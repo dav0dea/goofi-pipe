@@ -642,6 +642,11 @@ pub struct SlotDecl {
     /// latest-wins per wire, in connection order. Fixed by the node author here —
     /// a slot is single or multi for the life of the node type, never toggled.
     pub multi: bool,
+    /// A **required** slot must hold data when the node ticks. The engine checks the slot's
+    /// last-store — presence, never wiring — before `process` is invoked, and reports an error
+    /// instead of running. So a required slot is one a node may read unconditionally; a
+    /// non-required slot may be absent and the node handles that itself.
+    pub required: bool,
 }
 
 pub struct OutputDecl {

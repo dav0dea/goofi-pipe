@@ -318,8 +318,8 @@ mod tests {
     };
 
     static MULTI_IN: &[SlotDecl] = &[
-        SlotDecl { name: "many", kind: goofi_core::SlotType::Table, trigger_process: true, multi: true },
-        SlotDecl { name: "one", kind: goofi_core::SlotType::Array, trigger_process: true, multi: false },
+        SlotDecl { name: "many", kind: goofi_core::SlotType::Table, trigger_process: true, multi: true, required: false },
+        SlotDecl { name: "one", kind: goofi_core::SlotType::Array, trigger_process: true, multi: false, required: false },
     ];
     static MULTI_MANIFEST: NodeManifest = NodeManifest {
         type_name: "MultiThing",

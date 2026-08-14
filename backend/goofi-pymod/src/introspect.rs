@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::loader::{find_node_class, module_from_path};
-use crate::params::{BoolParam, FloatParam, IntParam, StringParam};
+use crate::params::{BoolParam, DataType, FloatParam, InputSlot, IntParam, StringParam};
 
 #[pyfunction]
 pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
@@ -51,12 +51,32 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
-/// `{name: DataType}` → the input slots (M1: every input triggers, none is `multi`).
+/// An input slot is declared either as a bare `goofi.DataType` — still the whole of it for a
+/// node with nothing to say beyond the type — or as a `goofi.InputSlot` carrying the per-slot
+/// options. Extracted typed, like [`ParamDescr`], so "which form is this" is a type-level
+/// question and anything else is a clean extract error, not an `else` arm.
+#[derive(FromPyObject)]
+enum SlotDescr<'py> {
+    Bare(Bound<'py, DataType>),
+    Full(Bound<'py, InputSlot>),
+}
+
+/// `{name: DataType | InputSlot}` → the input slots. `multi` stays false: it is not authorable
+/// from Python, because this tier has no variadic plumbing to honour it.
 fn slots(d: &Bound<'_, PyAny>) -> PyResult<Vec<Slot>> {
     d.cast::<PyDict>()?
         .iter()
         .map(|(k, v)| {
-            Ok(Slot { name: k.extract()?, kind: slot_kind(&v)?, trigger: true, multi: false })
+            let (kind, required, trigger) = match v.extract::<SlotDescr>()? {
+                // The bare form's answers are exactly `InputSlot`'s defaults, so a node written
+                // before `InputSlot` existed declares the same slot it always did.
+                SlotDescr::Bare(t) => (slot_kind(t.as_any())?, false, true),
+                SlotDescr::Full(s) => {
+                    let s = s.borrow();
+                    (slot_kind(s.dtype.bind(v.py()).as_any())?, s.required, s.trigger)
+                }
+            };
+            Ok(Slot { name: k.extract()?, kind, trigger, multi: false, required })
         })
         .collect()
 }
@@ -121,4 +141,61 @@ fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>)>
             )
         }
     })
+}
+
+// The interpreter these run in comes from the `host` feature (pyo3 auto-initialize); the
+// `extension-module` build links no libpython and cannot host one.
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    use super::*;
+
+    /// The one `Slot` that `config_input_slots()` returning `{"data": v}` yields.
+    fn slot_of(py: Python<'_>, v: Bound<'_, PyAny>) -> Slot {
+        let d = PyDict::new(py);
+        d.set_item("data", v).unwrap();
+        let mut got = slots(d.as_any()).expect("slots");
+        assert_eq!(got.len(), 1, "one declared slot in, one out");
+        got.pop().unwrap()
+    }
+
+    /// `goofi.InputSlot(DataType.ARRAY, **kwargs)` built through the real constructor, so the
+    /// signature's own defaults are what the tests read back.
+    fn input_slot<'py>(py: Python<'py>, kwargs: &Bound<'py, PyDict>) -> Bound<'py, PyAny> {
+        let dtype = Bound::new(py, DataType::ARRAY).unwrap();
+        py.get_type::<InputSlot>().call((dtype,), Some(kwargs)).expect("InputSlot(…)")
+    }
+
+    #[test]
+    fn a_bare_datatype_keeps_the_pre_inputslot_behaviour() {
+        Python::attach(|py| {
+            let s = slot_of(py, Bound::new(py, DataType::ARRAY).unwrap().into_any());
+            assert_eq!(s.kind, "ARRAY");
+            assert!(!s.required, "a bare DataType declares nothing, so it requires nothing");
+            assert!(s.trigger, "and it triggers, as every Python slot did before InputSlot existed");
+            assert!(!s.multi);
+        });
+    }
+
+    #[test]
+    fn an_input_slot_can_declare_itself_required() {
+        Python::attach(|py| {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("required", true).unwrap();
+            let s = slot_of(py, input_slot(py, &kwargs));
+            assert_eq!(s.kind, "ARRAY");
+            assert!(s.required);
+            assert!(s.trigger, "required does not touch trigger (D2)");
+        });
+    }
+
+    #[test]
+    fn an_input_slot_can_opt_out_of_triggering() {
+        Python::attach(|py| {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("trigger", false).unwrap();
+            let s = slot_of(py, input_slot(py, &kwargs));
+            assert!(!s.trigger, "trigger was hard-coded true before; it is authorable now");
+            assert!(!s.required, "and trigger does not touch required either (D2)");
+        });
+    }
 }

@@ -15,7 +15,10 @@ def introspect(name):
 def test_psd_like_declarations():
     m = introspect("psd_like.py")
     assert m["doc"] == "Power spectral density."
-    assert m["inputs"] == [{"name": "data", "kind": "ARRAY", "trigger": True, "multi": False}]
+    # A bare DataType declares the InputSlot defaults: triggering, not required.
+    assert m["inputs"] == [
+        {"name": "data", "kind": "ARRAY", "trigger": True, "multi": False, "required": False}
+    ]
     assert m["outputs"] == [{"name": "psd", "kind": "ARRAY"}]
     assert m["params"][0] == {
         "group": "welch",

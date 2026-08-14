@@ -29,6 +29,30 @@ impl DataType {
     }
 }
 
+/// `goofi.InputSlot(dtype, required=False, trigger=True)` — an input-slot declaration that
+/// carries the per-slot options a bare `goofi.DataType` has nowhere to put. The defaults ARE
+/// the bare form's behaviour, so `config_input_slots()` may return either and no existing node
+/// has to change. `multi` is deliberately absent: the Python tier has no variadic plumbing, and
+/// a flag that does nothing is worse than none.
+#[pyclass]
+pub struct InputSlot {
+    #[pyo3(get)]
+    pub dtype: Py<DataType>,
+    #[pyo3(get)]
+    pub required: bool,
+    #[pyo3(get)]
+    pub trigger: bool,
+}
+
+#[pymethods]
+impl InputSlot {
+    #[new]
+    #[pyo3(signature = (dtype, required=false, trigger=true))]
+    fn new(dtype: Py<DataType>, required: bool, trigger: bool) -> InputSlot {
+        InputSlot { dtype, required, trigger }
+    }
+}
+
 #[pyclass]
 pub struct IntParam {
     #[pyo3(get)]

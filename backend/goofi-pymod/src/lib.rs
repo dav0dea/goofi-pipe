@@ -27,6 +27,7 @@ pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<data::Data>()?;
     m.add_class::<node::Node>()?;
     m.add_class::<params::DataType>()?;
+    m.add_class::<params::InputSlot>()?;
     m.add_class::<params::IntParam>()?;
     m.add_class::<params::FloatParam>()?;
     m.add_class::<params::BoolParam>()?;

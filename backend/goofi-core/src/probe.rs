@@ -20,6 +20,12 @@ pub struct Slot {
     pub kind: String,
     pub trigger: bool,
     pub multi: bool,
+    /// Whether the engine refuses to tick the node while this slot's last-store is empty.
+    /// `#[serde(default)]` is load-bearing, for the same reason [`Param::doc`]'s is: an older
+    /// installed `goofi` wheel emits no `required` key, and a hard parse failure would silently
+    /// grey out every node it discovers (the probe swallows failures by design).
+    #[serde(default)]
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

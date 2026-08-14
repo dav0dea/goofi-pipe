@@ -57,6 +57,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     kind: SlotType::Array,
     trigger_process: true,
     multi: false,
+    required: false,
 }];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     name: "out",

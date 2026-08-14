@@ -66,6 +66,7 @@ pub fn leak_manifest(
             kind: SlotType::from_name(&s.kind).unwrap_or(SlotType::Array),
             trigger_process: s.trigger,
             multi: s.multi,
+            required: s.required,
         })
         .collect();
     let outputs: Vec<OutputDecl> = intro
@@ -276,6 +277,9 @@ mod tests {
         assert_eq!(m.inputs[0].name, "data");
         assert_eq!(m.inputs[0].kind, SlotType::Array);
         assert!(m.inputs[0].trigger_process);
+        // SAMPLE carries no `required` key — the shape a stale installed `goofi` wheel emits.
+        // It must parse as a non-required slot, not fail the whole introspection.
+        assert!(!m.inputs[0].required);
         assert_eq!(m.outputs[0].name, "psd");
         assert_eq!(m.params.len(), 2);
         assert_eq!(m.params[0].group, "welch");
@@ -287,6 +291,20 @@ mod tests {
             m.params[1].spec,
             crate::ParamSpec::Str { default: "a", options: [_, _], refresh: false }
         ));
+    }
+
+    #[test]
+    fn a_required_slot_crosses_the_probe() {
+        // `goofi.InputSlot(..., required=True)` on a Python node must reach the manifest as a
+        // required slot, or the engine never enforces the contract the author declared.
+        const REQ: &str = r#"{"gil_safe":true,"doc":"Lz",
+            "inputs":[{"name":"data","kind":"ARRAY","trigger":false,"multi":false,"required":true}],
+            "outputs":[{"name":"out","kind":"ARRAY"}],"params":[]}"#;
+        let intro = parse_introspection(REQ).expect("parse");
+        let m = leak_manifest("Lz".into(), &intro, "python", Isolation::Subprocess);
+        assert!(m.inputs[0].required);
+        // `required` and `trigger` are independent (D2) — an authored `trigger=False` survives too.
+        assert!(!m.inputs[0].trigger_process);
     }
 
     #[test]

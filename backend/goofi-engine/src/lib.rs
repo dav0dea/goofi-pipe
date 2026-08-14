@@ -3136,6 +3136,21 @@ pub(crate) fn execute_node(
     for v in outputs.values_mut() {
         *v = None;
     }
+    // A required slot must HOLD data when the node ticks — presence, never wiring, so a slot
+    // wired to a node that has emitted nothing reads the same as an unwired one (invariant 1).
+    // Checked here, the one seam the inline tick path and the detached worker share, so all
+    // three execution tiers answer identically. `last_outputs` is untouched: a viewer on a
+    // previously-emitting slot keeps its frame.
+    for slot in manifest.inputs.iter().filter(|s| s.required) {
+        let absent = if slot.multi {
+            multis.get(slot.name).is_none_or(|v| v.is_empty())
+        } else {
+            inputs.get(slot.name).and_then(Option::as_ref).is_none()
+        };
+        if absent {
+            return Some(format!("required input slot `{}` has no data", slot.name));
+        }
+    }
     let inp = Inputs::with_multi(inputs, multis);
     let p = goofi_node::Params::new(params);
     // Scope the `Outputs` borrow so `outputs` is free again for stamping below.
@@ -3552,6 +3567,7 @@ mod tests {
         kind: SlotType::Array,
         trigger_process: true,
         multi: false,
+        required: false,
     }];
     static E_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -3584,6 +3600,7 @@ mod tests {
         kind: SlotType::Array,
         trigger_process: true,
         multi: false,
+        required: false,
     }];
     static SINK_PARAMS: &[ParamDecl] = &[ParamDecl {
         group: "control",
@@ -3658,6 +3675,7 @@ mod tests {
         kind: SlotType::Array,
         trigger_process: true,
         multi: false,
+        required: false,
     }];
     static C_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -3694,8 +3712,8 @@ mod tests {
         }
     }
     static ADD_IN: &[SlotDecl] = &[
-        SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true, multi: false },
-        SlotDecl { name: "b", kind: SlotType::Array, trigger_process: true, multi: false },
+        SlotDecl { name: "a", kind: SlotType::Array, trigger_process: true, multi: false, required: false },
+        SlotDecl { name: "b", kind: SlotType::Array, trigger_process: true, multi: false, required: false },
     ];
     static ADD_OUT: &[OutputDecl] = &[OutputDecl {
         name: "out",
@@ -3789,6 +3807,7 @@ mod tests {
         kind: SlotType::String,
         trigger_process: true,
         multi: false,
+        required: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -3850,8 +3869,8 @@ mod tests {
         }
     }
     static REF_IN: &[SlotDecl] = &[
-        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false },
-        SlotDecl { name: "ref", kind: SlotType::Array, trigger_process: false, multi: false },
+        SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false, required: false },
+        SlotDecl { name: "ref", kind: SlotType::Array, trigger_process: false, multi: false, required: false },
     ];
     inventory::submit! {
         NodeManifest {
@@ -4105,6 +4124,7 @@ mod tests {
         kind: SlotType::Array,
         trigger_process: true,
         multi: true,
+        required: false,
     }];
     inventory::submit! {
         NodeManifest {
@@ -4116,6 +4136,76 @@ mod tests {
             params: COLLECT_PARAMS,
             isolation: Isolation::InProcess,
             factory: default_factory::<Collect>,
+        }
+    }
+
+    // A node with a REQUIRED input slot that counts and emits its own `process` calls. The
+    // counter is the load-bearing part: an assertion on the error message alone would also
+    // hold for a check placed AFTER `node.process`, which is the bug the contract exists to
+    // prevent, so the tests read the count back to prove `process` was never entered.
+    #[derive(Default)]
+    struct Required {
+        runs: i64,
+    }
+    impl Node for Required {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.runs += 1;
+            let d = Data::array_f32(vec![1], (self.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static REQ_IN: &[SlotDecl] = &[SlotDecl {
+        name: "data",
+        kind: SlotType::Array,
+        trigger_process: true,
+        multi: false,
+        required: true,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestRequired",
+            category: "test",
+            doc: "one required input; emits its own run count",
+            inputs: REQ_IN,
+            outputs: G_OUT,
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<Required>,
+        }
+    }
+
+    // The multi analogue: a required VARIADIC slot, whose frames live in `multi_inputs` rather
+    // than `inputs` — so the presence check has to look in the other place.
+    #[derive(Default)]
+    struct RequiredMulti;
+    impl Node for RequiredMulti {
+        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let n = inp.get_multi("ins").len() as f32;
+            let d = Data::array_f32(vec![1], n.to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static REQ_MULTI_IN: &[SlotDecl] = &[SlotDecl {
+        name: "ins",
+        kind: SlotType::Array,
+        trigger_process: true,
+        multi: true,
+        required: true,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestRequiredMulti",
+            category: "test",
+            doc: "one required multi input; emits its wire count",
+            inputs: REQ_MULTI_IN,
+            outputs: G_OUT,
+            params: NO_PARAMS,
+            isolation: Isolation::InProcess,
+            factory: default_factory::<RequiredMulti>,
         }
     }
 
@@ -4289,6 +4379,76 @@ mod tests {
         g2.tick();
         // All 3 wires restored, in connection order (a=1, b=2, c=3).
         assert_eq!(as_f32_vec(&g2.latest_frame(col2, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+    }
+
+    // ---- required input slots ----------------------------------------------
+
+    #[test]
+    fn a_required_input_with_no_frame_errors_before_process_is_entered() {
+        let mut g = Graph::new();
+        let n = g.add_node("_TestRequired", None).unwrap();
+        // Autotrigger is what makes an unwired node tick at all — D1: the check fires on a TICK,
+        // never on the configuration.
+        g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
+        g.tick();
+        assert_eq!(
+            g.last_error(n),
+            Some("required input slot `data` has no data"),
+            "the empty required slot is named"
+        );
+        assert!(g.latest_frame(n, "out").is_none(), "a refused tick emits nothing");
+        // …and `process` was never ENTERED, not merely denied its output. The node counts its own
+        // calls, so once the slot is fed the count must read 1; a check placed AFTER `node.process`
+        // would leave it at 2.
+        let src = const_src(&mut g, 4.0);
+        g.add_link(src, "out", n, "data").unwrap();
+        g.tick();
+        assert_eq!(g.last_error(n), None, "the fed slot clears the error");
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "process was entered exactly once");
+    }
+
+    #[test]
+    fn a_required_input_holding_a_frame_runs_cleanly() {
+        let mut g = Graph::new();
+        let src = const_src(&mut g, 7.0);
+        let n = g.add_node("_TestRequired", None).unwrap();
+        g.add_link(src, "out", n, "data").unwrap();
+        g.tick();
+        assert_eq!(g.last_error(n), None, "a satisfied required slot is not an error");
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "process ran");
+    }
+
+    #[test]
+    fn a_required_multi_input_with_no_frames_errors() {
+        let mut g = Graph::new();
+        let n = g.add_node("_TestRequiredMulti", None).unwrap();
+        g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
+        g.tick();
+        assert_eq!(
+            g.last_error(n),
+            Some("required input slot `ins` has no data"),
+            "an unwired variadic slot holds no frames either"
+        );
+        assert!(g.latest_frame(n, "out").is_none(), "a refused tick emits nothing");
+        // Wire one source and the same node runs, seeing its one frame.
+        let src = const_src(&mut g, 1.0);
+        g.add_link(src, "out", n, "ins").unwrap();
+        g.tick();
+        assert_eq!(g.last_error(n), None);
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "one wire present");
+    }
+
+    #[test]
+    fn a_required_input_on_a_node_that_never_ticks_is_silent() {
+        // D1 again, from the other side: an unwired node with no autotrigger is "a disconnected
+        // node floating in space" — we never asked it to run, so it has nothing to report.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestRequired", None).unwrap();
+        for _ in 0..3 {
+            g.tick();
+        }
+        assert_eq!(g.last_error(n), None, "a node that never ran cannot be missing an input");
+        assert!(g.latest_frame(n, "out").is_none(), "and it emitted nothing");
     }
 
     #[test]
@@ -4510,7 +4670,7 @@ mod tests {
     }
 
     static GATE_IN: &[SlotDecl] =
-        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false }];
+        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false, required: false }];
     static GATE_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
     static GATE_MANIFEST: NodeManifest = NodeManifest {
         type_name: "GateSubproc",
@@ -5432,12 +5592,14 @@ mod tests {
         kind: SlotType::Array,
         trigger_process: true,
         multi: false,
+        required: false,
     }];
     static RESHAPE_IN_V2: &[SlotDecl] = &[SlotDecl {
         name: "beta",
         kind: SlotType::Array,
         trigger_process: false,
         multi: false,
+        required: false,
     }];
     static RESHAPE_OUT_V1: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
     static RESHAPE_OUT_V2: &[OutputDecl] = &[
