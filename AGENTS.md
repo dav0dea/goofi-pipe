@@ -216,11 +216,11 @@ can no longer stall the tick.
 ```bash
 cargo run                       # launches the backend + bridge, prints the URL
 #   flags: --port N (default 8000), --bind HOST (default 127.0.0.1),
-#          --extra-nodes DIR, --subproc-python BIN, --list-nodes
+#          --extra-nodes DIR, --list-nodes
 # It scans ./nodes/ when present and routes each node by tier; --extra-nodes ADDS a
-# directory to that (repeatable, later wins a shared type name). Tier is never chosen
-# by a flag — one probe per node file decides it.
-# --subproc-python defaults to .gfivenv, which `cargo run -p goofi-init` provisions.
+# directory to that (repeatable, later wins a shared type name). NEITHER the tier nor
+# the interpreter is selectable: one probe per node file routes, and the subprocess tier
+# always runs .gfivenv, which `cargo run -p goofi-init` provisions.
 
 cargo test --workspace                      # must stay green, and warning-free
 cargo test -p goofi-py --features embed     # in-process Python host (needs .gfivenv-ft)
@@ -282,7 +282,7 @@ fish alike, with no `.sh`/`.ps1` pair to keep in sync. It depends on no goofi cr
 **The two interpreters** (machine-local, gitignored; use `uv pip`, never `pip`):
 - `.gfivenv-ft` — free-threaded 3.14t: the in-process host pyo3 LINKS against, and the probe.
 - `.gfivenv` — a GIL python (pinned 3.12, since the subprocess tier exists precisely for packages
-  that are *not* free-threading-safe): the subprocess child. `--subproc-python` overrides it.
+  that are *not* free-threading-safe): the subprocess child, with no flag to point elsewhere.
 
 Wheels are built through `uv tool run maturin`, numpy riding along as the wheel's own declared
 dependency. The names are deliberate: a generic `.venv` is claimed by editors and by `uv` itself,

@@ -58,12 +58,12 @@ link against *before cargo starts*, and cargo reads `.cargo/config.toml` only at
 it has run, the build stops with one line saying so.
 
 Flags: `--port N` (default 8000), `--bind HOST` (default 127.0.0.1),
-`--extra-nodes DIR`, `--subproc-python BIN`, `--list-nodes`. It scans `./nodes/`
-when that directory exists, routing each node to the tier it can run on —
-in-process when its imports are free-threading-safe, else a subprocess. There is no
-flag for choosing that tier; one probe decides per node. `--extra-nodes` is
-**repeatable** and **adds** to the shipped tree: each directory is scanned in turn,
-and a later one wins a type name it shares with an earlier one.
+`--extra-nodes DIR`, `--list-nodes`. It scans `./nodes/` when that directory exists,
+routing each node to the tier it can run on — in-process when its imports are
+free-threading-safe, else a subprocess. Neither the tier nor the interpreter is a
+setting: one probe decides per node, and the subprocess tier always runs `.gfivenv`.
+`--extra-nodes` is **repeatable** and **adds** to the shipped tree: each directory is
+scanned in turn, and a later one wins a type name it shares with an earlier one.
 
 **When the backend is not on your machine.** The Save and Open dialogs each carry a second
 door — *Download a copy* and *Open from this computer…* — which pass the `.gfi` through the
@@ -120,8 +120,9 @@ greyed out, naming the missing module — rather than silently vanishing. An exc
 
 The interpreters are `.gfivenv-ft` (free-threaded 3.14t, in-process) and `.gfivenv` (a GIL
 Python, subprocess). `cargo run -p goofi-init` creates both and installs the `goofi` package
-into them, using `uv` — which is therefore a hard requirement. `--subproc-python` overrides the
-GIL one. Re-run `goofi-init` after a version bump; it is idempotent.
+into them, using `uv` — which is therefore a hard requirement. Those two are the only
+interpreters goofi uses; there is no flag for naming another. Re-run `goofi-init` after a
+version bump; it is idempotent.
 
 ## Development
 

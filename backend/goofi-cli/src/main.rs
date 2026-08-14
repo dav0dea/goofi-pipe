@@ -2,8 +2,8 @@
 //! WebSocket planes. Flags: `--port N` (default 8000), `--bind HOST` (default
 //! 127.0.0.1), `--extra-nodes DIR` (a node directory scanned in ADDITION to the shipped
 //! `nodes/` tree, repeatable). Every Python node is tier-routed by one probe — in-process
-//! when free-threading-safe, else a subprocess run on `--subproc-python`, which defaults
-//! to the repo-local `.gfivenv`.
+//! when free-threading-safe, else a subprocess run on the repo-local `.gfivenv`. There is
+//! no flag for either choice — one probe routes, one venv runs.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,6 @@ struct Cli {
     /// shipped `nodes/` tree, which is what the name promises. Later entries win a shared type
     /// name — see `goofi_bridge::rescan`.
     extra_nodes: Vec<String>,
-    subproc_python: Option<String>,
     list_nodes: bool,
     help: bool,
 }
@@ -47,7 +46,6 @@ impl Default for Cli {
             port: 8000,
             bind: String::from("127.0.0.1"),
             extra_nodes: Vec::new(),
-            subproc_python: None,
             list_nodes: false,
             help: false,
         }
@@ -55,7 +53,7 @@ impl Default for Cli {
 }
 
 const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
-     [--extra-nodes DIR] [--list-nodes] [--subproc-python BIN]";
+     [--extra-nodes DIR] [--list-nodes]";
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
 /// exiting 2 — every malformed invocation reports, none is silently ignored: a value-taking flag
@@ -74,7 +72,6 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
             }
             "--bind" => cli.bind = need(args.next())?,
             "--extra-nodes" => cli.extra_nodes.push(need(args.next())?),
-            "--subproc-python" => cli.subproc_python = Some(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
             "-h" | "--help" => cli.help = true,
             other => return Err(format!("unknown argument `{other}` (try --help)")),
@@ -85,7 +82,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
 
 #[tokio::main]
 async fn main() {
-    let mut cli = match parse_args(std::env::args().skip(1)) {
+    let cli = match parse_args(std::env::args().skip(1)) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{e}");
@@ -97,8 +94,8 @@ async fn main() {
             "{USAGE}\n\
              \n  \
              Scans `{DEFAULT_NODES_DIR}/` when it exists, plus every --extra-nodes directory. \
-             Each node is routed in-process if free-threading-safe, else to a subprocess.\n  \
-             --subproc-python defaults to `{}`, which `cargo run -p goofi-init` provisions.",
+             Each node is routed in-process if free-threading-safe, else to a subprocess on \
+             `{}`, which `cargo run -p goofi-init` provisions.",
             goofi_init::GIL_VENV
         );
         return;
@@ -106,7 +103,7 @@ async fn main() {
     // Settled HERE, and handed to `run` as its own argument: resolving needs the filesystem, which
     // `parse_args` must not touch, and passing it separately is what makes "no interpreter" a state
     // `run` cannot be called in rather than one it has to invent a value for.
-    let python = match cli.subproc_python.take().map(Ok).unwrap_or_else(default_subproc_python) {
+    let python = match default_subproc_python() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
@@ -116,8 +113,8 @@ async fn main() {
     std::process::exit(run(cli, python, AppState::new(), shutdown_signal()).await);
 }
 
-/// The interpreter the subprocess tier runs on — the venv `goofi-init` made, unless
-/// `--subproc-python` names another. goofi does NOT provision here: setup is one explicit command
+/// The interpreter the subprocess tier runs on: the venv `goofi-init` made, and only that one —
+/// no flag names another. goofi does NOT provision here: setup is one explicit command
 /// (`cargo run -p goofi-init`), so an absent venv is reported once, by name, rather than as a
 /// dozen Python nodes each failing their probe with their own version of the same news.
 fn default_subproc_python() -> Result<String, String> {
@@ -163,8 +160,9 @@ async fn run(
     // Python node after it.
     point_embedded_python_at_its_venv();
 
-    // `subproc_python` arrives resolved (see `main`), so the parsed field has already been taken.
-    let Cli { port, bind, extra_nodes, subproc_python: _, list_nodes, help: _ } = cli;
+    // `subproc_python` arrives as its own argument (see `main`) — it is resolved from the
+    // filesystem, never parsed, so it was never a field on `Cli` to begin with.
+    let Cli { port, bind, extra_nodes, list_nodes, help: _ } = cli;
 
     if !list_nodes {
         register_evaluator(&state);
@@ -516,14 +514,12 @@ mod tests {
     #[test]
     fn reads_every_value_taking_flag() {
         let cli = parse(&[
-            "--port", "9001", "--bind", "0.0.0.0", "--extra-nodes", "b",
-            "--subproc-python", "py", "--list-nodes",
+            "--port", "9001", "--bind", "0.0.0.0", "--extra-nodes", "b", "--list-nodes",
         ])
         .expect("a well-formed invocation");
         assert_eq!(cli.port, 9001);
         assert_eq!(cli.bind, "0.0.0.0");
         assert_eq!(cli.extra_nodes, ["b"]);
-        assert_eq!(cli.subproc_python.as_deref(), Some("py"));
         assert!(cli.list_nodes);
     }
 
@@ -560,7 +556,7 @@ mod tests {
     /// for while reporting success.
     #[test]
     fn a_value_taking_flag_without_its_value_is_an_error() {
-        for flag in ["--port", "--bind", "--extra-nodes", "--subproc-python"] {
+        for flag in ["--port", "--bind", "--extra-nodes"] {
             let err = parse(&[flag]).expect_err(&format!("`{flag}` alone must not be ignored"));
             assert!(err.contains(flag), "the message names the flag: {err}");
         }
@@ -590,6 +586,23 @@ mod tests {
         assert!(parse(&["--port", "nope"]).unwrap_err().contains("--port"));
         // `--python-nodes` never existed — the warning in build.rs used to name it.
         assert!(parse(&["--python-nodes", "x"]).unwrap_err().contains("unknown argument"));
+    }
+
+    /// A RETIRED flag is REJECTED, never ignored. Someone's launcher still says
+    /// `--subproc-python /usr/bin/python3`; exiting 2 tells them it stopped meaning anything,
+    /// where swallowing it would let them keep believing the override applied — and the whole
+    /// point of retiring it is that there is now exactly one interpreter.
+    #[test]
+    fn a_retired_node_flag_is_rejected_rather_than_ignored() {
+        for retired in [
+            ["--subproc-python", "/usr/bin/python3"],
+            ["--subproc-nodes", "dir"],
+            ["--auto-nodes", "dir"],
+        ] {
+            let err = parse(&retired).expect_err(&format!("`{}` is retired", retired[0]));
+            assert!(err.contains("unknown argument"), "and says so plainly: {err}");
+            assert!(err.contains(retired[0]), "…naming the flag the user typed: {err}");
+        }
     }
 
     /// The workspace mount's lifetime is the run's: present while the server is up, gone once it
