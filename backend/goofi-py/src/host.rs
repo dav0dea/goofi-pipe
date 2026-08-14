@@ -96,16 +96,10 @@ impl Node for PyNode {
     }
 
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        // Gather the present input slots (single-source; M2's manifests are all single).
-        let present: Vec<(&str, &Data)> =
-            self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
-        // Same guard as the subprocess tier: a node with inputs but no frame has nothing to tick.
-        // Without it `run_process` calls `process()` with an empty kwargs dict and the authored
-        // `def process(self, data)` raises TypeError every tick — the SAME file behaving
-        // differently per tier. A zero-input source node has empty `in_slots` and is unaffected.
-        if present.is_empty() && !self.in_slots.is_empty() {
-            return Ok(());
-        }
+        // Every DECLARED input slot, with the frame it holds or `None` — the kwarg set
+        // `process()` is authored against (single-source; M2's manifests are all single).
+        let inputs: Vec<(&str, Option<&Data>)> =
+            self.in_slots.iter().map(|name| (*name, inp.get(name))).collect();
 
         let check_gil = !self.gil_checked;
         let (outs, tripped): (Vec<(String, Data)>, bool) = attach(|py| -> Result<_, String> {
@@ -113,7 +107,7 @@ impl Node for PyNode {
                 py,
                 self.instance.bind(py),
                 p.groups(),
-                &present,
+                &inputs,
                 &self.out_slots,
                 &mut self.cast_warned,
             )
@@ -313,6 +307,69 @@ mod tests {
         let mut node = mk(DOUBLE);
         assert_eq!(run(&mut node, &[1.0, 2.0, 3.0]), vec![2.0, 4.0, 6.0]);
         assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled after running");
+    }
+
+    // Two declared slots, only one of which the tests wire. The `a is None` branch returns a
+    // BARE array (not a `{slot: value}` dict), so one node pins both halves of the contract:
+    // that the absent slot arrives at all, and which input the bare return's meta comes from.
+    const PAIR: &str = concat!(
+        "import goofi\n",
+        "class Pair(goofi.Node):\n",
+        "    def config_input_slots(self):\n",
+        "        return {'a': goofi.DataType.ARRAY, 'b': goofi.DataType.ARRAY}\n",
+        "    def config_output_slots(self):\n",
+        "        return {'out': goofi.DataType.ARRAY}\n",
+        "    def process(self, a, b):\n",
+        "        if a is None:\n",
+        "            return b.data * 2.0\n",
+        "        return a.data + b.data\n",
+    );
+
+    /// Tick a `PAIR` node with `a` unwired and `b` carrying `frame` — the shape a node sees when
+    /// only some of its declared inputs are wired.
+    fn tick_a_absent(frame: Data) -> Data {
+        let mut node = PyNode::from_source(PAIR, vec!["a", "b"], vec!["out"]).expect("compile node");
+        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        inmap.insert("a", None);
+        inmap.insert("b", Some(frame));
+        let inp = Inputs::new(&inmap);
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        let params = ParamGroups::new();
+        {
+            let mut o = Outputs::new(&mut outmap);
+            node.process(&inp, &mut o, &mut NodeCtx::new(), &Params::new(&params)).expect("process");
+        }
+        outmap.get("out").unwrap().clone().expect("output frame")
+    }
+
+    #[test]
+    fn an_absent_declared_slot_arrives_as_none_rather_than_being_omitted() {
+        let _interp = interp();
+        // Omitting it is not a no-op: `def process(self, a, b)` then raises TypeError every tick,
+        // so a partially-wired node could never run. `[2,4,6]` is reachable ONLY through the
+        // node's own `a is None` branch — which is the point: what an absent non-required input
+        // means is the node's call to make, exactly as a native node's `inp.get(...)` lets it.
+        let frame = Data::array_f32(vec![3], f32s(&[1.0, 2.0, 3.0]), Meta::empty()).unwrap();
+        match tick_a_absent(frame).value() {
+            Value::Array(s) => {
+                let v: Vec<f32> = s.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+                assert_eq!(v, vec![2.0, 4.0, 6.0]);
+            }
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn a_bare_return_carries_the_first_present_inputs_meta_not_the_first_declared_slots() {
+        let _interp = interp();
+        // The meta source for a bare array return is a PRESENT frame. Keyed off the first
+        // DECLARED slot instead, a node whose first input is unwired silently loses its output
+        // meta — sfreq gone, so every downstream node reading a rate gets nothing.
+        let mut meta = Meta::empty();
+        meta.set_sfreq(Some(250.0));
+        let frame = Data::array_f32(vec![3], f32s(&[1.0, 2.0, 3.0]), meta).unwrap();
+        assert_eq!(tick_a_absent(frame).meta().sfreq(), Some(250.0));
     }
 
     #[test]

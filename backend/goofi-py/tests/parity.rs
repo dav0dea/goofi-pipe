@@ -73,9 +73,28 @@ fn tick(node: &mut dyn Node, input: Data, params: &ParamGroups) -> Data {
     outmap.get("out").unwrap().clone().expect("output frame")
 }
 
-/// Tick a node whose declared `data` slot carries NO frame — the shape `wants_run` produces for
-/// an unwired trigger input with `common.autotrigger` on. Returns the tick result and whatever
-/// landed in `out`.
+/// One authored node that can TELL the two cases apart: it answers a marker when its declared
+/// `data` slot arrives as `None` and the doubled input otherwise. A source that merely tolerated
+/// an absent input could not distinguish "called with None" from "never called at all", which is
+/// precisely the difference the tiers must agree on.
+const ABSENT: &str = r#"
+import goofi
+import numpy as np
+class Absent(goofi.Node):
+    @staticmethod
+    def config_input_slots():
+        return {"data": goofi.DataType.ARRAY}
+    @staticmethod
+    def config_output_slots():
+        return {"out": goofi.DataType.ARRAY}
+    def process(self, data):
+        if data is None:
+            return {"out": np.array([-1.0], dtype=np.float32)}
+        return {"out": data.data * 2.0}
+"#;
+
+/// Tick a node whose declared `data` slot carries NO frame — the shape the engine produces for
+/// an input slot that is unwired, or wired to a node that has not emitted yet.
 fn tick_absent(node: &mut dyn Node, params: &ParamGroups) -> (goofi_node::NodeResult, Option<Data>) {
     let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
     inmap.insert("data", None);
@@ -91,24 +110,32 @@ fn tick_absent(node: &mut dyn Node, params: &ParamGroups) -> (goofi_node::NodeRe
 }
 
 #[test]
-fn both_tiers_no_op_when_a_declared_input_has_no_frame() {
+fn both_tiers_pass_a_declared_input_with_no_frame_as_none() {
     let ft = goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
     let subpy = std::env::var("GOOFI_SUBPROC_TEST_PYTHON").unwrap_or(ft);
-    let p = params();
+    let p = ParamGroups::new();
 
-    let mut inproc = PyNode::from_source(SRC, vec!["data"], vec!["out"]).expect("PyNode");
+    let mut inproc = PyNode::from_source(ABSENT, vec!["data"], vec!["out"]).expect("PyNode");
     inproc.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("in-process setup");
     let (a_res, a_out) = tick_absent(&mut inproc, &p);
 
-    let mut remote = RemoteNode::new(&subpy, SRC, vec!["data"]);
+    // The subprocess wire carries only the slots that HOLD a frame, so the child has to widen the
+    // request back to its own declared slots — a different mechanism from the in-process tier's
+    // direct list, which is exactly why the two need pinning against each other.
+    let mut remote = RemoteNode::new(&subpy, ABSENT, vec!["data"]);
     let (b_res, b_out) = tick_absent(&mut remote, &p);
 
-    // `process(self, data)` cannot be called with no `data`: without the guard the in-process
-    // tier raises TypeError every tick while the subprocess tier quietly no-ops — the same
-    // authored file behaving differently per tier, which is exactly what this seam forbids.
     assert!(a_res.is_ok(), "in-process tier errored on an absent input: {:?}", a_res.err());
     assert!(b_res.is_ok(), "subprocess tier errored on an absent input: {:?}", b_res.err());
-    assert!(a_out.is_none() && b_out.is_none(), "neither tier may emit without an input frame");
+    let a = a_out.expect("in-process tier emitted nothing — `process` was not called with None");
+    let b = b_out.expect("subprocess tier emitted nothing — `process` was not called with None");
+    assert_eq!(floats(&a), floats(&b), "the two tiers must answer an absent input identically");
+    assert_eq!(floats(&a), vec![-1.0], "both tiers took the node's own `data is None` branch");
+
+    // The same nodes, now WITH a frame, take the other branch — so the marker above is the node
+    // choosing, not the only thing this source can ever return.
+    assert_eq!(floats(&tick(&mut inproc, input(), &p)), vec![2.0, 4.0, 6.0]);
+    assert_eq!(floats(&tick(&mut remote, input(), &p)), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]

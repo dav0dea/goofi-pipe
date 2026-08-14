@@ -272,13 +272,12 @@ impl RemoteNode {
 
 impl Node for RemoteNode {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        // Gather the present input slots; if the node has inputs but none arrived, there is
-        // nothing to tick (the engine gates on the triggering slot).
+        // Only the PRESENT slots cross the wire — an absent one is the absence of an entry, and
+        // the child rebuilds the full declared kwarg set from its own `config_input_slots()`.
+        // A node with inputs but none arrived still ticks: what a missing non-required input
+        // means is the node's own call (it receives `None`), and a required one never gets here.
         let present: Vec<(&str, &Data)> =
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
-        if present.is_empty() && !self.in_slots.is_empty() {
-            return Ok(());
-        }
 
         let frame = goofi_codec::encode_request(p.groups(), &present);
         let timeout = self.timeout;

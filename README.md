@@ -137,9 +137,14 @@ class Smooth(goofi.Node):
         return {"out": (out, data.meta)}
 ```
 
-`process` receives one keyword argument per **present** input slot and returns
+`process` receives one keyword argument per **declared** input slot and returns
 `{slot: value}` — a bare array, an `(array, meta)` pair, or a `goofi.Data`. Returning
 `None` emits nothing that tick. Params arrive as `self.params.<group>.<name>`.
+
+A slot with no data arrives as `None`, and handling that is the node's own call
+(`if data is None: return None`). Declare it
+`goofi.InputSlot(goofi.DataType.ARRAY, required=True)` instead and the node never ticks
+without it — so it may be read unconditionally.
 
 The same file runs on either Python tier — a discovery probe imports it in a real
 interpreter and reports whether it is free-threading-safe. If it isn't, it routes to a

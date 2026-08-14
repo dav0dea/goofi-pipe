@@ -66,11 +66,14 @@ pub fn run_refresh(
     }
 }
 
-/// Apply the live params, call `node.process(**present)`, and marshal the return into
-/// per-slot `Data`. `present` is `(slot, &Data)` for each PRESENT input slot (built into
-/// `goofi.Data` kwargs). `out_slots` are the node's declared output slot names (used when
-/// the node returns a bare value instead of a `{slot: value}` dict). `warned` is the
-/// caller's per-node dedup set for the cast-to-f32 warning.
+/// Apply the live params, call `node.process(**inputs)`, and marshal the return into
+/// per-slot `Data`. `inputs` is `(slot, frame)` for every DECLARED input slot in declaration
+/// order — one keyword argument each, a `goofi.Data` when the slot holds a frame and `None`
+/// when it does not, so `def process(self, a, b)` is callable however few of its slots are
+/// wired and the node decides for itself what an absent input means. A REQUIRED slot never
+/// arrives empty; the engine refuses the tick upstream. `out_slots` are the node's declared
+/// output slot names (used when the node returns a bare value instead of a `{slot: value}`
+/// dict). `warned` is the caller's per-node dedup set for the cast-to-f32 warning.
 ///
 /// Return coercion, per slot value:
 ///
@@ -84,23 +87,27 @@ pub fn run_process(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
     params: &Groups,
-    present: &[(&str, &CoreData)],
+    inputs: &[(&str, Option<&CoreData>)],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
 ) -> PyResult<Vec<(String, CoreData)>> {
     apply_params(py, instance, params)?;
 
     let kwargs = PyDict::new(py);
-    for (name, core) in present {
-        let d = Py::new(py, Data::from_core((*core).clone()))?;
-        kwargs.set_item(*name, d)?;
+    for (name, core) in inputs {
+        match core {
+            Some(c) => kwargs.set_item(*name, Py::new(py, Data::from_core((*c).clone()))?)?,
+            None => kwargs.set_item(*name, py.None())?,
+        }
     }
     let ret = instance.call_method("process", (), Some(&kwargs))?;
     if ret.is_none() {
         return Ok(Vec::new());
     }
 
-    let primary = present.first().map(|(_, c)| *c);
+    // The first PRESENT frame, not the first declared slot: a node whose leading slot is unwired
+    // must still carry meta from the input it did get.
+    let primary = inputs.iter().find_map(|(_, c)| *c);
     if let Ok(dict) = ret.cast::<PyDict>() {
         let mut outs = Vec::with_capacity(dict.len());
         for (k, v) in dict.iter() {

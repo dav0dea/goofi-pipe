@@ -54,13 +54,24 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
 
     let module = module_from_source(py, "goofi_node_main", &source)?;
     let instance = find_node_class(py, &module)?.call0()?;
-    let cfg = instance.call_method0("config_output_slots")?;
-    let out_slots: Vec<String> =
-        cfg.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect::<PyResult<_>>()?;
+    // The child is authoritative for BOTH slot lists: outputs name a bare return's slot, and
+    // inputs are the kwarg set `process()` is called with. The request carries only the slots
+    // that hold a frame, so the declared input names are what turn an absent one into `None`.
+    let out_slots = slot_names(&instance, "config_output_slots")?;
+    let in_slots = slot_names(&instance, "config_input_slots")?;
     let out_refs: Vec<&str> = out_slots.iter().map(|s| s.as_str()).collect();
+    let in_refs: Vec<&str> = in_slots.iter().map(|s| s.as_str()).collect();
 
-    run_loop(py, &instance, &out_refs, &req_name, &resp_name)
+    run_loop(py, &instance, &in_refs, &out_refs, &req_name, &resp_name)
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+}
+
+/// The slot names one `config_*_slots()` hook declares, in declaration order. Only the keys
+/// matter here — the dtypes (and any `InputSlot` options) are the probe's business, and the
+/// parent has already routed on them.
+fn slot_names(instance: &Bound<'_, PyAny>, hook: &str) -> PyResult<Vec<String>> {
+    let cfg = instance.call_method0(hook)?;
+    cfg.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
 }
 
 /// Read a required env var, or a clean Python error naming it.
@@ -73,6 +84,7 @@ fn env(key: &str) -> PyResult<String> {
 fn run_loop(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
+    in_slots: &[&str],
     out_slots: &[&str],
     req_name: &str,
     resp_name: &str,
@@ -128,7 +140,7 @@ fn run_loop(
         if last_seq == Some(seq) {
             continue; // a re-publish of an already-answered request — its response is in the buffer
         }
-        let resp = handle(py, instance, out_slots, &mut warned, &mut did_setup, &payload[4..])
+        let resp = handle(py, instance, in_slots, out_slots, &mut warned, &mut did_setup, &payload[4..])
             .map_err(|e| format!("node process: {e}"))?;
 
         // [u32 seq][response frame] — the seq lets the parent dedup a re-publish.
@@ -154,14 +166,21 @@ fn run_loop(
 fn handle(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
+    in_slots: &[&str],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
     did_setup: &mut bool,
     body: &[u8],
 ) -> PyResult<Vec<u8>> {
-    let (params, inputs) = decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)?;
-    let present: Vec<(&str, &CoreData)> = inputs.iter().map(|(n, d)| (n.as_str(), d)).collect();
-    match run_node(py, instance, &params, &present, out_slots, warned, did_setup) {
+    let (params, arrived) = decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    // The wire carries only the slots that hold a frame; widen it back to every declared slot so
+    // `process()` gets its full kwarg set, `None` where nothing arrived — the same list the
+    // in-process tier hands `run_process` directly.
+    let inputs: Vec<(&str, Option<&CoreData>)> = in_slots
+        .iter()
+        .map(|name| (*name, arrived.iter().find(|(n, _)| n == name).map(|(_, d)| d)))
+        .collect();
+    match run_node(py, instance, &params, &inputs, out_slots, warned, did_setup) {
         Ok(outs) => {
             let slots: Vec<(&str, &CoreData)> = outs.iter().map(|(n, d)| (n.as_str(), d)).collect();
             Ok(encode_response(&slots))
@@ -177,7 +196,7 @@ fn run_node(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
     params: &crate::exec::Groups,
-    present: &[(&str, &CoreData)],
+    inputs: &[(&str, Option<&CoreData>)],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
     did_setup: &mut bool,
@@ -186,5 +205,5 @@ fn run_node(
         *did_setup = true;
         crate::exec::run_setup(py, instance, params)?;
     }
-    crate::exec::run_process(py, instance, params, present, out_slots, warned)
+    crate::exec::run_process(py, instance, params, inputs, out_slots, warned)
 }
