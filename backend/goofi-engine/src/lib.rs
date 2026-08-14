@@ -113,6 +113,12 @@ struct NodeEntry {
     /// resolves them into `params` before the node runs; the node never sees them.
     bindings: HashMap<ParamKey, ExprBinding>,
     ctx: NodeCtx,
+    /// `Some(msg)` when this node's INITIALIZATION failed — the `on_param_changed` replay and
+    /// `setup()` together, which are one unit: a node that did not finish either never
+    /// initialized, so nothing may run against it (D3, [`ensure_initialized`]). Deliberately NOT
+    /// `last_error`, which [`execute_node`] overwrites every run — that is how a bootstrap failure
+    /// used to erase itself on the node's first clean tick.
+    setup_error: Option<String>,
     last_error: Option<String>,
     /// The message [`Graph::last_error`] last derived for this node, and WHEN it first read that
     /// way. Re-stamped only when the message changes, so the instant is the error's *onset* — the
@@ -541,7 +547,9 @@ impl Graph {
     /// is spawn + import + setup, which is where the spinner earns its keep.
     pub fn node_stage(&self, uid: Uid) -> &'static str {
         let Some(entry) = self.nodes.get(&uid) else { return "error" };
-        if entry.last_error.is_some() {
+        // Both error channels, or a node whose `setup()` failed would draw as `ready` — the
+        // uninitialized state is precisely the one the editor must not paint healthy.
+        if entry.setup_error.is_some() || entry.last_error.is_some() {
             return "error";
         }
         match &entry.exec {
@@ -813,7 +821,7 @@ impl Graph {
         let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         let run_policy = RunPolicy::from_params(&params);
 
-        let (exec, last_error) = make_exec(manifest, node, &params, &mut ctx);
+        let (exec, setup_error) = make_exec(manifest, node, &params, &mut ctx);
 
         self.nodes.insert(
             uid,
@@ -827,7 +835,8 @@ impl Graph {
                 last_outputs: IndexMap::new(),
                 bindings: HashMap::new(),
                 ctx,
-                last_error,
+                setup_error,
+                last_error: None,
                 error_since: None,
                 name,
                 pos: [0.0, 0.0],
@@ -1704,7 +1713,7 @@ impl Graph {
         let (manifest, params, node) = self.build_node(type_name, Some(params))?;
         let mut ctx = NodeCtx::new();
         ctx.globals = self.globals.snapshot();
-        let (exec, last_error) = make_exec(manifest, node, &params, &mut ctx);
+        let (exec, setup_error) = make_exec(manifest, node, &params, &mut ctx);
 
         // The per-wire cells live in the entry while the wires themselves live on the graph, so
         // they must be rebuilt from `links` (in connection order) — a fresh empty map would
@@ -1761,7 +1770,10 @@ impl Graph {
         entry.last_outputs.retain(|slot, _| manifest.outputs.iter().any(|o| o.name == *slot));
         entry.has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         entry.ctx = ctx;
-        entry.last_error = last_error;
+        entry.setup_error = setup_error;
+        // A fresh instance carries none of the corpse's failures — its predecessor's process error
+        // describes a node that no longer exists.
+        entry.last_error = None;
         entry.trigger_pending = false;
         entry.ufreq_meter = UfreqMeter { last_emit: None, ema: None };
         entry.run_policy = RunPolicy::from_params(&entry.params);
@@ -1813,6 +1825,17 @@ impl Graph {
             entry.run_policy = RunPolicy::from_params(&entry.params);
             return Ok(());
         }
+        // D3: the new value is stored ABOVE, so the retry's replay delivers it — correcting the
+        // param that broke `setup()` is what re-initializes the node. Two consequences, both
+        // deliberate. A SUCCESSFUL retry has already handed this edit to `on_param_changed`, so
+        // calling it again below would double-apply the handler's side effect. And a FAILED retry
+        // still answers `Ok`: the node's failure belongs on its error channel, not in this reply —
+        // returning `Err` would refuse the very edit that is the retry door, and `update_param` is
+        // a command whose inverse must stay in step with the session's history.
+        if entry.setup_error.is_some() {
+            let _ = ensure_initialized(entry);
+            return Ok(());
+        }
         match &mut entry.exec {
             Execution::Inline(node) => {
                 guard_lifecycle(|| node.on_param_changed(&ParamKey::new(group, name), &value))
@@ -1855,6 +1878,13 @@ impl Graph {
         // implement and report success — reject it instead (the UI shows no button for one).
         if !matches!(param, Param::Str { refresh: true, .. }) {
             return Err(format!("param `{group}.{name}` is not refreshable"));
+        }
+        // D3: a refresh is an interaction, so it retries the initialization first — a picker whose
+        // node failed `setup()` rescans as soon as that node comes up. If it does not, this DOES
+        // refuse: the call answers the UI with a list and there is none, and `Ok(None)` would read
+        // as "this node implements no hook", which is a different and misleading answer.
+        if let Err(e) = ensure_initialized(entry) {
+            return Err(format!("`{group}.{name}` cannot be refreshed — the node is uninitialized: {e}"));
         }
         // Disjoint field borrows: the instance mutably, its live params immutably.
         let live = Params::new(&entry.params);
@@ -2893,13 +2923,21 @@ impl Graph {
                         ran.push(uid);
                     }
                 }
-                // Feed the worker only once it has bootstrapped. A job built mid-`setup` is a
-                // snapshot of PRE-setup state — stale by the time the worker could run it — and
-                // it lands the instant `setup` returns, which is what used to race the bootstrap
-                // error out of the latest-wins outbox. Skipping it costs nothing: `last_run` and
-                // `trigger_pending` are left untouched, so the node runs on the first tick after
-                // READY rather than losing its turn.
-                if !matches!(&entry.exec, Execution::Detached(h) if h.stage() == detached::STAGE_READY) {
+                // Feed the worker only once it has bootstrapped SUCCESSFULLY. A job built
+                // mid-`setup` is a snapshot of PRE-setup state — stale by the time the worker could
+                // run it — and it lands the instant `setup` returns, which is what used to race the
+                // bootstrap error out of the latest-wins outbox. Skipping it costs nothing:
+                // `last_run` and `trigger_pending` are left untouched, so the node runs on the
+                // first tick after READY rather than losing its turn.
+                //
+                // The `boot_error` term is this tier's half of the initialization gate (D3): a
+                // worker whose `setup` failed is uninitialized, and "ticks of a node that had a
+                // setup() error should not be possible". Unlike the inline gate
+                // ([`ensure_initialized`]) it never RETRIES — that would need a new worker
+                // protocol op — so `restart_node` is the retry door for a detached node.
+                if !matches!(&entry.exec, Execution::Detached(h)
+                    if h.stage() == detached::STAGE_READY && h.boot_error().is_none())
+                {
                     continue;
                 }
                 let since_last = entry.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
@@ -3027,6 +3065,13 @@ fn entry_error(e: &NodeEntry) -> Option<&str> {
             return Some(err);
         }
     }
+    // An inline node's initialization failure, for the same reason and one tier down: it is the
+    // root cause, and D3 makes it the only thing that CAN be true here — if `setup` failed,
+    // `process` never runs, so a process error cannot arise beside it. The order therefore encodes
+    // which of the two is possible, not which one wins a contest.
+    if let Some(err) = e.setup_error.as_deref() {
+        return Some(err);
+    }
     if let Some(err) = e.last_error.as_deref() {
         return Some(err);
     }
@@ -3089,8 +3134,40 @@ pub(crate) fn seed_node(
     last_error
 }
 
+/// The initialization gate (D3). A node whose `setup()` failed is UNINITIALIZED, so nothing may
+/// run against it — not `process`, not a param callback, not a refresh. Any of those interactions
+/// RETRIES the initialization first ([`seed_node`]: the param replay and `setup()` together, which
+/// are one unit), so a node whose device has since appeared, or whose bad param the user has just
+/// corrected, comes back without an explicit restart. `Err` carries the standing failure: the gate
+/// is shut and the caller must not proceed.
+///
+/// A DETACHED node is a no-op here: its `setup()` runs on the worker and its failure is latched
+/// there (`detached::Channels::boot_error`), so `setup_error` is never set for one. Retrying it
+/// would need a new worker protocol op — `update_param` does not reach the worker at all and
+/// `refresh_param` refuses on that tier — so [`Graph::restart_node`] stays the retry door there.
+/// Not forgotten, scoped out; the job-dispatch gate in [`Graph::tick_at`] is what keeps a failed
+/// worker from being fed in the meantime.
+fn ensure_initialized(entry: &mut NodeEntry) -> Result<(), String> {
+    if entry.setup_error.is_none() {
+        return Ok(());
+    }
+    if let Execution::Inline(node) = &mut entry.exec {
+        entry.setup_error = seed_node(&mut **node, &entry.params, &mut entry.ctx);
+    }
+    match &entry.setup_error {
+        Some(e) => Err(e.clone()),
+        None => Ok(()),
+    }
+}
+
 fn run_node(entry: &mut NodeEntry) {
     entry.trigger_pending = false;
+    // A tick is an interaction like any other: it retries the initialization, and runs nothing if
+    // that fails. `trigger_pending` is consumed either way — the frame that asked for this run has
+    // been seen, and holding it would make the node fire twice the moment it recovers.
+    if ensure_initialized(entry).is_err() {
+        return;
+    }
     // Materialize each multi slot's present frames in connection order for the node
     // (Arc-bump clones). Empty for nodes with no multi slots — the common case pays
     // nothing beyond an empty map.
@@ -4209,6 +4286,87 @@ mod tests {
         }
     }
 
+    // A node whose INITIALIZATION the test controls: `setup()` fails unless its `boot.ok` param
+    // says otherwise, so correcting that param is a real retry door (D3) rather than a
+    // fixture-only hook. Every `process` entry, every `on_param_changed` and every `setup` it
+    // receives is counted in a cell the test reads directly — the counters are the load-bearing
+    // part. An assertion on the error MESSAGE alone holds just as well for a gate that reports the
+    // failure and then runs `process` anyway, which is exactly what D3 forbids.
+    #[derive(Default)]
+    struct GateCounts {
+        runs: usize,
+        param_calls: usize,
+        setups: usize,
+    }
+    type SharedCounts = std::sync::Arc<std::sync::Mutex<GateCounts>>;
+    struct GatedSetup {
+        counts: SharedCounts,
+    }
+    impl Node for GatedSetup {
+        fn setup(&mut self, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+            self.counts.lock().unwrap().setups += 1;
+            match p.bool("boot", "ok") {
+                Some(true) => Ok(()),
+                _ => Err("device is not open".into()),
+            }
+        }
+        fn on_param_changed(&mut self, _k: &ParamKey, _v: &Param) -> NodeResult {
+            self.counts.lock().unwrap().param_calls += 1;
+            Ok(())
+        }
+        fn on_param_refreshed(&mut self, _k: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
+            Some(vec!["dev0".to_string()])
+        }
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let mut c = self.counts.lock().unwrap();
+            c.runs += 1;
+            let d = Data::array_f32(vec![1], (c.runs as f32).to_le_bytes().to_vec(), Meta::empty())
+                .map_err(|e| e.to_string())?;
+            out.set("out", d);
+            Ok(())
+        }
+    }
+    static GATED_PARAMS: &[ParamDecl] = &[
+        ParamDecl {
+            group: "boot",
+            name: "ok",
+            spec: ParamSpec::Bool { default: false },
+            default_expr: None,
+            doc: None,
+        },
+        ParamDecl {
+            group: "boot",
+            name: "device",
+            spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
+            default_expr: None,
+            doc: None,
+        },
+    ];
+    static GATED_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_GatedSetup",
+        category: "test",
+        doc: "setup() fails until its `boot.ok` param says otherwise",
+        inputs: &[],
+        outputs: G_OUT,
+        params: GATED_PARAMS,
+        isolation: Isolation::InProcess,
+        factory: rt_stub_factory,
+    };
+
+    /// Register the gated type and add one instance, with the counters its node writes to. The
+    /// instance arrives UNINITIALIZED — `boot.ok` defaults false — which is the state every one of
+    /// these tests starts from.
+    fn gated_setup_node(g: &mut Graph) -> (Uid, SharedCounts) {
+        let counts: SharedCounts = Default::default();
+        let mine = counts.clone();
+        g.register_dyn_type(
+            &GATED_MANIFEST,
+            Box::new(move |_p| Box::new(GatedSetup { counts: mine.clone() })),
+        );
+        let uid = g.add_node("_GatedSetup", None).unwrap();
+        (uid, counts)
+    }
+
     // `_TestConst` (the constant-array source these tests use as a generic value
     // source) is the hidden test node in goofi-nodes — one shared definition across
     // the engine, bridge, and goofi-py suites.
@@ -4449,6 +4607,98 @@ mod tests {
         }
         assert_eq!(g.last_error(n), None, "a node that never ran cannot be missing an input");
         assert!(g.latest_frame(n, "out").is_none(), "and it emitted nothing");
+    }
+
+    // ---- the initialization gate (D3) --------------------------------------
+
+    #[test]
+    fn a_failed_setup_stands_through_the_ticks_that_used_to_erase_it() {
+        // `run_node` assigned `execute_node`'s result straight into `last_error`, and a
+        // construction failure lived in that SAME field — so a node whose `setup()` raised erased
+        // its own bootstrap failure on its first clean tick and read `ready, no error` though it
+        // had never initialized. The failure now has its own field, which `execute_node` cannot
+        // reach.
+        let mut g = Graph::new();
+        let (n, _counts) = gated_setup_node(&mut g);
+        assert_eq!(g.last_error(n), Some("device is not open"), "setup failed at construction");
+        for _ in 0..5 {
+            g.tick();
+        }
+        assert_eq!(g.last_error(n), Some("device is not open"), "and that is still what it reports");
+        assert_eq!(g.node_stage(n), "error", "the editor draws it errored, not ready");
+    }
+
+    #[test]
+    fn an_uninitialized_node_never_enters_process() {
+        // The message is not enough: a gate that reports the failure and runs `process` anyway
+        // passes every assertion above. The run counter is what fails it — "ticks of a node that
+        // had a setup() error should not be possible".
+        let mut g = Graph::new();
+        let (n, counts) = gated_setup_node(&mut g);
+        for _ in 0..5 {
+            g.tick();
+        }
+        assert_eq!(counts.lock().unwrap().runs, 0, "process was never entered");
+        assert!(g.latest_frame(n, "out").is_none(), "and the node emitted nothing");
+    }
+
+    #[test]
+    fn correcting_the_param_that_broke_setup_reinitializes_the_node() {
+        // D3's retry door. `update_param` stores the new value BEFORE the gate, so the replay
+        // inside the retry delivers it — which is what makes fixing the param the fix.
+        let mut g = Graph::new();
+        let (n, counts) = gated_setup_node(&mut g);
+        assert_eq!(g.last_error(n), Some("device is not open"));
+
+        assert!(g.update_param(n, "boot", "ok", Param::boolean(true)).is_ok(), "the edit is accepted");
+        assert_eq!(g.last_error(n), None, "the retry initialized the node");
+        assert_eq!(g.node_stage(n), "ready");
+        g.tick();
+        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "and it runs — for the first time");
+        let c = counts.lock().unwrap();
+        assert_eq!(c.setups, 2, "setup ran again");
+        // The retry replayed BOTH params through `on_param_changed` (2 at construction, 2 on the
+        // retry). `update_param` delivering its own edit on top would read 5 — and double-apply
+        // whatever side effect the handler carries.
+        assert_eq!(c.param_calls, 4, "the edit reached the node once, through the replay");
+    }
+
+    #[test]
+    fn a_failed_retry_keeps_the_node_uninitialized_and_still_accepts_the_edit() {
+        // An edit that does NOT fix what broke `setup()`. Refusing it (returning Err) would refuse
+        // the very interaction that is the retry door, and `update_param` is a command whose
+        // inverse must stay in step with the session's history.
+        let mut g = Graph::new();
+        let (n, counts) = gated_setup_node(&mut g);
+        let picked = Param::Str { value: "hw:1".into(), options: None, refresh: true };
+        assert!(g.update_param(n, "boot", "device", picked).is_ok(), "the edit is stored, not refused");
+        assert_eq!(g.last_error(n), Some("device is not open"), "the node is still uninitialized");
+        assert_eq!(g.node_stage(n), "error");
+        {
+            let c = counts.lock().unwrap();
+            assert_eq!(c.setups, 2, "the interaction retried the initialization");
+            assert_eq!(c.param_calls, 4, "the failed retry replayed the params; nothing was applied twice");
+            assert_eq!(c.runs, 0, "and no callback ran against an uninitialized node");
+        }
+        g.tick();
+        assert_eq!(counts.lock().unwrap().runs, 0, "a tick still cannot enter process");
+    }
+
+    #[test]
+    fn refreshing_a_param_on_an_uninitialized_node_refuses_and_names_the_failure() {
+        // A refresh answers the UI with a LIST, and there is none. `Ok(None)` would read as "this
+        // node implements no hook" — a different, misleading answer — so the refusal says why.
+        // The node's hook DOES return a list, so a missing gate reads as a successful scan.
+        let mut g = Graph::new();
+        let (n, _counts) = gated_setup_node(&mut g);
+        let err = g
+            .refresh_param(n, "boot", "device")
+            .expect_err("an uninitialized node has no options to give");
+        assert!(err.contains("device is not open"), "the refusal names the setup failure: {err}");
+
+        // Once it initializes, the same call answers normally.
+        g.update_param(n, "boot", "ok", Param::boolean(true)).unwrap();
+        assert_eq!(g.refresh_param(n, "boot", "device").unwrap(), Some(vec!["dev0".to_string()]));
     }
 
     #[test]
@@ -4894,12 +5144,16 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_bootstrap_error_survives_the_first_successful_job() {
-        // `outbox` is a latest-wins single slot, so a bootstrap failure posted THERE is erased by
-        // the first successful job's `Done` before any tick drains it — and the node then reports
-        // healthy though its `setup` failed (the silent case: a param `seed_node` folded in).
-        // Parking the worker inside `setup` makes the ordering exact rather than a race: the
-        // tick's job is queued FIRST, then the release makes the worker fail and immediately run it.
+    fn a_worker_whose_bootstrap_failed_is_never_given_a_job() {
+        // Two halves of one contract. The dispatch gate must refuse a worker whose `setup` failed —
+        // it is uninitialized, and "ticks of a node that had a setup() error should not be
+        // possible" (D3). And the failure must STAND: `outbox` is a latest-wins single slot, so a
+        // bootstrap failure posted there would be erased by any later `Done` before a tick drained
+        // it, and the node would report healthy though its `setup` failed (the silent case: a param
+        // `seed_node` folded in). It is latched off that channel for exactly that reason.
+        //
+        // Parking the worker inside `setup` makes the ordering exact rather than a race: the tick
+        // below runs while the bootstrap is still in flight, and the release then fails it.
         let gate = Gate::new();
         let mut g = Graph::new();
         register_gate_seeding(&mut g, gate.clone(), true);
@@ -4907,25 +5161,22 @@ mod tests {
         gate.wait_calls(1); // parked inside setup()
 
         let t0 = Instant::now();
-        g.tick_at(t0); // queues a job behind the still-booting worker
-        gate.open(); // setup returns Err; the queued job then runs and SUCCEEDS
+        g.tick_at(t0);
+        gate.open(); // setup returns Err and the worker reaches READY, failed
+        wait_bootstrapped(&g, det);
 
-        let mut ran = false;
-        for i in 1..400 {
+        // Every tick from here is one the failed worker must NOT be fed.
+        for i in 1..40 {
             g.tick_at(t0 + Duration::from_millis(10 * i));
-            if g.latest_frame(det, "out").is_some() {
-                ran = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(ran, "the successful job's Done was drained by a tick");
-        assert_eq!(
-            g.last_error(det),
-            Some("boot failed"),
-            "the bootstrap failure outlived the successful job"
-        );
-        assert_eq!(g.node_stage(det), "error", "and the editor sees it as errored, not ready");
+        // `SeedingNode` pushes 0.0 from `setup` and 1.0 from `process`, so the call log says
+        // whether a job ever reached it — an assertion on the error alone would also pass while
+        // jobs ran, which is the hole this used to be written around.
+        assert_eq!(gate.calls(), vec![0.0], "the bootstrap ran; no process() job ever followed it");
+        assert!(g.latest_frame(det, "out").is_none(), "so the node emitted nothing");
+        assert_eq!(g.last_error(det), Some("boot failed"), "and the bootstrap failure stands");
+        assert_eq!(g.node_stage(det), "error", "the editor sees it as errored, not ready");
     }
 
     #[test]
@@ -5733,10 +5984,12 @@ mod tests {
             let mut params = gg.default_params_of("_Panicky").unwrap();
             params.get_mut("danger").unwrap().insert("boom".into(), Param::boolean(true));
             let uid = gg.add_node("_Panicky", Some(params)).unwrap();
+            // On the INITIALIZATION channel: the replay is half of `seed_node`, so a panic in it
+            // leaves the node uninitialized exactly as a failed `setup()` does.
             assert!(
-                gg.nodes[&uid].last_error.as_deref().is_some_and(|e| e.contains("panic")),
+                gg.nodes[&uid].setup_error.as_deref().is_some_and(|e| e.contains("panic")),
                 "the panic is the node's error: {:?}",
-                gg.nodes[&uid].last_error
+                gg.nodes[&uid].setup_error
             );
         }
         assert!(g.lock().is_ok(), "the graph mutex is not poisoned");

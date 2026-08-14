@@ -189,9 +189,12 @@ fn handle(
     }
 }
 
-/// Run `setup()` (once, on the first request) then `process()`; a raise in either is the node
-/// error. `did_setup` is set BEFORE running setup so a setup raise is reported per-tick, not
-/// retried forever (matching the in-process tier's run-once semantics).
+/// Run `setup()` (once it has SUCCEEDED, on the first request) then `process()`; a raise in either
+/// is the node error. `did_setup` is set after success, so a setup that raised is retried on the
+/// next request — the initialization gate (D3), which the parent applies to an inline node and the
+/// child must apply to itself, since a `RemoteNode` cannot reach in here. A node whose device was
+/// not ready at the first tick therefore comes back on a later one instead of needing a restart.
+/// The `?` is the other half of the same contract: `process()` never runs after a failed setup.
 fn run_node(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -202,8 +205,8 @@ fn run_node(
     did_setup: &mut bool,
 ) -> PyResult<Vec<(String, CoreData)>> {
     if !*did_setup {
-        *did_setup = true;
         crate::exec::run_setup(py, instance, params)?;
+        *did_setup = true;
     }
     crate::exec::run_process(py, instance, params, inputs, out_slots, warned)
 }

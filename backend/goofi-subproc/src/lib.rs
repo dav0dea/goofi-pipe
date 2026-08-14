@@ -860,6 +860,47 @@ class Boom(goofi.Node):
     }
 
     #[test]
+    fn a_setup_that_raises_is_retried_on_the_next_tick() {
+        // D3 across the tiers: the inline tier retries the whole initialization on any interaction,
+        // so the child must too — it used to mark `did_setup` BEFORE running setup, deliberately,
+        // "matching the in-process tier's run-once semantics". That parity argument now points the
+        // other way. A device that was not ready at the first tick therefore comes back on the
+        // next one, without a restart.
+        let py = require_python();
+        let src = r#"
+import goofi
+class LateBoot(goofi.Node):
+    setups = 0
+    @staticmethod
+    def config_input_slots():
+        return {"data": goofi.DataType.ARRAY}
+    @staticmethod
+    def config_output_slots():
+        return {"out": goofi.DataType.ARRAY}
+    def setup(self):
+        LateBoot.setups += 1
+        if LateBoot.setups < 2:
+            raise RuntimeError("device is not open")
+    def process(self, data):
+        return {"out": data.data + LateBoot.setups}
+"#;
+        let mut node = RemoteNode::new(&*py, src, vec!["data"]);
+
+        let err = try_run(&mut node, arr(vec![1], &[10.0], Meta::empty()))
+            .expect_err("the first tick's setup raised");
+        assert!(err.contains("device is not open"), "the Python exception text rides back: {err}");
+
+        // The SAME child, one tick later: setup runs a second time and succeeds, so `process` runs
+        // — 10 + 2 setups. A latched `did_setup` would either skip setup (and raise on the missing
+        // attribute) or report the same failure forever.
+        assert_eq!(
+            floats(&run(&mut node, arr(vec![1], &[10.0], Meta::empty()))),
+            vec![12.0],
+            "the interaction retried the initialization and the node came up"
+        );
+    }
+
+    #[test]
     fn a_dead_child_is_reaped_and_respawns() {
         // If the child PROCESS actually dies (not a catchable raise — here os._exit), the tick
         // times out, the child is reaped, and a later tick respawns a fresh one.
