@@ -380,9 +380,11 @@ fn routes(state: AppState) -> Router {
 /// NOT a rate policy; genuinely unbounded ticking wants the data plane decoupled from
 /// the graph lock (future work).
 ///
-/// An INLINE node — native or in-process Python — runs its `process()` under this mutex, so a slow
-/// one paces the lock for every other holder. A Subprocess-isolated node does not: it ticks on its
-/// own detached worker, which `tests/detached_no_freeze.rs` pins.
+/// An INLINE node — native or in-process Python — runs its `process()` under this mutex, and since
+/// D3 its `setup()` too (the tick retries a failed initialization, throttled to
+/// `SETUP_RETRY_INTERVAL`), so a slow one paces the lock for every other holder. A
+/// Subprocess-isolated node does not: it ticks on its own detached worker, which
+/// `tests/detached_no_freeze.rs` pins.
 pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
     std::thread::spawn(move || {
         const IDLE_POLL: Duration = Duration::from_millis(50);

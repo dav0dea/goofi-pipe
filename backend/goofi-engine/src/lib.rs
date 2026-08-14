@@ -119,6 +119,11 @@ struct NodeEntry {
     /// `last_error`, which [`execute_node`] overwrites every run — that is how a bootstrap failure
     /// used to erase itself on the node's first clean tick.
     setup_error: Option<String>,
+    /// The tick clock (`ctx.now`) as of this node's last INITIALIZATION attempt — the backoff
+    /// [`run_node`] paces its retry by (see [`SETUP_RETRY_INTERVAL`]). Every attempt stamps it,
+    /// construction's included; only the tick reads it, so an explicit interaction still retries
+    /// at once. Meaningless (and never read) while `setup_error` is `None`.
+    last_setup_attempt: f64,
     last_error: Option<String>,
     /// The message [`Graph::last_error`] last derived for this node, and WHEN it first read that
     /// way. Re-stamped only when the message changes, so the instant is the error's *onset* — the
@@ -822,6 +827,9 @@ impl Graph {
         let run_policy = RunPolicy::from_params(&params);
 
         let (exec, setup_error) = make_exec(manifest, node, &params, &mut ctx);
+        // Construction IS the first initialization attempt, so it starts the retry backoff — else
+        // the very next tick would re-run a `setup()` that has just failed.
+        let last_setup_attempt = ctx.now;
 
         self.nodes.insert(
             uid,
@@ -836,6 +844,7 @@ impl Graph {
                 bindings: HashMap::new(),
                 ctx,
                 setup_error,
+                last_setup_attempt,
                 last_error: None,
                 error_since: None,
                 name,
@@ -1771,6 +1780,7 @@ impl Graph {
         entry.has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
         entry.ctx = ctx;
         entry.setup_error = setup_error;
+        entry.last_setup_attempt = entry.ctx.now;
         // A fresh instance carries none of the corpse's failures — its predecessor's process error
         // describes a node that no longer exists.
         entry.last_error = None;
@@ -2789,12 +2799,19 @@ impl Graph {
                         // Scheduler metadata, not a node param — re-derive the run gate, exactly as
                         // `update_param` does, and dispatch nothing.
                         entry.run_policy = RunPolicy::from_params(&entry.params);
-                    } else if changed {
+                    } else if changed && entry.setup_error.is_none() {
                         // The rest of `update_param`'s contract: `on_param_changed` is the SINGLE
                         // source of truth for param→field, so a node that mirrors a hot param to a
                         // field (Oscillator.sfreq) must hear its binding as well as a manual edit.
                         // A detached node's instance lives on its worker and reads params cold off
                         // each Job, so there is nothing to notify — same deferral as `update_param`.
+                        //
+                        // …and an UNINITIALIZED node hears nothing at all (D3, [`ensure_initialized`]),
+                        // exactly as `update_param` above it. Nothing is lost: the evaluated value is
+                        // already in `entry.params`, and the next successful initialization replays
+                        // every param from there — so skipping the dispatch delivers it once instead
+                        // of twice, since `run_node`'s retry would replay this same param moments
+                        // later in this very tick.
                         if let Execution::Inline(node) = &mut entry.exec {
                             let hook =
                                 guard_lifecycle(|| node.on_param_changed(&key, &p)).unwrap_or_else(fold_panic);
@@ -2842,6 +2859,15 @@ impl Graph {
         let mut soonest: Option<Duration> = None;
         for (uid, e) in &self.nodes {
             if !wants_run(e, uid, &wired) {
+                continue;
+            }
+            // A worker whose bootstrap failed is refused by the dispatch gate in [`Self::tick_at`]
+            // (D3) — permanently, since the latch is write-once per worker and only `restart_node`
+            // clears it by installing a fresh handle. Dispatch is also the sole writer of a
+            // detached node's `last_run`, so leaving it in this scan means the `None` arm below
+            // answers ZERO for the life of the patch and pins the loop at its floor, whatever the
+            // node's cap says.
+            if matches!(&e.exec, Execution::Detached(h) if h.boot_error().is_some()) {
                 continue;
             }
             let remaining = match e.run_policy.period() {
@@ -3134,6 +3160,14 @@ pub(crate) fn seed_node(
     last_error
 }
 
+/// How long the TICK waits between retries of a failed initialization (D3). The retry is the whole
+/// [`seed_node`] unit — every param's `on_param_changed` plus `setup()` — and it runs on the tick
+/// thread inside the mutex the bridge holds across a whole tick. A `setup()` that fails is exactly
+/// the kind that BLOCKS first (opening a device, dialling a socket) and the kind that leaks a
+/// handle per attempt, since `Drop` never fires between them. One second bounds both to roughly one
+/// per second, and is still well inside the time a user watching the node would wait for it to heal.
+const SETUP_RETRY_INTERVAL: f64 = 1.0;
+
 /// The initialization gate (D3). A node whose `setup()` failed is UNINITIALIZED, so nothing may
 /// run against it — not `process`, not a param callback, not a refresh. Any of those interactions
 /// RETRIES the initialization first ([`seed_node`]: the param replay and `setup()` together, which
@@ -3152,6 +3186,9 @@ fn ensure_initialized(entry: &mut NodeEntry) -> Result<(), String> {
         return Ok(());
     }
     if let Execution::Inline(node) = &mut entry.exec {
+        // Every attempt stamps itself, so the tick's backoff restarts from an interaction's retry
+        // too — the interaction is unthrottled, but it does not also hand the next tick a free one.
+        entry.last_setup_attempt = entry.ctx.now;
         entry.setup_error = seed_node(&mut **node, &entry.params, &mut entry.ctx);
     }
     match &entry.setup_error {
@@ -3165,6 +3202,14 @@ fn run_node(entry: &mut NodeEntry) {
     // A tick is an interaction like any other: it retries the initialization, and runs nothing if
     // that fails. `trigger_pending` is consumed either way — the frame that asked for this run has
     // been seen, and holding it would make the node fire twice the moment it recovers.
+    //
+    // Unlike `update_param`/`refresh_param` it retries on a TIMER ([`SETUP_RETRY_INTERVAL`]): a
+    // tick is not a user asking, it is one of however many the pacer admits — a rate-capped source
+    // ticks every period and a `trigger_process` consumer once per delivered frame — and this runs
+    // under the graph lock.
+    if entry.setup_error.is_some() && entry.ctx.now - entry.last_setup_attempt < SETUP_RETRY_INTERVAL {
+        return;
+    }
     if ensure_initialized(entry).is_err() {
         return;
     }
@@ -4702,6 +4747,75 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_setup_is_not_re_initialized_on_every_tick() {
+        // The tick's retry is THROTTLED. Unthrottled, every admitted run re-ran the whole
+        // `seed_node` unit — each param's `on_param_changed` plus `setup()` — on the tick thread,
+        // inside the mutex the bridge holds across the entire tick. The counters are the assertion:
+        // an error-message check passes identically with or without the backoff.
+        let mut g = Graph::new();
+        let (_n, counts) = gated_setup_node(&mut g);
+        let t0 = Instant::now();
+        for i in 0..5 {
+            g.tick_at(t0 + Duration::from_millis(i));
+        }
+        let c = counts.lock().unwrap();
+        assert_eq!(c.setups, 1, "only construction's setup ran; the ticks inside the window retried nothing");
+        assert_eq!(c.param_calls, 2, "and no param handler was replayed against them");
+    }
+
+    #[test]
+    fn a_failed_setup_retries_once_the_backoff_elapses() {
+        // The throttle must not become a refusal: a node whose device appears later still heals on
+        // its own, one attempt per interval — the recovery half of D3's tick retry.
+        let mut g = Graph::new();
+        let (_n, counts) = gated_setup_node(&mut g);
+        let t0 = Instant::now();
+        g.tick_at(t0);
+        assert_eq!(counts.lock().unwrap().setups, 1, "inside the window");
+
+        g.tick_at(t0 + Duration::from_secs(2));
+        assert_eq!(counts.lock().unwrap().setups, 2, "the elapsed window admits exactly one retry");
+        assert_eq!(counts.lock().unwrap().param_calls, 4, "which replayed the params once");
+
+        // …and the retry restarts the window rather than opening it.
+        g.tick_at(t0 + Duration::from_secs(2) + Duration::from_millis(1));
+        assert_eq!(counts.lock().unwrap().setups, 2, "the tick right behind it retries nothing");
+    }
+
+    #[test]
+    fn an_expression_binding_never_dispatches_into_an_uninitialized_node() {
+        // The binding APPLY phase is a FOURTH caller of `on_param_changed`, and it sat outside the
+        // gate — so a node whose `setup()` failed kept receiving param callbacks, against
+        // `ensure_initialized`'s own contract ("nothing may run against it — not `process`, not a
+        // param callback, not a refresh"). It also DOUBLE-APPLIES: the dispatch runs before
+        // `run_node`'s retry in the same tick, and that retry's `seed_node` replays the same param.
+        let mut g = eval_graph();
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        let (n, counts) = gated_setup_node(&mut g);
+        g.set_expression(n, "boot", "device", "nd('src')", true, false).unwrap();
+
+        // Three ticks inside the backoff window, each evaluating a NEW value for the bound param.
+        let t0 = Instant::now();
+        for i in 0..3 {
+            g.update_param(src, "constant", "value", Param::float(i as f64 + 1.0, -1e9, 1e9)).unwrap();
+            g.tick_at(t0 + Duration::from_millis(i));
+        }
+        {
+            let c = counts.lock().unwrap();
+            assert_eq!(c.setups, 1, "no retry inside the window");
+            assert_eq!(c.param_calls, 2, "and the node heard none of the three evaluated values");
+        }
+
+        // The window elapses: the retry's replay is what finally delivers the bound value — ONCE.
+        g.update_param(src, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
+        g.tick_at(t0 + Duration::from_secs(2));
+        let c = counts.lock().unwrap();
+        assert_eq!(c.setups, 2, "the elapsed window admitted the retry");
+        assert_eq!(c.param_calls, 4, "each param replayed once — not the binding's dispatch on top");
+    }
+
+    #[test]
     fn remove_node_drops_links() {
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
@@ -5257,6 +5371,30 @@ mod tests {
             out.set("out", d);
             Ok(())
         }
+    }
+
+    #[test]
+    fn a_worker_whose_bootstrap_failed_stops_asking_the_tick_loop_to_wake() {
+        // `next_run_delay` paces the tick loop, and `entry.last_run = Some(now)` on DISPATCH is a
+        // detached node's only writer of `last_run`. Since the dispatch gate refuses a boot-failed
+        // worker permanently, `last_run` stays `None` for the life of the patch — and the scan's
+        // `None => Duration::ZERO` arm then answers "run me now" forever, ignoring the node's own
+        // cap. The bridge clamps ZERO to `LOCK_CEDE`, so one 30 Hz node pinned the loop at ~10 kHz
+        // on the graph mutex.
+        let mut g = Graph::new();
+        g.register_dyn_type(&BOOT_ONCE_MANIFEST, Box::new(|_p| Box::new(BootOnceNode { fail: true })));
+        let det = g.add_node("GateBootOnce", None).unwrap();
+        wait_bootstrapped(&g, det);
+        assert_eq!(g.last_error(det), Some("boot failed"), "the worker latched its bootstrap failure");
+
+        g.update_param(det, "common", "max_frequency", Param::float(30.0, 0.0, 1e9)).unwrap();
+        let t0 = Instant::now();
+        g.tick_at(t0); // refused by the dispatch gate, so `last_run` is still None
+        assert_eq!(
+            g.next_run_delay(t0 + Duration::from_millis(1)),
+            None,
+            "a node the tick permanently refuses must not ask the loop to wake for it"
+        );
     }
 
     #[test]
