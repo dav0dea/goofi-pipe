@@ -139,8 +139,9 @@ tests/e2e/        Playwright end-to-end suite
 nodes/            Python nodes, auto-discovered at startup
 ```
 
-`CLAUDE.md` is the working orientation for the repo and goes deeper on every
-subsystem.
+`AGENTS.md` is the working orientation for the repo and goes deeper on every
+subsystem. (`CLAUDE.md` is a one-line `@AGENTS.md` import, so Claude Code finds
+it too — the same pairing goofi seeds into a patch workspace.)
 
 ## License
 
