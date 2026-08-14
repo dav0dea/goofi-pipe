@@ -95,6 +95,12 @@ keeps a `.gfi` at `/data/x.gfi` meaning the same thing inside and out. Create th
 first: Docker makes a missing mount source itself, owned by root, which a non-root container
 then cannot write.
 
+**Anywhere else, without a mount.** The Save and Open dialogs each carry a second door —
+*Download a copy* and *Open from this computer…* — which pass the `.gfi` through the browser
+rather than the backend. The browser runs on your host, so its own file dialogs reach any
+location, mounted or not. This is a copy out and a copy in: it deliberately leaves the patch's
+remembered file alone, so Ctrl+S never silently retargets to a download.
+
 Notes: on macOS and Windows, run it from a WSL2 or POSIX shell — Docker Desktop maps mount
 ownership itself, so `--user` is unnecessary there. If a host uses a uid other than 1000, add
 `--user "$(id -u):$(id -g)"`. And `docker` never inherits your shell's environment: `-e NAME`

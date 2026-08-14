@@ -11,6 +11,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import type { FsEntry, FsRoot } from '$lib/api/control';
+	import { downloadPatch } from '$lib/api/patchFile';
 	import { Bar, Button, Dialog, EmptyState, Icon, IconButton, ScrollArea, TextInput } from '$lib/ui';
 	import { onMount, untrack } from 'svelte';
 
@@ -20,8 +21,17 @@
 		suggestedName?: string;
 		onPick: (path: string) => void;
 		onClose: () => void;
+		/** The through-the-browser copy, for locations this list cannot show — see the footer. */
+		onFilePick: (file: File) => void;
 	};
-	const { mode, initialPath = null, suggestedName = '', onPick, onClose }: Props = $props();
+	const {
+		mode,
+		initialPath = null,
+		suggestedName = '',
+		onPick,
+		onClose,
+		onFilePick
+	}: Props = $props();
 
 	const g = graph();
 	let cwd = $state('');
@@ -33,6 +43,7 @@
 	let selected = $state<string | null>(null);
 	let error = $state<string | null>(null);
 	let pathBarEl = $state<HTMLDivElement | null>(null);
+	let fileInput = $state<HTMLInputElement | null>(null);
 
 	// This browser is a MODAL: while it is up the app's global chords stand down, so a Ctrl+Z on a
 	// focused file row can't undo a graph command behind it (and Ctrl+S can't re-enter Save). Held in
@@ -224,6 +235,31 @@
 						data-testid="fs-filename"
 					/>
 					<span class="ext">.gfi</span>
+					<!-- The way out of this list. The list shows what the BACKEND can reach, which in a
+					     container is only what was bind-mounted; the browser runs on the host and its
+					     own dialogs reach anywhere. Deliberately a copy, not a save: it leaves the
+					     patch's remembered file alone, so Ctrl-S never silently retargets. -->
+					<Button variant="ghost" onclick={downloadPatch} data-testid="fs-download">
+						Download a copy
+					</Button>
+				{:else}
+					<Button variant="ghost" onclick={() => fileInput?.click()} data-testid="fs-upload">
+						Open from this computer…
+					</Button>
+					<input
+						bind:this={fileInput}
+						type="file"
+						accept=".gfi"
+						hidden
+						onchange={(e) => {
+							const input = e.currentTarget;
+							const file = input.files?.[0];
+							// Cleared BEFORE handing the file on: without it, picking the same file
+							// twice in a row fires no `change` the second time and the click looks dead.
+							input.value = '';
+							if (file) onFilePick(file);
+						}}
+					/>
 				{/if}
 			{/snippet}
 			{#snippet end()}

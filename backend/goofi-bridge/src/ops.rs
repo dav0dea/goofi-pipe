@@ -213,8 +213,12 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "load_text", surface: ControlOnly, writes: true, args: "content:string!",
          doc: "Replace the open patch from an inline YAML manifest. Carries no workspace.",
          result: "{ok: true}" },
-    Op { name: "load", surface: ControlOnly, writes: true, args: "path:string!",
-         doc: "Replace the open patch with the `.gfi` at `path`, workspace and all.",
+    Op { name: "load", surface: ControlOnly, writes: true, args: "path:string! adopt:bool",
+         doc: "Replace the open patch with the `.gfi` at `path`, workspace and all. `adopt` \
+               (default true) decides whether the patch takes that path as its home, which is what \
+               a later silent Save overwrites; `/patch.gfi` passes false, because the file a \
+               browser upload came from lives on the user's machine and the staged copy this \
+               reads is deleted immediately.",
          result: "{ok: true}" },
     Op { name: "new", surface: ControlOnly, writes: true, args: "",
          doc: "Replace the open patch with an empty one. Unsaved work is lost.",

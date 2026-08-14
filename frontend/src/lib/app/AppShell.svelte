@@ -11,6 +11,7 @@
 <script lang="ts">
 	import TopBar from '$lib/editor/TopBar.svelte';
 	import FsBrowser from '$lib/fs/FsBrowser.svelte';
+	import { uploadPatch } from '$lib/api/patchFile';
 	import ErrorPanel from '$lib/editor/ErrorPanel.svelte';
 	import Toast from '$lib/app/Toast.svelte';
 	import AgentClose from '$lib/app/AgentClose.svelte';
@@ -92,6 +93,20 @@
 		} catch (e) {
 			// The browser has already closed by here, so the rejection has nowhere else to land.
 			notify().failure(mode === 'save' ? 'Save' : 'Load', e);
+		}
+	}
+
+	/** A `.gfi` the user picked on their OWN machine, for locations the backend's browser cannot
+	 *  reach — in a container, anything that was not bind-mounted. The modal closes first: the
+	 *  upload replaces the whole patch, so leaving a file list from the outgoing one on screen
+	 *  reads as if nothing happened. Failure notifies here for the same reason `onFsPick` does —
+	 *  the browser is already gone, so a rejection has nowhere else to land. */
+	async function onFsFilePick(file: File): Promise<void> {
+		fsMode = null;
+		try {
+			await uploadPatch(file);
+		} catch (e) {
+			notify().failure('Open', e);
 		}
 	}
 
@@ -204,6 +219,7 @@
 			initialPath={dirOf(g.savePath)}
 			suggestedName={g.savePath ? (g.savePath.split('/').pop() ?? '').replace(/\.gfi$/, '') : ''}
 			onPick={onFsPick}
+			onFilePick={onFsFilePick}
 			onClose={() => (fsMode = null)}
 		/>
 	{/if}

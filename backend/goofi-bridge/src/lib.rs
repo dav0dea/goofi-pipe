@@ -12,6 +12,7 @@ mod inspect;
 mod mcp;
 pub mod ops;
 mod origin;
+mod patchfile;
 mod proc;
 mod reducer;
 mod schemas;
@@ -35,7 +36,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::{any, post};
+use axum::routing::{any, get, post};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use goofi_engine::{Graph, Uid};
@@ -312,7 +313,12 @@ fn stage_load(
             fsbrowse::resolve(payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?);
         let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
             .map_err(|e| format!("load failed: {e}"))?;
-        (manifest, Some(path))
+        // Whether this file becomes the patch's home — the target a later silent Save overwrites.
+        // `/patch.gfi` declines: a browser upload was staged to a temp file that is deleted the
+        // moment this returns, so adopting it would aim Ctrl-S at a path that no longer exists.
+        // The patch's real home is on the USER's machine, which this process cannot name.
+        let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
+        (manifest, adopt.then_some(path))
     } else {
         let content =
             payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
@@ -340,6 +346,17 @@ fn routes(state: AppState) -> Router {
         // The agent's mirror of the same op set — one MCP server per goofi instance, so it lives
         // here rather than in a client-spawned sidecar. `post` alone is deliberate: axum answers
         // the transport's retired GET stream and DELETE teardown with the 405 they expect.
+        // The patch as a FILE, in both directions — the one door onto locations no mount
+        // reaches, because the browser runs on the host. `DefaultBodyLimit` is lifted for it:
+        // axum caps a body at 2 MB by default, and a patch carrying a workspace is routinely
+        // larger. Unbounded matches the size cap `archive` already declines to impose — a `.gfi`
+        // is the user's own file on a single-user local app, not hostile input.
+        .route(
+            "/patch.gfi",
+            get(patchfile::download)
+                .post(patchfile::upload)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/mcp", post(mcp::endpoint))
         // …and one address per spawned harness, minted by `spawn_harness` and written into that
         // harness's own config. Identity is the ROUTE, so there is no id to spoof and none to
