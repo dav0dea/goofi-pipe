@@ -64,66 +64,11 @@ each node to the tier it can run on. `--auto-nodes` is **repeatable** — each
 directory is scanned in turn, and a later one wins a type name it shares with an
 earlier one.
 
-### In Docker
-
-The image builds everything itself, so the host needs neither Rust nor uv nor Node. From a
-clone, that is one command:
-
-```bash
-docker compose up
-```
-
-The first run builds — a few minutes — and every run after it just starts, because compose
-builds a service's image only when it cannot find one locally. So there is no sequence to
-remember and no state to check. Add `--build` to pick up a `git pull`, `docker compose down` to
-remove the stopped container, and `GOOFI_PORT=9000 docker compose up` if 8000 is taken.
-
-The same image built and run by hand — the door for per-run flags, and the fallback on a host
-whose Docker ships without the compose plugin:
-
-```bash
-docker build -t goofi .
-docker run --rm -it -p 8000:8000 -v .:/workdir -v goofi-home:/home/goofi goofi
-```
-
-That `docker run` line is **literal** — no `$HOME`, no `$(id -u)`, no `~` — so it is the same text
-in bash, zsh, fish, PowerShell and cmd. Docker resolves `.` itself, and a named volume is
-keyed by name rather than by a host path. Any goofi flag appends: `docker run … goofi --port 9000`.
-Both routes build and run the *same* `goofi` image, so whichever you ran first spares the other
-its build.
-
-**`/workdir`** is goofi's working directory, so it appears in the Save/Load modal as *Working
-dir* and patches saved there land on your host. `-v .:/workdir` mounts the directory you
-launched from; compose mounts the clone, since it resolves a relative source against the
-compose file rather than the shell.
-
-**`-v goofi-home:/home/goofi`** is a Docker-managed volume holding the agent harnesses'
-credentials. Log in to `claude`, `codex` or `opencode` once inside the terminal panel and it
-persists — from any directory, because the volume is found by name. To use API keys from your
-shell instead, opt in per variable (they are *not* passed automatically):
-
-```bash
-CLAUDE_CODE_OAUTH_TOKEN=… docker run … -e CLAUDE_CODE_OAUTH_TOKEN … goofi
-```
-
-Under compose the same opt-in is one name under `environment:` in `compose.yaml` — listing a
-variable without a value passes yours through, and is inert when it is unset.
-
-To reach any other host directory, mount it at the same path on both sides — `-v /data:/data`
-keeps a `.gfi` at `/data/x.gfi` meaning the same thing inside and out. Create the directory
-first: Docker makes a missing mount source itself, owned by root, which a non-root container
-then cannot write.
-
-**Anywhere else, without a mount.** The Save and Open dialogs each carry a second door —
-*Download a copy* and *Open from this computer…* — which pass the `.gfi` through the browser
-rather than the backend. The browser runs on your host, so its own file dialogs reach any
-location, mounted or not. This is a copy out and a copy in: it deliberately leaves the patch's
-remembered file alone, so Ctrl+S never silently retargets to a download.
-
-Notes: on macOS and Windows, run it from a WSL2 or POSIX shell — Docker Desktop maps mount
-ownership itself, so `--user` is unnecessary there. If a host uses a uid other than 1000, add
-`--user "$(id -u):$(id -g)"`. And `docker` never inherits your shell's environment: `-e NAME`
-without a value passes that variable through, and is a silent no-op when it is unset.
+**When the backend is not on your machine.** The Save and Open dialogs each carry a second
+door — *Download a copy* and *Open from this computer…* — which pass the `.gfi` through the
+browser rather than the backend, so they reach wherever your own file dialogs do even when the
+server cannot. This is a copy out and a copy in: it deliberately leaves the patch's remembered
+file alone, so Ctrl+S never silently retargets to a download.
 
 ### Python nodes
 

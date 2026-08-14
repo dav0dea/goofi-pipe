@@ -2875,9 +2875,9 @@ mod node_scan_tests {
 
     /// SEVERAL shipped directories are one registry too, and the same "more specific wins" rule
     /// runs along the list: a later `--auto-nodes` takes a shared name, exactly as the patch tree
-    /// takes it from the shipped one. That is what lets the Docker image bake its builtin directory
-    /// into the ENTRYPOINT while a user's own directory can still shadow a single node — without
-    /// losing the rest of the builtin tree, which is the failure a replacing flag would cause.
+    /// takes it from the shipped one. That is what lets a packaged build bake its builtin directory
+    /// into the launch command while a user's own directory can still shadow a single node —
+    /// without losing the rest of the builtin tree, which is the failure a replacing flag causes.
     #[test]
     fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
         let mut state = AppState::new();

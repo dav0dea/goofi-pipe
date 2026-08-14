@@ -23,8 +23,8 @@ struct Cli {
     port: u16,
     bind: String,
     subproc_nodes: Option<String>,
-    /// Repeatable, and the only flag that is: the Docker image bakes its builtin node directory
-    /// into the ENTRYPOINT, so a user's own `--auto-nodes` has to be added to that rather than
+    /// Repeatable, and the only flag that is: a packaged build bakes its builtin node directory
+    /// into the launch command, so a user's own `--auto-nodes` has to be added to that rather than
     /// replace it. Later entries win a shared type name — see `goofi_bridge::rescan`.
     auto_nodes: Vec<String>,
     subproc_python: Option<String>,
@@ -309,7 +309,7 @@ fn register_evaluator(state: &AppState) {
 /// the venv — which is where `goofi` and `numpy` actually are — sits on no search path at all.
 /// `.cargo/config.toml` covers this with a `PYTHONPATH` in its `[env]` block, and cargo applies
 /// that to `cargo run` and to nothing else. So the binary launched any OTHER way — a packaged
-/// build, the Docker image, a bare `./goofi-pipe` — came up with a dead param-expression evaluator
+/// build, a bare `./goofi-pipe` — came up with a dead param-expression evaluator
 /// (`No module named 'numpy'`) and in-process Python nodes that cannot import their own package.
 ///
 /// The `--list-nodes` count does not reveal it: registration runs through the discovery probe,
@@ -558,9 +558,9 @@ mod tests {
         assert!(cli.list_nodes);
     }
 
-    /// `--auto-nodes` ACCUMULATES where every other value-taking flag replaces. The Docker image
-    /// bakes one into its ENTRYPOINT, so a user naming their own directory has to be *added* to
-    /// the builtin tree — a last-wins flag would silently drop the shipped nodes, which is the
+    /// `--auto-nodes` ACCUMULATES where every other value-taking flag replaces. A packaged build
+    /// bakes one into its launch command, so a user naming their own directory has to be *added*
+    /// to the builtin tree — a last-wins flag would silently drop the shipped nodes, which is the
     /// opposite of what someone extending the palette is asking for.
     #[test]
     fn auto_nodes_accumulates_where_the_other_flags_replace() {

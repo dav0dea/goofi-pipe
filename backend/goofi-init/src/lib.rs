@@ -57,7 +57,7 @@ pub fn venv_python(venv: &Path) -> Option<PathBuf> {
 /// The EMBEDDED interpreter needs this handed to it: pyo3 links `libpython` from the venv's BASE
 /// install, so `sys.prefix` is that install and the venv — holding `goofi` and `numpy` — is on no
 /// search path at all. `.cargo/config.toml` sets a `PYTHONPATH` for `cargo run`; a binary invoked
-/// any other way, the Docker image included, gets nothing.
+/// any other way gets nothing.
 ///
 /// The version is *found*, never named. Unix nests site-packages under `lib/python<X.Y>[t]/`, and
 /// hardcoding that segment would go stale the next time [`FT_PYTHON`] moves — the failure being a
@@ -360,7 +360,7 @@ mod tests {
     /// which cargo applies to `cargo run` and to nothing else. The binary run directly therefore
     /// started with a working node discovery (that spawns the venv's python as a SUBPROCESS, which
     /// finds its own site-packages) and a dead param-expression evaluator: `No module named
-    /// 'numpy'`. Every non-cargo invocation had it, the Docker image included.
+    /// 'numpy'`. Every non-cargo invocation had it.
     #[test]
     fn site_packages_is_found_under_either_layout_without_naming_a_python_version() {
         let dir = std::env::temp_dir().join(format!("goofi-init-sp-{}", std::process::id()));
