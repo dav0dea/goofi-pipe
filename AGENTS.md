@@ -223,6 +223,7 @@ cargo run                       # launches the backend + bridge, prints the URL
 
 cargo test --workspace                      # must stay green, and warning-free
 cargo test -p goofi-py --features embed     # in-process Python host (needs .gfivenv-ft)
+cargo test -p goofi-pymod --features host   # the goofi package's own decode tests (InputSlot → probe::Slot)
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # ALWAYS check before declaring done
 #   `--all-targets` is load-bearing: a plain `cargo build` never compiles the integration-test
 #   targets, so a warning inside `tests/*.rs` (a non-snake-case test name, an unused import)
@@ -362,6 +363,11 @@ seeds a live binding instead of a literal.
 
 **Python (`nodes/`).** Subclass `goofi.Node`: declare `config_input_slots()` /
 `config_output_slots()` / `config_params()`, implement `setup()` and `process()`.
+An input slot is a bare `goofi.DataType` or a `goofi.InputSlot(dtype, required=…, trigger=…)`, and
+`process()` receives one kwarg per **declared** slot — `None` when that slot holds no frame.
+A `required=True` slot never arrives empty (the engine refuses the tick and records the error
+before `process` is entered), so it may be read unconditionally; `trigger=` is authorable the same
+way, defaulting to today's `True`.
 A `StringParam(..., refresh=True)` gets a ⟳ button in the UI; the node answers it with a
 `refresh_{group}_{name}(self) -> list[str]` method (the Rust analogue is
 `Node::on_param_refreshed`). The hook runs under the graph lock, so keep it quick — a
@@ -375,7 +381,9 @@ A node whose deps are missing on BOTH interpreters fails its probe and is regist
 **unavailable**: it appears in the palette greyed and unclickable, labelled `unavailable` and
 with its tooltip naming the missing module — a node that cannot load explains itself
 instead of silently vanishing. A raise inside `process()` is a per-tick error frame, not a
-crash.
+crash. A raise inside `setup()` leaves the node uninitialized — its error stands and nothing runs
+against it, `process()` included — until a later tick or param interaction retries the whole
+initialization on the same instance.
 
 ---
 

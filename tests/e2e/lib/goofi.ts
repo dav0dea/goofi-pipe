@@ -73,7 +73,9 @@ export function updateParam(
  *
  * `common.max_frequency` is capped FIRST, before autotrigger, because it defaults to `0.0` =
  * uncapped: an autotriggered unwired node otherwise free-runs at ~10 kHz (~12 % of a core) for the
- * rest of the spec, and every one of those ticks enters Python. 2 Hz is ample — the error is
+ * rest of the spec. Those ticks never reach Python — the required check returns before `process` is
+ * entered — but each one re-runs that check and reallocates the node's `last_error`, on the tick
+ * thread of a backend every spec on this Playwright worker shares. 2 Hz is ample — the error is
  * permanent, and the console reports error TRANSITIONS rather than ticks.
  *
  * The caller removes the node when done: the backend graph is shared by every spec on the worker.

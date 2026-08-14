@@ -17,7 +17,9 @@ impl Node {
         Node {}
     }
 
-    /// `{slot_name: DataType}` — the node's input slots. Default: none.
+    /// `{slot_name: DataType | InputSlot}` — the node's input slots. A bare `DataType` is still
+    /// the whole of it for a slot with nothing to say beyond its type;
+    /// `goofi.InputSlot(dtype, required=…, trigger=…)` carries the per-slot options. Default: none.
     fn config_input_slots<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         PyDict::new(py)
     }
@@ -30,11 +32,16 @@ impl Node {
         PyDict::new(py)
     }
 
-    /// One-time init after params are seeded. Default: no-op.
+    /// Init after params are seeded — once, if it succeeds. A raise leaves the node
+    /// uninitialized: nothing runs against it until a later interaction retries this same
+    /// instance, so release what was acquired before failing. Default: no-op.
     fn setup(&self) -> PyResult<()> {
         Ok(())
     }
-    /// The tick body. Default: emit nothing. `**inputs` are the present input slots.
+    /// The tick body. Default: emit nothing. `**inputs` is one keyword argument per DECLARED
+    /// input slot — a `goofi.Data` when the slot holds a frame and `None` when it does not, so the
+    /// node decides for itself what an absent input means. A `required=True` slot never arrives
+    /// empty; the engine refuses the tick upstream.
     #[pyo3(signature = (**_inputs))]
     fn process(&self, _inputs: Option<&Bound<'_, PyDict>>) -> Option<Py<PyAny>> {
         None

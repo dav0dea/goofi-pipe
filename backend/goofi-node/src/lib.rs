@@ -402,9 +402,12 @@ pub fn with_common(params: ParamGroups) -> ParamGroups {
 // ---------------------------------------------------------------------------
 
 pub trait Node: Send {
-    /// Derived one-time init, after the node's params have been seeded (via the
-    /// construction replay of `on_param_changed`). Reads live params from `p`; may
-    /// fail terminally (surfaced on the node's error channel via the bootstrap pipe).
+    /// Derived init, after the node's params have been seeded (via the replay of
+    /// `on_param_changed`). Reads live params from `p`. It runs once if it succeeds; an `Err`
+    /// leaves the node UNINITIALIZED — surfaced on its error channel, nothing else runs against
+    /// it, and the next interaction retries the whole initialization on this same instance.
+    /// (The detached tier is the exception: its worker latches the failure and `restart_node` is
+    /// the retry door — see `goofi_engine::ensure_initialized`.)
     fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
@@ -420,8 +423,9 @@ pub trait Node: Send {
     ) -> NodeResult;
     /// Optional: react to a param edit — mirror a hot field or run a side effect
     /// (re-anchor pacing, reallocate a buffer). This same handler seeds mirrored
-    /// fields at construction (the engine replays it per declared param), so it is
-    /// the single source of truth for param→field. Cold params need no arm here.
+    /// fields at initialization — the engine replays it per declared param, at construction and
+    /// again on every retry of a failed `setup` — so it is the single source of truth for
+    /// param→field. Cold params need no arm here.
     fn on_param_changed(&mut self, _key: &ParamKey, _v: &Param) -> NodeResult {
         Ok(())
     }
@@ -434,7 +438,10 @@ pub trait Node: Send {
         None
     }
     // Teardown is `impl Drop for TheNode`, not a trait method — it runs automatically
-    // when the engine drops the boxed node, and can't be forgotten.
+    // when the engine drops the boxed node, and can't be forgotten. It is also the ONLY release
+    // mechanism, and it does NOT fire between initialization retries: a `setup` that fails partway
+    // is called again on the same instance, so it must itself release what it acquired before
+    // returning `Err`, or it leaks a handle per retry.
 }
 
 /// The generic node factory the manifest stores — construct a default instance,
