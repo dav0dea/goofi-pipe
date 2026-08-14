@@ -66,20 +66,36 @@ earlier one.
 
 ### In Docker
 
-The image builds everything itself, so the host needs neither Rust nor uv nor Node:
+The image builds everything itself, so the host needs neither Rust nor uv nor Node. From a
+clone, that is one command:
+
+```bash
+docker compose up
+```
+
+The first run builds — a few minutes — and every run after it just starts, because compose
+builds a service's image only when it cannot find one locally. So there is no sequence to
+remember and no state to check. Add `--build` to pick up a `git pull`, `docker compose down` to
+remove the stopped container, and `GOOFI_PORT=9000 docker compose up` if 8000 is taken.
+
+The same image built and run by hand — the door for per-run flags, and the fallback on a host
+whose Docker ships without the compose plugin:
 
 ```bash
 docker build -t goofi .
 docker run --rm -it -p 8000:8000 -v .:/workdir -v goofi-home:/home/goofi goofi
 ```
 
-That second line is **literal** — no `$HOME`, no `$(id -u)`, no `~` — so it is the same text
+That `docker run` line is **literal** — no `$HOME`, no `$(id -u)`, no `~` — so it is the same text
 in bash, zsh, fish, PowerShell and cmd. Docker resolves `.` itself, and a named volume is
 keyed by name rather than by a host path. Any goofi flag appends: `docker run … goofi --port 9000`.
+Both routes build and run the *same* `goofi` image, so whichever you ran first spares the other
+its build.
 
-**`-v .:/workdir`** mounts the directory you launched from, and it is goofi's working
-directory, so it appears in the Save/Load modal as *Working dir*. Patches saved there land
-on your host.
+**`/workdir`** is goofi's working directory, so it appears in the Save/Load modal as *Working
+dir* and patches saved there land on your host. `-v .:/workdir` mounts the directory you
+launched from; compose mounts the clone, since it resolves a relative source against the
+compose file rather than the shell.
 
 **`-v goofi-home:/home/goofi`** is a Docker-managed volume holding the agent harnesses'
 credentials. Log in to `claude`, `codex` or `opencode` once inside the terminal panel and it
@@ -89,6 +105,9 @@ shell instead, opt in per variable (they are *not* passed automatically):
 ```bash
 CLAUDE_CODE_OAUTH_TOKEN=… docker run … -e CLAUDE_CODE_OAUTH_TOKEN … goofi
 ```
+
+Under compose the same opt-in is one name under `environment:` in `compose.yaml` — listing a
+variable without a value passes yours through, and is inert when it is unset.
 
 To reach any other host directory, mount it at the same path on both sides — `-v /data:/data`
 keeps a `.gfi` at `/data/x.gfi` meaning the same thing inside and out. Create the directory

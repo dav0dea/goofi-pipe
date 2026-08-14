@@ -1,0 +1,48 @@
+# goofi-pipe in one command, whether or not the image exists yet:
+#
+#   docker compose up
+#
+# Compose builds a service's image when it cannot find one locally and reuses it on every run
+# after — so the first invocation is the build and the rest are starts, with nothing for a
+# README to sequence. The Dockerfile's `docker build` + `docker run` pair still works and is
+# the door for per-run flags; this is the door for "just start it". After a `git pull`, add
+# `--build` to pick the new source up.
+
+services:
+  goofi:
+    build: .
+    # Pinning the tag is what makes the two doors ONE image, in both directions: compose finds
+    # a `docker build -t goofi .` image and skips the build, and a `docker run … goofi` finds
+    # the compose one. Without it compose names the build after the project directory, so the
+    # two commands would each build their own copy and neither would spare the other's wait.
+    image: goofi
+    ports:
+      # The container always listens on 8000; only the host side moves. So a taken port is
+      # `GOOFI_PORT=9000 docker compose up`, or — in any shell, since compose reads the file
+      # itself — one line in a gitignored `.env`. Never an edit to this checked-in file.
+      - "${GOOFI_PORT:-8000}:8000"
+    volumes:
+      # `-v .:/workdir`, with one difference worth knowing: compose resolves a relative bind
+      # against THIS FILE's directory rather than the shell's, so /workdir is the clone even
+      # when `docker compose -f …` is run from elsewhere. To reach any other host directory,
+      # mount it at the same path on both sides (`- /data:/data`) so a path means one thing.
+      - .:/workdir
+      - goofi-home:/home/goofi
+    # `-it`. goofi is a foreground server whose stdout is meant to be read, and Ctrl-C stops it.
+    stdin_open: true
+    tty: true
+
+volumes:
+  goofi-home:
+    # `name:` pins the volume to `goofi-home` instead of the project-prefixed
+    # `goofi-pipe_goofi-home` compose would otherwise mint. The harness credentials it holds
+    # are supposed to be found BY NAME from any directory — a prefixed volume would be
+    # per-clone, and would strand the one an earlier `docker run` already filled.
+    #
+    # Reusing that already-filled volume is also the one case compose prints a warning for:
+    # "already exists but was not created by Docker Compose. Use `external: true`". TAKING
+    # THAT ADVICE WOULD BREAK THE ONE COMMAND — `external: true` pins the name but then
+    # refuses to CREATE the volume, so a machine that has never run goofi would fail instead
+    # of starting. The warning is cosmetic and specific to a host that used `docker run`
+    # first; a fresh one has compose create and label the volume, and never sees it.
+    name: goofi-home

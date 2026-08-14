@@ -21,9 +21,10 @@ tests/e2e/node_modules/
 node_modules/
 .svelte-kit/
 
-# Not inputs to a build.
+# Not inputs to a build. `compose.yaml` is the caller of this build, never a part of it.
 .git/
 .github/
 docs/
 crates/
+compose.yaml
 *.gfi

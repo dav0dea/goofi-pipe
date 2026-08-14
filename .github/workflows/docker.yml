@@ -7,6 +7,7 @@ on:
     paths:
       - 'Dockerfile'
       - '.dockerignore'
+      - 'compose.yaml'
       - 'backend/**'
       - 'frontend/**'
       - 'nodes/**'
@@ -20,8 +21,26 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build the image
-      run: docker build -t goofi .
+    # `docker compose up` is the README's one command, and this is what makes it one: a runner
+    # starts with no `goofi` image, so a served SPA here proves compose BUILT the image rather
+    # than found it — the property a step running after `docker build` could never assert.
+    # Every later step runs `docker run … goofi` against that same build, which works only
+    # because compose tags it with the `image:` name instead of a project-derived one.
+    - name: '`docker compose up` builds the image it cannot find, then serves'
+      run: |
+        if docker image inspect goofi >/dev/null 2>&1; then
+          echo "::error::a goofi image already exists — this step would prove nothing"; exit 1
+        fi
+        docker compose up -d
+        for _ in $(seq 30); do
+          curl -fsS http://127.0.0.1:8000/ -o compose.html && break
+          sleep 1
+        done
+        grep -qi '<html' compose.html \
+          || { echo "::error::compose did not serve the SPA"; docker compose logs; exit 1; }
+        docker image inspect goofi >/dev/null \
+          || { echo "::error::compose built under some other name"; exit 1; }
+        docker compose down
 
     # THE assertion this job exists for. Getting the interpreter wiring wrong is SILENT: goofi
     # still starts, still serves, and still runs every Python node — just on the slow subprocess
