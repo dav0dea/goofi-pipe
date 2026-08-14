@@ -23,7 +23,10 @@ struct Cli {
     port: u16,
     bind: String,
     subproc_nodes: Option<String>,
-    auto_nodes: Option<String>,
+    /// Repeatable, and the only flag that is: the Docker image bakes its builtin node directory
+    /// into the ENTRYPOINT, so a user's own `--auto-nodes` has to be added to that rather than
+    /// replace it. Later entries win a shared type name — see `goofi_bridge::rescan`.
+    auto_nodes: Vec<String>,
     subproc_python: Option<String>,
     list_nodes: bool,
     help: bool,
@@ -35,7 +38,7 @@ impl Default for Cli {
             port: 8000,
             bind: String::from("127.0.0.1"),
             subproc_nodes: None,
-            auto_nodes: None,
+            auto_nodes: Vec::new(),
             subproc_python: None,
             list_nodes: false,
             help: false,
@@ -63,7 +66,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
             }
             "--bind" => cli.bind = need(args.next())?,
             "--subproc-nodes" => cli.subproc_nodes = Some(need(args.next())?),
-            "--auto-nodes" => cli.auto_nodes = Some(need(args.next())?),
+            "--auto-nodes" => cli.auto_nodes.push(need(args.next())?),
             "--subproc-python" => cli.subproc_python = Some(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
             "-h" | "--help" => cli.help = true,
@@ -154,10 +157,10 @@ async fn run(
         cli;
 
     // When no explicit node source was given, auto-route the default `nodes/` directory.
-    if subproc_nodes.is_none() && auto_nodes.is_none()
+    if subproc_nodes.is_none() && auto_nodes.is_empty()
         && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
     {
-        auto_nodes = Some(DEFAULT_NODES_DIR.to_string());
+        auto_nodes.push(DEFAULT_NODES_DIR.to_string());
     }
 
     if !list_nodes {
@@ -169,11 +172,11 @@ async fn run(
     // and the seam itself takes only a directory.
     let python = subproc_python.clone();
     state.scan_nodes = Arc::new(move |g, dir| register_auto(g, dir, &python));
-    state.system_nodes = auto_nodes.as_deref().map(PathBuf::from);
+    state.system_nodes = auto_nodes.iter().map(PathBuf::from).collect();
     // `--list-nodes` runs the SAME registration the server does and reports its result, so the
     // listing is what actually registered — not a hand-kept mirror of the routing rule.
     let mut discovered = register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
-    if state.system_nodes.is_some() {
+    if !state.system_nodes.is_empty() {
         discovered.extend(boot_scan(&state));
     }
 
@@ -448,10 +451,10 @@ const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node disc
 /// TRUE here: the boot registry starts empty, so a `Replaced` can only be a second node file
 /// claiming a name an earlier one took. Returns the type names `--list-nodes` prints.
 fn boot_scan(state: &AppState) -> Vec<String> {
-    let (found, dir) = {
+    let (found, dirs) = {
         let mut g = state.graph.lock().unwrap();
-        // The mount is empty at boot, so this is exactly the shipped directory — one call, and a
-        // patch loaded later re-derives through the same function.
+        // The mount is empty at boot, so these are exactly the shipped directories — one call, and
+        // a patch loaded later re-derives through the same function.
         let patch = state.mount();
         (goofi_bridge::rescan(state, &mut g, &patch).1, state.system_nodes.clone())
     };
@@ -479,9 +482,11 @@ fn boot_scan(state: &AppState) -> Vec<String> {
         names.push(format!("{} ({tier})", t.type_name));
     }
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
+    // Every directory, in scan order — with several, "from nodes" would name one of them and read
+    // as if the others had not been looked at.
+    let from = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ");
     println!(
-        "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {}{bad}{NO_PYTHON_NOTE}",
-        dir.unwrap_or_default().display()
+        "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
     );
     names
 }
@@ -499,7 +504,7 @@ mod tests {
         let cli = parse(&[]).expect("no arguments is a valid invocation");
         assert_eq!(cli.port, 8000);
         assert_eq!(cli.bind, "127.0.0.1");
-        assert!(cli.subproc_nodes.is_none() && cli.auto_nodes.is_none());
+        assert!(cli.subproc_nodes.is_none() && cli.auto_nodes.is_empty());
         assert!(!cli.list_nodes && !cli.help);
     }
 
@@ -513,9 +518,22 @@ mod tests {
         assert_eq!(cli.port, 9001);
         assert_eq!(cli.bind, "0.0.0.0");
         assert_eq!(cli.subproc_nodes.as_deref(), Some("a"));
-        assert_eq!(cli.auto_nodes.as_deref(), Some("b"));
+        assert_eq!(cli.auto_nodes, ["b"]);
         assert_eq!(cli.subproc_python.as_deref(), Some("py"));
         assert!(cli.list_nodes);
+    }
+
+    /// `--auto-nodes` ACCUMULATES where every other value-taking flag replaces. The Docker image
+    /// bakes one into its ENTRYPOINT, so a user naming their own directory has to be *added* to
+    /// the builtin tree — a last-wins flag would silently drop the shipped nodes, which is the
+    /// opposite of what someone extending the palette is asking for.
+    #[test]
+    fn auto_nodes_accumulates_where_the_other_flags_replace() {
+        let cli = parse(&["--auto-nodes", "builtin", "--bind", "a", "--auto-nodes", "mine",
+                          "--bind", "b"])
+            .expect("a repeated flag is well-formed");
+        assert_eq!(cli.auto_nodes, ["builtin", "mine"], "--auto-nodes adds");
+        assert_eq!(cli.bind, "b", "…while --bind still replaces");
     }
 
     /// A missing value is the same class of user error as an unknown flag, and used to be the

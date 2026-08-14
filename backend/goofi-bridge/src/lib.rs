@@ -75,7 +75,7 @@ pub struct AppState {
     pub scan_nodes: NodeScan,
     /// The shipped node directory — `nodes/`, or whatever `--auto-nodes` named. `None` when the
     /// binary was launched with no auto-routed source. Boot-time config, set alongside the seam.
-    pub system_nodes: Option<PathBuf>,
+    pub system_nodes: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp. The baseline the next [`rescan`]
     /// diffs against, and the list it removes from — so a type registered some other way (a
     /// `--subproc-nodes` directory, a test) is never swept up by a rescan of these two trees.
@@ -182,7 +182,7 @@ impl AppState {
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
             scan_nodes: Arc::new(|_, _| Vec::new()),
-            system_nodes: None,
+            system_nodes: Vec::new(),
             node_index: Arc::new(Mutex::new(Default::default())),
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
@@ -630,9 +630,14 @@ pub fn rescan(
     let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
-    let dirs = [(state.system_nodes.clone(), false), (Some(patch.join("nodes")), true)];
+    // Shipped trees in the order they were named, patch LAST — the scan order IS the precedence,
+    // so a later `--auto-nodes` shadows an earlier one exactly as the patch shadows them all.
+    let dirs = (state.system_nodes.iter().map(|d| (d.clone(), false)))
+        .chain(std::iter::once((patch.join("nodes"), true)));
     for (dir, is_patch) in dirs {
-        let Some(dir) = dir.filter(|d| d.is_dir()) else { continue };
+        if !dir.is_dir() {
+            continue;
+        }
         for t in (state.scan_nodes)(g, &dir) {
             // A refused name never reaches the palette (a built-in owns it), so it must not enter
             // the index either — it would report as `added` and, later, as `removed`.
@@ -1802,9 +1807,13 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             "read_node_source" => {
                 // The two trees a scan registers from, patch first — the same precedence the
                 // palette's `source` badge reports, so provenance cannot disagree with it.
+                // `.rev()` is load-bearing, not tidiness: `rescan` scans the shipped list forwards
+                // and lets each directory overwrite the last, so the LAST one holds the name. This
+                // search runs first-match-wins, so it has to walk the same list backwards to land
+                // on the same file. Forwards here would hand back a shadowed copy nothing runs.
                 let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
                     .into_iter()
-                    .chain(state.system_nodes.clone().map(|d| (d, "shipped")))
+                    .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
                     .collect();
                 inspect::node_source(&g, parse_str(&payload, "type")?, &dirs)
             }
@@ -2833,7 +2842,7 @@ mod node_scan_tests {
         let shipped = tempfile::tempdir().unwrap();
         write_node(shipped.path(), "my_thing.py", "1.0");
         write_node(shipped.path(), "only_shipped.py", "7.0");
-        state.system_nodes = Some(shipped.path().to_path_buf());
+        state.system_nodes = vec![shipped.path().to_path_buf()];
         write_node(&state.mount().join("nodes"), "my_thing.py", "9.0");
 
         let mut g = state.graph.lock().unwrap();
@@ -2845,6 +2854,69 @@ mod node_scan_tests {
         assert!(!g.is_patch_type("OnlyShipped"), "the shipped tree's own node is not the patch's");
     }
 
+    /// SEVERAL shipped directories are one registry too, and the same "more specific wins" rule
+    /// runs along the list: a later `--auto-nodes` takes a shared name, exactly as the patch tree
+    /// takes it from the shipped one. That is what lets the Docker image bake its builtin directory
+    /// into the ENTRYPOINT while a user's own directory can still shadow a single node — without
+    /// losing the rest of the builtin tree, which is the failure a replacing flag would cause.
+    #[test]
+    fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let builtin = tempfile::tempdir().unwrap();
+        let mine = tempfile::tempdir().unwrap();
+        write_node(builtin.path(), "my_thing.py", "1.0");
+        write_node(builtin.path(), "only_builtin.py", "7.0");
+        write_node(mine.path(), "my_thing.py", "5.0");
+        state.system_nodes = vec![builtin.path().to_path_buf(), mine.path().to_path_buf()];
+
+        let mut g = state.graph.lock().unwrap();
+        rescan(&state, &mut g, &state.mount());
+
+        let shadowed = g.add_node("MyThing", None).unwrap();
+        g.tick();
+        assert_eq!(emitted(&g, shadowed), 5.0, "the later --auto-nodes directory wins the name");
+        assert!(!g.is_patch_type("MyThing"), "a shipped tree is not the patch's own, wherever it sits");
+
+        // The load-bearing half: adding a directory must not COST one. A replacing flag passes
+        // every assertion above and fails this one.
+        let kept = g.add_node("OnlyBuiltin", None).unwrap();
+        g.tick();
+        assert_eq!(emitted(&g, kept), 7.0, "the earlier directory's other nodes are still registered");
+    }
+
+    /// …and `read_node_source` has to walk that same list BACKWARDS to agree with it. `rescan`
+    /// overwrites forwards, so the LAST shipped directory holds the name; this search is
+    /// first-match-wins, so running it forwards too would hand back the shadowed file — source an
+    /// agent is about to edit, in a file nothing executes.
+    ///
+    /// Written because the omission is invisible: dropping the `.rev()` passes every other test in
+    /// this suite, all 101 of them.
+    #[test]
+    fn read_node_source_agrees_with_the_shipped_directory_that_actually_won() {
+        let mut state = AppState::new();
+        scanning(&mut state);
+        let builtin = tempfile::tempdir().unwrap();
+        let mine = tempfile::tempdir().unwrap();
+        write_node(builtin.path(), "my_thing.py", "1.0");
+        write_node(mine.path(), "my_thing.py", "5.0");
+        state.system_nodes = vec![builtin.path().to_path_buf(), mine.path().to_path_buf()];
+        rescan(&state, &mut state.graph.lock().unwrap(), &state.mount());
+
+        let req = json!({ "id": 1, "op": "read_node_source", "payload": { "type": "MyThing" } });
+        let reply: Value =
+            serde_json::from_str(&dispatch(&state, &req.to_string()).expect("answered")).unwrap();
+        let r = &reply["result"];
+        assert_eq!(r["source"], json!("5.0"), "the file that RUNS is the file handed back: {r}");
+        assert_eq!(r["provenance"], json!("shipped"), "{r}");
+        assert_eq!(
+            r["path"],
+            json!(goofi_core::path::to_slash(&mine.path().join("my_thing.py"))),
+            "…and it names the winning directory, not the shadowed one: {r}"
+        );
+        state.release_mount();
+    }
+
     /// …and `read_node_source` reports the same precedence, because an agent that reads a type's
     /// source is about to edit it: handing back the shipped file while the patch's own copy is the
     /// one running would send the edit to a file nothing executes.
@@ -2854,7 +2926,7 @@ mod node_scan_tests {
         scanning(&mut state);
         let shipped = tempfile::tempdir().unwrap();
         write_node(shipped.path(), "my_thing.py", "1.0");
-        state.system_nodes = Some(shipped.path().to_path_buf());
+        state.system_nodes = vec![shipped.path().to_path_buf()];
         write_node(&state.mount().join("nodes"), "my_thing.py", "9.0");
         rescan(&state, &mut state.graph.lock().unwrap(), &state.mount());
 
