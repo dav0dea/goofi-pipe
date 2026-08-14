@@ -13,7 +13,6 @@ members = [
     "backend/goofi-subproc",
     "backend/goofi-engine",
     "backend/goofi-view",
-    "backend/goofi-crdt",
     "backend/goofi-bridge",
     "backend/goofi-cli",
 ]
@@ -33,7 +32,6 @@ default-members = [
     "backend/goofi-subproc",
     "backend/goofi-engine",
     "backend/goofi-view",
-    "backend/goofi-crdt",
     "backend/goofi-bridge",
     "backend/goofi-cli",
 ]

@@ -1,6 +1,6 @@
 /**
  * The browser replica of goofi's control-plane document — the exact schema the Rust
- * `goofi_crdt::GraphDoc` mirrors: `nodes: Y.Map<uid, {type, name, pos:{x,y}, params:
+ * `goofi_bridge::crdt::GraphDoc` mirrors: `nodes: Y.Map<uid, {type, name, pos:{x,y}, params:
  * Y.Map<group, Y.Map<name, {value, expr?}>>, viewers}>` and `links: Y.Array<{node_out,
  * slot_out, node_in, slot_in}>`.
  *

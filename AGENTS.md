@@ -316,8 +316,7 @@ processes outlive the test and corrupt every later latency measurement.
 | `goofi-nodes` | the native node library — deliberately **Oscillator + Buffer** (+ a test source) after the tabula-rasa reset. |
 | `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v7 save/load — a zip of `patch.yaml` + `workspace/` (`archive.rs`), incl. the opaque frontend `layout` blob, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
 | `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
-| `goofi-crdt` | the yrs document: graph mirror, sync handshake, idempotent reconcile. |
-| `goofi-bridge` | the axum server: `/control` dispatch + CRDT mirror + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers. |
+| `goofi-bridge` | the axum server: `/control` dispatch + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers, and the yrs document itself — `crdt.rs` (shape-agnostic: graph mirror, sync handshake, idempotent reconcile) beside `crdt_mirror.rs`, its only caller and the one place the doc's roots are named. |
 | `goofi-py` | the in-process Python tier: `PyNode` (a `Node` adapter over a live `goofi.Node`), the pyo3 param-expression evaluator, discovery. Feature-gated `embed`. |
 | `goofi-pymod` | the `goofi` Python package itself, in Rust (pyo3): `Node`/`Data`/`Meta`/params, `introspect()`, the shared `exec` marshalling, and `serve()` — the iceoryx2 child loop. Dual-built: an abi3 wheel for GIL pythons, an rlib linked into the FT host. |
 | `goofi-subproc` | `RemoteNode` — the manager side of the subprocess tier (spawn, seq-framed iceoryx2 round-trip, error frames). |

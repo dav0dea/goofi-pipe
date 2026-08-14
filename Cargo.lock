@@ -563,7 +563,6 @@ dependencies = [
  "getrandom 0.3.4",
  "goofi-codec",
  "goofi-core",
- "goofi-crdt",
  "goofi-engine",
  "goofi-node",
  "goofi-nodes",
@@ -578,6 +577,7 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tower-http",
  "which",
+ "yrs",
 ]
 
 [[package]]
@@ -613,14 +613,6 @@ dependencies = [
  "goofi-view",
  "indexmap",
  "serde",
-]
-
-[[package]]
-name = "goofi-crdt"
-version = "3.1.0"
-dependencies = [
- "serde_json",
- "yrs",
 ]
 
 [[package]]

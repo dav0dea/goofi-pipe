@@ -143,8 +143,7 @@ backend/
   goofi-nodes     the native node library
   goofi-engine    Graph, scheduler, sub-patch scopes, commands + history, detached tier
   goofi-view      the ViewSpec constraint algebra
-  goofi-crdt      the yrs document + reconcile
-  goofi-bridge    axum server: control plane, data plane, SPA hosting
+  goofi-bridge    axum server: control plane, data plane, SPA hosting, the yrs document
   goofi-py        in-process Python tier (pyo3, free-threaded)
   goofi-pymod     the `goofi` Python package, written in Rust
   goofi-subproc   the subprocess tier's manager side

@@ -2,7 +2,7 @@
 //! each mutating RPC: `reconcile_root` diffs the whole projection and writes only what differs,
 //! so the doc's own delta is what reaches the wire. The client replica never writes the doc.
 
-use goofi_crdt::GraphDoc;
+use crate::crdt::GraphDoc;
 use goofi_engine::subpatch::Dir;
 use goofi_engine::Graph;
 use serde_json::{json, Map, Value};

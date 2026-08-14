@@ -1,6 +1,6 @@
 /**
  * Browser half of the CRDT sync protocol — the exact mirror of the Rust
- * `goofi_crdt::SyncMsg` + `GraphDoc::on_sync` (see the crate). Two framed message kinds,
+ * `goofi_bridge::crdt::SyncMsg` + `GraphDoc::on_sync` (see that module). Two framed message kinds,
  * one leading tag byte: a peer advertises what it has (`StateVector`) and ships what the
  * other lacks (`Update`). Both ends drive their doc by hand via the Yjs primitives
  * (`encodeStateVector` / `encodeStateAsUpdate` / `applyUpdate`), so no `y-protocols`

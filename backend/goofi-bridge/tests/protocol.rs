@@ -25,10 +25,10 @@ fn spelled(p: &std::path::Path) -> String {
 
 // Read leaves through the generic CRDT reader (the typed getters were removed). A whole-number
 // param comes back as an integer from `to_json`, so numeric reads compare via `as_f64`.
-fn doc_param_f64(doc: &goofi_crdt::GraphDoc, uid: &str, group: &str, name: &str) -> Option<f64> {
+fn doc_param_f64(doc: &goofi_bridge::crdt::GraphDoc, uid: &str, group: &str, name: &str) -> Option<f64> {
     doc.read_at(&["nodes", uid, "params", group, name, "value"]).and_then(|v| v.as_f64())
 }
-fn doc_node_pos(doc: &goofi_crdt::GraphDoc, uid: &str) -> Option<[f64; 2]> {
+fn doc_node_pos(doc: &goofi_bridge::crdt::GraphDoc, uid: &str) -> Option<[f64; 2]> {
     let x = doc.read_at(&["nodes", uid, "pos", "x"])?.as_f64()?;
     let y = doc.read_at(&["nodes", uid, "pos", "y"])?.as_f64()?;
     Some([x, y])
@@ -151,8 +151,8 @@ async fn bind_expression(ws: &mut Ws, id: i64, node: &str, group: &str, name: &s
 /// so tests read it here (the pattern `leaf_write_expression`/`connecting_to_a_boundary_…` use). A
 /// fresh replica advertises an empty state vector, so the server's `sync_hello` reply is the COMPLETE
 /// current doc; `ready` is always satisfiable once the preceding RPC's effect has landed.
-async fn sync_replica(ws: &mut Ws, ready: impl Fn(&goofi_crdt::GraphDoc) -> bool) -> goofi_crdt::GraphDoc {
-    use goofi_crdt::{GraphDoc, SyncMsg};
+async fn sync_replica(ws: &mut Ws, ready: impl Fn(&goofi_bridge::crdt::GraphDoc) -> bool) -> goofi_bridge::crdt::GraphDoc {
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
     let mut doc = GraphDoc::new();
     ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
     for _ in 0..60 {
@@ -185,13 +185,13 @@ async fn call_session(ws: &mut Ws, id: i64, op: &str, payload: Value, session: &
 /// layout now that the manager owns it.
 /// The arrangement's ENTRIES. The root also carries the manager's monotone id counter under a
 /// reserved key, which no minted `{prefix}-{n}` id can take — a reader walks entries, not keys.
-fn arrangement(doc: &goofi_crdt::GraphDoc) -> Value {
+fn arrangement(doc: &goofi_bridge::crdt::GraphDoc) -> Value {
     let mut m = doc.to_json()["arrangement"].as_object().cloned().unwrap_or_default();
     m.retain(|_, e| e.get("kind").is_some());
     Value::Object(m)
 }
 
-fn entry_count(doc: &goofi_crdt::GraphDoc) -> usize {
+fn entry_count(doc: &goofi_bridge::crdt::GraphDoc) -> usize {
     arrangement(doc).as_object().map_or(0, serde_json::Map::len)
 }
 
@@ -214,7 +214,7 @@ async fn page_names(ws: &mut Ws, id: i64) -> Vec<String> {
         .collect()
 }
 
-fn panels(doc: &goofi_crdt::GraphDoc) -> Vec<String> {
+fn panels(doc: &goofi_bridge::crdt::GraphDoc) -> Vec<String> {
     doc.to_json()["arrangement"]
         .as_object()
         .map(|m| {
@@ -272,7 +272,7 @@ async fn a_layout_op_reaches_a_peers_replica_through_the_doc() {
     // Layout used to be client-owned: a peer learned an arrangement only on `hello`. As the fifth
     // doc root it rides the SAME delta broadcast as a node add — a LAYOUT-ONLY change ships, which
     // is what makes the frontend's parallel write authority removable at all.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
     let base = start_server().await;
     let (mut a, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _ = recv_text(&mut a).await;
@@ -495,7 +495,7 @@ async fn a_layout_undo_leaves_a_peers_panel_standing() {
 
 /// The id of the entry the whole page hangs off, and how many there are — a page holds exactly one,
 /// so a second root IS the corruption a resurrected container makes.
-fn page_roots(doc: &goofi_crdt::GraphDoc, name: &str) -> Vec<String> {
+fn page_roots(doc: &goofi_bridge::crdt::GraphDoc, name: &str) -> Vec<String> {
     let arr = arrangement(doc);
     let obj = arr.as_object().expect("the arrangement root");
     let page = obj.iter().find(|(_, e)| e["name"] == json!(name)).map(|(id, _)| id.clone());
@@ -690,7 +690,7 @@ async fn undoing_a_move_puts_the_panel_back_at_the_index_and_share_it_had() {
 }
 
 /// A panel's share of its split, as a replica reads it.
-fn size_of(doc: &goofi_crdt::GraphDoc, id: &str) -> f64 {
+fn size_of(doc: &goofi_bridge::crdt::GraphDoc, id: &str) -> f64 {
     doc.read_at(&["arrangement", id, "size"]).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
 }
 
@@ -1924,7 +1924,7 @@ async fn group_undo_redo_over_the_wire_is_uid_stable() {
     let scope = call_session(&mut ws, 6, "group_nodes", json!({ "members": [osc, buf], "pos": [0.0, 0.0] }), "s1").await
         ["result"]["inst_id"].as_str().unwrap().to_string();
     let doc = sync_replica(&mut ws, |d| d.instance_ids().iter().any(|u| *u == scope)).await;
-    let has_stub = |d: &goofi_crdt::GraphDoc, s: &str| {
+    let has_stub = |d: &goofi_bridge::crdt::GraphDoc, s: &str| {
         d.to_json()["instances"][s]["stubs"].as_object().map(|m| !m.is_empty()).unwrap_or(false)
     };
     assert!(has_stub(&doc, &scope), "grouped scope exposes a stub");
@@ -2334,7 +2334,7 @@ async fn a_client_replica_converges_via_the_binary_sync_relay() {
     // Phase 2: a browser Yjs replica (here a Rust GraphDoc standing in for it) mounts, syncs
     // the current graph over the /control binary channel, and receives live deltas as the
     // graph mutates — the reader half of the CRDT control plane.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -2432,7 +2432,7 @@ async fn a_param_command_reaches_the_graph_and_other_clients() {
     // A client commits a param edit via the `update_param` command op. The manager routes it
     // through an `EditParam` command, applies it to the authoritative graph, and broadcasts the
     // resulting doc delta so a second client converges — no client doc write involved.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
 
@@ -2481,7 +2481,7 @@ async fn a_position_command_reaches_the_graph_and_other_clients() {
     // A client commits a drag by sending the `set_node_pos` command op — no client doc write. The
     // manager routes it through an `EditNode` command and broadcasts, so a second client sees the
     // moved position.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
 
@@ -2524,7 +2524,7 @@ async fn crdt_doc_tracks_an_rpc_node_add_and_param_edit() {
     // The server-side CRDT mirror tracks RPC-driven control edits: after an add_node +
     // update_param over the /control RPC path, a synced client replica reflects BOTH the node
     // and the new param value — read via the binary sync relay (not a diagnostic op).
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -2689,7 +2689,7 @@ async fn group_and_expand_project_the_instance_forest() {
 }
 
 /// The member uids of a scope, as the client reads them out of the doc forest.
-fn scope_members(doc: &goofi_crdt::GraphDoc, scope: &str) -> Vec<String> {
+fn scope_members(doc: &goofi_bridge::crdt::GraphDoc, scope: &str) -> Vec<String> {
     doc.to_json()["instances"][scope]["members"]
         .as_object()
         .map(|m| m.keys().cloned().collect())
@@ -2726,7 +2726,7 @@ async fn add_node_with_inst_id_lands_inside_the_scope_and_survives_undo_redo() {
     // Anchor every sync on the node's PRESENCE, never on the membership under test — an unsatisfiable
     // predicate would drain the helper's frame budget and report a recv timeout instead of the
     // assertion that actually failed. (A scope member stays in `node_ids`; only `members` moves.)
-    let present = |d: &goofi_crdt::GraphDoc| d.node_ids().iter().any(|u| *u == inner);
+    let present = |d: &goofi_bridge::crdt::GraphDoc| d.node_ids().iter().any(|u| *u == inner);
     let doc = sync_replica(&mut ws, present).await;
     assert!(
         scope_members(&doc, &scope).contains(&inner),
@@ -2894,7 +2894,7 @@ async fn connecting_to_a_boundary_creates_a_flat_leaf_link() {
 
     // Links live in the CRDT doc now (the `link_added` event is retired). Sync a fresh replica and
     // read the flat link back: the boundary endpoint must have resolved to the inner buffer leaf.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
     let mut doc = GraphDoc::new();
     ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
     let mut links = Vec::new();
@@ -3291,7 +3291,7 @@ async fn many_clients_concurrently_edit_params_and_all_converge() {
     // Determinism hinges on the awaited command reply: `handle_control` reads one incoming message
     // per socket at a time, so each `call` reply proves that command was applied. Once all writers
     // return, every edit is live server-side, so the reader's first full-state sync carries them.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     const N: usize = 8;
     const ROUNDS: usize = 5;
@@ -3385,7 +3385,7 @@ async fn many_clients_concurrently_drag_and_all_converge() {
     // re-asserts EVERY node's pos (upsert_node). With the wholesale pos-map replacement this test
     // would drop drags (a fresh reader would not converge on all N final positions); with the
     // idempotent in-place upsert_node every concurrent drag survives.
-    use goofi_crdt::{GraphDoc, SyncMsg};
+    use goofi_bridge::crdt::{GraphDoc, SyncMsg};
 
     const N: usize = 8;
     const ROUNDS: usize = 5;

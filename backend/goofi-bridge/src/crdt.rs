@@ -1,8 +1,8 @@
 //! `GraphDoc` — a `yrs::Doc` holding goofi's control-plane state, reconciled from and read back
-//! as plain JSON. The crate is deliberately SHAPE-AGNOSTIC: [`reconcile_map`] recurses over
-//! arbitrary JSON, so what the doc's roots actually contain is owned in exactly one place —
-//! `goofi-bridge`'s `crdt_mirror`, which builds the projection. Pure: depends only on `yrs` +
-//! `serde_json`, no engine/payload types.
+//! as plain JSON. Deliberately SHAPE-AGNOSTIC: [`reconcile_map`] recurses over arbitrary JSON, so
+//! what the doc's roots actually contain is owned in exactly one place — [`crate::crdt_mirror`],
+//! which builds the projection. Nothing here names an engine or payload type, and that is the
+//! property to preserve: this module sees `serde_json::Value` and `yrs`, never a `Graph`.
 
 use yrs::updates::decoder::Decode;
 use yrs::types::ToJson;

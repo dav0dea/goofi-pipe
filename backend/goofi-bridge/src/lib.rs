@@ -6,6 +6,9 @@
 //! as broadcast events the client applies. The built SPA is served from disk
 //! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
+/// The `yrs` document itself — shape-agnostic. `pub` because the protocol tests drive a real
+/// replica against the server, which is the only honest way to test the sync handshake.
+pub mod crdt;
 mod crdt_mirror;
 mod fsbrowse;
 mod inspect;
@@ -50,9 +53,9 @@ pub struct AppState {
     pub instance_id: Arc<str>,
     /// Server-side CRDT mirror of the graph's control state, re-synced after every
     /// successful control op. The shared source of truth clients replicate (Phase 2+).
-    pub crdt: Arc<Mutex<goofi_crdt::GraphDoc>>,
+    pub crdt: Arc<Mutex<crate::crdt::GraphDoc>>,
     /// Binary sync-update fan-out: each mutation broadcasts the CRDT delta as a framed
-    /// [`goofi_crdt::SyncMsg::Update`] to every connected client's replica.
+    /// [`crate::crdt::SyncMsg::Update`] to every connected client's replica.
     pub sync_updates: broadcast::Sender<Vec<u8>>,
     /// The doc's state vector as of the last broadcast delta — the baseline the next delta
     /// is computed against (guarded together with `crdt`: always lock `crdt` first).
@@ -160,7 +163,7 @@ impl AppState {
         // connecting to a fresh backend syncs the current state immediately (e.g. `default_ufreq`),
         // rather than an empty doc that stays blank until the first mutation re-mirrors.
         let graph_val = Graph::new();
-        let mut crdt = goofi_crdt::GraphDoc::new();
+        let mut crdt = crate::crdt::GraphDoc::new();
         crdt_mirror::sync_graph_to_doc(&graph_val, &mut crdt);
         let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
         let graph = Arc::new(Mutex::new(graph_val));
@@ -764,8 +767,8 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     // handshake (reply with the diff it lacks), and a client `Update` is never
                     // expected and is IGNORED (the doc is manager-authored; an out-of-band leaf
                     // write would just be reverted by the next re-mirror anyway).
-                    match goofi_crdt::SyncMsg::decode(&b) {
-                        Some(msg @ goofi_crdt::SyncMsg::StateVector(_)) => {
+                    match crate::crdt::SyncMsg::decode(&b) {
+                        Some(msg @ crate::crdt::SyncMsg::StateVector(_)) => {
                             let replies = state.crdt.lock().unwrap().on_sync(msg);
                             for r in replies {
                                 if tx.send(Message::Binary(r.encode().into())).await.is_err() {
@@ -773,7 +776,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                                 }
                             }
                         }
-                        Some(goofi_crdt::SyncMsg::Update(_)) => {} // read-only client — ignored
+                        Some(crate::crdt::SyncMsg::Update(_)) => {} // read-only client — ignored
                         None => {}
                     }
                 }
@@ -2043,7 +2046,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
 /// caller must hold `graph` then `crdt` (the canonical order); passing the guards in keeps the
 /// whole apply→re-mirror critical section atomic so no concurrent writer can observe a doc
 /// leaf the graph has not yet caught up to.
-fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_crdt::GraphDoc) {
+fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut crate::crdt::GraphDoc) {
     // Gate the broadcast on whether the mirror changed the doc's LOGICAL state (`to_json` before vs
     // after). A state-vector empty-diff check cannot do this: it is deletion-blind — a Yjs delete
     // does not advance the state vector, so a delete-only `diff(last_sv)` is byte-identical to the
@@ -2060,7 +2063,7 @@ fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut goofi_cr
     // applies the removal even though the state vector is unchanged by it.
     let delta = doc.diff(&last_sv);
     *last_sv = doc.state_vector();
-    let _ = state.sync_updates.send(goofi_crdt::SyncMsg::Update(delta).encode());
+    let _ = state.sync_updates.send(crate::crdt::SyncMsg::Update(delta).encode());
 }
 
 /// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
