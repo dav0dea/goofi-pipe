@@ -1,0 +1,29 @@
+# The build happens INSIDE the image, so the context carries SOURCE and nothing else.
+# This file is a correctness boundary, not hygiene: the first two entries would poison
+# the build rather than merely slow it.
+
+# Host-specific and actively harmful. `.cargo/config.toml` names this machine's
+# interpreter by absolute path (PYTHONHOME, an rpath into a host-only uv install), and
+# the venvs are symlink farms pointing into it. Copied in, they do not fail loudly —
+# they can produce a build that succeeds while pointing pyo3 at an interpreter that
+# cannot `import goofi`, which drops every Python node to the subprocess tier silently.
+.cargo/config.toml
+.gfivenv/
+.gfivenv-ft/
+
+# Build outputs, all regenerated inside. `target/` alone is ~23 GB on a working clone
+# (cargo never garbage-collects it), which is the difference between a context that
+# transfers in a second and one that does not.
+target/
+frontend/build/
+frontend/node_modules/
+tests/e2e/node_modules/
+node_modules/
+.svelte-kit/
+
+# Not inputs to a build.
+.git/
+.github/
+docs/
+crates/
+*.gfi
