@@ -35,7 +35,7 @@ export interface NodeTypeInfo {
 	category: string;
 	/** Which tree the type came from: the patch you have open, or the goofi you are running.
 	 * Recorded by the scan (the only thing that knows the directory) and shown on every palette
-	 * row. A `--subproc-nodes` directory reads as `builtin` — a badge of its own is a design
+	 * row. An `--extra-nodes` directory reads as `builtin` — a badge of its own is a design
 	 * question, not a fact the scan reports. */
 	source: 'builtin' | 'patch';
 	doc: string;

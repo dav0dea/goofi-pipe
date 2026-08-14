@@ -74,12 +74,12 @@ pub struct AppState {
     /// How a directory of node files becomes registered node types. Injected by the CLI at boot
     /// (see [`NodeScan`]); the default discovers nothing.
     pub scan_nodes: NodeScan,
-    /// The shipped node directory — `nodes/`, or whatever `--auto-nodes` named. `None` when the
-    /// binary was launched with no auto-routed source. Boot-time config, set alongside the seam.
+    /// The shipped node directories — `nodes/`, then every `--extra-nodes`. Empty when the binary
+    /// found neither. Boot-time config, set alongside the seam.
     pub system_nodes: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp. The baseline the next [`rescan`]
     /// diffs against, and the list it removes from — so a type registered some other way (a
-    /// `--subproc-nodes` directory, a test) is never swept up by a rescan of these two trees.
+    /// test's direct registration) is never swept up by a rescan of these two trees.
     node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
     /// Where the open patch's workspace files live while it is open — the tree a `.gfi` packs and
     /// unpacks. Created at boot, dropped by [`AppState::release_mount`] on a graceful exit; after a
@@ -635,7 +635,7 @@ pub struct ScanDiff {
 ///
 /// The previous scan's stamps are the baseline, so what comes back is a diff rather than a listing.
 /// Removal is driven by that baseline too, which is what keeps a type discovered some OTHER way —
-/// a `--subproc-nodes` directory, a test's direct registration — out of the blast radius.
+/// a test's direct registration, say — out of the blast radius.
 ///
 /// `pub`, and returning the raw per-file outcomes beside the diff, for ONE caller: the CLI's boot
 /// scan runs this rather than the seam directly, so the baseline the first refresh diffs against is
@@ -650,7 +650,7 @@ pub fn rescan(
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
     // Shipped trees in the order they were named, patch LAST — the scan order IS the precedence,
-    // so a later `--auto-nodes` shadows an earlier one exactly as the patch shadows them all.
+    // so a later `--extra-nodes` shadows an earlier one exactly as the patch shadows them all.
     let dirs = (state.system_nodes.iter().map(|d| (d.clone(), false)))
         .chain(std::iter::once((patch.join("nodes"), true)));
     for (dir, is_patch) in dirs {
@@ -2874,10 +2874,10 @@ mod node_scan_tests {
     }
 
     /// SEVERAL shipped directories are one registry too, and the same "more specific wins" rule
-    /// runs along the list: a later `--auto-nodes` takes a shared name, exactly as the patch tree
-    /// takes it from the shipped one. That is what lets a packaged build bake its builtin directory
-    /// into the launch command while a user's own directory can still shadow a single node —
-    /// without losing the rest of the builtin tree, which is the failure a replacing flag causes.
+    /// runs along the list: a later `--extra-nodes` takes a shared name, exactly as the patch tree
+    /// takes it from the shipped one. That is what lets a user's own directory shadow a single
+    /// shipped node without losing the rest of the shipped tree — the failure a replacing flag
+    /// causes, and the whole reason the flag is named for ADDING.
     #[test]
     fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
         let mut state = AppState::new();
@@ -2894,7 +2894,7 @@ mod node_scan_tests {
 
         let shadowed = g.add_node("MyThing", None).unwrap();
         g.tick();
-        assert_eq!(emitted(&g, shadowed), 5.0, "the later --auto-nodes directory wins the name");
+        assert_eq!(emitted(&g, shadowed), 5.0, "the later --extra-nodes directory wins the name");
         assert!(!g.is_patch_type("MyThing"), "a shipped tree is not the patch's own, wherever it sits");
 
         // The load-bearing half: adding a directory must not COST one. A replacing flag passes

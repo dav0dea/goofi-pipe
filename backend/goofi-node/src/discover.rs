@@ -228,25 +228,6 @@ pub fn discover_one(
     }
 }
 
-/// Scan `dir` for node files (skipping `_`-prefixed / non-`.py` / probe failures),
-/// deterministic order so type names are stable.
-pub fn discover(
-    dir: &Path,
-    python: &str,
-    category: &'static str,
-    isolation: Isolation,
-) -> std::io::Result<Vec<Discovered>> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-    Ok(entries
-        .iter()
-        .filter_map(|e| match discover_one(&e.path(), python, category, isolation) {
-            Discovery::Found(d) => Some(d),
-            Discovery::Skip | Discovery::Unavailable { .. } => None,
-        })
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

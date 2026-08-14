@@ -1,9 +1,9 @@
 //! `goofi-pipe` — launches the Rust engine + bridge, serving the SPA and the two
 //! WebSocket planes. Flags: `--port N` (default 8000), `--bind HOST` (default
-//! 127.0.0.1), `--subproc-nodes DIR` (discover isolated-GIL subprocess Python nodes,
-//! run on `--subproc-python`), `--auto-nodes DIR` (gil-gate routed). With no
-//! `--*-nodes` flag it auto-discovers the default `nodes/` directory;
-//! `--subproc-python` defaults to the repo-local `.gfivenv`.
+//! 127.0.0.1), `--extra-nodes DIR` (a node directory scanned in ADDITION to the shipped
+//! `nodes/` tree, repeatable). Every Python node is tier-routed by one probe — in-process
+//! when free-threading-safe, else a subprocess run on `--subproc-python`, which defaults
+//! to the repo-local `.gfivenv`.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -12,9 +12,19 @@ use std::sync::Arc;
 use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState, ScannedType, Tier};
 use goofi_engine::{Graph, Registration};
 
-/// The default node directory, auto-discovered (gil-gate routed) when no `--*-nodes` flag is given.
+/// The shipped node directory, scanned whenever it exists — no flag turns it on, and none turns
+/// it off. `--extra-nodes` names directories scanned *after* it.
 const DEFAULT_NODES_DIR: &str = "nodes";
 
+/// The directories to scan, in precedence order: the shipped tree first, then every
+/// `--extra-nodes` in the order given. Scan order IS precedence (`goofi_bridge::rescan`), so a
+/// user's own directory shadows a shipped type name while the rest of the shipped tree survives —
+/// which is the whole difference between *extra* nodes and *instead-of* nodes.
+fn node_dirs(extra: &[String], default_exists: bool) -> Vec<PathBuf> {
+    (default_exists.then(|| PathBuf::from(DEFAULT_NODES_DIR)).into_iter())
+        .chain(extra.iter().map(PathBuf::from))
+        .collect()
+}
 
 /// The parsed command line. `help` is a mode rather than a setting, so the caller decides what
 /// to do with it — which is also what keeps the parse itself pure and testable.
@@ -22,11 +32,10 @@ const DEFAULT_NODES_DIR: &str = "nodes";
 struct Cli {
     port: u16,
     bind: String,
-    subproc_nodes: Option<String>,
-    /// Repeatable, and the only flag that is: a packaged build bakes its builtin node directory
-    /// into the launch command, so a user's own `--auto-nodes` has to be added to that rather than
-    /// replace it. Later entries win a shared type name — see `goofi_bridge::rescan`.
-    auto_nodes: Vec<String>,
+    /// Repeatable, and the only flag that is: these are directories scanned *in addition to* the
+    /// shipped `nodes/` tree, which is what the name promises. Later entries win a shared type
+    /// name — see `goofi_bridge::rescan`.
+    extra_nodes: Vec<String>,
     subproc_python: Option<String>,
     list_nodes: bool,
     help: bool,
@@ -37,8 +46,7 @@ impl Default for Cli {
         Self {
             port: 8000,
             bind: String::from("127.0.0.1"),
-            subproc_nodes: None,
-            auto_nodes: Vec::new(),
+            extra_nodes: Vec::new(),
             subproc_python: None,
             list_nodes: false,
             help: false,
@@ -47,12 +55,12 @@ impl Default for Cli {
 }
 
 const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
-     [--subproc-nodes DIR] [--auto-nodes DIR] [--list-nodes] [--subproc-python BIN]";
+     [--extra-nodes DIR] [--list-nodes] [--subproc-python BIN]";
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
 /// exiting 2 — every malformed invocation reports, none is silently ignored: a value-taking flag
-/// with its value missing used to fall through to the default, so `--subproc-nodes` with a typo'd
-/// directory silently switched the whole run to gil-gated auto-routing of `nodes/` instead.
+/// with its value missing used to fall through to the default, so `--extra-nodes` with a typo'd
+/// directory silently scanned nothing while reporting success.
 fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
     let mut cli = Cli::default();
     while let Some(arg) = args.next() {
@@ -65,8 +73,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
                 cli.port = v.parse().map_err(|_| format!("invalid --port `{v}`"))?;
             }
             "--bind" => cli.bind = need(args.next())?,
-            "--subproc-nodes" => cli.subproc_nodes = Some(need(args.next())?),
-            "--auto-nodes" => cli.auto_nodes.push(need(args.next())?),
+            "--extra-nodes" => cli.extra_nodes.push(need(args.next())?),
             "--subproc-python" => cli.subproc_python = Some(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
             "-h" | "--help" => cli.help = true,
@@ -89,8 +96,8 @@ async fn main() {
         println!(
             "{USAGE}\n\
              \n  \
-             With no --*-nodes flag, auto-discovers `{DEFAULT_NODES_DIR}/` (each node routed \
-             in-process if free-threading-safe, else to a subprocess).\n  \
+             Scans `{DEFAULT_NODES_DIR}/` when it exists, plus every --extra-nodes directory. \
+             Each node is routed in-process if free-threading-safe, else to a subprocess.\n  \
              --subproc-python defaults to `{}`, which `cargo run -p goofi-init` provisions.",
             goofi_init::GIL_VENV
         );
@@ -157,15 +164,7 @@ async fn run(
     point_embedded_python_at_its_venv();
 
     // `subproc_python` arrives resolved (see `main`), so the parsed field has already been taken.
-    let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python: _, list_nodes, help: _ } =
-        cli;
-
-    // When no explicit node source was given, auto-route the default `nodes/` directory.
-    if subproc_nodes.is_none() && auto_nodes.is_empty()
-        && std::path::Path::new(DEFAULT_NODES_DIR).is_dir()
-    {
-        auto_nodes.push(DEFAULT_NODES_DIR.to_string());
-    }
+    let Cli { port, bind, extra_nodes, subproc_python: _, list_nodes, help: _ } = cli;
 
     if !list_nodes {
         register_evaluator(&state);
@@ -175,14 +174,11 @@ async fn run(
     // through one function. The interpreter choice is boot-time config, so the closure carries it
     // and the seam itself takes only a directory.
     let python = subproc_python.clone();
-    state.scan_nodes = Arc::new(move |g, dir| register_auto(g, dir, &python));
-    state.system_nodes = auto_nodes.iter().map(PathBuf::from).collect();
+    state.scan_nodes = Arc::new(move |g, dir| register_routed(g, dir, &python));
+    state.system_nodes = node_dirs(&extra_nodes, std::path::Path::new(DEFAULT_NODES_DIR).is_dir());
     // `--list-nodes` runs the SAME registration the server does and reports its result, so the
     // listing is what actually registered — not a hand-kept mirror of the routing rule.
-    let mut discovered = register_subproc(&state, subproc_nodes.as_deref(), &subproc_python);
-    if !state.system_nodes.is_empty() {
-        discovered.extend(boot_scan(&state));
-    }
+    let discovered = if state.system_nodes.is_empty() { Vec::new() } else { boot_scan(&state) };
 
     let code = if list_nodes {
         let mut names = goofi_bridge::catalog_type_names();
@@ -354,32 +350,6 @@ fn note_registration(name: &str, r: Registration) -> bool {
     r != Registration::Refused
 }
 
-/// Discover and register isolated-GIL subprocess Python node types (no build-time
-/// Python needed — only a `python` interpreter at run time). Always available.
-/// Returns the type names it actually registered (what `--list-nodes` reports).
-fn register_subproc(state: &AppState, dir: Option<&str>, python: &str) -> Vec<String> {
-    let Some(dir) = dir else { return Vec::new() };
-    let types = match goofi_subproc::discover(std::path::Path::new(dir), python) {
-        Ok(types) => types,
-        Err(e) => {
-            eprintln!("failed to discover subprocess nodes in {dir}: {e}");
-            return Vec::new();
-        }
-    };
-    let mut g = state.graph.lock().unwrap();
-    // Only registrations that succeeded (a name colliding with a built-in is refused).
-    let names: Vec<String> = types
-        .into_iter()
-        .filter_map(|t| {
-            let name = t.manifest.type_name;
-            let r = g.register_dyn_type(t.manifest, t.factory);
-            note_registration(name, r).then(|| name.to_string())
-        })
-        .collect();
-    println!("  registered {} subprocess node type(s) from {dir} (python `{python}`)", names.len());
-    names
-}
-
 /// The files in a node directory, in a deterministic order.
 #[cfg(feature = "python")]
 fn sorted_dir(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -411,7 +381,7 @@ fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
 /// It reports and prints NOTHING: a rescan runs this same function whenever an agent writes a node
 /// file, and it must not spew to stderr for doing its job. `boot_scan` does the talking.
 #[cfg(feature = "python")]
-fn register_auto(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
+fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
     let ft = goofi_py::interpreter_path(); // the embedded FT interpreter, for probing
     let mut found = Vec::new();
     for path in sorted_dir(dir) {
@@ -468,7 +438,7 @@ fn register_auto(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scanned
 }
 
 #[cfg(not(feature = "python"))]
-fn register_auto(_g: &mut Graph, _dir: &Path, _subproc_python: &str) -> Vec<ScannedType> {
+fn register_routed(_g: &mut Graph, _dir: &Path, _subproc_python: &str) -> Vec<ScannedType> {
     Vec::new()
 }
 
@@ -539,45 +509,58 @@ mod tests {
         let cli = parse(&[]).expect("no arguments is a valid invocation");
         assert_eq!(cli.port, 8000);
         assert_eq!(cli.bind, "127.0.0.1");
-        assert!(cli.subproc_nodes.is_none() && cli.auto_nodes.is_empty());
+        assert!(cli.extra_nodes.is_empty());
         assert!(!cli.list_nodes && !cli.help);
     }
 
     #[test]
     fn reads_every_value_taking_flag() {
         let cli = parse(&[
-            "--port", "9001", "--bind", "0.0.0.0", "--subproc-nodes", "a", "--auto-nodes", "b",
+            "--port", "9001", "--bind", "0.0.0.0", "--extra-nodes", "b",
             "--subproc-python", "py", "--list-nodes",
         ])
         .expect("a well-formed invocation");
         assert_eq!(cli.port, 9001);
         assert_eq!(cli.bind, "0.0.0.0");
-        assert_eq!(cli.subproc_nodes.as_deref(), Some("a"));
-        assert_eq!(cli.auto_nodes, ["b"]);
+        assert_eq!(cli.extra_nodes, ["b"]);
         assert_eq!(cli.subproc_python.as_deref(), Some("py"));
         assert!(cli.list_nodes);
     }
 
-    /// `--auto-nodes` ACCUMULATES where every other value-taking flag replaces. A packaged build
-    /// bakes one into its launch command, so a user naming their own directory has to be *added*
-    /// to the builtin tree — a last-wins flag would silently drop the shipped nodes, which is the
+    /// `--extra-nodes` ACCUMULATES where every other value-taking flag replaces — naming two
+    /// directories scans both. A last-wins flag would silently drop the first, which is the
     /// opposite of what someone extending the palette is asking for.
     #[test]
-    fn auto_nodes_accumulates_where_the_other_flags_replace() {
-        let cli = parse(&["--auto-nodes", "builtin", "--bind", "a", "--auto-nodes", "mine",
+    fn extra_nodes_accumulates_where_the_other_flags_replace() {
+        let cli = parse(&["--extra-nodes", "theirs", "--bind", "a", "--extra-nodes", "mine",
                           "--bind", "b"])
             .expect("a repeated flag is well-formed");
-        assert_eq!(cli.auto_nodes, ["builtin", "mine"], "--auto-nodes adds");
+        assert_eq!(cli.extra_nodes, ["theirs", "mine"], "--extra-nodes adds");
         assert_eq!(cli.bind, "b", "…while --bind still replaces");
     }
 
+    /// `--extra-nodes` ADDS to the shipped tree; it never replaces it. The flag's name is the
+    /// contract — a user naming their own directory still gets `nodes/`. Theirs comes LAST so it
+    /// can shadow a shipped type name, the same "more specific wins" order the patch tree rides.
+    #[test]
+    fn extra_nodes_are_scanned_after_the_shipped_tree_not_instead_of_it() {
+        let mine = || vec![String::from("mine")];
+        assert_eq!(
+            node_dirs(&mine(), true),
+            [PathBuf::from("nodes"), PathBuf::from("mine")],
+            "the shipped tree first, the user's own after it"
+        );
+        assert_eq!(node_dirs(&[], true), [PathBuf::from("nodes")], "…and alone when none is named");
+        assert_eq!(node_dirs(&mine(), false), [PathBuf::from("mine")], "no shipped tree to lead");
+    }
+
     /// A missing value is the same class of user error as an unknown flag, and used to be the
-    /// only one handled silently: `--bind` alone served on the default host, and
-    /// `--subproc-nodes` alone left the option `None`, which then satisfied the "no explicit node
-    /// source" guard and auto-routed `nodes/` — the opposite tier from the one asked for.
+    /// only one handled silently: `--bind` alone served on the default host, and a node-directory
+    /// flag alone left its value unset, so the run scanned somewhere other than the place asked
+    /// for while reporting success.
     #[test]
     fn a_value_taking_flag_without_its_value_is_an_error() {
-        for flag in ["--port", "--bind", "--subproc-nodes", "--auto-nodes", "--subproc-python"] {
+        for flag in ["--port", "--bind", "--extra-nodes", "--subproc-python"] {
             let err = parse(&[flag]).expect_err(&format!("`{flag}` alone must not be ignored"));
             assert!(err.contains(flag), "the message names the flag: {err}");
         }

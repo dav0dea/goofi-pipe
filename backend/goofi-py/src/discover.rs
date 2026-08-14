@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use goofi_node::discover::{discover as probe_discover, discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
+use goofi_node::discover::{discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
 use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, Outputs, Params};
 
 use crate::PyNode;
@@ -70,19 +70,6 @@ pub fn probe(path: &Path, ft_python: &str) -> Discovery {
 pub fn node_type_from(d: Discovered) -> PyNodeType {
     let path = d.source.clone();
     py_type_from_discovered(&path, d)
-}
-
-/// Scan `dir` for node files, probing each on `ft_python`; skips non-`.py`, `_`-prefixed,
-/// and probe failures. Type names are the `CamelCase` file stem.
-pub fn discover(dir: &Path, ft_python: &str) -> std::io::Result<Vec<PyNodeType>> {
-    let discovered = probe_discover(dir, ft_python, "python", Isolation::InProcess)?;
-    Ok(discovered
-        .into_iter()
-        .map(|d| {
-            let path = d.source.clone();
-            py_type_from_discovered(&path, d)
-        })
-        .collect())
 }
 
 /// Turn a probe-[`Discovered`] (rich manifest + `gil_safe` + source path) into an in-process

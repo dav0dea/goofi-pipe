@@ -249,7 +249,15 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
     std::fs::write(dir.join("_hidden.py"), triple.replace("Triple", "Hidden")).unwrap();
     std::fs::write(dir.join("broken.py"), "import nonexistent_dep_xyz\n").unwrap();
 
-    let types = goofi_py::discover(&dir, &py).unwrap();
+    // One probe per file, exactly as the CLI's router walks a directory — so the three files a
+    // real scan trips over are the three asserted here.
+    let types: Vec<_> = ["triple.py", "_hidden.py", "broken.py"]
+        .iter()
+        .filter_map(|f| match goofi_py::probe(&dir.join(f), &py) {
+            goofi_py::Discovery::Found(d) => Some(goofi_py::node_type_from(d)),
+            _ => None,
+        })
+        .collect();
     let names: Vec<&str> = types.iter().map(|t| t.manifest.type_name).collect();
     assert_eq!(names, vec!["Triple"], "only the valid, non-hidden node discovers");
 

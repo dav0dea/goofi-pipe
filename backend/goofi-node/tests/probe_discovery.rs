@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use goofi_node::discover::{discover, discover_one, probe_introspect, Discovery};
+use goofi_node::discover::{discover_one, probe_introspect, Discovery};
 use goofi_node::Isolation;
 
 /// The first interpreter that can `import goofi`: an explicit override, then the repo's two
@@ -163,16 +163,6 @@ fn a_node_whose_import_prints_still_discovers() {
     };
     assert_eq!(d.manifest.type_name, "Chatty");
     assert_eq!(d.manifest.doc, "A node whose dependency prints on import.");
-}
-
-#[test]
-fn discover_dir_skips_hidden_and_broken() {
-    let py = test_python();
-    let found = discover(&fixtures(), &py, "python", Isolation::Subprocess).expect("scan");
-    let names: Vec<_> = found.iter().map(|d| d.manifest.type_name).collect();
-    assert!(names.contains(&"Negate"), "negate discovered: {names:?}");
-    assert!(!names.iter().any(|n| *n == "Hidden"), "_hidden.py is skipped");
-    assert!(!names.iter().any(|n| *n == "Broken"), "missing-dep node greyed out");
 }
 
 #[test]

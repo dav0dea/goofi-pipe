@@ -216,9 +216,10 @@ can no longer stall the tick.
 ```bash
 cargo run                       # launches the backend + bridge, prints the URL
 #   flags: --port N (default 8000), --bind HOST (default 127.0.0.1),
-#          --subproc-nodes DIR | --auto-nodes DIR,
-#          --subproc-python BIN, --list-nodes
-# With no --*-nodes flag it auto-discovers ./nodes/ and routes each node by tier.
+#          --extra-nodes DIR, --subproc-python BIN, --list-nodes
+# It scans ./nodes/ when present and routes each node by tier; --extra-nodes ADDS a
+# directory to that (repeatable, later wins a shared type name). Tier is never chosen
+# by a flag — one probe per node file decides it.
 # --subproc-python defaults to .gfivenv, which `cargo run -p goofi-init` provisions.
 
 cargo test --workspace                      # must stay green, and warning-free

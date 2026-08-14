@@ -370,13 +370,6 @@ pub fn discover_one(path: &Path, python: &str) -> Option<SubprocNodeType> {
     Some(subproc_type_from_discovered(python, d))
 }
 
-/// Scan `dir` for node files, probing each on `python`; skips non-`.py`, `_`-prefixed, and
-/// probe failures. Type names are the `CamelCase` file stem (shared with the in-process tier).
-pub fn discover(dir: &Path, python: &str) -> std::io::Result<Vec<SubprocNodeType>> {
-    let discovered = goofi_node::discover::discover(dir, python, "subprocess", Isolation::Subprocess)?;
-    Ok(discovered.into_iter().map(|d| subproc_type_from_discovered(python, d)).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,8 +1147,12 @@ class Slow(goofi.Node):
         );
     }
 
+    /// The per-file probe IS the discovery path: the CLI's router walks a directory itself and
+    /// asks this once per file, so what a scan yields is exactly what these three answers say.
+    /// Asserted over a directory rather than a lone file because the two files that must NOT
+    /// become nodes are the ones a real scan puts in its way.
     #[test]
-    fn discover_yields_subprocess_types_that_run() {
+    fn discover_one_yields_subprocess_types_that_run_and_passes_over_the_rest() {
         let py = require_python();
         let dir = std::env::temp_dir().join(format!("goofi_subdisc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1176,14 +1173,15 @@ class Negate(goofi.Node):
         std::fs::write(dir.join("_hidden.py"), negate).unwrap(); // underscore → skipped
         std::fs::write(dir.join("nope.py"), "x = 1\n").unwrap(); // no Node subclass → probe skips
 
-        let types = discover(&dir, &py).unwrap();
-        let names: Vec<&str> = types.iter().map(|t| t.manifest.type_name).collect();
-        assert_eq!(names, vec!["Negate"]);
-        assert_eq!(types[0].manifest.category, "subprocess");
-        assert_eq!(types[0].manifest.isolation, Isolation::Subprocess);
+        assert!(discover_one(&dir.join("_hidden.py"), &py).is_none(), "`_`-prefixed is not a node");
+        assert!(discover_one(&dir.join("nope.py"), &py).is_none(), "no Node subclass → no type");
+        let ty = discover_one(&dir.join("negate.py"), &py).expect("a real node file");
+        assert_eq!(ty.manifest.type_name, "Negate");
+        assert_eq!(ty.manifest.category, "subprocess");
+        assert_eq!(ty.manifest.isolation, Isolation::Subprocess);
 
         // The factory builds a working node.
-        let mut node = (types[0].factory)(&ParamGroups::new());
+        let mut node = (ty.factory)(&ParamGroups::new());
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", Some(arr(vec![2], &[1.0, -2.0], Meta::empty())));
         let inp = Inputs::new(&inmap);

@@ -58,11 +58,12 @@ link against *before cargo starts*, and cargo reads `.cargo/config.toml` only at
 it has run, the build stops with one line saying so.
 
 Flags: `--port N` (default 8000), `--bind HOST` (default 127.0.0.1),
-`--subproc-nodes DIR` / `--auto-nodes DIR`, `--subproc-python BIN`,
-`--list-nodes`. With no `--*-nodes` flag it auto-discovers `./nodes/` and routes
-each node to the tier it can run on. `--auto-nodes` is **repeatable** — each
-directory is scanned in turn, and a later one wins a type name it shares with an
-earlier one.
+`--extra-nodes DIR`, `--subproc-python BIN`, `--list-nodes`. It scans `./nodes/`
+when that directory exists, routing each node to the tier it can run on —
+in-process when its imports are free-threading-safe, else a subprocess. There is no
+flag for choosing that tier; one probe decides per node. `--extra-nodes` is
+**repeatable** and **adds** to the shipped tree: each directory is scanned in turn,
+and a later one wins a type name it shares with an earlier one.
 
 **When the backend is not on your machine.** The Save and Open dialogs each carry a second
 door — *Download a copy* and *Open from this computer…* — which pass the `.gfi` through the

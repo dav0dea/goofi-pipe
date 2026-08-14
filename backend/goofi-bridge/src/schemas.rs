@@ -170,7 +170,7 @@ pub fn output_slots(m: &NodeManifest) -> Value {
 
 /// Where a palette row's type came from, for the badge the add-menu shows: the patch you have open,
 /// or the goofi you are running. Everything a scan did not attribute to the patch reads as
-/// `builtin` — compiled-in nodes, the shipped `nodes/` tree, and a `--subproc-nodes` directory
+/// `builtin` — compiled-in nodes, the shipped `nodes/` tree, and every `--extra-nodes` directory
 /// alike. A separate badge for that last one is a design question, not a scan fact.
 fn source_of(g: &Graph, type_name: &str) -> &'static str {
     if g.is_patch_type(type_name) {
