@@ -152,6 +152,10 @@ async fn run(
     mut state: AppState,
     shutdown: impl Future<Output = ()>,
 ) -> i32 {
+    // Before ANY use of the embedded interpreter — the evaluator below, and every in-process
+    // Python node after it.
+    point_embedded_python_at_its_venv();
+
     // `subproc_python` arrives resolved (see `main`), so the parsed field has already been taken.
     let Cli { port, bind, subproc_nodes, mut auto_nodes, subproc_python: _, list_nodes, help: _ } =
         cli;
@@ -298,6 +302,37 @@ fn register_evaluator(state: &AppState) {
         Err(e) => eprintln!("param-expression evaluator unavailable: {e}"),
     }
 }
+
+/// Hand the EMBEDDED interpreter the venv pyo3 was linked against.
+///
+/// pyo3 links `libpython` out of that venv's BASE install, so `sys.prefix` is the base install and
+/// the venv — which is where `goofi` and `numpy` actually are — sits on no search path at all.
+/// `.cargo/config.toml` covers this with a `PYTHONPATH` in its `[env]` block, and cargo applies
+/// that to `cargo run` and to nothing else. So the binary launched any OTHER way — a packaged
+/// build, the Docker image, a bare `./goofi-pipe` — came up with a dead param-expression evaluator
+/// (`No module named 'numpy'`) and in-process Python nodes that cannot import their own package.
+///
+/// The `--list-nodes` count does not reveal it: registration runs through the discovery probe,
+/// which is a SUBPROCESS and finds its own site-packages via `pyvenv.cfg`. Only execution breaks.
+///
+/// Doing it here makes the binary self-sufficient instead of dependent on the build tool that
+/// happened to launch it — a cargo config is for configuring a *build*.
+#[cfg(feature = "python")]
+fn point_embedded_python_at_its_venv() {
+    // An existing value is the documented override, and under `cargo run` it is already right.
+    if std::env::var_os("PYTHONPATH").is_some() {
+        return;
+    }
+    let Some(python) = goofi_py::interpreter_path() else { return };
+    // `<venv>/bin/python` → `<venv>`.
+    let Some(venv) = Path::new(&python).parent().and_then(Path::parent) else { return };
+    if let Some(dir) = goofi_init::site_packages(venv) {
+        std::env::set_var("PYTHONPATH", dir);
+    }
+}
+
+#[cfg(not(feature = "python"))]
+fn point_embedded_python_at_its_venv() {}
 
 #[cfg(not(feature = "python"))]
 fn register_evaluator(_state: &AppState) {

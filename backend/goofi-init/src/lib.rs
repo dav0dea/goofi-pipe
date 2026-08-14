@@ -52,6 +52,34 @@ pub fn venv_python(venv: &Path) -> Option<PathBuf> {
     python_in(venv).map(|rel| venv.join(rel))
 }
 
+/// A venv's `site-packages`, discovered rather than spelled out.
+///
+/// The EMBEDDED interpreter needs this handed to it: pyo3 links `libpython` from the venv's BASE
+/// install, so `sys.prefix` is that install and the venv — holding `goofi` and `numpy` — is on no
+/// search path at all. `.cargo/config.toml` sets a `PYTHONPATH` for `cargo run`; a binary invoked
+/// any other way, the Docker image included, gets nothing.
+///
+/// The version is *found*, never named. Unix nests site-packages under `lib/python<X.Y>[t]/`, and
+/// hardcoding that segment would go stale the next time [`FT_PYTHON`] moves — the failure being a
+/// silent `ModuleNotFoundError` at startup rather than anything that points at this file.
+pub fn site_packages(venv: &Path) -> Option<PathBuf> {
+    // Windows keeps it flat and version-free; check that first because it needs no scan.
+    let flat = venv.join("Lib").join("site-packages");
+    if flat.is_dir() {
+        return Some(flat);
+    }
+    let mut found: Vec<PathBuf> = std::fs::read_dir(venv.join("lib"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join("site-packages"))
+        .filter(|p| p.is_dir())
+        .collect();
+    // Sorted so a venv that somehow holds two answers gives a stable one rather than whatever
+    // order the filesystem happened to hand back.
+    found.sort();
+    found.pop()
+}
+
 /// The interpreter of `venv`, spelled RELATIVE to the repo root — the value [`write_config`] hands
 /// cargo, which expands it back to an absolute path against the config's own repo.
 ///
@@ -319,6 +347,39 @@ mod tests {
             assert_eq!(venv_python(&dir), Some(py.clone()), "{host}/{exe} layout");
             std::fs::remove_file(&py).unwrap();
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The EMBEDDED interpreter cannot find a venv on its own, so the binary has to hand it the
+    /// site-packages directory — and must find that directory without being told the Python
+    /// version, or the answer goes stale the next time `FT_PYTHON` moves.
+    ///
+    /// Why this exists at all: pyo3 links `libpython` from the venv's BASE install, so `sys.prefix`
+    /// is the base install and the venv — where `goofi` and `numpy` actually live — is nowhere on
+    /// `sys.path`. `.cargo/config.toml` papered over that with a `PYTHONPATH` in its `[env]` block,
+    /// which cargo applies to `cargo run` and to nothing else. The binary run directly therefore
+    /// started with a working node discovery (that spawns the venv's python as a SUBPROCESS, which
+    /// finds its own site-packages) and a dead param-expression evaluator: `No module named
+    /// 'numpy'`. Every non-cargo invocation had it, the Docker image included.
+    #[test]
+    fn site_packages_is_found_under_either_layout_without_naming_a_python_version() {
+        let dir = std::env::temp_dir().join(format!("goofi-init-sp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(site_packages(&dir), None, "a directory with no site-packages is not a venv");
+
+        // unix: `lib/pythonX.Yt/site-packages`, where X.Y is exactly what must NOT be hardcoded.
+        let unix = dir.join("lib").join("python3.14t").join("site-packages");
+        std::fs::create_dir_all(&unix).unwrap();
+        assert_eq!(site_packages(&dir), Some(unix.clone()), "unix layout, version discovered");
+        std::fs::remove_dir_all(dir.join("lib")).unwrap();
+
+        // Windows: `Lib/site-packages`, with no version component at all.
+        let win = dir.join("Lib").join("site-packages");
+        std::fs::create_dir_all(&win).unwrap();
+        assert_eq!(site_packages(&dir), Some(win), "windows layout");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
