@@ -11,6 +11,15 @@
 //! This module is standalone: it owns one node against a [`Transport`], and nothing in [`Graph`]
 //! drives it yet.
 //!
+//! ## Where this diverges from the tick path it replaces
+//!
+//! [`NodeRuntime::run`] is `run_node` + `execute_node` minus three things, each of which the
+//! cutover must restore or drop on purpose: the engine's meta stamping (`index` and `ufreq`);
+//! `last_outputs`, which §7 removes along with `latest_frame`, so that one is a deliberate drop;
+//! and the **required-input gate**, where `execute_node` refuses to run a node whose `required`
+//! slot holds no frame and records that refusal as its error — nothing here does. `ensure_initialized`
+//! now also exists twice, once per scheduler, and the two must be collapsed rather than kept in step.
+//!
 //! [`Graph`]: crate::Graph
 
 use std::collections::HashMap;
@@ -25,7 +34,9 @@ mod mailbox;
 mod wire;
 
 pub use mailbox::{Binding, Mailbox};
-pub use wire::{Control, EventId, MemoryTransport, ParamValue, ServiceName, Status, Transport, Var, VarName};
+#[cfg(test)]
+pub use wire::MemoryTransport;
+pub use wire::{Control, EventId, ParamValue, ServiceName, Status, Transport, Var, VarName};
 
 /// The scheduling namespace. A `common.*` param decides *when* a node runs, so it is resolved
 /// before the gates are read and never inside a run (§1.1).
@@ -68,34 +79,34 @@ pub struct NodeRuntime {
     /// by one `RunPolicy::from_params`, so there is nothing to keep in step.
     ///
     /// Paths A and C: something asked this node to run and it has not run since.
-    pub trigger_pending: bool,
-    pub run_policy: RunPolicy,
-    pub last_run: Option<Instant>,
+    pub(crate) trigger_pending: bool,
+    pub(crate) run_policy: RunPolicy,
+    pub(crate) last_run: Option<Instant>,
     /// Set by ANY arrival that can affect a `common.*` param, whatever path it came in on (§1.1).
-    pub common_dirty: bool,
+    pub(crate) common_dirty: bool,
 
     /// The param RECORD: literals only, which is what the `.gfi` persists and what a broken or
     /// not-yet-arrived binding falls back to (§2.1). Kept apart from `effective` because an
     /// evaluated value would otherwise erase the number the user authored.
-    pub literals: ParamGroups,
+    pub(crate) literals: ParamGroups,
     /// The node's FULL params — the literal record overlaid with evaluated bindings. What
     /// `process()` reads and what `RunPolicy::from_params` is given.
-    pub effective: ParamGroups,
+    pub(crate) effective: ParamGroups,
     /// The SPARSE bound subset, which exists only as the wire projection in
     /// [`Status::ParamValues`]. Handing THIS to `RunPolicy::from_params` would silently default
     /// every absent key — which is why the two maps are named apart (§2).
-    pub evaluated: IndexMap<ParamKey, Param>,
-    pub bindings: IndexMap<ParamKey, Binding>,
+    pub(crate) evaluated: IndexMap<ParamKey, Param>,
+    pub(crate) bindings: IndexMap<ParamKey, Binding>,
 
     /// Latest-wins input cells, one per declared single input slot.
-    pub inputs: IndexMap<&'static str, Option<Data>>,
-    pub ctx: NodeCtx,
+    pub(crate) inputs: IndexMap<&'static str, Option<Data>>,
+    pub(crate) ctx: NodeCtx,
 
-    pub fault: Option<NodeFault>,
+    pub(crate) fault: Option<NodeFault>,
     /// Binding errors are a MAP, not a fault variant: several bindings can be errored at once and
     /// each renders on its own inspector field. [`NodeFault::Expr`] is the derived node-level
     /// roll-up ([`Self::node_fault`]), not the record.
-    pub binding_errors: HashMap<ParamKey, String>,
+    pub(crate) binding_errors: HashMap<ParamKey, String>,
     /// When the binding-error set last changed — the roll-up's `since`, which the map itself has
     /// no room for.
     binding_errors_since: f64,
@@ -264,6 +275,9 @@ impl NodeRuntime {
     /// in the slot's service list, so it arrives with the transport that subscribes per wire.
     pub fn deliver_input(&mut self, slot: &str, frame: Data) {
         let Some(decl) = self.manifest.inputs.iter().find(|s| s.name == slot && !s.multi) else {
+            // A slot this node does not declare as a single input: a frame from a wire the graph
+            // has since re-planned, or a multi slot. Refused rather than half-served — a
+            // single-source cell would read back as the whole of a multi slot.
             return;
         };
         self.inputs.insert(decl.name, Some(frame));
@@ -485,8 +499,10 @@ impl NodeRuntime {
                 self.initialized = true;
                 self.set_fault(None);
             }
+            // One clock read: the attempt IS when the failure happened, and `set_fault` keeps the
+            // `since` of a fault that has not changed anyway.
             Some(msg) => {
-                self.set_fault(Some(NodeFault::Setup { msg, since: now_ms(), last_attempt: attempt }))
+                self.set_fault(Some(NodeFault::Setup { msg, since: attempt, last_attempt: attempt }))
             }
         }
     }

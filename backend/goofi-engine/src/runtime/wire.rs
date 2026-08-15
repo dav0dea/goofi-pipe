@@ -7,9 +7,16 @@
 //! Only [`MemoryTransport`] ships here — the iceoryx2 implementation is its own step.
 //!
 //! The message sets are the subset this runtime can honestly act on. `Control::{InSlot, OutSlot,
-//! RefreshParam, Terminate}` and `Status::{Ready, Ack, Ufreq, Stage, RefreshOptions}` arrive with
-//! the transport that gives a node subscribers to wire and a graph to answer.
+//! RefreshParam, Terminate}` and `Status::{Ready, Ufreq, Stage, RefreshOptions}` arrive with the
+//! transport that gives a node subscribers to wire and a graph to answer.
+//!
+//! `Status::Ack` and the `seq` every `Control` carries are absent for the same reason and are
+//! named here because they are the one omission that WIDENS a shipped type rather than adding a
+//! variant beside it: an ack confirms an ordering the in-memory transport does not have, to a
+//! graph that is not listening. `seq` belongs ON `Control`, so the transport that can honour it
+//! is the one that should add it.
 
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -100,25 +107,24 @@ pub trait Transport: Send + Sync {
 }
 
 /// The in-memory [`Transport`]: it never parks, and it records everything so a test can read what
-/// the node emitted and told the graph.
+/// the node emitted and told the graph. Test-only, because the transport that ships is the one
+/// built on iceoryx2 — this exists to drive a node without one.
+#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryTransport {
     inner: Mutex<Inner>,
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct Inner {
-    events: Vec<EventId>,
     control: Vec<Control>,
     published: Vec<(String, Data)>,
     reported: Vec<Status>,
 }
 
+#[cfg(test)]
 impl MemoryTransport {
-    /// Ring the node's doorbell — the graph side of [`Transport::wait`].
-    pub fn notify(&self, id: EventId) {
-        self.inner.lock().unwrap().events.push(id);
-    }
     /// Queue a control message for the node — the graph side of [`Transport::drain_control`].
     pub fn send(&self, msg: Control) {
         self.inner.lock().unwrap().control.push(msg);
@@ -133,9 +139,12 @@ impl MemoryTransport {
     }
 }
 
+#[cfg(test)]
 impl Transport for MemoryTransport {
+    /// Nothing rings an in-memory doorbell: a node on this transport is driven directly by its
+    /// caller, so there is never a wake reason to report and never anything to park on.
     fn wait(&self, _timeout: Option<Duration>) -> Vec<EventId> {
-        std::mem::take(&mut self.inner.lock().unwrap().events)
+        Vec::new()
     }
     fn drain_control(&self) -> Vec<Control> {
         std::mem::take(&mut self.inner.lock().unwrap().control)
@@ -155,17 +164,13 @@ mod tests {
 
     #[test]
     fn the_memory_transport_hands_each_queue_over_once() {
-        // Draining is destructive on both queues, because a wake that re-delivered what it already
-        // delivered would run the node again on a frame it has consumed.
+        // Draining is destructive, because a wake that re-delivered what it already delivered
+        // would run the node again on a message it has consumed.
         let t = MemoryTransport::default();
-        t.notify(0);
-        t.notify(65);
         t.send(Control::SetParam {
             key: ParamKey::new("osc", "freq"),
             value: ParamValue::Literal(Param::float(1.0, 0.0, 2.0)),
         });
-        assert_eq!(t.wait(None), vec![0, 65]);
-        assert!(t.wait(None).is_empty(), "a second park sees nothing it already saw");
         assert_eq!(t.drain_control().len(), 1);
         assert!(t.drain_control().is_empty());
 
