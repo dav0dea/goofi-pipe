@@ -21,9 +21,11 @@
 //! awaited, so answering it advances nothing. What the cancelled messages already SAID still stands,
 //! because a slot message is declarative and its delivery never depended on the ack.
 //!
-//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]). The
-//! cutover adds the rest of §4's callers — node birth and removal, `restart_node`, a load, and an
-//! expression binding, which joins a producer's target set without being a link at all.
+//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]) and a
+//! channel being attached, which plans that node's slots from an empty base because it heard
+//! nothing said before it arrived. The cutover adds the rest of §4's callers — node removal,
+//! `restart_node`, a load, and an expression binding, which joins a producer's target set without
+//! being a link at all.
 //!
 //! [`Graph::add_link`]: crate::Graph::add_link
 //! [`Graph::remove_link`]: crate::Graph::remove_link

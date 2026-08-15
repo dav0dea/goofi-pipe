@@ -78,6 +78,21 @@ fn instance() -> String {
     format!("t{:x}", std::process::id())
 }
 
+/// Status is asynchronous by design (§4: "a node inside a long `process()` acks late"), so a test
+/// waits for it with a deadline rather than reading once. Under load — two of these targets at once,
+/// which is a thing that happens — a single immediate read is a race, and a deadline can only make a
+/// real failure slower, never a passing run flakier.
+fn status_within(channel: &NodeChannel, timeout: Duration) -> Vec<Status> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let got = channel.drain_status();
+        if !got.is_empty() || std::time::Instant::now() >= deadline {
+            return got;
+        }
+        std::thread::yield_now();
+    }
+}
+
 /// The service names of a node born at `uid` — what the graph puts in the other end's slot message.
 fn base_of(uid: Uid) -> String {
     service_base(&instance(), uid, 0)
@@ -154,7 +169,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
 
     node.run_once();
     assert!(node.next_wake().is_some(), "the node applied what it was sent and re-paced");
-    assert_eq!(channel.drain_status(), vec![Status::Ack { seq: 41, ok: Ok(()) }]);
+    assert_eq!(status_within(&channel, MS200), vec![Status::Ack { seq: 41, ok: Ok(()) }]);
 
     // And the ack carries the VERDICT, not a receipt: a slot this manifest does not declare is the
     // one refusal a node can state, and the graph abandons that sequence rather than waiting on it.
@@ -164,7 +179,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     });
     node.run_once();
     assert_eq!(
-        channel.drain_status(),
+        status_within(&channel, MS200),
         vec![Status::Ack { seq: 42, ok: Err("no output slot `nope`".to_string()) }]
     );
 
@@ -172,7 +187,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     // the same crossing — a `Fault` is what the console and the node badge are drawn from.
     let fault = NodeFault::Process { msg: "boom".to_string(), since: 12.5 };
     transport.report(Status::Fault { fault: Some(fault.clone()) });
-    assert_eq!(channel.drain_status(), vec![Status::Fault { fault: Some(fault) }]);
+    assert_eq!(status_within(&channel, MS200), vec![Status::Fault { fault: Some(fault) }]);
 }
 
 #[test]
