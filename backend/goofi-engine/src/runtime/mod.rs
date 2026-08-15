@@ -46,6 +46,14 @@
 //! `Graph::expression_values`, and so of the bridge's `param_values` event. Nothing reports one yet,
 //! so that event is silent until the cutover.
 //!
+//! And the status-drain worker (§6.2) is half here. `Graph::apply_status` is the graph-side half and
+//! is complete: every variant lands in the fields `last_error`/`node_stage` already read, an ack
+//! goes to the wire planner, and the evaluated values reach the record the `param_values` event
+//! reads. What is missing is its SOURCE — `goofi_bridge::spawn_stats` still polls, because nothing
+//! publishes a `Status` and `Status::{Ufreq, Stage}` are deliberately absent from the wire contract
+//! until something sends them. The ≤10 Hz coalesced re-mirror belongs with that swap: nothing yet
+//! changes doc-carried state out of band.
+//!
 //! [`Graph`]: crate::Graph
 
 use std::collections::HashMap;

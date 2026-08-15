@@ -430,7 +430,24 @@ fn error_transitions(
 }
 
 /// Broadcast each node's measured update frequency (`node_stats`) at `hz`, and push an
-/// `error` event whenever a node's error state changes. The tick loop emits nothing, so
+/// `error` event whenever a node's error state changes.
+///
+/// **This is the status-drain worker's predecessor** (spec §6.2), and what the cutover replaces is
+/// its SOURCE, not its four events: it POLLS the graph under the lock, where the worker will drain
+/// each node's `Status` service and hand each report to `Graph::apply_status` — which already
+/// exists, and already lands every variant in the fields `last_error`/`node_stage` read, so
+/// `runtime_overlay` keeps working verbatim. The swap waits on Task 5 for a plain reason: nothing
+/// constructs a `NodeRuntime`, so no `Status` is published at all, and `Status::{Ufreq, Stage}` are
+/// deliberately absent from the wire contract until something sends them. Draining a service
+/// nobody writes would simply silence all four events, every one of which has a live frontend
+/// consumer.
+///
+/// Two of the worker's obligations are already met here and must survive the swap: it never calls
+/// `set_dirty(true)` — a node reporting its own state is not a user edit — and it FORGETS a uid on
+/// removal, both in `error_transitions` (`last.retain`) and in `last_stages.retain` below, so a
+/// stale error cannot outlive its node or suppress a re-created uid's first report.
+///
+/// The tick loop emits nothing, so
 /// without this a RUNTIME error that appears mid-run (an expression that compiles but
 /// fails on later data, a process error) would not turn the node border red until an
 /// unrelated RPC or a reconnect. De-duped: one push per transition, not per tick.

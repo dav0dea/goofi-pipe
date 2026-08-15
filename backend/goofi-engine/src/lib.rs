@@ -4046,6 +4046,47 @@ mod tests {
     }
 
     #[test]
+    fn a_reported_fault_surfaces_on_the_projections_that_already_exist() {
+        // §6: `NodeFault` and `Stage` change only how the graph LEARNS a node's state, not how it
+        // is projected — `runtime_overlay` keeps working verbatim, and it reads `last_error` and
+        // `node_stage`. So the four variants have to land in the fields those two already read;
+        // storing them anywhere else would leave a node reporting an error the editor never draws.
+        let mut g = eval_graph();
+        let uid = g.add_node("_TestConst", None).unwrap();
+        assert_eq!(g.node_stage(uid), "ready");
+
+        for (fault, msg) in [
+            (runtime::NodeFault::Process { msg: "boom".into(), since: 1.0 }, "boom"),
+            (runtime::NodeFault::Boot { msg: "no worker".into(), since: 1.0 }, "no worker"),
+            (runtime::NodeFault::Setup { msg: "no device".into(), since: 1.0, last_attempt: 1.0 }, "no device"),
+        ] {
+            g.apply_status(uid, runtime::Status::Fault { fault: Some(fault) });
+            assert_eq!(g.last_error(uid), Some(msg));
+            assert_eq!(g.node_stage(uid), "error");
+        }
+
+        // A clean run clears Setup/Process/Boot TOGETHER — the node stamped one fault at a time,
+        // and clearing only the last one reported would leave the earlier field standing forever.
+        g.apply_status(uid, runtime::Status::Fault { fault: None });
+        assert_eq!(g.last_error(uid), None);
+        assert_eq!(g.node_stage(uid), "ready");
+
+        // A binding error is a MAP, not a fault: it arrives on its own channel and rolls up through
+        // the same `last_error` the badge reads. It is deliberately NOT cleared by a clean run.
+        let key = ParamKey::new("constant", "value");
+        g.set_expression(uid, "constant", "value", "5", true, false).unwrap();
+        g.apply_status(
+            uid,
+            runtime::Status::BindingErrors { errors: vec![(key.clone(), Some("nope".to_string()))] },
+        );
+        assert_eq!(g.last_error(uid), Some("nope"));
+        g.apply_status(uid, runtime::Status::Fault { fault: None });
+        assert_eq!(g.last_error(uid), Some("nope"), "a clean run does not fix a broken expression");
+        g.apply_status(uid, runtime::Status::BindingErrors { errors: vec![(key, None)] });
+        assert_eq!(g.last_error(uid), None, "only the binding evaluating clears it");
+    }
+
+    #[test]
     fn a_param_read_is_never_blocked_by_a_concurrent_edit() {
         // §5.1: the record is an `ArcSwap` the graph and the node hold TOGETHER. That is the READ
         // path — a node's `process()` loads it without the graph mutex, so an edit storm cannot

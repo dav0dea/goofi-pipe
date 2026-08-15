@@ -369,9 +369,13 @@ mod tests {
         format!("{}_{gen}_door", uid.to_hex())
     }
 
+    /// Answer a batch the way the status-drain worker will: every ack reaches the planner through
+    /// `apply_status`, because that is the only door a node's `Status` service has. Routing them
+    /// through `wire_ack` directly would leave the worker's own arm — the one every phase in
+    /// production depends on — pinned by nothing.
     fn ack_all(batch: &[(Uid, Envelope)], g: &mut Graph) {
-        for (_, e) in batch {
-            g.wire_ack(e.seq, Ok(()));
+        for (to, e) in batch {
+            g.apply_status(*to, crate::runtime::Status::Ack { seq: e.seq, ok: Ok(()) });
         }
     }
 

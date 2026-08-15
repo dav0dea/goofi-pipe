@@ -498,8 +498,13 @@ impl Command {
                     ),
                     None => None,
                 };
-                let old_expr = expr.as_ref().map(|_| {
-                    g.param_expression(uid, &group, &name)
+                // Captured when the caller names an `expr` — and ALSO when it names only a literal
+                // over a param that is bound, because §3.4 makes a literal write an unbind. The
+                // binding is part of what this edit destroys, so it is part of what the inverse
+                // owes; without this, undo hands back the number and the expression stays gone.
+                let bound = g.param_expression(uid, &group, &name);
+                let old_expr = (expr.is_some() || (value.is_some() && bound.is_some())).then(|| {
+                    bound
                         .map(|e| ExprState { source: e.source, enabled: e.enabled, triggers: e.triggers_process })
                         .unwrap_or(ExprState { source: String::new(), enabled: false, triggers: false })
                 });
@@ -1213,6 +1218,32 @@ mod tests {
         assert!(g.scope(inner).is_some() && g.contains(b), "nested subtree restored");
         assert_eq!(g.scope_of(inner), Some(outer), "inner re-nested in outer");
         assert_eq!(g.scope_of(b), Some(inner), "b back inside inner");
+    }
+
+    #[test]
+    fn a_literal_over_a_bound_param_undoes_back_to_the_binding() {
+        // §3.4 made a literal write UNBIND — the graph must mean by it what the node does. That
+        // makes the binding part of what this edit destroys, so the inverse has to restore it even
+        // though the caller named no `expr`: `old_expr` used to be captured only when one was
+        // given, and undo would have handed back the number while the expression stayed gone.
+        let mut g = Graph::new();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        g.set_expression(osc, "common", "max_frequency", "globals.default_ufreq", true, false).unwrap();
+
+        let edit = Command::EditParam {
+            uid: osc,
+            group: "common".to_string(),
+            name: "max_frequency".to_string(),
+            value: Some(Param::float(5.0, 0.0, 1000.0)),
+            expr: None,
+        };
+        let (_r, inverse) = edit.execute(&mut g).unwrap();
+        assert!(g.param_expression(osc, "common", "max_frequency").is_none(), "the literal unbound it");
+
+        inverse.execute(&mut g).unwrap();
+        let restored = g.param_expression(osc, "common", "max_frequency").expect("the binding is back");
+        assert_eq!(restored.source, "globals.default_ufreq");
+        assert!(restored.enabled, "and live, as it was");
     }
 
     #[test]
