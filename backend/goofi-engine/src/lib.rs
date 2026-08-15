@@ -2049,13 +2049,22 @@ impl Graph {
         edit_params(entry, |p| {
             p.entry(group.to_string()).or_default().insert(name.to_string(), value.clone());
         });
-        // §3.4: a LITERAL on a bound param unbinds it, which is what the node does with the
-        // `SetParam` this write sends — so the graph must mean the same by it, or the two records
-        // disagree about whether the param is driven. Unbinding also drops this node from the
-        // producer's target set (§5.3: an expression reference IS a link), so the producer stops
-        // ringing a doorbell nobody reads.
+        // §3.4: a LITERAL on a param the node is DRIVING unbinds it, which is what the node does
+        // with the `SetParam` this write sends — so the graph must mean the same by it, or the two
+        // records disagree about whether the param is driven. Unbinding also drops this node from
+        // the producer's target set (§5.3: an expression reference IS a link), so the producer
+        // stops ringing a doorbell nobody reads.
+        //
+        // An ENABLED binding only. A disabled one drives nothing — it is source the fx toggle is
+        // holding for the user, and every node in the patch carries one on `common.max_frequency`
+        // (`globals.default_ufreq`, waiting to be switched on). Unbinding those would make typing a
+        // number into a consumer's rate cap permanently delete the patch-rate expression, and
+        // persist the loss to the `.gfi`.
         let key = ParamKey::new(group, name);
-        self.unbind(uid, &key);
+        if self.nodes[&uid].bindings.get(&key).is_some_and(|b| b.enabled) {
+            self.unbind(uid, &key);
+        }
+        self.notify_param(uid, &key);
         let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         // The `common` group is scheduler metadata, not a node param — re-derive
         // the cached run gate rather than dispatching it to the node.
@@ -2173,16 +2182,20 @@ impl Graph {
             return Err(format!("no such node {uid}"));
         }
         let key = ParamKey::new(group, name);
-        // Release any prior compiled handle first.
+        // Only an empty source is a true unbind, and `unbind` owns the release on that path — so it
+        // goes FIRST, above the release below. Releasing here as well handed the evaluator two
+        // `release` calls for one handle, and `ExprEvaluator` is a public trait an implementation
+        // may reasonably treat as a refcount.
+        if source.trim().is_empty() {
+            self.unbind(uid, &key);
+            self.notify_param(uid, &key);
+            return Ok(());
+        }
+        // Release any prior compiled handle first — this path REPLACES it.
         if let Some(prev) = self.nodes.get(&uid).and_then(|e| e.bindings.get(&key)) {
             if let (Some(ev), Some(id)) = (&self.evaluator, prev.id) {
                 ev.release(id);
             }
-        }
-        // Only an empty source is a true unbind.
-        if source.trim().is_empty() {
-            self.unbind(uid, &key);
-            return Ok(());
         }
         // A non-empty source binds a real param — reject a dangling binding (invisible in
         // the descriptor, unclearable from the UI, phantom scheduling edges), like
@@ -2255,6 +2268,7 @@ impl Graph {
         Ok(())
     }
 
+
     /// Drop a binding and re-plan what it was subscribed to, answering nothing — the shared tail of
     /// an empty `set_expression` and of a literal write over a bound param (§3.4: both mean unbind,
     /// and the graph must mean by it what the node does).
@@ -2265,13 +2279,28 @@ impl Graph {
         if let (Some(ev), Some(id)) = (&self.evaluator, binding.id) {
             ev.release(id);
         }
-        self.replan_binding(uid, binding.bind_id);
     }
 
-    /// This binding's index into [`Self::bind_keys`], minting one on first bind. The interner is
-    /// append-only and never cleared short of a whole-graph `clear`, because an id must stay
-    /// readable after its binding is gone: an unbind's own wire sequence still has to compose the
-    /// `SetParam` that tells the node its param is a literal again.
+    /// Tell the node what this param is now (§5.1). Storing the record is only HALF of a param
+    /// edit: the `ArcSwap` is the read path, and a node parked with `next_wake() == None` is never
+    /// rung by a bare pointer swap, so the write has to be announced as well.
+    ///
+    /// A param's [`runtime::plan::Slot::Bind`] subscription is that channel whether or not it
+    /// currently holds variables — with none, §4's phases 1 and 3 have no recipients and phase 2
+    /// carries the literal. ONE re-plan per edit: a second `begin` on the same key cancels the
+    /// first mid-sequence, so the producer-shrink it had already sent would be waiting on an ack
+    /// nothing is listening for.
+    fn notify_param(&mut self, uid: Uid, key: &ParamKey) {
+        let bind_id = self.bind_id(uid, key);
+        self.replan_binding(uid, bind_id);
+    }
+
+    /// This PARAM's index into [`Self::bind_keys`], minting one the first time the graph has
+    /// anything to say about it. Keyed by param rather than by binding because [`runtime::plan::Slot::Bind`]
+    /// is the param's notification channel, which outlives any one binding on it: an unbind's own
+    /// wire sequence still has to compose the `SetParam` that says the param is a literal again, and
+    /// a param that was never bound still has to hear its edits. Append-only and cleared only by a
+    /// whole-graph `clear`, for the same reason.
     fn bind_id(&mut self, uid: Uid, key: &ParamKey) -> usize {
         if let Some(b) = self.nodes.get(&uid).and_then(|e| e.bindings.get(key)) {
             return b.bind_id;
@@ -7498,6 +7527,10 @@ mod tests {
     struct MockEval {
         exprs: std::sync::Mutex<HashMap<u64, MockExpr>>,
         next: std::sync::atomic::AtomicU64,
+        /// Every `release` CALL, in order — not the surviving handles. `ExprEvaluator` is a public
+        /// trait an implementation may reasonably treat as a refcount, so releasing one handle twice
+        /// is a defect a "how many are left?" oracle cannot see: the second remove is a no-op.
+        releases: std::sync::Mutex<Vec<u64>>,
     }
     #[derive(Clone)]
     enum MockExpr {
@@ -7535,6 +7568,7 @@ mod tests {
             })
         }
         fn release(&self, id: u64) {
+            self.releases.lock().unwrap().push(id);
             self.exprs.lock().unwrap().remove(&id);
         }
     }
@@ -7593,6 +7627,62 @@ mod tests {
         g.update_param(osc, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
         assert!(g.out_targets(lfo, "out").is_empty(), "unbind unlinked it");
         assert!(g.param_expression(osc, "constant", "value").is_none(), "and the binding is gone");
+    }
+
+    #[test]
+    fn a_handle_is_released_exactly_once_however_the_binding_ends() {
+        // One owner for the release. `set_expression` released the previous handle at the top and
+        // then handed the empty-source path to `unbind`, which released it again — invisible to a
+        // "how many handles survive?" check, because the second remove is a no-op.
+        let mock = Arc::new(MockEval::default());
+        let mut g = Graph::new();
+        g.set_evaluator(mock.clone());
+        let n = g.add_node("_TestConst", None).unwrap();
+        let released = || mock.releases.lock().unwrap().clone();
+
+        g.set_expression(n, "constant", "value", "5", true, false).unwrap();
+        let id = g.nodes[&n].bindings[&ParamKey::new("constant", "value")].id.expect("compiled");
+        assert!(released().is_empty(), "nothing released while it stands");
+
+        g.set_expression(n, "constant", "value", "", false, false).unwrap();
+        assert_eq!(released(), [id], "the empty source released it, once");
+
+        // The two other doors onto the same handle, each also exactly once.
+        g.set_expression(n, "constant", "value", "6", true, false).unwrap();
+        let rebound = g.nodes[&n].bindings[&ParamKey::new("constant", "value")].id.unwrap();
+        g.set_expression(n, "constant", "value", "7", true, false).unwrap();
+        assert_eq!(released(), [id, rebound], "a REBIND releases what it replaces, once");
+        let literal = g.nodes[&n].bindings[&ParamKey::new("constant", "value")].id.unwrap();
+        g.update_param(n, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
+        assert_eq!(released(), [id, rebound, literal], "and so does a literal write");
+    }
+
+    #[test]
+    fn a_literal_unbinds_only_a_binding_that_is_actually_driving() {
+        // §3.4 unbinds a param the node is DRIVEN on. A disabled binding drives nothing — it is
+        // source the fx toggle is holding — and EVERY node in the patch carries one on
+        // `common.max_frequency` (`globals.default_ufreq`, waiting to be switched on). Unbinding
+        // those made typing a number into a consumer's rate cap permanently delete the patch-rate
+        // expression, and `serialize` then persisted the loss.
+        //
+        // Both halves in one test: the enabled case is the rule and the disabled case is its edge,
+        // and pinning only one is how this diff's other guards went hollow.
+        let mut g = eval_graph();
+        let consumer = g.add_node("_TestSink", None).unwrap();
+        let carried = g.param_expression(consumer, "common", "max_frequency").expect("carried");
+        assert!(!carried.enabled, "a consumer carries the patch rate, disabled");
+
+        g.update_param(consumer, "common", "max_frequency", Param::float(7.0, 0.0, 100.0)).unwrap();
+        let kept = g.param_expression(consumer, "common", "max_frequency").expect("still there");
+        assert_eq!(kept.source, "globals.default_ufreq", "a disabled binding is not driving it");
+        assert!(!kept.enabled);
+        assert!(g.serialize().contains("globals.default_ufreq"), "and the `.gfi` still carries it");
+
+        // The same write over an ENABLED binding still unbinds — that is the rule this is the edge of.
+        let producer = g.add_node("_TestGated", None).unwrap();
+        assert!(g.param_expression(producer, "common", "max_frequency").unwrap().enabled);
+        g.update_param(producer, "common", "max_frequency", Param::float(7.0, 0.0, 100.0)).unwrap();
+        assert!(g.param_expression(producer, "common", "max_frequency").is_none(), "unbound");
     }
 
     #[test]

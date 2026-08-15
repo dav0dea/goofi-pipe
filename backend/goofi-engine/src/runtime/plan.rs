@@ -808,6 +808,26 @@ mod tests {
     }
 
     #[test]
+    fn a_literal_edit_is_announced_even_on_a_param_that_was_never_bound() {
+        // §5.1: the `ArcSwap` is the READ path and `Control::SetParam` is the NOTIFICATION path,
+        // and BOTH are required — a node parked with `next_wake() == None` is never rung by a bare
+        // pointer swap, so an edit it is not told about is one it never applies.
+        //
+        // The `SetParam` used to be built only inside a BINDING's phase 2, so this — the ordinary
+        // case, a user typing a number into a plain param — sent nothing at all.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        let log = attach(&mut g, &[n]);
+
+        g.update_param(n, "constant", "value", Param::float(4.0, -1e9, 1e9)).unwrap();
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Param { to: n, key: "constant.value".to_string(), vars: None }],
+            "the node is told the number, and told it once",
+        );
+    }
+
+    #[test]
     fn disabling_a_binding_unsubscribes_it_and_leaves_the_source_stored() {
         // The fx toggle. A disabled binding is KEPT — the user's code round-trips — but it drives
         // nothing, so the node must hear the literal and the producer must stop ringing it. The
