@@ -2831,10 +2831,13 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
 #[tokio::test]
 async fn param_values_broadcasts_live_expression_values() {
     // A param with an ENABLED expression is broadcast on the `param_values` event so the
-    // inspector preview tracks each re-evaluation. (No evaluator is injected here, so the
-    // value stays the literal — the point is the seam exists and carries the bound param.)
+    // inspector preview tracks each re-evaluation. The value now comes from the NODE
+    // (`Status::ParamValues`, spec §6.2) rather than from a graph-side evaluation, so the report
+    // is what this drives — reporting nothing and asserting the event never arrives would pass
+    // against a broadcaster that was deleted.
     let state = AppState::new();
     spawn_workers(&state); // tick loop + 2 Hz stats/param_values, as the CLI startup does
+    let graph = state.graph.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -2850,6 +2853,20 @@ async fn param_values_broadcasts_live_expression_values() {
         .to_string();
     // Bind an enabled expression via the set_expression command op.
     bind_expression(&mut ws, 2, &osc, "common", "max_frequency", "1 + 2").await;
+    // …and report an evaluation of it, as the node's own status service will.
+    {
+        let uid = goofi_engine::Uid::from_hex(&osc).expect("a uid");
+        let mut g = graph.lock().unwrap();
+        g.apply_status(
+            uid,
+            goofi_engine::runtime::Status::ParamValues {
+                evaluated: vec![(
+                    goofi_node::ParamKey::new("common", "max_frequency"),
+                    goofi_core::Param::float(3.0, 0.0, 100.0),
+                )],
+            },
+        );
+    }
 
     let ev = tokio::time::timeout(Duration::from_secs(8), async {
         loop {

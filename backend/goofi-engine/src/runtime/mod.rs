@@ -27,6 +27,25 @@
 //! node's `Control` until it answers `Status::Ready`, which needs a node lifecycle the graph does
 //! not own yet, so a message sent before its node exists is simply lost (pub/sub has no history).
 //!
+//! And two from the graph/state split, both of which are **live capability gaps until the cutover**,
+//! not merely unfinished plumbing:
+//!
+//! - **No expression is evaluated anywhere.** `Graph::resolve_level_bindings` is deleted — §2.1
+//!   evaluates in the node, immediately before the run that reads the value — but nothing drives a
+//!   [`NodeRuntime`], so on the tick path a bound param simply holds its literal. Three tests were
+//!   deleted with it and name precisely what the cutover must restore: a constant expression driving
+//!   `process`, an evaluated value reaching a mirrored field through `on_param_changed`, and
+//!   `Oscillator.sfreq` re-rating its block from a binding.
+//! - **[`Binding::evaluate`] handles only a bare-variable source.** A `NodeRuntime` holds no
+//!   [`goofi_node::ExprEvaluator`], so `__v0.mean() * __v1` reports that it needs one rather than
+//!   computing it. The graph compiles the rewritten source (so `set_expression`'s reply stays
+//!   honest) and the evaluator's locals channel is proven end to end in `goofi-python`; what is
+//!   missing is only the node-side handle.
+//!
+//! One more that is plumbing rather than capability: `Status::ParamValues` is now the ONLY source of
+//! `Graph::expression_values`, and so of the bridge's `param_values` event. Nothing reports one yet,
+//! so that event is silent until the cutover.
+//!
 //! [`Graph`]: crate::Graph
 
 use std::collections::HashMap;

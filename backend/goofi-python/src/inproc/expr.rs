@@ -1,8 +1,12 @@
 //! `PyExprEvaluator` — the pyo3 param-expression evaluator (the `goofi_node::
 //! ExprEvaluator` the engine injects). Runs each expression in the free-threaded
 //! interpreter, so an eval does not serialize against node processing (no GIL global
-//! lock). Expressions are lightweight numpy math over `nd()` references + `t`; anything
-//! needing a GIL-bound import belongs in a Python *node*, not an expression.
+//! lock). Expressions are lightweight numpy math over the graph's resolved variables + `t`;
+//! anything needing a GIL-bound import belongs in a Python *node*, not an expression.
+//!
+//! The evaluator resolves NOTHING. It is handed a source the graph rewrote (spec §5.3) and one
+//! local per variable, so `nd('lfo')` and `globals.gain` never reach it — which is why there is no
+//! name lookup, no proxy and no `globals` namespace here any more.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -10,102 +14,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use goofi_core::{Data, Param, Value};
-use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
+use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator, Local};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule, PyString};
 
-/// The Python harness. `nd(name)` returns a proxy over the resolved refs: `.slot`
-/// selects an output slot, any other attribute (`.mean`, …) delegates to the bare
-/// single-output value (numpy methods), and using the proxy directly is the bare
-/// single-output value. A bare nd() on a multi-output node raises.
+/// The Python harness. The source it is given has already had every `nd(..)` and `globals.*` term
+/// replaced by a generated variable (spec §5.3), so there is no `nd()` function, no proxy and no
+/// `globals` namespace here — the variables arrive as ordinary locals and the expression is plain
+/// numpy math over them. A variable that has not arrived is `None`, and using it raises naturally.
 const EVAL_SRC: &str = r#"
 import numpy as np
-
-class _NdProxy:
-    __slots__ = ("_name", "_refs")
-    def __init__(self, name, refs):
-        self._name = name
-        self._refs = refs
-    def _bare(self):
-        key = (self._name, None)
-        if key in self._refs:
-            v = self._refs[key]
-            if v is not None:
-                return v
-            raise ValueError("nd('%s') is unavailable (no value yet)" % self._name)
-        if any(k[0] == self._name for k in self._refs):
-            raise ValueError("nd('%s') is ambiguous: it has multiple outputs; use nd('%s').slot" % (self._name, self._name))
-        raise ValueError("nd('%s') is not a known node reference" % self._name)
-    def __getattr__(self, attr):
-        # Key-absent and value-None are different answers, as in _bare: a DECLARED slot that
-        # has not emitted yet must name itself, not fall through to the bare value and tell
-        # the user to "use nd('x').slot" while they are using it. A numpy method name is
-        # never a refs key, so delegation is unaffected.
-        key = (self._name, attr)
-        if key in self._refs:
-            v = self._refs[key]
-            if v is not None:
-                return v
-            raise ValueError("nd('%s').%s is unavailable (no value yet)" % (self._name, attr))
-        return getattr(self._bare(), attr)
-    def __array__(self, dtype=None): return np.asarray(self._bare(), dtype=dtype)
-    def __float__(self): return float(self._bare())
-    def __int__(self): return int(self._bare())
-    def __len__(self): return len(self._bare())
-    def __getitem__(self, i): return self._bare()[i]
-    def __add__(self, o): return self._bare() + o
-    def __radd__(self, o): return o + self._bare()
-    def __sub__(self, o): return self._bare() - o
-    def __rsub__(self, o): return o - self._bare()
-    def __mul__(self, o): return self._bare() * o
-    def __rmul__(self, o): return o * self._bare()
-    def __truediv__(self, o): return self._bare() / o
-    def __rtruediv__(self, o): return o / self._bare()
-    def __floordiv__(self, o): return self._bare() // o
-    def __rfloordiv__(self, o): return o // self._bare()
-    def __mod__(self, o): return self._bare() % o
-    def __rmod__(self, o): return o % self._bare()
-    def __pow__(self, o): return self._bare() ** o
-    def __rpow__(self, o): return o ** self._bare()
-    def __neg__(self): return -self._bare()
-    def __abs__(self): return abs(self._bare())
-    # Rich comparisons — Python resolves operator dunders on the TYPE, bypassing
-    # __getattr__, so these must be defined explicitly or `nd('x') == v` compares by
-    # object identity (silently always False) and `nd('x') > v` raises.
-    def __lt__(self, o): return self._bare() < o
-    def __le__(self, o): return self._bare() <= o
-    def __gt__(self, o): return self._bare() > o
-    def __ge__(self, o): return self._bare() >= o
-    def __eq__(self, o): return self._bare() == o
-    def __ne__(self, o): return self._bare() != o
-    __hash__ = None  # defining __eq__ makes it unhashable; proxies are never dict keys
-
-class _Globals:
-    # The `globals` namespace an expression reads as `globals.<name>`. A missing name raises
-    # NameError — the natural "not defined" error, per the spec: no rename cascade, a stale
-    # reference just throws at eval time.
-    #
-    # Overrides __getattribute__ (not __getattr__), so EVERY name routes through the dict — a global
-    # legally named like the internal slot (`_d`) or an object dunder (`__class__`) would otherwise be
-    # served by normal attribute lookup and never reach the dict. `is_valid_global_name` permits
-    # leading-underscore names, so this is reachable. The slot is read via the base impl to avoid
-    # recursing back through __getattribute__.
-    __slots__ = ("_d",)
-    def __init__(self, d):
-        object.__setattr__(self, "_d", d)
-    def __getattribute__(self, name):
-        d = object.__getattribute__(self, "_d")
-        if name in d:
-            return d[name]
-        raise NameError("global '%s' is not defined" % name)
 
 def __goofi_compile(source):
     return compile(source, "<goofi-expr>", "eval")
 
-def __goofi_eval(code, refs, t, gvals):
-    def nd(name):
-        return _NdProxy(name, refs)
-    return eval(code, {"nd": nd, "t": t, "np": np, "globals": _Globals(gvals)})
+def __goofi_eval(code, locals_, t):
+    ns = {"t": t, "np": np}
+    ns.update(locals_)
+    return eval(code, ns)
 "#;
 
 /// The pyo3 evaluator. Holds the harness functions + a registry of compiled code
@@ -150,6 +76,20 @@ fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
         Value::Str(st) => Ok(PyString::new(py, st.as_ref()).into_any().unbind()),
         Value::Table(_) => Ok(py.None()),
     }
+}
+
+/// Convert a resolved `Param` to a native Python scalar — what a `globals.*` variable carries, and
+/// what a param-valued arrival will. `Trigger` reads as its `fired` bool, matching the `Bool`
+/// coercion on the way back out.
+fn param_to_py(py: Python<'_>, p: &Param) -> PyResult<Py<PyAny>> {
+    use pyo3::IntoPyObject;
+    Ok(match p {
+        Param::Float { value, .. } => value.into_pyobject(py)?.into_any().unbind(),
+        Param::Int { value, .. } => value.into_pyobject(py)?.into_any().unbind(),
+        Param::Bool { value } => value.into_pyobject(py)?.to_owned().into_any().unbind(),
+        Param::Trigger { fired } => fired.into_pyobject(py)?.to_owned().into_any().unbind(),
+        Param::Str { value, .. } => PyString::new(py, value).into_any().unbind(),
+    })
 }
 
 /// Extract a scalar `T` from an expression result. goofi Data force-promotes every scalar to a
@@ -202,13 +142,6 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
 
 impl ExprEvaluator for PyExprEvaluator {
     fn compile(&self, source: &str) -> Result<Compiled, ExprError> {
-        // Only the node NAME matters here — the engine exposes every output slot of each
-        // referenced node at eval. Scanning lives in `goofi_node::nd_ref_names`, the one source
-        // of truth shared with the rename rewriter, so extraction and rewriting can't disagree.
-        let refs = goofi_node::nd_ref_names(source);
-        // The `globals.<name>` reads, so the engine re-evaluates this binding exactly when one of
-        // those globals changes. Same scan as the eval-namespace injection, so they can't disagree.
-        let global_refs = goofi_node::global_ref_names(source);
         crate::attach(|py| -> Result<Compiled, ExprError> {
             let code = self
                 .compile_fn
@@ -217,7 +150,7 @@ impl ExprEvaluator for PyExprEvaluator {
                 .map_err(|e| ExprError(e.to_string()))?;
             let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
             self.codes.lock().unwrap().insert(id, code.unbind());
-            Ok(Compiled { id, refs, global_refs })
+            Ok(Compiled { id })
         })
     }
 
@@ -230,32 +163,22 @@ impl ExprEvaluator for PyExprEvaluator {
                 .get(&id)
                 .map(|c| c.clone_ref(py))
                 .ok_or_else(|| ExprError("expression not compiled".into()))?;
-            let refs = PyDict::new(py);
-            for ((name, slot), data) in ctx.refs {
-                let val: Py<PyAny> = match data {
-                    Some(d) => data_to_py(py, d).map_err(|e| ExprError(e.to_string()))?,
+            // One dict, keyed by the generated variable names the graph minted. There is nothing
+            // for the harness to resolve: a name the graph did not hand over is simply not defined,
+            // which is the natural Python error and the only one an expression can now get wrong.
+            let locals = PyDict::new(py);
+            for (name, local) in ctx.locals {
+                let val: Py<PyAny> = match local {
+                    Some(Local::Frame(d)) => data_to_py(py, d).map_err(|e| ExprError(e.to_string()))?,
+                    Some(Local::Value(p)) => param_to_py(py, p).map_err(|e| ExprError(e.to_string()))?,
                     None => py.None(),
                 };
-                refs.set_item((name.as_str(), slot.as_deref()), val)
-                    .map_err(|e| ExprError(e.to_string()))?;
-            }
-            // The `globals` namespace, as native Python scalars (float/int/bool/str). A missing
-            // `globals.<name>` raises NameError inside the harness — the natural "not defined" error.
-            let gvals = PyDict::new(py);
-            for (name, value) in ctx.globals.iter() {
-                use goofi_core::globals::GlobalValue as G;
-                let set = match value {
-                    G::Float(f) => gvals.set_item(name.as_str(), *f),
-                    G::Int(i) => gvals.set_item(name.as_str(), *i),
-                    G::Bool(b) => gvals.set_item(name.as_str(), *b),
-                    G::Str(s) => gvals.set_item(name.as_str(), s.as_str()),
-                };
-                set.map_err(|e| ExprError(e.to_string()))?;
+                locals.set_item(name.as_str(), val).map_err(|e| ExprError(e.to_string()))?;
             }
             let result = self
                 .eval_fn
                 .bind(py)
-                .call1((code.bind(py), &refs, ctx.t, &gvals))
+                .call1((code.bind(py), &locals, ctx.t))
                 .map_err(|e| ExprError(e.to_string()))?;
             coerce(&result, ctx.target).map_err(ExprError)
         })
@@ -266,39 +189,17 @@ impl ExprEvaluator for PyExprEvaluator {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testlock::interp;
 
-    #[test]
-    fn compile_reports_the_referenced_node_names() {
-        let _interp = interp();
-        // The evaluator's own contract: `compile` delegates the scan to
-        // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there) and
-        // reports the distinct node NAMES — which slot each `nd()` lands on is engine-side.
-        let ev = PyExprEvaluator::new().expect("interpreter");
-        let c = ev.compile("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]").expect("compile");
-        assert_eq!(c.refs, vec!["lfo".to_string(), "psd".to_string()], "distinct names, deduped");
-        ev.release(c.id);
-    }
+    // These drive the real embedded interpreter (numpy required), matching the crate's existing
+    // `host.rs` embed-test posture.
+    use goofi_core::Meta;
 
-    // The tests below drive the real embedded interpreter (numpy required), matching
-    // the crate's existing `host.rs` embed-test posture.
-    use goofi_core::globals::{GlobalValue, GlobalsSnapshot};
-    use goofi_core::{Meta};
-    use indexmap::IndexMap;
-    use std::collections::HashMap;
-
-    fn snap(pairs: &[(&str, GlobalValue)]) -> GlobalsSnapshot {
-        let mut m = IndexMap::new();
-        for (k, v) in pairs {
-            m.insert((*k).to_string(), v.clone());
-        }
-        GlobalsSnapshot::new(m)
-    }
-
-    type Refs = HashMap<(String, Option<String>), Option<Data>>;
+    type Locals = HashMap<String, Option<Local>>;
 
     fn f32_1d(vals: &[f32]) -> Data {
         let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -307,98 +208,120 @@ mod tests {
     fn fparam() -> Param {
         Param::Float { value: 0.0, vmin: -1e9, vmax: 1e9 }
     }
-    fn eval_once(src: &str, t: f64, refs: Refs, target: &Param) -> Result<Param, ExprError> {
-        eval_with_globals(src, t, refs, target, &GlobalsSnapshot::default())
+    /// One local, by the generated name the graph's rewrite would have minted.
+    fn frame(name: &str, vals: &[f32]) -> (String, Option<Local>) {
+        (name.to_string(), Some(Local::Frame(f32_1d(vals))))
     }
-    fn eval_with_globals(
-        src: &str,
-        t: f64,
-        refs: Refs,
-        target: &Param,
-        globals: &GlobalsSnapshot,
-    ) -> Result<Param, ExprError> {
+    fn value(name: &str, p: Param) -> (String, Option<Local>) {
+        (name.to_string(), Some(Local::Value(p)))
+    }
+    fn eval_once(src: &str, t: f64, locals: Locals, target: &Param) -> Result<Param, ExprError> {
         let ev = PyExprEvaluator::new().expect("interpreter");
         let c = ev.compile(src)?;
-        let out = ev.eval(c.id, &EvalCtx { refs: &refs, t, target, globals });
+        let out = ev.eval(c.id, &EvalCtx { locals: &locals, t, target });
         ev.release(c.id);
         out
     }
-
-    #[test]
-    fn constant_expression_coerces_to_float() {
-        let _interp = interp();
-        let r = eval_once("1 + 2", 0.0, Refs::new(), &fparam()).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 3.0).abs() < 1e-9));
+    fn f(src: &str, locals: Locals) -> f64 {
+        match eval_once(src, 0.0, locals, &fparam()).unwrap() {
+            Param::Float { value, .. } => value,
+            other => panic!("expected a float, got {other:?}"),
+        }
     }
 
     #[test]
-    fn time_expression_reads_t() {
+    fn the_evaluator_takes_locals_keyed_by_generated_variable() {
         let _interp = interp();
-        let r = eval_once("t * 2", 4.0, Refs::new(), &fparam()).unwrap();
+        // §5.3's locals channel — the whole point of the rewrite. `EvalCtx` carried `refs` keyed by
+        // `(name, slot)` and a `globals` snapshot; now it carries one dict the graph filled, and the
+        // evaluator resolves nothing.
+        let ev = PyExprEvaluator::new().expect("interpreter");
+        let c = ev.compile("__v0 * 2").unwrap();
+        let mut locals = Locals::new();
+        locals.insert("__v0".to_string(), Some(Local::Value(Param::float(21.0, 0.0, 100.0))));
+        let ctx = EvalCtx { locals: &locals, t: 0.0, target: &Param::float(0.0, 0.0, 100.0) };
+        assert_eq!(ev.eval(c.id, &ctx).unwrap(), Param::float(42.0, 0.0, 100.0));
+        ev.release(c.id);
+    }
+
+    #[test]
+    fn a_frame_local_is_a_numpy_array_the_expression_can_reduce() {
+        let _interp = interp();
+        // What the `nd('psd').out.mean()` half of the rewrite produces: `__v0.mean()`, with the
+        // producer's frame in `__v0`. A local that arrived as a scalar could not answer `.mean()`,
+        // so this is what pins that a stream variable stays an ARRAY across the seam.
+        assert!((f("__v0.mean()", Locals::from([frame("__v0", &[3.0, 5.0])])) - 4.0).abs() < 1e-6);
+        // …and the canonical shape-[1] producer still drives a Float, which numpy 2.x refuses to
+        // convert directly (`to_scalar`'s whole reason for existing).
+        assert!((f("__v0", Locals::from([frame("__v0", &[3.5])])) - 3.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn several_variables_and_t_share_one_namespace() {
+        let _interp = interp();
+        // The rewritten form of `nd('a') * nd('b') + globals.gain + t`: mixed frame and value
+        // locals beside the clock, all read by their generated names.
+        let locals = Locals::from([
+            frame("__v0", &[2.0]),
+            frame("__v1", &[3.0]),
+            value("__v2", Param::int(4, 0, 10)),
+        ]);
+        let r = eval_once("__v0 * __v1 + __v2 + t", 5.0, locals, &fparam()).unwrap();
+        assert!(matches!(r, Param::Float { value, .. } if (value - 15.0).abs() < 1e-6), "{r:?}");
+    }
+
+    #[test]
+    fn a_variable_that_has_not_arrived_is_none_and_using_it_raises() {
+        let _interp = interp();
+        // The graph ships a variable it could not resolve as `Missing` and the node reports that
+        // without evaluating — but a STREAM variable simply has not arrived yet, and an expression
+        // that uses one anyway must fail visibly rather than compute with a placeholder.
+        let locals = Locals::from([("__v0".to_string(), None)]);
+        let err = eval_once("__v0 + 1", 0.0, locals, &fparam()).unwrap_err();
+        assert!(err.0.contains("NoneType"), "got: {}", err.0);
+    }
+
+    #[test]
+    fn a_name_the_graph_did_not_hand_over_is_not_defined() {
+        let _interp = interp();
+        // There is no `nd` and no `globals` namespace any more. A source that still names one — a
+        // call the rewrite could not span, a `globals.` read inside a string the scan skipped —
+        // fails visibly rather than resolving anything.
+        let err = eval_once("nd('a', 2) + 1", 0.0, Locals::new(), &fparam()).unwrap_err();
+        assert!(err.0.contains("not defined"), "got: {}", err.0);
+        // `globals` alone is still Python's own builtin, so the failure there is the ATTRIBUTE, not
+        // the name — which is why this asserts the error and not its wording.
+        assert!(eval_once("globals.gain + 1", 0.0, Locals::new(), &fparam()).is_err());
+    }
+
+    #[test]
+    fn constant_and_time_expressions_need_no_locals_at_all() {
+        let _interp = interp();
+        assert!((f("1 + 2", Locals::new()) - 3.0).abs() < 1e-9);
+        let r = eval_once("t * 2", 4.0, Locals::new(), &fparam()).unwrap();
         assert!(matches!(r, Param::Float { value, .. } if (value - 8.0).abs() < 1e-9));
     }
 
     #[test]
-    fn bare_nd_single_output_delegates_numpy_methods() {
+    fn result_coerces_to_int_bool_and_str() {
         let _interp = interp();
-        let mut refs = Refs::new();
-        refs.insert(("osc".into(), None), Some(f32_1d(&[3.0, 5.0])));
-        let r = eval_once("nd('osc').mean()", 0.0, refs, &fparam()).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 4.0).abs() < 1e-6));
-    }
-
-    #[test]
-    fn nd_slot_access_selects_the_output() {
-        let _interp = interp();
-        let mut refs = Refs::new();
-        refs.insert(("psd".into(), Some("out".into())), Some(f32_1d(&[10.0, 20.0])));
-        refs.insert(("psd".into(), None), Some(f32_1d(&[10.0, 20.0])));
-        let r = eval_once("float(nd('psd').out.sum())", 0.0, refs, &fparam()).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 30.0).abs() < 1e-6));
-    }
-
-    #[test]
-    fn bare_nd_on_multi_output_is_error() {
-        let _interp = interp();
-        // Only slot keys present, no bare (name, None) -> bare use must raise.
-        let mut refs = Refs::new();
-        refs.insert(("m".into(), Some("a".into())), Some(f32_1d(&[1.0])));
-        refs.insert(("m".into(), Some("b".into())), Some(f32_1d(&[2.0])));
-        assert!(eval_once("nd('m').mean()", 0.0, refs, &fparam()).is_err());
-    }
-
-    #[test]
-    fn an_unemitted_slot_names_itself_instead_of_claiming_ambiguity() {
-        let _interp = interp();
-        // A multi-output producer whose `a` is declared but has not emitted yet.
-        let mut refs = Refs::new();
-        refs.insert(("m".into(), Some("a".into())), None);
-        refs.insert(("m".into(), Some("b".into())), Some(f32_1d(&[2.0])));
-        let err = eval_once("nd('m').a + 1", 0.0, refs.clone(), &fparam()).unwrap_err();
-        assert!(err.0.contains("nd('m').a"), "the error must name the slot: {}", err.0);
-        assert!(!err.0.contains("ambiguous"), "the user IS using .slot — telling them to is nonsense: {}", err.0);
-
-        // A slot that does not exist at all is still the ambiguity/unknown message from `_bare`.
-        let typo = eval_once("nd('m').c + 1", 0.0, refs, &fparam()).unwrap_err();
-        assert!(typo.0.contains("ambiguous"), "an unknown attribute still falls through to the bare value: {}", typo.0);
-    }
-
-    #[test]
-    fn missing_ref_is_error() {
-        let _interp = interp();
-        let mut refs = Refs::new();
-        refs.insert(("ghost".into(), None), None);
-        assert!(eval_once("nd('ghost') + 1", 0.0, refs, &fparam()).is_err());
-    }
-
-    #[test]
-    fn result_coerces_to_int_and_bool() {
-        let _interp = interp();
-        let ir = eval_once("2.7", 0.0, Refs::new(), &Param::Int { value: 0, vmin: -100, vmax: 100 })
-            .unwrap();
+        let ir = eval_once("2.7", 0.0, Locals::new(), &Param::Int { value: 0, vmin: -100, vmax: 100 }).unwrap();
         assert!(matches!(ir, Param::Int { value: 3, .. }), "float result rounds to nearest int");
-        let br = eval_once("3 > 1", 0.0, Refs::new(), &Param::Bool { value: false }).unwrap();
-        assert!(matches!(br, Param::Bool { value: true }));
+        let br = eval_once("__v0 > 1", 0.0, Locals::from([frame("__v0", &[2.0])]), &Param::Bool { value: false })
+            .unwrap();
+        assert!(matches!(br, Param::Bool { value: true }), "a comparison over a frame drives a Bool");
+        let sp = Param::Str { value: String::new(), options: None, refresh: false };
+        let sr = eval_once("__v0", 0.0, Locals::from([value("__v0", Param::str_free("P07"))]), &sp).unwrap();
+        assert!(matches!(sr, Param::Str { value, .. } if value == "P07"), "a str global reads as a str");
+    }
+
+    #[test]
+    fn nonfinite_int_and_nonbool_trigger_error() {
+        let _interp = interp();
+        let ip = Param::Int { value: 0, vmin: -100, vmax: 100 };
+        assert!(eval_once("float('inf')", 0.0, Locals::new(), &ip).is_err(), "inf into Int errors, not i64::MAX");
+        let tp = Param::Trigger { fired: false };
+        assert!(eval_once("1.5", 0.0, Locals::new(), &tp).is_err(), "non-bool into Trigger errors, not silent false");
     }
 
     #[test]
@@ -406,105 +329,5 @@ mod tests {
         let _interp = interp();
         let ev = PyExprEvaluator::new().expect("interpreter");
         assert!(ev.compile("1 +").is_err(), "a syntax error must fail compile");
-    }
-
-    #[test]
-    fn bare_nd_size1_array_coerces_to_scalar_float() {
-        let _interp = interp();
-        // The canonical case: a producer emits shape [1]; bare nd('x') drives a Float.
-        let mut refs = Refs::new();
-        refs.insert(("x".into(), None), Some(f32_1d(&[3.5])));
-        let r = eval_once("nd('x')", 0.0, refs, &fparam()).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 3.5).abs() < 1e-6));
-    }
-
-    #[test]
-    fn arithmetic_over_size1_refs_coerces_to_float() {
-        let _interp = interp();
-        let mut refs = Refs::new();
-        refs.insert(("a".into(), None), Some(f32_1d(&[2.0])));
-        refs.insert(("b".into(), None), Some(f32_1d(&[3.0])));
-        let r = eval_once("nd('a') * nd('b')", 0.0, refs, &fparam()).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 6.0).abs() < 1e-6));
-    }
-
-    #[test]
-    fn comparison_operators_on_bare_nd_drive_a_bool() {
-        let _interp = interp();
-        let bp = Param::Bool { value: false };
-        let refs = || {
-            let mut r = Refs::new();
-            r.insert(("a".into(), None), Some(f32_1d(&[2.0])));
-            r
-        };
-        // `>` used to raise; `==` used to be silently identity-False. Both must be correct.
-        assert!(matches!(eval_once("nd('a') > 1", 0.0, refs(), &bp).unwrap(), Param::Bool { value: true }));
-        assert!(matches!(eval_once("nd('a') == 2", 0.0, refs(), &bp).unwrap(), Param::Bool { value: true }));
-        assert!(matches!(eval_once("nd('a') < 1", 0.0, refs(), &bp).unwrap(), Param::Bool { value: false }));
-    }
-
-    #[test]
-    fn pow_mod_floordiv_abs_delegate() {
-        let _interp = interp();
-        let mut refs = Refs::new();
-        refs.insert(("a".into(), None), Some(f32_1d(&[-3.0])));
-        let f = |src: &str, r: Refs| match eval_once(src, 0.0, r, &fparam()).unwrap() {
-            Param::Float { value, .. } => value,
-            _ => f64::NAN,
-        };
-        assert!((f("abs(nd('a'))", refs.clone()) - 3.0).abs() < 1e-6);
-        assert!((f("nd('a') ** 2", refs.clone()) - 9.0).abs() < 1e-6);
-        assert!((f("nd('a') % 2", refs) - 1.0).abs() < 1e-6, "-3 % 2 == 1 (python)");
-    }
-
-    #[test]
-    fn nonfinite_int_and_nonbool_trigger_error() {
-        let _interp = interp();
-        let ip = Param::Int { value: 0, vmin: -100, vmax: 100 };
-        assert!(eval_once("float('inf')", 0.0, Refs::new(), &ip).is_err(), "inf into Int errors, not i64::MAX");
-        let tp = Param::Trigger { fired: false };
-        assert!(eval_once("1.5", 0.0, Refs::new(), &tp).is_err(), "non-bool into Trigger errors, not silent false");
-    }
-
-    #[test]
-    fn globals_are_readable_as_a_namespace() {
-        let _interp = interp();
-        // The spec's headline: an expression reads a global as `globals.<name>`, typed natively.
-        let g = snap(&[("default_ufreq", GlobalValue::Float(30.0)), ("gain", GlobalValue::Int(4))]);
-        let r = eval_with_globals("globals.default_ufreq * globals.gain", 0.0, Refs::new(), &fparam(), &g).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 120.0).abs() < 1e-9));
-        // A string global reads as a Python str.
-        let gs = snap(&[("subject", GlobalValue::Str("P07".into()))]);
-        let sp = Param::Str { value: String::new(), options: None, refresh: false };
-        let rs = eval_with_globals("globals.subject", 0.0, Refs::new(), &sp, &gs).unwrap();
-        assert!(matches!(rs, Param::Str { value, .. } if value == "P07"));
-    }
-
-    #[test]
-    fn a_global_named_like_a_slot_or_dunder_is_still_readable() {
-        let _interp = interp();
-        // `is_valid_global_name` permits leading-underscore names, so `_d` (the proxy's internal slot
-        // name) and dunder-ish names must still read from the dict, not the proxy's own attributes.
-        let g = snap(&[("_d", GlobalValue::Float(5.0)), ("__class__", GlobalValue::Int(9))]);
-        let r = eval_with_globals("globals._d + globals.__class__", 0.0, Refs::new(), &fparam(), &g).unwrap();
-        assert!(matches!(r, Param::Float { value, .. } if (value - 14.0).abs() < 1e-9));
-    }
-
-    #[test]
-    fn missing_global_raises_a_not_defined_error() {
-        let _interp = interp();
-        // Per the spec: no rename cascade — a stale `globals.<old>` just throws at eval time.
-        let g = snap(&[("default_ufreq", GlobalValue::Float(30.0))]);
-        let err = eval_with_globals("globals.gone + 1", 0.0, Refs::new(), &fparam(), &g).unwrap_err();
-        assert!(err.0.contains("not defined"), "got: {}", err.0);
-    }
-
-    #[test]
-    fn compile_extracts_global_refs() {
-        let _interp = interp();
-        let ev = PyExprEvaluator::new().expect("interpreter");
-        let c = ev.compile("globals.a + nd('x') * globals.b + globals.a").unwrap();
-        assert_eq!(c.global_refs, vec!["a", "b"], "distinct global names, in order");
-        ev.release(c.id);
     }
 }

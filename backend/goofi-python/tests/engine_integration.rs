@@ -127,72 +127,77 @@ fn lempel_ziv_runs_in_process_inline() {
 }
 
 #[test]
-fn real_evaluator_resolves_a_param_expression_end_to_end() {
-    // The user-facing path: the pyo3 PyExprEvaluator injected via `set_evaluator` (exactly what
-    // the CLI's `--features python` startup does) must actually evaluate a param expression each
-    // tick and drive the node — not just compile. Without the evaluator wired the binding errors
-    // "no expression evaluator available"; this proves the real evaluator resolves it.
+fn the_real_evaluator_runs_what_the_graphs_rewrite_produces() {
+    // The user-facing chain, end to end and across the crate boundary: the graph REWRITES an
+    // authored source (§5.3), the pyo3 evaluator compiles that rewritten form, and evaluating it
+    // with the locals the rewrite named gives the answer. Driven through both halves rather than
+    // through `set_expression` alone, because a graph that compiles cleanly proves only that the
+    // text parsed — a rewrite that emitted a variable the evaluator cannot read would pass that.
     assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
-    let mut g = Graph::new();
-    g.set_evaluator(std::sync::Arc::new(goofi_python::inproc::PyExprEvaluator::new().unwrap()));
+    use goofi_node::ExprEvaluator;
+    let ev = goofi_python::inproc::PyExprEvaluator::new().unwrap();
 
-    let n = g.add_node("_TestConst", None).unwrap();
-    g.update_param(n, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
-    g.update_param(n, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
+    let (rewritten, vars) = goofi_engine::expr_rewrite::rewrite("nd('src').out.mean() * globals.gain")
+        .expect("the graph's rewrite");
+    assert_eq!(rewritten, "__v0.mean() * __v1");
+    let mut locals: std::collections::HashMap<String, Option<goofi_node::Local>> =
+        std::collections::HashMap::new();
+    locals.insert(vars[0].var().to_string(), Some(goofi_node::Local::Frame(f32_frame(&[3.0, 5.0]))));
+    locals.insert(vars[1].var().to_string(), Some(goofi_node::Local::Value(Param::float(10.0, 0.0, 1e9))));
 
-    // Bind `value` to a NON-literal expression: the engine must evaluate it via the real
-    // evaluator and drive the output with the result (40+2 = 42, not the literal 1.0).
-    g.set_expression(n, "constant", "value", "40 + 2", true, false).unwrap();
-    assert!(
-        g.param_expression(n, "constant", "value").unwrap().error.is_none(),
-        "the real evaluator compiled the expression cleanly (got {:?})",
-        g.param_expression(n, "constant", "value").unwrap().error
-    );
-    g.tick();
-    assert_eq!(
-        first_f32(&g.latest_frame(n, "out").unwrap()),
-        42.0,
-        "the expression evaluated and drove the node's output (not the literal 1.0)"
-    );
+    let target = Param::float(0.0, -1e9, 1e9);
+    let compiled = ev.compile(&rewritten).expect("the rewritten source compiles");
+    let out = ev.eval(compiled.id, &goofi_node::EvalCtx { locals: &locals, t: 0.0, target: &target }).unwrap();
+    assert_eq!(out.as_f64(), Some(40.0), "mean([3,5]) * 10");
+    ev.release(compiled.id);
 
-    // A time expression resolves too (proves `t` is exposed, not only constants).
-    g.set_expression(n, "constant", "value", "t*0 + 7", true, false).unwrap();
-    g.tick();
-    assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 7.0, "time expression resolves");
+    // And a time expression names no variable at all — §2.1's "a binding with no variables".
+    let (t_src, t_vars) = goofi_engine::expr_rewrite::rewrite("t*0 + 7").unwrap();
+    assert!(t_vars.is_empty());
+    let c = ev.compile(&t_src).unwrap();
+    let out = ev
+        .eval(c.id, &goofi_node::EvalCtx { locals: &std::collections::HashMap::new(), t: 4.0, target: &target })
+        .unwrap();
+    assert_eq!(out.as_f64(), Some(7.0));
     assert!(!PyNode::gil_enabled().unwrap(), "GIL stays disabled");
 }
 
 #[test]
 fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
-    // Renaming a node referenced by `nd('src')` must rewrite the source AND have the real
-    // pyo3 evaluator recompile it, so the expression still resolves through the new name
-    // (not just a string rewrite that leaves the compiled refs pointing at the old name).
+    // Renaming a node referenced by `nd('src')` must rewrite the AUTHORED source and have the real
+    // pyo3 evaluator recompile the rewritten form — a rename that only edited the text would leave
+    // the graph shipping a variable resolved against the old name.
     assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
     let mut g = Graph::new();
     g.set_evaluator(std::sync::Arc::new(goofi_python::inproc::PyExprEvaluator::new().unwrap()));
 
     let src = g.add_node("_TestConst", None).unwrap();
     g.rename_node(src, "src").unwrap();
-    g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
-    g.update_param(src, "constant", "length", Param::int(1, 1, 1_000_000)).unwrap();
 
     let host = g.add_node("_TestConst", None).unwrap();
     g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
-    g.tick();
-    assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 5.0, "resolves before rename");
+    assert!(g.param_expression(host, "constant", "value").unwrap().error.is_none(), "resolves before rename");
 
     let touched = g.rename_node(src, "signal").unwrap();
     assert_eq!(touched, vec![host], "the referrer is reported for rebroadcast");
     let info = g.param_expression(host, "constant", "value").unwrap();
-    assert_eq!(info.source, "nd('signal')", "source rewritten");
-    assert!(info.error.is_none(), "the real evaluator recompiled the rewritten source cleanly");
-    g.tick();
+    assert_eq!(info.source, "nd('signal')", "authored source rewritten");
+    assert!(info.error.is_none(), "and re-resolved + recompiled cleanly through the new name");
+
+    // A name nothing answers is the control: the same call path must report it rather than
+    // reporting healthy for every source it managed to compile.
+    g.set_expression(host, "constant", "value", "nd('gone')", true, false).unwrap();
     assert_eq!(
-        first_f32(&g.latest_frame(host, "out").unwrap()),
-        5.0,
-        "still resolves end-to-end via nd('signal')"
+        g.param_expression(host, "constant", "value").unwrap().error.as_deref(),
+        Some("no node named `gone`"),
     );
     assert!(!PyNode::gil_enabled().unwrap(), "GIL stays disabled");
+}
+
+/// A 1-D f32 frame, the shape a producer's output takes across the locals seam.
+fn f32_frame(vals: &[f32]) -> goofi_core::Data {
+    let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+    goofi_core::Data::array_f32(vec![vals.len()], bytes, goofi_core::Meta::empty()).unwrap()
 }
 
 /// The FT interpreter with `goofi` importable, for the discovery probe. Prefers

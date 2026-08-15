@@ -32,6 +32,9 @@ pub use command::{Command, CommandHistory, ExprState, Outcome};
 /// The isolated-node execution tier (off-tick detached workers + latest-wins mailboxes).
 mod detached;
 
+/// The expression rewrite: an authored source becomes a variable-keyed one plus its variable map.
+pub mod expr_rewrite;
+
 /// The per-node runtime: the wake loop, the three run paths, and a node's faults (see `runtime/`).
 /// Public because it is a standalone module today — nothing in [`Graph`] drives it yet, and the
 /// cutover from `tick_at` is its own step.
@@ -116,9 +119,14 @@ struct NodeEntry {
     /// wall-clock-paced producer (e.g. Oscillator ticked faster than its sample rate)
     /// keeps showing its latest data rather than blinking to None on silent ticks.
     last_outputs: IndexMap<&'static str, Data>,
-    /// Param-expression bindings on this node, keyed by `(group, name)`. The engine
-    /// resolves them into `params` before the node runs; the node never sees them.
+    /// Param-expression bindings on this node, keyed by `(group, name)`. The graph resolves each
+    /// one's references and ships it; the NODE evaluates it (spec §5.3).
     bindings: HashMap<ParamKey, ExprBinding>,
+    /// The evaluated values of this node's bound params, as it last reported them
+    /// ([`runtime::Status::ParamValues`]). Kept apart from `params`, which holds the literal
+    /// RECORD — the number the user authored and the `.gfi` persists. Overwriting that with each
+    /// evaluation is what once left an oscillator authored at 5 Hz running at 500 forever.
+    evaluated: IndexMap<ParamKey, Param>,
     ctx: NodeCtx,
     /// `Some(msg)` when this node's INITIALIZATION failed — the `on_param_changed` replay and
     /// `setup()` together, which are one unit: a node that did not finish either never
@@ -311,22 +319,55 @@ pub enum Registration {
 /// engine writes the evaluated value into its params before it runs). See the
 /// param-expressions design.
 struct ExprBinding {
+    /// The AUTHORED source — `nd('lfo').out * globals.gain`. This is the SSOT: it is what the
+    /// `.gfi` stores, what the doc and inspector show, and what a rename edits. Everything below it
+    /// is DERIVED and re-derived whenever it, or a name the graph resolves, changes (spec §5.3).
     source: String,
     enabled: bool,
     triggers_process: bool,
-    /// Compiled handle owned by the evaluator (`None` if compile failed / no evaluator).
+    /// Compiled handle owned by the evaluator (`None` if compile failed / no evaluator). Compiled
+    /// from [`Self::rewritten`], never from [`Self::source`] — the node's evaluator is handed
+    /// variables, not names.
     id: Option<goofi_node::BindingId>,
-    /// Statically-extracted `nd()` node names (empty for a ref-less/time expression).
+    /// Derived: `source` with every reference replaced by a generated variable.
+    rewritten: String,
+    /// Derived: one entry per variable `rewritten` names, resolved against the graph.
+    vars: Vec<BoundVar>,
+    /// Derived: the distinct node NAMES the source references, and the distinct globals it reads.
+    /// Kept beside `vars` because a variable that failed to resolve no longer says what it was
+    /// looking for — and those are exactly the bindings a node being added must re-resolve.
     refs: Vec<String>,
-    /// Statically-extracted `globals.<name>` reads, so a change to one of those globals forces a
-    /// re-eval of this binding (and only these) on the next tick — see [`Graph::apply_global_change`].
-    global_refs: Vec<String>,
-    /// The referenced producers' emit `index` seen at the last eval, for the dirty check.
-    last_seen: HashMap<(String, Option<String>), Option<u64>>,
-    /// Wall-clock of the last eval, for the per-node `max_frequency` eval gate.
-    last_eval: Option<Instant>,
+    globals: Vec<String>,
+    /// This binding's identity in the wire planner, stable across a rebind — its index into
+    /// [`Graph::bind_keys`].
+    bind_id: usize,
     /// The current expression error (field indicator), or `None` when healthy.
     error: Option<String>,
+}
+
+/// One resolved expression variable, graph-side (spec §5.3). The wire projection
+/// ([`runtime::Var`]) drops the uid and keeps the service name, because a node addresses a producer
+/// by service and never by uid; the graph keeps the uid because it is what re-planning is keyed on.
+#[derive(Clone, Debug)]
+enum BoundVar {
+    /// A producer's output slot, and the doorbell id the producer rings this consumer with. §3.2
+    /// budgets `65..=128` for expression channels, so a node may hold at most 64 of them.
+    Stream { var: String, producer: Uid, slot: &'static str, event_id: runtime::EventId },
+    /// A `globals.*` read, resolved and shipped inline — a globals edit re-sends the binding.
+    Value { var: String, value: Param },
+    /// The graph could not resolve it: an unknown node, a slot that does not exist, an ambiguous
+    /// bare `nd()` on a multi-output producer, a global that is not defined.
+    Missing { var: String, reason: String },
+}
+
+impl BoundVar {
+    /// The producer wire this variable subscribes to, if it resolved to one.
+    fn wire(&self) -> Option<runtime::plan::Wire> {
+        match self {
+            BoundVar::Stream { producer, slot, .. } => Some((*producer, *slot)),
+            _ => None,
+        }
+    }
 }
 
 /// A param's expression binding, projected for the bridge/`.gfi` (the internal
@@ -386,6 +427,11 @@ pub struct Graph {
     /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
     /// flight, and every uid's birth generation.
     wire: runtime::plan::WirePlanner,
+    /// Every `(node, param)` this graph has ever bound an expression to, so the wire planner can
+    /// name a binding by index (`Slot::Bind`) and keep a `Copy` key. Append-only within a patch:
+    /// an unbind's own three-phase sequence still has to compose the `SetParam` that announces it,
+    /// and by then the binding is gone. `clear` resets it with the rest of the patch.
+    bind_keys: Vec<(Uid, ParamKey)>,
     /// What this graph's service names are scoped by — random, not the bridge's instance id: a
     /// service name has to be unique on the MACHINE, across this process's own graphs and across
     /// every stale record a previous run left behind.
@@ -418,6 +464,35 @@ fn wants_run(e: &NodeEntry, uid: &Uid, wired: &std::collections::HashSet<Uid>) -
     e.trigger_pending || !e.has_trigger_inputs || (e.run_policy.autotrigger && !wired.contains(uid))
 }
 
+/// A global's value as the [`Param`] an expression variable carries (§5.3: the graph resolves a
+/// global and ships it inline). The numeric bounds are a carrier's, not a control's — nothing
+/// clamps a local, and the evaluator coerces the RESULT to the target param's own type and range.
+fn global_as_param(value: &goofi_core::globals::GlobalValue) -> Param {
+    use goofi_core::globals::GlobalValue as G;
+    match value {
+        G::Float(v) => Param::float(*v, f64::NEG_INFINITY, f64::INFINITY),
+        G::Int(v) => Param::int(*v, i64::MIN, i64::MAX),
+        G::Bool(v) => Param::boolean(*v),
+        G::Str(v) => Param::str_free(v.clone()),
+    }
+}
+
+/// The lowest free doorbell id in §3.2's expression range, or `None` when a node has spent all 64.
+fn next_event_id(taken: &[runtime::EventId]) -> Option<runtime::EventId> {
+    (65..=128).find(|id| !taken.contains(id))
+}
+
+/// The distinct values of an iterator, in first-seen order.
+fn distinct(values: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in values {
+        if !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
+}
+
 impl Graph {
     pub fn new() -> Graph {
         // Reference goofi-nodes so the linker keeps its inventory registrations.
@@ -438,6 +513,7 @@ impl Graph {
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
             wire: runtime::plan::WirePlanner::default(),
+            bind_keys: Vec::new(),
             instance: runtime::service_instance(),
         }
     }
@@ -453,10 +529,10 @@ impl Graph {
     }
 
     /// Apply one mirrored client global change (`Some` = set/add, `None` = remove). System deletes
-    /// are rejected. Every expression binding that reads this global is forced to re-evaluate on the
-    /// next tick, so a producer bound to `globals.default_ufreq` re-rates live — and only those
-    /// bindings pay (an unrelated global edit touches nothing). Resetting `last_eval` opens both the
-    /// due check and the per-node eval-rate gate, giving exactly one immediate re-eval.
+    /// are rejected. Every expression binding that READS this global is re-resolved and re-sent, so
+    /// a producer bound to `globals.default_ufreq` re-rates live — and only those bindings pay (an
+    /// unrelated global edit touches nothing). §5.2: there is no invalidation message, because the
+    /// graph resolves a global's value and ships it inline.
     pub fn apply_global_change(
         &mut self,
         name: &str,
@@ -480,15 +556,41 @@ impl Graph {
         Ok(())
     }
 
-    /// Force every expression binding that reads global `name` to re-evaluate on the next tick, so a
-    /// producer bound to it re-rates live (only those bindings pay). Shared by the global mutators.
+    /// Re-resolve and re-send every expression binding that reads global `name`, so its new value
+    /// reaches the nodes reading it (only those bindings pay). Shared by the global mutators.
     fn invalidate_bindings_reading(&mut self, name: &str) {
-        for entry in self.nodes.values_mut() {
-            for b in entry.bindings.values_mut() {
-                if b.global_refs.iter().any(|g| g == name) {
-                    b.last_eval = None;
-                }
-            }
+        let reading = self.bindings_where(|b| b.globals.iter().any(|g| g == name));
+        self.rebind(&reading);
+    }
+
+    /// Re-resolve and re-send every binding whose source references the node display name `name`.
+    /// §5.3's "renamed, added, removed or restarted", stated once — what all four have in common is
+    /// that a NAME started or stopped meaning what it did, and the authored source is written
+    /// against names.
+    fn rebind_naming(&mut self, name: &str) {
+        let naming = self.bindings_where(|b| b.refs.iter().any(|r| r == name));
+        self.rebind(&naming);
+    }
+
+    /// Every binding matching a predicate, as `(node, param)` — the addressing `rebind` takes.
+    fn bindings_where(&self, want: impl Fn(&ExprBinding) -> bool) -> Vec<(Uid, ParamKey)> {
+        self.nodes
+            .iter()
+            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (*uid, k.clone(), b)))
+            .filter(|(_, _, b)| want(b))
+            .map(|(uid, key, _)| (uid, key))
+            .collect()
+    }
+
+    /// Re-run `set_expression` on each of these bindings from its AUTHORED source — the one
+    /// operation that re-derives everything a resolution depends on (the rewrite, the variables,
+    /// the compiled handle, the wire plan). Every "the graph changed under a binding" path funnels
+    /// here rather than patching a resolved field in place, so there is one re-resolution.
+    fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
+        for (uid, key) in bindings {
+            let Some(b) = self.nodes.get(uid).and_then(|e| e.bindings.get(key)) else { continue };
+            let (source, enabled, triggers) = (b.source.clone(), b.enabled, b.triggers_process);
+            let _ = self.set_expression(*uid, &key.group, &key.name, &source, enabled, triggers);
         }
     }
 
@@ -800,6 +902,7 @@ impl Graph {
             name.to_string()
         };
         let seed = params_arg_was_none;
+        let born = name.clone();
         self.insert_node_at(uid, name, manifest, node, params);
         if uid.0 >= self.next_uid {
             self.next_uid = uid.0 + 1;
@@ -807,6 +910,9 @@ impl Graph {
         if seed {
             self.seed_default_expressions(uid, manifest);
         }
+        // A name that meant nothing a moment ago now names a producer (§5.3). This also covers
+        // undo-of-delete, which is how a binding survives its reference being deleted and restored.
+        self.rebind_naming(&born);
         Ok(uid)
     }
 
@@ -871,6 +977,7 @@ impl Graph {
                 outputs,
                 last_outputs: IndexMap::new(),
                 bindings: HashMap::new(),
+                evaluated: IndexMap::new(),
                 ctx,
                 setup_error,
                 last_setup_attempt,
@@ -975,7 +1082,14 @@ impl Graph {
         self.nodes.get_mut(&uid).unwrap().name = name.to_string();
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
-        Ok(self.rewrite_nd_refs_for_rename(&old_name, name))
+        let touched = self.rewrite_nd_refs_for_rename(&old_name, name);
+        // …and re-resolve the ones that were ALREADY written against the new name. A binding
+        // authored as `nd('src')` before any node was called `src` is unresolved, and this rename
+        // is what makes it resolvable — the rewrite above cannot see it, since there is no
+        // `nd('<old>')` in it to follow (§5.3: the graph re-resolves on a rename, an add and a
+        // removal alike).
+        self.rebind_naming(name);
+        Ok(touched)
     }
 
     /// Rewrite `nd('old')` -> `nd('new')` across all nodes' param expressions, re-binding
@@ -1684,6 +1798,11 @@ impl Graph {
             return Err(format!("no such node {uid}"));
         };
         self.release_entry_bindings(&removed);
+        // §5.3: every binding that referenced this node by name is now unresolvable, and must be
+        // told so — a variable still naming a dead producer's service is one the node waits on
+        // forever.
+        let name = removed.name.clone();
+        self.rebind_naming(&name);
         // Drop any membership tag: a removed node has no scope. Leaving it dangling would make a
         // reused uid (a delete→undo that restores the scope) self-parent via `common_parent`.
         self.scope_of.remove(&uid);
@@ -1846,6 +1965,11 @@ impl Graph {
         for (out, so, into, si) in orphaned {
             let _ = self.remove_link(out, so, into, si);
         }
+        // The rebirth renamed every one of this node's services (§3.1), so a binding reading one
+        // is holding a name that no longer resolves. Re-resolved, not patched: the reshape may
+        // also have retired the very output slot the reference named.
+        let name = self.nodes[&uid].name.clone();
+        self.rebind_naming(&name);
         Ok(())
     }
 
@@ -1865,6 +1989,14 @@ impl Graph {
         } else {
             return Err(format!("no such param group `{group}`"));
         }
+        // §3.4: a LITERAL on a bound param unbinds it, which is what the node does with the
+        // `SetParam` this write sends — so the graph must mean the same by it, or the two records
+        // disagree about whether the param is driven. Unbinding also drops this node from the
+        // producer's target set (§5.3: an expression reference IS a link), so the producer stops
+        // ringing a doorbell nobody reads.
+        let key = ParamKey::new(group, name);
+        self.unbind(uid, &key);
+        let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         // The `common` group is scheduler metadata, not a node param — re-derive
         // the cached run gate rather than dispatching it to the node.
         if group == "common" {
@@ -1989,10 +2121,7 @@ impl Graph {
         }
         // Only an empty source is a true unbind.
         if source.trim().is_empty() {
-            if let Some(e) = self.nodes.get_mut(&uid) {
-                e.bindings.remove(&key);
-            }
-            return Ok(());
+            return Ok(self.unbind(uid, &key));
         }
         // A non-empty source binds a real param — reject a dangling binding (invisible in
         // the descriptor, unclearable from the UI, phantom scheduling edges), like
@@ -2000,36 +2129,159 @@ impl Graph {
         if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
-        // Compile only when enabled; a disabled binding is preserved (source round-trips)
-        // but carries no handle/refs/error and is skipped by the scheduling + eval guards.
-        let (id, refs, global_refs, error) = if enabled {
-            match &self.evaluator {
-                Some(ev) => match ev.compile(source) {
-                    Ok(c) => (Some(c.id), c.refs, c.global_refs, None),
-                    Err(e) => (None, Vec::new(), Vec::new(), Some(e.0)),
-                },
-                None => {
-                    (None, Vec::new(), Vec::new(), Some("no expression evaluator available".to_string()))
-                }
+        let bind_id = self.bind_id(uid, &key);
+        // §5.3's four steps, in order: rewrite, resolve, compile the REWRITTEN source, ship. The
+        // scan runs even for a DISABLED binding, because `refs`/`globals` are what say which
+        // bindings a later rename or globals edit has to re-resolve — a disabled binding that an
+        // fx toggle re-enables must come back resolved against the graph as it is then. What a
+        // disabled binding does not get is variables, a handle, or a place in anyone's target set.
+        let scanned = expr_rewrite::rewrite(source);
+        let (refs, globals) = match &scanned {
+            Ok((_, vars)) => (
+                distinct(vars.iter().filter_map(|v| match v {
+                    expr_rewrite::VarRef::Node { name, .. } => Some(name.clone()),
+                    _ => None,
+                })),
+                distinct(vars.iter().filter_map(|v| match v {
+                    expr_rewrite::VarRef::Global { key, .. } => Some(key.clone()),
+                    _ => None,
+                })),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+        let (rewritten, vars, mut error) = match (enabled, scanned) {
+            (true, Ok((rewritten, refs))) => {
+                let vars = self.resolve_vars(uid, &key, &refs);
+                let error = vars.iter().find_map(|v| match v {
+                    BoundVar::Missing { reason, .. } => Some(reason.clone()),
+                    _ => None,
+                });
+                (rewritten, vars, error)
             }
-        } else {
-            (None, Vec::new(), Vec::new(), None)
+            (true, Err(e)) => (source.to_string(), Vec::new(), Some(e.0)),
+            (false, _) => (source.to_string(), Vec::new(), None),
+        };
+        let id = match (&self.evaluator, enabled, error.is_none()) {
+            (Some(ev), true, true) => match ev.compile(&rewritten) {
+                Ok(c) => Some(c.id),
+                Err(e) => {
+                    error = Some(e.0);
+                    None
+                }
+            },
+            (None, true, _) => {
+                error = Some("no expression evaluator available".to_string());
+                None
+            }
+            _ => None,
         };
         let binding = ExprBinding {
             source: source.to_string(),
             enabled,
             triggers_process,
             id,
+            rewritten,
+            vars,
             refs,
-            global_refs,
-            last_seen: HashMap::new(),
-            last_eval: None,
+            globals,
+            bind_id,
             error,
         };
         if let Some(e) = self.nodes.get_mut(&uid) {
             e.bindings.insert(key, binding);
         }
+        self.replan_binding(uid, bind_id);
         Ok(())
+    }
+
+    /// Drop a binding and re-plan what it was subscribed to, answering nothing — the shared tail of
+    /// an empty `set_expression` and of a literal write over a bound param (§3.4: both mean unbind,
+    /// and the graph must mean by it what the node does).
+    fn unbind(&mut self, uid: Uid, key: &ParamKey) {
+        let Some(binding) = self.nodes.get_mut(&uid).and_then(|e| e.bindings.remove(key)) else {
+            return;
+        };
+        if let (Some(ev), Some(id)) = (&self.evaluator, binding.id) {
+            ev.release(id);
+        }
+        self.replan_binding(uid, binding.bind_id);
+    }
+
+    /// This binding's index into [`Self::bind_keys`], minting one on first bind. The interner is
+    /// append-only and never cleared short of a whole-graph `clear`, because an id must stay
+    /// readable after its binding is gone: an unbind's own wire sequence still has to compose the
+    /// `SetParam` that tells the node its param is a literal again.
+    fn bind_id(&mut self, uid: Uid, key: &ParamKey) -> usize {
+        if let Some(b) = self.nodes.get(&uid).and_then(|e| e.bindings.get(key)) {
+            return b.bind_id;
+        }
+        if let Some(at) = self.bind_keys.iter().position(|(u, k)| *u == uid && k == key) {
+            return at;
+        }
+        self.bind_keys.push((uid, key.clone()));
+        self.bind_keys.len() - 1
+    }
+
+    /// Resolve a rewrite's variables against the graph: a producer output, a global's value, or the
+    /// reason neither could be found. Event ids are drawn from §3.2's `65..=128` expression budget,
+    /// lowest free first among the ids this node's OTHER bindings already hold — `key`'s own ids are
+    /// being replaced and are therefore free.
+    fn resolve_vars(&self, consumer: Uid, key: &ParamKey, refs: &[expr_rewrite::VarRef]) -> Vec<BoundVar> {
+        let mut taken: Vec<runtime::EventId> = self
+            .nodes
+            .get(&consumer)
+            .into_iter()
+            .flat_map(|e| e.bindings.iter().filter(|(k, _)| *k != key))
+            .flat_map(|(_, b)| &b.vars)
+            .filter_map(|v| match v {
+                BoundVar::Stream { event_id, .. } => Some(*event_id),
+                _ => None,
+            })
+            .collect();
+        refs.iter()
+            .map(|r| match r {
+                expr_rewrite::VarRef::Global { var, key } => match self.globals.get(key) {
+                    Some(value) => BoundVar::Value { var: var.clone(), value: global_as_param(value) },
+                    None => BoundVar::Missing {
+                        var: var.clone(),
+                        reason: format!("global `{key}` is not defined"),
+                    },
+                },
+                expr_rewrite::VarRef::Node { var, name, slot } => {
+                    match self.resolve_stream(name.as_str(), slot.as_deref()) {
+                        Err(reason) => BoundVar::Missing { var: var.clone(), reason },
+                        Ok((producer, slot)) => match next_event_id(&taken) {
+                            None => BoundVar::Missing {
+                                var: var.clone(),
+                                reason: "too many expression references on this node".to_string(),
+                            },
+                            Some(event_id) => {
+                                taken.push(event_id);
+                                BoundVar::Stream { var: var.clone(), producer, slot, event_id }
+                            }
+                        },
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// The producer output a `nd('name')` / `nd('name').slot` term names, or why it names none. A
+    /// bare reference to a multi-output node is refused HERE rather than at eval, where it used to
+    /// raise from inside the proxy — the graph is what knows how many outputs a node has.
+    fn resolve_stream(&self, name: &str, slot: Option<&str>) -> Result<(Uid, &'static str), String> {
+        let uid = self.uid_by_name(name).ok_or_else(|| format!("no node named `{name}`"))?;
+        let outputs = self.nodes[&uid].manifest.outputs;
+        match slot {
+            Some(slot) => outputs
+                .iter()
+                .find(|o| o.name == slot)
+                .map(|o| (uid, o.name))
+                .ok_or_else(|| format!("node `{name}` has no output `{slot}`")),
+            None if outputs.len() == 1 => Ok((uid, outputs[0].name)),
+            None if outputs.is_empty() => Err(format!("node `{name}` has no outputs")),
+            None => Err(format!("nd('{name}') is ambiguous: it has multiple outputs; use nd('{name}').slot")),
+        }
     }
 
     /// The expression binding on a param, for the bridge descriptor + `.gfi` (or `None`
@@ -2071,13 +2323,10 @@ impl Graph {
             return Vec::new();
         };
         entry
-            .bindings
+            .evaluated
             .iter()
-            .filter(|(_, b)| b.enabled)
-            .filter_map(|(key, _)| {
-                let p = entry.params.get(&key.group)?.get(&key.name)?;
-                Some((key.group.as_str(), key.name.as_str(), p))
-            })
+            .filter(|(key, _)| entry.bindings.get(key).is_some_and(|b| b.enabled))
+            .map(|(key, p)| (key.group.as_str(), key.name.as_str(), p))
             .collect()
     }
 
@@ -2242,18 +2491,32 @@ impl Graph {
         self.wire.attach(uid, sink);
         for (consumer, slot) in self.slots_touching(uid) {
             self.wire.forget_planned((consumer, slot));
-            self.replan_slot(consumer, slot);
+            self.replan(consumer, slot);
         }
     }
 
-    /// Every consumer slot whose wiring names `uid` — the ones it consumes on, and the ones it
-    /// feeds. A slot is named once however many wires it has.
+    /// Every consumer subscription whose wiring names `uid` — the input slots it consumes on and
+    /// feeds, and the expression bindings on either end of it. A subscription is named once however
+    /// many wires it has.
     fn slots_touching(&self, uid: Uid) -> Vec<runtime::plan::SlotKey> {
         let mut slots: Vec<runtime::plan::SlotKey> = Vec::new();
         for link in self.links.iter().filter(|l| l.node_in == uid || l.node_out == uid) {
-            let key = (link.node_in, link.slot_in);
+            let key = (link.node_in, runtime::plan::Slot::In(link.slot_in));
             if !slots.contains(&key) {
                 slots.push(key);
+            }
+        }
+        // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
+        // the same re-plan its input slots get — both ends of one, since a producer that could not
+        // be reached was never told to ring the reader.
+        for (consumer, entry) in &self.nodes {
+            for binding in entry.bindings.values() {
+                let touches = *consumer == uid
+                    || binding.vars.iter().filter_map(BoundVar::wire).any(|(p, _)| p == uid);
+                let key = (*consumer, runtime::plan::Slot::Bind(binding.bind_id));
+                if touches && !slots.contains(&key) {
+                    slots.push(key);
+                }
             }
         }
         slots
@@ -2280,15 +2543,26 @@ impl Graph {
         runtime::service_base(&self.instance, uid, self.wire.generation(uid))
     }
 
-    /// Plan a slot's full desired wire set and run the three-phase sequence (§4). Every link change
-    /// to a slot comes through here, which is why a displaced single-input wire needs no special
-    /// case anywhere: the consumer's new set is simply the new producer.
+    /// Plan an input slot's full desired wire set and run the three-phase sequence (§4). Every link
+    /// change to a slot comes through here, which is why a displaced single-input wire needs no
+    /// special case anywhere: the consumer's new set is simply the new producer.
     pub(crate) fn replan_slot(&mut self, uid: Uid, slot: &'static str) {
+        self.replan(uid, runtime::plan::Slot::In(slot));
+    }
+
+    /// The same for an expression binding (§5.3), whose subscription set is the producers its
+    /// variables resolved to. Keyed by the binding's id rather than by its `ParamKey`, so an unbind
+    /// can still be planned after the binding itself is gone.
+    fn replan_binding(&mut self, uid: Uid, bind_id: usize) {
+        self.replan(uid, runtime::plan::Slot::Bind(bind_id));
+    }
+
+    fn replan(&mut self, uid: Uid, slot: runtime::plan::Slot) {
         if self.wire.is_idle() {
             return;
         }
         let key = (uid, slot);
-        let desired = self.desired_wires(uid, slot);
+        let desired = self.desired_wires(key);
         let previous = self.wire.planned(key);
         let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
         let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
@@ -2301,6 +2575,51 @@ impl Graph {
     pub fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
         if let Some(key) = self.wire.ack(seq, ok) {
             self.advance_wire(key);
+        }
+    }
+
+    /// Apply one node's report to the graph — the status-drain worker's whole graph-side job
+    /// (§6.2). Every variant is a TRANSITION the node stamped itself, so nothing here diffs.
+    ///
+    /// The faults land in the very fields `last_error`/`node_stage` already read, because §6 is
+    /// explicit that `runtime_overlay` keeps working verbatim: what changes is how the graph LEARNS
+    /// a node's state, not how it projects it.
+    pub fn apply_status(&mut self, uid: Uid, status: runtime::Status) {
+        if let runtime::Status::Ack { seq, ok } = status {
+            self.wire_ack(seq, ok);
+            return;
+        }
+        let Some(entry) = self.nodes.get_mut(&uid) else { return };
+        match status {
+            runtime::Status::Ack { .. } => unreachable!("answered above"),
+            runtime::Status::Fault { fault } => match fault {
+                // A clean run clears Setup/Process/Boot together and never touches a binding
+                // error, which only that binding evaluating successfully clears (§6).
+                None => {
+                    entry.setup_error = None;
+                    entry.last_error = None;
+                }
+                Some(runtime::NodeFault::Setup { msg, .. }) => entry.setup_error = Some(msg),
+                // `Boot` shares `last_error` with `Process` on purpose: the graph projects one
+                // node-level error string, and the two differ only in which side of the manager
+                // thread failed — which the node has already said in the message.
+                Some(runtime::NodeFault::Process { msg, .. } | runtime::NodeFault::Boot { msg, .. }) => {
+                    entry.last_error = Some(msg)
+                }
+                // The roll-up, not the record: a node reports `Expr` only as the badge-level
+                // derivation of its binding-error map, and that map arrives as `BindingErrors`.
+                Some(runtime::NodeFault::Expr { .. }) => {}
+            },
+            runtime::Status::BindingErrors { errors } => {
+                for (key, msg) in errors {
+                    if let Some(b) = entry.bindings.get_mut(&key) {
+                        b.error = msg;
+                    }
+                }
+            }
+            runtime::Status::ParamValues { evaluated } => {
+                entry.evaluated = evaluated.into_iter().collect();
+            }
         }
     }
 
@@ -2326,15 +2645,21 @@ impl Graph {
         phase: runtime::plan::Phase,
     ) -> Vec<(Uid, runtime::Control)> {
         match phase {
-            runtime::plan::Phase::Apply => {
-                let services = self
-                    .wire
-                    .desired(key)
-                    .iter()
-                    .map(|(uid, slot)| self.output_service_of(*uid, slot))
-                    .collect();
-                vec![(key.0, runtime::Control::InSlot { slot: key.1.to_string(), services })]
-            }
+            // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is: an input slot receives
+            // its full service set, a binding receives the whole re-resolved expression. Both are
+            // declarative, and both are what the producer phases are ordered around.
+            runtime::plan::Phase::Apply => match key.1 {
+                runtime::plan::Slot::In(slot) => {
+                    let services = self
+                        .wire
+                        .desired(key)
+                        .iter()
+                        .map(|(uid, slot)| self.output_service_of(*uid, slot))
+                        .collect();
+                    vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), services })]
+                }
+                runtime::plan::Slot::Bind(id) => self.compose_set_param(key.0, id).into_iter().collect(),
+            },
             runtime::plan::Phase::Shrink | runtime::plan::Phase::Grow => self
                 .wire
                 .recipients(key, phase)
@@ -2347,42 +2672,113 @@ impl Graph {
         }
     }
 
-    /// Every producer feeding a consumer slot, in wire order — many for a `multi` slot, at most one
-    /// for a single one. `links` is the order, for both: a wire is appended there as it is added,
-    /// which IS `Inputs::get_multi`'s connection order, and the per-wire cells the tick path keeps
-    /// are rebuilt from this same list by `restart_node`. Reading those cells here instead would be
-    /// a second record of one order.
+    /// The `SetParam` a binding's phase 2 carries: the rewritten source with its resolved variables
+    /// while the binding stands, and the param's LITERAL once it does not — an unbind is a param
+    /// going back to its authored number, and §3.4 makes that the message that says so.
+    fn compose_set_param(&self, uid: Uid, bind_id: usize) -> Option<(Uid, runtime::Control)> {
+        let (owner, key) = self.bind_keys.get(bind_id)?;
+        if *owner != uid {
+            return None;
+        }
+        let entry = self.nodes.get(&uid)?;
+        let value = match entry.bindings.get(key).filter(|b| b.enabled) {
+            Some(b) => runtime::ParamValue::Expr {
+                source: b.rewritten.clone(),
+                vars: b.vars.iter().map(|v| self.wire_var(v)).collect(),
+                trigger: b.triggers_process,
+            },
+            None => runtime::ParamValue::Literal(goofi_node::param(&entry.params, &key.group, &key.name)?.clone()),
+        };
+        Some((uid, runtime::Control::SetParam { key: key.clone(), value }))
+    }
+
+    /// A resolved variable as the NODE sees it: a service name rather than a uid, because a node
+    /// addresses a producer by service and cannot resolve anything for itself (§5.3).
+    fn wire_var(&self, var: &BoundVar) -> runtime::Var {
+        match var {
+            BoundVar::Stream { var, producer, slot, event_id } => runtime::Var::Stream {
+                name: var.clone(),
+                service: self.output_service_of(*producer, slot),
+                event_id: *event_id,
+            },
+            BoundVar::Value { var, value } => runtime::Var::Value { name: var.clone(), value: value.clone() },
+            BoundVar::Missing { var, reason } => {
+                runtime::Var::Missing { name: var.clone(), reason: reason.clone() }
+            }
+        }
+    }
+
+    /// Every producer a consumer subscription feeds from, in wire order.
+    ///
+    /// For an input slot: many for a `multi` slot, at most one for a single one. `links` is the
+    /// order for both — a wire is appended there as it is added, which IS `Inputs::get_multi`'s
+    /// connection order, and the per-wire cells the tick path keeps are rebuilt from this same list
+    /// by `restart_node`. Reading those cells here instead would be a second record of one order.
+    ///
+    /// For a binding: the producers its variables resolved to, in variable order.
     ///
     /// Stubs never appear — a link's endpoints are resolved real nodes by the time it is recorded.
     /// A slot with no event id does not appear either: §3.2 budgets 1..=64 for input slots, and a
     /// wire subscribed by a consumer that no producer can ring is worse than no wire at all. No
     /// manifest in this codebase declares anything like 64 inputs.
-    fn desired_wires(&self, uid: Uid, slot: &str) -> Vec<(Uid, &'static str)> {
-        if self.input_event_id(uid, slot).is_none() {
-            return Vec::new();
+    fn desired_wires(&self, key: runtime::plan::SlotKey) -> Vec<runtime::plan::Wire> {
+        match key.1 {
+            runtime::plan::Slot::In(slot) => {
+                if self.input_event_id(key.0, slot).is_none() {
+                    return Vec::new();
+                }
+                self.links
+                    .iter()
+                    .filter(|l| l.node_in == key.0 && l.slot_in == slot)
+                    .map(|l| (l.node_out, l.slot_out))
+                    .collect()
+            }
+            runtime::plan::Slot::Bind(id) => self
+                .binding_of(key.0, id)
+                .filter(|b| b.enabled)
+                .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
+                .unwrap_or_default(),
         }
-        self.links
-            .iter()
-            .filter(|l| l.node_in == uid && l.slot_in == slot)
-            .map(|l| (l.node_out, l.slot_out))
-            .collect()
     }
 
-    /// Every doorbell one output slot rings, with the event id that says why the far node woke.
-    /// Task 4 adds this slot's expression subscribers to the same set — a producer cannot tell a
-    /// wire consumer from an `nd()` reader, and does not need to.
+    /// The binding a planner id names, if it still exists.
+    fn binding_of(&self, uid: Uid, bind_id: usize) -> Option<&ExprBinding> {
+        let (owner, key) = self.bind_keys.get(bind_id)?;
+        (*owner == uid).then(|| self.nodes.get(&uid)?.bindings.get(key)).flatten()
+    }
+
+    /// Every doorbell one output slot rings, with the event id that says why the far node woke —
+    /// the UNION of this slot's wire consumers and its expression subscribers (§5.3). One set,
+    /// because a producer cannot tell an `nd()` reader from a wired consumer and does not need to.
     fn out_targets(&self, producer: Uid, slot: &'static str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
-        self.links
+        // §4's ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence
+        // has not applied this wire yet does not exist as a subscriber, so naming it here — because
+        // some other consumer's sequence reached phase 3 first — is exactly the "told to notify a
+        // subscriber that does not exist yet" the phases are ordered to prevent. Its own phase 3
+        // names it, against the same live target set.
+        let wired = self
+            .links
             .iter()
             .filter(|l| l.node_out == producer && l.slot_out == slot)
-            // §4's ordering guarantee is per TARGET, not per sequence: a consumer whose own
-            // sequence has not applied this wire yet does not exist as a subscriber, so naming it
-            // here — because some other consumer's sequence reached phase 3 first — is exactly the
-            // "told to notify a subscriber that does not exist yet" the phases are ordered to
-            // prevent. Its own phase 3 names it, against the same live target set.
-            .filter(|l| !self.wire.unapplied((l.node_in, l.slot_in), (producer, slot)))
-            .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)))
-            .collect()
+            .filter(|l| {
+                !self.wire.unapplied((l.node_in, runtime::plan::Slot::In(l.slot_in)), (producer, slot))
+            })
+            .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)));
+        let bound = self.nodes.iter().flat_map(|(consumer, entry)| {
+            entry.bindings.values().filter(|b| b.enabled).flat_map(move |b| {
+                b.vars
+                    .iter()
+                    .filter(move |v| v.wire() == Some((producer, slot)))
+                    .filter(move |_| {
+                        !self.wire.unapplied((*consumer, runtime::plan::Slot::Bind(b.bind_id)), (producer, slot))
+                    })
+                    .filter_map(move |v| match v {
+                        BoundVar::Stream { event_id, .. } => Some((self.door_of(*consumer), *event_id)),
+                        _ => None,
+                    })
+            })
+        });
+        wired.chain(bound).collect()
     }
 
     /// An input slot's event id: its position in the manifest's inputs, past `EventId(0)`, which is
@@ -2431,6 +2827,8 @@ impl Graph {
         // The channels addressed nodes that no longer exist; the generations stay, because they are
         // what keeps whatever is born at those uids next clear of what just died.
         self.wire.reset_channels();
+        // …and the binding ids went with the sequences that named them.
+        self.bind_keys.clear();
         // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
         // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
         self.globals = goofi_core::globals::GlobalStore::new();
@@ -2895,178 +3293,6 @@ impl Graph {
             .collect()
     }
 
-    /// Resolve the expression-bound params of this level's nodes into their concrete
-    /// `params`, BEFORE they run — so `process` reads a finished value with no eval in
-    /// its path. Called per level in topo order, so a referenced producer (an earlier
-    /// level via `scheduling_edges`) has already emitted this tick; a cycle back-edge
-    /// reads the producer's still-previous `last_outputs`. Two phases (read then apply)
-    /// so the immutable cross-node reads don't collide with the per-node param write.
-    fn resolve_level_bindings(
-        &mut self,
-        level: &[Uid],
-        now: Instant,
-        now_secs: f64,
-        globals: &goofi_core::globals::GlobalsSnapshot,
-    ) {
-        let Some(ev) = self.evaluator.clone() else { return };
-
-        enum Outcome {
-            Value(Param, HashMap<(String, Option<String>), Option<u64>>),
-            Error(String),
-        }
-        let mut results: Vec<(Uid, ParamKey, Outcome)> = Vec::new();
-
-        // READ phase — immutable; decide each due binding's outcome.
-        for &uid in level {
-            let Some(entry) = self.nodes.get(&uid) else { continue };
-            if entry.bindings.is_empty() {
-                continue;
-            }
-            let period = entry.run_policy.period();
-            for (key, b) in &entry.bindings {
-                if !b.enabled {
-                    continue;
-                }
-                let Some(id) = b.id else { continue }; // compile failed → keep its error
-                // Eval-rate gate: at most one eval per `max_frequency` period.
-                let gate_open = match (period, b.last_eval) {
-                    (None, _) | (Some(_), None) => true,
-                    (Some(p), Some(t)) => now.saturating_duration_since(t).as_secs_f64() >= p,
-                };
-                if !gate_open {
-                    continue;
-                }
-                // Resolve refs: expose EVERY output slot of each referenced node keyed by
-                // (name, Some(slot)), plus (name, None) = the single output for a bare
-                // nd(). A multi-output node gets no (name, None) entry — a bare nd() on it
-                // is caught at runtime by the proxy. Fresh if the producer ran an earlier
-                // level this tick, else prev-tick (`last_outputs`) = 1-tick feedback.
-                let mut refs_map: HashMap<(String, Option<String>), Option<Data>> = HashMap::new();
-                let mut seen: HashMap<(String, Option<String>), Option<u64>> = HashMap::new();
-                let mut names: Vec<&str> = b.refs.iter().map(|r| r.as_str()).collect();
-                names.sort_unstable();
-                names.dedup();
-                for nm in names {
-                    let mut put = |k: (String, Option<String>), data: Option<Data>| {
-                        seen.insert(k.clone(), data.as_ref().and_then(|d| d.meta().index()));
-                        refs_map.insert(k, data);
-                    };
-                    match self.uid_by_name(nm) {
-                        None => put((nm.to_string(), None), None), // missing → bare is None
-                        Some(pu) => {
-                            let pe = &self.nodes[&pu];
-                            for o in pe.manifest.outputs {
-                                let d = pe.last_outputs.get(o.name).cloned();
-                                put((nm.to_string(), Some(o.name.to_string())), d);
-                            }
-                            if pe.manifest.outputs.len() == 1 {
-                                let d = pe.last_outputs.get(pe.manifest.outputs[0].name).cloned();
-                                put((nm.to_string(), None), d);
-                            }
-                        }
-                    }
-                }
-                // Due: a ref-less (time) expr every gated tick; else a ref emitted a new
-                // frame, or a first eval, or an error to retry.
-                let due = b.refs.is_empty()
-                    || b.last_eval.is_none()
-                    || b.error.is_some()
-                    || seen.iter().any(|(k, idx)| b.last_seen.get(k) != Some(idx));
-                if !due {
-                    continue;
-                }
-                let Some(target) =
-                    entry.params.get(&key.group).and_then(|g| g.get(&key.name)).cloned()
-                else {
-                    continue;
-                };
-                let ctx = goofi_node::EvalCtx { refs: &refs_map, t: now_secs, target: &target, globals };
-                match ev.eval(id, &ctx) {
-                    Ok(p) => results.push((uid, key.clone(), Outcome::Value(p, seen))),
-                    Err(e) => results.push((uid, key.clone(), Outcome::Error(e.0))),
-                }
-            }
-        }
-
-        // APPLY phase — mutable.
-        for (uid, key, outcome) in results {
-            let Some(entry) = self.nodes.get_mut(&uid) else { continue };
-            match outcome {
-                Outcome::Value(p, seen) => {
-                    // A settled binding re-evaluates to the same value most ticks; only a real
-                    // change is worth propagating past `params`.
-                    let changed = entry.params.get(&key.group).and_then(|g| g.get(&key.name)) != Some(&p);
-                    if let Some(g) = entry.params.get_mut(&key.group) {
-                        g.insert(key.name.clone(), p.clone());
-                    }
-                    let triggers = entry.bindings.get(&key).is_some_and(|b| b.triggers_process);
-                    if let Some(b) = entry.bindings.get_mut(&key) {
-                        b.last_seen = seen;
-                        b.last_eval = Some(now);
-                        b.error = None;
-                    }
-                    if key.group == "common" {
-                        // Scheduler metadata, not a node param — re-derive the run gate, exactly as
-                        // `update_param` does, and dispatch nothing. Nothing includes the trigger
-                        // (spec §1.1): a `common.*` arrival is a RE-PACING, never a reason to run.
-                        // Left to fall through, a ref-less `globals.` binding is due every gated
-                        // tick, so a `trigger: true` on one would pin `trigger_pending` on forever
-                        // and make `autotrigger` moot.
-                        entry.run_policy = RunPolicy::from_params(&entry.params);
-                    } else if changed && entry.setup_error.is_none() {
-                        // The rest of `update_param`'s contract: `on_param_changed` is the SINGLE
-                        // source of truth for param→field, so a node that mirrors a hot param to a
-                        // field (Oscillator.sfreq) must hear its binding as well as a manual edit.
-                        // A detached node's instance lives on its worker and reads params cold off
-                        // each Job, so there is nothing to notify — same deferral as `update_param`.
-                        //
-                        // …and an UNINITIALIZED node hears nothing at all (D3, [`ensure_initialized`]),
-                        // exactly as `update_param` above it. Nothing is lost: the evaluated value is
-                        // already in `entry.params`, and the next successful initialization replays
-                        // every param from there — so skipping the dispatch delivers it once instead
-                        // of twice, since `run_node`'s retry would replay this same param moments
-                        // later in this very tick.
-                        if let Execution::Inline(node) = &mut entry.exec {
-                            let hook =
-                                guard_lifecycle(|| node.on_param_changed(&key, &p)).unwrap_or_else(fold_panic);
-                            if let Err(e) = hook {
-                                // The channel a runtime eval failure already uses, so a rejecting
-                                // (or panicking) hook surfaces on the field rather than vanishing.
-                                if let Some(b) = entry.bindings.get_mut(&key) {
-                                    b.error = Some(e.0);
-                                }
-                            }
-                        }
-                    }
-                    // Guarded by NAMESPACE, not by `changed`, and deliberately so. The value guard
-                    // above is an optimization — a settled binding is not worth propagating — but a
-                    // `common.*` binding must not wake the node even when its value really did
-                    // change, because re-pacing is the whole of what a rate edit means.
-                    //
-                    // The converse case is left alone on purpose: a ref-less binding OUTSIDE
-                    // `common` still triggers on every evaluation, where the honest predicate is
-                    // *arrival* rather than re-evaluation. That distinction only becomes
-                    // expressible in the async runtime (a mailbox delivery is an arrival; an
-                    // evaluation is not), and `resolve_level_bindings` does not survive it — so
-                    // the namespace guard is the whole fix here rather than an arrival tracker
-                    // built to be deleted.
-                    if triggers && key.group != "common" {
-                        entry.trigger_pending = true;
-                    }
-                }
-                Outcome::Error(msg) => {
-                    if let Some(b) = entry.bindings.get_mut(&key) {
-                        b.last_eval = Some(now);
-                        b.error = Some(msg);
-                    }
-                    // The node-level error is derived from `b.error` on read (see
-                    // `last_error()`), so recovery/selection stays consistent — nothing to
-                    // cache here.
-                }
-            }
-        }
-    }
-
     /// Run one tick of the whole graph against the wall clock. See [`Self::tick_at`].
     pub fn tick(&mut self) {
         self.tick_at(Instant::now());
@@ -3141,10 +3367,13 @@ impl Graph {
         let wired = self.wired_trigger_nodes();
         let levels = self.topo_levels();
         for level in levels {
-            // Resolve this level's expression-bound params BEFORE it runs, using the
-            // (already-run) earlier levels' fresh outputs. May set `trigger_pending` for
-            // a `triggers_process` binding, so it must precede Phase A's run decision.
-            self.resolve_level_bindings(&level, now, now_secs, &globals);
+            // Expression bindings are NOT evaluated here any more. §2.1 evaluates them in the node,
+            // in the same breath as the run that reads them, from the mailboxes its variables name
+            // — which is what makes an ARRIVAL the thing that triggers and an evaluation merely the
+            // thing that runs. `resolve_level_bindings` could not express that distinction: it set
+            // `trigger_pending` on every evaluation, so a `globals.`-only expression (due every
+            // tick) pinned the flag on permanently. Until the cutover drives `NodeRuntime`, a bound
+            // param therefore holds its LITERAL on this path.
             let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
 
             // Detached tier — drain each detached node's completed output (→ `ran`, so
@@ -3689,48 +3918,66 @@ mod tests {
         assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 45.0, "sees the edited value next tick");
     }
 
+    /// What a binding's variables resolved to, spelled out — the graph half of §5.3, which is now
+    /// the whole of what the graph does with an expression. Written out as strings so a wrong
+    /// producer, a wrong slot or a lost value is visible in the failure.
+    fn resolved(g: &Graph, uid: Uid, group: &str, name: &str) -> Vec<String> {
+        g.nodes[&uid].bindings[&ParamKey::new(group, name)]
+            .vars
+            .iter()
+            .map(|v| match v {
+                BoundVar::Stream { var, producer, slot, event_id } => {
+                    format!("{var}={}.{slot}#{event_id}", g.nodes[producer].name)
+                }
+                BoundVar::Value { var, value } => format!("{var}={:?}", value.as_f64()),
+                BoundVar::Missing { var, reason } => format!("{var}!{reason}"),
+            })
+            .collect()
+    }
+
     #[test]
-    fn expression_binding_reads_globals_and_tracks_edits() {
+    fn a_global_is_resolved_into_the_binding_and_re_resolved_on_an_edit() {
+        // §5.2/§5.3: a global is an ordinary variable — the graph resolves its VALUE and ships it
+        // inline, and an edit re-sends the binding. There is no invalidation message and nothing
+        // for the node to look up, which is why the value has to be here rather than a promise.
         use goofi_core::globals::GlobalValue;
         let mut g = eval_graph();
         let n = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n, "constant", "value", "globals.default_ufreq", true, false).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "the binding reads the global");
+        assert_eq!(resolved(&g, n, "constant", "value"), ["__v0=Some(30.0)"]);
+
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(48.0))).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 48.0, "the bound param re-rates on a global edit");
+        assert_eq!(resolved(&g, n, "constant", "value"), ["__v0=Some(48.0)"], "the edit re-resolved it");
     }
 
     #[test]
-    fn editing_a_referenced_global_forces_only_that_bindings_reeval() {
-        // White-box: a global edit resets `last_eval` (→ due + gate-open) for exactly the bindings
-        // that read it, and leaves unrelated bindings untouched — the targeted dirty-tracking that
-        // makes the mixed `nd('x') * globals.gain` case re-rate even when its ref hasn't re-emitted.
+    fn editing_a_referenced_global_re_resolves_only_the_bindings_that_read_it() {
+        // The targeted half: an unrelated global edit costs nothing. Driven by giving the two
+        // bindings DIFFERENT values, so a blanket re-resolution and a targeted one are
+        // distinguishable — an assertion that the untouched binding still holds its value would
+        // pass under either.
         use goofi_core::globals::GlobalValue;
         let mut g = eval_graph();
-        let n = g.add_node("_TestConst", None).unwrap();
-        g.set_expression(n, "constant", "value", "globals.default_ufreq", true, false).unwrap();
-        let key = ParamKey::new("constant", "value");
-        g.tick();
-        assert!(g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_some(), "evaluated once");
-        // Editing the referenced global forces an immediate re-eval.
+        g.apply_global_change("other", Some(GlobalValue::Float(7.0))).unwrap();
+        let (a, b) = (g.add_node("_TestConst", None).unwrap(), g.add_node("_TestConst", None).unwrap());
+        g.set_expression(a, "constant", "value", "globals.default_ufreq", true, false).unwrap();
+        g.set_expression(b, "constant", "value", "globals.other", true, false).unwrap();
+
+        // A global the FIRST binding reads. The second's variable is untouched…
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(50.0))).unwrap();
-        assert!(
-            g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_none(),
-            "a referenced-global edit resets the eval gate"
-        );
-        // An UNrelated global edit must not disturb the binding.
-        g.tick(); // re-evaluates → last_eval Some again
-        g.apply_global_change("unrelated", Some(GlobalValue::Float(1.0))).unwrap();
-        assert!(
-            g.nodes.get(&n).unwrap().bindings.get(&key).unwrap().last_eval.is_some(),
-            "an unrelated global edit leaves the binding alone"
-        );
+        assert_eq!(resolved(&g, a, "constant", "value"), ["__v0=Some(50.0)"]);
+        assert_eq!(resolved(&g, b, "constant", "value"), ["__v0=Some(7.0)"]);
+
+        // …and one NEITHER reads re-resolves nothing at all, which is observable because a
+        // re-resolution would have to read the store and would still land the same value: the
+        // guard is that `globals` names what the binding reads, and `other` is not in it.
+        let key = ParamKey::new("constant", "value");
+        assert_eq!(g.nodes[&b].bindings[&key].globals, ["other"], "the read set is what targets it");
+        assert_eq!(g.nodes[&a].bindings[&key].globals, ["default_ufreq"]);
     }
 
     #[test]
-    fn fresh_add_seeds_a_default_expr_binding_that_tracks_globals() {
+    fn fresh_add_seeds_a_default_expr_binding_resolved_against_the_globals() {
         use goofi_core::globals::GlobalValue;
         let mut g = eval_graph();
         let n = g.add_node("_TestDefaultExpr", None).unwrap();
@@ -3738,42 +3985,9 @@ mod tests {
         let info = g.param_expression(n, "control", "rate").expect("default_expr seeded a binding");
         assert_eq!(info.source, "globals.default_ufreq");
         assert!(info.enabled && info.error.is_none(), "seeded binding is enabled + healthy");
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "evaluates to the global");
-        // Editing the referenced global re-rates the producer live.
+        assert_eq!(resolved(&g, n, "control", "rate"), ["__v0=Some(30.0)"]);
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(42.0))).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 42.0, "re-rates on a global edit");
-    }
-
-    #[test]
-    fn a_common_binding_re_paces_the_node_and_never_asks_it_to_run() {
-        // Spec §1.1: a `common.*` arrival is a RE-PACING, never a reason to run. The APPLY phase
-        // already treats a common binding as scheduler metadata that "dispatches nothing" — but
-        // the trigger set sat outside that branch and fired for every group, so a `common.*`
-        // binding with `trigger: true` pinned `trigger_pending` on permanently (a `globals.`-only
-        // expression is ref-less, hence due on every gated tick, and the trigger was applied
-        // whether or not the value changed).
-        //
-        // Driven through `resolve_level_bindings` directly, and asserted on `trigger_pending`
-        // rather than on whether the node ran, because neither proxy survives contact:
-        // `wants_run` still free-runs a source through `!has_trigger_inputs` (the term the async
-        // runtime deletes — which is what would turn this into a live "autotrigger does nothing
-        // for any producer" bug), and a full tick would consume the flag in the very run it
-        // wrongly caused. The eval-rate gate is the same period as the run gate, so a rate cap
-        // cannot separate them either.
-        let mut g = eval_graph();
-        // Oscillator binds `common.max_frequency` to `globals.default_ufreq` with `trigger: true`.
-        let osc = g.add_node("Oscillator", None).unwrap();
-        // The control: a triggering binding OUTSIDE `common` must still wake `process`, so the fix
-        // has to be by namespace rather than a blanket removal of the trigger.
-        let paced = g.add_node("_TestCarriedExpr", None).unwrap();
-
-        let globals = g.globals.snapshot();
-        g.resolve_level_bindings(&[osc, paced], Instant::now(), 0.0, &globals);
-
-        assert!(!g.nodes[&osc].trigger_pending, "a common.* re-evaluation re-paces, it does not run");
-        assert!(g.nodes[&paced].trigger_pending, "a triggering binding outside common still wakes it");
+        assert_eq!(resolved(&g, n, "control", "rate"), ["__v0=Some(42.0)"], "and it re-rates live");
     }
 
     #[test]
@@ -3794,10 +4008,11 @@ mod tests {
         assert!(paced.enabled, "mode On is live");
         assert!(paced.triggers_process, "and `trigger: true` reaches the binding");
 
-        // The carried one must not drive its param either: the spec literal stands.
-        g.tick();
+        // …and only the LIVE one subscribes: a carried binding resolves no variables, so nothing
+        // is shipped for it and the spec literal stands until the fx toggle turns it on.
+        assert!(resolved(&g, n, "control", "carried").is_empty(), "a carried binding resolves nothing");
+        assert_eq!(resolved(&g, n, "control", "paced"), ["__v0=Some(30.0)"]);
         assert_eq!(g.params(n).unwrap()["control"]["carried"].as_f64(), Some(5.0), "literal stands");
-        assert_eq!(g.params(n).unwrap()["control"]["paced"].as_f64(), Some(30.0), "the global drives");
     }
 
     #[test]
@@ -3814,19 +4029,17 @@ mod tests {
 
     #[test]
     fn binding_common_max_frequency_to_a_global_re_rates_the_run_policy() {
-        // The producer story end-to-end: a `common.max_frequency` bound to `globals.default_ufreq`
-        // rates the scheduler at the global, and a global EDIT re-rates it immediately — even though
-        // the node is under a rate cap (the dirty-reset opens the closed eval gate). This is exactly
-        // how editing default_ufreq re-paces every Oscillator.
+        // The producer story, graph-side: a `common.max_frequency` bound to `globals.default_ufreq`
+        // carries the global's VALUE, and a global edit re-resolves it — which is what re-paces
+        // every Oscillator. The node's half (re-deriving `RunPolicy` from the arrival without
+        // running) is `runtime::tests::a_common_arrival_repaces_without_running`.
         use goofi_core::globals::GlobalValue;
         let mut g = eval_graph();
         let n = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n, "common", "max_frequency", "globals.default_ufreq", true, false).unwrap();
-        g.tick();
-        assert_eq!(g.nodes.get(&n).unwrap().run_policy.max_frequency, 30.0, "rated by the global");
+        assert_eq!(resolved(&g, n, "common", "max_frequency"), ["__v0=Some(30.0)"], "rated by the global");
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(12.0))).unwrap();
-        g.tick();
-        assert_eq!(g.nodes.get(&n).unwrap().run_policy.max_frequency, 12.0, "re-rates on a global edit");
+        assert_eq!(resolved(&g, n, "common", "max_frequency"), ["__v0=Some(12.0)"], "re-rates on an edit");
     }
 
     #[test]
@@ -3864,8 +4077,11 @@ mod tests {
         let info = g2.param_expression(restored, "control", "rate").expect("binding restored from the doc");
         assert_eq!(info.source, "globals.default_ufreq");
         assert!(info.error.is_none(), "restored binding is healthy (not double-seeded / errored)");
-        g2.tick();
-        assert_eq!(first_f32(&g2.latest_frame(restored, "out").unwrap()), 30.0, "evaluates to the global after load");
+        assert_eq!(
+            resolved(&g2, restored, "control", "rate"),
+            ["__v0=Some(30.0)"],
+            "and it comes back resolved against the loaded patch's globals",
+        );
     }
 
     #[test]
@@ -6036,21 +6252,47 @@ mod tests {
 
     #[test]
     fn restart_keeps_a_param_expression_binding_live() {
+        // A restart replaces the instance, not the patch: the authored binding and its resolution
+        // both survive. The reference is to ANOTHER node, so the assertion can see the resolution
+        // and not merely the stored text.
         let mut g = eval_graph();
+        let src = const_src(&mut g, 1.0);
+        g.rename_node(src, "src").unwrap();
         let uid = const_src(&mut g, 1.0);
-        g.set_expression(uid, "constant", "value", "42", true, false).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+        g.set_expression(uid, "constant", "value", "nd('src')", true, false).unwrap();
 
         g.restart_node(uid).unwrap();
-        g.tick();
 
         assert_eq!(
             g.param_expression(uid, "constant", "value").map(|e| e.source),
-            Some("42".to_string()),
-            "the compiled binding is untouched by a restart"
+            Some("nd('src')".to_string()),
+            "the authored source is untouched by a restart"
         );
-        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+        assert_eq!(resolved(&g, uid, "constant", "value"), ["__v0=src.out#65"], "and still resolved");
+    }
+
+    #[test]
+    fn restarting_a_referenced_node_re_resolves_the_bindings_reading_it() {
+        // §3.1: a rebirth renames every one of that node's services, so a binding holding the old
+        // name is holding one nothing will ever publish on. Asserted on the SERVICE, because the
+        // uid and slot are unchanged by a restart — the generation is the only thing that moved.
+        let mut g = eval_graph();
+        let src = const_src(&mut g, 1.0);
+        g.rename_node(src, "src").unwrap();
+        let host = const_src(&mut g, 1.0);
+        g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
+        let before = g.wire_var(&g.nodes[&host].bindings[&ParamKey::new("constant", "value")].vars[0]);
+
+        g.restart_node(src).unwrap();
+
+        let after = g.wire_var(&g.nodes[&host].bindings[&ParamKey::new("constant", "value")].vars[0]);
+        assert_ne!(before, after, "the reborn producer's service name reached the reader");
+        match after {
+            runtime::Var::Stream { service, .. } => {
+                assert!(service.ends_with(&format!("{}_1_out_out", src.to_hex())), "{service}")
+            }
+            other => panic!("expected a resolved stream, got {other:?}"),
+        }
     }
 
     #[test]
@@ -6956,10 +7198,11 @@ mod tests {
         assert!(g.latest_frame(s, "out").is_some(), "persists last emit across a silent tick");
     }
 
-    // A deterministic stand-in for the pyo3 evaluator, so the engine's binding lifecycle
-    // + scheduling + resolution are testable without a Python interpreter. It recognizes
-    // `nd('name')` (first f32 of that node's single output), `globals.name` (that global's
-    // numeric value), a bare number (a constant), and `ERR` (a compile failure).
+    // A deterministic stand-in for the pyo3 evaluator, so the engine's binding lifecycle +
+    // resolution are testable without a Python interpreter. It is handed the REWRITTEN source
+    // (§5.3), so what it recognizes is a bare variable (`__v0` — read from the locals the graph
+    // resolved), a bare number (a constant), and `ERR` (a compile failure). It resolves no names,
+    // exactly as the real evaluator no longer does.
     #[derive(Default)]
     struct MockEval {
         exprs: std::sync::Mutex<HashMap<u64, MockExpr>>,
@@ -6967,8 +7210,7 @@ mod tests {
     }
     #[derive(Clone)]
     enum MockExpr {
-        Ref(String),
-        Global(String),
+        Var(String),
         Const(f64),
     }
     impl goofi_node::ExprEvaluator for MockEval {
@@ -6976,32 +7218,24 @@ mod tests {
             if source == "ERR" {
                 return Err("mock compile error".into());
             }
-            let (expr, refs) = if let Some(name) =
-                source.strip_prefix("nd('").and_then(|s| s.strip_suffix("')"))
-            {
-                (MockExpr::Ref(name.to_string()), vec![name.to_string()])
-            } else if let Some(name) = source.strip_prefix("globals.") {
-                (MockExpr::Global(name.to_string()), vec![])
+            let expr = if source.starts_with("__v") {
+                MockExpr::Var(source.to_string())
             } else {
                 let v: f64 = source.parse().map_err(|_| goofi_node::ExprError("mock: not a number".into()))?;
-                (MockExpr::Const(v), vec![])
+                MockExpr::Const(v)
             };
             let id = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             self.exprs.lock().unwrap().insert(id, expr);
-            // The same scanner the real evaluator uses, so dirty-tracking is exercised faithfully.
-            Ok(goofi_node::Compiled { id, refs, global_refs: goofi_node::global_ref_names(source) })
+            Ok(goofi_node::Compiled { id })
         }
         fn eval(&self, id: u64, ctx: &goofi_node::EvalCtx<'_>) -> Result<Param, goofi_node::ExprError> {
             let expr = self.exprs.lock().unwrap().get(&id).cloned().ok_or_else(|| goofi_node::ExprError("mock: no such id".into()))?;
             let v: f64 = match expr {
                 MockExpr::Const(c) => c,
-                MockExpr::Ref(node) => match ctx.refs.get(&(node.clone(), None)).and_then(|o| o.clone()) {
-                    Some(data) => first_f32(&data) as f64,
-                    None => return Err(goofi_node::ExprError(format!("mock: nd('{node}') missing"))),
-                },
-                MockExpr::Global(name) => match ctx.globals.f64(&name) {
-                    Some(v) => v,
-                    None => return Err(goofi_node::ExprError(format!("mock: globals.{name} missing"))),
+                MockExpr::Var(name) => match ctx.locals.get(&name) {
+                    Some(Some(goofi_node::Local::Frame(d))) => first_f32(d) as f64,
+                    Some(Some(goofi_node::Local::Value(p))) => p.as_f64().unwrap_or(f64::NAN),
+                    _ => return Err(goofi_node::ExprError(format!("mock: {name} missing"))),
                 },
             };
             Ok(match ctx.target {
@@ -7021,69 +7255,100 @@ mod tests {
     }
 
     #[test]
-    fn constant_expression_drives_a_param_before_process() {
-        // Bind _TestConst.value to the literal expression "5"; process must read 5.
-        let mut g = eval_graph();
-        let n = g.add_node("_TestConst", None).unwrap();
-        g.set_expression(n, "constant", "value", "5", true, false).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 5.0);
-    }
-
-    #[test]
-    fn an_expression_reaches_a_param_the_node_mirrors_to_a_field() {
-        // `on_param_changed` is the documented single source of truth for param→field, and
-        // `update_param` dispatches it. The expression path wrote `entry.params` and stopped, so a
-        // hot param (Oscillator.sfreq is the shipped case) ignored its binding while the inspector
-        // showed the bound value.
-        let mut g = eval_graph();
-        let n = g.add_node("_TestMirror", None).unwrap();
-        g.set_expression(n, "mirror", "value", "9", true, false).unwrap();
-        g.tick();
-        let out = as_f32_vec(&g.latest_frame(n, "out").unwrap());
-        assert_eq!(out[0], 9.0, "the evaluated value reached the node's field");
-
-        // And a settled binding does not hammer the hook: the seed call plus exactly one for the
-        // expression, then nothing while the value is unchanged.
-        let calls = out[1];
-        g.tick();
-        g.tick();
-        assert_eq!(
-            as_f32_vec(&g.latest_frame(n, "out").unwrap())[1],
-            calls,
-            "an unchanged evaluated value re-dispatches nothing"
-        );
-    }
-
-    #[test]
-    fn binding_oscillator_sfreq_re_rates_the_shipped_hot_param() {
-        // The regression on a real node: `Oscillator.sfreq` is the library's one mirrored param,
-        // and it kept emitting its seeded 250 Hz while the inspector showed (and the .gfi saved)
-        // the bound value.
-        use std::time::Duration;
-        let mut g = eval_graph();
-        let osc = g.add_node("Oscillator", None).unwrap();
-        g.set_expression(osc, "oscillator", "sfreq", "200", true, false).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // anchors pacing; a source emits nothing in its first zero-length interval
-        g.tick_at(t0 + Duration::from_millis(100));
-        let f = g.latest_frame(osc, "out").expect("frame");
-        assert_eq!(f.meta().sfreq(), Some(200.0), "the bound rate reached the mirrored field");
-        assert_eq!(as_f32_vec(&f).len(), 20, "and paced the block: 200 Hz over 100 ms");
-    }
-
-    #[test]
-    fn nd_reference_resolves_same_tick_via_dag_lifting() {
-        // src emits value 3; host.value = nd('src'). The ref edge schedules src before
-        // host, so host reads THIS tick's value — 3 in one tick, not next tick.
+    fn an_nd_reference_resolves_to_the_producers_output_stream() {
+        // §5.3, the graph's whole job with a reference: `nd('src')` becomes a variable naming a
+        // PRODUCER OUTPUT, with a doorbell id out of the expression budget. The node resolves
+        // nothing — it is handed the service and subscribes.
+        //
+        // (The tick used to evaluate this in-place, lifting the reference into the DAG so `host`
+        // read `src`'s value in the same tick. That path is gone: §2.1 evaluates in the node, in
+        // the same breath as the run that reads it.)
         let mut g = eval_graph();
         let src = g.add_node("_TestConst", None).unwrap();
         g.rename_node(src, "src").unwrap();
-        g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
         let host = g.add_node("_TestConst", None).unwrap();
         g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "same-tick nd() resolution");
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=src.out#65"]);
+        assert!(g.param_expression(host, "constant", "value").unwrap().error.is_none());
+
+        // A reference nothing answers is an error the moment it is authored, and it names what it
+        // could not find rather than failing silently at some later run.
+        g.set_expression(host, "constant", "value", "nd('ghost')", true, false).unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0!no node named `ghost`"]);
+    }
+
+    /// The doorbell entry a producer would ring `uid` on, for `event`.
+    fn doorbell_of(g: &Graph, uid: Uid, event: runtime::EventId) -> (runtime::ServiceName, runtime::EventId) {
+        (g.door_of(uid), event)
+    }
+
+    #[test]
+    fn setting_a_literal_on_a_bound_param_unbinds_it_and_unlinks_the_producer() {
+        // §5.3: expression references ARE links. A producer's `OutSlot` target set is the union of
+        // its wire consumers and its expression subscribers, so unbinding must drop this node from
+        // it — otherwise the producer keeps ringing a doorbell nobody reads.
+        //
+        // In-module because `out_targets` is the graph's own, and widening it for a test would be
+        // publishing an internal to prove something about it.
+        let mut g = eval_graph();
+        let lfo = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(lfo, "lfo").unwrap();
+        let osc = g.add_node("_TestConst", None).unwrap();
+        assert!(g.out_targets(lfo, "out").is_empty(), "nothing reads it yet");
+
+        g.set_expression(osc, "constant", "value", "nd('lfo')", true, false).unwrap();
+        assert_eq!(g.out_targets(lfo, "out"), [doorbell_of(&g, osc, 65)], "the reader joined the set");
+
+        g.update_param(osc, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
+        assert!(g.out_targets(lfo, "out").is_empty(), "unbind unlinked it");
+        assert!(g.param_expression(osc, "constant", "value").is_none(), "and the binding is gone");
+    }
+
+    #[test]
+    fn a_producers_targets_are_the_union_of_its_wires_and_its_readers() {
+        // One set, because a producer cannot tell a wired consumer from an `nd()` reader — and the
+        // two carry DIFFERENT event ids out of §3.2's two budgets, so a union that dropped either
+        // half, or that reused one id for both, is visible here.
+        let mut g = eval_graph();
+        let src = g.add_node("_TestGated", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        let wired = g.add_node("_TestSink", None).unwrap();
+        let reader = g.add_node("_TestConst", None).unwrap();
+
+        g.add_link(src, "out", wired, "in").unwrap();
+        g.set_expression(reader, "constant", "value", "nd('src')", true, false).unwrap();
+        assert_eq!(
+            g.out_targets(src, "out"),
+            [doorbell_of(&g, wired, 1), doorbell_of(&g, reader, 65)],
+            "an input slot's id comes from the manifest, an expression's from the 65.. budget",
+        );
+
+        // A DISABLED binding subscribes to nothing: the fx toggle is off, so the literal stands and
+        // the producer has no one to ring for it.
+        g.set_expression(reader, "constant", "value", "nd('src')", false, false).unwrap();
+        assert_eq!(g.out_targets(src, "out"), [doorbell_of(&g, wired, 1)]);
+    }
+
+    #[test]
+    fn each_reference_on_a_node_gets_its_own_doorbell_id() {
+        // §3.2 budgets `65..=128` for expression channels, and a producer rings ONE id per
+        // variable — two references sharing an id would be one wake the node cannot attribute.
+        // Driven across two bindings, because the ids are allocated per binding against what the
+        // node's OTHER bindings already hold.
+        let mut g = eval_graph();
+        let a = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(a, "a").unwrap();
+        let b = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(b, "b").unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('a')", true, false).unwrap();
+        g.set_expression(host, "constant", "length", "nd('b')", true, false).unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=a.out#65"]);
+        assert_eq!(resolved(&g, host, "constant", "length"), ["__v0=b.out#66"], "the next free id");
+
+        // …and re-binding one frees its own id rather than stepping past it forever.
+        g.set_expression(host, "constant", "value", "nd('b')", true, false).unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=b.out#65"], "its own id is free");
     }
 
     #[test]
@@ -7104,19 +7369,27 @@ mod tests {
             "nd('signal')",
             "the reference followed the rename"
         );
-        // And it still resolves end-to-end through the new name.
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 3.0, "resolves via nd('signal')");
+        // And it still resolves, through the new name, to the same producer.
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=signal.out#65"]);
     }
 
     #[test]
     fn expression_values_report_live_evaluated_params() {
-        // The live preview seam: after a tick, the evaluated value of each ENABLED binding
-        // is reported (a plain literal param is not), and a disabled binding drops out.
+        // The live preview seam: the evaluated value of each ENABLED binding is reported (a plain
+        // literal param is not), and a disabled binding drops out. The value now arrives as the
+        // node's own `Status::ParamValues` (§6.2) rather than being computed here, so the record
+        // it feeds must be the one `expression_values` reads — reading `params` instead would
+        // report the LITERAL and look right for a binding that never evaluated.
         let mut g = eval_graph();
         let n = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n, "constant", "value", "7", true, false).unwrap();
-        g.tick();
+        assert!(g.expression_values(n).is_empty(), "nothing is live until the node reports one");
+        g.apply_status(
+            n,
+            runtime::Status::ParamValues {
+                evaluated: vec![(ParamKey::new("constant", "value"), Param::float(7.0, -1e9, 1e9))],
+            },
+        );
         let vals = g.expression_values(n);
         assert_eq!(vals.len(), 1, "only the expression-bound param is reported");
         let (group, name, p) = vals[0];

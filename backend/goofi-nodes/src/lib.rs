@@ -51,7 +51,8 @@ mod tests {
         for (owner, decl) in decls {
             let Some(expr) = decl.expression else { continue };
             assert!(!expr.source.trim().is_empty(), "{}: {}/{} has an empty expression", owner, decl.group, decl.name);
-            for name in goofi_node::global_ref_names(expr.source) {
+            for read in goofi_node::scan_globals(expr.source) {
+                let name = read.name;
                 assert!(
                     goofi_core::globals::SYSTEM_GLOBALS.iter().any(|g| g.name == name),
                     "{}: the expression on {}/{} reads `globals.{}`, which no fresh patch has",

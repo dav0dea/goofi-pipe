@@ -21,11 +21,13 @@
 //! awaited, so answering it advances nothing. What the cancelled messages already SAID still stands,
 //! because a slot message is declarative and its delivery never depended on the ack.
 //!
-//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]) and a
-//! channel being attached, which plans that node's slots from an empty base because it heard
-//! nothing said before it arrived. The cutover adds the rest of §4's callers — node removal,
-//! `restart_node`, a load, and an expression binding, which joins a producer's target set without
-//! being a link at all.
+//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]), a channel
+//! being attached — which plans that node's slots from an empty base, because it heard nothing said
+//! before it arrived — and every EXPRESSION BINDING change: binding, unbinding, a rename, a globals
+//! edit, a referenced node being added, removed or restarted (§5.3). A binding is a consumer
+//! subscription like any other ([`Slot::Bind`]); what differs is only that its phase 2 is a
+//! `SetParam`. The cutover adds the rest of §4's callers, all of them about a NODE rather than a
+//! wire: birth, removal, `restart_node` and a load.
 //!
 //! [`Graph::add_link`]: crate::Graph::add_link
 //! [`Graph::remove_link`]: crate::Graph::remove_link
@@ -36,11 +38,25 @@ use std::sync::Arc;
 use super::wire::{Control, ControlSink, Envelope};
 use crate::Uid;
 
-/// The producer end of a wire: a node and one of its output slots.
+/// The producer end of a wire: a node and one of its output slots. A producer end is always an
+/// output slot, whichever kind of consumer it feeds.
 pub(crate) type Wire = (Uid, &'static str);
 
-/// The consumer input slot a sequence is about.
-pub(crate) type SlotKey = (Uid, &'static str);
+/// What a consumer subscribes THROUGH — the sequence's subject.
+///
+/// §5.3: an expression reference is a link. A bound param subscribes to a producer exactly as an
+/// input slot does, and must be attached and detached through the same three phases: the `SetParam`
+/// carrying its resolved services IS the consumer-apply. So the planner is keyed by consumer
+/// *subscription*, not by input slot, and a binding names itself by a graph-minted id that survives
+/// a rebind — an id rather than the `ParamKey` itself so the key stays `Copy` and cheap to hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Slot {
+    In(&'static str),
+    Bind(usize),
+}
+
+/// The consumer subscription a sequence is about.
+pub(crate) type SlotKey = (Uid, Slot);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -239,7 +255,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::EventId;
-    use crate::Graph;
+    use crate::{Graph, Param};
 
     /// Every message the graph sent, in order, whoever it was for. A shared log rather than one
     /// recorder per node, because the ordering ACROSS nodes is the whole subject: phase 1 leaves a
@@ -294,7 +310,10 @@ mod tests {
     enum Sent {
         In { to: Uid, slot: String, services: Vec<String> },
         Out { to: Uid, slot: String, targets: Vec<(String, EventId)> },
-        Param { to: Uid },
+        /// A binding's phase 2. `vars` is `Some` for an expression and `None` for a literal, which
+        /// is how an unbind announces itself — collapsing the two would make an unbind's message
+        /// indistinguishable from a rebind's.
+        Param { to: Uid, key: String, vars: Option<Vec<(String, EventId)>> },
     }
 
     fn sent(batch: &[(Uid, Envelope)]) -> Vec<Sent> {
@@ -311,7 +330,23 @@ mod tests {
                     slot: slot.clone(),
                     targets: targets.iter().map(|(door, id)| (scoped(door), *id)).collect(),
                 },
-                Control::SetParam { .. } => Sent::Param { to: *to },
+                Control::SetParam { key, value } => Sent::Param {
+                    to: *to,
+                    key: format!("{}.{}", key.group, key.name),
+                    vars: match value {
+                        crate::runtime::ParamValue::Literal(_) => None,
+                        crate::runtime::ParamValue::Expr { vars, .. } => Some(
+                            vars.iter()
+                                .map(|v| match v {
+                                    crate::runtime::Var::Stream { service, event_id, .. } => {
+                                        (scoped(service), *event_id)
+                                    }
+                                    other => (format!("{other:?}"), 0),
+                                })
+                                .collect(),
+                        ),
+                    },
+                },
             })
             .collect()
     }
@@ -718,6 +753,130 @@ mod tests {
             [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(c, 1), 1)] }],
             "and the producer is grown, which a stale diff base would have skipped"
         );
+    }
+
+    #[test]
+    fn binding_an_expression_runs_the_same_three_phases_a_wire_does() {
+        // §5.3: an expression reference IS a link, so binding and unbinding go through §4's
+        // sequence — the `SetParam` carrying the resolved services is the consumer-apply, and the
+        // producer's target set grows AFTER it and shrinks BEFORE it, exactly as for a wire.
+        let mut g = Graph::new();
+        let src = source(&mut g);
+        g.rename_node(src, "src").unwrap();
+        let reader = g.add_node("_TestConst", None).unwrap();
+        g.set_evaluator(Arc::new(PassThrough));
+        let log = attach(&mut g, &[src, reader]);
+
+        g.set_expression(reader, "constant", "value", "nd('src')", true, false).unwrap();
+        let apply = log.take();
+        assert_eq!(
+            sent(&apply),
+            [Sent::Param {
+                to: reader,
+                key: "constant.value".to_string(),
+                vars: Some(vec![(out_name(src, 0, "out"), 65)]),
+            }],
+            "a pure add opens at phase 2, and the node is handed the SERVICE, never a name",
+        );
+        ack_all(&apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: src, slot: "out".to_string(), targets: vec![(door_name(reader, 0), 65)] }],
+            "then phase 3 tells the producer to ring it",
+        );
+        settle(&log, &mut g);
+
+        // A literal over the bound param unbinds it: the producer loses the subscriber FIRST, and
+        // only then is the node told its param is a number again.
+        g.update_param(reader, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
+        let shrink = log.take();
+        assert_eq!(
+            sent(&shrink),
+            [Sent::Out { to: src, slot: "out".to_string(), targets: Vec::new() }],
+            "1. producer-shrink",
+        );
+        ack_all(&shrink, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Param { to: reader, key: "constant.value".to_string(), vars: None }],
+            "2. the literal, and no phase 3 to run",
+        );
+    }
+
+    #[test]
+    fn disabling_a_binding_unsubscribes_it_and_leaves_the_source_stored() {
+        // The fx toggle. A disabled binding is KEPT — the user's code round-trips — but it drives
+        // nothing, so the node must hear the literal and the producer must stop ringing it. The
+        // binding still existing is exactly what makes this different from an unbind, and what a
+        // "does it still exist?" check on the wire message would get wrong.
+        let mut g = Graph::new();
+        let src = source(&mut g);
+        g.rename_node(src, "src").unwrap();
+        let reader = g.add_node("_TestConst", None).unwrap();
+        g.set_evaluator(Arc::new(PassThrough));
+        let log = attach(&mut g, &[src, reader]);
+        g.set_expression(reader, "constant", "value", "nd('src')", true, false).unwrap();
+        settle(&log, &mut g);
+
+        g.set_expression(reader, "constant", "value", "nd('src')", false, false).unwrap();
+        let shrink = log.take();
+        assert_eq!(sent(&shrink), [Sent::Out { to: src, slot: "out".to_string(), targets: Vec::new() }]);
+        ack_all(&shrink, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Param { to: reader, key: "constant.value".to_string(), vars: None }],
+            "the node is told a number, not a binding it must not run",
+        );
+        assert_eq!(
+            g.param_expression(reader, "constant", "value").map(|e| e.source),
+            Some("nd('src')".to_string()),
+            "and the source is still there for the toggle to turn back on",
+        );
+    }
+
+    #[test]
+    fn restarting_a_referenced_producer_re_sends_its_readers_the_new_service() {
+        // §3.1 renames every service at a rebirth, so a reader still holding the old name is
+        // holding one nothing will publish on. Asserted on what was SENT rather than on what the
+        // graph would answer if asked again — the resolution stores a uid and a slot and derives
+        // the name live, so re-deriving it here would agree with itself whether or not the reader
+        // was ever told. (That is exactly how this test first passed against no re-send at all.)
+        let mut g = Graph::new();
+        let src = source(&mut g);
+        g.rename_node(src, "src").unwrap();
+        let reader = g.add_node("_TestConst", None).unwrap();
+        g.set_evaluator(Arc::new(PassThrough));
+        let log = attach(&mut g, &[src, reader]);
+        g.set_expression(reader, "constant", "value", "nd('src')", true, false).unwrap();
+        settle(&log, &mut g);
+
+        g.restart_node(src).unwrap();
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Param {
+                to: reader,
+                key: "constant.value".to_string(),
+                vars: Some(vec![(out_name(src, 1, "out"), 65)]),
+            }],
+            "the reborn generation's service reached the reader",
+        );
+    }
+
+    /// An evaluator that compiles anything and evaluates nothing — the wire planner is about which
+    /// messages go where, and a real evaluator would only add an interpreter to that question.
+    struct PassThrough;
+    impl goofi_node::ExprEvaluator for PassThrough {
+        fn compile(&self, _source: &str) -> Result<goofi_node::Compiled, goofi_node::ExprError> {
+            Ok(goofi_node::Compiled { id: 1 })
+        }
+        fn eval(
+            &self,
+            _id: goofi_node::BindingId,
+            _ctx: &goofi_node::EvalCtx<'_>,
+        ) -> Result<goofi_core::Param, goofi_node::ExprError> {
+            Err("not evaluated here".into())
+        }
+        fn release(&self, _id: goofi_node::BindingId) {}
     }
 
     #[test]

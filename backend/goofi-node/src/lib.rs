@@ -540,32 +540,35 @@ string_error!(
     ExprError
 );
 
-/// The result of compiling an expression: the evaluator's opaque handle plus the
-/// statically-extracted references, so the engine knows the dependency set (for
-/// scheduling + dirty-tracking) without executing the snippet.
+/// The result of compiling an expression: the evaluator's opaque handle. What the snippet
+/// REFERENCES is not extracted here — the graph rewrote every `nd()` and `globals.*` term into a
+/// generated variable before compiling (spec §5.3), so the compiled source names none of them and
+/// the graph already holds the resolved variable map.
 pub struct Compiled {
     pub id: BindingId,
-    /// The distinct node NAMES the snippet references as `nd('name')`. Which output slot
-    /// each `nd()` resolves to is decided engine-side at eval (it exposes every slot of the
-    /// referenced node, keyed in [`EvalCtx::refs`]), so a compiled ref carries only the name.
-    pub refs: Vec<String>,
-    /// The distinct `globals.<name>` names the snippet reads, so the engine re-evaluates this
-    /// binding exactly when one of those globals changes (an unrelated global edit costs nothing).
-    pub global_refs: Vec<String>,
+}
+
+/// One expression variable's value, as the graph resolved it (spec §5.3). A stream variable carries
+/// a producer's frame; a `globals.*` variable carries a scalar.
+#[derive(Clone, Debug)]
+pub enum Local {
+    Frame(Data),
+    Value(Param),
 }
 
 /// Per-evaluation context handed to [`ExprEvaluator::eval`].
 pub struct EvalCtx<'a> {
-    /// Resolved referenced `Data` keyed by `(node name, slot|None)`. A `None` value
-    /// means the ref is missing / has not emitted (or is a feedback back-edge with no
-    /// prior frame) — the expression sees `nd(...)` as absent and may default it.
-    pub refs: &'a std::collections::HashMap<(String, Option<String>), Option<Data>>,
-    /// Engine wall-clock seconds (`NodeCtx::now`) — for time-based (ref-less) expressions.
+    /// The expression's variables, keyed by the GENERATED name the rewrite minted (`__v0`). A
+    /// `None` value is a variable that has not arrived yet — the expression sees it as absent.
+    ///
+    /// This replaced `refs` (keyed by node name and slot) and `globals` together: the rewrite is
+    /// what makes both unnecessary, and keeping either would leave two ways to reach a reference —
+    /// one the graph resolved and one the evaluator resolved for itself.
+    pub locals: &'a std::collections::HashMap<String, Option<Local>>,
+    /// Engine wall-clock seconds (`NodeCtx::now`) — for time-based (variable-less) expressions.
     pub t: f64,
     /// The param being driven, a type template the evaluator coerces its result to.
     pub target: &'a Param,
-    /// The patch globals — expressions read them as `globals.<name>` (missing → a natural error).
-    pub globals: &'a goofi_core::globals::GlobalsSnapshot,
 }
 
 /// Evaluates param expressions. Implemented by `goofi-python` against the free-threaded
@@ -588,16 +591,34 @@ pub trait ExprEvaluator: Send + Sync {
 // scan, so they can never disagree on what counts as a reference.
 // ---------------------------------------------------------------------------
 
-/// Scan `source` for `nd('name')` / `nd("name")` calls, yielding the byte span of each
-/// name *literal's content* (between the quotes) and the name, in source order.
+/// One `nd(..)` call [`scan_nd_calls`] found, with every span its two consumers need.
+///
+/// The two spans exist because the two consumers want different halves of one call: a RENAME
+/// replaces the name literal and must leave every other byte alone, while the expression REWRITE
+/// (`goofi_engine::expr_rewrite`) replaces the whole term. They share this scan rather than each
+/// carrying their own, because the drift between two word-boundary rules is invisible — a call one
+/// of them declines to see is a rename that silently stops following, or a reference that never
+/// becomes a variable.
+pub struct NdCall<'a> {
+    /// Byte offset of the `n` in `nd` — where the TERM begins.
+    pub start: usize,
+    /// The name literal's content, between the quotes — what a rename replaces.
+    pub name_start: usize,
+    pub name_end: usize,
+    /// One past the call's closing `)`, or `None` when the call does not close with one (an extra
+    /// argument, an unterminated call). A rename still applies to those; a rewrite cannot span
+    /// them, and leaves them verbatim so the failure is a visible eval error.
+    pub end: Option<usize>,
+    pub name: &'a str,
+}
+
+/// Scan `source` for `nd('name')` / `nd("name")` calls, in source order.
 ///
 /// A plain lexical scan, not a full parse: `nd` must be a standalone token (word
 /// boundary before it, so `round('x')`, `s.rfind('y')`, `grand('z')` do NOT match),
 /// whitespace between `nd` and `(` is tolerated (`nd ('sig')` is a valid call), and the
 /// first argument must be a single string literal (a non-literal `nd(x)` is skipped).
-/// This mirrors what the evaluator resolves — only the node NAME matters; `.slot`
-/// vs `.method` is decided at eval.
-fn scan_nd_calls(source: &str) -> Vec<(usize, usize, &str)> {
+pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
     let b = source.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -625,7 +646,20 @@ fn scan_nd_calls(source: &str) -> Vec<(usize, usize, &str)> {
                     j += 1;
                 }
                 if j < b.len() {
-                    out.push((start, j, &source[start..j]));
+                    // Where the whole call ends, when it ends cleanly: past the closing quote,
+                    // past any whitespace, on a `)`.
+                    let mut close = j + 1;
+                    while close < b.len() && (b[close] as char).is_whitespace() {
+                        close += 1;
+                    }
+                    let end = (b.get(close) == Some(&b')')).then_some(close + 1);
+                    out.push(NdCall {
+                        start: i,
+                        name_start: start,
+                        name_end: j,
+                        end,
+                        name: &source[start..j],
+                    });
                     i = j + 1;
                     continue;
                 }
@@ -636,61 +670,59 @@ fn scan_nd_calls(source: &str) -> Vec<(usize, usize, &str)> {
     out
 }
 
-/// The distinct node names referenced as `nd('name')` in `source`, in first-seen order.
-pub fn nd_ref_names(source: &str) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for (_, _, name) in scan_nd_calls(source) {
-        if !name.is_empty() && !names.iter().any(|n| n == name) {
-            names.push(name.to_string());
-        }
-    }
-    names
+/// One `globals.<name>` read [`scan_globals`] found.
+pub struct GlobalRead<'a> {
+    /// The whole term, `globals.` included — what the expression rewrite replaces.
+    pub start: usize,
+    pub end: usize,
+    pub name: &'a str,
 }
 
-/// Extract the distinct `globals.<name>` names an expression reads — the source of truth for both the
-/// eval-namespace injection and the engine's dirty-tracking (a binding re-evaluates exactly when one
-/// of these globals changes). Matches `globals` at a word boundary followed by `.<identifier>`. A
-/// byte scan (like `nd_ref_names`): a match inside a string literal only causes a harmless extra
-/// re-eval, never a missed one.
-pub fn global_ref_names(source: &str) -> Vec<String> {
+/// Scan `source` for `globals.<name>` reads, in source order. The same word-boundary rule
+/// [`scan_nd_calls`] applies, so `myglobals.x` is not a reference; the name must be a valid
+/// identifier, so a bare `globals.` and a digit-led name are not either.
+///
+/// A byte scan, not a parse: a match inside a string literal is read as a reference. That costs a
+/// variable nothing else names, never a missed one.
+pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
+    const PREFIX: &str = "globals.";
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let bytes = source.as_bytes();
-    let mut names: Vec<String> = Vec::new();
+    let mut out = Vec::new();
     let mut i = 0;
-    while let Some(pos) = source[i..].find("globals.") {
+    while let Some(pos) = source[i..].find(PREFIX) {
         let start = i + pos;
-        i = start + "globals.".len();
-        // Word boundary before `globals` (so `myglobals.x` doesn't match).
+        i = start + PREFIX.len();
         if start > 0 && is_ident(bytes[start - 1]) {
             continue;
         }
-        let name_start = start + "globals.".len();
+        let name_start = start + PREFIX.len();
         let mut end = name_start;
         while end < bytes.len() && is_ident(bytes[end]) {
             end += 1;
         }
-        // A valid identifier: non-empty and not starting with a digit.
         if end > name_start && !bytes[name_start].is_ascii_digit() {
-            let name = &source[name_start..end];
-            if !names.iter().any(|n| n == name) {
-                names.push(name.to_string());
-            }
+            out.push(GlobalRead { start, end, name: &source[name_start..end] });
+            i = end;
         }
     }
-    names
+    out
 }
 
 /// Rewrite every `nd('name')` literal for which `rename(name)` returns `Some(new)`,
 /// preserving the literal's quote style and every other byte of the source. Returns
 /// `Some(new_source)` if any literal changed, else `None` (nothing to do). Used when a
 /// referenced node is renamed: `nd('old')` follows to `nd('new')` across the graph.
+///
+/// This edits the AUTHORED source, which is the SSOT — the rewritten form the node runs is derived
+/// from it and re-derived after every rename.
 pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
     // Collect (start, end, replacement) then splice right-to-left so earlier byte offsets
     // stay valid as the string is edited.
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    for (start, end, name) in scan_nd_calls(source) {
-        if let Some(new) = rename(name) {
-            edits.push((start, end, new));
+    for call in scan_nd_calls(source) {
+        if let Some(new) = rename(call.name) {
+            edits.push((call.name_start, call.name_end, new));
         }
     }
     if edits.is_empty() {
@@ -1014,33 +1046,38 @@ mod tests {
     }
 
     #[test]
-    fn nd_ref_names_are_distinct_and_ordered() {
-        let names = nd_ref_names("nd('lfo') * 2 + nd(\"psd\").out.mean() + nd('lfo')[0]");
-        assert_eq!(names, vec!["lfo", "psd"], "distinct names in first-seen order");
-        assert!(nd_ref_names("t * 2").is_empty(), "no refs for a time expression");
+    fn a_call_is_found_only_at_a_word_boundary() {
+        // The rule BOTH consumers inherit — the rename rewriter and the expression rewrite. It is
+        // pinned here, once, because that is the whole reason they share this scan.
+        let names = |s| scan_nd_calls(s).into_iter().map(|c| c.name.to_string()).collect::<Vec<_>>();
+        assert_eq!(names("nd('s').find('sub')"), ["s"], "only nd(), not .find()");
+        assert!(names("round('x')").is_empty(), "round( is not nd(");
+        assert!(names("grand('z')").is_empty(), "grand( is not nd(");
+        assert_eq!(names("nd ('sig') * 2"), ["sig"], "whitespace before ( tolerated");
+        assert!(names("t * 2").is_empty(), "no calls in a time expression");
     }
 
     #[test]
-    fn nd_ref_names_requires_a_word_boundary() {
-        assert_eq!(nd_ref_names("nd('s').find('sub')"), vec!["s"], "only nd(), not .find()");
-        assert!(nd_ref_names("round('x')").is_empty(), "round( is not nd(");
-        assert!(nd_ref_names("grand('z')").is_empty(), "grand( is not nd(");
-        assert_eq!(nd_ref_names("nd ('sig') * 2"), vec!["sig"], "whitespace before ( tolerated");
-    }
+    fn a_call_reports_both_the_name_span_and_the_term_span() {
+        // The two consumers take different halves: a rename replaces `name_start..name_end`, the
+        // expression rewrite replaces `start..end`. Spelled out as literal offsets rather than
+        // asked of the scanner itself, which would agree with any answer it gave.
+        let src = "x + nd( \"psd\" ).out";
+        let calls = scan_nd_calls(src);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(&src[calls[0].name_start..calls[0].name_end], "psd");
+        assert_eq!(&src[calls[0].start..calls[0].end.unwrap()], "nd( \"psd\" )", "the whole call");
 
-    #[test]
-    fn global_ref_names_are_distinct_ordered_and_word_bounded() {
+        // A call that does not close with a `)` has no term span — a rename still applies to it,
+        // and the rewrite leaves it alone rather than spanning past the argument it cannot read.
+        let extra = scan_nd_calls("nd('a', 2)");
+        assert_eq!(extra[0].name, "a");
+        assert_eq!(extra[0].end, None);
         assert_eq!(
-            global_ref_names("globals.a + nd('x') * globals.b + globals.a"),
-            vec!["a", "b"],
-            "distinct global names in first-seen order"
+            rewrite_nd_refs("nd('a', 2)", |n| (n == "a").then(|| "b".to_string())).unwrap(),
+            "nd('b', 2)",
+            "a rename does not depend on the term span",
         );
-        assert!(global_ref_names("nd('x') + t").is_empty(), "no globals referenced");
-        // Word boundary before `globals` (so an attribute named `myglobals.x` doesn't match) and a
-        // valid identifier after the dot (a trailing dot / digit-led name is not a ref).
-        assert!(global_ref_names("myglobals.foo").is_empty(), "only the `globals` namespace matches");
-        assert_eq!(global_ref_names("globals.default_ufreq * 2"), vec!["default_ufreq"]);
-        assert!(global_ref_names("globals.").is_empty(), "a bare `globals.` is not a ref");
     }
 
     #[test]
