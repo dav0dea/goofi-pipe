@@ -2065,8 +2065,10 @@ impl Graph {
         }
         self.notify_param(uid, &key);
         let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
-        // The `common` group is scheduler metadata, not a node param — re-derive
-        // the cached run gate rather than dispatching it to the node.
+        // The `common` group is scheduler metadata, not a node param — re-derive the cached run
+        // gate rather than running the node's `on_param_changed` for it. The node still HEARS the
+        // edit (`notify_param` above): it is the scheduler's own param on the far side too, and
+        // §1.1 has the node re-derive its `RunPolicy` from the arrival without running.
         if group == "common" {
             entry.run_policy = RunPolicy::from_params(&entry.params.load());
             return Ok(());
@@ -2204,8 +2206,8 @@ impl Graph {
         }
         let bind_id = self.bind_id(uid, &key);
         // §5.3's four steps, in order: rewrite, resolve, compile the REWRITTEN source, ship. The
-        // scan runs even for a DISABLED binding, because `refs`/`globals` are what say which
-        // bindings a later rename or globals edit has to re-resolve — a disabled binding that an
+        // scan runs even for a DISABLED binding, because `terms` is what says which bindings a
+        // later rename or globals edit has to re-resolve — a disabled binding that an
         // fx toggle re-enables must come back resolved against the graph as it is then. What a
         // disabled binding does not get is variables, a handle, or a place in anyone's target set.
         let scanned = expr_rewrite::rewrite(source);
@@ -2254,10 +2256,13 @@ impl Graph {
         Ok(())
     }
 
-
-    /// Drop a binding and re-plan what it was subscribed to, answering nothing — the shared tail of
-    /// an empty `set_expression` and of a literal write over a bound param (§3.4: both mean unbind,
-    /// and the graph must mean by it what the node does).
+    /// Drop a binding and release its compiled handle — the shared tail of an empty
+    /// `set_expression` and of a literal write over a bound param (§3.4: both mean unbind, and the
+    /// graph must mean by it what the node does).
+    ///
+    /// It does NOT re-plan: its callers do, exactly once, through [`Self::notify_param`]. A second
+    /// `begin` on the same key cancels the first mid-sequence, so a re-plan here would leave the
+    /// producer-shrink it had already sent waiting on an ack nothing listens for.
     fn unbind(&mut self, uid: Uid, key: &ParamKey) {
         let Some(binding) = self.nodes.get_mut(&uid).and_then(|e| e.bindings.remove(key)) else {
             return;
@@ -4043,38 +4048,33 @@ mod tests {
 
     #[test]
     fn editing_a_referenced_global_re_resolves_only_the_bindings_that_read_it() {
-        // The targeted half: an unrelated global edit costs nothing. Driven by giving the two
-        // bindings DIFFERENT values, so a blanket re-resolution and a targeted one are
-        // distinguishable — an assertion that the untouched binding still holds its value would
-        // pass under either.
+        // The targeted half: a binding that does NOT read the edited global is not re-resolved.
+        //
+        // Its value cannot show that — `globals.other` resolves to 7.0 whether it is re-resolved or
+        // not, so a "does it still hold 7.0?" oracle passes against a blanket re-resolution. What
+        // does show it is the compiled HANDLE: re-resolving a binding releases the old one and
+        // compiles the rewritten source again, so the untouched binding's id must never appear in
+        // the evaluator's release log.
         use goofi_core::globals::GlobalValue;
-        let mut g = eval_graph();
+        let mock = Arc::new(MockEval::default());
+        let mut g = Graph::new();
+        g.set_evaluator(mock.clone());
         g.apply_global_change("other", Some(GlobalValue::Float(7.0))).unwrap();
         let (a, b) = (g.add_node("_TestConst", None).unwrap(), g.add_node("_TestConst", None).unwrap());
         g.set_expression(a, "constant", "value", "globals.default_ufreq", true, false).unwrap();
         g.set_expression(b, "constant", "value", "globals.other", true, false).unwrap();
+        let key = ParamKey::new("constant", "value");
+        let (a_id, b_id) = (g.nodes[&a].bindings[&key].id.unwrap(), g.nodes[&b].bindings[&key].id.unwrap());
 
-        // A global the FIRST binding reads. The second's variable is untouched…
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(50.0))).unwrap();
+
+        let released = mock.releases.lock().unwrap().clone();
+        assert!(released.contains(&a_id), "the binding that reads it WAS re-resolved");
+        assert!(!released.contains(&b_id), "and the one that does not read it was not");
+        // …and the re-resolution actually landed the new value, so "nothing was re-resolved" is not
+        // a way to pass the line above.
         assert_eq!(resolved(&g, a, "constant", "value"), ["__v0=Some(50.0)"]);
         assert_eq!(resolved(&g, b, "constant", "value"), ["__v0=Some(7.0)"]);
-
-        // …and one NEITHER reads re-resolves nothing at all, which is observable because a
-        // re-resolution would have to read the store and would still land the same value: the
-        // guard is that `globals` names what the binding reads, and `other` is not in it.
-        let key = ParamKey::new("constant", "value");
-        let reads = |g: &Graph, uid: Uid| {
-            g.nodes[&uid].bindings[&key]
-                .terms
-                .iter()
-                .filter_map(|t| match t {
-                    expr_rewrite::VarRef::Global { key, .. } => Some(key.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(reads(&g, b), ["other"], "the read set is what targets it");
-        assert_eq!(reads(&g, a), ["default_ufreq"]);
     }
 
     #[test]

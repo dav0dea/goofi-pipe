@@ -1044,6 +1044,19 @@ mod tests {
     }
 
     #[test]
+    fn a_globals_read_needs_a_word_boundary_and_a_real_identifier() {
+        // The other scanner's rule, and the three ways it says no. `globals.` with nothing after it
+        // and `globals.1x` are not references — a digit-led name is not a Python identifier, so
+        // reading one would mint a variable for a term the evaluator could never name.
+        let names = |s| scan_globals(s).into_iter().map(|r| r.name.to_string()).collect::<Vec<_>>();
+        assert_eq!(names("globals.default_ufreq * 2"), ["default_ufreq"]);
+        assert!(names("myglobals.foo").is_empty(), "only the `globals` namespace matches");
+        assert!(names("globals.").is_empty(), "a bare `globals.` is not a ref");
+        assert!(names("globals.1x").is_empty(), "and neither is a digit-led name");
+        assert_eq!(names("globals._x + globals.a1"), ["_x", "a1"], "but underscores and digits WITHIN one are fine");
+    }
+
+    #[test]
     fn a_call_is_found_only_at_a_word_boundary() {
         // The rule BOTH consumers inherit — the rename rewriter and the expression rewrite. It is
         // pinned here, once, because that is the whole reason they share this scan.

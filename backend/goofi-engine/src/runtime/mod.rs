@@ -1010,11 +1010,18 @@ mod tests {
     fn a_settled_binding_re_dispatches_nothing() {
         // The hook is the single source of truth for param→field, so an evaluated value has to
         // reach it — but a binding that keeps evaluating to the SAME value must not hammer it at
-        // the node's run rate. The old engine test that pinned this evaluated on the tick and went
-        // with `resolve_level_bindings`; the rule did not, so it is pinned here, at its new home.
+        // the node's RUN RATE. A node that re-opens a device or reallocates a buffer in that hook
+        // would do it every single run. The old engine test that pinned this evaluated on the tick
+        // and went with `resolve_level_bindings`; the rule did not, so it lives here now.
+        //
+        // The node is made to AUTOTRIGGER, which is the whole of what makes this test mean its
+        // name: `run_once` only reaches `eval_bindings` past `should_process()`, and a fixture that
+        // never gets there passes against a deleted guard — and against an `eval_bindings` that is
+        // nothing but a `panic!`. The first version of this test did exactly that.
         let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
         r.set_param(ParamKey::new("cfg", "ok"), ParamValue::Literal(Param::boolean(true)));
         assert!(r.fault.is_none(), "initialized, so the hook is live");
+        r.set_param(ParamKey::new("common", "autotrigger"), ParamValue::Literal(Param::boolean(true)));
 
         let key = ParamKey::new("cfg", "scale");
         r.set_param(key.clone(), value_expr(Param::float(2.0, 0.0, 4.0), false));
@@ -1022,13 +1029,16 @@ mod tests {
         assert!(hook_log().ends_with(&["cfg.scale".to_string()]), "the new value reached the field");
 
         r.run_once();
+        assert!(r.last_run.is_some(), "the node RAN — so `eval_bindings` was entered, not skipped");
+        r.run_once();
         r.run_once();
         assert_eq!(hook_log().len(), settled, "an unchanged evaluated value re-dispatches nothing");
 
-        // The control: a value that really did change is dispatched, so the guard above is not
-        // "the hook is never called".
-        r.set_param(key, value_expr(Param::float(3.0, 0.0, 4.0), false));
-        assert_eq!(hook_log().len(), settled + 1);
+        // The control: a value that really did change is dispatched on the very next run, so the
+        // guard above is not "the hook is never called" and not "the node never runs".
+        r.deliver_arrival(key, Param::float(3.0, 0.0, 4.0));
+        r.run_once();
+        assert_eq!(hook_log().len(), settled + 1, "a changed value IS dispatched, from inside the run");
     }
 
     #[test]
