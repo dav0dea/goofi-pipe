@@ -7765,7 +7765,7 @@ mod tests {
             ["__v0!no node named `src`"],
             "a variable still naming a dead producer's service waits on it forever",
         );
-        assert_eq!(g.last_error(host).as_deref(), Some("no node named `src`"));
+        assert_eq!(g.last_error(host), Some("no node named `src`"));
 
         g.add_node_at("_TestConst", None, src, "src").unwrap();
         assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=src.out#65"], "undo-of-delete");
@@ -7841,6 +7841,20 @@ mod tests {
         // Disabling the binding removes it from the live set (its value is now the literal).
         g.set_expression(n, "constant", "value", "7", false, false).unwrap();
         assert!(g.expression_values(n).is_empty(), "disabled binding is not a live value");
+
+        // And a RESTART clears them: they are the corpse's report, and a fresh instance has
+        // evaluated nothing yet. Left standing, the inspector preview shows a dead node's numbers
+        // until the new one happens to report — indistinguishable from a live value.
+        g.set_expression(n, "constant", "value", "7", true, false).unwrap();
+        g.apply_status(
+            n,
+            runtime::Status::ParamValues {
+                evaluated: vec![(ParamKey::new("constant", "value"), Param::float(7.0, -1e9, 1e9))],
+            },
+        );
+        assert_eq!(g.expression_values(n).len(), 1);
+        g.restart_node(n).unwrap();
+        assert!(g.expression_values(n).is_empty(), "the new instance has reported nothing");
     }
 
     #[test]
