@@ -229,8 +229,13 @@ impl NodeRuntime {
 
     /// Path A — a frame on an input slot. A `trigger_process` slot wakes the node; a reference
     /// slot updates the cell and nothing more.
+    ///
+    /// Single slots only: a `multi` slot keeps one cell per WIRE, ordered by that wire's position
+    /// in the slot's service list, so it arrives with the transport that subscribes per wire.
     pub fn deliver_input(&mut self, slot: &str, frame: Data) {
-        let Some(decl) = self.manifest.inputs.iter().find(|s| s.name == slot) else { return };
+        let Some(decl) = self.manifest.inputs.iter().find(|s| s.name == slot && !s.multi) else {
+            return;
+        };
         self.inputs.insert(decl.name, Some(frame));
         if decl.trigger_process {
             self.trigger_pending = true;
