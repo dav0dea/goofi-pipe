@@ -14,7 +14,7 @@ use std::time::Duration;
 use goofi_core::{Data, Meta, Param, SlotType, Value};
 use goofi_engine::runtime::{
     door_service, iox_node, output_service, service_base, Control, ControlSink, Doorbell, Envelope,
-    IoxNode, IoxTransport, NodeChannel, NodeRuntime, ParamValue, Status, Transport,
+    IoxNode, IoxTransport, NodeChannel, NodeFault, NodeRuntime, ParamValue, Status, Transport,
 };
 use goofi_engine::Uid;
 use goofi_node::{
@@ -167,6 +167,12 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
         channel.drain_status(),
         vec![Status::Ack { seq: 42, ok: Err("no output slot `nope`".to_string()) }]
     );
+
+    // The status channel carries the node's own state as well as its acks, and every variant takes
+    // the same crossing — a `Fault` is what the console and the node badge are drawn from.
+    let fault = NodeFault::Process { msg: "boom".to_string(), since: 12.5 };
+    transport.report(Status::Fault { fault: Some(fault.clone()) });
+    assert_eq!(channel.drain_status(), vec![Status::Fault { fault: Some(fault) }]);
 }
 
 #[test]

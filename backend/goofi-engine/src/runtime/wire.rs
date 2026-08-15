@@ -313,5 +313,11 @@ mod tests {
         for status in statuses {
             assert_eq!(Status::decode(&status.encode()), Ok(status.clone()), "{status:?}");
         }
+
+        // And a payload that is not one of ours is refused rather than half-read: both decoders are
+        // the far end of a shared-memory service anyone could have written to, and the transport
+        // drops what it cannot read because there is no seq to answer with.
+        assert!(Envelope::decode(b"not msgpack at all").is_err());
+        assert!(Status::decode(&[0xc1]).is_err());
     }
 }
