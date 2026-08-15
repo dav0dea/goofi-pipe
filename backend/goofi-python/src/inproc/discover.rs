@@ -12,7 +12,7 @@ use std::path::Path;
 use goofi_node::discover::{discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
 use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, Outputs, Params};
 
-use crate::PyNode;
+use super::PyNode;
 
 /// A stand-in for a Python node whose per-instance construction failed (its module re-exec raised).
 /// It surfaces the error TERMINALLY from `setup()` — the node's bootstrap-error channel — instead of
@@ -66,7 +66,7 @@ pub fn probe(path: &Path, ft_python: &str) -> Discovery {
 }
 
 /// Turn a probe-[`Discovered`] into an in-process [`PyNodeType`]. Public so a caller that already
-/// ran [`probe`] can build the type without a second spawn (mirrors `goofi_subproc::node_type_from`).
+/// ran [`probe`] can build the type without a second spawn (mirrors [`crate::subproc::node_type_from`]).
 pub fn node_type_from(d: Discovered) -> PyNodeType {
     let path = d.source.clone();
     py_type_from_discovered(&path, d)

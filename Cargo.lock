@@ -587,8 +587,7 @@ dependencies = [
  "goofi-bridge",
  "goofi-engine",
  "goofi-init",
- "goofi-py",
- "goofi-subproc",
+ "goofi-python",
  "tokio",
 ]
 
@@ -658,19 +657,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goofi-py"
-version = "3.1.0"
-dependencies = [
- "goofi-core",
- "goofi-engine",
- "goofi-node",
- "goofi-pymod",
- "goofi-subproc",
- "indexmap",
- "pyo3",
-]
-
-[[package]]
 name = "goofi-pymod"
 version = "3.1.0"
 dependencies = [
@@ -684,14 +670,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "goofi-subproc"
+name = "goofi-python"
 version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
+ "goofi-engine",
  "goofi-node",
+ "goofi-pymod",
  "iceoryx2",
  "indexmap",
+ "pyo3",
 ]
 
 [[package]]

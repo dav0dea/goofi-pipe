@@ -149,7 +149,7 @@ is tiered; the browser is a read-only replica driven by commands.
        │ native Rust   │ in-process    │ detached worker
        │ (inventory)   │ Python (FT)   │ + iceoryx2 SHM
        ▼               ▼               ▼
-    goofi-nodes    goofi-py/PyNode   goofi-subproc → `python -c "import goofi; goofi.serve()"`
+    goofi-nodes  goofi-python::inproc  goofi-python::subproc → `python -c "import goofi; goofi.serve()"`
 ```
 
 ### Control plane — `/control` WS
@@ -223,7 +223,9 @@ cargo run                       # launches the backend + bridge, prints the URL
 # always runs .gfivenv, which `cargo run -p goofi-init` provisions.
 
 cargo test --workspace                      # must stay green, and warning-free
-cargo test -p goofi-py --features embed     # in-process Python host (needs .gfivenv-ft)
+cargo test -p goofi-python --features embed # BOTH Python tiers; `embed` adds the in-process
+#                                             # host, which needs .gfivenv-ft. Without it only
+#                                             # the subprocess tier's tests compile.
 cargo test -p goofi-pymod --features host   # the goofi package's own decode tests (InputSlot → probe::Slot)
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # ALWAYS check before declaring done
 #   `--all-targets` is load-bearing: a plain `cargo build` never compiles the integration-test
@@ -317,9 +319,8 @@ processes outlive the test and corrupt every later latency measurement.
 | `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v7 save/load — a zip of `patch.yaml` + `workspace/` (`archive.rs`), incl. the opaque frontend `layout` blob, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
 | `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
 | `goofi-bridge` | the axum server: `/control` dispatch + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers, and the yrs document itself — `crdt.rs` (shape-agnostic: graph mirror, sync handshake, idempotent reconcile) beside `crdt_mirror.rs`, its only caller and the one place the doc's roots are named. |
-| `goofi-py` | the in-process Python tier: `PyNode` (a `Node` adapter over a live `goofi.Node`), the pyo3 param-expression evaluator, discovery. Feature-gated `embed`. |
+| `goofi-python` | the manager side of BOTH Python tiers, one crate because the probe that routes between them is the same probe: `inproc` (`PyNode` — a `Node` adapter over a live `goofi.Node` — plus the pyo3 param-expression evaluator; feature-gated `embed`, since it LINKS libpython) and `subproc` (`RemoteNode`: spawn, seq-framed iceoryx2 round-trip, error frames; unconditional, since it only spawns one). Both expose the same `probe`/`node_type_from` pair. |
 | `goofi-pymod` | the `goofi` Python package itself, in Rust (pyo3): `Node`/`Data`/`Meta`/params, `introspect()`, the shared `exec` marshalling, and `serve()` — the iceoryx2 child loop. Dual-built: an abi3 wheel for GIL pythons, an rlib linked into the FT host. |
-| `goofi-subproc` | `RemoteNode` — the manager side of the subprocess tier (spawn, seq-framed iceoryx2 round-trip, error frames). |
 | `goofi-cli` | the `goofi-pipe` binary: arg parsing, tier routing/registration, `build.rs` (frontend build + pyo3 config). |
 
 ## Frontend map (`frontend/src/lib/`)

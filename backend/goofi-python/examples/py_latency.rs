@@ -1,7 +1,7 @@
 //! Latency + concurrency-scaling probe for the in-process Python node path.
 //! Not a test — run under the FT env:
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
-//!     cargo run -p goofi-py --features embed --example py_latency --release
+//!     cargo run -p goofi-python --features embed --example py_latency --release
 //!
 //! Measures (1) per-tick latency of a single Python node ticked by the engine and
 //! (2) how an N-wide fan-out of Python nodes scales on the parallel scheduler,
@@ -11,7 +11,7 @@ use std::time::Instant;
 use goofi_core::Param;
 use goofi_engine::Graph;
 use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
-use goofi_py::PyNode;
+use goofi_python::inproc::PyNode;
 
 static PY_IN: &[SlotDecl] = &[SlotDecl {
     name: "data",

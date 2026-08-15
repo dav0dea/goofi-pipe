@@ -3,12 +3,12 @@
 //! other in-process host tests — every one of them would trip on its own first tick.
 //!
 //! Runs only with `embed` + a free-threaded interpreter:
-//!   cargo test -p goofi-py --features embed --test gil_tripwire
+//!   cargo test -p goofi-python --features embed --test gil_tripwire
 #![cfg(feature = "embed")]
 
 use goofi_core::Data;
 use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
-use goofi_py::PyNode;
+use goofi_python::inproc::PyNode;
 use indexmap::IndexMap;
 
 /// A source node whose first `process` re-enables the GIL — the shape an FT-unsafe import at

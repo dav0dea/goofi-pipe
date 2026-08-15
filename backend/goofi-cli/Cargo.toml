@@ -12,15 +12,13 @@ path = "src/main.rs"
 goofi-bridge = { path = "../goofi-bridge" }
 # Direct, for the node-registration vocabulary (`Registration`) the tier routing below reads.
 goofi-engine = { path = "../goofi-engine" }
-goofi-subproc = { path = "../goofi-subproc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-# In-process Python nodes + the param-expression evaluator (pyo3, free-threaded 3.14t).
-# ON by default: `cargo run -p goofi-init` creates a repo-local `.gfivenv-ft` and the
-# `.cargo/config.toml` that points pyo3 at it, so `cargo run` needs no env vars. The build script
-# only CHECKS that this happened — it cannot provision, because cargo reads that config once, at
-# startup. Build a pure-native binary (no Python, no interpreter needed) with
-# `--no-default-features`.
-goofi-py = { path = "../goofi-py", optional = true }
+# BOTH Python node tiers + the param-expression evaluator. ON by default: `cargo run -p
+# goofi-init` creates a repo-local `.gfivenv-ft` and the `.cargo/config.toml` that points pyo3 at
+# it, so `cargo run` needs no env vars. The build script only CHECKS that this happened — it
+# cannot provision, because cargo reads that config once, at startup. Build a pure-native binary
+# (no Python, no interpreter needed) with `--no-default-features`.
+goofi-python = { path = "../goofi-python", optional = true }
 # The venv layout and the interpreter lookup, shared with `cargo run -p goofi-init` so the binary's
 # default and that command's output are one definition rather than two that can drift.
 goofi-init = { path = "../goofi-init" }
@@ -30,6 +28,8 @@ goofi-init = { path = "../goofi-init" }
 [build-dependencies]
 goofi-init = { path = "../goofi-init" }
 
+# One feature for Python node support, not one per tier: the free-threaded probe IS the router,
+# so without it there is nothing to decide between in-process and subprocess.
 [features]
 default = ["python"]
-python = ["dep:goofi-py", "goofi-py/embed"]
+python = ["dep:goofi-python", "goofi-python/embed"]

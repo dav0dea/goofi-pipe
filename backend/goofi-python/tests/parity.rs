@@ -7,13 +7,13 @@
 //! Runs only with `embed` + a free-threaded interpreter (the in-process host). The subprocess
 //! interpreter defaults to the same one (it has goofi+numpy); override with
 //! GOOFI_SUBPROC_TEST_PYTHON. Example:
-//!   cargo test -p goofi-py --features embed --test parity
+//!   cargo test -p goofi-python --features embed --test parity
 #![cfg(feature = "embed")]
 
 use goofi_core::{Data, Meta, Param, Value};
 use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
-use goofi_py::PyNode;
-use goofi_subproc::RemoteNode;
+use goofi_python::inproc::PyNode;
+use goofi_python::subproc::RemoteNode;
 use indexmap::IndexMap;
 
 /// One authored node, exercised by both tiers. Reads a param + input meta, and returns an
@@ -111,7 +111,7 @@ fn tick_absent(node: &mut dyn Node, params: &ParamGroups) -> (goofi_node::NodeRe
 
 #[test]
 fn both_tiers_pass_a_declared_input_with_no_frame_as_none() {
-    let ft = goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
+    let ft = goofi_python::inproc::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
     let subpy = std::env::var("GOOFI_SUBPROC_TEST_PYTHON").unwrap_or(ft);
     let p = ParamGroups::new();
 
@@ -140,7 +140,7 @@ fn both_tiers_pass_a_declared_input_with_no_frame_as_none() {
 
 #[test]
 fn in_process_and_subprocess_produce_identical_output() {
-    let ft = goofi_py::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
+    let ft = goofi_python::inproc::interpreter_path().expect("no FT interpreter (PYO3_PYTHON) for the subprocess tier");
     let subpy = std::env::var("GOOFI_SUBPROC_TEST_PYTHON").unwrap_or(ft);
     let p = params();
 

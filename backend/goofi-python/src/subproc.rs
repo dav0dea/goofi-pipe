@@ -1,4 +1,4 @@
-//! goofi-subproc — the subprocess node tier (Pathway C).
+//! The subprocess node tier (Pathway C).
 //!
 //! A [`RemoteNode`] runs a Python node in an isolated **GIL** interpreter, one
 //! process per node. It exists for two reasons: (1) deps that aren't
@@ -330,7 +330,7 @@ pub struct SubprocNodeType {
     pub factory: NodeFactory,
 }
 
-pub use goofi_node::discover::Discovery;
+use crate::Discovery;
 
 /// Probe one file for this tier, reporting all three outcomes. The CLI uses this (rather than
 /// [`discover_one`]) because it needs the failure REASON to list the node as unavailable, and one
@@ -1097,8 +1097,15 @@ class Slow(goofi.Node):
         // The fidelity case a ctrl_c handler cannot cover: SIGKILL the intermediate parent, which
         // gets no chance to clean up. The OS closes its write end anyway, so the child still EOFs.
         let py = require_python();
+        // libtest names a test by its module path MINUS the crate root, so deriving the filter
+        // rather than spelling it keeps this working when the module moves. It has moved: this
+        // file was its own crate, where the name was `tests::…`; hard-coded, the filter silently
+        // matched NOTHING the moment it became `subproc::tests::…` — no helper, no announced pid,
+        // and a failure that reads as "the child was orphaned" rather than "nobody ran".
+        let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
+        let helper_test = format!("{module}::liveness_helper_process");
         let mut helper = Command::new(std::env::current_exe().expect("test binary path"))
-            .args(["--exact", "tests::liveness_helper_process", "--nocapture", "--test-threads=1"])
+            .args(["--exact", &helper_test, "--nocapture", "--test-threads=1"])
             .env(HELPER_ENV, &*py)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

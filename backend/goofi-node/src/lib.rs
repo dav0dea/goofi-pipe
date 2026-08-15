@@ -13,7 +13,7 @@ use std::fmt;
 use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
-/// Runtime node-discovery scaffolding shared by the discovery backends (goofi-py, goofi-subproc).
+/// Runtime node-discovery scaffolding shared by both of `goofi-python`'s tiers.
 pub mod discover;
 
 // ---------------------------------------------------------------------------
@@ -452,7 +452,7 @@ pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
 }
 
 // ---------------------------------------------------------------------------
-// Param expressions — the injected evaluator seam (impl lives in goofi-py, so the
+// Param expressions — the injected evaluator seam (impl lives in goofi-python, so the
 // engine core carries no pyo3 dependency). See the param-expressions design.
 // ---------------------------------------------------------------------------
 
@@ -494,7 +494,7 @@ pub struct EvalCtx<'a> {
     pub globals: &'a goofi_core::globals::GlobalsSnapshot,
 }
 
-/// Evaluates param expressions. Implemented by `goofi-py` against the free-threaded
+/// Evaluates param expressions. Implemented by `goofi-python` against the free-threaded
 /// interpreter and injected into the engine, so the engine core carries no pyo3
 /// dependency. The engine owns the binding lifecycle + scheduling and calls this only
 /// to compile / evaluate / release.

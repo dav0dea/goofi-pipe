@@ -7,7 +7,7 @@
 //! Runs only with the `embed` feature + a free-threaded interpreter, e.g.:
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib \
 //!     PYTHONPATH=<ft-venv site-packages> \
-//!     cargo test -p goofi-py --features embed --test engine_integration
+//!     cargo test -p goofi-python --features embed --test engine_integration
 #![cfg(feature = "embed")]
 
 use goofi_core::{Param, Value};
@@ -15,7 +15,7 @@ use goofi_engine::Graph;
 use goofi_node::{
     Isolation, Node, NodeManifest, OutputDecl, ParamDecl, SlotDecl,
 };
-use goofi_py::PyNode;
+use goofi_python::inproc::PyNode;
 
 // A Python node type descriptor: one F32 "data" input (triggers), one "out".
 static PY_IN: &[SlotDecl] = &[SlotDecl {
@@ -133,7 +133,7 @@ fn real_evaluator_resolves_a_param_expression_end_to_end() {
     // "no expression evaluator available"; this proves the real evaluator resolves it.
     assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
     let mut g = Graph::new();
-    g.set_evaluator(std::sync::Arc::new(goofi_py::PyExprEvaluator::new().unwrap()));
+    g.set_evaluator(std::sync::Arc::new(goofi_python::inproc::PyExprEvaluator::new().unwrap()));
 
     let n = g.add_node("_TestConst", None).unwrap();
     g.update_param(n, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
@@ -168,7 +168,7 @@ fn renaming_a_producer_keeps_the_real_evaluator_expression_resolving() {
     // (not just a string rewrite that leaves the compiled refs pointing at the old name).
     assert!(!PyNode::gil_enabled().unwrap(), "interpreter must be free-threaded");
     let mut g = Graph::new();
-    g.set_evaluator(std::sync::Arc::new(goofi_py::PyExprEvaluator::new().unwrap()));
+    g.set_evaluator(std::sync::Arc::new(goofi_python::inproc::PyExprEvaluator::new().unwrap()));
 
     let src = g.add_node("_TestConst", None).unwrap();
     g.rename_node(src, "src").unwrap();
@@ -204,7 +204,7 @@ fn probe_python() -> String {
             cands.push(p);
         }
     }
-    cands.extend(goofi_py::interpreter_path());
+    cands.extend(goofi_python::inproc::interpreter_path());
     for cand in &cands {
         let ok = std::process::Command::new(cand)
             .args(["-c", "import goofi"])
@@ -253,8 +253,8 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
     // real scan trips over are the three asserted here.
     let types: Vec<_> = ["triple.py", "_hidden.py", "broken.py"]
         .iter()
-        .filter_map(|f| match goofi_py::probe(&dir.join(f), &py) {
-            goofi_py::Discovery::Found(d) => Some(goofi_py::node_type_from(d)),
+        .filter_map(|f| match goofi_python::inproc::probe(&dir.join(f), &py) {
+            goofi_python::Discovery::Found(d) => Some(goofi_python::inproc::node_type_from(d)),
             _ => None,
         })
         .collect();

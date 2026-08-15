@@ -1,14 +1,14 @@
 //! Unified backend-parity benchmark — the SAME `x*2+1` workload run through all
 //! three node backends inside ONE engine, for a directly comparable measurement:
 //!   1. native Rust           (an inline element-wise node)
-//!   2. in-process FT Python  (pyo3, GIL off — `goofi_py::PyNode`)
-//!   3. subprocess Python     (a separate GIL interpreter — `goofi_subproc::RemoteNode`)
+//!   2. in-process FT Python  (pyo3, GIL off — `goofi_python::inproc::PyNode`)
+//!   3. subprocess Python     (a separate GIL interpreter — `goofi_python::subproc::RemoteNode`)
 //!
 //! Each backend is hosted identically (_TestConst -> node), warmed up, then
 //! timed per-tick, followed by a sustained stability run (no faulted error
 //! channel). Not a test — run under the FT env (same vars as `py_latency`):
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
-//!     cargo run -p goofi-py --features embed --example backend_parity --release
+//!     cargo run -p goofi-python --features embed --example backend_parity --release
 //! The subprocess tier talks iceoryx2, so point GOOFI_SUBPROC_PYTHON at an
 //! iceoryx2-capable interpreter (e.g. the repo .gfivenv); it falls back to PYO3_PYTHON.
 
@@ -20,8 +20,8 @@ use goofi_node::{
     Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
     ParamGroups, Params, SlotDecl,
 };
-use goofi_py::PyNode;
-use goofi_subproc::RemoteNode;
+use goofi_python::inproc::PyNode;
+use goofi_python::subproc::RemoteNode;
 
 /// The identical workload every backend computes, so the comparison is apples-to-apples.
 const PY_SRC: &str = concat!(

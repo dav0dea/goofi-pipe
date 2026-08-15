@@ -1,6 +1,6 @@
 //! Parent-liveness pipe — the subprocess tier's orphan guard, shared by both ends.
 //!
-//! The parent ([`goofi_subproc`]'s `Running::spawn`) creates a pipe, keeps the **write**
+//! The parent (`goofi_python::subproc`'s `Running::spawn`) creates a pipe, keeps the **write**
 //! end alive for the child's lifetime and **never writes to it**, and hands the **read**
 //! end to the child through [`ENV_VAR`]. The child (`goofi.serve`) blocks reading that end
 //! on a watcher thread: when the parent dies for ANY reason — Ctrl-C, a panic, `kill -9`, a
@@ -13,7 +13,7 @@
 //!
 //! It lives in `goofi-codec` because this crate already owns the parent↔child subprocess
 //! protocol (`encode_request`/`decode_response`): one module, compiled into both the parent
-//! (`goofi-subproc`) and the child (`goofi-pymod`'s wheel), so the two ends cannot drift.
+//! (`goofi-python`) and the child (`goofi-pymod`'s wheel), so the two ends cannot drift.
 
 use std::io::{self, PipeReader, PipeWriter, Read};
 use std::process::Command;

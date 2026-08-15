@@ -1,13 +1,13 @@
 [package]
-name = "goofi-py"
+name = "goofi-python"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# The pyo3 host is behind the `embed` feature so the default workspace build
-# stays python-free. Build/test the real thing with:
-#   PYO3_PYTHON=<python3.14t> PYTHONPATH=<ft site-packages> \
-#     cargo test -p goofi-py --features embed
+# The manager side of BOTH Python node tiers. `subproc` is unconditional — it only ever SPAWNS an
+# interpreter, so a python-free binary still runs Python nodes out-of-process. `inproc` LINKS
+# libpython, so it is behind `embed` and the default workspace build needs no interpreter:
+#   PYO3_PYTHON=<python3.14t> cargo test -p goofi-python --features embed
 [features]
 default = []
 embed = ["dep:pyo3", "dep:goofi_pymod"]
@@ -15,6 +15,10 @@ embed = ["dep:pyo3", "dep:goofi_pymod"]
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
+# The subprocess transport: `goofi-codec` request/response frames over iceoryx2 shared memory,
+# the Rust crate on BOTH ends (the child runs `goofi.serve` from the abi3 wheel, same 0.9.3 ABI).
+goofi-codec = { path = "../goofi-codec" }
+iceoryx2 = "0.9.3"
 # The dual-built goofi pyclass crate, linked (rlib, `host`) into the embedded FT
 # interpreter. Its `[lib] name` is `goofi`; the dep key renames it to `goofi_pymod`.
 goofi_pymod = { path = "../goofi-pymod", package = "goofi-pymod", features = ["host"], optional = true }
@@ -25,9 +29,6 @@ indexmap = "2"
 # For the engine-integration test (runs only under `--features embed`): proves a
 # real PyNode is hosted + ticked inside a live Graph, concurrently on the pool.
 goofi-engine = { path = "../goofi-engine" }
-# The backend-parity benchmark hosts the subprocess tier alongside the in-process
-# tiers in one engine, for a directly comparable measurement.
-goofi-subproc = { path = "../goofi-subproc" }
 
 # The latency/concurrency probe needs the embedded interpreter; skip it unless
 # `embed` is on (else the default workspace build would fail to compile it).
@@ -35,7 +36,8 @@ goofi-subproc = { path = "../goofi-subproc" }
 name = "py_latency"
 required-features = ["embed"]
 
-# Unified native-vs-FT-Python-vs-subprocess parity benchmark (same env as above).
+# Unified native-vs-FT-Python-vs-subprocess parity benchmark: all three backends in one engine,
+# for a directly comparable measurement. Both Python tiers are this crate's now.
 [[example]]
 name = "backend_parity"
 required-features = ["embed"]

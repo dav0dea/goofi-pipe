@@ -8,7 +8,7 @@
 //! instance keeps the module alive via the class `__globals__`).
 #![cfg(feature = "embed")]
 
-use goofi_py::PyNode;
+use goofi_python::inproc::PyNode;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 

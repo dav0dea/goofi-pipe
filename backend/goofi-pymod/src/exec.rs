@@ -1,5 +1,5 @@
 //! The shared Rust↔`goofi.Node` call marshalling, used by BOTH in-process tiers:
-//! goofi-py's `PyNode` (engine-tick-driven) and — in M3 — `goofi.serve`
+//! goofi-python's `inproc::PyNode` (engine-tick-driven) and — in M3 — `goofi.serve`
 //! (iceoryx2-driven). Writing it once is the point: the two tiers can't drift.
 //! It operates on `goofi_core::Data`, so it is transport-agnostic; the caller owns
 //! the cast-to-f32 warning dedup set.

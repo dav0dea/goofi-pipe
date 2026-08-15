@@ -363,7 +363,7 @@ pub struct Graph {
     /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
     /// seconds-since-start (deterministic under an injected clock).
     start: Option<Instant>,
-    /// The injected param-expression evaluator (pyo3, from goofi-py). `None` → bindings
+    /// The injected param-expression evaluator (pyo3, from goofi-python). `None` → bindings
     /// are stored + round-trip but can't evaluate (graceful degrade to the literal).
     evaluator: Option<Arc<dyn goofi_node::ExprEvaluator>>,
     /// ── Sub-patch scopes: a purely organizational overlay over the flat `nodes`/`links`. A scope
@@ -476,7 +476,7 @@ impl Graph {
         }
     }
 
-    /// Inject the param-expression evaluator (pyo3, from goofi-py). Wired by the CLI at
+    /// Inject the param-expression evaluator (pyo3, from goofi-python). Wired by the CLI at
     /// startup; without it, expression bindings are stored but not evaluated.
     pub fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
         self.evaluator = Some(evaluator);
@@ -4467,7 +4467,7 @@ mod tests {
 
     // `_TestConst` (the constant-array source these tests use as a generic value
     // source) is the hidden test node in goofi-nodes — one shared definition across
-    // the engine, bridge, and goofi-py suites.
+    // the engine, bridge, and goofi-python suites.
 
     fn first_f32(d: &Data) -> f32 {
         if let Value::Array(s) = d.value() {

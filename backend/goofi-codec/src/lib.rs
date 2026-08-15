@@ -370,7 +370,7 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
 
 // ---------------------------------------------------------------------------
 // Subprocess multi-slot request/response frames — the shared wire between the
-// parent (`goofi-subproc` RemoteNode) and the child (`goofi.serve` in pymod).
+// parent (`goofi-python`'s `subproc::RemoteNode`) and the child (`goofi.serve` in pymod).
 // A request carries the live params + the present input slots; a response the
 // output slots. Each slot's `Data` is a self-describing GOOF frame ([`encode`]/
 // [`decode`]), so channels/sfreq/index/dtype cross with full fidelity — no
@@ -712,7 +712,7 @@ mod decode_tests {
 #[cfg(test)]
 mod frame_tests {
     //! The subprocess multi-slot request/response frames — the shared wire between the
-    //! parent (`goofi-subproc` RemoteNode) and the child (`goofi.serve` in pymod).
+    //! parent (`goofi-python`'s `subproc::RemoteNode`) and the child (`goofi.serve` in pymod).
     use super::*;
     use goofi_core::{Axes, Axis, Coord, Data, Meta, Param, Value};
     use indexmap::IndexMap;

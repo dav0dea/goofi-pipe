@@ -288,7 +288,7 @@ async fn managed_stop() {
 /// interpreter the `python` feature links.
 #[cfg(feature = "python")]
 fn register_evaluator(state: &AppState) {
-    match goofi_py::PyExprEvaluator::new() {
+    match goofi_python::inproc::PyExprEvaluator::new() {
         Ok(ev) => {
             state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(ev));
             println!("  param-expression evaluator ready (free-threaded Python)");
@@ -317,7 +317,7 @@ fn point_embedded_python_at_its_venv() {
     if std::env::var_os("PYTHONPATH").is_some() {
         return;
     }
-    let Some(python) = goofi_py::interpreter_path() else { return };
+    let Some(python) = goofi_python::inproc::interpreter_path() else { return };
     // `<venv>/bin/python` → `<venv>`.
     let Some(venv) = Path::new(&python).parent().and_then(Path::parent) else { return };
     if let Some(dir) = goofi_init::site_packages(venv) {
@@ -380,15 +380,18 @@ fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
 /// file, and it must not spew to stderr for doing its job. `boot_scan` does the talking.
 #[cfg(feature = "python")]
 fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
-    let ft = goofi_py::interpreter_path(); // the embedded FT interpreter, for probing
+    let ft = goofi_python::inproc::interpreter_path(); // the embedded FT interpreter, for probing
     let mut found = Vec::new();
     for path in sorted_dir(dir) {
         // ONE free-threaded probe answers both questions: it imports the module and constructs the
         // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
         // whether the GIL is still disabled — `gil_safe` IS the routing gate.
-        if let goofi_py::Discovery::Found(d) = ft.as_deref().map_or(goofi_py::Discovery::Skip, |ftp| goofi_py::probe(&path, ftp)) {
+        let ft_probe = ft.as_deref().map_or(goofi_python::Discovery::Skip, |ftp| {
+            goofi_python::inproc::probe(&path, ftp)
+        });
+        if let goofi_python::Discovery::Found(d) = ft_probe {
             if d.gil_safe {
-                let t = goofi_py::node_type_from(d);
+                let t = goofi_python::inproc::node_type_from(d);
                 found.push(ScannedType {
                     type_name: t.manifest.type_name.to_string(),
                     tier: Tier::InProcess,
@@ -403,9 +406,9 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
         }
         // One probe, both outcomes: the subprocess tier is the last chance, so its result decides
         // between "registered" and "listed as unavailable".
-        match goofi_subproc::probe(&path, subproc_python) {
-            goofi_subproc::Discovery::Found(d) => {
-                let t = goofi_subproc::node_type_from(subproc_python, d);
+        match goofi_python::subproc::probe(&path, subproc_python) {
+            goofi_python::Discovery::Found(d) => {
+                let t = goofi_python::subproc::node_type_from(subproc_python, d);
                 found.push(ScannedType {
                     type_name: t.manifest.type_name.to_string(),
                     tier: Tier::Subprocess,
@@ -416,7 +419,7 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
             // Neither tier could load it. Register it as unavailable WITH the reason so the
             // palette explains itself — a node file that silently does not appear reads as
             // "goofi ignored my file" rather than "install this dependency".
-            goofi_subproc::Discovery::Unavailable { type_name, reason } => {
+            goofi_python::Discovery::Unavailable { type_name, reason } => {
                 let registration = if g.register_unavailable(type_name.clone(), reason.clone()) {
                     Registration::Added
                 } else {
@@ -429,7 +432,7 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
                     registration,
                 });
             }
-            goofi_subproc::Discovery::Skip => {}
+            goofi_python::Discovery::Skip => {}
         }
     }
     found

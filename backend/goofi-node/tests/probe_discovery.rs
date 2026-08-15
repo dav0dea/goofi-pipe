@@ -2,7 +2,7 @@
 //! `goofi` importable; it finds one itself (the repo venvs), so these run on a plain
 //! `cargo test`. Override with GOOFI_PYMOD_TEST_PYTHON. When no usable interpreter
 //! exists they FAIL with an actionable message rather than skipping — a green run has
-//! to mean the cross-language path actually ran (the goofi-subproc convention).
+//! to mean the cross-language path actually ran (the `goofi-python` convention).
 
 use std::path::Path;
 

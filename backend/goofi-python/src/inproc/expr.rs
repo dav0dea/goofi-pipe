@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn compile_reports_the_referenced_node_names() {
         let _interp = interp();
-        // The goofi-py-specific contract: `compile` delegates the scan to
+        // The evaluator's own contract: `compile` delegates the scan to
         // goofi_node::nd_ref_names (whose word-boundary/quote behavior is tested there) and
         // reports the distinct node NAMES — which slot each `nd()` lands on is engine-side.
         let ev = PyExprEvaluator::new().expect("interpreter");

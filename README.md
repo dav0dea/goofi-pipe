@@ -128,7 +128,7 @@ version bump; it is idempotent.
 
 ```bash
 cargo test --workspace                    # backend
-cargo test -p goofi-py --features embed   # in-process Python host
+cargo test -p goofi-python --features embed   # both Python tiers
 cd frontend && npm run check && npm run test
 cd tests/e2e && npm run e2e               # Playwright against the real binary
 ```
@@ -144,9 +144,8 @@ backend/
   goofi-engine    Graph, scheduler, sub-patch scopes, commands + history, detached tier
   goofi-view      the ViewSpec constraint algebra
   goofi-bridge    axum server: control plane, data plane, SPA hosting, the yrs document
-  goofi-py        in-process Python tier (pyo3, free-threaded)
+  goofi-python    both Python node tiers: in-process (pyo3, free-threaded) + subprocess
   goofi-pymod     the `goofi` Python package, written in Rust
-  goofi-subproc   the subprocess tier's manager side
   goofi-cli       the goofi-pipe binary
 frontend/         SvelteKit SPA (the only UI)
 tests/e2e/        Playwright end-to-end suite

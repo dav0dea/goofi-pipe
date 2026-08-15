@@ -14,7 +14,7 @@
  * stylistic one: `max(nd('a` , `x + nd('` and `nd('a', '` are three different answers that a regex
  * over the raw text reads as one. `complete.test.ts` drives exactly those cases.
  *
- * The scope this completes is small and fully knowable — `backend/goofi-py/src/expr.rs` evaluates with
+ * The scope this completes is small and fully knowable — `backend/goofi-python/src/inproc/expr.rs` evaluates with
  * `{nd, t, np, globals}` and nothing else.
  */
 import { syntaxTree } from '@codemirror/language';

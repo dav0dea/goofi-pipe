@@ -93,7 +93,7 @@ mod tests {
     /// Set on the child of the tests below; its presence is what makes that child sleep instead of
     /// returning at once. The child is THIS test binary re-entered with one `#[test]` filtered in,
     /// because no binary that merely stays alive is named the same thing on every platform — the
-    /// same trick `goofi-subproc`'s liveness tests use, and the reason these tests are portable at
+    /// same trick `goofi-python`'s subproc liveness tests use, and the reason these tests are portable at
     /// all rather than being a unix suite wearing a cross-platform name.
     const SLEEPER_ENV: &str = "GOOFI_PROC_SLEEPER";
 

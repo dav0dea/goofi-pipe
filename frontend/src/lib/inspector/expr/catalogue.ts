@@ -1,7 +1,7 @@
 /**
  * What the completion source needs to know about the patch — the whole of it.
  *
- * The expression scope is `{nd, t, np, globals}` (`backend/goofi-py/src/expr.rs`), so this is a small,
+ * The expression scope is `{nd, t, np, globals}` (`backend/goofi-python/src/inproc/expr.rs`), so this is a small,
  * fully knowable surface rather than "general Python autocomplete": node names, each node's OUTPUT
  * slots, and the patch's global keys. Everything here already lives in the frontend, so a completion
  * is a synchronous local read and needs no RPC.

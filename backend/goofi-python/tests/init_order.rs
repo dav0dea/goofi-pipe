@@ -10,7 +10,7 @@
 //! while the manager holds the graph mutex — poisoning it and downing the control plane.
 #![cfg(feature = "embed")]
 
-use goofi_py::{PyExprEvaluator, PyNode};
+use goofi_python::inproc::{PyExprEvaluator, PyNode};
 
 const NODE: &str = concat!(
     "import goofi\n",
