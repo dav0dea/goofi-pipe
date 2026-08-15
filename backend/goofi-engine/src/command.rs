@@ -508,7 +508,9 @@ impl Command {
                         .map(|e| ExprState { source: e.source, enabled: e.enabled, triggers: e.triggers_process })
                         .unwrap_or(ExprState { source: String::new(), enabled: false, triggers: false })
                 });
-                // Literal and binding are independent slots on the param, so order is immaterial.
+                // Literal FIRST, then binding, and the order is load-bearing: §3.4 makes a
+                // literal write an UNBIND, so an `EditParam` carrying both would otherwise bind and
+                // then immediately undo it.
                 if let Some(v) = value {
                     g.update_param(uid, &group, &name, v)?;
                 }

@@ -132,8 +132,10 @@ struct NodeEntry {
     bindings: HashMap<ParamKey, ExprBinding>,
     /// The evaluated values of this node's bound params, as it last reported them
     /// ([`runtime::Status::ParamValues`]). Kept apart from `params`, which holds the literal
-    /// RECORD — the number the user authored and the `.gfi` persists. Overwriting that with each
-    /// evaluation is what once left an oscillator authored at 5 Hz running at 500 forever.
+    /// RECORD — the number the user authored and the `.gfi` persists. `serialize` writes that
+    /// record, so folding evaluated values into it would save whatever a since-deleted reference
+    /// last happened to give the param, and leave nothing to fall back TO when the binding broke
+    /// (§2.1).
     evaluated: IndexMap<ParamKey, Param>,
     ctx: NodeCtx,
     /// `Some(msg)` when this node's INITIALIZATION failed — the `on_param_changed` replay and
@@ -341,11 +343,11 @@ struct ExprBinding {
     rewritten: String,
     /// Derived: one entry per variable `rewritten` names, resolved against the graph.
     vars: Vec<BoundVar>,
-    /// Derived: the distinct node NAMES the source references, and the distinct globals it reads.
-    /// Kept beside `vars` because a variable that failed to resolve no longer says what it was
-    /// looking for — and those are exactly the bindings a node being added must re-resolve.
-    refs: Vec<String>,
-    globals: Vec<String>,
+    /// Derived: the rewrite's own variable list, BEFORE resolution. Kept beside `vars` because a
+    /// variable that failed to resolve no longer says what it was looking for — and those are
+    /// exactly the bindings a node being added, or a global being defined, has to re-resolve. One
+    /// record rather than a name list and a key list beside it: both are questions about this.
+    terms: Vec<expr_rewrite::VarRef>,
     /// This binding's identity in the wire planner, stable across a rebind — its index into
     /// [`Graph::bind_keys`].
     bind_id: usize,
@@ -504,17 +506,6 @@ fn next_event_id(taken: &[runtime::EventId]) -> Option<runtime::EventId> {
     (65..=128).find(|id| !taken.contains(id))
 }
 
-/// The distinct values of an iterator, in first-seen order.
-fn distinct(values: impl Iterator<Item = String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for v in values {
-        if !out.contains(&v) {
-            out.push(v);
-        }
-    }
-    out
-}
-
 impl Graph {
     pub fn new() -> Graph {
         // Reference goofi-nodes so the linker keeps its inventory registrations.
@@ -584,7 +575,9 @@ impl Graph {
     /// Re-resolve and re-send every expression binding that reads global `name`, so its new value
     /// reaches the nodes reading it (only those bindings pay). Shared by the global mutators.
     fn invalidate_bindings_reading(&mut self, name: &str) {
-        let reading = self.bindings_where(|b| b.globals.iter().any(|g| g == name));
+        let reading = self.bindings_where(|b| {
+            b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Global { key, .. } if key == name))
+        });
         self.rebind(&reading);
     }
 
@@ -593,7 +586,9 @@ impl Graph {
     /// that a NAME started or stopped meaning what it did, and the authored source is written
     /// against names.
     fn rebind_naming(&mut self, name: &str) {
-        let naming = self.bindings_where(|b| b.refs.iter().any(|r| r == name));
+        let naming = self.bindings_where(|b| {
+            b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Node { name: n, .. } if n == name))
+        });
         self.rebind(&naming);
     }
 
@@ -1998,6 +1993,10 @@ impl Graph {
         // A fresh instance carries none of the corpse's failures — its predecessor's process error
         // describes a node that no longer exists.
         entry.last_error = None;
+        // The evaluated values are the CORPSE's report (§6.2): a fresh instance has evaluated
+        // nothing, and leaving them would let the inspector preview show a dead node's numbers
+        // until the new one reports its own.
+        entry.evaluated.clear();
         entry.trigger_pending = false;
         entry.ufreq_meter = UfreqMeter { last_emit: None, ema: None };
         entry.run_policy = RunPolicy::from_params(&entry.params.load());
@@ -2210,19 +2209,7 @@ impl Graph {
         // fx toggle re-enables must come back resolved against the graph as it is then. What a
         // disabled binding does not get is variables, a handle, or a place in anyone's target set.
         let scanned = expr_rewrite::rewrite(source);
-        let (refs, globals) = match &scanned {
-            Ok((_, vars)) => (
-                distinct(vars.iter().filter_map(|v| match v {
-                    expr_rewrite::VarRef::Node { name, .. } => Some(name.clone()),
-                    _ => None,
-                })),
-                distinct(vars.iter().filter_map(|v| match v {
-                    expr_rewrite::VarRef::Global { key, .. } => Some(key.clone()),
-                    _ => None,
-                })),
-            ),
-            Err(_) => (Vec::new(), Vec::new()),
-        };
+        let terms = scanned.as_ref().map(|(_, vars)| vars.clone()).unwrap_or_default();
         let (rewritten, vars, mut error) = match (enabled, scanned) {
             (true, Ok((rewritten, refs))) => {
                 let vars = self.resolve_vars(uid, &key, &refs);
@@ -2256,8 +2243,7 @@ impl Graph {
             id,
             rewritten,
             vars,
-            refs,
-            globals,
+            terms,
             bind_id,
             error,
         };
@@ -2675,13 +2661,19 @@ impl Graph {
     /// explicit that `runtime_overlay` keeps working verbatim: what changes is how the graph LEARNS
     /// a node's state, not how it projects it.
     pub fn apply_status(&mut self, uid: Uid, status: runtime::Status) {
+        // An ack is the PLANNER's, not an entry's, and it must still land after the node it came
+        // from is gone — or a sequence parks forever on a message nobody will answer.
         if let runtime::Status::Ack { seq, ok } = status {
             self.wire_ack(seq, ok);
             return;
         }
         let Some(entry) = self.nodes.get_mut(&uid) else { return };
         match status {
-            runtime::Status::Ack { .. } => unreachable!("answered above"),
+            // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
+            // the bridge locks with `.lock().unwrap()` throughout, so a panic site here would
+            // poison the control plane rather than cost one report — and "genuinely unreachable"
+            // is a claim about today's callers, which is what B's hardening pass stopped trusting.
+            runtime::Status::Ack { .. } => {}
             runtime::Status::Fault { fault } => match fault {
                 // A clean run clears Setup/Process/Boot together and never touches a binding
                 // error, which only that binding evaluating successfully clears (§6).
@@ -3283,33 +3275,19 @@ impl Graph {
     /// a cycle form a final level (latest-wins tolerates their back-edges). This
     /// is what lets a level's nodes run concurrently while the graph as a whole
     /// still propagates end-to-end in a single tick.
-    /// The scheduling dependency edges `(producer, consumer)`: wired links PLUS
-    /// param-expression `nd()` references (a host depends on each node it references, so
-    /// the referenced node runs first → the expression sees this-tick's value). A ref
-    /// cycle is handled like a link cycle (the remainder runs last, reading prev-tick
-    /// outputs — 1-tick feedback).
+    /// The scheduling dependency edges `(producer, consumer)`: the wired links.
+    ///
+    /// It used to LIFT each param-expression's `nd()` references in here too, so a referenced node
+    /// ran first and the expression saw this-tick's value. That was load-bearing while the tick
+    /// evaluated bindings; §2.1 moved evaluation into the node, in the same breath as the run that
+    /// reads it, so the lifting ordered nothing and the guarantee it bought no longer exists to buy.
+    /// Dropped rather than left inert with a doc claiming it — the whole tick goes at the cutover.
     fn scheduling_edges(&self) -> Vec<(Uid, Uid)> {
-        let mut edges: Vec<(Uid, Uid)> = self
-            .links
+        self.links
             .iter()
             .filter(|l| self.nodes.contains_key(&l.node_out) && self.nodes.contains_key(&l.node_in))
             .map(|l| (l.node_out, l.node_in))
-            .collect();
-        for (host, e) in &self.nodes {
-            for b in e.bindings.values() {
-                if !b.enabled {
-                    continue;
-                }
-                for r in &b.refs {
-                    if let Some(prod) = self.uid_by_name(r) {
-                        if prod != *host {
-                            edges.push((prod, *host));
-                        }
-                    }
-                }
-            }
-        }
-        edges
+            .collect()
     }
 
     fn topo_levels(&self) -> Vec<Vec<Uid>> {
@@ -4047,6 +4025,20 @@ mod tests {
 
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(48.0))).unwrap();
         assert_eq!(resolved(&g, n, "constant", "value"), ["__v0=Some(48.0)"], "the edit re-resolved it");
+
+        // A global the patch does not define is refused HERE, at bind time. It used to be an
+        // eval-time NameError raised by the evaluator's `_Globals` proxy; with the rewrite the
+        // graph is what resolves a global, so this is where the rule lives now.
+        g.set_expression(n, "constant", "value", "globals.nope", true, false).unwrap();
+        assert_eq!(resolved(&g, n, "constant", "value"), ["__v0!global `nope` is not defined"]);
+        assert_eq!(
+            g.param_expression(n, "constant", "value").unwrap().error.as_deref(),
+            Some("global `nope` is not defined"),
+        );
+
+        // …and defining it later resolves the binding, which is the other half of the same rule.
+        g.apply_global_change("nope", Some(GlobalValue::Float(2.0))).unwrap();
+        assert_eq!(resolved(&g, n, "constant", "value"), ["__v0=Some(2.0)"]);
     }
 
     #[test]
@@ -4071,8 +4063,18 @@ mod tests {
         // re-resolution would have to read the store and would still land the same value: the
         // guard is that `globals` names what the binding reads, and `other` is not in it.
         let key = ParamKey::new("constant", "value");
-        assert_eq!(g.nodes[&b].bindings[&key].globals, ["other"], "the read set is what targets it");
-        assert_eq!(g.nodes[&a].bindings[&key].globals, ["default_ufreq"]);
+        let reads = |g: &Graph, uid: Uid| {
+            g.nodes[&uid].bindings[&key]
+                .terms
+                .iter()
+                .filter_map(|t| match t {
+                    expr_rewrite::VarRef::Global { key, .. } => Some(key.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reads(&g, b), ["other"], "the read set is what targets it");
+        assert_eq!(reads(&g, a), ["default_ufreq"]);
     }
 
     #[test]

@@ -393,14 +393,11 @@ fn autotrigger(m: &NodeManifest) -> ParamDecl {
 ///
 /// `trigger: true` unconditionally, and it is INERT here — do not read it as load-bearing. Spec
 /// §1.1: a `common.*` arrival never sets `trigger_pending`, because re-pacing is not a reason to
-/// run. What re-paces a sleeping producer is the binding re-evaluating (`invalidate_bindings_reading`
-/// clears `last_eval`, so a `default_ufreq` edit makes it due) and the `common` branch re-deriving
-/// `RunPolicy` — `trigger` is nowhere in that path. It is declared for interface completeness: the
-/// field is on every `ParamDecl`, the frontend renders it, and a non-`common` declaration means it.
-///
-/// NOT YET SEEDED (Task 4): `Graph::seed_default_expressions` walks a manifest's OWN `params`, and
-/// these universal declarations are not part of any manifest's `params` — so today only a node that
-/// redeclares `common.max_frequency` itself (`Oscillator`) gets a binding. Task 4 walks these too.
+/// run. What re-paces a sleeping producer is the graph re-resolving this binding on a
+/// `default_ufreq` edit and re-sending it (`Graph::invalidate_bindings_reading`), and the node's
+/// `common` branch re-deriving `RunPolicy` from the arrival — `trigger` is nowhere in that path. It
+/// is declared for interface completeness: the field is on every `ParamDecl`, the frontend renders
+/// it, and a non-`common` declaration means it.
 fn max_frequency(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
@@ -437,8 +434,8 @@ fn frequency_mode(_: &NodeManifest) -> ParamDecl {
 }
 
 /// The universal `common` scheduling group, declared once. A fourth param is added here and
-/// nowhere else: the loop in [`with_common`] carries no name match, and Task 4's expression
-/// seeding will walk the same list.
+/// nowhere else: the loop in [`with_common`] carries no name match, and
+/// `Graph::seed_default_expressions` walks the same list for the expression half.
 pub static COMMON_DECLS: &[CommonDecl] = &[autotrigger, max_frequency, frequency_mode];
 
 /// The universal declarations as THIS node type sees them — the ONE place a manifest is allowed to
@@ -781,8 +778,9 @@ pub struct NodeManifest {
     /// This type is a SOURCE: it makes frames on its own schedule rather than in answer to an
     /// input. The only pacing an author declares — everything downstream inherits its cadence
     /// through triggers, so a consumer never states a rate. Today it does exactly one thing:
-    /// default `common.autotrigger` on (see [`with_common`]). Turning [`COMMON_DECLS`]'s carried
-    /// `globals.default_ufreq` expression on is the other half, and is not yet wired (Task 4).
+    /// default `common.autotrigger` on (see [`with_common`]), and turn [`COMMON_DECLS`]'s carried
+    /// `globals.default_ufreq` expression live — a source is what the patch rate is for, so it is
+    /// paced by it out of the box while a consumer merely carries the source for the fx toggle.
     pub producer: bool,
     /// Build a default instance (type-erased). The engine seeds params afterward by
     /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.

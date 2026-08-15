@@ -2880,9 +2880,11 @@ async fn param_values_broadcasts_live_expression_values() {
     })
     .await
     .expect("a param_values event for the node with an active expression must arrive");
-    assert!(
-        ev["payload"]["values"]["common"]["max_frequency"].is_number(),
-        "the bound param's live value is carried; got {:?}",
+    assert_eq!(
+        ev["payload"]["values"]["common"]["max_frequency"].as_f64(),
+        Some(3.0),
+        "the EVALUATED value is carried, not the literal (Oscillator's own default is 30.0, so \
+         `is_number()` could not tell the two apart); got {:?}",
         ev["payload"]["values"]
     );
 }

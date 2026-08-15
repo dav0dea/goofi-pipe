@@ -35,7 +35,9 @@
 //!   [`NodeRuntime`], so on the tick path a bound param simply holds its literal. Three tests were
 //!   deleted with it and name precisely what the cutover must restore: a constant expression driving
 //!   `process`, an evaluated value reaching a mirrored field through `on_param_changed`, and
-//!   `Oscillator.sfreq` re-rating its block from a binding.
+//!   `Oscillator.sfreq` re-rating its block from a binding. (Their *other* halves did not go with
+//!   them: "a settled binding re-dispatches nothing" is
+//!   [`tests::a_settled_binding_re_dispatches_nothing`] here, at the seam that owns it now.)
 //! - **[`Binding::evaluate`] handles only a bare-variable source.** A `NodeRuntime` holds no
 //!   [`goofi_node::ExprEvaluator`], so `__v0.mean() * __v1` reports that it needs one rather than
 //!   computing it. The graph compiles the rewritten source (so `set_expression`'s reply stays
@@ -45,6 +47,23 @@
 //! One more that is plumbing rather than capability: `Status::ParamValues` is now the ONLY source of
 //! `Graph::expression_values`, and so of the bridge's `param_values` event. Nothing reports one yet,
 //! so that event is silent until the cutover.
+//!
+//! Two things were DROPPED on purpose rather than deferred, and are listed so neither reads as an
+//! oversight at the cutover:
+//!
+//! - **`scheduling_edges` no longer lifts `nd()` references into the topo DAG.** That ordering
+//!   existed so a referenced producer ran earlier in the same tick and the expression saw
+//!   this-tick's value. §2.1 moved evaluation into the node, so the lifting ordered nothing and the
+//!   guarantee it bought no longer exists to buy. The whole tick goes next.
+//! - **The pyo3 evaluator's `nd()` proxy and `globals` namespace.** The rules they enforced did not
+//!   all retire with them, and the ones that MOVED are pinned at their new home rather than left to
+//!   the reader: a bare `nd()` on a multi-output producer, an unknown `.slot`, and a `globals.` name
+//!   the patch does not define are now refused by `Graph::resolve_stream` / `resolve_vars` at bind
+//!   time (pinned in `goofi-engine`), and "a variable that has not arrived raises" is pinned in
+//!   `goofi-python`. What genuinely retired: the proxy's ~28 operator dunders (a numpy array
+//!   supports them natively), its key-absent-vs-value-`None` distinction (there is one `Option` now),
+//!   `_Globals`' `__getattribute__` shim (a global's NAME never reaches Python any more), and
+//!   `Compiled`'s `refs`/`global_refs` extraction (the compiled source names neither).
 //!
 //! And the status-drain worker (§6.2) is half here. `Graph::apply_status` is the graph-side half and
 //! is complete: every variant lands in the fields `last_error`/`node_stage` already read, an ack
@@ -985,6 +1004,31 @@ mod tests {
             ["cfg.ok", "cfg.scale", "cfg.ok", "cfg.scale"],
             "the retry's replay applied the edit — notifying again would double-apply it",
         );
+    }
+
+    #[test]
+    fn a_settled_binding_re_dispatches_nothing() {
+        // The hook is the single source of truth for param→field, so an evaluated value has to
+        // reach it — but a binding that keeps evaluating to the SAME value must not hammer it at
+        // the node's run rate. The old engine test that pinned this evaluated on the tick and went
+        // with `resolve_level_bindings`; the rule did not, so it is pinned here, at its new home.
+        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        r.set_param(ParamKey::new("cfg", "ok"), ParamValue::Literal(Param::boolean(true)));
+        assert!(r.fault.is_none(), "initialized, so the hook is live");
+
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), value_expr(Param::float(2.0, 0.0, 4.0), false));
+        let settled = hook_log().len();
+        assert!(hook_log().ends_with(&["cfg.scale".to_string()]), "the new value reached the field");
+
+        r.run_once();
+        r.run_once();
+        assert_eq!(hook_log().len(), settled, "an unchanged evaluated value re-dispatches nothing");
+
+        // The control: a value that really did change is dispatched, so the guard above is not
+        // "the hook is never called".
+        r.set_param(key, value_expr(Param::float(3.0, 0.0, 4.0), false));
+        assert_eq!(hook_log().len(), settled + 1);
     }
 
     #[test]
