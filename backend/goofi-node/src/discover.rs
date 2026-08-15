@@ -89,7 +89,7 @@ pub fn leak_manifest(
         outputs: Box::leak(outputs.into_boxed_slice()),
         params: Box::leak(params.into_boxed_slice()),
         isolation,
-        producer: false,
+        producer: intro.producer,
         factory: stub,
     }))
 }
@@ -263,9 +263,10 @@ mod tests {
         assert_eq!(m.inputs[0].name, "data");
         assert_eq!(m.inputs[0].kind, SlotType::Array);
         assert!(m.inputs[0].trigger_process);
-        // SAMPLE carries no `required` key — the shape a stale installed `goofi` wheel emits.
-        // It must parse as a non-required slot, not fail the whole introspection.
+        // SAMPLE carries neither a `required` nor a `producer` key — the shape a stale installed
+        // `goofi` wheel emits. Both must default, not fail the whole introspection.
         assert!(!m.inputs[0].required);
+        assert!(!m.producer);
         assert_eq!(m.outputs[0].name, "psd");
         assert_eq!(m.params.len(), 2);
         assert_eq!(m.params[0].group, "welch");

@@ -43,6 +43,13 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|d| d.extract::<String>().ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
+        // A plain class attribute (`producer = True`), not a hook: it is the one pacing an author
+        // declares, and a node that says nothing is not a source.
+        producer: cls
+            .getattr("producer")
+            .ok()
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false),
         inputs,
         outputs,
         params,

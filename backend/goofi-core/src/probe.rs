@@ -9,6 +9,12 @@ pub struct Introspection {
     pub gil_safe: bool,
     #[serde(default)]
     pub doc: String,
+    /// Whether the node makes frames on its own schedule (`producer = True` on the class) rather
+    /// than in answer to an input. `#[serde(default)]` is load-bearing, for the same reason
+    /// [`Slot::required`]'s is: an older installed `goofi` wheel emits no `producer` key, and a
+    /// hard parse failure would silently grey out every node it discovers.
+    #[serde(default)]
+    pub producer: bool,
     pub inputs: Vec<Slot>,
     pub outputs: Vec<OutSlot>,
     pub params: Vec<Param>,

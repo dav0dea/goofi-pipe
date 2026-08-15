@@ -127,6 +127,27 @@ fn discovers_a_valid_node_with_declarations() {
 }
 
 #[test]
+fn a_python_node_can_declare_itself_a_producer() {
+    // A Rust manifest is a static literal; a Python one is BUILT from the probe, so `producer`
+    // has to travel. `#[serde(default)]` on the schema is load-bearing — an older installed
+    // wheel emits no key, and a hard parse failure greys out every node it discovers.
+    let py = test_python();
+    let Discovery::Found(d) =
+        discover_one(&fixtures().join("producer.py"), &py, "python", Isolation::InProcess)
+    else {
+        panic!("producer.py discovers")
+    };
+    assert!(d.manifest.producer, "the class attribute reached the manifest");
+
+    let Discovery::Found(n) =
+        discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::InProcess)
+    else {
+        panic!("negate.py discovers")
+    };
+    assert!(!n.manifest.producer, "and a node that does not declare it is not one");
+}
+
+#[test]
 fn missing_dep_greys_out_instead_of_crashing() {
     let py = test_python();
     // The probe import fails -> the REASON, never a panic/crash — and the node is reported as
