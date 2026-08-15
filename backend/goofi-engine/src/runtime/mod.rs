@@ -652,9 +652,15 @@ mod tests {
     /// Both `common` gates are BOUND — an arrival needs a mailbox to land in — and both declare
     /// `trigger: true`, which is what the universal declaration carries and what makes "`trigger`
     /// is inert on `common.*`" observable rather than assumed. The autotrigger binding starts
-    /// holding `false`: a fixture whose mailbox already agrees with the value under test cannot
-    /// tell a landed arrival from an ignored one. And the runtime starts SETTLED, because a dirty
-    /// flag left over from wiring would mask the very arrival these tests are about.
+    /// holding `false` so a re-derivation genuinely stops this producer, which is what lets
+    /// `a_common_arrival_repaces_without_running` mean its own name. And the runtime starts
+    /// SETTLED, because a dirty flag left over from wiring would mask the very arrival these
+    /// tests are about.
+    ///
+    /// What this fixture CANNOT show, measured by dropping every arrival on the floor: the
+    /// autotrigger toggle test delivers `true`, which is also this producer's literal, so it pins
+    /// the dirty-marking and not the value. The value landing is pinned on the consumer, where the
+    /// two differ — [`a_stream_arrival_repaces_a_consumer_without_ever_running_it`].
     fn fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
         let transport = Arc::new(MemoryTransport::default());
         let mut r = NodeRuntime::new(&PRODUCER, transport.clone());
