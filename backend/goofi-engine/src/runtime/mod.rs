@@ -200,25 +200,40 @@ impl NodeRuntime {
     /// evaluated once here — the authoring moment — because without that a binding error can
     /// neither appear nor clear on a node that never runs (§2.1).
     pub fn set_param(&mut self, key: ParamKey, value: ParamValue) {
-        match value {
+        // The record moves FIRST, so the initialization retry below replays the NEW value rather
+        // than the one that broke `setup()`.
+        let literal = match value {
             ParamValue::Literal(p) => {
                 self.bindings.shift_remove(&key);
                 self.evaluated.shift_remove(&key);
                 self.clear_binding_error(&key);
                 self.set_effective(&key, p.clone());
-                if key.group == COMMON {
-                    self.common_dirty = true;
-                } else {
-                    self.on_param_changed(&key, &p);
-                }
+                Some(p)
             }
             ParamValue::Expr { source, vars, trigger } => {
                 self.bindings.insert(key.clone(), Binding::new(source, vars, trigger));
-                if key.group == COMMON {
-                    self.common_dirty = true;
-                } else {
+                // A `common.*` binding is evaluated by the pacing pass instead, before the gates.
+                if key.group != COMMON {
                     self.eval_bindings_where(|k| *k == key);
                 }
+                None
+            }
+        };
+        if key.group == COMMON {
+            self.common_dirty = true;
+        }
+        // §5.1 + D3: a param write is an INTERACTION, and an interaction retries the initialization
+        // first — a node whose `setup()` failed on a bad param has no other way back when it never
+        // runs, since `run()` is the only other caller of the gate. Unthrottled, unlike a wake:
+        // this is a user asking, not one of however many the pacer admits.
+        let was_initialized = self.initialized;
+        let healed = self.ensure_initialized() && !was_initialized;
+        // `initialize` replays the whole record through `on_param_changed`, so a retry that
+        // succeeded has already delivered this edit — notifying again would double-apply it. And
+        // an UNINITIALIZED node hears nothing at all (D3).
+        if let Some(p) = literal {
+            if self.initialized && !healed && key.group != COMMON {
+                self.on_param_changed(&key, &p);
             }
         }
     }
@@ -319,8 +334,10 @@ impl NodeRuntime {
                     self.set_effective(&key, value.clone());
                     // The hook is the single source of truth for param→field, and the only way an
                     // evaluated value reaches a node's mirrored field. A `common.*` param has no
-                    // field to mirror — it is the scheduler's, not the node's.
-                    if key.group != COMMON {
+                    // field to mirror — it is the scheduler's, not the node's — and an
+                    // UNINITIALIZED node hears nothing at all (D3); the value is in the record, so
+                    // the retry's replay delivers it when `setup` finally succeeds.
+                    if key.group != COMMON && self.initialized {
                         self.on_param_changed(&key, &value);
                     }
                 }
@@ -365,7 +382,7 @@ impl NodeRuntime {
         // the moment it recovers. Consumed whether or not the run itself gets as far as `process`.
         self.trigger_pending = false;
         self.last_run = Some(Instant::now());
-        if !self.ensure_initialized() {
+        if !self.ensure_initialized_paced() {
             return;
         }
         let mut outputs = self.manifest.output_buffer();
@@ -392,10 +409,20 @@ impl NodeRuntime {
         }
     }
 
-    /// The initialization gate: a node whose `setup()` failed is UNINITIALIZED, so nothing runs
-    /// against it until a retry succeeds. Paced by [`SETUP_RETRY_MS`] because a wake is not a user
-    /// asking — it is one of however many the pacer admits.
+    /// The initialization gate (D3): a node whose `setup()` failed is UNINITIALIZED, so nothing
+    /// runs against it — not `process`, not a param callback — and any interaction retries the
+    /// initialization first. Answers whether the node may be run against.
     fn ensure_initialized(&mut self) -> bool {
+        if self.initialized {
+            return true;
+        }
+        self.initialize();
+        self.initialized
+    }
+
+    /// The same gate on a WAKE, which is not a user asking but one of however many the pacer
+    /// admits — so the retry is paced by [`SETUP_RETRY_MS`], and every attempt restarts the window.
+    fn ensure_initialized_paced(&mut self) -> bool {
         if self.initialized {
             return true;
         }
@@ -404,8 +431,7 @@ impl NodeRuntime {
                 return false;
             }
         }
-        self.initialize();
-        self.initialized
+        self.ensure_initialized()
     }
 
     /// The param replay and `setup()` together, which are one unit — a retry re-runs both, on the
@@ -479,9 +505,9 @@ mod tests {
     use super::*;
     use goofi_core::{Meta, Param, SlotType};
     use goofi_node::{
-        default_factory, Isolation, NodeResult, OutputDecl, ParamDecl, SlotDecl,
+        default_factory, Isolation, NodeResult, OutputDecl, ParamDecl, ParamSpec, SlotDecl,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::cell::{Cell, RefCell};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -624,26 +650,58 @@ mod tests {
     }
 
     #[test]
+    fn correcting_the_param_that_broke_setup_heals_a_node_that_never_runs() {
+        // spec §5.1: a param write runs the D3 initialization retry FIRST. Without it a consumer
+        // with no triggers and autotrigger off is broken permanently — `run()` is the only other
+        // caller of the gate and it never runs — where `update_param` heals such a node today.
+        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        assert!(matches!(r.fault, Some(NodeFault::Setup { .. })), "setup refused the default");
+        assert_eq!(hook_log(), ["cfg.ok", "cfg.scale"], "birth replayed the record");
+
+        r.set_param(ParamKey::new("cfg", "ok"), ParamValue::Literal(Param::boolean(true)));
+        assert!(r.fault.is_none(), "the correction re-initialized the node");
+        assert_eq!(
+            hook_log(),
+            ["cfg.ok", "cfg.scale", "cfg.ok", "cfg.scale"],
+            "the retry's replay applied the edit — notifying again would double-apply it",
+        );
+    }
+
+    #[test]
+    fn an_uninitialized_node_hears_no_param_hook() {
+        // D3: nothing runs against a node whose `setup()` failed — not `process`, not a param
+        // callback. The value still lands, so it is there for the replay when the retry succeeds.
+        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        r.set_param(ParamKey::new("cfg", "scale"), value_expr(Param::float(2.0, 0.0, 4.0), false));
+        assert_eq!(
+            hook_log(),
+            ["cfg.ok", "cfg.scale", "cfg.ok", "cfg.scale"],
+            "the retry replayed the record, and nothing else was dispatched",
+        );
+        assert_eq!(goofi_node::param(&r.effective, "cfg", "scale").and_then(Param::as_f64), Some(2.0));
+        assert!(r.fault.is_some(), "and it is still uninitialized");
+    }
+
+    #[test]
     fn a_failed_setup_retries_on_a_backoff_that_restarts_from_each_attempt() {
         // The backoff is what keeps a node whose device is missing from re-opening it at its wake
         // rate — a producer at `default_ufreq` would attempt ~30×/s, and `setup` acquires. It is
         // paced from the LAST attempt, so an unchanged fault must still move its `last_attempt`
         // even though it is deliberately not re-broadcast.
-        RETRY_ATTEMPTS.store(0, Ordering::SeqCst);
         let mut r = NodeRuntime::new(&RETRY_PROBE, Arc::new(MemoryTransport::default()));
-        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 1, "birth is the first attempt");
+        assert_eq!(setup_attempts(), 1, "birth is the first attempt");
         for _ in 0..50 {
             r.run_once();
         }
-        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 1, "50 wakes inside the window are one");
+        assert_eq!(setup_attempts(), 1, "50 wakes inside the window are one");
 
         expire_setup_backoff(&mut r);
         r.run_once();
-        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 2, "the window's end admits exactly one");
+        assert_eq!(setup_attempts(), 2, "the window's end admits exactly one");
         for _ in 0..50 {
             r.run_once();
         }
-        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 2, "and it restarts from THAT attempt");
+        assert_eq!(setup_attempts(), 2, "and it restarts from THAT attempt");
     }
 
     #[test]
@@ -731,11 +789,22 @@ mod tests {
         NodeRuntime::new(&TRIGGERED, Arc::new(MemoryTransport::default()))
     }
 
-    /// The single-variable identity binding §5.3's rewrite produces for `globals.default_ufreq`.
+    /// The single-variable identity binding §5.3's rewrite produces for `globals.default_ufreq`,
+    /// awaiting a producer.
     fn stream_expr(trigger: bool) -> ParamValue {
         ParamValue::Expr {
             source: "__v0".to_string(),
             vars: vec![Var::Stream { name: "__v0".to_string(), service: "svc".to_string(), event_id: 65 }],
+            trigger,
+        }
+    }
+
+    /// The same binding with its variable already resolved — a `globals.*` read the graph delivered
+    /// inline, which is how a globals edit reaches a node (§5.2).
+    fn value_expr(value: Param, trigger: bool) -> ParamValue {
+        ParamValue::Expr {
+            source: "__v0".to_string(),
+            vars: vec![Var::Value { name: "__v0".to_string(), value }],
             trigger,
         }
     }
@@ -781,16 +850,50 @@ mod tests {
         }
     }
 
-    /// Attempts, counted for the one test that measures the retry backoff. A static is sound here
-    /// only because exactly one test instantiates this type.
-    static RETRY_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        /// Every `on_param_changed` key a node on this thread heard, in order. Thread-local rather
+        /// than static because the harness gives each test its own thread, so two tests sharing a
+        /// node type cannot see each other's calls.
+        static HOOK_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// `setup()` attempts on this thread's node — the retry backoff's observable.
+        static SETUP_ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn hook_log() -> Vec<String> {
+        HOOK_LOG.with(|log| log.borrow().clone())
+    }
+
+    fn setup_attempts() -> usize {
+        SETUP_ATTEMPTS.with(Cell::get)
+    }
 
     #[derive(Default)]
     struct RetryProbe;
     impl Node for RetryProbe {
         fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            RETRY_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            SETUP_ATTEMPTS.with(|n| n.set(n.get() + 1));
             Err("no device".into())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+
+    /// A node whose `setup()` refuses until a param is corrected — the D3 retry door's whole point.
+    #[derive(Default)]
+    struct NeedsGoodParam {
+        ok: bool,
+    }
+    impl Node for NeedsGoodParam {
+        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.ok.then_some(()).ok_or_else(|| "cfg.ok is false".into())
+        }
+        fn on_param_changed(&mut self, key: &ParamKey, v: &Param) -> NodeResult {
+            HOOK_LOG.with(|log| log.borrow_mut().push(format!("{}.{}", key.group, key.name)));
+            if key.name == "ok" {
+                self.ok = v.as_bool().unwrap_or(false);
+            }
+            Ok(())
         }
         fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
             Ok(())
@@ -818,6 +921,20 @@ mod tests {
     static BAD_SETUP: NodeManifest = manifest("_RuntimeBadSetup", &[], true, default_factory::<BadSetup>);
     static BAD_PROCESS: NodeManifest = manifest("_RuntimeBadProcess", &[], true, default_factory::<BadProcess>);
     static RETRY_PROBE: NodeManifest = manifest("_RuntimeRetryProbe", &[], true, default_factory::<RetryProbe>);
+    static NEEDS_PARAM: NodeManifest = NodeManifest {
+        params: CFG_PARAMS,
+        ..manifest("_RuntimeNeedsParam", &[], false, default_factory::<NeedsGoodParam>)
+    };
+    static CFG_PARAMS: &[ParamDecl] = &[
+        ParamDecl { group: "cfg", name: "ok", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },
+        ParamDecl {
+            group: "cfg",
+            name: "scale",
+            spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 4.0 },
+            expression: None,
+            doc: None,
+        },
+    ];
 
     const fn manifest(
         type_name: &'static str,
