@@ -927,10 +927,20 @@ impl Graph {
         if self.evaluator.is_none() {
             return;
         }
-        for decl in manifest.params {
-            if let Some(e) = decl.expression {
+        // The manifest's own declarations, then the universal `common` group — and the node's own
+        // win, exactly as `with_common`'s `or_insert_with` makes them win on the VALUE side. A node
+        // that declares a `common` param has said what it means by it; nothing here overwrites a
+        // manifest's param definition. Read through `common_decls`, which is the one place
+        // `producer` is interpreted, so the two halves cannot disagree about who is a producer.
+        let declared = manifest.params.iter().map(|d| (d.group, d.name, d.expression));
+        let universal = goofi_node::common_decls(manifest)
+            .filter(|d| !manifest.params.iter().any(|o| o.group == d.group && o.name == d.name))
+            .map(|d| (d.group, d.name, d.expression))
+            .collect::<Vec<_>>();
+        for (group, name, expression) in declared.chain(universal) {
+            if let Some(e) = expression {
                 let enabled = matches!(e.mode, ExprMode::On);
-                let _ = self.set_expression(uid, decl.group, decl.name, e.source, enabled, e.trigger);
+                let _ = self.set_expression(uid, group, name, e.source, enabled, e.trigger);
             }
         }
     }
@@ -3977,6 +3987,60 @@ mod tests {
     }
 
     #[test]
+    fn the_universal_common_declarations_are_seeded_too() {
+        // `common.max_frequency` CARRIES `globals.default_ufreq` on every node — live on a producer,
+        // carried (disabled) on a consumer, so one inspector toggle paces anything. The seeding walk
+        // read only `manifest.params`, and the universal declarations are in no manifest's params,
+        // so a producer that did not redeclare the key got no binding at all and never re-rated.
+        //
+        // Read through `common_decls`, the ONE place `producer` is interpreted, so the value half
+        // (`with_common`) and this half cannot disagree about who is a producer.
+        let mut g = eval_graph();
+        let producer = g.add_node("_TestGated", None).unwrap();
+        let consumer = g.add_node("_TestSink", None).unwrap();
+
+        let live = g.param_expression(producer, "common", "max_frequency").expect("a producer is paced");
+        assert_eq!(live.source, "globals.default_ufreq");
+        assert!(live.enabled, "a source is what the patch rate is for");
+        assert_eq!(resolved(&g, producer, "common", "max_frequency"), ["__v0=Some(30.0)"]);
+
+        let carried =
+            g.param_expression(consumer, "common", "max_frequency").expect("a consumer carries it");
+        assert!(!carried.enabled, "carried for the fx toggle, not imposed");
+        assert!(carried.error.is_none(), "and healthy — a carried binding is not a broken one");
+    }
+
+    #[test]
+    fn a_node_that_declares_a_common_param_itself_keeps_its_own_declaration() {
+        // The owner's rule, verbatim: "when a node declares a common param in its manifest, we will
+        // not touch this param. We will not overwrite the manifest's param definitions." Oscillator
+        // declares `common.max_frequency` with its own literal ceiling, and seeding it twice — once
+        // from the manifest, once from the universal list — would leave whichever ran last.
+        let mut g = eval_graph();
+        let osc = g.add_node("Oscillator", None).unwrap();
+        let info = g.param_expression(osc, "common", "max_frequency").expect("seeded");
+        assert_eq!(info.source, "globals.default_ufreq");
+        assert!(info.enabled);
+        // The literal underneath is the manifest's 30.0-with-a-1000-ceiling, not the universal
+        // declaration's 0.0-with-a-100-ceiling. `with_common` is what keeps it, and this is the
+        // half that could quietly replace it.
+        assert_eq!(
+            g.params(osc).unwrap()["common"]["max_frequency"],
+            Param::float(30.0, 0.0, 1000.0),
+            "the manifest's own declaration stands",
+        );
+
+        // Oscillator happens to declare a `common.max_frequency` expression IDENTICAL to the
+        // universal one in every field, so it cannot show which of the two was applied. `_TestOwnCommon`
+        // is where they differ: it is a CONSUMER — universal mode Off — that declares mode On.
+        let own = g.add_node("_TestOwnCommon", None).unwrap();
+        let info = g.param_expression(own, "common", "max_frequency").expect("seeded");
+        assert!(info.enabled, "the node said On; the universal declaration does not get to say Off");
+        assert!(!info.triggers_process, "and its own `trigger`, not the universal `true`");
+        assert_eq!(g.params(own).unwrap()["common"]["max_frequency"], Param::float(7.0, 0.0, 500.0));
+    }
+
+    #[test]
     fn fresh_add_seeds_a_default_expr_binding_resolved_against_the_globals() {
         use goofi_core::globals::GlobalValue;
         let mut g = eval_graph();
@@ -4274,6 +4338,35 @@ mod tests {
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
             producer: true,
+            factory: default_factory::<GatedSource>,
+        }
+    }
+
+    // A CONSUMER that declares `common.max_frequency` itself, with a LIVE expression. The universal
+    // declaration would give a non-producer a carried (Off) one, so this is where "we will not
+    // overwrite the manifest's param definitions" is observable rather than a coincidence: for a
+    // producer the two declarations happen to agree in every field.
+    static OWN_COMMON_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "common",
+        name: "max_frequency",
+        spec: ParamSpec::Float { default: 7.0, min: 0.0, max: 500.0 },
+        expression: Some(goofi_node::ExprDecl {
+            source: "globals.default_ufreq",
+            mode: ExprMode::On,
+            trigger: false,
+        }),
+        doc: None,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestOwnCommon",
+            category: "test",
+            doc: "a consumer that declares its own common.max_frequency",
+            inputs: SINK_IN,
+            outputs: G_OUT,
+            params: OWN_COMMON_PARAMS,
+            isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<GatedSource>,
         }
     }
@@ -8258,20 +8351,24 @@ mod tests {
 
     #[test]
     fn teardown_releases_compiled_handles() {
-        // remove_node and clear (hence load_doc) must release the evaluator's handles.
+        // remove_node and clear (hence load_doc) must release the evaluator's handles. Counted
+        // against a live baseline rather than against 1: a fresh producer also seeds its universal
+        // `common.max_frequency` binding, so the node under test holds two handles, and the point
+        // here is that NONE of them survive their node.
         let mock = Arc::new(MockEval::default());
         let mut g = Graph::new();
         g.set_evaluator(mock.clone());
+        let live = || mock.exprs.lock().unwrap().len();
         let n = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n, "constant", "value", "5", true, false).unwrap();
-        assert_eq!(mock.exprs.lock().unwrap().len(), 1, "compiled once");
+        assert!(live() >= 1, "the binding compiled");
         g.remove_node(n).unwrap();
-        assert_eq!(mock.exprs.lock().unwrap().len(), 0, "released on remove_node");
+        assert_eq!(live(), 0, "released on remove_node");
         let n2 = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n2, "constant", "value", "7", true, false).unwrap();
-        assert_eq!(mock.exprs.lock().unwrap().len(), 1);
+        assert!(live() >= 1);
         g.clear();
-        assert_eq!(mock.exprs.lock().unwrap().len(), 0, "released on clear");
+        assert_eq!(live(), 0, "released on clear");
     }
 
     #[test]
