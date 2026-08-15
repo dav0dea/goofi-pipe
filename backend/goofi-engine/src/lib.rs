@@ -2809,7 +2809,11 @@ impl Graph {
                     }
                     if key.group == "common" {
                         // Scheduler metadata, not a node param — re-derive the run gate, exactly as
-                        // `update_param` does, and dispatch nothing.
+                        // `update_param` does, and dispatch nothing. Nothing includes the trigger
+                        // (spec §1.1): a `common.*` arrival is a RE-PACING, never a reason to run.
+                        // Left to fall through, a ref-less `globals.` binding is due every gated
+                        // tick, so a `trigger: true` on one would pin `trigger_pending` on forever
+                        // and make `autotrigger` moot.
                         entry.run_policy = RunPolicy::from_params(&entry.params);
                     } else if changed && entry.setup_error.is_none() {
                         // The rest of `update_param`'s contract: `on_param_changed` is the SINGLE
@@ -2836,7 +2840,19 @@ impl Graph {
                             }
                         }
                     }
-                    if triggers {
+                    // Guarded by NAMESPACE, not by `changed`, and deliberately so. The value guard
+                    // above is an optimization — a settled binding is not worth propagating — but a
+                    // `common.*` binding must not wake the node even when its value really did
+                    // change, because re-pacing is the whole of what a rate edit means.
+                    //
+                    // The converse case is left alone on purpose: a ref-less binding OUTSIDE
+                    // `common` still triggers on every evaluation, where the honest predicate is
+                    // *arrival* rather than re-evaluation. That distinction only becomes
+                    // expressible in the async runtime (a mailbox delivery is an arrival; an
+                    // evaluation is not), and `resolve_level_bindings` does not survive it — so
+                    // the namespace guard is the whole fix here rather than an arrival tracker
+                    // built to be deleted.
+                    if triggers && key.group != "common" {
                         entry.trigger_pending = true;
                     }
                 }
@@ -3530,6 +3546,36 @@ mod tests {
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(42.0))).unwrap();
         g.tick();
         assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 42.0, "re-rates on a global edit");
+    }
+
+    #[test]
+    fn a_common_binding_re_paces_the_node_and_never_asks_it_to_run() {
+        // Spec §1.1: a `common.*` arrival is a RE-PACING, never a reason to run. The APPLY phase
+        // already treats a common binding as scheduler metadata that "dispatches nothing" — but
+        // the trigger set sat outside that branch and fired for every group, so a `common.*`
+        // binding with `trigger: true` pinned `trigger_pending` on permanently (a `globals.`-only
+        // expression is ref-less, hence due on every gated tick, and the trigger was applied
+        // whether or not the value changed).
+        //
+        // Driven through `resolve_level_bindings` directly, and asserted on `trigger_pending`
+        // rather than on whether the node ran, because neither proxy survives contact:
+        // `wants_run` still free-runs a source through `!has_trigger_inputs` (the term the async
+        // runtime deletes — which is what would turn this into a live "autotrigger does nothing
+        // for any producer" bug), and a full tick would consume the flag in the very run it
+        // wrongly caused. The eval-rate gate is the same period as the run gate, so a rate cap
+        // cannot separate them either.
+        let mut g = eval_graph();
+        // Oscillator binds `common.max_frequency` to `globals.default_ufreq` with `trigger: true`.
+        let osc = g.add_node("Oscillator", None).unwrap();
+        // The control: a triggering binding OUTSIDE `common` must still wake `process`, so the fix
+        // has to be by namespace rather than a blanket removal of the trigger.
+        let paced = g.add_node("_TestCarriedExpr", None).unwrap();
+
+        let globals = g.globals.snapshot();
+        g.resolve_level_bindings(&[osc, paced], Instant::now(), 0.0, &globals);
+
+        assert!(!g.nodes[&osc].trigger_pending, "a common.* re-evaluation re-paces, it does not run");
+        assert!(g.nodes[&paced].trigger_pending, "a triggering binding outside common still wakes it");
     }
 
     #[test]
