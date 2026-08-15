@@ -13,7 +13,7 @@
 //!
 //! ## Where this diverges from the tick path it replaces
 //!
-//! [`NodeRuntime::run`] is `run_node` + `execute_node` minus three things, each of which the
+//! `NodeRuntime::run` is `run_node` + `execute_node` minus three things, each of which the
 //! cutover must restore or drop on purpose: the engine's meta stamping (`index` and `ufreq`);
 //! `last_outputs`, which §7 removes along with `latest_frame`, so that one is a deliberate drop;
 //! and the **required-input gate**, where `execute_node` refuses to run a node whose `required`
@@ -749,6 +749,10 @@ mod tests {
         // the distinction has to be structural, not a rate gate or a changed-comparison.
         let (mut r, _t) = consumer_fixture();
         r.set_param(ParamKey::new("osc", "freq"), stream_expr(true));
+        // Binding a bare `nd()` reference only SUBSCRIBES — there is no value yet, so there is
+        // nothing to have arrived. Without `set_param`'s `Var::Value` conjunct the act of binding
+        // would itself fire a run, which is the §5.2 half of the arrival rule.
+        assert!(!r.trigger_pending, "subscribing is not an arrival");
         r.deliver_arrival(ParamKey::new("osc", "freq"), Param::float(3.0, 0.0, 10.0));
         assert!(r.trigger_pending, "the arrival triggered it");
         r.run_once();
@@ -772,6 +776,26 @@ mod tests {
 
         r.set_param(key, value_expr(Param::float(4.0, 0.0, 1000.0), true));
         assert!(r.trigger_pending, "the same arrival with `trigger` on IS path C");
+    }
+
+    #[test]
+    fn a_data_plane_arrival_with_trigger_off_also_leaves_the_node_asleep() {
+        // The control plane's `triggering` and the data plane's `binding.trigger` are two
+        // independent reads of the same rule, so pinning one leaves the other free. This is the
+        // `nd('lfo')` case an author writes to TRACK a value without being run by it: a regression
+        // here fires path C on every frame the producer emits, silently running this node at the
+        // producer's rate.
+        let (mut r, t) = consumer_fixture();
+        let key = ParamKey::new("osc", "freq");
+        r.set_param(key.clone(), stream_expr(false));
+        r.deliver_arrival(key.clone(), Param::float(3.0, 0.0, 10.0));
+        assert!(!r.trigger_pending, "the value arrived, the node did not wake");
+
+        r.run_once();
+        assert!(published(&t).is_empty(), "and nothing ran to publish");
+        // No assertion on `effective` here on purpose: §2.1 evaluates a non-`common` binding in the
+        // same breath as the run that reads it, so a node that never ran has nothing evaluated yet.
+        // The value is in the mailbox waiting for whatever does wake this node.
     }
 
     #[test]

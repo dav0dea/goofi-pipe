@@ -53,8 +53,8 @@ pub enum ParamValue {
         /// evaluator receives as a local, so the node never resolves a name (§5.3).
         source: String,
         vars: Vec<Var>,
-        /// Whether an arrival on this binding also wakes `process()`. Inert on a `common.*` key —
-        /// see [`super::NodeRuntime::deliver_expr_arrival`].
+        /// Whether an arrival on this binding also wakes `process()`. Inert on a `common.*` key,
+        /// where re-pacing is never a reason to run (§1.1).
         trigger: bool,
     },
 }
