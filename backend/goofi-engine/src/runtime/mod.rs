@@ -426,6 +426,11 @@ impl NodeRuntime {
     /// Install a fault, keeping `since` when nothing changed: the node stamps its own `since` when
     /// its fault CHANGES, and reports only transitions — so a process error recurring every run
     /// is one console line, not one per run.
+    ///
+    /// An unchanged fault still moves the parts of the RECORD that are not the transition.
+    /// `last_attempt` is one: it paces the next retry, so freezing it at the first failure turns
+    /// the backoff off entirely and the node re-attempts at its wake rate. `since` is precisely
+    /// the part that must not move.
     fn set_fault(&mut self, next: Option<NodeFault>) {
         let unchanged = match (&self.fault, &next) {
             (Some(current), Some(next)) => {
@@ -436,6 +441,13 @@ impl NodeRuntime {
             _ => false,
         };
         if unchanged {
+            if let (
+                Some(NodeFault::Setup { last_attempt, .. }),
+                Some(NodeFault::Setup { last_attempt: attempted, .. }),
+            ) = (&mut self.fault, &next)
+            {
+                *last_attempt = *attempted;
+            }
             return;
         }
         self.fault = next;
@@ -469,6 +481,7 @@ mod tests {
     use goofi_node::{
         default_factory, Isolation, NodeResult, OutputDecl, ParamDecl, SlotDecl,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -611,6 +624,29 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_setup_retries_on_a_backoff_that_restarts_from_each_attempt() {
+        // The backoff is what keeps a node whose device is missing from re-opening it at its wake
+        // rate — a producer at `default_ufreq` would attempt ~30×/s, and `setup` acquires. It is
+        // paced from the LAST attempt, so an unchanged fault must still move its `last_attempt`
+        // even though it is deliberately not re-broadcast.
+        RETRY_ATTEMPTS.store(0, Ordering::SeqCst);
+        let mut r = NodeRuntime::new(&RETRY_PROBE, Arc::new(MemoryTransport::default()));
+        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 1, "birth is the first attempt");
+        for _ in 0..50 {
+            r.run_once();
+        }
+        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 1, "50 wakes inside the window are one");
+
+        expire_setup_backoff(&mut r);
+        r.run_once();
+        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 2, "the window's end admits exactly one");
+        for _ in 0..50 {
+            r.run_once();
+        }
+        assert_eq!(RETRY_ATTEMPTS.load(Ordering::SeqCst), 2, "and it restarts from THAT attempt");
+    }
+
+    #[test]
     fn a_recurring_process_error_is_reported_once() {
         // §6.2: the node reports TRANSITIONS, so the status worker needs no diffing — and the
         // console does not repaint the same line at the node's run rate.
@@ -708,6 +744,14 @@ mod tests {
         Instant::now() - Duration::from_millis(ms)
     }
 
+    /// Move the recorded attempt out of the backoff window, rather than sleeping a second for it.
+    fn expire_setup_backoff(r: &mut NodeRuntime) {
+        let Some(NodeFault::Setup { last_attempt, .. }) = &mut r.fault else {
+            panic!("not a setup fault");
+        };
+        *last_attempt -= SETUP_RETRY_MS + 1.0;
+    }
+
     fn frame() -> Data {
         Data::string("x", Meta::empty())
     }
@@ -737,6 +781,22 @@ mod tests {
         }
     }
 
+    /// Attempts, counted for the one test that measures the retry backoff. A static is sound here
+    /// only because exactly one test instantiates this type.
+    static RETRY_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Default)]
+    struct RetryProbe;
+    impl Node for RetryProbe {
+        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            RETRY_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            Err("no device".into())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct BadProcess;
     impl Node for BadProcess {
@@ -757,6 +817,7 @@ mod tests {
     static TRIGGERED: NodeManifest = manifest("_RuntimeTriggered", SLOTS, false, default_factory::<Emit>);
     static BAD_SETUP: NodeManifest = manifest("_RuntimeBadSetup", &[], true, default_factory::<BadSetup>);
     static BAD_PROCESS: NodeManifest = manifest("_RuntimeBadProcess", &[], true, default_factory::<BadProcess>);
+    static RETRY_PROBE: NodeManifest = manifest("_RuntimeRetryProbe", &[], true, default_factory::<RetryProbe>);
 
     const fn manifest(
         type_name: &'static str,
