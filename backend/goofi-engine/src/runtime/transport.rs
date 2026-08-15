@@ -26,6 +26,10 @@ use crate::Uid;
 /// the ports `Send + Sync`, which a `Transport` must be — the node thread publishes while the
 /// status-drain worker reads.
 type Svc = ipc_threadsafe::Service;
+/// The iceoryx2 node every port of one owner is built from. It must outlive them, and it is what
+/// `max_nodes` counts on each service — which is why owners share one rather than minting one per
+/// port (see [`iox_node`]).
+pub type IoxNode = iceoryx2::node::Node<Svc>;
 type BytePublisher = iceoryx2::port::publisher::Publisher<Svc, [u8], ()>;
 type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<Svc, [u8], ()>;
 type ByteService = iceoryx2::service::port_factory::publish_subscribe::PortFactory<Svc, [u8], ()>;
@@ -41,6 +45,11 @@ const CONTROL_EVENT_ID: EventId = 0;
 const MAX_NOTIFIERS: usize = 256;
 /// Fan-out plus the `/data` reducer. The default 8 busts on a 9-consumer slot.
 const MAX_SUBSCRIBERS: usize = 256;
+/// How many iceoryx2 NODES may open one service. §3.5 reads it as a per-process bound, which would
+/// make the default 20 irrelevant here — but one graph node is one iceoryx2 node, so it is really a
+/// per-peer bound, and it binds below both ceilings above: measured, the 20th consumer of a slot was
+/// refused with `ExceedsMaxNumberOfNodes` while `max_subscribers` said 256. Raised to match.
+const MAX_NODES: usize = 256;
 /// The pool a publisher starts with. `PowerOfTwo` grows it for a larger frame; the initial size
 /// only decides how many reallocations a big-frame patch pays before it settles.
 const INITIAL_SLICE: usize = 64 * 1024;
@@ -57,13 +66,13 @@ pub fn door_service(base: &str) -> ServiceName {
     format!("goofi_{base}_door")
 }
 
-/// Graph → node control messages.
-pub fn control_service(base: &str) -> ServiceName {
+/// Graph → node control messages. Private: both ends of this one are in this module.
+fn control_service(base: &str) -> ServiceName {
     format!("goofi_{base}_ctl")
 }
 
-/// Node → graph status transitions.
-pub fn status_service(base: &str) -> ServiceName {
+/// Node → graph status transitions. Private for the same reason as [`control_service`].
+fn status_service(base: &str) -> ServiceName {
     format!("goofi_{base}_sts")
 }
 
@@ -75,19 +84,21 @@ pub fn output_service(base: &str, slot: &str) -> ServiceName {
 /// A notifier onto one node's door. A producer holds one per target of an output slot and the graph
 /// holds one per node it messages; neither knows anything else about the node it rings.
 pub struct Doorbell {
-    _node: iceoryx2::node::Node<Svc>,
     notifier: iceoryx2::port::notifier::Notifier<Svc>,
 }
 
 impl Doorbell {
-    /// Open an existing door by name. `open_or_create` rather than `open` because the graph may ring
-    /// a node whose own listener is still being built — the service is the rendezvous, not a proof
-    /// of liveness.
-    pub fn open(service: &str) -> Result<Doorbell, String> {
-        let node = new_node()?;
-        let door = event_service(&node, service)?;
+    /// Open an existing door by name, on the ringer's OWN iceoryx2 node. Borrowed rather than minted
+    /// per bell for two measured reasons: each node is a permanent `/tmp/iceoryx2/nodes/<id>`
+    /// directory and a multi-kilobyte stderr dump when it drops, and each one counts against every
+    /// service's `max_nodes`. A door is rung by one bell per producing NODE, not per wire.
+    ///
+    /// `open_or_create` rather than `open` because the graph may ring a node whose own listener is
+    /// still being built — the service is the rendezvous, not a proof of liveness.
+    pub fn open(node: &IoxNode, service: &str) -> Result<Doorbell, String> {
+        let door = event_service(node, service)?;
         let notifier = door.notifier_builder().create().map_err(|e| format!("notifier `{service}`: {e}"))?;
-        Ok(Doorbell { _node: node, notifier })
+        Ok(Doorbell { notifier })
     }
 
     /// Ring it. `EventId` says WHY the node woke, and the node treats it as a hint (§3.3) — so a
@@ -100,15 +111,14 @@ impl Doorbell {
     }
 }
 
-/// One output slot: its publisher, and the doorbells to ring once a frame is out. The target list is
-/// the full desired set the graph last sent (§3.4), so applying one is an assignment, not a diff.
+/// One output slot: its publisher, and the doorbells to ring once a frame is out.
 struct OutputPort {
     service: ByteService,
     publisher: BytePublisher,
-    targets: Mutex<Vec<(ServiceName, EventId)>>,
-    /// One doorbell per target service, kept across re-wirings — opening one costs a service
-    /// lookup, and a target that survives a re-plan should not pay it again.
-    bells: Mutex<HashMap<ServiceName, Doorbell>>,
+    /// The full desired set the graph last sent (§3.4), already opened. ONE record rather than
+    /// names beside bells: `wire_out` opens them, `publish` rings them, and nothing is reconciled on
+    /// the per-frame path.
+    targets: Mutex<Vec<(Doorbell, EventId)>>,
 }
 
 /// One wire feeding an input slot: the producer's service name (the wire's identity) and this end
@@ -120,9 +130,8 @@ struct InputWire {
 
 /// A node's end of every service it owns.
 pub struct IoxTransport {
-    base: String,
-    /// The iceoryx2 node must outlive every port built from it.
-    node: iceoryx2::node::Node<Svc>,
+    /// Must outlive every port built from it, this node's doorbells included.
+    node: IoxNode,
     door: EventService,
     listener: iceoryx2::port::listener::Listener<Svc>,
     control: ByteSubscriber,
@@ -144,7 +153,7 @@ impl IoxTransport {
         manifest: &NodeManifest,
     ) -> Result<IoxTransport, String> {
         let base = service_base(instance, uid, gen);
-        let node = new_node()?;
+        let node = iox_node()?;
 
         let door = event_service(&node, &door_service(&base))?;
         let listener = door.listener_builder().create().map_err(|e| format!("listener: {e}"))?;
@@ -161,22 +170,11 @@ impl IoxTransport {
             let publisher = publisher(&service, out.name)?;
             outputs.insert(
                 out.name,
-                OutputPort {
-                    service,
-                    publisher,
-                    targets: Mutex::new(Vec::new()),
-                    bells: Mutex::new(HashMap::new()),
-                },
+                OutputPort { service, publisher, targets: Mutex::new(Vec::new()) },
             );
         }
 
-        Ok(IoxTransport { base, node, door, listener, control, status, outputs, inputs: Mutex::new(Vec::new()) })
-    }
-
-    /// The base every one of this node's service names is built from — what the graph puts in
-    /// another node's slot message.
-    pub fn base(&self) -> &str {
-        &self.base
+        Ok(IoxTransport { node, door, listener, control, status, outputs, inputs: Mutex::new(Vec::new()) })
     }
 
     /// The doorbell service's creation-time limits, read back from iceoryx2 itself.
@@ -231,25 +229,6 @@ impl IoxTransport {
         Ok(InputWire { service: service.clone(), subscriber })
     }
 
-    /// The doorbells for one output slot, opened once and kept: `wire_out` is declarative, so a
-    /// target that survives a re-plan must not pay another service lookup.
-    fn ring_targets(&self, port: &OutputPort) {
-        let targets = port.targets.lock().unwrap().clone();
-        let mut bells = port.bells.lock().unwrap();
-        bells.retain(|service, _| targets.iter().any(|(t, _)| t == service));
-        for (service, id) in targets {
-            let bell = match bells.entry(service.clone()) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => match Doorbell::open(&service) {
-                    Ok(bell) => e.insert(bell),
-                    // A door that cannot be opened is a node that has died or has not been born.
-                    // The frame is already published, so the consumer gets it on its next wake.
-                    Err(_) => continue,
-                },
-            };
-            let _ = bell.ring(id);
-        }
-    }
 }
 
 impl Transport for IoxTransport {
@@ -313,7 +292,14 @@ impl Transport for IoxTransport {
 
     fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String> {
         let port = self.outputs.get(slot).ok_or_else(|| format!("no output slot `{slot}`"))?;
-        *port.targets.lock().unwrap() = targets.to_vec();
+        // Opened here, where a failure can still be reported: the ack carries it and the graph
+        // abandons that sequence. The previous set stands until the whole new one opens, so a
+        // refused message leaves the node in the state its ack describes.
+        let mut opened = Vec::with_capacity(targets.len());
+        for (service, id) in targets {
+            opened.push((Doorbell::open(&self.node, service)?, *id));
+        }
+        *port.targets.lock().unwrap() = opened;
         Ok(())
     }
 
@@ -326,7 +312,9 @@ impl Transport for IoxTransport {
         let _ = sample.write_from_slice(&bytes).send();
         // The ring comes AFTER the send, always: a consumer woken before the frame is in its queue
         // drains nothing and parks again, and the frame then waits for an unrelated wake.
-        self.ring_targets(port);
+        for (bell, id) in port.targets.lock().unwrap().iter() {
+            let _ = bell.ring(*id);
+        }
     }
 
     fn report(&self, status: Status) {
@@ -341,7 +329,7 @@ impl Transport for IoxTransport {
 /// that node's doorbell. Opened by name from the same base the node built its services from, which
 /// is the whole of what the graph needs to know about where a node lives.
 pub struct NodeChannel {
-    _node: iceoryx2::node::Node<Svc>,
+    _node: IoxNode,
     control: BytePublisher,
     status: ByteSubscriber,
     door: Doorbell,
@@ -349,13 +337,13 @@ pub struct NodeChannel {
 
 impl NodeChannel {
     pub fn open(base: &str) -> Result<NodeChannel, String> {
-        let node = new_node()?;
+        let node = iox_node()?;
         let control = publisher(&data_service(&node, &control_service(base))?, "control")?;
         let status = data_service(&node, &status_service(base))?
             .subscriber_builder()
             .create()
             .map_err(|e| format!("status subscriber: {e}"))?;
-        let door = Doorbell::open(&door_service(base))?;
+        let door = Doorbell::open(&node, &door_service(base))?;
         Ok(NodeChannel { _node: node, control, status, door })
     }
 
@@ -384,17 +372,21 @@ impl ControlSink for NodeChannel {
     }
 }
 
-/// One iceoryx2 node per port owner. They are cheap, and a shared one would tie every port's
-/// lifetime to the longest-lived owner.
-fn new_node() -> Result<iceoryx2::node::Node<Svc>, String> {
+/// One iceoryx2 node per port OWNER — a node's transport, or the graph's channel to one node —
+/// never per port. Each one is a permanent `/tmp/iceoryx2/nodes/<id>` directory plus a multi-kilobyte
+/// "unable to remove node resources" dump on drop, and each one is counted by every service's
+/// `max_nodes`, so minting one per wire would both leak per re-plan and lower the real fan-out
+/// ceiling below the configured one.
+pub fn iox_node() -> Result<IoxNode, String> {
     NodeBuilder::new().create::<Svc>().map_err(|e| format!("iox node: {e}"))
 }
 
 /// The event service every door is: the three id ranges of §3.2 budgeted against one ceiling, and
 /// one listener — the node itself.
-fn event_service(node: &iceoryx2::node::Node<Svc>, name: &str) -> Result<EventService, String> {
+fn event_service(node: &IoxNode, name: &str) -> Result<EventService, String> {
     node.service_builder(&parse_name(name)?)
         .event()
+        .max_nodes(MAX_NODES)
         .event_id_max_value(EVENT_ID_MAX)
         .max_notifiers(MAX_NOTIFIERS)
         .max_listeners(1)
@@ -405,9 +397,10 @@ fn event_service(node: &iceoryx2::node::Node<Svc>, name: &str) -> Result<EventSe
 /// The publish/subscribe service every data, control and status wire is. One publisher because a
 /// slot has exactly one producer; no history because a link never replays a previous output; a
 /// one-deep buffer because that is what latest-wins resolves to per wire.
-fn data_service(node: &iceoryx2::node::Node<Svc>, name: &str) -> Result<ByteService, String> {
+fn data_service(node: &IoxNode, name: &str) -> Result<ByteService, String> {
     node.service_builder(&parse_name(name)?)
         .publish_subscribe::<[u8]>()
+        .max_nodes(MAX_NODES)
         .enable_safe_overflow(true)
         .history_size(0)
         .subscriber_max_buffer_size(1)

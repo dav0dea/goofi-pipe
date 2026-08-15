@@ -44,8 +44,8 @@ mod wire;
 
 pub use mailbox::{Binding, Mailbox};
 pub use transport::{
-    control_service, door_service, output_service, service_base, status_service, Doorbell,
-    IoxTransport, NodeChannel,
+    door_service, iox_node, output_service, service_base, Doorbell, IoxNode, IoxTransport,
+    NodeChannel,
 };
 #[cfg(test)]
 pub use wire::MemoryTransport;
