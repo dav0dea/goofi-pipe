@@ -211,7 +211,8 @@ impl NodeRuntime {
             ParamValue::Literal(p) => {
                 self.bindings.shift_remove(&key);
                 self.evaluated.shift_remove(&key);
-                self.record_binding_error(&key, None);
+                let cleared = self.record_binding_error(&key, None);
+                self.report_binding_errors(cleared.into_iter().collect());
                 self.set_literal(&key, p.clone());
                 Some(p)
             }
@@ -681,6 +682,32 @@ mod tests {
     }
 
     #[test]
+    fn unbinding_a_broken_param_clears_its_error_on_the_wire_too() {
+        // §3.4: a literal on a bound param unbinds it, and `Status::BindingErrors` is a DELTA — so
+        // the clear has to be SENT. The sibling path (a recovering evaluation) sends it; an error
+        // that only one of the two can clear leaves an inspector field stuck red.
+        let (mut r, t) = consumer_fixture();
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), missing_expr("no node named `lfo`"));
+        assert_eq!(
+            binding_error_reports(&t),
+            [vec![(key.clone(), Some("no node named `lfo`".to_string()))]],
+            "the error was announced",
+        );
+
+        r.set_param(key.clone(), ParamValue::Literal(Param::float(5.0, 0.0, 1000.0)));
+        assert!(r.binding_errors.is_empty(), "the record cleared");
+        assert_eq!(
+            binding_error_reports(&t),
+            [
+                vec![(key.clone(), Some("no node named `lfo`".to_string()))],
+                vec![(key, None)],
+            ],
+            "and so was the clear",
+        );
+    }
+
+    #[test]
     fn a_broken_binding_falls_back_to_the_param_it_was_authored_with() {
         // spec §2.1: a failed binding falls back to its LITERAL for that run, which needs the
         // literal to still exist. Overwriting the record with each evaluated value leaves a param
@@ -866,6 +893,16 @@ mod tests {
             vars: vec![Var::Value { name: "__v0".to_string(), value }],
             trigger,
         }
+    }
+
+    fn binding_error_reports(t: &MemoryTransport) -> Vec<Vec<(ParamKey, Option<String>)>> {
+        t.reported()
+            .into_iter()
+            .filter_map(|s| match s {
+                Status::BindingErrors { errors } => Some(errors),
+                _ => None,
+            })
+            .collect()
     }
 
     fn effective_f64(r: &NodeRuntime, key: &ParamKey) -> Option<f64> {
