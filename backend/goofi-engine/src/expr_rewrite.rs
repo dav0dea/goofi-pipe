@@ -72,13 +72,15 @@ struct Term {
 pub fn rewrite(source: &str) -> Result<(String, Vec<VarRef>), ExprError> {
     let mut terms: Vec<Term> = Vec::new();
     for call in goofi_node::scan_nd_calls(source) {
+        // Checked BEFORE the call is required to close: `nd('')` names nothing however it is
+        // spelled, and an unclosed one is not the more forgivable of the two.
+        if call.name.is_empty() {
+            return Err(ExprError("nd() needs a node name".to_string()));
+        }
         // A call whose `)` the scanner never found is not a term this can span. Left verbatim: the
         // rewritten source then names `nd`, which no longer exists in the eval namespace, so the
         // binding reports a NameError instead of being quietly rewired.
         let Some(end) = call.end else { continue };
-        if call.name.is_empty() {
-            return Err(ExprError("nd() needs a node name".to_string()));
-        }
         let (end, slot) = match slot_after(source, end) {
             Some((slot, at)) => (at, Some(slot.to_string())),
             None => (end, None),
@@ -92,9 +94,7 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<VarRef>), ExprError> {
             target: Target::Global { key: read.name.to_string() },
         });
     }
-    // Source order, so `__v0` is the first term a reader sees — and so the splice below can walk
-    // the terms once.
-    terms.sort_by_key(|t| t.start);
+    let terms = merge(terms);
 
     let mut vars: Vec<VarRef> = Vec::new();
     let mut targets: Vec<Target> = Vec::new();
@@ -118,6 +118,30 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<VarRef>), ExprError> {
     }
     out.push_str(&source[cursor..]);
     Ok((out, vars))
+}
+
+/// The two scans' terms as ONE ascending, non-overlapping list — the only shape the splice can
+/// consume, and the reason it needs no bounds check of its own.
+///
+/// Both properties are earned here rather than assumed, because both were violated by ordinary user
+/// input. Ascending: the scans run one after the other, so `globals.g * nd('a')` arrives with its
+/// terms in the wrong order and an unsorted splice slices `source[19..0]`. Non-overlapping: the
+/// `globals.` scan is a byte scan and does not know what a string literal is, so
+/// `nd('globals.gain')` yields a `globals` term INSIDE the `nd` term — and a nested term is not a
+/// term at all, it is part of the node name. A slice run backwards PANICS, and this runs under the
+/// graph mutex a `set_expression` RPC holds, so the panic poisons the whole control plane.
+///
+/// Dropping the nested term is the answer rather than refusing the source: `nd('globals.gain')`
+/// names a node called `globals.gain`, which is a legal display name.
+fn merge(mut terms: Vec<Term>) -> Vec<Term> {
+    terms.sort_by_key(|t| t.start);
+    let mut merged: Vec<Term> = Vec::with_capacity(terms.len());
+    for term in terms {
+        if merged.last().is_none_or(|prev| prev.end <= term.start) {
+            merged.push(term);
+        }
+    }
+    merged
 }
 
 /// The output slot named after a closed `nd(..)` call, and where it ends. `None` when the next
@@ -225,8 +249,40 @@ mod tests {
     #[test]
     fn a_nameless_reference_is_refused_rather_than_left_unresolvable() {
         // `nd('')` names nothing, so there is no producer it could ever resolve to — saying so at
-        // bind time is the honest answer, where a variable would sit permanently Missing.
+        // bind time is the honest answer, where a variable would sit permanently Missing. An
+        // unclosed call is the same authoring mistake with a second one on top of it, so the empty
+        // name is checked before the call is required to close.
         assert!(rewrite("nd('') + 1").is_err());
+        assert!(rewrite("nd('', 2) + 1").is_err());
+    }
+
+    #[test]
+    fn the_two_scans_merge_whatever_order_they_arrive_in() {
+        // The scans run one after the other, so a source that names a global FIRST hands the splice
+        // a descending pair. Unsorted, that slices `source[19..0]` and panics — under the graph
+        // mutex a `set_expression` RPC holds, which poisons the control plane for every later RPC.
+        assert_eq!(rewrite("globals.g * nd('a')").unwrap().0, "__v0 * __v1");
+        assert_eq!(rewrite("nd('a') * globals.g").unwrap().0, "__v0 * __v1");
+        // Both orders, because a fixture that only ever writes `nd()` first cannot tell a sort from
+        // no sort at all — which is exactly how the missing sort survived.
+        assert_eq!(rewrite("globals.g * nd('a')").unwrap().1.len(), 2);
+        assert_eq!(rewrite("nd('a') * globals.g").unwrap().1.len(), 2);
+    }
+
+    #[test]
+    fn a_globals_read_inside_a_node_name_is_part_of_the_name() {
+        // The `globals.` scan is a byte scan and does not know what a string literal is, so it
+        // finds one INSIDE `nd('globals.gain')`. Two overlapping terms make the splice run
+        // backwards, which panics; and `globals.gain` is a legal display name, so the honest answer
+        // is that the nested term is not a term — it is part of the node the reference names.
+        let (src, vars) = rewrite("nd('globals.gain') + 1").unwrap();
+        assert_eq!(src, "__v0 + 1");
+        assert_eq!(
+            vars,
+            [VarRef::Node { var: "__v0".to_string(), name: "globals.gain".to_string(), slot: None }],
+        );
+        // …and the same nesting with a slot on the outside, so the overlap spans past the `)` too.
+        assert_eq!(rewrite("nd('globals.a').out * globals.b").unwrap().0, "__v0 * __v1");
     }
 
     #[test]

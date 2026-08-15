@@ -4047,6 +4047,34 @@ mod tests {
     }
 
     #[test]
+    fn an_expression_a_user_can_type_never_panics_under_the_graph_lock() {
+        // `set_expression` is an MCP surface AND the RPC the inspector's fx field calls, and it runs
+        // holding the `Arc<Mutex<Graph>>` the bridge locks with `.lock().unwrap()` everywhere. A
+        // panic here is not one failed edit — it poisons the mutex and every later RPC, worker and
+        // `/data` subscribe dies with it. So a string a user can type must ANSWER, always.
+        //
+        // Driven through the RPC entry point rather than through `rewrite`, because that is where
+        // the mutex is: a pure-function test proves the arithmetic and not the containment.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestConst", None).unwrap();
+        for source in [
+            "nd('globals.gain') + 1",  // a globals read nested inside a node NAME
+            "globals.g * nd('a')",     // the two scans arriving out of source order
+            "nd('globals.a').out * globals.b",
+            "nd('') + 1",
+            "nd('a', 2) + globals.x",
+            "nd(",
+            "globals.",
+            "",
+        ] {
+            // Ok or Err, both fine — the point is that it RETURNS. `set_expression` answers Err only
+            // for an unknown node or param, so a bad expression rides the binding's error field.
+            let _ = g.set_expression(n, "constant", "value", source, true, false);
+        }
+        assert!(g.contains(n), "the graph survived every one of them");
+    }
+
+    #[test]
     fn a_reported_fault_surfaces_on_the_projections_that_already_exist() {
         // §6: `NodeFault` and `Stage` change only how the graph LEARNS a node's state, not how it
         // is projected — `runtime_overlay` keeps working verbatim, and it reads `last_error` and
