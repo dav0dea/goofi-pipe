@@ -88,30 +88,37 @@ pub struct ParamDecl {
     pub name: &'static str,
     pub spec: ParamSpec,
     /// An optional default *expression* (e.g. `"globals.default_ufreq"`): when a node is freshly
-    /// instantiated, the engine seeds a live binding on this param instead of a plain literal, so it
+    /// instantiated, the engine seeds a binding on this param instead of a plain literal, so it
     /// tracks the referenced globals/refs. The `spec` default is the graceful fallback (used verbatim
     /// when no evaluator is wired). `None` ⇒ an ordinary literal-default param.
-    pub expression: Option<&'static str>,
-    /// Whether the declared [`Self::expression`] starts live. `Off` is a *carried* expression — its
-    /// source is the declaration the inspector's fx toggle turns on, so a param can ship the
-    /// expression its author expects the user to want without imposing it.
-    pub expression_mode: ExprMode,
-    /// Whether re-evaluating the declared expression also wakes `process()`. Declaration
-    /// completeness — the same flag the fx editor exposes per binding, stated by the author
-    /// instead of defaulted at the seam.
-    pub trigger: bool,
+    pub expression: Option<ExprDecl>,
     /// Help text for the UI's tooltip. Static per-type metadata, so it lives here and never on
     /// the runtime [`Param`] — a doc string on the value would be copied into the CRDT doc, the
     /// `.gfi`, and every param clone.
     pub doc: Option<&'static str>,
 }
 
-/// Whether a declared [`ParamDecl::expression`] is live or merely carried.
+/// A declared param expression: its source plus the two flags the fx editor exposes per binding.
+/// One optional struct rather than three flat fields on [`ParamDecl`], so a mode or a trigger flag
+/// with no source is unconstructible — and so the ~30 params that declare no expression say so in
+/// one word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExprDecl {
+    pub source: &'static str,
+    /// Whether this expression starts live. `Off` is a *carried* expression — the source is there
+    /// for the inspector's fx toggle to turn on, so a param can ship the expression its author
+    /// expects the user to want without imposing it.
+    pub mode: ExprMode,
+    /// Whether re-evaluating it also wakes `process()`.
+    pub trigger: bool,
+}
+
+/// Whether a declared [`ExprDecl`] is live or merely carried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExprMode {
     /// Saved on the declaration, awaiting the inspector toggle — the `spec` literal is in force.
     Off,
-    /// Live: the engine seeds a real binding, and the param tracks what the expression reads.
+    /// Live: the engine seeds an enabled binding, and the param tracks what the expression reads.
     On,
 }
 
@@ -361,8 +368,6 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
         name: "autotrigger",
         spec: ParamSpec::Bool { default: false },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some(
             "Run every tick on the node's own schedule, instead of waiting for an input frame. \
              Turn this on for sources; leave it off for transforms driven by their input.",
@@ -374,11 +379,18 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
         spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 100.0 },
         // Every node carries the patch's producer rate here, so any node can be paced by
         // `globals.default_ufreq` with one inspector toggle. It starts `Off` — a consumer runs at
-        // its input's rate — and a producer is what turns it on. `trigger` so that editing the
-        // global re-paces a producer that is asleep between frames rather than at its next wake.
-        expression: Some("globals.default_ufreq"),
-        expression_mode: ExprMode::Off,
-        trigger: true,
+        // its input's rate. `trigger: true` so that editing the global re-paces a sleeping
+        // producer rather than waiting for its next wake.
+        //
+        // INTENT, NOT YET WIRED (Task 4): a `producer` type is meant to start this expression `On`,
+        // and nothing flips it today. `Graph::seed_default_expressions` walks a manifest's OWN
+        // `params`, and these universal decls are not part of any manifest's `params` — only a node
+        // that redeclares `common.max_frequency` itself (today: `Oscillator`) seeds a binding here.
+        expression: Some(ExprDecl {
+            source: "globals.default_ufreq",
+            mode: ExprMode::Off,
+            trigger: true,
+        }),
         doc: Some(
             "Rate cap for this node, read through `frequency_mode`. 0 means uncapped — the node \
              runs as often as the scheduler and its inputs allow.",
@@ -393,8 +405,6 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
             refresh: false,
         },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some(
             "How to read `max_frequency`: as a rate in Hz (updates per second), or as a period \
              in seconds between updates — convenient for very slow nodes.",
@@ -709,8 +719,9 @@ pub struct NodeManifest {
     pub isolation: Isolation,
     /// This type is a SOURCE: it makes frames on its own schedule rather than in answer to an
     /// input. The only pacing an author declares — everything downstream inherits its cadence
-    /// through triggers, so a consumer never states a rate. Seeds `common.autotrigger`
-    /// (see [`with_common`]) and the `globals.default_ufreq` binding on `common.max_frequency`.
+    /// through triggers, so a consumer never states a rate. Today it does exactly one thing:
+    /// default `common.autotrigger` on (see [`with_common`]). Turning [`COMMON_DECLS`]'s carried
+    /// `globals.default_ufreq` expression on is the other half, and is not yet wired (Task 4).
     pub producer: bool,
     /// Build a default instance (type-erased). The engine seeds params afterward by
     /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.
@@ -825,18 +836,21 @@ mod tests {
     }
 
     #[test]
-    fn producer_defaults_autotrigger_on_and_enables_the_ufreq_expression() {
-        // `producer` is the ONLY pacing an author declares (spec §1.2). It must do exactly two
-        // things, and a node that is not a producer must get neither.
+    fn producer_defaults_autotrigger_on_and_every_node_carries_the_ufreq_expression() {
+        // `producer` is the ONLY pacing an author declares (spec §1.2), and a node that is not a
+        // producer must not get its autotrigger.
         let p = with_common(ParamGroups::new(), /* producer */ true);
         assert_eq!(param(&p, "common", "autotrigger").and_then(Param::as_bool), Some(true));
         let c = with_common(ParamGroups::new(), /* producer */ false);
         assert_eq!(param(&c, "common", "autotrigger").and_then(Param::as_bool), Some(false));
 
+        // The rate expression is carried by EVERY node, live on none of them — `Off` is the
+        // inspector's fx toggle waiting to be flipped, not a binding.
         let decl = COMMON_DECLS.iter().find(|d| d.name == "max_frequency").expect("declared");
-        assert_eq!(decl.expression, Some("globals.default_ufreq"), "every node carries it");
-        assert_eq!(decl.expression_mode, ExprMode::Off, "off until producer flips it");
-        assert!(decl.trigger, "so a default_ufreq edit re-paces a sleeping producer");
+        let expr = decl.expression.expect("every node carries it");
+        assert_eq!(expr.source, "globals.default_ufreq");
+        assert_eq!(expr.mode, ExprMode::Off, "carried, not imposed");
+        assert!(expr.trigger, "so a default_ufreq edit re-paces a sleeping producer");
     }
 
     #[test]
@@ -862,13 +876,13 @@ mod tests {
 
     static DECL_PARAMS: &[ParamDecl] = &[
         ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
         ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
         ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
         ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
     ];
 
     #[test]

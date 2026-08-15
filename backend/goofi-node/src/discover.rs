@@ -7,9 +7,7 @@
 use goofi_core::probe;
 use goofi_core::SlotType;
 
-use crate::{
-    ExprMode, Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl,
-};
+use crate::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
 
 /// Builds a fresh boxed instance of a runtime-discovered node type from its params. A bare `fn`
 /// pointer can't close over per-type state (a source string, a device handle), so this is a boxed
@@ -119,8 +117,6 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
         name: leak_str(&p.name),
         spec,
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: p.doc.as_deref().map(leak_str),
     }
 }

@@ -296,7 +296,7 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_node::{ExprMode, Isolation, OutputDecl, ParamDecl, SlotDecl};
+    use goofi_node::{Isolation, OutputDecl, ParamDecl, SlotDecl};
 
     static STUB_PARAMS: &[ParamDecl] = &[];
     fn stub_factory() -> Box<dyn goofi_node::Node> {
@@ -339,8 +339,6 @@ mod tests {
         name: "nperseg",
         spec: goofi_node::ParamSpec::Int { default: 256, min: 16, max: 4096 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some("Samples per Welch segment: longer means finer frequency resolution."),
     }];
     static DOCUMENTED_MANIFEST: NodeManifest = NodeManifest {
@@ -360,8 +358,6 @@ mod tests {
         name: "autotrigger",
         spec: goofi_node::ParamSpec::Bool { default: true },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some("On by default: this node is a source."),
     }];
     static OVERRIDE_MANIFEST: NodeManifest = NodeManifest {

@@ -2489,8 +2489,6 @@ mod result_enrichment_tests {
         name: "device",
         spec: goofi_node::ParamSpec::Str { default: "", options: &[], refresh: true },
         expression: None,
-        expression_mode: goofi_node::ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static PICKER: goofi_node::NodeManifest = goofi_node::NodeManifest {

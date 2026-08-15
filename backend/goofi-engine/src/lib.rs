@@ -802,7 +802,7 @@ impl Graph {
         }
         for decl in manifest.params {
             if let Some(expr) = decl.expression {
-                let _ = self.set_expression(uid, decl.group, decl.name, expr, true, false);
+                let _ = self.set_expression(uid, decl.group, decl.name, expr.source, true, false);
             }
         }
     }
@@ -3407,8 +3407,8 @@ mod tests {
     use super::*;
     use goofi_core::{Meta, SlotType, Value};
     use goofi_node::{
-        default_factory, ExprMode, Isolation, Node, NodeManifest, NodeResult, OutputDecl,
-        ParamDecl, ParamSpec, Params, SlotDecl,
+        default_factory, ExprDecl, ExprMode, Isolation, Node, NodeManifest, NodeResult,
+        OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl,
     };
 
     /// Empty param declaration, shared by the many test nodes with no own params.
@@ -3735,8 +3735,6 @@ mod tests {
         name: "value",
         spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -3977,9 +3975,9 @@ mod tests {
     // 10 Hz (-> 0.1s), autotriggering. `frequency_mode` is filled by `with_common`.
     static CAPPED_PARAMS: &[ParamDecl] = &[
         ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
         ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 },
-            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+            expression: None, doc: None },
     ];
     inventory::submit! {
         NodeManifest {
@@ -4057,8 +4055,6 @@ mod tests {
         name: "value",
         spec: ParamSpec::Float { default: 1.0, min: -1e9, max: 1e9 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -4147,9 +4143,11 @@ mod tests {
         group: "control",
         name: "rate",
         spec: ParamSpec::Float { default: 5.0, min: 0.0, max: 1000.0 },
-        expression: Some("globals.default_ufreq"),
-        expression_mode: ExprMode::On,
-        trigger: false,
+        expression: Some(ExprDecl {
+            source: "globals.default_ufreq",
+            mode: ExprMode::On,
+            trigger: false,
+        }),
         doc: None,
     }];
     inventory::submit! {
@@ -4190,8 +4188,6 @@ mod tests {
         name: "value",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -4270,8 +4266,6 @@ mod tests {
         name: "autotrigger",
         spec: ParamSpec::Bool { default: true },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static COLLECT_IN: &[SlotDecl] = &[SlotDecl {
@@ -4468,8 +4462,6 @@ mod tests {
             name: "ok",
             spec: ParamSpec::Bool { default: false },
             expression: None,
-            expression_mode: ExprMode::Off,
-            trigger: false,
             doc: None,
         },
         ParamDecl {
@@ -4477,8 +4469,6 @@ mod tests {
             name: "device",
             spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
             expression: None,
-            expression_mode: ExprMode::Off,
-            trigger: false,
             doc: None,
         },
     ];
@@ -5775,8 +5765,6 @@ mod tests {
         name: "device",
         spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static GATE_PICKER_MANIFEST: NodeManifest = NodeManifest {
@@ -5925,8 +5913,6 @@ mod tests {
             name: "device",
             spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
             expression: None,
-            expression_mode: ExprMode::Off,
-            trigger: false,
             doc: None,
         },
         ParamDecl {
@@ -5934,8 +5920,6 @@ mod tests {
             name: "fixed",
             spec: ParamSpec::Str { default: "a", options: &["a", "b"], refresh: false },
             expression: None,
-            expression_mode: ExprMode::Off,
-            trigger: false,
             doc: None,
         },
     ];
@@ -6093,8 +6077,6 @@ mod tests {
         name: "gain",
         spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 10.0 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static RT_GAINED_MANIFEST: NodeManifest = NodeManifest {
@@ -6116,8 +6098,6 @@ mod tests {
         name: "gain",
         spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 100.0 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static RT_WIDENED_MANIFEST: NodeManifest = NodeManifest {
@@ -6284,8 +6264,6 @@ mod tests {
         name: "boom",
         spec: ParamSpec::Bool { default: false },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: None,
     }];
     static PANICKY_MANIFEST: NodeManifest = NodeManifest {

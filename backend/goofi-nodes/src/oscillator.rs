@@ -14,8 +14,8 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, ExprMode, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult,
-    OutputDecl, Outputs, ParamDecl, ParamKey, ParamSpec, Params,
+    default_factory, ExprDecl, ExprMode, Inputs, Isolation, Node, NodeCtx, NodeManifest,
+    NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, ParamSpec, Params,
 };
 use std::f64::consts::{PI, TAU};
 
@@ -146,8 +146,6 @@ static PARAMS: &[ParamDecl] = &[
         name: "frequency",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some("Oscillation frequency in Hz, within the signal band rather than the audio band."),
     },
     ParamDecl {
@@ -155,8 +153,6 @@ static PARAMS: &[ParamDecl] = &[
         name: "amplitude",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 1.0e6 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some("Peak value of the waveform; it swings between -amplitude and +amplitude."),
     },
     ParamDecl {
@@ -164,8 +160,6 @@ static PARAMS: &[ParamDecl] = &[
         name: "sfreq",
         spec: ParamSpec::Float { default: 250.0, min: 1.0, max: 10_000.0 },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some(
             "Sample rate WITHIN each emitted frame, in Hz. Together with this node's update rate \
              (common.max_frequency) it decides how many samples each frame carries.",
@@ -176,8 +170,6 @@ static PARAMS: &[ParamDecl] = &[
         name: "waveform",
         spec: ParamSpec::Str { default: "sine", options: &["sine", "square", "sawtooth", "triangle"], refresh: false },
         expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
         doc: Some("Shape of one cycle."),
     },
     // The producer contract: free-running, paced by the patch's `default_ufreq` global (30 Hz by
@@ -188,9 +180,11 @@ static PARAMS: &[ParamDecl] = &[
         group: "common",
         name: "max_frequency",
         spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
-        expression: Some("globals.default_ufreq"),
-        expression_mode: ExprMode::On,
-        trigger: false,
+        expression: Some(ExprDecl {
+            source: "globals.default_ufreq",
+            mode: ExprMode::On,
+            trigger: false,
+        }),
         doc: Some(
             "How many frames per second to emit. Bound to the patch's `default_ufreq` global by \
              default, so editing that global re-rates every Oscillator at once.",
@@ -422,7 +416,8 @@ mod tests {
             .iter()
             .find(|d| d.group == "common" && d.name == "max_frequency")
             .expect("oscillator declares common.max_frequency");
-        assert_eq!(decl.expression, Some("globals.default_ufreq"));
+        let expr = decl.expression.expect("oscillator binds its rate to the global");
+        assert_eq!(expr.source, "globals.default_ufreq");
         // Without an evaluator, the fallback literal must still pace it at the producer default
         // (30 Hz) and free-run it — never unbounded (which would saturate the tick loop).
         let policy = RunPolicy::from_params(&with_common(m.default_params(), m.producer));
