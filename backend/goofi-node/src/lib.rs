@@ -370,9 +370,9 @@ impl RunPolicy {
 pub type CommonDecl = fn(&NodeManifest) -> ParamDecl;
 
 /// Run on the node's own schedule instead of waiting for an input frame — which is exactly what
-/// being a producer means, so the default IS `m.producer`. The spec *default* moves rather than
-/// the materialized value, so a consumer that describes the declaration and one that materializes
-/// it cannot disagree (the palette used to describe `false` beside a value of `true`).
+/// being a producer means, so the default IS `m.producer`. It is the spec *default* that moves and
+/// not the materialized value, so the declaration a reader sees — or that Task 4's seeding walk
+/// reads — is the one `with_common` materializes. One number, not two kept in step.
 fn autotrigger(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
@@ -388,8 +388,14 @@ fn autotrigger(m: &NodeManifest) -> ParamDecl {
 
 /// The rate cap. Every node CARRIES the patch's producer rate as an expression, so any node can be
 /// paced by `globals.default_ufreq` with one inspector toggle; on a producer it is already live,
-/// because a source is what the patch rate is for. `trigger` unconditionally, so that editing the
-/// global re-paces a sleeping producer rather than waiting for its next wake.
+/// because a source is what the patch rate is for.
+///
+/// `trigger: true` unconditionally, and it is INERT here — do not read it as load-bearing. Spec
+/// §1.1: a `common.*` arrival never sets `trigger_pending`, because re-pacing is not a reason to
+/// run. What re-paces a sleeping producer is the binding re-evaluating (`invalidate_bindings_reading`
+/// clears `last_eval`, so a `default_ufreq` edit makes it due) and the `common` branch re-deriving
+/// `RunPolicy` — `trigger` is nowhere in that path. It is declared for interface completeness: the
+/// field is on every `ParamDecl`, the frontend renders it, and a non-`common` declaration means it.
 ///
 /// NOT YET SEEDED (Task 4): `Graph::seed_default_expressions` walks a manifest's OWN `params`, and
 /// these universal declarations are not part of any manifest's `params` — so today only a node that
@@ -873,7 +879,9 @@ mod tests {
         };
         assert_eq!(expr(false).source, "globals.default_ufreq");
         assert_eq!(expr(false).mode, ExprMode::Off, "carried, not imposed");
-        assert!(expr(false).trigger, "so a default_ufreq edit re-paces a sleeping producer");
+        // Declared uniformly, inert on `common.*` (spec §1.1) — pinned so the two producer
+        // variants stay identical in it, not because pacing depends on it.
+        assert!(expr(false).trigger, "declared for interface completeness, ignored on common.*");
         assert_eq!(expr(true).mode, ExprMode::On, "a producer IS paced by the patch rate");
         assert_eq!(expr(true).source, expr(false).source, "the producer variant rewrites only mode");
         assert_eq!(expr(true).trigger, expr(false).trigger);

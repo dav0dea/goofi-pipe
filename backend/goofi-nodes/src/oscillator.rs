@@ -183,9 +183,11 @@ static PARAMS: &[ParamDecl] = &[
         // Declaring `common.max_frequency` here means the universal declaration does not apply to
         // this node at all — a manifest's own common param is never overwritten, and is under no
         // obligation to match it. Stated in full for that reason: the Oscillator IS paced by the
-        // patch rate, so the expression is `On`; a global edit re-paces it even while it sleeps
-        // between frames, so it triggers; and 30.0 is the literal that stands in when no evaluator
-        // is wired, which is also why this one is capped far above the universal 100.
+        // patch rate, so the expression is `On`; 30.0 is the literal that stands in when no
+        // evaluator is wired, which is also why this one is capped far above the universal 100.
+        // `trigger` matches the universal declaration and is equally inert — spec §1.1 ignores it
+        // on `common.*`. A `default_ufreq` edit re-rates this node by re-evaluating the binding,
+        // not by triggering a run.
         expression: Some(ExprDecl {
             source: "globals.default_ufreq",
             mode: ExprMode::On,
