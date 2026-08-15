@@ -256,14 +256,13 @@ impl Transport for IoxTransport {
     fn wait(&self, timeout: Option<Duration>) -> Vec<EventId> {
         let mut ids = Vec::new();
         // `wait_all` rather than `wait_one`: several producers can ring between two parks, and
-        // taking one id per wake would leave the rest to be re-delivered a wake later.
-        let waited = match timeout {
+        // taking one id per wake would leave the rest to be re-delivered a wake later. A listener
+        // that errors reports no reason to wake, and the caller drains regardless — which is
+        // exactly what makes a lost notification cost nothing.
+        let _ = match timeout {
             Some(t) => self.listener.timed_wait_all(|id| ids.push(id.as_value() as EventId), t),
             None => self.listener.blocking_wait_all(|id| ids.push(id.as_value() as EventId)),
         };
-        // A listener that errors reports no reason to wake; the caller drains regardless, which is
-        // exactly what makes a lost notification cost nothing.
-        let _ = waited;
         ids
     }
 
@@ -321,14 +320,10 @@ impl Transport for IoxTransport {
     fn publish(&self, slot: &str, frame: &Data) {
         let Some(port) = self.outputs.get(slot) else { return };
         let bytes = goofi_codec::encode(frame);
-        match port.publisher.loan_slice_uninit(bytes.len()) {
-            Ok(sample) => {
-                let _ = sample.write_from_slice(&bytes).send();
-            }
-            // Nothing to report this to: a publish failure is a shared-memory condition, not a node
-            // error, and the next emit re-tries it.
-            Err(_) => return,
-        }
+        // Nothing to report a loan failure to: it is a shared-memory condition rather than a node
+        // error, and the next emit re-tries it. What must not happen is ringing anyway.
+        let Ok(sample) = port.publisher.loan_slice_uninit(bytes.len()) else { return };
+        let _ = sample.write_from_slice(&bytes).send();
         // The ring comes AFTER the send, always: a consumer woken before the frame is in its queue
         // drains nothing and parks again, and the frame then waits for an unrelated wake.
         self.ring_targets(port);

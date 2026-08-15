@@ -2227,8 +2227,8 @@ impl Graph {
 
     // ── The wire plane (spec §3.1, §4) ──────────────────────────────────────────────────────
     // The async runtime's topology side: what each node is told about its slots, and in what order.
-    // Inert until a node's control channel is attached, which nothing does until the cutover — so
-    // every link path below already calls it and nothing yet answers.
+    // `add_link` and `remove_link` above already replan through it; it stays inert until a node's
+    // control channel is attached, which nothing does until the cutover.
 
     /// Register the graph's end of one node's control channel. A node's birth attaches it.
     pub fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
