@@ -60,6 +60,14 @@ struct Sequence {
     phase: Option<Phase>,
 }
 
+impl Sequence {
+    /// Whether the consumer has NOT yet acked a set from this sequence — it has been told nothing,
+    /// or has been sent an `InSlot` it has not answered. Past `Apply` it holds `desired`.
+    fn unapplied(&self) -> bool {
+        matches!(self.phase, None | Some(Phase::Shrink) | Some(Phase::Apply))
+    }
+}
+
 /// The graph's end of the wire plane: who to talk to, what each slot was last told, what is in
 /// flight, and the birth generation of every uid this graph has ever held.
 #[derive(Default)]
@@ -120,6 +128,20 @@ impl WirePlanner {
 
     /// Start a slot's sequence, cancelling whatever it had in flight.
     pub(crate) fn begin(&mut self, key: SlotKey, desired: Vec<Wire>, removed: Vec<Wire>, added: Vec<Wire>) {
+        // A cancelled sequence that had not applied yet leaves its OWN additions unapplied, and the
+        // diff base has already moved past them — so unless they are carried, the evidence that this
+        // consumer never subscribed to them disappears with the sequence that held it, and some
+        // other slot's phase 3 tells their producer to ring it. Carrying them also re-owes the grow
+        // the cancelled sequence never sent. Rebuilt in `desired` order, so a phase's messages go
+        // out in the order the set names them however they were merged.
+        let carried = self
+            .sequences
+            .get(&key)
+            .filter(|previous| previous.unapplied())
+            .map(|previous| previous.added.clone())
+            .unwrap_or_default();
+        let added: Vec<Wire> =
+            desired.iter().copied().filter(|w| added.contains(w) || carried.contains(w)).collect();
         self.abandon(key);
         self.planned.insert(key, desired.clone());
         self.sequences.insert(key, Sequence { desired, removed, added, phase: None });
@@ -146,10 +168,7 @@ impl WirePlanner {
     /// told nothing yet, or has been sent an `InSlot` it has not acked. A producer must not be told
     /// to ring it until then (§4).
     pub(crate) fn unapplied(&self, key: SlotKey, wire: Wire) -> bool {
-        self.sequences.get(&key).is_some_and(|sequence| {
-            sequence.added.contains(&wire)
-                && matches!(sequence.phase, None | Some(Phase::Shrink) | Some(Phase::Apply))
-        })
+        self.sequences.get(&key).is_some_and(|s| s.unapplied() && s.added.contains(&wire))
     }
 
     /// Move to the next phase, or finish the sequence and answer `None`.
@@ -585,6 +604,57 @@ mod tests {
                 targets: vec![(door_name(c, 0), 1), (door_name(d, 0), 1)],
             }],
             "and c's own phase 3 names them both"
+        );
+    }
+
+    #[test]
+    fn a_superseded_sequence_leaves_its_own_additions_unapplied() {
+        // The residual of the rule above: `unapplied` reads the LIVE sequence, and a supersede
+        // recomputes `added` against a diff base that has already moved — so the cancelled
+        // sequence's own additions would stop counting as unapplied the moment it was replaced,
+        // even though the consumer never heard a set naming them. `d`'s phase 3 would then tell `a`
+        // to ring `c`, which is the very thing the phases are ordered to prevent.
+        let mut g = Graph::new();
+        let (a, b) = (source(&mut g), source(&mut g));
+        let c = g.add_node("_TestCollect", None).unwrap();
+        let d = sink(&mut g);
+        let log = attach(&mut g, &[a, b, c, d]);
+
+        g.add_link(a, "out", c, "ins").unwrap(); // c's phase 2, left unanswered
+        assert_eq!(sent(&log.take()).len(), 1);
+        g.add_link(b, "out", c, "ins").unwrap(); // and superseded before it could be
+        let restarted = log.take();
+        assert_eq!(
+            sent(&restarted),
+            [Sent::In {
+                to: c,
+                slot: "ins".to_string(),
+                services: vec![out_name(a, 0, "out"), out_name(b, 0, "out")],
+            }],
+            "the new set names both, and c has still acked neither"
+        );
+
+        g.add_link(a, "out", d, "in").unwrap();
+        let d_apply = log.take();
+        ack_all(&d_apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(d, 0), 1)] }],
+            "d only — c has never applied a set naming a, whichever sequence would have said so"
+        );
+
+        ack_all(&restarted, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [
+                Sent::Out {
+                    to: a,
+                    slot: "out".to_string(),
+                    targets: vec![(door_name(c, 0), 1), (door_name(d, 0), 1)],
+                },
+                Sent::Out { to: b, slot: "out".to_string(), targets: vec![(door_name(c, 0), 1)] },
+            ],
+            "and now both producers are grown: the cancelled sequence's grow was owed too"
         );
     }
 

@@ -285,10 +285,15 @@ fn a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow() {
 #[test]
 fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
     // §3.5: a multi slot's cells are "keyed by service name and ordered by that service's position
-    // in the received `services` Vec" — the order is the SET's, never the producers' own. §3.2 sets
-    // `max_notifiers` to 256 for exactly this shape, "a 20-wire multi-input", so the wire count here
-    // is past what the defaults allow on purpose.
-    const WIRES: u64 = 24;
+    // in the received `services` Vec" — the order is the SET's, never the producers' own.
+    //
+    // The wire count is past what the defaults allow on purpose, and it is the EVENT service's turn
+    // to say so: §3.2 sets `max_notifiers` to 256 for exactly this shape, "a 20-wire multi-input",
+    // but a door is also opened by one iceoryx2 node per producing node, and `max_nodes` (default 36
+    // for an event service) counts those. Measured without it set: bell 35 was refused with
+    // `ExceedsMaxNumberOfNodes`, so `wire_out` errs, the node acks Err, the sequence is abandoned —
+    // and the cable is drawn in the editor and never wired, with nothing reported.
+    const WIRES: u64 = 40;
     let producers: Vec<IoxTransport> = (0..WIRES)
         .map(|i| IoxTransport::create(&instance(), Uid(200 + i), 0, manifest()).unwrap())
         .collect();

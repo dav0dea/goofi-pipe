@@ -238,7 +238,6 @@ impl IoxTransport {
             .map_err(|e| format!("subscriber `{service}`: {e}"))?;
         Ok(InputWire { service: service.clone(), subscriber })
     }
-
 }
 
 impl Transport for IoxTransport {

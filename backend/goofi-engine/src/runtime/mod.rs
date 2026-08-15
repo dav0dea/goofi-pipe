@@ -44,9 +44,11 @@ mod wire;
 
 pub use mailbox::{Binding, Mailbox};
 pub use transport::{
-    door_service, iox_node, output_service, service_base, service_instance, Doorbell, IoxNode,
-    IoxTransport, NodeChannel,
+    door_service, iox_node, output_service, service_base, Doorbell, IoxNode, IoxTransport,
+    NodeChannel,
 };
+/// Only [`Graph`] mints a scope, and it is in this crate.
+pub(crate) use transport::service_instance;
 #[cfg(test)]
 pub use wire::MemoryTransport;
 pub use wire::{
