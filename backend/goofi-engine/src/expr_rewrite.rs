@@ -29,13 +29,28 @@ impl VarRef {
     }
 }
 
-/// One term to replace, and what it refers to.
+/// What a term refers to — the variable map's content, before a variable name is minted for it.
+/// Two terms with equal targets share one variable, because they share one mailbox.
+#[derive(Clone, PartialEq)]
+enum Target {
+    Node { name: String, slot: Option<String> },
+    Global { key: String },
+}
+
+impl Target {
+    fn into_ref(self, var: String) -> VarRef {
+        match self {
+            Target::Node { name, slot } => VarRef::Node { var, name, slot },
+            Target::Global { key } => VarRef::Global { var, key },
+        }
+    }
+}
+
+/// One span of the source to replace, and what it refers to.
 struct Term {
     start: usize,
     end: usize,
-    /// The reference, keyed so two spellings of the same thing share one variable.
-    key: (Option<String>, Option<String>, Option<String>),
-    make: fn(String, &(Option<String>, Option<String>, Option<String>)) -> VarRef,
+    target: Target,
 }
 
 /// Rewrite every `nd(..)` and `globals.*` term into a generated variable, answering the rewritten
@@ -68,23 +83,13 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<VarRef>), ExprError> {
             Some((slot, at)) => (at, Some(slot.to_string())),
             None => (end, None),
         };
-        terms.push(Term {
-            start: call.start,
-            end,
-            key: (Some(call.name.to_string()), slot, None),
-            make: |var, key| VarRef::Node {
-                var,
-                name: key.0.clone().unwrap_or_default(),
-                slot: key.1.clone(),
-            },
-        });
+        terms.push(Term { start: call.start, end, target: Target::Node { name: call.name.to_string(), slot } });
     }
     for read in goofi_node::scan_globals(source) {
         terms.push(Term {
             start: read.start,
             end: read.end,
-            key: (None, None, Some(read.name.to_string())),
-            make: |var, key| VarRef::Global { var, key: key.2.clone().unwrap_or_default() },
+            target: Target::Global { key: read.name.to_string() },
         });
     }
     // Source order, so `__v0` is the first term a reader sees — and so the splice below can walk
@@ -92,18 +97,18 @@ pub fn rewrite(source: &str) -> Result<(String, Vec<VarRef>), ExprError> {
     terms.sort_by_key(|t| t.start);
 
     let mut vars: Vec<VarRef> = Vec::new();
-    let mut keys: Vec<(Option<String>, Option<String>, Option<String>)> = Vec::new();
+    let mut targets: Vec<Target> = Vec::new();
     let mut out = String::with_capacity(source.len());
     let mut cursor = 0;
     for term in terms {
         // Two spellings of the same reference share ONE variable, because they share one mailbox:
         // `nd('a') + nd('a')` subscribes once.
-        let var = match keys.iter().position(|k| *k == term.key) {
+        let var = match targets.iter().position(|t| *t == term.target) {
             Some(at) => vars[at].var().to_string(),
             None => {
                 let var = format!("__v{}", vars.len());
-                vars.push((term.make)(var.clone(), &term.key));
-                keys.push(term.key);
+                vars.push(term.target.clone().into_ref(var.clone()));
+                targets.push(term.target);
                 var
             }
         };

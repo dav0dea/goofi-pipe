@@ -2181,7 +2181,8 @@ impl Graph {
         }
         // Only an empty source is a true unbind.
         if source.trim().is_empty() {
-            return Ok(self.unbind(uid, &key));
+            self.unbind(uid, &key);
+            return Ok(());
         }
         // A non-empty source binds a real param — reject a dangling binding (invisible in
         // the descriptor, unclearable from the UI, phantom scheduling edges), like
