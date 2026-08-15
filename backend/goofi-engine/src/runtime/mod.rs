@@ -31,12 +31,20 @@ use goofi_node::{Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, Para
 use indexmap::IndexMap;
 
 mod mailbox;
+mod transport;
 mod wire;
 
 pub use mailbox::{Binding, Mailbox};
+pub use transport::{
+    control_service, door_service, output_service, service_base, status_service, Doorbell,
+    IoxTransport, NodeChannel,
+};
 #[cfg(test)]
 pub use wire::MemoryTransport;
-pub use wire::{Control, EventId, ParamValue, ServiceName, Status, Transport, Var, VarName};
+pub use wire::{
+    Control, ControlSink, Envelope, EventId, ParamValue, ServiceName, Status, Transport, Var,
+    VarName,
+};
 
 /// The scheduling namespace. A `common.*` param decides *when* a node runs, so it is resolved
 /// before the gates are read and never inside a run (§1.1).
@@ -50,7 +58,7 @@ const SETUP_RETRY_MS: f64 = crate::SETUP_RETRY_INTERVAL * 1000.0;
 ///
 /// Four variants because `entry_error` folds four sources, and wall-clock `f64` rather than
 /// [`Instant`] because a fault is reported over the wire.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum NodeFault {
     Setup { msg: String, since: f64, last_attempt: f64 },
     Process { msg: String, since: f64 },
@@ -201,11 +209,24 @@ impl NodeRuntime {
         }
     }
 
+    /// Apply every waiting control message and ack each one. The ack is what tells the graph this
+    /// node is in sync with it (§3.4) — and the wire sequence's phases are ordered by nothing else,
+    /// so a message applied but not acked stalls the change that sent it.
+    ///
+    /// The slot messages are handed to the transport rather than acted on here: which subscribers a
+    /// wire needs is the transport's whole subject, and the runtime's is when to run.
     fn drain_control(&mut self) {
-        for msg in self.transport.drain_control() {
-            match msg {
-                Control::SetParam { key, value } => self.set_param(key, value),
-            }
+        let transport = self.transport.clone();
+        for Envelope { seq, control } in transport.drain_control() {
+            let ok = match control {
+                Control::InSlot { slot, services } => transport.wire_in(&slot, &services),
+                Control::OutSlot { slot, targets } => transport.wire_out(&slot, &targets),
+                Control::SetParam { key, value } => {
+                    self.set_param(key, value);
+                    Ok(())
+                }
+            };
+            transport.report(Status::Ack { seq, ok });
         }
     }
 
@@ -615,6 +636,21 @@ mod tests {
         r.run_once();
         assert_eq!(r.run_policy.max_frequency, 60.0, "but the policy IS re-derived");
         assert!(published(&t).is_empty(), "and the node did not run");
+    }
+
+    #[test]
+    fn a_slot_message_reaches_the_transport_and_every_message_is_acked() {
+        // The two halves of one drain: a slot message is the TRANSPORT's to honour — which
+        // subscribers a wire needs is its whole subject — while the ack is the runtime's to send,
+        // and the graph's three-phase wire change advances on nothing else. A message applied
+        // without an ack stalls the change that sent it, silently and forever.
+        let (mut r, t) = fixture();
+        t.send(Control::InSlot { slot: "in".to_string(), services: vec!["goofi_a_out_x".to_string()] });
+        t.send(Control::OutSlot { slot: "out".to_string(), targets: vec![("goofi_b_door".to_string(), 1)] });
+        r.run_once();
+        assert_eq!(t.wired_in(), [("in".to_string(), vec!["goofi_a_out_x".to_string()])]);
+        assert_eq!(t.wired_out(), [("out".to_string(), vec![("goofi_b_door".to_string(), 1)])]);
+        assert_eq!(acks(&t), [(1, Ok(())), (2, Ok(()))], "each seq answered, in the order sent");
     }
 
     #[test]
@@ -1126,6 +1162,16 @@ mod tests {
             .into_iter()
             .filter_map(|s| match s {
                 Status::Fault { fault } => Some(fault.map(|f| f.msg().to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn acks(t: &MemoryTransport) -> Vec<(u64, Result<(), String>)> {
+        t.reported()
+            .into_iter()
+            .filter_map(|s| match s {
+                Status::Ack { seq, ok } => Some((seq, ok)),
                 _ => None,
             })
             .collect()

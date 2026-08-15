@@ -622,9 +622,12 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-nodes",
+ "iceoryx2",
  "indexmap",
  "inventory",
  "rayon",
+ "rmp-serde",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "tempfile",
@@ -643,6 +646,7 @@ dependencies = [
  "goofi-core",
  "indexmap",
  "inventory",
+ "serde",
  "serde_json",
 ]
 

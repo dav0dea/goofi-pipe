@@ -57,8 +57,9 @@ pub type NodeResult = std::result::Result<(), NodeError>;
 /// Grouped params: `group -> (name -> Param)`, insertion-ordered.
 pub type ParamGroups = IndexMap<String, IndexMap<String, Param>>;
 
-/// A `(group, name)` address into a node's params.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A `(group, name)` address into a node's params. Serializable because it addresses a param over
+/// the wire too — every `SetParam`, ack and binding error the async runtime sends names one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ParamKey {
     pub group: String,
     pub name: String,
