@@ -32,6 +32,11 @@ pub use command::{Command, CommandHistory, ExprState, Outcome};
 /// The isolated-node execution tier (off-tick detached workers + latest-wins mailboxes).
 mod detached;
 
+/// The per-node runtime: the wake loop, the three run paths, and a node's faults (see `runtime/`).
+/// Public because it is a standalone module today — nothing in [`Graph`] drives it yet, and the
+/// cutover from `tick_at` is its own step.
+pub mod runtime;
+
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
