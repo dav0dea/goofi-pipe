@@ -463,6 +463,7 @@ mod tests {
         outputs: BOOM_OUT,
         params: &[],
         isolation: goofi_node::Isolation::InProcess,
+        producer: false,
         factory: || Box::new(Boom),
     };
 

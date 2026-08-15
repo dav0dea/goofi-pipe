@@ -196,7 +196,7 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
         "output_slots": output_slots(m),
         // Project the same universal `common` group instances carry, so the palette
         // and an instantiated node agree on a type's params.
-        "params": describe_params(&goofi_node::with_common(m.default_params()), m.params),
+        "params": describe_params(&goofi_node::with_common(m.default_params(), m.producer), m.params),
     })
 }
 
@@ -296,7 +296,7 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_node::{Isolation, OutputDecl, ParamDecl, SlotDecl};
+    use goofi_node::{ExprMode, Isolation, OutputDecl, ParamDecl, SlotDecl};
 
     static STUB_PARAMS: &[ParamDecl] = &[];
     fn stub_factory() -> Box<dyn goofi_node::Node> {
@@ -314,6 +314,7 @@ mod tests {
         outputs: T_OUT,
         params: STUB_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: stub_factory,
     };
 
@@ -329,6 +330,7 @@ mod tests {
         outputs: T_OUT,
         params: STUB_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: stub_factory,
     };
 
@@ -336,7 +338,9 @@ mod tests {
         group: "welch",
         name: "nperseg",
         spec: goofi_node::ParamSpec::Int { default: 256, min: 16, max: 4096 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some("Samples per Welch segment: longer means finer frequency resolution."),
     }];
     static DOCUMENTED_MANIFEST: NodeManifest = NodeManifest {
@@ -347,6 +351,7 @@ mod tests {
         outputs: T_OUT,
         params: DOCUMENTED_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: stub_factory,
     };
 
@@ -354,7 +359,9 @@ mod tests {
         group: "common",
         name: "autotrigger",
         spec: goofi_node::ParamSpec::Bool { default: true },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some("On by default: this node is a source."),
     }];
     static OVERRIDE_MANIFEST: NodeManifest = NodeManifest {
@@ -365,6 +372,7 @@ mod tests {
         outputs: T_OUT,
         params: OVERRIDE_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: stub_factory,
     };
 

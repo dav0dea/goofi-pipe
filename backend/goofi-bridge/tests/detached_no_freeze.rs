@@ -40,6 +40,7 @@ static SLOW_MANIFEST: NodeManifest = NodeManifest {
     outputs: SLOW_OUT,
     params: &[],
     isolation: Isolation::Subprocess,
+    producer: false,
     factory: slow_stub,
 };
 

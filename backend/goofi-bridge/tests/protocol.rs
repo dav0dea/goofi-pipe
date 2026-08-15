@@ -71,6 +71,7 @@ static SERVE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: SERVE_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
+    producer: false,
     factory: stub_factory,
 };
 
@@ -3991,6 +3992,7 @@ static FLAKY_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: SERVE_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
+    producer: false,
     factory: stub_factory,
 };
 
@@ -4102,7 +4104,9 @@ static PICKER_PARAMS: &[goofi_node::ParamDecl] = &[goofi_node::ParamDecl {
     group: "audio",
     name: "device",
     spec: goofi_node::ParamSpec::Str { default: "none", options: &["none"], refresh: true },
-    default_expr: None,
+    expression: None,
+    expression_mode: goofi_node::ExprMode::Off,
+    trigger: false,
     doc: Some("Which input device to capture from."),
 }];
 static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
@@ -4113,6 +4117,7 @@ static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: PICKER_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
+    producer: false,
     factory: stub_factory,
 };
 
@@ -4146,6 +4151,7 @@ static MUTE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: PICKER_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
+    producer: false,
     factory: stub_factory,
 };
 

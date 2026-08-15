@@ -2488,7 +2488,9 @@ mod result_enrichment_tests {
         group: "io",
         name: "device",
         spec: goofi_node::ParamSpec::Str { default: "", options: &[], refresh: true },
-        default_expr: None,
+        expression: None,
+        expression_mode: goofi_node::ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static PICKER: goofi_node::NodeManifest = goofi_node::NodeManifest {
@@ -2499,6 +2501,7 @@ mod result_enrichment_tests {
         outputs: &[],
         params: PICKER_PARAMS,
         isolation: goofi_node::Isolation::InProcess,
+        producer: false,
         factory: || Box::new(Picker),
     };
 
@@ -2782,6 +2785,7 @@ mod node_scan_tests {
                 outputs: OUT,
                 params: &[],
                 isolation: Isolation::InProcess,
+                producer: false,
                 factory: never,
             }));
             out.push(ScannedType {

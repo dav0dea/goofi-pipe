@@ -86,6 +86,7 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
         outputs: OUT,
         params: NO_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: stub_factory,
     }
 }

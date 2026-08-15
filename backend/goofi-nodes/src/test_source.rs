@@ -10,8 +10,8 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
+    default_factory, ExprMode, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult,
+    OutputDecl, Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
 #[derive(Default)]
@@ -34,14 +34,18 @@ static PARAMS: &[ParamDecl] = &[
         group: "constant",
         name: "value",
         spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some("The value every element of the emitted array carries."),
     },
     ParamDecl {
         group: "constant",
         name: "length",
         spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some("How many elements the emitted array has."),
     },
 ];
@@ -60,6 +64,7 @@ inventory::submit! {
         outputs: OUTPUTS,
         params: PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: default_factory::<TestConst>,
     }
 }

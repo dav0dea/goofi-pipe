@@ -5,8 +5,8 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta, Value};
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
+    default_factory, ExprMode, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult,
+    OutputDecl, Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
 /// `size` is a cold param — read live from `p` each tick, so the node holds only the
@@ -49,7 +49,9 @@ static PARAMS: &[ParamDecl] = &[ParamDecl {
     group: "buffer",
     name: "size",
     spec: ParamSpec::Int { default: 1000, min: 1, max: 10_000_000 },
-    default_expr: None,
+    expression: None,
+    expression_mode: ExprMode::Off,
+    trigger: false,
     doc: Some("How many of the most recent samples to keep along the time axis."),
 }];
 static INPUTS: &[SlotDecl] = &[SlotDecl {
@@ -73,6 +75,7 @@ inventory::submit! {
         outputs: OUTPUTS,
         params: PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: default_factory::<Buffer>,
     }
 }

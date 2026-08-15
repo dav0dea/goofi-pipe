@@ -706,18 +706,19 @@ impl Graph {
         }
     }
 
+    /// The manifest for `type_name` — the compile-time catalog, else a runtime-registered type.
+    fn manifest_of(&self, type_name: &str) -> Result<&'static NodeManifest, String> {
+        goofi_node::find(type_name)
+            .or_else(|| self.dyn_types.get(type_name).map(|dt| dt.manifest))
+            .ok_or_else(|| self.reject_type(type_name))
+    }
+
     /// The params a fresh instance of `type_name` starts from, resolved WITHOUT constructing the
     /// node. The `.gfi` load path needs these first: it folds the saved values in before building,
     /// so `setup()` sees what the user saved rather than the type's defaults.
     fn default_params_of(&self, type_name: &str) -> Result<ParamGroups, String> {
-        let defaults = if let Some(m) = goofi_node::find(type_name) {
-            m.default_params()
-        } else if let Some(dt) = self.dyn_types.get(type_name) {
-            dt.manifest.default_params()
-        } else {
-            return Err(self.reject_type(type_name));
-        };
-        Ok(goofi_node::with_common(defaults))
+        let m = self.manifest_of(type_name)?;
+        Ok(goofi_node::with_common(m.default_params(), m.producer))
     }
 
     /// Construct (but do not insert) a node by type name — the shared front half of `add_node` /
@@ -729,7 +730,9 @@ impl Graph {
         params: Option<ParamGroups>,
     ) -> Result<(&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>), String> {
         let p = match params {
-            Some(p) => goofi_node::with_common(p),
+            // Saved values win, but the type still decides what a MISSING `common` key means —
+            // a patch written before a node became a producer must still load as one.
+            Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?.producer),
             None => self.default_params_of(type_name)?,
         };
         if let Some(m) = goofi_node::find(type_name) {
@@ -788,16 +791,17 @@ impl Graph {
         Ok(uid)
     }
 
-    /// Seed a live expression binding for each of the type's `default_expr` params — the fresh-add
-    /// analogue of a literal default. Skipped entirely without an evaluator (the `spec` literal is the
-    /// graceful fallback, never an errored "no evaluator" binding). Only fresh adds (`params == None`)
-    /// call this; a restore/load supplies explicit params + its own captured expressions.
+    /// Seed a live expression binding for each of the type's declared `expression` params — the
+    /// fresh-add analogue of a literal default. Skipped entirely without an evaluator (the `spec`
+    /// literal is the graceful fallback, never an errored "no evaluator" binding). Only fresh adds
+    /// (`params == None`) call this; a restore/load supplies explicit params + its own captured
+    /// expressions.
     fn seed_default_expressions(&mut self, uid: Uid, manifest: &'static NodeManifest) {
         if self.evaluator.is_none() {
             return;
         }
         for decl in manifest.params {
-            if let Some(expr) = decl.default_expr {
+            if let Some(expr) = decl.expression {
                 let _ = self.set_expression(uid, decl.group, decl.name, expr, true, false);
             }
         }
@@ -3403,8 +3407,8 @@ mod tests {
     use super::*;
     use goofi_core::{Meta, SlotType, Value};
     use goofi_node::{
-        default_factory, Isolation, Node, NodeManifest, NodeResult, OutputDecl, ParamDecl,
-        ParamSpec, Params, SlotDecl,
+        default_factory, ExprMode, Isolation, Node, NodeManifest, NodeResult, OutputDecl,
+        ParamDecl, ParamSpec, Params, SlotDecl,
     };
 
     /// Empty param declaration, shared by the many test nodes with no own params.
@@ -3555,7 +3559,8 @@ mod tests {
         // doc's own captured expressions are what get restored (separately). `add_node_at(Some(..))`
         // models the restore entry point.
         let mut g = eval_graph();
-        let params = goofi_node::with_common(goofi_node::find("_TestDefaultExpr").unwrap().default_params());
+        let m = goofi_node::find("_TestDefaultExpr").unwrap();
+        let params = goofi_node::with_common(m.default_params(), m.producer);
         let n = g.add_node_at("_TestDefaultExpr", Some(params), Uid(0xD15C), "restored").unwrap();
         assert!(
             g.param_expression(n, "control", "rate").is_none(),
@@ -3704,6 +3709,7 @@ mod tests {
             outputs: E_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Echo>,
         }
     }
@@ -3728,7 +3734,9 @@ mod tests {
         group: "control",
         name: "value",
         spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -3740,6 +3748,7 @@ mod tests {
             outputs: &[],
             params: SINK_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Sink>,
         }
     }
@@ -3774,6 +3783,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<GatedSource>,
         }
     }
@@ -3812,6 +3822,7 @@ mod tests {
             outputs: C_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Counter>,
         }
     }
@@ -3850,6 +3861,7 @@ mod tests {
             outputs: ADD_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Adder>,
         }
     }
@@ -3886,6 +3898,7 @@ mod tests {
             outputs: SLOW_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Slow>,
         }
     }
@@ -3911,6 +3924,7 @@ mod tests {
             outputs: P_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Panicky>,
         }
     }
@@ -3940,6 +3954,7 @@ mod tests {
             outputs: &[],
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Text>,
         }
     }
@@ -3961,8 +3976,10 @@ mod tests {
     }
     // 10 Hz (-> 0.1s), autotriggering. `frequency_mode` is filled by `with_common`.
     static CAPPED_PARAMS: &[ParamDecl] = &[
-        ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true }, default_expr: None, doc: None },
-        ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 }, default_expr: None, doc: None },
+        ParamDecl { group: "common", name: "autotrigger", spec: ParamSpec::Bool { default: true },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+        ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 10.0, min: 0.0, max: 60.0 },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
     ];
     inventory::submit! {
         NodeManifest {
@@ -3973,6 +3990,7 @@ mod tests {
             outputs: G_OUT,
             params: CAPPED_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<CappedSource>,
         }
     }
@@ -4003,6 +4021,7 @@ mod tests {
             outputs: C_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<RefLenChange>,
         }
     }
@@ -4037,7 +4056,9 @@ mod tests {
         group: "mirror",
         name: "value",
         spec: ParamSpec::Float { default: 1.0, min: -1e9, max: 1e9 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -4049,6 +4070,7 @@ mod tests {
             outputs: G_OUT,
             params: MIRROR_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<MirrorSource>,
         }
     }
@@ -4074,6 +4096,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<NowSource>,
         }
     }
@@ -4101,6 +4124,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<GlobalSource>,
         }
     }
@@ -4123,7 +4147,9 @@ mod tests {
         group: "control",
         name: "rate",
         spec: ParamSpec::Float { default: 5.0, min: 0.0, max: 1000.0 },
-        default_expr: Some("globals.default_ufreq"),
+        expression: Some("globals.default_ufreq"),
+        expression_mode: ExprMode::On,
+        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -4135,6 +4161,7 @@ mod tests {
             outputs: G_OUT,
             params: DEFAULT_EXPR_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<DefaultExprSource>,
         }
     }
@@ -4162,7 +4189,9 @@ mod tests {
         group: "control",
         name: "value",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 100.0 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     inventory::submit! {
@@ -4174,6 +4203,7 @@ mod tests {
             outputs: G_OUT,
             params: SETUP_LATCH_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<SetupLatch>,
         }
     }
@@ -4212,6 +4242,7 @@ mod tests {
             outputs: TWO_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<TwoRate>,
         }
     }
@@ -4238,7 +4269,9 @@ mod tests {
         group: "common",
         name: "autotrigger",
         spec: ParamSpec::Bool { default: true },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static COLLECT_IN: &[SlotDecl] = &[SlotDecl {
@@ -4257,6 +4290,7 @@ mod tests {
             outputs: G_OUT,
             params: COLLECT_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Collect>,
         }
     }
@@ -4294,6 +4328,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Required>,
         }
     }
@@ -4327,6 +4362,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<RequiredMulti>,
         }
     }
@@ -4347,6 +4383,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Required>,
         }
     }
@@ -4381,6 +4418,7 @@ mod tests {
         outputs: G_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -4429,14 +4467,18 @@ mod tests {
             group: "boot",
             name: "ok",
             spec: ParamSpec::Bool { default: false },
-            default_expr: None,
+            expression: None,
+            expression_mode: ExprMode::Off,
+            trigger: false,
             doc: None,
         },
         ParamDecl {
             group: "boot",
             name: "device",
             spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
-            default_expr: None,
+            expression: None,
+            expression_mode: ExprMode::Off,
+            trigger: false,
             doc: None,
         },
     ];
@@ -4448,6 +4490,7 @@ mod tests {
         outputs: G_OUT,
         params: GATED_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -5189,6 +5232,7 @@ mod tests {
         outputs: GATE_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -5231,6 +5275,7 @@ mod tests {
         outputs: GATE_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -5498,6 +5543,7 @@ mod tests {
         outputs: GATE_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
+        producer: false,
         factory: rt_stub_factory,
     };
     struct BootOnceNode {
@@ -5593,6 +5639,7 @@ mod tests {
             outputs: RT_OUT,
             params: RT_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: rt_stub_factory,
         };
         struct Boot {
@@ -5727,7 +5774,9 @@ mod tests {
         group: "audio",
         name: "device",
         spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static GATE_PICKER_MANIFEST: NodeManifest = NodeManifest {
@@ -5738,6 +5787,7 @@ mod tests {
         outputs: GATE_OUT,
         params: GATE_PICKER_PARAMS,
         isolation: Isolation::Subprocess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -5866,6 +5916,7 @@ mod tests {
         outputs: RT_OUT,
         params: PICKER_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
     static PICKER_PARAMS: &[ParamDecl] = &[
@@ -5873,14 +5924,18 @@ mod tests {
             group: "audio",
             name: "device",
             spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
-            default_expr: None,
+            expression: None,
+            expression_mode: ExprMode::Off,
+            trigger: false,
             doc: None,
         },
         ParamDecl {
             group: "audio",
             name: "fixed",
             spec: ParamSpec::Str { default: "a", options: &["a", "b"], refresh: false },
-            default_expr: None,
+            expression: None,
+            expression_mode: ExprMode::Off,
+            trigger: false,
             doc: None,
         },
     ];
@@ -5976,6 +6031,7 @@ mod tests {
             outputs: RT_OUT,
             params: PICKER_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: rt_stub_factory,
         };
         #[derive(Default)]
@@ -6026,6 +6082,7 @@ mod tests {
         outputs: RT_OUT,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -6035,7 +6092,9 @@ mod tests {
         group: "shape",
         name: "gain",
         spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 10.0 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static RT_GAINED_MANIFEST: NodeManifest = NodeManifest {
@@ -6046,6 +6105,7 @@ mod tests {
         outputs: RT_OUT,
         params: GAINED_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -6055,7 +6115,9 @@ mod tests {
         group: "shape",
         name: "gain",
         spec: ParamSpec::Float { default: 3.0, min: 0.0, max: 100.0 },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static RT_WIDENED_MANIFEST: NodeManifest = NodeManifest {
@@ -6066,6 +6128,7 @@ mod tests {
         outputs: RT_OUT,
         params: WIDENED_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -6078,6 +6141,7 @@ mod tests {
         outputs: RT_OUT,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -6148,6 +6212,7 @@ mod tests {
         outputs: RESHAPE_OUT_V1,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
     static RESHAPE_V2: NodeManifest = NodeManifest {
@@ -6158,6 +6223,7 @@ mod tests {
         outputs: RESHAPE_OUT_V2,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -6217,7 +6283,9 @@ mod tests {
         group: "danger",
         name: "boom",
         spec: ParamSpec::Bool { default: false },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: None,
     }];
     static PANICKY_MANIFEST: NodeManifest = NodeManifest {
@@ -6228,6 +6296,7 @@ mod tests {
         outputs: RT_OUT,
         params: PANICKY_PARAMS,
         isolation: Isolation::InProcess,
+        producer: false,
         factory: rt_stub_factory,
     };
 
@@ -8117,6 +8186,7 @@ mod tests {
             outputs: P_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: || Box::new(Changing(0)),
         };
         let mut g = Graph::new();

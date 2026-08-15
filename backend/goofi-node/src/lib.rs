@@ -91,11 +91,28 @@ pub struct ParamDecl {
     /// instantiated, the engine seeds a live binding on this param instead of a plain literal, so it
     /// tracks the referenced globals/refs. The `spec` default is the graceful fallback (used verbatim
     /// when no evaluator is wired). `None` ⇒ an ordinary literal-default param.
-    pub default_expr: Option<&'static str>,
+    pub expression: Option<&'static str>,
+    /// Whether the declared [`Self::expression`] starts live. `Off` is a *carried* expression — its
+    /// source is the declaration the inspector's fx toggle turns on, so a param can ship the
+    /// expression its author expects the user to want without imposing it.
+    pub expression_mode: ExprMode,
+    /// Whether re-evaluating the declared expression also wakes `process()`. Declaration
+    /// completeness — the same flag the fx editor exposes per binding, stated by the author
+    /// instead of defaulted at the seam.
+    pub trigger: bool,
     /// Help text for the UI's tooltip. Static per-type metadata, so it lives here and never on
     /// the runtime [`Param`] — a doc string on the value would be copied into the CRDT doc, the
     /// `.gfi`, and every param clone.
     pub doc: Option<&'static str>,
+}
+
+/// Whether a declared [`ParamDecl::expression`] is live or merely carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExprMode {
+    /// Saved on the declaration, awaiting the inspector toggle — the `spec` literal is in force.
+    Off,
+    /// Live: the engine seeds a real binding, and the param tracks what the expression reads.
+    On,
 }
 
 /// The kind + defaults of a declared param.
@@ -343,7 +360,9 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
         group: "common",
         name: "autotrigger",
         spec: ParamSpec::Bool { default: false },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some(
             "Run every tick on the node's own schedule, instead of waiting for an input frame. \
              Turn this on for sources; leave it off for transforms driven by their input.",
@@ -353,7 +372,13 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
         group: "common",
         name: "max_frequency",
         spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 100.0 },
-        default_expr: None,
+        // Every node carries the patch's producer rate here, so any node can be paced by
+        // `globals.default_ufreq` with one inspector toggle. It starts `Off` — a consumer runs at
+        // its input's rate — and a producer is what turns it on. `trigger` so that editing the
+        // global re-paces a producer that is asleep between frames rather than at its next wake.
+        expression: Some("globals.default_ufreq"),
+        expression_mode: ExprMode::Off,
+        trigger: true,
         doc: Some(
             "Rate cap for this node, read through `frequency_mode`. 0 means uncapped — the node \
              runs as often as the scheduler and its inputs allow.",
@@ -367,7 +392,9 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
             options: &[FREQ_MODE_UPDATES_PER_SECOND, FREQ_MODE_SECONDS_PER_UPDATE],
             refresh: false,
         },
-        default_expr: None,
+        expression: None,
+        expression_mode: ExprMode::Off,
+        trigger: false,
         doc: Some(
             "How to read `max_frequency`: as a rate in Hz (updates per second), or as a period \
              in seconds between updates — convenient for very slow nodes.",
@@ -379,13 +406,21 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
 /// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
 /// exist on every node uniformly. Any keys a node already declared are kept;
 /// missing ones are filled with behavior-preserving defaults (unbounded, not
-/// autotriggering). `common` is placed first for a stable frontend ordering. Used
+/// autotriggering) — except that `producer` (the type's own [`NodeManifest::producer`])
+/// flips `autotrigger` on, because a source paces itself and everything else is
+/// driven by its input. `common` is placed first for a stable frontend ordering. Used
 /// both when instantiating a node (the engine) and when projecting a node type to
 /// the palette (the bridge), so type-level and instance-level params agree.
-pub fn with_common(params: ParamGroups) -> ParamGroups {
+pub fn with_common(params: ParamGroups, producer: bool) -> ParamGroups {
     let mut common = params.get("common").cloned().unwrap_or_default();
     for d in COMMON_DECLS {
-        common.entry(d.name.to_string()).or_insert_with(|| d.spec.to_param());
+        common.entry(d.name.to_string()).or_insert_with(|| {
+            if producer && d.name == "autotrigger" {
+                Param::boolean(true)
+            } else {
+                d.spec.to_param()
+            }
+        });
     }
     let mut merged = ParamGroups::new();
     merged.insert("common".to_string(), common);
@@ -672,6 +707,11 @@ pub struct NodeManifest {
     /// `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
     pub isolation: Isolation,
+    /// This type is a SOURCE: it makes frames on its own schedule rather than in answer to an
+    /// input. The only pacing an author declares — everything downstream inherits its cadence
+    /// through triggers, so a consumer never states a rate. Seeds `common.autotrigger`
+    /// (see [`with_common`]) and the `globals.default_ufreq` binding on `common.max_frequency`.
+    pub producer: bool,
     /// Build a default instance (type-erased). The engine seeds params afterward by
     /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.
     pub factory: fn() -> Box<dyn Node>,
@@ -764,7 +804,7 @@ mod tests {
         // Every node in the system carries this group, and its values are persisted into every
         // `.gfi`. A bound or default edited here changes behavior everywhere, silently — so pin
         // the materialized values, not just their presence.
-        let common = with_common(ParamGroups::new());
+        let common = with_common(ParamGroups::new(), false);
         let c = common.get("common").expect("the group is always present");
 
         assert_eq!(c.get("autotrigger"), Some(&Param::boolean(false)));
@@ -785,25 +825,50 @@ mod tests {
     }
 
     #[test]
+    fn producer_defaults_autotrigger_on_and_enables_the_ufreq_expression() {
+        // `producer` is the ONLY pacing an author declares (spec §1.2). It must do exactly two
+        // things, and a node that is not a producer must get neither.
+        let p = with_common(ParamGroups::new(), /* producer */ true);
+        assert_eq!(param(&p, "common", "autotrigger").and_then(Param::as_bool), Some(true));
+        let c = with_common(ParamGroups::new(), /* producer */ false);
+        assert_eq!(param(&c, "common", "autotrigger").and_then(Param::as_bool), Some(false));
+
+        let decl = COMMON_DECLS.iter().find(|d| d.name == "max_frequency").expect("declared");
+        assert_eq!(decl.expression, Some("globals.default_ufreq"), "every node carries it");
+        assert_eq!(decl.expression_mode, ExprMode::Off, "off until producer flips it");
+        assert!(decl.trigger, "so a default_ufreq edit re-paces a sleeping producer");
+    }
+
+    #[test]
     fn with_common_keeps_a_param_the_node_declared_itself() {
-        // Oscillator declares its own `common.autotrigger` (true, because it is a source); the
-        // universal fallback must not overwrite it.
-        let mut declared = ParamGroups::new();
-        let mut group = IndexMap::new();
-        group.insert("autotrigger".to_string(), Param::boolean(true));
-        declared.insert("common".to_string(), group);
+        // A `common.*` key already present wins over BOTH the universal fallback and the producer
+        // default — the latter matters on the restore path, where a user who turned a source's
+        // autotrigger off must not have it turned back on by their own patch loading.
+        let declared = |v: bool| {
+            let mut groups = ParamGroups::new();
+            let mut group = IndexMap::new();
+            group.insert("autotrigger".to_string(), Param::boolean(v));
+            groups.insert("common".to_string(), group);
+            groups
+        };
 
-        let common = with_common(declared);
-
+        let common = with_common(declared(true), false);
         assert_eq!(common["common"].get("autotrigger"), Some(&Param::boolean(true)));
         assert!(common["common"].contains_key("max_frequency"), "the rest is still filled in");
+
+        let producer = with_common(declared(false), true);
+        assert_eq!(producer["common"].get("autotrigger"), Some(&Param::boolean(false)));
     }
 
     static DECL_PARAMS: &[ParamDecl] = &[
-        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 }, default_expr: None, doc: None },
-        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 }, default_expr: None, doc: None },
-        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false }, default_expr: None, doc: None },
-        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true }, default_expr: None, doc: None },
+        ParamDecl { group: "g", name: "freq", spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+        ParamDecl { group: "g", name: "n", spec: ParamSpec::Int { default: 4, min: 1, max: 9 },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+        ParamDecl { group: "g", name: "wave", spec: ParamSpec::Str { default: "sine", options: &["sine", "saw"], refresh: false },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
+        ParamDecl { group: "z", name: "on", spec: ParamSpec::Bool { default: true },
+            expression: None, expression_mode: ExprMode::Off, trigger: false, doc: None },
     ];
 
     #[test]
@@ -926,6 +991,7 @@ mod tests {
             outputs: NOP_OUT,
             params: NOP_PARAMS,
             isolation: Isolation::InProcess,
+            producer: false,
             factory: default_factory::<Nop>,
         }
     }

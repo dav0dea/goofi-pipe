@@ -36,6 +36,7 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     outputs: PY_OUT,
     params: PY_PARAMS,
     isolation: Isolation::InProcess,
+    producer: false,
     factory: py_stub_factory,
 };
 

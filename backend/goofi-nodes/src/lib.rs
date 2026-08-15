@@ -23,28 +23,32 @@ pub fn native_node_count() -> usize {
 
 #[cfg(test)]
 mod tests {
-    /// Catalog validation: every `default_expr` a node declares must READ ONLY GLOBALS THAT EXIST
+    /// Catalog validation: every `expression` a node declares must READ ONLY GLOBALS THAT EXIST
     /// in a fresh patch — i.e. `goofi_core::globals::SYSTEM_GLOBALS`. Seeding runs on a fresh add
     /// (`seed_default_expressions`), where the only globals in the store are the system ones, so a
     /// typo'd `globals.defualt_ufreq` compiles, binds, and then errors at eval on every instance of
     /// that node type — the param falls back to its literal and the node wears an error badge.
     ///
-    /// The "targets a declared param" check this test used to make cannot fail and is gone: a
-    /// `default_expr` lives ON the decl it targets, and `with_common` keeps whatever `common.*`
+    /// The "targets a declared param" check this test used to make cannot fail and is gone: an
+    /// `expression` lives ON the decl it targets, and `with_common` keeps whatever `common.*`
     /// keys a node declared, so the target always exists by construction.
     ///
-    /// Cheap, evaluator-free, and runs over the whole linked catalog.
+    /// Cheap, evaluator-free, and runs over the whole linked catalog PLUS the universal `common`
+    /// group, which every node carries and which now declares one itself.
     #[test]
-    fn every_default_expr_reads_only_system_globals() {
-        for m in goofi_node::catalog() {
-            for decl in m.params {
-                let Some(expr) = decl.default_expr else { continue };
-                assert!(!expr.trim().is_empty(), "{}: {}/{} has an empty default_expr", m.type_name, decl.group, decl.name);
+    fn every_declared_expression_reads_only_system_globals() {
+        let decls = goofi_node::catalog()
+            .map(|m| (m.type_name, m.params))
+            .chain(std::iter::once(("common", goofi_node::COMMON_DECLS)));
+        for (owner, params) in decls {
+            for decl in params {
+                let Some(expr) = decl.expression else { continue };
+                assert!(!expr.trim().is_empty(), "{}: {}/{} has an empty expression", owner, decl.group, decl.name);
                 for name in goofi_node::global_ref_names(expr) {
                     assert!(
                         goofi_core::globals::SYSTEM_GLOBALS.iter().any(|g| g.name == name),
-                        "{}: default_expr on {}/{} reads `globals.{}`, which no fresh patch has",
-                        m.type_name,
+                        "{}: the expression on {}/{} reads `globals.{}`, which no fresh patch has",
+                        owner,
                         decl.group,
                         decl.name,
                         name
