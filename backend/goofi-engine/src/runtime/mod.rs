@@ -75,6 +75,10 @@ pub struct NodeRuntime {
     /// Set by ANY arrival that can affect a `common.*` param, whatever path it came in on (§1.1).
     pub common_dirty: bool,
 
+    /// The param RECORD: literals only, which is what the `.gfi` persists and what a broken or
+    /// not-yet-arrived binding falls back to (§2.1). Kept apart from `effective` because an
+    /// evaluated value would otherwise erase the number the user authored.
+    pub literals: ParamGroups,
     /// The node's FULL params — the literal record overlaid with evaluated bindings. What
     /// `process()` reads and what `RunPolicy::from_params` is given.
     pub effective: ParamGroups,
@@ -115,6 +119,7 @@ impl NodeRuntime {
             run_policy,
             last_run: None,
             common_dirty: false,
+            literals: effective.clone(),
             effective,
             evaluated: IndexMap::new(),
             bindings: IndexMap::new(),
@@ -206,8 +211,8 @@ impl NodeRuntime {
             ParamValue::Literal(p) => {
                 self.bindings.shift_remove(&key);
                 self.evaluated.shift_remove(&key);
-                self.clear_binding_error(&key);
-                self.set_effective(&key, p.clone());
+                self.record_binding_error(&key, None);
+                self.set_literal(&key, p.clone());
                 Some(p)
             }
             ParamValue::Expr { source, vars, trigger } => {
@@ -309,44 +314,38 @@ impl NodeRuntime {
         let mut errors: Vec<(ParamKey, Option<String>)> = Vec::new();
         let mut values_changed = false;
         for key in keys {
-            match self.bindings[&key].evaluate() {
+            // A binding with nothing in its mailbox yet is not an error — the literal simply
+            // stands. A binding that cannot be evaluated at all is, and it falls back to the same
+            // literal for this run.
+            let evaluated = match self.bindings[&key].evaluate() {
+                Ok(value) => {
+                    errors.extend(self.record_binding_error(&key, None));
+                    value
+                }
                 Err(msg) => {
-                    if self.binding_errors.get(&key) != Some(&msg) {
-                        self.binding_errors.insert(key.clone(), msg.clone());
-                        errors.push((key, Some(msg)));
-                    }
+                    errors.extend(self.record_binding_error(&key, Some(msg)));
+                    None
                 }
-                // Nothing has arrived yet: the param's literal stands, and that is not an error.
-                Ok(None) => {
-                    if self.clear_binding_error(&key) {
-                        errors.push((key, None));
-                    }
-                }
-                Ok(Some(value)) => {
-                    if self.clear_binding_error(&key) {
-                        errors.push((key.clone(), None));
-                    }
-                    let previous = self.evaluated.insert(key.clone(), value.clone());
-                    if previous.as_ref() == Some(&value) {
-                        continue;
-                    }
-                    values_changed = true;
-                    self.set_effective(&key, value.clone());
-                    // The hook is the single source of truth for param→field, and the only way an
-                    // evaluated value reaches a node's mirrored field. A `common.*` param has no
-                    // field to mirror — it is the scheduler's, not the node's — and an
-                    // UNINITIALIZED node hears nothing at all (D3); the value is in the record, so
-                    // the retry's replay delivers it when `setup` finally succeeds.
-                    if key.group != COMMON && self.initialized {
-                        self.on_param_changed(&key, &value);
-                    }
-                }
+            };
+            values_changed |= match &evaluated {
+                Some(value) => self.evaluated.insert(key.clone(), value.clone()).as_ref() != Some(value),
+                None => self.evaluated.shift_remove(&key).is_some(),
+            };
+            let Some(next) = evaluated.or_else(|| self.literal(&key)) else { continue };
+            if goofi_node::param(&self.effective, &key.group, &key.name) == Some(&next) {
+                continue;
+            }
+            self.set_effective(&key, next.clone());
+            // The hook is the single source of truth for param→field, and the only way an
+            // evaluated value reaches a node's mirrored field. A `common.*` param has no field to
+            // mirror — it is the scheduler's, not the node's — and an UNINITIALIZED node hears
+            // nothing at all (D3); the value is in the record, so the retry's replay delivers it
+            // when `setup` finally succeeds.
+            if key.group != COMMON && self.initialized {
+                self.on_param_changed(&key, &next);
             }
         }
-        if !errors.is_empty() {
-            self.binding_errors_since = now_ms();
-            self.transport.report(Status::BindingErrors { errors });
-        }
+        self.report_binding_errors(errors);
         if values_changed {
             let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             self.transport.report(Status::ParamValues { evaluated });
@@ -359,14 +358,46 @@ impl NodeRuntime {
         let result = crate::guard_lifecycle(|| self.node.on_param_changed(key, value))
             .unwrap_or_else(crate::fold_panic);
         if let Err(e) = result {
-            self.binding_errors.insert(key.clone(), e.0.clone());
-            self.binding_errors_since = now_ms();
-            self.transport.report(Status::BindingErrors { errors: vec![(key.clone(), Some(e.0))] });
+            let recorded = self.record_binding_error(key, Some(e.0));
+            self.report_binding_errors(recorded.into_iter().collect());
         }
     }
 
-    fn clear_binding_error(&mut self, key: &ParamKey) -> bool {
-        self.binding_errors.remove(key).is_some()
+    /// Record or clear a binding's error, answering with the wire entry when it CHANGED. The map
+    /// is the record and `Status::BindingErrors` is a delta, so an unchanged error is silent and a
+    /// cleared one is announced — an error that cannot clear leaves a node showing a failure it
+    /// has recovered from.
+    fn record_binding_error(
+        &mut self,
+        key: &ParamKey,
+        msg: Option<String>,
+    ) -> Option<(ParamKey, Option<String>)> {
+        match msg {
+            Some(msg) if self.binding_errors.get(key) == Some(&msg) => None,
+            Some(msg) => {
+                self.binding_errors.insert(key.clone(), msg.clone());
+                Some((key.clone(), Some(msg)))
+            }
+            None => self.binding_errors.remove(key).map(|_| (key.clone(), None)),
+        }
+    }
+
+    fn report_binding_errors(&mut self, errors: Vec<(ParamKey, Option<String>)>) {
+        if errors.is_empty() {
+            return;
+        }
+        self.binding_errors_since = now_ms();
+        self.transport.report(Status::BindingErrors { errors });
+    }
+
+    fn literal(&self, key: &ParamKey) -> Option<Param> {
+        goofi_node::param(&self.literals, &key.group, &key.name).cloned()
+    }
+
+    /// Write the param RECORD, and `effective` with it — for an unbound param they are one number.
+    fn set_literal(&mut self, key: &ParamKey, value: Param) {
+        self.literals.entry(key.group.clone()).or_default().insert(key.name.clone(), value.clone());
+        self.set_effective(key, value);
     }
 
     fn set_effective(&mut self, key: &ParamKey, value: Param) {
@@ -650,6 +681,25 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_binding_falls_back_to_the_param_it_was_authored_with() {
+        // spec §2.1: a failed binding falls back to its LITERAL for that run, which needs the
+        // literal to still exist. Overwriting the record with each evaluated value leaves a param
+        // holding the last number a since-deleted reference gave it — an oscillator authored at
+        // 5 Hz runs at 500 forever because `nd('lfo')` said so once.
+        let (mut r, _t) = consumer_fixture();
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), ParamValue::Literal(Param::float(5.0, 0.0, 1000.0)));
+        r.set_param(key.clone(), value_expr(Param::float(500.0, 0.0, 1000.0), false));
+        assert_eq!(effective_f64(&r, &key), Some(500.0), "the binding is in force");
+
+        // `lfo` is deleted: the graph re-sends the binding with its reference unresolved.
+        r.set_param(key.clone(), missing_expr("no node named `lfo`"));
+        assert_eq!(effective_f64(&r, &key), Some(5.0), "back to the authored value, not the stale 500");
+        assert_eq!(r.binding_errors.get(&key).map(String::as_str), Some("no node named `lfo`"));
+        assert!(!r.evaluated.contains_key(&key), "and it has no evaluated value to project");
+    }
+
+    #[test]
     fn correcting_the_param_that_broke_setup_heals_a_node_that_never_runs() {
         // spec §5.1: a param write runs the D3 initialization retry FIRST. Without it a consumer
         // with no triggers and autotrigger off is broken permanently — `run()` is the only other
@@ -799,6 +849,15 @@ mod tests {
         }
     }
 
+    /// A binding the graph could not resolve — a deleted reference, a removed global.
+    fn missing_expr(reason: &str) -> ParamValue {
+        ParamValue::Expr {
+            source: "__v0".to_string(),
+            vars: vec![Var::Missing { name: "__v0".to_string(), reason: reason.to_string() }],
+            trigger: false,
+        }
+    }
+
     /// The same binding with its variable already resolved — a `globals.*` read the graph delivered
     /// inline, which is how a globals edit reaches a node (§5.2).
     fn value_expr(value: Param, trigger: bool) -> ParamValue {
@@ -807,6 +866,10 @@ mod tests {
             vars: vec![Var::Value { name: "__v0".to_string(), value }],
             trigger,
         }
+    }
+
+    fn effective_f64(r: &NodeRuntime, key: &ParamKey) -> Option<f64> {
+        goofi_node::param(&r.effective, &key.group, &key.name).and_then(Param::as_f64)
     }
 
     fn now_minus_ms(ms: u64) -> Instant {
@@ -916,7 +979,15 @@ mod tests {
     ];
 
     static PRODUCER: NodeManifest = manifest("_RuntimeProducer", &[], true, default_factory::<Emit>);
-    static CONSUMER: NodeManifest = manifest("_RuntimeConsumer", &[], false, default_factory::<Emit>);
+    static CONSUMER: NodeManifest =
+        NodeManifest { params: SCALE_PARAMS, ..manifest("_RuntimeConsumer", &[], false, default_factory::<Emit>) };
+    static SCALE_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "cfg",
+        name: "scale",
+        spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 1000.0 },
+        expression: None,
+        doc: None,
+    }];
     static TRIGGERED: NodeManifest = manifest("_RuntimeTriggered", SLOTS, false, default_factory::<Emit>);
     static BAD_SETUP: NodeManifest = manifest("_RuntimeBadSetup", &[], true, default_factory::<BadSetup>);
     static BAD_PROCESS: NodeManifest = manifest("_RuntimeBadProcess", &[], true, default_factory::<BadProcess>);
