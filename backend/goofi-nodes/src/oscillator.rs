@@ -180,10 +180,15 @@ static PARAMS: &[ParamDecl] = &[
         group: "common",
         name: "max_frequency",
         spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
+        // A node's own decl replaces the universal one wholesale, so this must agree with
+        // `COMMON_DECLS`'s `max_frequency` on `trigger` or the only shipped producer would get the
+        // opposite of what that declaration documents. It differs from it in exactly two ways: the
+        // mode is `On` (the Oscillator IS paced by the global, not merely offered it) and the
+        // literal fallback is 30.0 rather than uncapped.
         expression: Some(ExprDecl {
             source: "globals.default_ufreq",
             mode: ExprMode::On,
-            trigger: false,
+            trigger: true,
         }),
         doc: Some(
             "How many frames per second to emit. Bound to the patch's `default_ufreq` global by \

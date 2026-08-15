@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use goofi_core::{Data, Param};
-use goofi_node::{Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy};
+use goofi_node::{
+    ExprMode, Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy,
+};
 use indexmap::IndexMap;
 use rayon::prelude::*;
 
@@ -730,8 +732,11 @@ impl Graph {
         params: Option<ParamGroups>,
     ) -> Result<(&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>), String> {
         let p = match params {
-            // Saved values win, but the type still decides what a MISSING `common` key means —
-            // a patch written before a node became a producer must still load as one.
+            // Supplied params still get the `common` group NORMALIZED, since a caller may hand
+            // over a partial group (an MCP `add_node` payload, a hand-edited `.gfi`) — and the
+            // type is what decides a missing key's default. Not a load-path concern: `serialize`
+            // writes every param unconditionally, so a saved patch has all three keys and its own
+            // values win here.
             Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?.producer),
             None => self.default_params_of(type_name)?,
         };
@@ -791,8 +796,10 @@ impl Graph {
         Ok(uid)
     }
 
-    /// Seed a live expression binding for each of the type's declared `expression` params — the
-    /// fresh-add analogue of a literal default. Skipped entirely without an evaluator (the `spec`
+    /// Seed an expression binding for each of the type's declared `expression` params — the
+    /// fresh-add analogue of a literal default. The declaration decides whether that binding starts
+    /// live: an `ExprMode::Off` expression is *carried*, stored so the inspector's fx toggle has a
+    /// source to turn on while the `spec` literal stands. Skipped entirely without an evaluator (the
     /// literal is the graceful fallback, never an errored "no evaluator" binding). Only fresh adds
     /// (`params == None`) call this; a restore/load supplies explicit params + its own captured
     /// expressions.
@@ -801,8 +808,9 @@ impl Graph {
             return;
         }
         for decl in manifest.params {
-            if let Some(expr) = decl.expression {
-                let _ = self.set_expression(uid, decl.group, decl.name, expr.source, true, false);
+            if let Some(e) = decl.expression {
+                let enabled = matches!(e.mode, ExprMode::On);
+                let _ = self.set_expression(uid, decl.group, decl.name, e.source, enabled, e.trigger);
             }
         }
     }
@@ -3525,6 +3533,30 @@ mod tests {
     }
 
     #[test]
+    fn seeding_carries_the_declarations_mode_and_trigger_rather_than_assuming_them() {
+        // A declared expression states whether it starts live and whether it wakes `process`.
+        // Seeding used to hard-code `enabled = true, triggers_process = false`, which made a
+        // carried (Off) expression live the moment it was declared — the opposite of what
+        // `ExprMode::Off` documents — and left `trigger` unable to mean anything at all.
+        let mut g = eval_graph();
+        let n = g.add_node("_TestCarriedExpr", None).unwrap();
+
+        let carried = g.param_expression(n, "control", "carried").expect("the source is stored");
+        assert_eq!(carried.source, "globals.default_ufreq");
+        assert!(!carried.enabled, "mode Off is carried for the fx toggle, not imposed");
+        assert!(!carried.triggers_process);
+
+        let paced = g.param_expression(n, "control", "paced").expect("seeded");
+        assert!(paced.enabled, "mode On is live");
+        assert!(paced.triggers_process, "and `trigger: true` reaches the binding");
+
+        // The carried one must not drive its param either: the spec literal stands.
+        g.tick();
+        assert_eq!(g.params(n).unwrap()["control"]["carried"].as_f64(), Some(5.0), "literal stands");
+        assert_eq!(g.params(n).unwrap()["control"]["paced"].as_f64(), Some(30.0), "the global drives");
+    }
+
+    #[test]
     fn default_expr_falls_back_to_the_literal_without_an_evaluator() {
         // No evaluator wired ⇒ no binding is minted; the param keeps its spec-default literal (5.0),
         // never an errored "no evaluator" binding. Graceful degrade for eval-less runs (a build
@@ -4158,6 +4190,48 @@ mod tests {
             inputs: &[],
             outputs: G_OUT,
             params: DEFAULT_EXPR_PARAMS,
+            isolation: Isolation::InProcess,
+            producer: true,
+            factory: default_factory::<DefaultExprSource>,
+        }
+    }
+
+    // A source declaring the two `ExprDecl` shapes `_TestDefaultExpr` cannot express — a CARRIED
+    // expression (mode Off) and a TRIGGERING one. Both are needed as a fixture: seeding that
+    // hard-codes `enabled = true, triggers_process = false` reproduces `_TestDefaultExpr` exactly
+    // and would pass against it, so only a node declaring the other values can catch that.
+    static CARRIED_PARAMS: &[ParamDecl] = &[
+        ParamDecl {
+            group: "control",
+            name: "carried",
+            spec: ParamSpec::Float { default: 5.0, min: 0.0, max: 1000.0 },
+            expression: Some(ExprDecl {
+                source: "globals.default_ufreq",
+                mode: ExprMode::Off,
+                trigger: false,
+            }),
+            doc: None,
+        },
+        ParamDecl {
+            group: "control",
+            name: "paced",
+            spec: ParamSpec::Float { default: 5.0, min: 0.0, max: 1000.0 },
+            expression: Some(ExprDecl {
+                source: "globals.default_ufreq",
+                mode: ExprMode::On,
+                trigger: true,
+            }),
+            doc: None,
+        },
+    ];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestCarriedExpr",
+            category: "test",
+            doc: "one carried (Off) expression and one triggering one",
+            inputs: &[],
+            outputs: G_OUT,
+            params: CARRIED_PARAMS,
             isolation: Isolation::InProcess,
             producer: true,
             factory: default_factory::<DefaultExprSource>,
@@ -6195,6 +6269,10 @@ mod tests {
         producer: false,
         factory: rt_stub_factory,
     };
+    // `producer` because V2's only slot is `trigger_process: false` — the node has an input and
+    // still free-runs, which is the case `inputs.is_empty()` misses and `!any(trigger_process)`
+    // catches. Inert today (`has_trigger_inputs` is already false), and what keeps it running
+    // once the implicit free-run term goes.
     static RESHAPE_V2: NodeManifest = NodeManifest {
         type_name: "_Reshaper",
         category: "runtime",
@@ -6203,7 +6281,7 @@ mod tests {
         outputs: RESHAPE_OUT_V2,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -7763,6 +7841,31 @@ mod tests {
         g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
         let f = g.latest_frame(cnt, "out").expect("counter ran");
         assert_eq!(f.meta().index(), Some(0), "fresh counter, not the source's 3");
+    }
+
+    #[test]
+    fn every_type_that_free_runs_says_so_in_its_own_declaration() {
+        // The scheduler currently free-runs any node with no *triggering* input, whatever its
+        // params say (`wants_run`'s `!has_trigger_inputs` term). That implicit rule is what the
+        // async runtime removes, so a type that relies on it has to declare the pacing itself —
+        // via `producer`, or by declaring `common.autotrigger` in its own params.
+        //
+        // The operative predicate is `!any(trigger_process)`, NOT `inputs.is_empty()`: a node can
+        // declare a held reference input and still free-run. Walks the whole LINKED catalog, so it
+        // covers goofi-nodes plus every test node this crate registers.
+        for m in goofi_node::catalog() {
+            if m.inputs.iter().any(|s| s.trigger_process) {
+                continue;
+            }
+            let common = goofi_node::with_common(m.default_params(), m.producer);
+            assert_eq!(
+                goofi_node::param(&common, "common", "autotrigger").and_then(Param::as_bool),
+                Some(true),
+                "`{}` has no triggering input, so it free-runs on the implicit rule alone — set \
+                 `producer: true` on its manifest (or declare `common.autotrigger` yourself)",
+                m.type_name,
+            );
+        }
     }
 
     #[test]

@@ -44,11 +44,14 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
         // A plain class attribute (`producer = True`), not a hook: it is the one pacing an author
-        // declares, and a node that says nothing is not a source.
+        // declares, and a node that says nothing is not a source. ABSENT is the default; PRESENT
+        // but not a bool is an authoring mistake that raises, like a bad slot or param descriptor
+        // below — swallowing it would cost the author a node that silently never runs.
         producer: cls
             .getattr("producer")
             .ok()
-            .and_then(|v| v.extract::<bool>().ok())
+            .map(|v| v.extract::<bool>())
+            .transpose()?
             .unwrap_or(false),
         inputs,
         outputs,

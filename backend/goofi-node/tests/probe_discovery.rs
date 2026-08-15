@@ -148,6 +148,22 @@ fn a_python_node_can_declare_itself_a_producer() {
 }
 
 #[test]
+fn a_producer_that_is_not_a_bool_is_refused_rather_than_read_as_false() {
+    // Absent means "not a producer"; PRESENT-but-not-a-bool is an authoring mistake. Swallowing it
+    // costs the author a node that simply never runs once implicit free-run is gone, with no
+    // diagnostic anywhere — so the probe fails the node the way a bad slot or param declaration
+    // already does, and the palette greys it out with the reason.
+    let py = test_python();
+    match discover_one(&fixtures().join("bad_producer.py"), &py, "python", Isolation::InProcess) {
+        Discovery::Unavailable { type_name, reason } => {
+            assert_eq!(type_name, "BadProducer");
+            assert!(!reason.is_empty(), "the palette tooltip gets something to show");
+        }
+        _ => panic!("a non-bool `producer` must not discover as a healthy node"),
+    }
+}
+
+#[test]
 fn missing_dep_greys_out_instead_of_crashing() {
     let py = test_python();
     // The probe import fails -> the REASON, never a panic/crash — and the node is reported as
