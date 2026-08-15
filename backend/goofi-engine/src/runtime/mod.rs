@@ -64,10 +64,9 @@ pub struct NodeRuntime {
     node: Box<dyn Node>,
     transport: Arc<dyn Transport>,
 
-    /// Path B: the node always wants to run and paces itself. Lifted out of [`RunPolicy`] because
-    /// it is the *gate* the three paths share while the policy is the *pacing*; one
-    /// `RunPolicy::from_params` writes both, so they cannot disagree.
-    pub autotrigger: bool,
+    /// Path B lives in `run_policy.autotrigger`, beside the cap that paces it — one value derived
+    /// by one `RunPolicy::from_params`, so there is nothing to keep in step.
+    ///
     /// Paths A and C: something asked this node to run and it has not run since.
     pub trigger_pending: bool,
     pub run_policy: RunPolicy,
@@ -114,7 +113,6 @@ impl NodeRuntime {
             manifest,
             node: (manifest.factory)(),
             transport,
-            autotrigger: run_policy.autotrigger,
             trigger_pending: false,
             run_policy,
             last_run: None,
@@ -141,13 +139,13 @@ impl NodeRuntime {
     /// Whether this wake runs `process()`. An autotriggering node always wants to; any other node
     /// runs when something triggered it; both are held to the rate cap.
     pub fn should_process(&self) -> bool {
-        (self.autotrigger || self.trigger_pending) && self.rate_cap_elapsed()
+        (self.run_policy.autotrigger || self.trigger_pending) && self.rate_cap_elapsed()
     }
 
     /// How long to park, or `None` to park indefinitely. A node holding a pending trigger the cap
     /// refuses re-arms on cap release rather than parking with work in hand.
     pub fn next_wake(&self) -> Option<Duration> {
-        (self.autotrigger || self.trigger_pending).then(|| self.cap_release())
+        (self.run_policy.autotrigger || self.trigger_pending).then(|| self.cap_release())
     }
 
     fn rate_cap_elapsed(&self) -> bool {
@@ -182,7 +180,6 @@ impl NodeRuntime {
         if self.common_dirty {
             self.eval_common_bindings();
             self.run_policy = RunPolicy::from_params(&self.effective);
-            self.autotrigger = self.run_policy.autotrigger;
             self.common_dirty = false;
         }
 
@@ -205,6 +202,14 @@ impl NodeRuntime {
     /// evaluated once here — the authoring moment — because without that a binding error can
     /// neither appear nor clear on a node that never runs (§2.1).
     pub fn set_param(&mut self, key: ParamKey, value: ParamValue) {
+        // §5.2: a re-send carrying a resolved value IS an arrival — that is how a globals edit
+        // reaches a bound param — while binding a bare `nd()` reference only subscribes.
+        let triggering = match &value {
+            ParamValue::Literal(_) => false,
+            ParamValue::Expr { vars, trigger, .. } => {
+                *trigger && vars.iter().any(|v| matches!(v, Var::Value { .. }))
+            }
+        };
         // The record moves FIRST, so the initialization retry below replays the NEW value rather
         // than the one that broke `setup()`.
         let literal = match value {
@@ -217,7 +222,13 @@ impl NodeRuntime {
                 Some(p)
             }
             ParamValue::Expr { source, vars, trigger } => {
-                self.bindings.insert(key.clone(), Binding::new(source, vars, trigger));
+                let binding = Binding::new(source, vars, trigger);
+                match self.bindings.get_mut(&key) {
+                    Some(existing) => existing.rebind(binding),
+                    None => {
+                        self.bindings.insert(key.clone(), binding);
+                    }
+                }
                 // A `common.*` binding is evaluated by the pacing pass instead, before the gates.
                 if key.group != COMMON {
                     self.eval_bindings_where(|k| *k == key);
@@ -225,9 +236,7 @@ impl NodeRuntime {
                 None
             }
         };
-        if key.group == COMMON {
-            self.common_dirty = true;
-        }
+        self.arrived(&key, triggering);
         // §5.1 + D3: a param write is an INTERACTION, and an interaction retries the initialization
         // first — a node whose `setup()` failed on a bad param has no other way back when it never
         // runs, since `run()` is the only other caller of the gate. Unthrottled, unlike a wake:
@@ -263,32 +272,33 @@ impl NodeRuntime {
         }
     }
 
-    /// A `Var::Value` arrival — the graph resolving a global and delivering it inline (§5.2), the
-    /// shape a `Control::SetParam` carries.
-    pub fn deliver_expr_arrival(&mut self, key: ParamKey, value: Param) {
-        self.deliver(key, value);
-    }
-
-    /// Path C — a `Var::Stream` mailbox write: a producer's frame landing in a bound variable.
-    pub fn deliver_stream_arrival(&mut self, key: ParamKey, value: Param) {
-        self.deliver(key, value);
-    }
-
-    /// §1.1's rule, stated ONCE and by key NAMESPACE rather than by arrival path: any arrival that
-    /// can affect a `common.*` param re-paces the node **without** setting `trigger_pending`, and
-    /// only a non-`common` binding that declares `trigger` fires path C. `trigger` is therefore
-    /// ignored on a `common.*` key — every node's `common.max_frequency` declares it, and it means
-    /// nothing there.
-    ///
-    /// Both `deliver_*` doors route through here because saying the rule per drain function is
-    /// what leaves the stream path uncovered: a `common.autotrigger` bound to `nd('gate')` arrives
-    /// there, and with autotrigger still false the node parks forever holding the value that would
-    /// have started it.
-    fn deliver(&mut self, key: ParamKey, value: Param) {
-        let Some(binding) = self.bindings.get_mut(&key) else { return };
+    /// Path C on the DATA plane — a producer's frame landing in a bound variable's mailbox. Its
+    /// sibling is [`Self::set_param`] on the control plane, which carries the same three §1.1
+    /// arrivals a `Control` message can (a literal, a binding, a global the graph resolved inline);
+    /// §5.3 lands both in the same mailbox, so the two planes differ in how a value gets here and
+    /// in nothing else.
+    pub fn deliver_arrival(&mut self, key: ParamKey, value: Param) {
+        let Some(binding) = self.bindings.get_mut(&key) else {
+            // A value for a param this node has no binding on: a re-send that raced an unbind. The
+            // graph is the only sender and it stops sending on unbind, so dropping it converges.
+            return;
+        };
         binding.deliver(value);
         let trigger = binding.trigger;
+        self.arrived(&key, trigger);
+    }
+
+    /// What an arrival does to the schedule — §1.1's rule, stated ONCE and by key NAMESPACE rather
+    /// than per arrival path. Both planes call it, which is the point: a `common.autotrigger` bound
+    /// to `nd('gate')` arrives on the data plane while the same key bound to a global arrives on
+    /// the control plane, and covering only one leaves the node parked forever holding the value
+    /// that would have started it.
+    fn arrived(&mut self, key: &ParamKey, trigger: bool) {
         if key.group == COMMON {
+            // Re-pacing is not a reason to run: a producer runs anyway on its own schedule, and a
+            // consumer must not fire because a global changed. `trigger` is therefore IGNORED
+            // here — every node's `common.max_frequency` declares it, and it means nothing on this
+            // namespace.
             self.common_dirty = true;
         } else if trigger {
             self.trigger_pending = true;
@@ -548,7 +558,7 @@ mod tests {
         // Whether it declares a trigger input, and whether that input is wired, does not enter into
         // it. There is no `wired` term and no connected_trigger_inputs counter.
         let mut r = fixture_with_trigger_input();
-        r.autotrigger = true;
+        r.run_policy.autotrigger = true;
         r.trigger_pending = false;
         r.last_run = None;
         assert!(r.should_process(), "autotrigger runs with no arrival and an unwired input");
@@ -558,7 +568,7 @@ mod tests {
     fn a_node_with_no_trigger_inputs_and_no_autotrigger_never_runs() {
         // spec §1: "and that is correct". The old !has_trigger_inputs free-run term is gone.
         let mut r = fixture_no_inputs();
-        r.autotrigger = false;
+        r.run_policy.autotrigger = false;
         r.trigger_pending = false;
         assert!(!r.should_process());
         assert_eq!(r.next_wake(), None, "and it parks rather than spinning");
@@ -569,7 +579,7 @@ mod tests {
         // The failure this prevents: next_wake() returning None while trigger_pending is set parks
         // the node forever with work in hand.
         let mut r = fixture_no_inputs();
-        r.autotrigger = false;
+        r.run_policy.autotrigger = false;
         r.trigger_pending = true;
         r.run_policy.max_frequency = 10.0;
         r.last_run = Some(now_minus_ms(10)); // 90ms still to wait
@@ -582,12 +592,13 @@ mod tests {
     fn a_common_arrival_repaces_without_running() {
         // spec §1.1: re-pacing is not a reason to run. A producer runs anyway on its own schedule;
         // a consumer must not fire because a global changed.
-        let mut r = fixture_no_inputs();
-        r.autotrigger = false;
-        r.deliver_expr_arrival(ParamKey::new("common", "max_frequency"), Param::float(60.0, 0.0, 100.0));
+        let (mut r, t) = fixture();
+        r.run_policy.autotrigger = false;
+        r.set_param(ParamKey::new("common", "max_frequency"), value_expr(Param::float(60.0, 0.0, 100.0), true));
         assert!(!r.trigger_pending, "common.* never sets trigger_pending");
         r.run_once();
         assert_eq!(r.run_policy.max_frequency, 60.0, "but the policy IS re-derived");
+        assert!(published(&t).is_empty(), "and the node did not run");
     }
 
     #[test]
@@ -597,11 +608,11 @@ mod tests {
         // drain_expr, and with autotrigger still false next_wake() is None, so the node parks
         // forever holding the value that would have started it.
         let mut r = fixture_no_inputs();
-        r.autotrigger = false;
+        r.run_policy.autotrigger = false;
         assert_eq!(r.next_wake(), None, "parked");
-        r.deliver_stream_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(true));
+        r.deliver_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(true));
         r.run_once();
-        assert!(r.autotrigger, "the toggle landed");
+        assert!(r.run_policy.autotrigger, "the toggle landed");
         assert!(r.next_wake().is_some(), "and the node is reachable again");
     }
 
@@ -609,24 +620,60 @@ mod tests {
     fn a_clean_run_clears_setup_but_not_expr() {
         // spec §6: process() is unreachable while a setup error stands, so a clean run PROVES setup
         // succeeded. Expr is different — only a successful re-evaluation of that binding clears it.
-        let mut r = fixture_no_inputs();
-        r.fault = Some(NodeFault::Setup { msg: "boom".into(), since: 0.0, last_attempt: 0.0 });
+        //
+        // The fault is DRIVEN by a failing `setup`, never constructed: an initialized node carrying
+        // a Setup fault is a state production cannot reach, and underneath one `process` runs.
+        let t = Arc::new(MemoryTransport::default());
+        let mut r = NodeRuntime::new(&FLAKY_SETUP, t.clone());
+        assert!(matches!(r.fault, Some(NodeFault::Setup { .. })), "the first attempt failed");
+        r.run_once();
+        assert!(published(&t).is_empty(), "and nothing ran while it stood");
+
+        expire_setup_backoff(&mut r);
         r.run_once();
         assert!(r.fault.is_none());
+        assert_eq!(published(&t), ["out: ok"], "the retry succeeded and the run went through");
 
-        r.binding_errors.insert(ParamKey::new("osc", "freq"), "bad ref".into());
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), missing_expr("no node named `lfo`"));
         r.run_once();
-        assert!(!r.binding_errors.is_empty(), "a clean process does not fix a broken expression");
+        assert_eq!(published(&t).len(), 2, "the run happened");
+        assert!(r.binding_errors.contains_key(&key), "a clean process does not fix a broken expression");
+    }
+
+    #[test]
+    fn a_recovering_run_clears_a_process_fault() {
+        // The other half of "a clean run clears Setup/Process/Boot": a node that failed once and
+        // then worked must stop drawing errored, and both edges reach the console.
+        let t = Arc::new(MemoryTransport::default());
+        let mut r = NodeRuntime::new(&FLAKY_PROCESS, t.clone());
+        r.run_once();
+        assert!(matches!(r.fault, Some(NodeFault::Process { .. })));
+        assert!(published(&t).is_empty(), "a failing run emits nothing");
+
+        r.run_once();
+        assert!(r.fault.is_none(), "the next clean run clears it");
+        assert_eq!(published(&t), ["out: run 2"]);
+        assert_eq!(fault_reports(&t), [Some("boom".to_string()), None], "both transitions reported");
     }
 
     #[test]
     fn several_bindings_can_be_errored_at_once() {
-        // spec §6: binding errors are a MAP, not a variant — each renders on its own inspector field.
-        let mut r = fixture_no_inputs();
-        r.binding_errors.insert(ParamKey::new("osc", "freq"), "a".into());
-        r.binding_errors.insert(ParamKey::new("osc", "amp"), "b".into());
+        // spec §6: binding errors are a MAP, not a variant — each renders on its own inspector
+        // field. Driven through the binding path, because a map filled by hand cannot show that
+        // the code keeps more than one; and the roll-up is read by key, because `matches!` on the
+        // variant alone would accept any of them.
+        let (mut r, _t) = consumer_fixture();
+        r.set_param(ParamKey::new("osc", "freq"), missing_expr("no node named `lfo`"));
+        r.set_param(ParamKey::new("osc", "amp"), missing_expr("no node named `env`"));
         assert_eq!(r.binding_errors.len(), 2);
-        assert!(matches!(r.node_fault(), Some(NodeFault::Expr { .. })), "rolled up for the node badge");
+        match r.node_fault() {
+            Some(NodeFault::Expr { key, msg, .. }) => {
+                assert_eq!(key, ParamKey::new("osc", "amp"), "the lowest key, as entry_error orders them");
+                assert_eq!(msg, "no node named `env`");
+            }
+            other => panic!("expected a rolled-up Expr fault for the badge, got {other:?}"),
+        }
     }
 
     #[test]
@@ -635,23 +682,48 @@ mod tests {
         // its params and not merely in a poked field: the arrival must land (a value the fixture
         // did not already hold) and must not run the node.
         let (mut r, t) = consumer_fixture();
-        r.deliver_stream_arrival(ParamKey::new("common", "max_frequency"), Param::float(25.0, 0.0, 100.0));
+        r.deliver_arrival(ParamKey::new("common", "max_frequency"), Param::float(25.0, 0.0, 100.0));
         r.run_once();
         assert_eq!(r.run_policy.max_frequency, 25.0, "the delivered value is what re-paced it");
-        assert!(!r.autotrigger, "and a consumer is still a consumer");
+        assert!(!r.run_policy.autotrigger, "and a consumer is still a consumer");
         assert!(t.published().is_empty(), "a global changing never fires a consumer");
     }
 
     #[test]
     fn a_frame_on_a_trigger_slot_wakes_the_node_and_a_reference_slot_does_not() {
-        // Path A. `trigger_process` is the whole of it — a reference input is read when the node
-        // runs for some other reason, never a reason of its own.
-        let mut r = fixture_with_trigger_input();
-        r.deliver_input("ref", frame());
+        // Path A. `trigger_process` is the whole of the WAKING; both cells are read when the run
+        // happens, which is what makes a reference input worth holding at all. The node echoes
+        // what it saw, so a `deliver_input` that never wrote a cell cannot pass this.
+        let (mut r, t) = triggered_fixture();
+        r.deliver_input("ref", text_frame("R"));
         assert!(!r.trigger_pending, "a reference input is not a trigger");
-        r.deliver_input("in", frame());
+        assert!(!r.should_process());
+
+        r.deliver_input("in", text_frame("A"));
         assert!(r.trigger_pending);
         assert!(r.should_process(), "even with autotrigger off");
+        r.run_once();
+        assert_eq!(published(&t), ["out: A|R"], "both cells reached process()");
+    }
+
+    #[test]
+    fn a_run_publishes_the_frame_it_just_produced() {
+        // The oracle every "did it run?" assertion leans on: emptiness alone cannot tell a node
+        // that did not run from a publish path that drops what it is given.
+        let (mut r, t) = fixture();
+        r.run_once();
+        r.run_once();
+        assert_eq!(published(&t), ["out: run 1", "out: run 2"], "each run's own frame, in order");
+    }
+
+    #[test]
+    fn a_multi_slot_frame_is_refused_rather_than_half_served() {
+        // A multi slot keeps one cell per WIRE, ordered by that wire's position in the slot's
+        // service list. Taking the single-source cell for it would read back as the whole slot.
+        let mut r = NodeRuntime::new(&MULTI_IN, Arc::new(MemoryTransport::default()));
+        r.deliver_input("many", text_frame("A"));
+        assert!(!r.inputs.contains_key("many"), "no single-source cell was minted for it");
+        assert!(!r.trigger_pending, "and it did not wake the node");
     }
 
     #[test]
@@ -661,12 +733,70 @@ mod tests {
         // the distinction has to be structural, not a rate gate or a changed-comparison.
         let (mut r, _t) = consumer_fixture();
         r.set_param(ParamKey::new("osc", "freq"), stream_expr(true));
-        r.deliver_stream_arrival(ParamKey::new("osc", "freq"), Param::float(3.0, 0.0, 10.0));
+        r.deliver_arrival(ParamKey::new("osc", "freq"), Param::float(3.0, 0.0, 10.0));
         assert!(r.trigger_pending, "the arrival triggered it");
         r.run_once();
         assert!(!r.trigger_pending, "the run consumed it");
         r.run_once();
         assert!(!r.trigger_pending, "re-evaluating the same value is not a new arrival");
+    }
+
+    #[test]
+    fn a_binding_with_trigger_off_lands_its_value_without_waking_the_node() {
+        // §5.2: on a non-`common` key the binding's `trigger` flag is what decides path C. It also
+        // separates ARRIVAL from EVALUATION — the old engine set the flag whenever a binding
+        // evaluated, which for an always-due expression pinned it on forever.
+        let (mut r, t) = consumer_fixture();
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), value_expr(Param::float(3.0, 0.0, 1000.0), false));
+        assert_eq!(effective_f64(&r, &key), Some(3.0), "the value landed");
+        assert!(!r.trigger_pending, "and nothing asked the node to run");
+        r.run_once();
+        assert!(published(&t).is_empty());
+
+        r.set_param(key, value_expr(Param::float(4.0, 0.0, 1000.0), true));
+        assert!(r.trigger_pending, "the same arrival with `trigger` on IS path C");
+    }
+
+    #[test]
+    fn the_evaluated_values_are_projected_to_the_graph() {
+        // `Status::ParamValues` is the source for today's `param_values` event, and it carries the
+        // SPARSE bound subset — never the full param record.
+        let (mut r, t) = consumer_fixture();
+        let key = ParamKey::new("cfg", "scale");
+        r.set_param(key.clone(), value_expr(Param::float(3.0, 0.0, 1000.0), false));
+        assert_eq!(param_value_reports(&t), [vec![(key, Param::float(3.0, 0.0, 1000.0))]]);
+    }
+
+    #[test]
+    fn a_wake_drains_the_control_mailbox() {
+        // The graph writes control, the node reads it on its next wake, and nothing else connects
+        // the two — a message the drain never takes is a param edit the node never hears.
+        let (mut r, t) = consumer_fixture();
+        let key = ParamKey::new("cfg", "scale");
+        t.send(Control::SetParam {
+            key: key.clone(),
+            value: ParamValue::Literal(Param::float(7.0, 0.0, 1000.0)),
+        });
+        assert_eq!(effective_f64(&r, &key), Some(1.0), "not before the wake");
+        r.run_once();
+        assert_eq!(effective_f64(&r, &key), Some(7.0));
+    }
+
+    #[test]
+    fn a_period_authored_in_seconds_is_read_as_a_rate() {
+        // `frequency_mode` is a pure input convention: the scheduler only ever reasons in Hz, so
+        // both spellings normalize before they reach the cap. Setting a literal on a bound
+        // `common` key also unbinds it, which is the same `common` write path.
+        let (mut r, _t) = consumer_fixture();
+        r.set_param(
+            ParamKey::new("common", "frequency_mode"),
+            ParamValue::Literal(Param::str_free("seconds-per-update")),
+        );
+        r.set_param(ParamKey::new("common", "max_frequency"), ParamValue::Literal(Param::float(0.5, 0.0, 100.0)));
+        r.run_once();
+        assert_eq!(r.run_policy.max_frequency, 2.0, "one update every half second is 2 Hz");
+        assert!(r.bindings.get(&ParamKey::new("common", "max_frequency")).is_none(), "and it unbound");
     }
 
     #[test]
@@ -782,16 +912,22 @@ mod tests {
     }
 
     #[test]
-    fn a_recurring_process_error_is_reported_once() {
+    fn a_fault_is_reported_on_transition_and_a_new_message_is_a_new_one() {
         // §6.2: the node reports TRANSITIONS, so the status worker needs no diffing — and the
-        // console does not repaint the same line at the node's run rate.
+        // console does not repaint the same line at the node's run rate. The comparison is
+        // discriminant AND message, because a node failing differently is saying something new.
         let t = Arc::new(MemoryTransport::default());
         let mut r = NodeRuntime::new(&BAD_PROCESS, t.clone());
         r.run_once();
         r.run_once();
-        let faults: Vec<_> = t.reported().into_iter().filter(|s| matches!(s, Status::Fault { .. })).collect();
-        assert_eq!(faults.len(), 1, "two failing runs, one transition");
-        assert!(matches!(&r.fault, Some(NodeFault::Process { msg, .. }) if msg == "no"));
+        assert_eq!(fault_reports(&t), [Some("no".to_string())], "two failing runs, one transition");
+
+        r.run_once();
+        assert_eq!(
+            fault_reports(&t),
+            [Some("no".to_string()), Some("still no".to_string())],
+            "a different complaint is a different fault",
+        );
     }
 
     #[test]
@@ -811,7 +947,7 @@ mod tests {
         assert_eq!(r.binding_errors.get(&key).map(String::as_str), Some("no node named `ghost`"));
         assert!(matches!(r.node_fault(), Some(NodeFault::Expr { .. })));
 
-        r.deliver_stream_arrival(key.clone(), Param::float(3.0, 0.0, 10.0));
+        r.deliver_arrival(key.clone(), Param::float(3.0, 0.0, 10.0));
         r.run_once();
         assert!(r.binding_errors.is_empty(), "the value arrived, so the reference resolved");
         let errors: Vec<_> = t.reported().into_iter().filter(|s| matches!(s, Status::BindingErrors { .. })).collect();
@@ -842,7 +978,7 @@ mod tests {
         let mut r = NodeRuntime::new(&PRODUCER, transport.clone());
         r.set_param(ParamKey::new("common", "max_frequency"), stream_expr(true));
         r.set_param(ParamKey::new("common", "autotrigger"), stream_expr(true));
-        r.deliver_stream_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(false));
+        r.deliver_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(false));
         r.common_dirty = false;
         (r, transport)
     }
@@ -862,8 +998,13 @@ mod tests {
     }
 
     /// A node declaring one trigger input and one reference input, neither wired to anything.
+    fn triggered_fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
+        let transport = Arc::new(MemoryTransport::default());
+        (NodeRuntime::new(&TRIGGERED, transport.clone()), transport)
+    }
+
     fn fixture_with_trigger_input() -> NodeRuntime {
-        NodeRuntime::new(&TRIGGERED, Arc::new(MemoryTransport::default()))
+        triggered_fixture().0
     }
 
     /// The single-variable identity binding §5.3's rewrite produces for `globals.default_ufreq`,
@@ -921,19 +1062,101 @@ mod tests {
         *last_attempt -= SETUP_RETRY_MS + 1.0;
     }
 
-    fn frame() -> Data {
-        Data::string("x", Meta::empty())
+    fn text_frame(s: &str) -> Data {
+        Data::string(s, Meta::empty())
+    }
+
+    fn text(d: &Data) -> String {
+        match d.value() {
+            goofi_core::Value::Str(s) => s.to_string(),
+            _ => panic!("expected a string frame"),
+        }
+    }
+
+    /// Every frame the node emitted, as `slot: content` — the oracle that tells a run that
+    /// happened from one that did not.
+    fn published(t: &MemoryTransport) -> Vec<String> {
+        t.published().iter().map(|(slot, frame)| format!("{slot}: {}", text(frame))).collect()
+    }
+
+    fn fault_reports(t: &MemoryTransport) -> Vec<Option<String>> {
+        t.reported()
+            .into_iter()
+            .filter_map(|s| match s {
+                Status::Fault { fault } => Some(fault.map(|f| f.msg().to_string())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn param_value_reports(t: &MemoryTransport) -> Vec<Vec<(ParamKey, Param)>> {
+        t.reported()
+            .into_iter()
+            .filter_map(|s| match s {
+                Status::ParamValues { evaluated } => Some(evaluated),
+                _ => None,
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
     // Test nodes
     // -----------------------------------------------------------------------
 
+    /// Emits a frame naming the run that produced it, so a test can tell "the node did not run"
+    /// from "publishing is broken" — an oracle that only ever asserts emptiness cannot.
     #[derive(Default)]
-    struct Emit;
+    struct Emit {
+        runs: usize,
+    }
     impl Node for Emit {
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            out.set("out", frame());
+            self.runs += 1;
+            out.set("out", text_frame(&format!("run {}", self.runs)));
+            Ok(())
+        }
+    }
+
+    /// Reads BOTH its input slots and emits what it saw, so path A's cells are observable.
+    #[derive(Default)]
+    struct Echo;
+    impl Node for Echo {
+        fn process(&mut self, i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let read = |name: &str| i.get(name).map(text).unwrap_or_else(|| "-".to_string());
+            out.set("out", text_frame(&format!("{}|{}", read("in"), read("ref"))));
+            Ok(())
+        }
+    }
+
+    /// Fails its first `setup`, then succeeds — the only way to reach a standing Setup fault the
+    /// way production does, on a node that is genuinely uninitialized underneath it.
+    #[derive(Default)]
+    struct FlakySetup {
+        attempts: usize,
+    }
+    impl Node for FlakySetup {
+        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.attempts += 1;
+            (self.attempts > 1).then_some(()).ok_or_else(|| "no device".into())
+        }
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            out.set("out", text_frame("ok"));
+            Ok(())
+        }
+    }
+
+    /// Fails its first `process`, then succeeds.
+    #[derive(Default)]
+    struct FlakyProcess {
+        runs: usize,
+    }
+    impl Node for FlakyProcess {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.runs += 1;
+            if self.runs == 1 {
+                return Err("boom".into());
+            }
+            out.set("out", text_frame(&format!("run {}", self.runs)));
             Ok(())
         }
     }
@@ -945,7 +1168,7 @@ mod tests {
             Err("no device".into())
         }
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            out.set("out", frame());
+            out.set("out", text_frame("ok"));
             Ok(())
         }
     }
@@ -1000,11 +1223,16 @@ mod tests {
         }
     }
 
+    /// Fails every run, and changes its complaint on the third — a different message is a
+    /// different fault.
     #[derive(Default)]
-    struct BadProcess;
+    struct BadProcess {
+        runs: usize,
+    }
     impl Node for BadProcess {
         fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            Err("no".into())
+            self.runs += 1;
+            Err(if self.runs > 2 { "still no" } else { "no" }.into())
         }
     }
 
@@ -1025,7 +1253,21 @@ mod tests {
         expression: None,
         doc: None,
     }];
-    static TRIGGERED: NodeManifest = manifest("_RuntimeTriggered", SLOTS, false, default_factory::<Emit>);
+    static TRIGGERED: NodeManifest = manifest("_RuntimeTriggered", SLOTS, false, default_factory::<Echo>);
+    static MULTI_IN: NodeManifest = manifest("_RuntimeMultiIn", MULTI_SLOT, false, default_factory::<Echo>);
+    static FLAKY_SETUP: NodeManifest = NodeManifest {
+        params: SCALE_PARAMS,
+        ..manifest("_RuntimeFlakySetup", &[], true, default_factory::<FlakySetup>)
+    };
+    static FLAKY_PROCESS: NodeManifest =
+        manifest("_RuntimeFlakyProcess", &[], true, default_factory::<FlakyProcess>);
+    static MULTI_SLOT: &[SlotDecl] = &[SlotDecl {
+        name: "many",
+        kind: SlotType::String,
+        trigger_process: true,
+        multi: true,
+        required: false,
+    }];
     static BAD_SETUP: NodeManifest = manifest("_RuntimeBadSetup", &[], true, default_factory::<BadSetup>);
     static BAD_PROCESS: NodeManifest = manifest("_RuntimeBadProcess", &[], true, default_factory::<BadProcess>);
     static RETRY_PROBE: NodeManifest = manifest("_RuntimeRetryProbe", &[], true, default_factory::<RetryProbe>);

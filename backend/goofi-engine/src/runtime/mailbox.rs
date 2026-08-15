@@ -73,6 +73,21 @@ impl Binding {
         Binding { source: source.into(), trigger, vars }
     }
 
+    /// Re-resolve this binding in place, keeping what each surviving variable already holds:
+    /// §5.3's re-send "lands in the same mailbox", so a globals edit, a rename or a re-plan must
+    /// not silence a producer whose frame this node is already holding. A variable the graph has
+    /// since lost keeps its `Missing` state — the point of the re-send is that it is now broken.
+    pub fn rebind(&mut self, next: Binding) {
+        let previous = std::mem::replace(self, next);
+        for (name, mailbox) in &mut self.vars {
+            if mailbox.value().is_none() && mailbox.unresolved().is_none() {
+                if let Some(held) = previous.vars.get(name).and_then(Mailbox::value) {
+                    mailbox.put(held.clone());
+                }
+            }
+        }
+    }
+
     /// Land an arrival addressed to this BINDING rather than to one of its variables. A delivery
     /// is addressed by variable once the doorbell carries an `EventId` to map back; until then the
     /// distinction is nothing to the scheduling rule this seam exists for, which reads the param
@@ -148,6 +163,33 @@ mod tests {
 
         let rich = Binding::new("__v0.mean() * __v1", vec![stream("__v0"), stream("__v1")], true);
         assert!(rich.evaluate().is_err(), "an expression that is not a bare variable says so");
+    }
+
+    #[test]
+    fn a_rebind_lands_in_the_same_mailbox() {
+        // A globals edit re-sends the whole binding. Rebuilding it from scratch would empty every
+        // stream cell, so a node holding a producer's frame would fall back to its literal until
+        // that producer emitted again — a re-plan silently un-driving a param.
+        let mut b = Binding::new("__v0", vec![stream("__v0")], true);
+        b.deliver(Param::float(7.0, 0.0, 10.0));
+        b.rebind(Binding::new("__v0", vec![stream("__v0")], true));
+        assert_eq!(b.evaluate(), Ok(Some(Param::float(7.0, 0.0, 10.0))), "the held frame survived");
+
+        // A variable the graph has since lost is the exception: the re-send is what says so.
+        b.rebind(Binding::new(
+            "__v0",
+            vec![Var::Missing { name: "__v0".to_string(), reason: "no node named `lfo`".to_string() }],
+            true,
+        ));
+        assert_eq!(b.evaluate(), Err("no node named `lfo`".to_string()));
+
+        // And a re-sent value wins over the one it replaces.
+        b.rebind(Binding::new(
+            "__v0",
+            vec![Var::Value { name: "__v0".to_string(), value: Param::float(9.0, 0.0, 10.0) }],
+            true,
+        ));
+        assert_eq!(b.evaluate(), Ok(Some(Param::float(9.0, 0.0, 10.0))));
     }
 
     #[test]
