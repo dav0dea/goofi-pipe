@@ -54,6 +54,16 @@ const MAX_NODES: usize = 256;
 /// only decides how many reallocations a big-frame patch pays before it settles.
 const INITIAL_SLICE: usize = 64 * 1024;
 
+/// A fresh service-name scope for one graph. Random rather than the pid the first version used: a
+/// pid is reused, every builder here is `open_or_create`, and a machine accumulates service records
+/// — so a recycled pid would silently JOIN a stale service, taking whatever limits it was created
+/// with, instead of failing. Carries no underscore, so a name splits back into its parts.
+pub fn service_instance() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("the OS random source");
+    format!("{:016x}", u64::from_be_bytes(bytes))
+}
+
 /// The name every service of one node is derived from: `<instance>_<uid>_<gen>`. `gen` is bumped on
 /// EVERY birth at a uid — restart, undo-of-delete and load alike — because teardown never blocks,
 /// so without it a rebirth would race its predecessor's service names.
@@ -423,4 +433,36 @@ fn publisher(service: &ByteService, what: &str) -> Result<BytePublisher, String>
 
 fn parse_name(name: &str) -> Result<iceoryx2::service::service_name::ServiceName, String> {
     name.try_into().map_err(|e| format!("bad service name `{name}`: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_service_name_states_the_instance_the_uid_and_the_generation() {
+        // Spelled out rather than composed from the same helpers that build it: an oracle that asks
+        // `service_base` what to expect cannot tell a name that DROPS the generation from one that
+        // carries it — and carrying it is the whole of what keeps a reborn node clear of a
+        // predecessor whose teardown does not block.
+        let base = service_base("beef", Uid(0x2a), 7);
+        assert_eq!(base, "beef_00000000002a_7");
+        assert_eq!(door_service(&base), "goofi_beef_00000000002a_7_door");
+        assert_eq!(control_service(&base), "goofi_beef_00000000002a_7_ctl");
+        assert_eq!(status_service(&base), "goofi_beef_00000000002a_7_sts");
+        assert_eq!(output_service(&base, "psd"), "goofi_beef_00000000002a_7_out_psd");
+        assert_ne!(service_base("beef", Uid(0x2a), 8), base, "a rebirth is a different node");
+    }
+
+    #[test]
+    fn a_scope_is_random_and_splits_back_into_its_parts() {
+        // 16 hex digits and no underscore, so `<instance>_<uid>_<gen>` has exactly three fields —
+        // the pid-based scope this replaced carried one, and a reused pid silently joined a stale
+        // service rather than failing.
+        let scope = service_instance();
+        assert_eq!(scope.len(), 16);
+        assert!(scope.chars().all(|c| c.is_ascii_hexdigit()), "{scope}");
+        assert!(!scope.contains('_'), "{scope}");
+        assert_ne!(scope, service_instance(), "two graphs never share a scope");
+    }
 }

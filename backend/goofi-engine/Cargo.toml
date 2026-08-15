@@ -10,9 +10,12 @@ goofi-core = { path = "../goofi-core" }
 goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
 goofi-nodes = { path = "../goofi-nodes" }
-# The async runtime's transport. Pinned to the version the Python child links, since the two
-# open the same services over the shared 0.9.3 ABI.
+# The async runtime's transport, at the version the Python child links — the two open the same
+# services over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this
+# is a caret requirement, as in the two crates that already depend on it).
 iceoryx2 = "0.9.3"
+# One line: the random scope a graph's service names live in.
+getrandom = "0.3"
 indexmap = "2"
 rayon = "1"
 # Control and status travel msgpack-encoded, so the thread and subprocess cases are one codec.

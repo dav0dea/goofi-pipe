@@ -386,14 +386,11 @@ pub struct Graph {
     /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
     /// flight, and every uid's birth generation.
     wire: runtime::plan::WirePlanner,
-    /// What this graph's service names are scoped by. Process-unique rather than the bridge's
-    /// instance id, because a service name only has to be unique on the machine — and two `Graph`s
-    /// in one process (a test binary) must not open each other's ports.
+    /// What this graph's service names are scoped by — random, not the bridge's instance id: a
+    /// service name has to be unique on the MACHINE, across this process's own graphs and across
+    /// every stale record a previous run left behind.
     instance: String,
 }
-
-/// Hands each [`Graph`] a distinct service-name scope within this process.
-static GRAPH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Default for Graph {
     fn default() -> Self {
@@ -441,11 +438,7 @@ impl Graph {
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
             wire: runtime::plan::WirePlanner::default(),
-            instance: format!(
-                "{:x}_{}",
-                std::process::id(),
-                GRAPH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ),
+            instance: runtime::service_instance(),
         }
     }
 
@@ -1789,6 +1782,13 @@ impl Graph {
                 (s.name, wires)
             })
             .collect();
+
+        // A restart is a BIRTH at this uid (§3.1) — the first case the generation counter names,
+        // because the corpse's teardown does not block: without the bump the reborn node re-opens
+        // its predecessor's service names while its predecessor's ports are still registered, and
+        // `max_publishers(1)` refuses the new publisher. This is the one birth that does not go
+        // through `insert_node_at`, which is exactly why it has to be said here too.
+        self.wire.bump_generation(uid);
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
         // Dropping the old instance never waits: a `DetachedHandle`'s Drop only signals its

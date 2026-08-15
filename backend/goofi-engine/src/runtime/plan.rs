@@ -199,6 +199,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::runtime::EventId;
     use crate::Graph;
 
     /// Every message the graph sent, in order, whoever it was for. A shared log rather than one
@@ -241,43 +242,51 @@ mod tests {
         g.add_node("_TestSink", None).unwrap()
     }
 
-    /// Which node got told about which kind of slot, in order.
-    fn kinds(batch: &[(Uid, Envelope)]) -> Vec<(Uid, &'static str)> {
+    /// One message, projected to everything a test can assert about it: who it went to, which slot
+    /// it is about, and the payload. Nothing is dropped — a projection that discards the slot name
+    /// or the event id is a defect's hiding place, and both have been one.
+    #[derive(Debug, PartialEq)]
+    enum Sent {
+        In { to: Uid, slot: String, services: Vec<String> },
+        Out { to: Uid, slot: String, targets: Vec<(String, EventId)> },
+        Param { to: Uid },
+    }
+
+    fn sent(batch: &[(Uid, Envelope)]) -> Vec<Sent> {
         batch
             .iter()
-            .map(|(uid, e)| {
-                (
-                    *uid,
-                    match e.control {
-                        Control::InSlot { .. } => "in-slot",
-                        Control::OutSlot { .. } => "out-slot",
-                        Control::SetParam { .. } => "set-param",
-                    },
-                )
+            .map(|(to, e)| match &e.control {
+                Control::InSlot { slot, services } => Sent::In {
+                    to: *to,
+                    slot: slot.clone(),
+                    services: services.iter().map(|s| scoped(s)).collect(),
+                },
+                Control::OutSlot { slot, targets } => Sent::Out {
+                    to: *to,
+                    slot: slot.clone(),
+                    targets: targets.iter().map(|(door, id)| (scoped(door), *id)).collect(),
+                },
+                Control::SetParam { .. } => Sent::Param { to: *to },
             })
             .collect()
     }
 
-    fn services(batch: &[(Uid, Envelope)]) -> Vec<Vec<String>> {
-        batch
-            .iter()
-            .filter_map(|(_, e)| match &e.control {
-                Control::InSlot { services, .. } => Some(services.clone()),
-                _ => None,
-            })
-            .collect()
+    /// A service name with the graph's random scope removed, leaving `<uid>_<gen>_<what>` — the one
+    /// part a test cannot know, dropped so the rest can be spelled out rather than asked of the same
+    /// function that built it. `goofi_<instance>_` is exactly two underscore-separated fields,
+    /// because a scope carries no underscore of its own.
+    fn scoped(service: &str) -> String {
+        service.splitn(3, '_').nth(2).unwrap_or(service).to_string()
     }
 
-    fn targets(batch: &[(Uid, Envelope)]) -> Vec<Vec<String>> {
-        batch
-            .iter()
-            .filter_map(|(_, e)| match &e.control {
-                Control::OutSlot { targets, .. } => {
-                    Some(targets.iter().map(|(door, _)| door.clone()).collect())
-                }
-                _ => None,
-            })
-            .collect()
+    /// What the graph must have named for `(uid, slot)` at generation `gen` — §3.1's format, written
+    /// out here so a wrong uid, a wrong slot or a dropped generation is visible.
+    fn out_name(uid: Uid, gen: u64, slot: &str) -> String {
+        format!("{}_{gen}_out_{slot}", uid.to_hex())
+    }
+
+    fn door_name(uid: Uid, gen: u64) -> String {
+        format!("{}_{gen}_door", uid.to_hex())
     }
 
     fn ack_all(batch: &[(Uid, Envelope)], g: &mut Graph) {
@@ -313,22 +322,38 @@ mod tests {
         g.add_link(b, "out", c, "in").unwrap(); // displaces a -> c on a SINGLE input
 
         let phase1 = log.take();
-        assert_eq!(kinds(&phase1), [(a, "out-slot")], "1. producer-shrink");
-        assert_eq!(targets(&phase1), [Vec::<String>::new()], "a has lost its only consumer");
+        assert_eq!(
+            sent(&phase1),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: Vec::new() }],
+            "1. producer-shrink: a has lost its only consumer"
+        );
         ack_all(&phase1, &mut g);
 
         let phase2 = log.take();
-        assert_eq!(kinds(&phase2), [(c, "in-slot")], "2. consumer-apply, and only after the shrink");
         assert_eq!(
-            services(&phase2),
-            [vec![g.output_service_of(b, "out")]],
-            "the displaced wire needs no special case — the new set is simply [b]"
+            sent(&phase2),
+            [Sent::In {
+                to: c,
+                slot: "in".to_string(),
+                // The displaced wire needs no special case — the new set is simply [b].
+                services: vec![out_name(b, 0, "out")],
+            }],
+            "2. consumer-apply, and only after the shrink"
         );
         ack_all(&phase2, &mut g);
 
         let phase3 = log.take();
-        assert_eq!(kinds(&phase3), [(b, "out-slot")], "3. producer-grow, and only after the apply");
-        assert_eq!(targets(&phase3), [vec![g.door_of(c)]]);
+        assert_eq!(
+            sent(&phase3),
+            [Sent::Out {
+                to: b,
+                slot: "out".to_string(),
+                // §3.2: an input slot's event id is its position in the manifest, past the control
+                // id — `_TestSink` declares `in` first, so this is 1 and never 0.
+                targets: vec![(door_name(c, 0), 1)],
+            }],
+            "3. producer-grow, and only after the apply"
+        );
         ack_all(&phase3, &mut g);
         assert!(log.take().is_empty(), "and the sequence is over");
     }
@@ -345,11 +370,15 @@ mod tests {
 
         g.add_link(b, "out", c, "in").unwrap(); // change 1, left unanswered in phase 1
         let stale = log.take();
-        assert_eq!(kinds(&stale), [(a, "out-slot")]);
+        assert_eq!(sent(&stale), [Sent::Out { to: a, slot: "out".to_string(), targets: Vec::new() }]);
 
         g.add_link(a, "out", c, "in").unwrap(); // change 2, on the same slot
         let restarted = log.take();
-        assert_eq!(kinds(&restarted), [(b, "out-slot")], "phase 1 again, against the NEW desired set");
+        assert_eq!(
+            sent(&restarted),
+            [Sent::Out { to: b, slot: "out".to_string(), targets: Vec::new() }],
+            "phase 1 again, against the NEW desired set"
+        );
 
         // The cancelled sequence's ack is inert — a REFUSED one included, which would otherwise
         // abandon the live sequence that replaced it and leave the slot wired to nothing.
@@ -357,9 +386,11 @@ mod tests {
         assert!(log.take().is_empty(), "the cancelled sequence's ack advances nothing");
 
         g.wire_ack(restarted[0].1.seq, Ok(()));
-        let phase2 = log.take();
-        assert_eq!(kinds(&phase2), [(c, "in-slot")], "and the live sequence still advances on ITS ack");
-        assert_eq!(services(&phase2), [vec![g.output_service_of(a, "out")]]);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::In { to: c, slot: "in".to_string(), services: vec![out_name(a, 0, "out")] }],
+            "and the live sequence still advances on ITS ack, against the new set"
+        );
     }
 
     #[test]
@@ -373,18 +404,33 @@ mod tests {
 
         g.add_link(a, "out", c, "in").unwrap();
         let first = log.take();
-        assert_eq!(kinds(&first), [(c, "in-slot")], "a pure add opens at phase 2");
+        assert_eq!(
+            sent(&first),
+            [Sent::In { to: c, slot: "in".to_string(), services: vec![out_name(a, 0, "out")] }],
+            "a pure add opens at phase 2"
+        );
         ack_all(&first, &mut g);
-        assert_eq!(kinds(&log.take()), [(a, "out-slot")], "then phase 3");
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(c, 0), 1)] }],
+            "then phase 3"
+        );
 
         settle(&log, &mut g);
         g.remove_link(a, "out", c, "in").unwrap();
         let shrink = log.take();
-        assert_eq!(kinds(&shrink), [(a, "out-slot")], "a pure removal opens at phase 1");
+        assert_eq!(
+            sent(&shrink),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: Vec::new() }],
+            "a pure removal opens at phase 1"
+        );
         ack_all(&shrink, &mut g);
         let apply = log.take();
-        assert_eq!(kinds(&apply), [(c, "in-slot")]);
-        assert_eq!(services(&apply), [Vec::<String>::new()], "an empty set means disconnected");
+        assert_eq!(
+            sent(&apply),
+            [Sent::In { to: c, slot: "in".to_string(), services: Vec::new() }],
+            "an empty set means disconnected"
+        );
         ack_all(&apply, &mut g);
         assert!(log.take().is_empty(), "and there is no phase 3 to run");
     }
@@ -400,7 +446,10 @@ mod tests {
 
         g.add_link(a, "out", c, "in").unwrap();
         let apply = log.take();
-        assert_eq!(kinds(&apply), [(c, "in-slot")]);
+        assert_eq!(
+            sent(&apply),
+            [Sent::In { to: c, slot: "in".to_string(), services: vec![out_name(a, 0, "out")] }]
+        );
         g.wire_ack(apply[0].1.seq, Err("no input slot `in`".to_string()));
         assert!(log.take().is_empty(), "the grow never runs");
     }
@@ -410,17 +459,40 @@ mod tests {
         // The counter is runtime bookkeeping, not patch content: `load_doc` restores the uids the
         // patch was saved with, so loading the same `.gfi` twice would otherwise mint the identical
         // service names — while the previous generation's ports are still being torn down.
+        //
+        // Every birth means every DOOR into one: §3.1 names restart first, and it is the one that
+        // does not go through `insert_node_at`.
         let mut g = Graph::new();
         let uid = source(&mut g);
         assert_eq!(g.node_generation(uid), 0);
 
+        g.restart_node(uid).unwrap();
+        assert_eq!(g.node_generation(uid), 1, "a restart is a birth at the same uid");
+
         g.remove_node(uid).unwrap();
         g.add_node_at("_TestGated", None, uid, "").unwrap();
-        assert_eq!(g.node_generation(uid), 1, "a rebirth never reuses its predecessor's names");
+        assert_eq!(g.node_generation(uid), 2, "and so is an undo of a delete");
 
         g.clear();
         g.add_node_at("_TestGated", None, uid, "").unwrap();
-        assert_eq!(g.node_generation(uid), 2, "and a load does not put the counter back");
+        assert_eq!(g.node_generation(uid), 3, "a load does not put the counter back");
+    }
+
+    #[test]
+    fn a_rebirth_is_named_apart_from_the_generation_it_replaces() {
+        // What the counter is FOR: the name a consumer is given must change, or the reborn node
+        // re-opens ports its predecessor — whose teardown does not block — still holds. Spelled out
+        // rather than compared against `output_service_of` itself, which answers the same either way.
+        let mut g = Graph::new();
+        let uid = source(&mut g);
+        let born = g.output_service_of(uid, "out");
+        assert!(born.ends_with(&format!("_{}_0_out_out", uid.to_hex())), "{born}");
+        assert!(g.door_of(uid).ends_with(&format!("_{}_0_door", uid.to_hex())), "{}", g.door_of(uid));
+
+        g.restart_node(uid).unwrap();
+        let reborn = g.output_service_of(uid, "out");
+        assert!(reborn.ends_with(&format!("_{}_1_out_out", uid.to_hex())), "{reborn}");
+        assert_ne!(reborn, born);
     }
 
     #[test]
