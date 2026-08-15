@@ -7897,8 +7897,15 @@ mod tests {
         // via `producer`, or by declaring `common.autotrigger` in its own params.
         //
         // The operative predicate is `!any(trigger_process)`, NOT `inputs.is_empty()`: a node can
-        // declare a held reference input and still free-run. Walks the whole LINKED catalog, so it
-        // covers goofi-nodes plus every test node this crate registers.
+        // declare a held reference input and still free-run.
+        //
+        // REACH: the `inventory` catalog only — goofi-nodes plus the test types this crate submits.
+        // That is every type goofi SHIPS, which is what matters. It does NOT cover a manifest handed
+        // to `register_dyn_type`, since those are per-`Graph` and have no registry to walk: today
+        // that means `RESHAPE_V2` here and the ~20 fixture statics in `goofi-bridge`'s tests, all
+        // of them test fixtures. A discovered Python node is also outside it by nature — its
+        // `producer` comes from the author's class attribute, so a missing one is an authoring
+        // mistake this process cannot diagnose, not an invariant to assert.
         for m in goofi_node::catalog() {
             if m.inputs.iter().any(|s| s.trigger_process) {
                 continue;
