@@ -135,8 +135,8 @@ pub enum ParamSpec {
 
 impl ParamSpec {
     /// Materialize the runtime [`Param`] this descriptor declares.
-    fn to_param(&self) -> Param {
-        match *self {
+    fn to_param(self) -> Param {
+        match self {
             ParamSpec::Float { default, min, max } => Param::float(default, min, max),
             ParamSpec::Int { default, min, max } => Param::int(default, min, max),
             ParamSpec::Bool { default } => Param::boolean(default),
