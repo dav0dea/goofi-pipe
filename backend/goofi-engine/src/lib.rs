@@ -383,7 +383,17 @@ pub struct Graph {
     /// Patch-scoped globals (system + user). System globals are seeded here; a `clear`/load
     /// re-asserts them. Read by param expressions + node setup/process; persisted to `.gfi`.
     globals: goofi_core::globals::GlobalStore,
+    /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
+    /// flight, and every uid's birth generation.
+    wire: runtime::plan::WirePlanner,
+    /// What this graph's service names are scoped by. Process-unique rather than the bridge's
+    /// instance id, because a service name only has to be unique on the machine — and two `Graph`s
+    /// in one process (a test binary) must not open each other's ports.
+    instance: String,
 }
+
+/// Hands each [`Graph`] a distinct service-name scope within this process.
+static GRAPH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Default for Graph {
     fn default() -> Self {
@@ -430,6 +440,12 @@ impl Graph {
             scopes: IndexMap::new(),
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
+            wire: runtime::plan::WirePlanner::default(),
+            instance: format!(
+                "{:x}_{}",
+                std::process::id(),
+                GRAPH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
         }
     }
 
@@ -847,6 +863,9 @@ impl Graph {
         // Construction IS the first initialization attempt, so it starts the retry backoff — else
         // the very next tick would re-run a `setup()` that has just failed.
         let last_setup_attempt = ctx.now;
+        // This IS the birth §3.1 counts, whichever door it came through — a fresh add, a restart,
+        // an undo of a delete, a load.
+        self.wire.bump_generation(uid);
 
         self.nodes.insert(
             uid,
@@ -2164,6 +2183,7 @@ impl Graph {
             self.clear_input(node_in, slot_in);
         }
         self.links.push(new);
+        self.replan_slot(node_in, slot_in);
         Ok(())
     }
 
@@ -2189,6 +2209,9 @@ impl Graph {
         } else {
             self.clear_input(node_in, slot_in);
         }
+        if let Some(slot_in) = self.resolve_input(node_in, slot_in) {
+            self.replan_slot(node_in, slot_in);
+        }
         Ok(())
     }
 
@@ -2200,6 +2223,139 @@ impl Graph {
                 cells.retain(|(u, s, _)| !(*u == src && *s == src_slot));
             }
         }
+    }
+
+    // ── The wire plane (spec §3.1, §4) ──────────────────────────────────────────────────────
+    // The async runtime's topology side: what each node is told about its slots, and in what order.
+    // Inert until a node's control channel is attached, which nothing does until the cutover — so
+    // every link path below already calls it and nothing yet answers.
+
+    /// Register the graph's end of one node's control channel. A node's birth attaches it.
+    pub fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
+        self.wire.attach(uid, sink);
+    }
+
+    /// The generation the node at `uid` was born at — the third component of its service names, and
+    /// what keeps a rebirth clear of a predecessor whose teardown does not block.
+    pub fn node_generation(&self, uid: Uid) -> u64 {
+        self.wire.generation(uid)
+    }
+
+    /// One output slot's data service name — the whole of a wire's identity, which is why a slot
+    /// message carries names and never a source uid.
+    pub(crate) fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
+        runtime::output_service(&self.service_base_of(uid), slot)
+    }
+
+    /// One node's doorbell service name.
+    pub(crate) fn door_of(&self, uid: Uid) -> runtime::ServiceName {
+        runtime::door_service(&self.service_base_of(uid))
+    }
+
+    fn service_base_of(&self, uid: Uid) -> String {
+        runtime::service_base(&self.instance, uid, self.wire.generation(uid))
+    }
+
+    /// Plan a slot's full desired wire set and run the three-phase sequence (§4). Every link change
+    /// to a slot comes through here, which is why a displaced single-input wire needs no special
+    /// case anywhere: the consumer's new set is simply the new producer.
+    pub(crate) fn replan_slot(&mut self, uid: Uid, slot: &'static str) {
+        if self.wire.is_idle() {
+            return;
+        }
+        let key = (uid, slot);
+        let desired = self.desired_wires(uid, slot);
+        let previous = self.wire.planned(key);
+        let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
+        let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
+        self.wire.begin(key, desired, removed, added);
+        self.advance_wire(key);
+    }
+
+    /// Answer one node's ack — the status-drain worker's door into the sequence. Completing a phase
+    /// is the only thing that starts the next one.
+    pub fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
+        if let Some(key) = self.wire.ack(seq, ok) {
+            self.advance_wire(key);
+        }
+    }
+
+    /// Walk the phases until one has something to send. A phase with no recipients is skipped rather
+    /// than sent empty, or the sequence would park on an ack for a message that says nothing.
+    fn advance_wire(&mut self, key: runtime::plan::SlotKey) {
+        while let Some(phase) = self.wire.step(key) {
+            let messages = self.compose_wire(key, phase);
+            if self.wire.dispatch(key, messages) {
+                return;
+            }
+        }
+    }
+
+    /// One phase's messages, built from the graph as it stands NOW rather than at plan time: a
+    /// producer's target set can be changed by another slot's sequence between two phases of this
+    /// one, and the message that goes out must carry the truth at the moment it goes.
+    fn compose_wire(
+        &self,
+        key: runtime::plan::SlotKey,
+        phase: runtime::plan::Phase,
+    ) -> Vec<(Uid, runtime::Control)> {
+        match phase {
+            runtime::plan::Phase::Apply => {
+                let services = self
+                    .wire
+                    .desired(key)
+                    .iter()
+                    .map(|(uid, slot)| self.output_service_of(*uid, slot))
+                    .collect();
+                vec![(key.0, runtime::Control::InSlot { slot: key.1.to_string(), services })]
+            }
+            runtime::plan::Phase::Shrink | runtime::plan::Phase::Grow => self
+                .wire
+                .recipients(key, phase)
+                .into_iter()
+                .map(|(uid, slot)| {
+                    let targets = self.out_targets(uid, slot);
+                    (uid, runtime::Control::OutSlot { slot: slot.to_string(), targets })
+                })
+                .collect(),
+        }
+    }
+
+    /// Every producer feeding a consumer slot, in wire order — connection order for a `multi` slot,
+    /// at most one wire for a single one. Stubs never appear: a link's endpoints are resolved real
+    /// nodes by the time it is recorded.
+    fn desired_wires(&self, uid: Uid, slot: &str) -> Vec<(Uid, &'static str)> {
+        if self.is_multi_input(uid, slot) {
+            return self
+                .nodes
+                .get(&uid)
+                .and_then(|e| e.multi_inputs.get(slot))
+                .map(|cells| cells.iter().map(|(uid, slot, _)| (*uid, *slot)).collect())
+                .unwrap_or_default();
+        }
+        self.links
+            .iter()
+            .filter(|l| l.node_in == uid && l.slot_in == slot)
+            .map(|l| (l.node_out, l.slot_out))
+            .collect()
+    }
+
+    /// Every doorbell one output slot rings, with the event id that says why the far node woke.
+    /// Task 4 adds this slot's expression subscribers to the same set — a producer cannot tell a
+    /// wire consumer from an `nd()` reader, and does not need to.
+    fn out_targets(&self, producer: Uid, slot: &str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
+        self.links
+            .iter()
+            .filter(|l| l.node_out == producer && l.slot_out == slot)
+            .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)))
+            .collect()
+    }
+
+    /// An input slot's event id: its position in the manifest's inputs, past `EventId(0)`, which is
+    /// the control channel's (§3.2). `None` beyond the 64 ids the budget gives input slots.
+    fn input_event_id(&self, uid: Uid, slot: &str) -> Option<runtime::EventId> {
+        let at = self.nodes.get(&uid)?.manifest.inputs.iter().position(|s| s.name == slot)?;
+        (at < 64).then_some(at as runtime::EventId + 1)
     }
 
     fn clear_input(&mut self, uid: Uid, slot: &str) {
@@ -2238,6 +2394,9 @@ impl Graph {
         self.links.clear();
         self.scopes.clear();
         self.scope_of.clear();
+        // The channels addressed nodes that no longer exist; the generations stay, because they are
+        // what keeps whatever is born at those uids next clear of what just died.
+        self.wire.reset_channels();
         // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
         // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
         self.globals = goofi_core::globals::GlobalStore::new();

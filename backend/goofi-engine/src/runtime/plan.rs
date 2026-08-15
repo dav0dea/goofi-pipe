@@ -1,0 +1,440 @@
+//! The graph-side wire planner (spec §4): one sequence per consumer slot, three phases, ordered by
+//! acks.
+//!
+//! Attach, detach and replace are ONE operation, because a slot message carries the full desired set
+//! and can add and remove at once. The order is what closes the attach window a history-less
+//! transport leaves open:
+//!
+//! ```text
+//! 1. producer-shrink   → OutSlot with removed targets gone          ack
+//! 2. consumer-apply    → InSlot with the full new service set       ack
+//! 3. producer-grow     → OutSlot with added targets present         ack
+//! ```
+//!
+//! Removals leave the producer first, so no frame lands on a torn-down consumer; additions reach the
+//! producer last, so it is never told to notify a subscriber that does not exist yet.
+//!
+//! **Supersede at the sequence level, not the message level.** A later change to a slot cancels the
+//! in-flight sequence and starts again from phase 1 against the new desired set — superseding
+//! individual messages would collapse phase 1 into phase 3 and destroy the ordering the phases exist
+//! to establish. A cancelled sequence's ack is inert rather than an error: its seq is no longer
+//! awaited, so answering it advances nothing. What the cancelled messages already SAID still stands,
+//! because a slot message is declarative and its delivery never depended on the ack.
+//!
+//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]). The
+//! cutover adds the rest of §4's callers — node birth and removal, `restart_node`, a load, and an
+//! expression binding, which joins a producer's target set without being a link at all.
+//!
+//! [`Graph::add_link`]: crate::Graph::add_link
+//! [`Graph::remove_link`]: crate::Graph::remove_link
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use super::wire::{Control, ControlSink, Envelope};
+use crate::Uid;
+
+/// The producer end of a wire: a node and one of its output slots.
+pub(crate) type Wire = (Uid, &'static str);
+
+/// The consumer input slot a sequence is about.
+pub(crate) type SlotKey = (Uid, &'static str);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Shrink,
+    Apply,
+    Grow,
+}
+
+/// One slot's in-flight wire change.
+struct Sequence {
+    /// Every producer that should feed this slot when the sequence completes, in wire order.
+    desired: Vec<Wire>,
+    /// The producers that lost this consumer, and the ones that gained it.
+    removed: Vec<Wire>,
+    added: Vec<Wire>,
+    /// `None` until the first [`WirePlanner::step`] — a sequence begins before phase 1, not in it.
+    phase: Option<Phase>,
+}
+
+/// The graph's end of the wire plane: who to talk to, what each slot was last told, what is in
+/// flight, and the birth generation of every uid this graph has ever held.
+#[derive(Default)]
+pub(crate) struct WirePlanner {
+    /// One per live node. A uid with no channel is not addressable — its messages are dropped and
+    /// never awaited, so a partially attached graph converges instead of stalling.
+    sinks: HashMap<Uid, Arc<dyn ControlSink>>,
+    /// Bumped on EVERY birth at a uid and never reset: it is what keeps a reborn node's service
+    /// names clear of its predecessor's, whose teardown does not block (§3.1).
+    generations: HashMap<Uid, u64>,
+    sequences: HashMap<SlotKey, Sequence>,
+    /// seq → the sequence waiting on it, and the ONLY record of what is outstanding: a phase is
+    /// complete when no entry here still names its slot. That is also what makes a cancelled
+    /// sequence's ack inert — cancelling drops its entries, so the late answer finds nothing to
+    /// advance, a refusal included.
+    awaiting: HashMap<u64, SlotKey>,
+    /// What each slot was last PLANNED to hold — not what it is confirmed to hold. It is the base a
+    /// shrink/grow diff is taken against, and it moves when the plan is made because a slot message
+    /// is declarative: the node applies what it was sent whether or not its ack came back.
+    planned: HashMap<SlotKey, Vec<Wire>>,
+    next_seq: u64,
+}
+
+impl WirePlanner {
+    /// Whether there is anyone to plan for. Nothing attaches a channel until the cutover, so this is
+    /// what keeps the planner off the paths that call it.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.sinks.is_empty()
+    }
+
+    pub(crate) fn attach(&mut self, uid: Uid, sink: Arc<dyn ControlSink>) {
+        self.sinks.insert(uid, sink);
+    }
+
+    /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than the
+    /// last for every rebirth.
+    pub(crate) fn bump_generation(&mut self, uid: Uid) -> u64 {
+        let next = self.generations.get(&uid).map_or(0, |g| g + 1);
+        self.generations.insert(uid, next);
+        next
+    }
+
+    pub(crate) fn generation(&self, uid: Uid) -> u64 {
+        self.generations.get(&uid).copied().unwrap_or(0)
+    }
+
+    /// Drop every channel and everything in flight, keeping the generations: a `clear` destroys the
+    /// nodes those channels addressed, and a channel held past its node's death would deliver one
+    /// node's wiring to another born at the same uid.
+    pub(crate) fn reset_channels(&mut self) {
+        self.sinks.clear();
+        self.sequences.clear();
+        self.awaiting.clear();
+        self.planned.clear();
+    }
+
+    /// Start a slot's sequence, cancelling whatever it had in flight.
+    pub(crate) fn begin(&mut self, key: SlotKey, desired: Vec<Wire>, removed: Vec<Wire>, added: Vec<Wire>) {
+        self.abandon(key);
+        self.planned.insert(key, desired.clone());
+        self.sequences.insert(key, Sequence { desired, removed, added, phase: None });
+    }
+
+    /// Forget a slot's sequence and everything it was waiting on.
+    fn abandon(&mut self, key: SlotKey) {
+        self.sequences.remove(&key);
+        self.awaiting.retain(|_, waiting| *waiting != key);
+    }
+
+    /// What this slot was last planned to hold — the set a change is diffed against.
+    pub(crate) fn planned(&self, key: SlotKey) -> Vec<Wire> {
+        self.planned.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Move to the next phase, or finish the sequence and answer `None`.
+    pub(crate) fn step(&mut self, key: SlotKey) -> Option<Phase> {
+        let sequence = self.sequences.get_mut(&key)?;
+        let next = match sequence.phase {
+            None => Some(Phase::Shrink),
+            Some(Phase::Shrink) => Some(Phase::Apply),
+            Some(Phase::Apply) => Some(Phase::Grow),
+            Some(Phase::Grow) => None,
+        };
+        sequence.phase = next;
+        if next.is_none() {
+            self.sequences.remove(&key);
+        }
+        next
+    }
+
+    /// The recipients of one phase: the producers that lost this consumer, or the ones that gained
+    /// it. Phase 2 addresses the consumer itself, which the caller already knows.
+    pub(crate) fn recipients(&self, key: SlotKey, phase: Phase) -> Vec<Wire> {
+        let Some(sequence) = self.sequences.get(&key) else { return Vec::new() };
+        match phase {
+            Phase::Shrink => sequence.removed.clone(),
+            Phase::Grow => sequence.added.clone(),
+            Phase::Apply => Vec::new(),
+        }
+    }
+
+    /// The full desired set of the sequence in flight on this slot.
+    pub(crate) fn desired(&self, key: SlotKey) -> Vec<Wire> {
+        self.sequences.get(&key).map(|s| s.desired.clone()).unwrap_or_default()
+    }
+
+    /// Send one phase's messages and start awaiting their acks. Answers whether anything is now
+    /// awaited — a phase with nothing to say, or one every recipient of which is unaddressable, must
+    /// not park the sequence on an ack that will never come.
+    pub(crate) fn dispatch(&mut self, key: SlotKey, messages: Vec<(Uid, Control)>) -> bool {
+        let mut waiting = false;
+        for (uid, control) in messages {
+            let Some(sink) = self.sinks.get(&uid).cloned() else { continue };
+            self.next_seq += 1;
+            let seq = self.next_seq;
+            self.awaiting.insert(seq, key);
+            waiting = true;
+            sink.send(Envelope { seq, control });
+        }
+        waiting
+    }
+
+    /// Answer one ack. `Some(key)` when it completed a phase and the sequence is ready to advance;
+    /// `None` when the phase is still outstanding, when the ack is a cancelled sequence's, or when
+    /// the node refused — a refusal abandons the sequence rather than leaving it half applied, since
+    /// there is no retry and `restart_node` is the recovery door (§4).
+    pub(crate) fn ack(&mut self, seq: u64, ok: Result<(), String>) -> Option<SlotKey> {
+        let key = self.awaiting.remove(&seq)?;
+        if ok.is_err() {
+            self.abandon(key);
+            return None;
+        }
+        (!self.awaiting.values().any(|waiting| *waiting == key)).then_some(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::Graph;
+
+    /// Every message the graph sent, in order, whoever it was for. A shared log rather than one
+    /// recorder per node, because the ordering ACROSS nodes is the whole subject: phase 1 leaves a
+    /// producer before phase 2 reaches the consumer.
+    #[derive(Default)]
+    struct Log(Mutex<Vec<(Uid, Envelope)>>);
+
+    struct Recorder {
+        uid: Uid,
+        log: Arc<Log>,
+    }
+
+    impl ControlSink for Recorder {
+        fn send(&self, envelope: Envelope) {
+            self.log.0.lock().unwrap().push((self.uid, envelope));
+        }
+    }
+
+    impl Log {
+        /// Take what has been sent since the last look.
+        fn take(&self) -> Vec<(Uid, Envelope)> {
+            std::mem::take(&mut self.0.lock().unwrap())
+        }
+    }
+
+    fn attach(g: &mut Graph, uids: &[Uid]) -> Arc<Log> {
+        let log = Arc::new(Log::default());
+        for uid in uids {
+            g.attach_control_sink(*uid, Arc::new(Recorder { uid: *uid, log: log.clone() }));
+        }
+        log
+    }
+
+    fn source(g: &mut Graph) -> Uid {
+        g.add_node("_TestGated", None).unwrap()
+    }
+
+    fn sink(g: &mut Graph) -> Uid {
+        g.add_node("_TestSink", None).unwrap()
+    }
+
+    /// Which node got told about which kind of slot, in order.
+    fn kinds(batch: &[(Uid, Envelope)]) -> Vec<(Uid, &'static str)> {
+        batch
+            .iter()
+            .map(|(uid, e)| {
+                (
+                    *uid,
+                    match e.control {
+                        Control::InSlot { .. } => "in-slot",
+                        Control::OutSlot { .. } => "out-slot",
+                        Control::SetParam { .. } => "set-param",
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn services(batch: &[(Uid, Envelope)]) -> Vec<Vec<String>> {
+        batch
+            .iter()
+            .filter_map(|(_, e)| match &e.control {
+                Control::InSlot { services, .. } => Some(services.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn targets(batch: &[(Uid, Envelope)]) -> Vec<Vec<String>> {
+        batch
+            .iter()
+            .filter_map(|(_, e)| match &e.control {
+                Control::OutSlot { targets, .. } => {
+                    Some(targets.iter().map(|(door, _)| door.clone()).collect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ack_all(batch: &[(Uid, Envelope)], g: &mut Graph) {
+        for (_, e) in batch {
+            g.wire_ack(e.seq, Ok(()));
+        }
+    }
+
+    /// Answer everything outstanding, the way live nodes would — so a test can start from a settled
+    /// wire rather than from a half-applied one.
+    fn settle(log: &Log, g: &mut Graph) {
+        loop {
+            let batch = log.take();
+            if batch.is_empty() {
+                return;
+            }
+            ack_all(&batch, g);
+        }
+    }
+
+    #[test]
+    fn a_wire_change_removes_before_it_applies_and_adds_after() {
+        // spec §4: one sequence for attach, detach and replace, because a declarative set can add
+        // and remove at once. Removals leave the producer FIRST so no frame lands on a torn-down
+        // consumer; additions reach the producer LAST so it is never told to notify a subscriber
+        // that does not exist yet.
+        let mut g = Graph::new();
+        let (a, b, c) = (source(&mut g), source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, b, c]);
+        g.add_link(a, "out", c, "in").unwrap();
+        settle(&log, &mut g);
+
+        g.add_link(b, "out", c, "in").unwrap(); // displaces a -> c on a SINGLE input
+
+        let phase1 = log.take();
+        assert_eq!(kinds(&phase1), [(a, "out-slot")], "1. producer-shrink");
+        assert_eq!(targets(&phase1), [Vec::<String>::new()], "a has lost its only consumer");
+        ack_all(&phase1, &mut g);
+
+        let phase2 = log.take();
+        assert_eq!(kinds(&phase2), [(c, "in-slot")], "2. consumer-apply, and only after the shrink");
+        assert_eq!(
+            services(&phase2),
+            [vec![g.output_service_of(b, "out")]],
+            "the displaced wire needs no special case — the new set is simply [b]"
+        );
+        ack_all(&phase2, &mut g);
+
+        let phase3 = log.take();
+        assert_eq!(kinds(&phase3), [(b, "out-slot")], "3. producer-grow, and only after the apply");
+        assert_eq!(targets(&phase3), [vec![g.door_of(c)]]);
+        ack_all(&phase3, &mut g);
+        assert!(log.take().is_empty(), "and the sequence is over");
+    }
+
+    #[test]
+    fn a_later_change_restarts_the_sequence_rather_than_superseding_a_message() {
+        // Superseding individual messages would collapse phase 1 into phase 3 and destroy the
+        // ordering the phases exist to establish.
+        let mut g = Graph::new();
+        let (a, b, c) = (source(&mut g), source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, b, c]);
+        g.add_link(a, "out", c, "in").unwrap();
+        settle(&log, &mut g);
+
+        g.add_link(b, "out", c, "in").unwrap(); // change 1, left unanswered in phase 1
+        let stale = log.take();
+        assert_eq!(kinds(&stale), [(a, "out-slot")]);
+
+        g.add_link(a, "out", c, "in").unwrap(); // change 2, on the same slot
+        let restarted = log.take();
+        assert_eq!(kinds(&restarted), [(b, "out-slot")], "phase 1 again, against the NEW desired set");
+
+        // The cancelled sequence's ack is inert — a REFUSED one included, which would otherwise
+        // abandon the live sequence that replaced it and leave the slot wired to nothing.
+        g.wire_ack(stale[0].1.seq, Err("superseded".to_string()));
+        assert!(log.take().is_empty(), "the cancelled sequence's ack advances nothing");
+
+        g.wire_ack(restarted[0].1.seq, Ok(()));
+        let phase2 = log.take();
+        assert_eq!(kinds(&phase2), [(c, "in-slot")], "and the live sequence still advances on ITS ack");
+        assert_eq!(services(&phase2), [vec![g.output_service_of(a, "out")]]);
+    }
+
+    #[test]
+    fn a_phase_with_nothing_to_say_is_skipped_rather_than_sent() {
+        // A pure add runs phases 2–3, a pure removal 1–2. An empty phase sent anyway would tell a
+        // producer that lost nothing to re-declare its targets, and — worse — park the sequence on
+        // an ack for a message that says nothing.
+        let mut g = Graph::new();
+        let (a, c) = (source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, c]);
+
+        g.add_link(a, "out", c, "in").unwrap();
+        let first = log.take();
+        assert_eq!(kinds(&first), [(c, "in-slot")], "a pure add opens at phase 2");
+        ack_all(&first, &mut g);
+        assert_eq!(kinds(&log.take()), [(a, "out-slot")], "then phase 3");
+
+        settle(&log, &mut g);
+        g.remove_link(a, "out", c, "in").unwrap();
+        let shrink = log.take();
+        assert_eq!(kinds(&shrink), [(a, "out-slot")], "a pure removal opens at phase 1");
+        ack_all(&shrink, &mut g);
+        let apply = log.take();
+        assert_eq!(kinds(&apply), [(c, "in-slot")]);
+        assert_eq!(services(&apply), [Vec::<String>::new()], "an empty set means disconnected");
+        ack_all(&apply, &mut g);
+        assert!(log.take().is_empty(), "and there is no phase 3 to run");
+    }
+
+    #[test]
+    fn a_refused_message_abandons_its_sequence() {
+        // There is no retry (§4): a node that refuses is not in sync with the graph, and driving the
+        // remaining phases at it would tell a producer to notify a consumer that never applied its
+        // set. `restart_node` is the recovery door.
+        let mut g = Graph::new();
+        let (a, c) = (source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, c]);
+
+        g.add_link(a, "out", c, "in").unwrap();
+        let apply = log.take();
+        assert_eq!(kinds(&apply), [(c, "in-slot")]);
+        g.wire_ack(apply[0].1.seq, Err("no input slot `in`".to_string()));
+        assert!(log.take().is_empty(), "the grow never runs");
+    }
+
+    #[test]
+    fn a_generation_is_bumped_at_every_birth_and_survives_a_clear() {
+        // The counter is runtime bookkeeping, not patch content: `load_doc` restores the uids the
+        // patch was saved with, so loading the same `.gfi` twice would otherwise mint the identical
+        // service names — while the previous generation's ports are still being torn down.
+        let mut g = Graph::new();
+        let uid = source(&mut g);
+        assert_eq!(g.node_generation(uid), 0);
+
+        g.remove_node(uid).unwrap();
+        g.add_node_at("_TestGated", None, uid, "").unwrap();
+        assert_eq!(g.node_generation(uid), 1, "a rebirth never reuses its predecessor's names");
+
+        g.clear();
+        g.add_node_at("_TestGated", None, uid, "").unwrap();
+        assert_eq!(g.node_generation(uid), 2, "and a load does not put the counter back");
+    }
+
+    #[test]
+    fn a_cleared_graph_does_not_talk_to_the_nodes_it_destroyed() {
+        // A channel outliving its node would deliver one node's wiring to whatever is born at that
+        // uid next — which, after a load, is a different node entirely.
+        let mut g = Graph::new();
+        let (a, c) = (source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, c]);
+        g.clear();
+
+        g.add_node_at("_TestGated", None, a, "").unwrap();
+        g.add_node_at("_TestSink", None, c, "").unwrap();
+        g.add_link(a, "out", c, "in").unwrap();
+        assert!(log.take().is_empty(), "the dead node's channel is not the new node's");
+    }
+}

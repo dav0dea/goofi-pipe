@@ -209,12 +209,11 @@ impl IoxTransport {
                 while let Ok(Some(sample)) = wire.subscriber.receive() {
                     newest = Some(goofi_codec::decode(sample.payload()));
                 }
-                match newest {
-                    Some(Ok(frame)) => out.push((slot.clone(), index, frame)),
-                    // A frame that cannot be decoded is a wire whose two ends disagree about the
-                    // format — dropping it keeps the node running on its other inputs, and the
-                    // producer is the only thing that could report it.
-                    Some(Err(_)) | None => {}
+                // A frame that cannot be decoded is a wire whose two ends disagree about the format
+                // — dropping it keeps the node running on its other inputs, and the producer is the
+                // only end that could report it anyway.
+                if let Some(Ok(frame)) = newest {
+                    out.push((slot.clone(), index, frame));
                 }
             }
         }

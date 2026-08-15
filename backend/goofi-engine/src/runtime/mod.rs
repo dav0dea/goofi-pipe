@@ -8,8 +8,9 @@
 //! connected-trigger-input counter, and a node that declares no trigger input and leaves
 //! autotrigger off never runs, which is correct.
 //!
-//! This module is standalone: it owns one node against a [`Transport`], and nothing in [`Graph`]
-//! drives it yet.
+//! A [`NodeRuntime`] owns one node against a [`Transport`]. [`Graph`] now plans and sends that
+//! node's wiring ([`plan`]), but nothing constructs a `NodeRuntime` or drives its wake loop yet —
+//! the tick path still owns execution.
 //!
 //! ## Where this diverges from the tick path it replaces
 //!
@@ -19,6 +20,12 @@
 //! and the **required-input gate**, where `execute_node` refuses to run a node whose `required`
 //! slot holds no frame and records that refusal as its error — nothing here does. `ensure_initialized`
 //! now also exists twice, once per scheduler, and the two must be collapsed rather than kept in step.
+//!
+//! Two more, added with the transport. **Frames do not reach a node from its own wires**: the graph
+//! propagates them on the tick path, while [`IoxTransport::drain_inputs`] is what the wake loop will
+//! read instead — so `deliver_input` is still called by hand. And **no birth barrier**: §4 queues a
+//! node's `Control` until it answers `Status::Ready`, which needs a node lifecycle the graph does
+//! not own yet, so a message sent before its node exists is simply lost (pub/sub has no history).
 //!
 //! [`Graph`]: crate::Graph
 
@@ -31,6 +38,7 @@ use goofi_node::{Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, Para
 use indexmap::IndexMap;
 
 mod mailbox;
+pub(crate) mod plan;
 mod transport;
 mod wire;
 
