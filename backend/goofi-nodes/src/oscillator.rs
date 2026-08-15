@@ -181,17 +181,9 @@ static PARAMS: &[ParamDecl] = &[
         doc: Some("Shape of one cycle."),
     },
     // The producer contract: free-running, paced by the patch's `default_ufreq` global (30 Hz by
-    // default). The 30.0 literal is the no-evaluator fallback; the `default_expr` binding makes a
-    // live `globals.default_ufreq` edit re-rate every Oscillator. `autotrigger` marks it a source.
-    ParamDecl {
-        group: "common",
-        name: "autotrigger",
-        spec: ParamSpec::Bool { default: true },
-        expression: None,
-        expression_mode: ExprMode::Off,
-        trigger: false,
-        doc: Some("On by default: the Oscillator is a source, so it runs on its own schedule."),
-    },
+    // default). The 30.0 literal is the no-evaluator fallback; the expression makes a live
+    // `globals.default_ufreq` edit re-rate every Oscillator. `common.autotrigger` is NOT declared
+    // here — `producer: true` on the manifest is the one place a source says so.
     ParamDecl {
         group: "common",
         name: "max_frequency",
@@ -219,7 +211,7 @@ inventory::submit! {
         outputs: OUTPUTS,
         params: PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: default_factory::<Oscillator>,
     }
 }

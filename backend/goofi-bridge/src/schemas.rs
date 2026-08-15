@@ -314,7 +314,7 @@ mod tests {
         outputs: T_OUT,
         params: STUB_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: stub_factory,
     };
 
@@ -351,7 +351,7 @@ mod tests {
         outputs: T_OUT,
         params: DOCUMENTED_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: stub_factory,
     };
 

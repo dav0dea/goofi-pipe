@@ -991,7 +991,7 @@ mod tests {
             outputs: NOP_OUT,
             params: NOP_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<Nop>,
         }
     }

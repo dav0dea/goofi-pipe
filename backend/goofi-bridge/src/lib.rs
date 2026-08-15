@@ -2501,7 +2501,7 @@ mod result_enrichment_tests {
         outputs: &[],
         params: PICKER_PARAMS,
         isolation: goofi_node::Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: || Box::new(Picker),
     };
 
@@ -2785,7 +2785,7 @@ mod node_scan_tests {
                 outputs: OUT,
                 params: &[],
                 isolation: Isolation::InProcess,
-                producer: false,
+                producer: true,
                 factory: never,
             }));
             out.push(ScannedType {

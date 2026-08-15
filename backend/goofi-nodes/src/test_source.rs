@@ -64,7 +64,7 @@ inventory::submit! {
         outputs: OUTPUTS,
         params: PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: default_factory::<TestConst>,
     }
 }

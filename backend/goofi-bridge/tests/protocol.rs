@@ -71,7 +71,7 @@ static SERVE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: SERVE_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
-    producer: false,
+    producer: true,
     factory: stub_factory,
 };
 
@@ -3992,7 +3992,7 @@ static FLAKY_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: SERVE_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
-    producer: false,
+    producer: true,
     factory: stub_factory,
 };
 
@@ -4117,7 +4117,7 @@ static PICKER_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: PICKER_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
-    producer: false,
+    producer: true,
     factory: stub_factory,
 };
 
@@ -4151,7 +4151,7 @@ static MUTE_MANIFEST: goofi_node::NodeManifest = goofi_node::NodeManifest {
     outputs: SERVE_OUT,
     params: PICKER_PARAMS,
     isolation: goofi_node::Isolation::InProcess,
-    producer: false,
+    producer: true,
     factory: stub_factory,
 };
 

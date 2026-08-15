@@ -3783,7 +3783,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<GatedSource>,
         }
     }
@@ -3898,7 +3898,7 @@ mod tests {
             outputs: SLOW_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<Slow>,
         }
     }
@@ -3924,7 +3924,7 @@ mod tests {
             outputs: P_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<Panicky>,
         }
     }
@@ -4070,7 +4070,7 @@ mod tests {
             outputs: G_OUT,
             params: MIRROR_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<MirrorSource>,
         }
     }
@@ -4096,7 +4096,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<NowSource>,
         }
     }
@@ -4124,7 +4124,7 @@ mod tests {
             outputs: G_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<GlobalSource>,
         }
     }
@@ -4161,7 +4161,7 @@ mod tests {
             outputs: G_OUT,
             params: DEFAULT_EXPR_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<DefaultExprSource>,
         }
     }
@@ -4203,7 +4203,7 @@ mod tests {
             outputs: G_OUT,
             params: SETUP_LATCH_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<SetupLatch>,
         }
     }
@@ -4242,7 +4242,7 @@ mod tests {
             outputs: TWO_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: default_factory::<TwoRate>,
         }
     }
@@ -4490,7 +4490,7 @@ mod tests {
         outputs: G_OUT,
         params: GATED_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -5275,7 +5275,7 @@ mod tests {
         outputs: GATE_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -5543,7 +5543,7 @@ mod tests {
         outputs: GATE_OUT,
         params: NO_PARAMS,
         isolation: Isolation::Subprocess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
     struct BootOnceNode {
@@ -5639,7 +5639,7 @@ mod tests {
             outputs: RT_OUT,
             params: RT_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: rt_stub_factory,
         };
         struct Boot {
@@ -5916,7 +5916,7 @@ mod tests {
         outputs: RT_OUT,
         params: PICKER_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
     static PICKER_PARAMS: &[ParamDecl] = &[
@@ -6031,7 +6031,7 @@ mod tests {
             outputs: RT_OUT,
             params: PICKER_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: rt_stub_factory,
         };
         #[derive(Default)]
@@ -6082,7 +6082,7 @@ mod tests {
         outputs: RT_OUT,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -6105,7 +6105,7 @@ mod tests {
         outputs: RT_OUT,
         params: GAINED_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -6128,7 +6128,7 @@ mod tests {
         outputs: RT_OUT,
         params: WIDENED_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -6141,7 +6141,7 @@ mod tests {
         outputs: RT_OUT,
         params: RT_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -6296,7 +6296,7 @@ mod tests {
         outputs: RT_OUT,
         params: PANICKY_PARAMS,
         isolation: Isolation::InProcess,
-        producer: false,
+        producer: true,
         factory: rt_stub_factory,
     };
 
@@ -7798,9 +7798,14 @@ mod tests {
         assert!(common.contains_key("autotrigger"));
         assert!(common.contains_key("max_frequency"));
         assert!(common.contains_key("frequency_mode"));
-        // Default is unbounded + not autotriggering (behavior-preserving).
+        // Unbounded by default. `_TestConst` is a producer, so its autotrigger is on; a node
+        // driven by its input gets the same group with the opposite default, from the same
+        // declaration — the manifest's `producer` is the only thing that differs.
         assert_eq!(common["max_frequency"].as_f64(), Some(0.0));
-        assert_eq!(common["autotrigger"].as_bool(), Some(false));
+        assert_eq!(common["autotrigger"].as_bool(), Some(true), "a source paces itself");
+        let b = g.add_node("Buffer", None).unwrap();
+        let consumer = g.params(b).unwrap();
+        assert_eq!(consumer["common"]["autotrigger"].as_bool(), Some(false), "a transform does not");
     }
 
     #[test]
@@ -8186,7 +8191,7 @@ mod tests {
             outputs: P_OUT,
             params: NO_PARAMS,
             isolation: Isolation::InProcess,
-            producer: false,
+            producer: true,
             factory: || Box::new(Changing(0)),
         };
         let mut g = Graph::new();
