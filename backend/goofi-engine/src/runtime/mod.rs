@@ -182,8 +182,8 @@ impl NodeRuntime {
     /// One iteration of the wake loop, minus the park: §3.3 makes a notification a pure hint — the
     /// truth is in the control mailbox and the latest-wins cells — so the drain never consults the
     /// event ids, and the loop that parks on [`Transport::wait`] wraps this rather than replacing
-    /// it. Paths A and C arrive through the `deliver_*` doors until a real transport subscribes
-    /// for them.
+    /// it. Path A and path C's data half arrive through [`Self::deliver_input`] and
+    /// [`Self::deliver_arrival`] until a real transport subscribes for them.
     pub fn run_once(&mut self) {
         self.drain_control();
 
@@ -987,8 +987,10 @@ mod tests {
     ///
     /// What this fixture CANNOT show, measured by dropping every arrival on the floor: the
     /// autotrigger toggle test delivers `true`, which is also this producer's literal, so it pins
-    /// the dirty-marking and not the value. The value landing is pinned on the consumer, where the
-    /// two differ — [`a_stream_arrival_repaces_a_consumer_without_ever_running_it`].
+    /// the dirty-marking and not the value. The value landing is pinned where the two differ — on
+    /// the consumer ([`a_stream_arrival_repaces_a_consumer_without_ever_running_it`]) and on the
+    /// control plane ([`a_common_arrival_repaces_without_running`], which re-sends 60 Hz over a
+    /// literal 0).
     fn fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
         let transport = Arc::new(MemoryTransport::default());
         let mut r = NodeRuntime::new(&PRODUCER, transport.clone());
