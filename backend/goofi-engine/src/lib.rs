@@ -720,7 +720,7 @@ impl Graph {
     /// so `setup()` sees what the user saved rather than the type's defaults.
     fn default_params_of(&self, type_name: &str) -> Result<ParamGroups, String> {
         let m = self.manifest_of(type_name)?;
-        Ok(goofi_node::with_common(m.default_params(), m.producer))
+        Ok(goofi_node::with_common(m.default_params(), m))
     }
 
     /// Construct (but do not insert) a node by type name — the shared front half of `add_node` /
@@ -737,7 +737,7 @@ impl Graph {
             // type is what decides a missing key's default. Not a load-path concern: `serialize`
             // writes every param unconditionally, so a saved patch has all three keys and its own
             // values win here.
-            Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?.producer),
+            Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?),
             None => self.default_params_of(type_name)?,
         };
         if let Some(m) = goofi_node::find(type_name) {
@@ -3592,7 +3592,7 @@ mod tests {
         // models the restore entry point.
         let mut g = eval_graph();
         let m = goofi_node::find("_TestDefaultExpr").unwrap();
-        let params = goofi_node::with_common(m.default_params(), m.producer);
+        let params = goofi_node::with_common(m.default_params(), m);
         let n = g.add_node_at("_TestDefaultExpr", Some(params), Uid(0xD15C), "restored").unwrap();
         assert!(
             g.param_expression(n, "control", "rate").is_none(),
@@ -7857,7 +7857,7 @@ mod tests {
             if m.inputs.iter().any(|s| s.trigger_process) {
                 continue;
             }
-            let common = goofi_node::with_common(m.default_params(), m.producer);
+            let common = goofi_node::with_common(m.default_params(), m);
             assert_eq!(
                 goofi_node::param(&common, "common", "autotrigger").and_then(Param::as_bool),
                 Some(true),

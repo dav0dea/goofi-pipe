@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(expr.source, "globals.default_ufreq");
         // Without an evaluator, the fallback literal must still pace it at the producer default
         // (30 Hz) and free-run it — never unbounded (which would saturate the tick loop).
-        let policy = RunPolicy::from_params(&with_common(m.default_params(), m.producer));
+        let policy = RunPolicy::from_params(&with_common(m.default_params(), m));
         assert_eq!(policy.max_frequency, 30.0, "fallback rate is the producer default");
         assert!(policy.autotrigger, "the oscillator is a free-running producer");
     }

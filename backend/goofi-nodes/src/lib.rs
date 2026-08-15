@@ -37,23 +37,29 @@ mod tests {
     /// group, which every node carries and which now declares one itself.
     #[test]
     fn every_declared_expression_reads_only_system_globals() {
-        let decls = goofi_node::catalog()
-            .map(|m| (m.type_name, m.params))
-            .chain(std::iter::once(("common", goofi_node::COMMON_DECLS)));
-        for (owner, params) in decls {
-            for decl in params {
-                let Some(expr) = decl.expression else { continue };
-                assert!(!expr.source.trim().is_empty(), "{}: {}/{} has an empty expression", owner, decl.group, decl.name);
-                for name in goofi_node::global_ref_names(expr.source) {
-                    assert!(
-                        goofi_core::globals::SYSTEM_GLOBALS.iter().any(|g| g.name == name),
-                        "{}: the expression on {}/{} reads `globals.{}`, which no fresh patch has",
-                        owner,
-                        decl.group,
-                        decl.name,
-                        name
-                    );
-                }
+        // The universal declarations are read AS EACH TYPE SEES THEM, so both the producer and the
+        // consumer forms are covered (the catalog holds both kinds) — a declaration is free to
+        // condition its source on the manifest, and one naming a global no fresh patch has would
+        // otherwise fail on one kind of node only.
+        let decls = goofi_node::catalog().flat_map(|m| {
+            m.params
+                .iter()
+                .copied()
+                .chain(goofi_node::common_decls(m))
+                .map(move |d| (m.type_name, d))
+        });
+        for (owner, decl) in decls {
+            let Some(expr) = decl.expression else { continue };
+            assert!(!expr.source.trim().is_empty(), "{}: {}/{} has an empty expression", owner, decl.group, decl.name);
+            for name in goofi_node::global_ref_names(expr.source) {
+                assert!(
+                    goofi_core::globals::SYSTEM_GLOBALS.iter().any(|g| g.name == name),
+                    "{}: the expression on {}/{} reads `globals.{}`, which no fresh patch has",
+                    owner,
+                    decl.group,
+                    decl.name,
+                    name
+                );
             }
         }
     }

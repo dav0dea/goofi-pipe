@@ -75,11 +75,13 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
 }
 
 /// Look up a param's declared help text. A node's own declaration wins over the universal
-/// `common` fallback, matching `with_common`'s keep-what-the-node-declared rule.
-fn param_doc(decls: &[goofi_node::ParamDecl], group: &str, name: &str) -> Option<&'static str> {
-    decls
+/// `common` fallback, matching `with_common`'s keep-what-the-node-declared rule — which is why the
+/// universal declarations are read through the same manifest that materialized the values.
+fn param_doc(m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> {
+    m.params
         .iter()
-        .chain(goofi_node::COMMON_DECLS)
+        .copied()
+        .chain(goofi_node::common_decls(m))
         .find(|d| d.group == group && d.name == name)
         .and_then(|d| d.doc)
 }
@@ -87,12 +89,12 @@ fn param_doc(decls: &[goofi_node::ParamDecl], group: &str, name: &str) -> Option
 /// Type-level / literal params (no expression bindings) — used for the palette. This is the
 /// projection the frontend renders param tooltips from: the instance descriptors override only
 /// value/expression/options, so `doc` has to be right *here*.
-pub fn describe_params(p: &ParamGroups, decls: &[goofi_node::ParamDecl]) -> Value {
+pub fn describe_params(p: &ParamGroups, m: &NodeManifest) -> Value {
     let mut groups = Map::new();
     for (gname, g) in p {
         let mut names = Map::new();
         for (n, param) in g {
-            names.insert(n.clone(), describe_param(param, None, param_doc(decls, gname, n)));
+            names.insert(n.clone(), describe_param(param, None, param_doc(m, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -102,16 +104,16 @@ pub fn describe_params(p: &ParamGroups, decls: &[goofi_node::ParamDecl]) -> Valu
 /// A node instance's params, each carrying its real expression binding state (source /
 /// enabled / triggers / error) for the fx toggle + field error indicator.
 pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
-    let Some(params) = g.params(uid) else {
+    // Params and manifest live on the same entry, so a node has both or is not a node.
+    let (Some(params), Some(m)) = (g.params(uid), g.manifest(uid)) else {
         return Value::Object(Map::new());
     };
-    let decls = g.manifest(uid).map(|m| m.params).unwrap_or(&[]);
     let mut groups = Map::new();
     for (gname, group) in params {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
-            names.insert(n.clone(), describe_param(param, expr.as_ref(), param_doc(decls, gname, n)));
+            names.insert(n.clone(), describe_param(param, expr.as_ref(), param_doc(m, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -196,7 +198,7 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
         "output_slots": output_slots(m),
         // Project the same universal `common` group instances carry, so the palette
         // and an instantiated node agree on a type's params.
-        "params": describe_params(&goofi_node::with_common(m.default_params(), m.producer), m.params),
+        "params": describe_params(&goofi_node::with_common(m.default_params(), m), m),
     })
 }
 
@@ -371,6 +373,28 @@ mod tests {
         producer: false,
         factory: stub_factory,
     };
+
+    #[test]
+    fn the_palette_shows_a_producer_paced_by_itself_and_a_consumer_by_its_input() {
+        // The palette is what a user reads BEFORE adding a node, and it is projected from the
+        // manifest alone — so `producer` has to reach it. Both types below declare no `common.*`
+        // param of their own; the only difference between them is the flag.
+        let mut g = Graph::new();
+        g.register_dyn_type(&T_MANIFEST, Box::new(|_| unreachable!()));
+        g.register_dyn_type(&MULTI_MANIFEST, Box::new(|_| unreachable!()));
+        let cat = catalog_types(&g);
+        let autotrigger = |ty: &str| {
+            cat.as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["type"] == ty)
+                .unwrap_or_else(|| panic!("{ty} is in the palette"))["params"]["common"]
+                ["autotrigger"]["value"]
+                .clone()
+        };
+        assert_eq!(autotrigger("MyPyThing"), json!(true), "a source paces itself");
+        assert_eq!(autotrigger("MultiThing"), json!(false), "a transform is driven by its input");
+    }
 
     #[test]
     fn a_nodes_own_doc_wins_over_the_universal_common_one() {

@@ -83,6 +83,7 @@ pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Para
 /// params as a `static PARAMS: &[ParamDecl]` (a literal `&[Param]` is impossible —
 /// `Param::Str` owns heap `String`/`Vec`). The runtime [`ParamGroups`] is built from
 /// these on demand by [`NodeManifest::default_params`].
+#[derive(Clone, Copy)]
 pub struct ParamDecl {
     pub group: &'static str,
     pub name: &'static str,
@@ -123,6 +124,7 @@ pub enum ExprMode {
 }
 
 /// The kind + defaults of a declared param.
+#[derive(Clone, Copy)]
 pub enum ParamSpec {
     Float { default: f64, min: f64, max: f64 },
     Int { default: i64, min: i64, max: i64 },
@@ -358,44 +360,59 @@ impl RunPolicy {
     }
 }
 
-/// The universal `common` scheduling group, declared once. Both [`with_common`] (which
-/// materializes the values) and the bridge's doc lookup read these, so the group's help text
-/// lives in exactly one place — a node that declares its own `common.*` param overrides the
-/// whole declaration, matching `with_common`'s keep-what-the-node-declared rule.
-pub static COMMON_DECLS: &[ParamDecl] = &[
+/// One universal `common` param, expressed as a function of the manifest it is being added to.
+/// The function IS the declaration — there is no base-plus-override pair — so a param is defined
+/// in exactly one place and states its own condition there. Most read nothing from the manifest.
+///
+/// These run while the `common` group is being BUILT, so a declaration may read the manifest's
+/// static shape (`producer`, slots) but must never read `m.params` for a `common` key: that is a
+/// half-built world.
+pub type CommonDecl = fn(&NodeManifest) -> ParamDecl;
+
+/// Run on the node's own schedule instead of waiting for an input frame — which is exactly what
+/// being a producer means, so the default IS `m.producer`. The spec *default* moves rather than
+/// the materialized value, so a consumer that describes the declaration and one that materializes
+/// it cannot disagree (the palette used to describe `false` beside a value of `true`).
+fn autotrigger(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
         name: "autotrigger",
-        spec: ParamSpec::Bool { default: false },
+        spec: ParamSpec::Bool { default: m.producer },
         expression: None,
         doc: Some(
             "Run every tick on the node's own schedule, instead of waiting for an input frame. \
              Turn this on for sources; leave it off for transforms driven by their input.",
         ),
-    },
+    }
+}
+
+/// The rate cap. Every node CARRIES the patch's producer rate as an expression, so any node can be
+/// paced by `globals.default_ufreq` with one inspector toggle; on a producer it is already live,
+/// because a source is what the patch rate is for. `trigger` unconditionally, so that editing the
+/// global re-paces a sleeping producer rather than waiting for its next wake.
+///
+/// NOT YET SEEDED (Task 4): `Graph::seed_default_expressions` walks a manifest's OWN `params`, and
+/// these universal declarations are not part of any manifest's `params` — so today only a node that
+/// redeclares `common.max_frequency` itself (`Oscillator`) gets a binding. Task 4 walks these too.
+fn max_frequency(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
         name: "max_frequency",
         spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 100.0 },
-        // Every node carries the patch's producer rate here, so any node can be paced by
-        // `globals.default_ufreq` with one inspector toggle. It starts `Off` — a consumer runs at
-        // its input's rate. `trigger: true` so that editing the global re-paces a sleeping
-        // producer rather than waiting for its next wake.
-        //
-        // INTENT, NOT YET WIRED (Task 4): a `producer` type is meant to start this expression `On`,
-        // and nothing flips it today. `Graph::seed_default_expressions` walks a manifest's OWN
-        // `params`, and these universal decls are not part of any manifest's `params` — only a node
-        // that redeclares `common.max_frequency` itself (today: `Oscillator`) seeds a binding here.
         expression: Some(ExprDecl {
             source: "globals.default_ufreq",
-            mode: ExprMode::Off,
+            mode: if m.producer { ExprMode::On } else { ExprMode::Off },
             trigger: true,
         }),
         doc: Some(
             "Rate cap for this node, read through `frequency_mode`. 0 means uncapped — the node \
              runs as often as the scheduler and its inputs allow.",
         ),
-    },
+    }
+}
+
+/// How to read [`max_frequency`]: a rate, or a period.
+fn frequency_mode(_: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
         name: "frequency_mode",
@@ -409,28 +426,33 @@ pub static COMMON_DECLS: &[ParamDecl] = &[
             "How to read `max_frequency`: as a rate in Hz (updates per second), or as a period \
              in seconds between updates — convenient for very slow nodes.",
         ),
-    },
-];
+    }
+}
+
+/// The universal `common` scheduling group, declared once. A fourth param is added here and
+/// nowhere else: the loop in [`with_common`] carries no name match, and Task 4's expression
+/// seeding will walk the same list.
+pub static COMMON_DECLS: &[CommonDecl] = &[autotrigger, max_frequency, frequency_mode];
+
+/// The universal declarations as THIS node type sees them — the ONE place a manifest is allowed to
+/// change what the `common` group means. The value half ([`with_common`]) and Task 4's expression
+/// seeding both read this, so they cannot disagree about what a producer gets.
+pub fn common_decls(m: &NodeManifest) -> impl Iterator<Item = ParamDecl> + '_ {
+    COMMON_DECLS.iter().map(move |d| d(m))
+}
 
 /// Guarantee a node's params carry the universal `common` scheduling group (the
 /// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
-/// exist on every node uniformly. Any keys a node already declared are kept;
-/// missing ones are filled with behavior-preserving defaults (unbounded, not
-/// autotriggering) — except that `producer` (the type's own [`NodeManifest::producer`])
-/// flips `autotrigger` on, because a source paces itself and everything else is
-/// driven by its input. `common` is placed first for a stable frontend ordering. Used
-/// both when instantiating a node (the engine) and when projecting a node type to
+/// exist on every node uniformly. **Any key the node declared itself is kept untouched** — this
+/// function never overwrites a manifest's own param definition; `or_insert_with` is the whole of
+/// that rule. Missing ones are materialized from [`common_decls`], which is where the manifest
+/// decides what a missing key defaults to. `common` is placed first for a stable frontend
+/// ordering. Used both when instantiating a node (the engine) and when projecting a node type to
 /// the palette (the bridge), so type-level and instance-level params agree.
-pub fn with_common(params: ParamGroups, producer: bool) -> ParamGroups {
+pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
     let mut common = params.get("common").cloned().unwrap_or_default();
-    for d in COMMON_DECLS {
-        common.entry(d.name.to_string()).or_insert_with(|| {
-            if producer && d.name == "autotrigger" {
-                Param::boolean(true)
-            } else {
-                d.spec.to_param()
-            }
-        });
+    for d in common_decls(m) {
+        common.entry(d.name.to_string()).or_insert_with(|| d.spec.to_param());
     }
     let mut merged = ParamGroups::new();
     merged.insert("common".to_string(), common);
@@ -815,7 +837,7 @@ mod tests {
         // Every node in the system carries this group, and its values are persisted into every
         // `.gfi`. A bound or default edited here changes behavior everywhere, silently — so pin
         // the materialized values, not just their presence.
-        let common = with_common(ParamGroups::new(), false);
+        let common = with_common(ParamGroups::new(), &probe_manifest(false));
         let c = common.get("common").expect("the group is always present");
 
         assert_eq!(c.get("autotrigger"), Some(&Param::boolean(false)));
@@ -839,18 +861,78 @@ mod tests {
     fn producer_defaults_autotrigger_on_and_every_node_carries_the_ufreq_expression() {
         // `producer` is the ONLY pacing an author declares (spec §1.2), and a node that is not a
         // producer must not get its autotrigger.
-        let p = with_common(ParamGroups::new(), /* producer */ true);
+        let p = with_common(ParamGroups::new(), &probe_manifest(true));
         assert_eq!(param(&p, "common", "autotrigger").and_then(Param::as_bool), Some(true));
-        let c = with_common(ParamGroups::new(), /* producer */ false);
+        let c = with_common(ParamGroups::new(), &probe_manifest(false));
         assert_eq!(param(&c, "common", "autotrigger").and_then(Param::as_bool), Some(false));
 
-        // The rate expression is carried by EVERY node, live on none of them — `Off` is the
+        // The rate expression is carried by EVERY node, live only on a producer — `Off` is the
         // inspector's fx toggle waiting to be flipped, not a binding.
-        let decl = COMMON_DECLS.iter().find(|d| d.name == "max_frequency").expect("declared");
-        let expr = decl.expression.expect("every node carries it");
-        assert_eq!(expr.source, "globals.default_ufreq");
-        assert_eq!(expr.mode, ExprMode::Off, "carried, not imposed");
-        assert!(expr.trigger, "so a default_ufreq edit re-paces a sleeping producer");
+        let expr = |producer| {
+            find_common(producer, "max_frequency").expression.expect("every node carries it")
+        };
+        assert_eq!(expr(false).source, "globals.default_ufreq");
+        assert_eq!(expr(false).mode, ExprMode::Off, "carried, not imposed");
+        assert!(expr(false).trigger, "so a default_ufreq edit re-paces a sleeping producer");
+        assert_eq!(expr(true).mode, ExprMode::On, "a producer IS paced by the patch rate");
+        assert_eq!(expr(true).source, expr(false).source, "the producer variant rewrites only mode");
+        assert_eq!(expr(true).trigger, expr(false).trigger);
+    }
+
+    /// A bare manifest that differs from its sibling only in `producer` — the input the universal
+    /// declarations are a function of.
+    fn probe_manifest(producer: bool) -> NodeManifest {
+        NodeManifest {
+            type_name: "_CommonDeclProbe",
+            category: "test",
+            doc: "",
+            inputs: &[],
+            outputs: NOP_OUT,
+            params: NOP_PARAMS,
+            isolation: Isolation::InProcess,
+            producer,
+            factory: default_factory::<Nop>,
+        }
+    }
+
+    /// The one universal declaration named `name`, as a node of this kind sees it.
+    fn find_common(producer: bool, name: &str) -> ParamDecl {
+        common_decls(&probe_manifest(producer)).find(|d| d.name == name).expect("declared")
+    }
+
+    #[test]
+    fn every_common_declaration_states_its_own_condition_on_the_manifest() {
+        // Each universal param IS a function of the manifest, so a param is defined in one place
+        // and states its own condition there — `with_common` needs no name match, and a fourth
+        // param is added to COMMON_DECLS and nowhere else. All three are pinned, INCLUDING the one
+        // that reads nothing: "no condition" is a claim, and it has to be checked like the rest.
+        assert_eq!(
+            common_decls(&probe_manifest(false)).count(),
+            3,
+            "no declaration silently joins the group"
+        );
+
+        // The spec DEFAULT moves, not just the materialized value, so that a consumer describing
+        // the declaration and a consumer materializing it cannot disagree.
+        let autotrigger = |p| match find_common(p, "autotrigger").spec {
+            ParamSpec::Bool { default } => default,
+            _ => panic!("autotrigger is a bool"),
+        };
+        assert!(!autotrigger(false));
+        assert!(autotrigger(true), "a source paces itself");
+        assert_eq!(
+            with_common(ParamGroups::new(), &probe_manifest(true))["common"]["autotrigger"],
+            find_common(true, "autotrigger").spec.to_param(),
+            "the value `with_common` materializes IS the declared default, for a producer too",
+        );
+
+        // frequency_mode reads nothing from the manifest — how to read the cap is the user's choice.
+        let mode = |p| match find_common(p, "frequency_mode").spec {
+            ParamSpec::Str { default, .. } => default,
+            _ => panic!("frequency_mode is a string"),
+        };
+        assert_eq!(mode(true), mode(false), "being a source says nothing about this one");
+        assert!(find_common(true, "frequency_mode").expression.is_none());
     }
 
     #[test]
@@ -866,11 +948,11 @@ mod tests {
             groups
         };
 
-        let common = with_common(declared(true), false);
+        let common = with_common(declared(true), &probe_manifest(false));
         assert_eq!(common["common"].get("autotrigger"), Some(&Param::boolean(true)));
         assert!(common["common"].contains_key("max_frequency"), "the rest is still filled in");
 
-        let producer = with_common(declared(false), true);
+        let producer = with_common(declared(false), &probe_manifest(true));
         assert_eq!(producer["common"].get("autotrigger"), Some(&Param::boolean(false)));
     }
 
