@@ -2231,8 +2231,32 @@ impl Graph {
     // control channel is attached, which nothing does until the cutover.
 
     /// Register the graph's end of one node's control channel. A node's birth attaches it.
+    ///
+    /// Attaching RE-PLANS every slot this node touches, from an empty base. A node that was not
+    /// addressable when those slots were planned had its message dropped — `dispatch` skips a uid
+    /// with no channel so a partially attached graph converges instead of stalling — while the diff
+    /// base moved anyway, so nothing would ever resend it. A node that has just become addressable
+    /// knows nothing, whatever the graph planned meanwhile. This is the shape the birth barrier
+    /// takes when it lands: `Status::Ready` is the moment a node becomes addressable.
     pub fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
         self.wire.attach(uid, sink);
+        for (consumer, slot) in self.slots_touching(uid) {
+            self.wire.forget_planned((consumer, slot));
+            self.replan_slot(consumer, slot);
+        }
+    }
+
+    /// Every consumer slot whose wiring names `uid` — the ones it consumes on, and the ones it
+    /// feeds. A slot is named once however many wires it has.
+    fn slots_touching(&self, uid: Uid) -> Vec<runtime::plan::SlotKey> {
+        let mut slots: Vec<runtime::plan::SlotKey> = Vec::new();
+        for link in self.links.iter().filter(|l| l.node_in == uid || l.node_out == uid) {
+            let key = (link.node_in, link.slot_in);
+            if !slots.contains(&key) {
+                slots.push(key);
+            }
+        }
+        slots
     }
 
     /// The generation the node at `uid` was born at — the third component of its service names, and
@@ -2291,9 +2315,11 @@ impl Graph {
         }
     }
 
-    /// One phase's messages, built from the graph as it stands NOW rather than at plan time: a
-    /// producer's target set can be changed by another slot's sequence between two phases of this
-    /// one, and the message that goes out must carry the truth at the moment it goes.
+    /// One phase's messages. The `OutSlot` phases are built from the graph as it stands NOW rather
+    /// than at plan time — a producer's target set can be changed by another slot's sequence between
+    /// two phases of this one, and the message that goes out must carry the truth at the moment it
+    /// goes. `Apply` carries the sequence's own stored `desired`, which is what the phases are
+    /// ordered around and must not shift underneath them.
     fn compose_wire(
         &self,
         key: runtime::plan::SlotKey,
@@ -2321,17 +2347,19 @@ impl Graph {
         }
     }
 
-    /// Every producer feeding a consumer slot, in wire order — connection order for a `multi` slot,
-    /// at most one wire for a single one. Stubs never appear: a link's endpoints are resolved real
-    /// nodes by the time it is recorded.
+    /// Every producer feeding a consumer slot, in wire order — many for a `multi` slot, at most one
+    /// for a single one. `links` is the order, for both: a wire is appended there as it is added,
+    /// which IS `Inputs::get_multi`'s connection order, and the per-wire cells the tick path keeps
+    /// are rebuilt from this same list by `restart_node`. Reading those cells here instead would be
+    /// a second record of one order.
+    ///
+    /// Stubs never appear — a link's endpoints are resolved real nodes by the time it is recorded.
+    /// A slot with no event id does not appear either: §3.2 budgets 1..=64 for input slots, and a
+    /// wire subscribed by a consumer that no producer can ring is worse than no wire at all. No
+    /// manifest in this codebase declares anything like 64 inputs.
     fn desired_wires(&self, uid: Uid, slot: &str) -> Vec<(Uid, &'static str)> {
-        if self.is_multi_input(uid, slot) {
-            return self
-                .nodes
-                .get(&uid)
-                .and_then(|e| e.multi_inputs.get(slot))
-                .map(|cells| cells.iter().map(|(uid, slot, _)| (*uid, *slot)).collect())
-                .unwrap_or_default();
+        if self.input_event_id(uid, slot).is_none() {
+            return Vec::new();
         }
         self.links
             .iter()
@@ -2343,10 +2371,16 @@ impl Graph {
     /// Every doorbell one output slot rings, with the event id that says why the far node woke.
     /// Task 4 adds this slot's expression subscribers to the same set — a producer cannot tell a
     /// wire consumer from an `nd()` reader, and does not need to.
-    fn out_targets(&self, producer: Uid, slot: &str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
+    fn out_targets(&self, producer: Uid, slot: &'static str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
         self.links
             .iter()
             .filter(|l| l.node_out == producer && l.slot_out == slot)
+            // §4's ordering guarantee is per TARGET, not per sequence: a consumer whose own
+            // sequence has not applied this wire yet does not exist as a subscriber, so naming it
+            // here — because some other consumer's sequence reached phase 3 first — is exactly the
+            // "told to notify a subscriber that does not exist yet" the phases are ordered to
+            // prevent. Its own phase 3 names it, against the same live target set.
+            .filter(|l| !self.wire.unapplied((l.node_in, l.slot_in), (producer, slot)))
             .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)))
             .collect()
     }

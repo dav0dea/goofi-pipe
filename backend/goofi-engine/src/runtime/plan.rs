@@ -83,7 +83,9 @@ pub(crate) struct WirePlanner {
 
 impl WirePlanner {
     /// Whether there is anyone to plan for. Nothing attaches a channel until the cutover, so this is
-    /// what keeps the planner off the paths that call it.
+    /// what keeps the planner off the paths that call it — DELETE IT AT THE CUTOVER, when every live
+    /// node has a channel: without it the planner is still correct (a sequence whose recipients have
+    /// no sink simply walks to completion), it just does the work for nobody.
     pub(crate) fn is_idle(&self) -> bool {
         self.sinks.is_empty()
     }
@@ -130,6 +132,22 @@ impl WirePlanner {
     /// What this slot was last planned to hold — the set a change is diffed against.
     pub(crate) fn planned(&self, key: SlotKey) -> Vec<Wire> {
         self.planned.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Forget what a slot was planned to hold, so the next plan runs against nothing. What a node
+    /// that has just become addressable is owed: it heard none of it.
+    pub(crate) fn forget_planned(&mut self, key: SlotKey) {
+        self.planned.remove(&key);
+    }
+
+    /// Whether `key`'s in-flight sequence is still ABOUT to subscribe `wire` — the consumer has been
+    /// told nothing yet, or has been sent an `InSlot` it has not acked. A producer must not be told
+    /// to ring it until then (§4).
+    pub(crate) fn unapplied(&self, key: SlotKey, wire: Wire) -> bool {
+        self.sequences.get(&key).is_some_and(|sequence| {
+            sequence.added.contains(&wire)
+                && matches!(sequence.phase, None | Some(Phase::Shrink) | Some(Phase::Apply))
+        })
     }
 
     /// Move to the next phase, or finish the sequence and answer `None`.
@@ -228,10 +246,16 @@ mod tests {
 
     fn attach(g: &mut Graph, uids: &[Uid]) -> Arc<Log> {
         let log = Arc::new(Log::default());
+        attach_to(g, &log, uids);
+        log
+    }
+
+    /// Attach more nodes to a log that is already recording — a node becoming addressable LATER is
+    /// its own case, and it has to be visible in the same order as everything else.
+    fn attach_to(g: &mut Graph, log: &Arc<Log>, uids: &[Uid]) {
         for uid in uids {
             g.attach_control_sink(*uid, Arc::new(Recorder { uid: *uid, log: log.clone() }));
         }
-        log
     }
 
     fn source(g: &mut Graph) -> Uid {
@@ -493,6 +517,135 @@ mod tests {
         let reborn = g.output_service_of(uid, "out");
         assert!(reborn.ends_with(&format!("_{}_1_out_out", uid.to_hex())), "{reborn}");
         assert_ne!(reborn, born);
+    }
+
+    #[test]
+    fn a_multi_input_names_every_wire_in_connection_order() {
+        // §3.5: a multi slot keeps one subscriber per wire, "ordered by that service's position in
+        // the received `services` Vec" — which is where `Inputs::get_multi`'s connection-order
+        // contract comes from. A suite of single inputs can never see an order at all.
+        let mut g = Graph::new();
+        let (a, b) = (source(&mut g), source(&mut g));
+        let c = g.add_node("_TestCollect", None).unwrap();
+        let log = attach(&mut g, &[a, b, c]);
+
+        g.add_link(a, "out", c, "ins").unwrap();
+        settle(&log, &mut g);
+        g.add_link(b, "out", c, "ins").unwrap(); // appended — a multi slot displaces nothing
+
+        let apply = log.take();
+        assert_eq!(
+            sent(&apply),
+            [Sent::In {
+                to: c,
+                slot: "ins".to_string(),
+                services: vec![out_name(a, 0, "out"), out_name(b, 0, "out")],
+            }],
+            "both wires, in the order they were added"
+        );
+        ack_all(&apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: b, slot: "out".to_string(), targets: vec![(door_name(c, 0), 1)] }],
+            "and only the producer that was added is grown"
+        );
+    }
+
+    #[test]
+    fn a_producer_is_not_told_to_ring_a_consumer_that_has_not_subscribed() {
+        // §4's guarantee is per TARGET: `a` feeds `c` and `d`, and `d`'s sequence reaches phase 3
+        // while `c`'s InSlot is still unanswered. Naming `c` there tells `a` to ring a subscriber
+        // that does not exist yet, and with `history_size 0` a frame published in that window is
+        // simply lost. `c`'s own phase 3 names it, against the same live target set.
+        let mut g = Graph::new();
+        let (a, c, d) = (source(&mut g), sink(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, c, d]);
+
+        g.add_link(a, "out", c, "in").unwrap(); // c's phase 2, left unanswered
+        let c_apply = log.take();
+        assert_eq!(sent(&c_apply).len(), 1);
+
+        g.add_link(a, "out", d, "in").unwrap();
+        let d_apply = log.take();
+        ack_all(&d_apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(d, 0), 1)] }],
+            "d only: c has not applied its InSlot"
+        );
+
+        ack_all(&c_apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out {
+                to: a,
+                slot: "out".to_string(),
+                targets: vec![(door_name(c, 0), 1), (door_name(d, 0), 1)],
+            }],
+            "and c's own phase 3 names them both"
+        );
+    }
+
+    #[test]
+    fn a_node_that_could_not_be_reached_is_wired_when_it_arrives() {
+        // `dispatch` skips a uid with no channel so a partially attached graph converges instead of
+        // stalling — but the diff base moves all the same, so without a re-plan on attach nothing
+        // would ever resend what was dropped. A node that has just become addressable knows nothing,
+        // whatever was planned while it could not hear.
+        let mut g = Graph::new();
+        let (a, c) = (source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[c]); // the producer is not addressable yet
+
+        g.add_link(a, "out", c, "in").unwrap();
+        let apply = log.take();
+        assert_eq!(sent(&apply).len(), 1, "the consumer is told");
+        ack_all(&apply, &mut g);
+        assert!(log.take().is_empty(), "and the producer's phase 3 went nowhere");
+
+        attach_to(&mut g, &log, &[a]);
+        let replanned = log.take();
+        assert_eq!(
+            sent(&replanned),
+            [Sent::In { to: c, slot: "in".to_string(), services: vec![out_name(a, 0, "out")] }],
+            "the slot is planned again from nothing"
+        );
+        ack_all(&replanned, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(c, 0), 1)] }],
+            "and the newly addressable producer is told what it feeds"
+        );
+    }
+
+    #[test]
+    fn a_cleared_graph_wires_the_next_patch_from_nothing() {
+        // `clear` drops what the planner believed as well as the channels: a load that rebuilds the
+        // same uids and the same links would otherwise diff against the dead patch's plan and decide
+        // the producers had nothing to hear.
+        let mut g = Graph::new();
+        let (a, c) = (source(&mut g), sink(&mut g));
+        let log = attach(&mut g, &[a, c]);
+        g.add_link(a, "out", c, "in").unwrap();
+        settle(&log, &mut g);
+
+        g.clear();
+        g.add_node_at("_TestGated", None, a, "").unwrap();
+        g.add_node_at("_TestSink", None, c, "").unwrap();
+        let reborn = attach(&mut g, &[a, c]);
+        g.add_link(a, "out", c, "in").unwrap();
+
+        let apply = reborn.take();
+        assert_eq!(
+            sent(&apply),
+            [Sent::In { to: c, slot: "in".to_string(), services: vec![out_name(a, 1, "out")] }],
+            "the new generation's name, planned from nothing"
+        );
+        ack_all(&apply, &mut g);
+        assert_eq!(
+            sent(&reborn.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(c, 1), 1)] }],
+            "and the producer is grown, which a stale diff base would have skipped"
+        );
     }
 
     #[test]

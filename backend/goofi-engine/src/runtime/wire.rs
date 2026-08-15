@@ -130,6 +130,7 @@ pub enum Status {
 }
 
 impl Status {
+    /// Infallible for these shapes, as [`Envelope::encode`] is and for the same reason.
     pub fn encode(&self) -> Vec<u8> {
         rmp_serde::to_vec(self).unwrap_or_default()
     }
