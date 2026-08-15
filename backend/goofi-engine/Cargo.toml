@@ -10,6 +10,10 @@ goofi-core = { path = "../goofi-core" }
 goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
 goofi-nodes = { path = "../goofi-nodes" }
+# The param + globals records: one atomic pointer swap to write, a lock-free load to read, so a
+# node thread's read can never be delayed by a concurrent edit (spec §5.1).
+arc-swap = "1"
+
 # The async runtime's transport, at the version the Python child links — the two open the same
 # services over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this
 # is a caret requirement, as in the two crates that already depend on it).

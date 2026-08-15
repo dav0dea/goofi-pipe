@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
+
 use goofi_core::{Data, Param};
 use goofi_node::{
     ExprMode, Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy,
@@ -105,7 +107,13 @@ enum Execution {
 struct NodeEntry {
     manifest: &'static NodeManifest,
     exec: Execution,
-    params: ParamGroups,
+    /// The param RECORD — literals and, through `bindings`, expression source. Held behind an
+    /// [`ArcSwap`] so the graph and the node's own thread hold the SAME record (spec §5.1): a write
+    /// is one atomic pointer swap under the graph lock, a read is lock-free, and a `process()`
+    /// reading a param can never be delayed by a concurrent edit. `Command::EditParam` stays the
+    /// command-layer writer, so manager-owned undo and the read-only client replica are unchanged;
+    /// only the storage moved.
+    params: Arc<ArcSwap<ParamGroups>>,
     inputs: IndexMap<&'static str, Option<Data>>,
     /// Per-wire latest-wins cells for each `multi` input slot, in connection order:
     /// `(src_uid, src_slot) -> latest frame`. Engine-owned; materialized to an ordered
@@ -424,6 +432,10 @@ pub struct Graph {
     /// Patch-scoped globals (system + user). System globals are seeded here; a `clear`/load
     /// re-asserts them. Read by param expressions + node setup/process; persisted to `.gfi`.
     globals: goofi_core::globals::GlobalStore,
+    /// The same globals as the node threads read them (§5.2) — the store is the graph's writable
+    /// record, this is the lock-free view every node holds a handle to. Re-published by every
+    /// mutator, which is why `globals` is written ONLY through [`Graph::globals_mut`].
+    globals_record: Arc<ArcSwap<goofi_core::globals::GlobalsSnapshot>>,
     /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
     /// flight, and every uid's birth generation.
     wire: runtime::plan::WirePlanner,
@@ -462,6 +474,16 @@ fn materialize_multis(entry: &NodeEntry) -> IndexMap<&'static str, Vec<Data>> {
 /// decide who runs, so a term added to one alone means spinning hot or sleeping through work.
 fn wants_run(e: &NodeEntry, uid: &Uid, wired: &std::collections::HashSet<Uid>) -> bool {
     e.trigger_pending || !e.has_trigger_inputs || (e.run_policy.autotrigger && !wired.contains(uid))
+}
+
+/// Write a node's param record: load, clone, mutate, swap. Copy-on-write because the record is
+/// SHARED with the node's own thread (§5.1) — a reader mid-`process` keeps the version it loaded,
+/// and the next load sees the whole edit or none of it. Param edits are user-paced, so the clone
+/// costs nothing that matters.
+fn edit_params(entry: &NodeEntry, edit: impl FnOnce(&mut ParamGroups)) {
+    let mut next = (*entry.params.load_full()).clone();
+    edit(&mut next);
+    entry.params.store(Arc::new(next));
 }
 
 /// A global's value as the [`Param`] an expression variable carries (§5.3: the graph resolves a
@@ -512,6 +534,9 @@ impl Graph {
             scopes: IndexMap::new(),
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
+            globals_record: Arc::new(ArcSwap::from_pointee(
+                goofi_core::globals::GlobalStore::new().snapshot(),
+            )),
             wire: runtime::plan::WirePlanner::default(),
             bind_keys: Vec::new(),
             instance: runtime::service_instance(),
@@ -538,7 +563,7 @@ impl Graph {
         name: &str,
         value: Option<goofi_core::globals::GlobalValue>,
     ) -> Result<(), String> {
-        self.globals.apply_change(name, value)?;
+        self.globals_mut(|g| g.apply_change(name, value))?;
         self.invalidate_bindings_reading(name);
         Ok(())
     }
@@ -551,7 +576,7 @@ impl Graph {
         value: goofi_core::globals::GlobalValue,
         at: usize,
     ) -> Result<(), String> {
-        self.globals.add_at(name, value, at)?;
+        self.globals_mut(|g| g.add_at(name, value, at))?;
         self.invalidate_bindings_reading(name);
         Ok(())
     }
@@ -981,7 +1006,7 @@ impl Graph {
             NodeEntry {
                 manifest,
                 exec,
-                params,
+                params: Arc::new(ArcSwap::from_pointee(params)),
                 inputs,
                 multi_inputs,
                 outputs,
@@ -1064,8 +1089,30 @@ impl Graph {
             .or_else(|| self.scopes.get(&uid).map(|s| s.pos))
     }
 
-    pub fn params(&self, uid: Uid) -> Option<&ParamGroups> {
-        self.nodes.get(&uid).map(|e| &e.params)
+    /// A node's params as of now. An owned snapshot rather than a borrow, because the record is an
+    /// [`ArcSwap`] a node thread writes nothing to and the graph replaces wholesale (§5.1) — cloning
+    /// the `Arc` is what makes the read lock-free, and holding a `&` into it would pin the version.
+    pub fn params(&self, uid: Uid) -> Option<Arc<ParamGroups>> {
+        self.nodes.get(&uid).map(|e| e.params.load_full())
+    }
+
+    /// The node's param record itself — the handle its own thread keeps, so it reads params without
+    /// ever taking the graph lock. The graph writes through it; nobody else does.
+    pub fn param_record(&self, uid: Uid) -> Option<Arc<ArcSwap<ParamGroups>>> {
+        self.nodes.get(&uid).map(|e| e.params.clone())
+    }
+
+    /// The globals as the node threads read them (§5.2), by the same rule and for the same reason.
+    pub fn globals_record(&self) -> Arc<ArcSwap<goofi_core::globals::GlobalsSnapshot>> {
+        self.globals_record.clone()
+    }
+
+    /// Write the globals store and re-publish the node-side view. The ONE writer, so the two can
+    /// never drift — a store mutated anywhere else would leave every node reading the old values.
+    fn globals_mut(&mut self, edit: impl FnOnce(&mut goofi_core::globals::GlobalStore) -> Result<(), String>) -> Result<(), String> {
+        let out = edit(&mut self.globals);
+        self.globals_record.store(Arc::new(self.globals.snapshot()));
+        out
     }
 
     /// Rename a node's display name (globally unique). On a successful rename, every
@@ -1857,7 +1904,7 @@ impl Graph {
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
-        let held = entry.params.clone();
+        let held = entry.params.load_full();
         // Fold what the node HAS onto what its type declares NOW, rather than replaying the old map
         // verbatim: a rescan restart is usually prompted by an edit to the file, and an edit that
         // adds a param would otherwise leave the instance without it while the palette advertises
@@ -1866,7 +1913,7 @@ impl Graph {
         // the edited file's to state. Replacing the whole `Param` would silently keep the instance
         // on the old spec while the inspector already draws the new one from the catalog.
         let mut params = self.default_params_of(type_name)?;
-        for (group, held) in &held {
+        for (group, held) in &*held {
             let Some(g) = params.get_mut(group) else { continue };
             for (name, value) in held {
                 if let Some(slot) = g.get_mut(name) {
@@ -1931,7 +1978,9 @@ impl Graph {
         // a slot the edit added was unlinkable, and one it removed still accepted wires.
         entry.manifest = manifest;
         entry.exec = exec;
-        entry.params = params;
+        // A swap, not a new record: the node's own thread holds this very handle, so replacing it
+        // would leave the reborn instance reading the corpse's params.
+        entry.params.store(Arc::new(params));
         // Manifest-derived caches, REBUILT rather than carried. A slot that survived the reshape
         // by name keeps its last frame (a live graph should not blink — same rationale as the
         // multi cells above); one that did not is dropped, because its `&'static str` key no
@@ -1951,7 +2000,7 @@ impl Graph {
         entry.last_error = None;
         entry.trigger_pending = false;
         entry.ufreq_meter = UfreqMeter { last_emit: None, ema: None };
-        entry.run_policy = RunPolicy::from_params(&entry.params);
+        entry.run_policy = RunPolicy::from_params(&entry.params.load());
         entry.last_run = None;
         // `index_counters` deliberately CARRY OVER: `meta["index"]` is a stream-position counter,
         // and restarting it at 0 would regress the index downstream consumers dirty-check on.
@@ -1994,11 +2043,12 @@ impl Graph {
             .nodes
             .get_mut(&uid)
             .ok_or_else(|| format!("no such node {uid}"))?;
-        if let Some(g) = entry.params.get_mut(group) {
-            g.insert(name.to_string(), value.clone());
-        } else {
+        if entry.params.load().get(group).is_none() {
             return Err(format!("no such param group `{group}`"));
         }
+        edit_params(entry, |p| {
+            p.entry(group.to_string()).or_default().insert(name.to_string(), value.clone());
+        });
         // §3.4: a LITERAL on a bound param unbinds it, which is what the node does with the
         // `SetParam` this write sends — so the graph must mean the same by it, or the two records
         // disagree about whether the param is driven. Unbinding also drops this node from the
@@ -2010,7 +2060,7 @@ impl Graph {
         // The `common` group is scheduler metadata, not a node param — re-derive
         // the cached run gate rather than dispatching it to the node.
         if group == "common" {
-            entry.run_policy = RunPolicy::from_params(&entry.params);
+            entry.run_policy = RunPolicy::from_params(&entry.params.load());
             return Ok(());
         }
         // D3: the new value is stored ABOVE, so the retry's replay delivers it — correcting the
@@ -2057,10 +2107,8 @@ impl Graph {
         name: &str,
     ) -> Result<Option<Vec<String>>, String> {
         let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
-        let param = entry
-            .params
-            .get(group)
-            .and_then(|g| g.get(name))
+        let live = entry.params.load_full();
+        let param = goofi_node::param(&live, group, name)
             .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
         // Refreshing a param the node never declared refreshable would call a hook it does not
         // implement and report success — reject it instead (the UI shows no button for one).
@@ -2075,7 +2123,7 @@ impl Graph {
             return Err(format!("`{group}.{name}` cannot be refreshed — the node is uninitialized: {e}"));
         }
         // Disjoint field borrows: the instance mutably, its live params immutably.
-        let live = Params::new(&entry.params);
+        let live = Params::new(&live);
         let fresh = match &mut entry.exec {
             Execution::Inline(node) => {
                 // A device/stream scan is exactly the hook most likely to throw, and it runs under
@@ -2094,11 +2142,13 @@ impl Graph {
             }
         };
         if let Some(options) = &fresh {
-            if let Some(Param::Str { options: slot, .. }) =
-                entry.params.get_mut(group).and_then(|g| g.get_mut(name))
-            {
-                *slot = Some(options.clone());
-            }
+            edit_params(entry, |p| {
+                if let Some(Param::Str { options: slot, .. }) =
+                    p.get_mut(group).and_then(|g| g.get_mut(name))
+                {
+                    *slot = Some(options.clone());
+                }
+            });
         }
         Ok(fresh)
     }
@@ -2136,7 +2186,7 @@ impl Graph {
         // A non-empty source binds a real param — reject a dangling binding (invisible in
         // the descriptor, unclearable from the UI, phantom scheduling edges), like
         // update_param guards param existence.
-        if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
+        if goofi_node::param(&self.nodes[&uid].params.load(), group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
         let bind_id = self.bind_id(uid, &key);
@@ -2697,7 +2747,9 @@ impl Graph {
                 vars: b.vars.iter().map(|v| self.wire_var(v)).collect(),
                 trigger: b.triggers_process,
             },
-            None => runtime::ParamValue::Literal(goofi_node::param(&entry.params, &key.group, &key.name)?.clone()),
+            None => {
+                runtime::ParamValue::Literal(goofi_node::param(&entry.params.load(), &key.group, &key.name)?.clone())
+            }
         };
         Some((uid, runtime::Control::SetParam { key: key.clone(), value }))
     }
@@ -2841,7 +2893,11 @@ impl Graph {
         self.bind_keys.clear();
         // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
         // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
-        self.globals = goofi_core::globals::GlobalStore::new();
+        self.globals_mut(|g| {
+            *g = goofi_core::globals::GlobalStore::new();
+            Ok(())
+        })
+        .expect("re-seeding cannot fail");
         // The node clock belongs to the PATCH, not the process: a patch loaded an hour in must
         // compute what it would have computed at boot, so the next tick re-anchors it. Safe only
         // because every node — and every `UfreqMeter`/`last_emit` reading this clock — was just
@@ -2865,7 +2921,8 @@ impl Graph {
         for uid in self.node_uids() {
             let e = &self.nodes[&uid];
             let mut params = Map::new();
-            for (group, names) in &e.params {
+            let live = e.params.load_full();
+            for (group, names) in &*live {
                 let mut gmap = Map::new();
                 for (name, p) in names {
                     gmap.insert(name.clone(), param_value_json(p));
@@ -3005,7 +3062,7 @@ impl Graph {
                 if let (Some(name), Some(value)) =
                     (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
                 {
-                    let _ = self.globals.apply_change(name, Some(value));
+                    let _ = self.globals_mut(|g| g.apply_change(name, Some(value)));
                 }
             }
         }
@@ -3439,7 +3496,7 @@ impl Graph {
                     let job = detached::Job {
                         inputs: entry.inputs.clone(),
                         multis,
-                        params: entry.params.clone(),
+                        params: (*entry.params.load_full()).clone(),
                         now: now_secs,
                     };
                     if let Execution::Detached(h) = &entry.exec {
@@ -3654,7 +3711,8 @@ fn ensure_initialized(entry: &mut NodeEntry) -> Result<(), String> {
         // Every attempt stamps itself, so the tick's backoff restarts from an interaction's retry
         // too — the interaction is unthrottled, but it does not also hand the next tick a free one.
         entry.last_setup_attempt = entry.ctx.now;
-        entry.setup_error = seed_node(&mut **node, &entry.params, &mut entry.ctx);
+        let params = entry.params.load_full();
+        entry.setup_error = seed_node(&mut **node, &params, &mut entry.ctx);
     }
     match &entry.setup_error {
         Some(e) => Err(e.clone()),
@@ -3684,10 +3742,11 @@ fn run_node(entry: &mut NodeEntry) {
     let multis = materialize_multis(entry);
     // A detached node runs on its own worker (see `tick_at`), never inline here.
     let Execution::Inline(node) = &mut entry.exec else { return };
+    let params = entry.params.load_full();
     entry.last_error = execute_node(
         entry.manifest,
         node,
-        &entry.params,
+        &params,
         &entry.inputs,
         &multis,
         &mut entry.outputs,
@@ -3984,6 +4043,75 @@ mod tests {
         let key = ParamKey::new("constant", "value");
         assert_eq!(g.nodes[&b].bindings[&key].globals, ["other"], "the read set is what targets it");
         assert_eq!(g.nodes[&a].bindings[&key].globals, ["default_ufreq"]);
+    }
+
+    #[test]
+    fn a_param_read_is_never_blocked_by_a_concurrent_edit() {
+        // §5.1: the record is an `ArcSwap` the graph and the node hold TOGETHER. That is the READ
+        // path — a node's `process()` loads it without the graph mutex, so an edit storm cannot
+        // stall a run — while `Control::SetParam` stays the NOTIFICATION path, because a bare swap
+        // cannot say which key changed and a node parked with `next_wake() == None` is never rung.
+        //
+        // The reader deliberately runs while the WRITER holds the graph mutex for its whole burst:
+        // a handle that needed that lock would deadlock here rather than merely be slow.
+        use std::sync::Mutex;
+        let graph = Arc::new(Mutex::new(Graph::new()));
+        let uid = graph.lock().unwrap().add_node("_TestConst", None).unwrap();
+        let record = graph.lock().unwrap().param_record(uid).expect("the node's own handle");
+
+        let reader = {
+            let record = record.clone();
+            std::thread::spawn(move || {
+                (0..10_000).filter(|_| record.load().contains_key("constant")).count()
+            })
+        };
+        let mut g = graph.lock().unwrap();
+        for i in 0..10_000 {
+            g.update_param(uid, "constant", "value", Param::float(i as f64, -1e9, 1e9)).unwrap();
+        }
+        drop(g);
+        assert_eq!(reader.join().unwrap(), 10_000, "every read completed, none torn");
+
+        // …and the handle IS the record rather than a copy of it: a snapshot handed out once would
+        // pass everything above and never see an edit.
+        assert_eq!(
+            goofi_node::param(&record.load(), "constant", "value").and_then(Param::as_f64),
+            Some(9_999.0),
+        );
+    }
+
+    #[test]
+    fn a_restart_swaps_the_record_rather_than_replacing_it() {
+        // A restart replaces the INSTANCE, not the node — and the node's own thread is holding this
+        // handle (§5.1). Installing a fresh `ArcSwap` would leave every holder reading the corpse's
+        // params forever, while `params(uid)` — which reads the entry — went on looking right.
+        // Driven by an edit made AFTER the restart, because the restart carries the held values
+        // over and a stale handle answers those correctly.
+        let mut g = Graph::new();
+        let uid = g.add_node("_TestConst", None).unwrap();
+        let record = g.param_record(uid).unwrap();
+        g.restart_node(uid).unwrap();
+        g.update_param(uid, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
+        assert_eq!(
+            goofi_node::param(&record.load(), "constant", "value").and_then(Param::as_f64),
+            Some(9.0),
+            "a handle taken before the restart still sees the graph",
+        );
+    }
+
+    #[test]
+    fn the_globals_record_is_a_handle_too() {
+        // §5.2: globals are shared exactly as params are, for the direct reads a node makes through
+        // `ctx.globals`. Same property, same reason: a node thread must not need the graph mutex to
+        // read one.
+        use goofi_core::globals::GlobalValue;
+        let mut g = Graph::new();
+        let record = g.globals_record();
+        assert_eq!(record.load().f64("default_ufreq"), Some(30.0));
+        g.apply_global_change("default_ufreq", Some(GlobalValue::Float(45.0))).unwrap();
+        assert_eq!(record.load().f64("default_ufreq"), Some(45.0), "the edit reached the handle");
+        g.apply_global_change("subject", Some(GlobalValue::Str("P07".into()))).unwrap();
+        assert_eq!(record.load().str("subject"), Some("P07"), "and so does an ADD");
     }
 
     #[test]
@@ -5684,7 +5812,7 @@ mod tests {
         assert_eq!(g2.type_name(restored), Some("_TestConst"));
         assert_eq!(g2.pos(restored), Some([11.0, 22.0]));
         assert_eq!(
-            goofi_node::param(g2.params(restored).unwrap(), "constant", "value")
+            goofi_node::param(&g2.params(restored).unwrap(), "constant", "value")
                 .unwrap()
                 .as_f64(),
             Some(7.5)
@@ -7594,7 +7722,7 @@ mod tests {
         assert_eq!(g2.node_uids().len(), 1, "node round-trips");
         let uid2 = g2.node_uids()[0];
         assert_eq!(
-            goofi_node::param(g2.params(uid2).unwrap(), "constant", "value").unwrap().as_f64(),
+            goofi_node::param(&g2.params(uid2).unwrap(), "constant", "value").unwrap().as_f64(),
             Some(7.0),
             "param round-trips through v7",
         );
@@ -8539,7 +8667,7 @@ mod tests {
         g2.load_doc(&yaml).unwrap();
         let c2 = g2.node_uids()[0];
         assert_eq!(
-            goofi_node::param(g2.params(c2).unwrap(), "common", "max_frequency").unwrap().as_f64(),
+            goofi_node::param(&g2.params(c2).unwrap(), "common", "max_frequency").unwrap().as_f64(),
             Some(10.0),
             "max_frequency round-trips"
         );

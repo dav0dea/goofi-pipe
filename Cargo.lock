@@ -618,6 +618,7 @@ dependencies = [
 name = "goofi-engine"
 version = "3.1.0"
 dependencies = [
+ "arc-swap",
  "getrandom 0.3.4",
  "goofi-codec",
  "goofi-core",

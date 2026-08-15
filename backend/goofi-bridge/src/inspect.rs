@@ -290,7 +290,7 @@ pub fn node(
 
     if want_params {
         out.push_str("\nparams:\n");
-        for (group, names) in g.params(uid).into_iter().flatten() {
+        for (group, names) in g.params(uid).iter().flat_map(|p| p.iter()) {
             for (name, p) in names {
                 let expr = g.param_expression(uid, group, name);
                 out.push_str(&format!("  {group}.{name} = {}\n", param_line(p, expr.as_ref())));

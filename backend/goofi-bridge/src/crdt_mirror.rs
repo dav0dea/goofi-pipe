@@ -25,7 +25,7 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
         node.insert("pos".into(), pos_json(g.pos(uid).unwrap_or([0.0, 0.0])));
         let mut params = Map::new();
         if let Some(ps) = g.params(uid) {
-            for (group, pg) in ps {
+            for (group, pg) in &*ps {
                 let mut gmap = Map::new();
                 for (pname, p) in pg {
                     let mut entry = Map::new();

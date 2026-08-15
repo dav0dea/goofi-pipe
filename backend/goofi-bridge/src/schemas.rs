@@ -109,7 +109,7 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
         return Value::Object(Map::new());
     };
     let mut groups = Map::new();
-    for (gname, group) in params {
+    for (gname, group) in &*params {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);

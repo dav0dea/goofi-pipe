@@ -493,8 +493,7 @@ impl Command {
                 let old_value = match &value {
                     Some(_) => Some(
                         g.params(uid)
-                            .and_then(|p| param(p, &group, &name))
-                            .cloned()
+                            .and_then(|p| param(&p, &group, &name).cloned())
                             .ok_or_else(|| format!("edit_param: no param {group}.{name} on {}", uid.to_hex()))?,
                     ),
                     None => None,
@@ -878,7 +877,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
             pos: g.pos(u).unwrap_or([0.0, 0.0]),
             uid: Some(u),
             name: g.name(u).map(str::to_string),
-            params: g.params(u).cloned(),
+            params: g.params(u).map(|p| (*p).clone()),
             exprs,
             viewers,
             // Membership is restored by the SetScope child below, not here — see the field's doc.
@@ -950,7 +949,7 @@ mod tests {
     use super::*;
 
     fn freq(uid: Uid, g: &Graph) -> Option<Param> {
-        g.params(uid).and_then(|p| param(p, "common", "max_frequency")).cloned()
+        g.params(uid).and_then(|p| param(&p, "common", "max_frequency").cloned())
     }
 
     /// An `AddNode` for a fresh user add, parameterised only by where it lands.

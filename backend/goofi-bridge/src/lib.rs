@@ -1220,7 +1220,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                         let Some(names) = names.as_object() else { continue };
                         for (name, vjson) in names {
                             if let Some(existing) =
-                                g.params(uid).and_then(|p| goofi_node::param(p, group, name)).cloned()
+                                g.params(uid).and_then(|p| goofi_node::param(&p, group, name).cloned())
                             {
                                 let newp = goofi_engine::param_from_json(&existing, vjson, true);
                                 let _ = g.update_param(uid, group, name, newp);
@@ -1241,7 +1241,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     "name": g.name(uid).unwrap_or_default(),
                     "input_slots": m.map(schemas::input_slots).unwrap_or_else(|| json!({})),
                     "output_slots": m.map(schemas::output_slots).unwrap_or_else(|| json!({})),
-                    "params": g.params(uid).map(schemas::param_value_map).unwrap_or_else(|| json!({})),
+                    "params": g.params(uid).map(|p| schemas::param_value_map(&p)).unwrap_or_else(|| json!({})),
                 }))
             }
             "remove_node" => {
@@ -1345,8 +1345,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let vjson = payload.get("value").ok_or("missing value")?;
                 let existing = g
                     .params(uid)
-                    .and_then(|p| goofi_node::param(p, &group, &name))
-                    .cloned()
+                    .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
                     .ok_or("no such param")?;
                 let newp = goofi_engine::param_from_json(&existing, vjson, true);
                 state.history.lock().unwrap().apply(
@@ -1367,8 +1366,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 Ok(json!({
                     "value": g
                         .params(uid)
-                        .and_then(|p| goofi_node::param(p, &group, &name))
-                        .map(schemas::param_value_json)
+                        .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                        .map(|p| schemas::param_value_json(&p))
                 }))
             }
             "set_expression" => {
