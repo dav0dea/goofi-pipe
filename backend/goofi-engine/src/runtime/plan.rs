@@ -808,6 +808,64 @@ mod tests {
     }
 
     #[test]
+    fn neither_kind_of_subscriber_is_named_before_it_has_applied() {
+        // §4's guarantee is per TARGET, and `out_targets` now has TWO halves to apply it to — the
+        // wired consumers and the expression readers. They are three lines apart and were guarded
+        // by two independent reads of one rule, only one of which was pinned: dropping the guard on
+        // the expression half left the whole workspace green.
+        //
+        // So both are driven here, in one test, against one producer. `c` (a wire) and `r` (an
+        // `nd()` reader) each leave their own phase 2 unanswered while `d`'s sequence reaches phase
+        // 3 — and `a` must be told about `d` alone, because a frame published to a subscriber that
+        // does not exist yet is simply lost (`history_size 0`).
+        let mut g = Graph::new();
+        let (a, c, d) = (source(&mut g), sink(&mut g), sink(&mut g));
+        g.rename_node(a, "a").unwrap();
+        let r = g.add_node("_TestConst", None).unwrap();
+        g.set_evaluator(Arc::new(PassThrough));
+        let log = attach(&mut g, &[a, c, d, r]);
+
+        g.add_link(a, "out", c, "in").unwrap(); // c's phase 2, left unanswered
+        let c_apply = log.take();
+        assert_eq!(sent(&c_apply).len(), 1);
+        g.set_expression(r, "constant", "value", "nd('a')", true, false).unwrap(); // r's, likewise
+        let r_apply = log.take();
+        assert_eq!(sent(&r_apply).len(), 1);
+
+        g.add_link(a, "out", d, "in").unwrap();
+        ack_all(&log.take(), &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out { to: a, slot: "out".to_string(), targets: vec![(door_name(d, 0), 1)] }],
+            "d only: neither the wire nor the reader has applied its own set",
+        );
+
+        ack_all(&c_apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out {
+                to: a,
+                slot: "out".to_string(),
+                targets: vec![(door_name(c, 0), 1), (door_name(d, 0), 1)],
+            }],
+            "the WIRE applied; the reader is still absent",
+        );
+
+        ack_all(&r_apply, &mut g);
+        assert_eq!(
+            sent(&log.take()),
+            [Sent::Out {
+                to: a,
+                slot: "out".to_string(),
+                // §3.2's two budgets side by side: an input slot's id comes from the manifest, an
+                // expression's from 65...
+                targets: vec![(door_name(c, 0), 1), (door_name(d, 0), 1), (door_name(r, 0), 65)],
+            }],
+            "and now the reader is in the set too",
+        );
+    }
+
+    #[test]
     fn a_literal_edit_is_announced_even_on_a_param_that_was_never_bound() {
         // §5.1: the `ArcSwap` is the READ path and `Control::SetParam` is the NOTIFICATION path,
         // and BOTH are required — a node parked with `next_wake() == None` is never rung by a bare

@@ -4116,12 +4116,34 @@ mod tests {
         for (fault, msg) in [
             (runtime::NodeFault::Process { msg: "boom".into(), since: 1.0 }, "boom"),
             (runtime::NodeFault::Boot { msg: "no worker".into(), since: 1.0 }, "no worker"),
-            (runtime::NodeFault::Setup { msg: "no device".into(), since: 1.0, last_attempt: 1.0 }, "no device"),
         ] {
             g.apply_status(uid, runtime::Status::Fault { fault: Some(fault) });
             assert_eq!(g.last_error(uid), Some(msg));
             assert_eq!(g.node_stage(uid), "error");
+            // The roll-ups fold BOTH error channels, so which field a fault landed in is exactly
+            // what they cannot show — and the two fields are not interchangeable (below).
+            assert_eq!(g.nodes[&uid].last_error.as_deref(), Some(msg));
+            assert!(g.nodes[&uid].setup_error.is_none(), "a run failure is not a setup failure");
         }
+
+        // `Setup` is the one that must be told apart, and `last_error`/`node_stage` cannot tell it:
+        // `setup_error` is `ensure_initialized`'s gate (D3), so a Setup fault written to
+        // `last_error` instead leaves the node "initialized" — nothing retries it, and correcting
+        // the param that broke it stops being the door back. That closes silently.
+        g.apply_status(
+            uid,
+            runtime::Status::Fault {
+                fault: Some(runtime::NodeFault::Setup { msg: "no device".into(), since: 1.0, last_attempt: 1.0 }),
+            },
+        );
+        assert_eq!(g.last_error(uid), Some("no device"));
+        assert_eq!(g.node_stage(uid), "error");
+        assert_eq!(g.nodes[&uid].setup_error.as_deref(), Some("no device"), "the RETRY gate is set");
+        // …and the gate is live: a param write takes D3's retry path, which re-runs `setup()` on
+        // the same instance. `_TestConst`'s setup succeeds, so the retry clears the fault — where a
+        // Setup fault filed as `last_error` would leave it standing forever.
+        g.update_param(uid, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
+        assert!(g.nodes[&uid].setup_error.is_none(), "the interaction retried the initialization");
 
         // A clean run clears Setup/Process/Boot TOGETHER — the node stamped one fault at a time,
         // and clearing only the last one reported would leave the earlier field standing forever.
@@ -6592,30 +6614,6 @@ mod tests {
     }
 
     #[test]
-    fn restarting_a_referenced_node_re_resolves_the_bindings_reading_it() {
-        // §3.1: a rebirth renames every one of that node's services, so a binding holding the old
-        // name is holding one nothing will ever publish on. Asserted on the SERVICE, because the
-        // uid and slot are unchanged by a restart — the generation is the only thing that moved.
-        let mut g = eval_graph();
-        let src = const_src(&mut g, 1.0);
-        g.rename_node(src, "src").unwrap();
-        let host = const_src(&mut g, 1.0);
-        g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
-        let before = g.wire_var(&g.nodes[&host].bindings[&ParamKey::new("constant", "value")].vars[0]);
-
-        g.restart_node(src).unwrap();
-
-        let after = g.wire_var(&g.nodes[&host].bindings[&ParamKey::new("constant", "value")].vars[0]);
-        assert_ne!(before, after, "the reborn producer's service name reached the reader");
-        match after {
-            runtime::Var::Stream { service, .. } => {
-                assert!(service.ends_with(&format!("{}_1_out_out", src.to_hex())), "{service}")
-            }
-            other => panic!("expected a resolved stream, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn restarting_a_detached_node_reaps_the_old_worker() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let gate = Gate::new();
@@ -7708,6 +7706,68 @@ mod tests {
         // the producer has no one to ring for it.
         g.set_expression(reader, "constant", "value", "nd('src')", false, false).unwrap();
         assert_eq!(g.out_targets(src, "out"), [doorbell_of(&g, wired, 1)]);
+    }
+
+    #[test]
+    fn a_reference_the_graph_cannot_resolve_is_refused_rather_than_guessed() {
+        // The graph is what knows how many outputs a node has, so this is where a bare `nd()` on a
+        // multi-output producer and a slot that does not exist are caught — the pyo3 proxy used to
+        // raise for the first at eval time, and the second was never anyone's.
+        //
+        // The refusal is load-bearing for the REWRITE, not just tidy: `expr_rewrite` reads a
+        // trailing non-call attribute as a slot on purpose, and the whole defence of that decision
+        // is that an attribute which is not a slot comes back named. Resolving to `outputs[0]`
+        // instead would make `nd('a').T` silently mean `nd('a').fast`.
+        let mut g = eval_graph();
+        let two = g.add_node("_TestTwoRate", None).unwrap();
+        g.rename_node(two, "two").unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+
+        g.set_expression(host, "constant", "value", "nd('two')", true, false).unwrap();
+        let bare = g.param_expression(host, "constant", "value").unwrap().error;
+        assert_eq!(
+            bare.as_deref(),
+            Some("nd('two') is ambiguous: it has multiple outputs; use nd('two').slot"),
+            "a bare reference to a multi-output node names the problem, it does not pick one",
+        );
+        assert!(resolved(&g, host, "constant", "value")[0].contains("!"), "and resolves to nothing");
+
+        g.set_expression(host, "constant", "value", "nd('two').nope", true, false).unwrap();
+        assert_eq!(
+            g.param_expression(host, "constant", "value").unwrap().error.as_deref(),
+            Some("node `two` has no output `nope`"),
+        );
+
+        // The control: a slot that DOES exist resolves, and to the one it names — otherwise
+        // "everything is refused" would pass both assertions above.
+        g.set_expression(host, "constant", "value", "nd('two').slow", true, false).unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=two.slow#65"]);
+    }
+
+    #[test]
+    fn a_reference_follows_its_producer_being_removed_and_restored() {
+        // §5.3's "added" and "removed": a NAME started or stopped meaning what it did, and every
+        // binding written against it has to be re-resolved. Both halves in one test, because they
+        // are one rule and pinning one leaves the other free — the add case is undo-of-delete,
+        // which is the whole reason a restore keeps the display name.
+        let mut g = eval_graph();
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.rename_node(src, "src").unwrap();
+        let host = g.add_node("_TestConst", None).unwrap();
+        g.set_expression(host, "constant", "value", "nd('src')", true, false).unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=src.out#65"]);
+
+        g.remove_node(src).unwrap();
+        assert_eq!(
+            resolved(&g, host, "constant", "value"),
+            ["__v0!no node named `src`"],
+            "a variable still naming a dead producer's service waits on it forever",
+        );
+        assert_eq!(g.last_error(host).as_deref(), Some("no node named `src`"));
+
+        g.add_node_at("_TestConst", None, src, "src").unwrap();
+        assert_eq!(resolved(&g, host, "constant", "value"), ["__v0=src.out#65"], "undo-of-delete");
+        assert!(g.last_error(host).is_none(), "and the error cleared with it");
     }
 
     #[test]
