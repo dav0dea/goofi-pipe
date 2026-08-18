@@ -160,6 +160,28 @@ impl WirePlanner {
         self.generations.get(&uid).copied().unwrap_or(0)
     }
 
+    /// Forget ONE node the graph has destroyed — a removal, or the corpse a restart replaces.
+    ///
+    /// Not tidiness. The sink OWNS the graph's end of that node's services (an iceoryx2 node of its
+    /// own, carrying `_ctl`, `_sts` and `_door`), so a planner that keeps it keeps them allocated
+    /// for the rest of the process — and the startup sweep is structurally blind to that, because a
+    /// live process's own nodes read `Alive` and never `Dead`. It has to be released here or not at
+    /// all.
+    ///
+    /// It is also what makes §4's birth barrier hold for a REBIRTH: a sink outliving its node makes
+    /// the next node born at that uid look addressable while it is not, so [`Self::send`] publishes
+    /// to the dead generation instead of holding the message.
+    ///
+    /// Only what this node CONSUMED is dropped. What it produced belongs to its consumers'
+    /// sequences, which their own re-plan settles.
+    pub(crate) fn detach(&mut self, uid: Uid) {
+        self.sinks.remove(&uid);
+        self.sequences.retain(|(consumer, _), _| *consumer != uid);
+        self.awaiting.retain(|_, (consumer, _)| *consumer != uid);
+        self.planned.retain(|(consumer, _), _| *consumer != uid);
+        self.pending.retain(|(to, _)| *to != uid);
+    }
+
     /// Drop every channel and everything in flight, keeping the generations: a `clear` destroys the
     /// nodes those channels addressed, and a channel held past its node's death would deliver one
     /// node's wiring to another born at the same uid.

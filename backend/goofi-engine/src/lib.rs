@@ -86,15 +86,21 @@ struct NodeHost {
     channel: Option<Arc<runtime::NodeChannel>>,
 }
 
-impl Drop for NodeHost {
-    /// Removing a node stops its thread — and rings it, so a parked node notices now rather than at
-    /// the end of its park. Never joined: the thread may be inside a long `process()`, and this runs
-    /// under the graph mutex the bridge holds.
-    fn drop(&mut self) {
+impl NodeHost {
+    /// Ask the thread to stop, and ring it so a parked node notices now rather than at the end of
+    /// its park. Never joined here: the thread may be inside a long `process()`, and both callers
+    /// run under the graph mutex the bridge holds.
+    fn signal_stop(&self) {
         self.halt.stop();
         if let Some(channel) = &self.channel {
             channel.wake();
         }
+    }
+}
+
+impl Drop for NodeHost {
+    fn drop(&mut self) {
+        self.signal_stop();
     }
 }
 
@@ -505,8 +511,6 @@ impl Graph {
     // Patch-scoped named scalars. System globals (`default_ufreq`) are seeded + delete-protected;
     // user globals are add/edit/remove/rename. Read by expressions (`globals.<name>`) + node ctx.
 
-    /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
-    /// `.gfi`, and (via `snapshot()`) expression eval + node setup/process.
     /// Stop every node and WAIT for each to release its shared memory, up to [`SHUTDOWN_WAIT`].
     ///
     /// The waiting is the whole point, and it is why this is not what `clear()` does: a load
@@ -515,10 +519,7 @@ impl Graph {
     /// has no "a moment later".
     pub fn shutdown(&mut self) {
         for entry in self.nodes.values() {
-            entry.host.halt.stop();
-            if let Some(channel) = &entry.host.channel {
-                channel.wake();
-            }
+            entry.host.signal_stop();
         }
         let deadline = Instant::now() + SHUTDOWN_WAIT;
         while self.nodes.values().any(|e| !e.host.halt.released()) {
@@ -532,6 +533,8 @@ impl Graph {
         self.nodes.clear();
     }
 
+    /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
+    /// `.gfi`, and (via `snapshot()`) expression eval + node setup/process.
     pub fn globals(&self) -> &goofi_core::globals::GlobalStore {
         &self.globals
     }
@@ -1852,6 +1855,10 @@ impl Graph {
             return Err(format!("no such node {uid}"));
         };
         self.release_entry_bindings(&removed);
+        // The planner holds its OWN handle on this node's channel, and that handle is the graph's
+        // end of its services. Dropping the entry alone leaves them allocated for the process
+        // lifetime, where no sweep can reach them.
+        self.wire.detach(uid);
         // §5.3: every binding that referenced this node by name is now unresolvable, and must be
         // told so — a variable still naming a dead producer's service is one the node waits on
         // forever.
@@ -1938,6 +1945,10 @@ impl Graph {
         // a slot the edit added was unlinkable, and one it removed still accepted wires.
         entry.manifest = manifest;
         entry.host = host;
+        // The corpse's channel goes with it, and it must go BEFORE the new generation reports
+        // `Ready`: while it stands, the reborn node reads as addressable and anything sent to it is
+        // published to services nothing is listening on any more.
+        self.wire.detach(uid);
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
         entry.params.store(Arc::new(params));
@@ -5375,6 +5386,72 @@ mod tests {
             iceoryx2::service::messaging_pattern::MessagingPattern::PublishSubscribe,
         )
         .unwrap_or(false)
+    }
+
+    /// Whether an EVENT service by this name exists — a node's doorbell, which the graph holds one
+    /// end of. The publish/subscribe check above cannot answer for it: iceoryx2 keys a service by
+    /// name AND messaging pattern.
+    fn event_service_exists(name: &str) -> bool {
+        <iceoryx2::service::ipc_threadsafe::Service as iceoryx2::service::Service>::does_exist(
+            &name.try_into().expect("a valid service name"),
+            crate::runtime::iox_config(),
+            iceoryx2::service::messaging_pattern::MessagingPattern::Event,
+        )
+        .unwrap_or(false)
+    }
+
+    /// Wait for a service to disappear. A node's own end goes with its thread, which is never
+    /// joined, so "gone" is always eventual — but only ever eventual: nothing re-creates one.
+    fn gone_within(name: &str, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !event_service_exists(name) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("{what}: `{name}` is still allocated");
+    }
+
+    #[test]
+    fn removing_a_node_releases_the_graphs_own_end_of_its_services() {
+        // The graph holds a `NodeChannel` per node — an iceoryx2 node of its own, carrying that
+        // node's `_ctl`, `_sts` and `_door`. `remove_node` drops the ENTRY's handle, but the wire
+        // planner kept a second one in its sink map, which is only ever inserted into. So every
+        // deleted node left ~8 MB of /dev/shm and a permanent node record for the process lifetime.
+        //
+        // The startup sweep is structurally blind to this: a live process's own iceoryx2 nodes read
+        // `Alive`, never `Dead`, so nothing reclaims them. It has to be released, not swept.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        let door = g.door_of(n);
+        wait_for(&mut g, "the node to become addressable", |g| g.node_stage(n) == "ready");
+        assert!(event_service_exists(&door), "the live node's doorbell is allocated");
+
+        g.remove_node(n).unwrap();
+        gone_within(&door, "a removed node's doorbell outlived it");
+    }
+
+    #[test]
+    fn restarting_a_node_releases_the_generation_it_replaced() {
+        // The same leak once per restart, and a second symptom with it: a sink outliving its node
+        // makes the REBORN node look addressable while it is not, so `WirePlanner::send` publishes
+        // to the dead generation instead of holding the message — the exact hole §4's barrier
+        // closes for a first birth, left open for a rebirth.
+        let (mut g, uid) = picker_graph();
+        wait_for(&mut g, "the first instance to become addressable", |g| g.node_stage(uid) == "ready");
+        let dead = g.door_of(uid);
+
+        g.restart_node(uid).unwrap();
+        assert_ne!(g.door_of(uid), dead, "a rebirth is a new generation");
+        gone_within(&dead, "the corpse's doorbell outlived the restart");
+
+        // And a request made inside the rebirth window reaches the node that was born, not the one
+        // that died: it is queued until the new generation reports `Ready`.
+        g.refresh_param(uid, "audio", "device").unwrap();
+        wait_for(&mut g, "the scan to reach the record", |g| {
+            options_of(g, uid, "audio", "device") == Some(vec!["dev0".to_string()])
+        });
     }
 
     #[test]
