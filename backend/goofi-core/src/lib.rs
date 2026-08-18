@@ -221,9 +221,6 @@ impl ArrayStore {
     pub fn ndim(&self) -> usize {
         self.shape.len()
     }
-    pub fn nelem(&self) -> usize {
-        self.shape.iter().product()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -519,15 +516,6 @@ impl Data {
         self.0.value.dtype_tag()
     }
 
-    /// Whether two handles are THE SAME emitted frame — pointer identity on the shared
-    /// allocation, never payload comparison. Every engine emit mints a fresh allocation
-    /// (`with_stamps` always rebuilds), so identity is exactly "has the producer emitted
-    /// since I last looked", which the data plane uses to skip re-broadcasting an
-    /// unchanged frame. Holding the older handle keeps its allocation alive, so the
-    /// comparison can never be confused by an address reuse.
-    pub fn same_frame(&self, other: &Data) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
 
     /// A pre-normalized array `Data` (caller guarantees the invariants).
     pub fn array(store: ArrayStore, meta: Meta) -> Data {
@@ -675,7 +663,8 @@ pub enum Param {
         /// Dispatch is by `ParamKey`, so a bool ("is refreshable") suffices.
         refresh: bool,
     },
-    /// Momentary trigger: `take_trigger` returns the state then resets to false.
+    /// Momentary trigger. The graph clears `fired` by writing the param through
+    /// `param_from_json` with `fire_triggers: false`; there is no read-and-clear accessor.
     Trigger {
         fired: bool,
     },
@@ -728,35 +717,12 @@ impl Param {
             _ => None,
         }
     }
-    /// Consume a momentary trigger: returns whether it fired, resetting to false.
-    pub fn take_trigger(&mut self) -> bool {
-        if let Param::Trigger { fired } = self {
-            let f = *fired;
-            *fired = false;
-            f
-        } else {
-            false
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn same_frame_is_identity_not_equality() {
-        // The data plane's change signal: every engine emit mints a fresh allocation
-        // (`with_stamps` builds a new `Arc`), so identity — not payload equality —
-        // distinguishes "the node emitted again" from "the same frame, re-read".
-        let a = Data::array_f32(vec![4], vec![0u8; 16], Meta::empty()).unwrap();
-        let same_handle = a.clone();
-        assert!(a.same_frame(&same_handle), "a clone is the same frame");
-        let same_bytes = Data::array_f32(vec![4], vec![0u8; 16], Meta::empty()).unwrap();
-        assert!(!a.same_frame(&same_bytes), "equal payload, different emit — not the same frame");
-        let restamped = a.with_stamps(1, None);
-        assert!(!a.same_frame(&restamped), "a re-stamp is a new emit");
-    }
 
     #[test]
     fn viewspec_admits_a_real_data_frame() {
@@ -906,14 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn param_accessors_and_trigger_consume() {
+    fn param_accessors_read_each_variant() {
         assert_eq!(Param::float(2.5, 0.0, 10.0).as_f64(), Some(2.5));
         assert_eq!(Param::int(4, 0, 10).as_i64(), Some(4));
         assert_eq!(Param::boolean(true).as_bool(), Some(true));
         assert_eq!(Param::str_free("hi").as_str(), Some("hi"));
-        let mut t = Param::Trigger { fired: true };
-        assert!(t.take_trigger());
-        assert!(!t.take_trigger()); // consumed on read
+        assert_eq!(Param::Trigger { fired: true }.as_bool(), Some(true));
     }
 
     #[test]

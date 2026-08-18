@@ -328,24 +328,6 @@ impl RunPolicy {
         (self.max_frequency > 0.0).then(|| 1.0 / self.max_frequency)
     }
 
-    /// Whether a node that already wants to run this tick is admitted by its rate
-    /// cap. `wants_run` folds the whole trigger/source/autotrigger decision — the
-    /// engine computes it from graph topology, because whether `autotrigger`
-    /// free-runs a node depends on whether its trigger input is *wired* (Python's
-    /// `autotrigger AND _has_no_triggering_inputs()`), which this type can't see.
-    /// This method only applies the frequency cap on top: unbounded always passes,
-    /// a never-run node (`since_last == None`) runs immediately, otherwise the
-    /// period must have elapsed.
-    pub fn should_run(&self, since_last: Option<f64>, wants_run: bool) -> bool {
-        if !wants_run {
-            return false;
-        }
-        match self.period() {
-            None => true,
-            Some(p) => since_last.is_none_or(|dt| dt >= p),
-        }
-    }
-
     /// Read the policy from a node's `common` param group, defaulting each field
     /// when the group or a key is absent (so a node without a `common` group is a
     /// triggered, unbounded node — the safe default). A `seconds-per-update` period is
@@ -1160,29 +1142,6 @@ mod tests {
         // `max_frequency` is always a Hz rate now: period = 1/f.
         let ups = RunPolicy { max_frequency: 4.0, ..Default::default() };
         assert_eq!(ups.period(), Some(0.25));
-    }
-
-    #[test]
-    fn run_policy_gates_on_wants_run() {
-        // should_run is purely the rate gate over the engine's `wants_run`
-        // decision: no desire to run -> never runs; a desire + unbounded -> runs.
-        // (The autotrigger/trigger/source logic lives in the engine, not here.)
-        let p = RunPolicy::default();
-        assert!(!p.should_run(None, false), "doesn't want to run -> no");
-        assert!(p.should_run(None, true), "wants to run + unbounded -> yes");
-    }
-
-    #[test]
-    fn run_policy_rate_caps_frequency() {
-        // Capped at 10 Hz (period 0.1s); `wants_run` is true throughout.
-        let p = RunPolicy { max_frequency: 10.0, ..Default::default() };
-        assert!(p.should_run(None, true), "never run yet -> runs immediately");
-        assert!(!p.should_run(Some(0.05), true), "0.05s < 0.1s period -> skip");
-        assert!(p.should_run(Some(0.10), true), "period elapsed -> run");
-        assert!(p.should_run(Some(0.30), true), "well past period -> run");
-        // Unbounded ignores elapsed time entirely.
-        let unbounded = RunPolicy::default();
-        assert!(unbounded.should_run(Some(0.0), true));
     }
 
     #[test]
