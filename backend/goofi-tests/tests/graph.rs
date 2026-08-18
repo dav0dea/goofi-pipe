@@ -28,6 +28,24 @@ fn a_param_edit_and_a_drag_land_in_the_state_clients_replicate() {
 }
 
 #[test]
+fn the_mirror_flags_a_system_global_and_leaves_a_viewerless_node_bare() {
+    // `viewers(uid)` answers `Some({})` for EVERY node, so an unconditional insert would stamp a
+    // `viewers: "{}"` leaf on every one of them. The mirror gates on non-emptiness, the way
+    // `serialize` does, and the frontend reads a MISSING leaf as "no viewers".
+    let g = Goofi::new();
+    let bare = g.add("Oscillator");
+    assert!(g.doc()["nodes"][hex(bare)].get("viewers").is_none(), "no viewers leaf when empty");
+    g.call("set_node_viewers", j!({ "node": hex(bare), "viewers": { "out": { "kind": "line" } } }));
+    assert!(!g.doc()["nodes"][hex(bare)]["viewers"].is_null(), "…and one once there is view state");
+
+    // The system flag is what stops the Globals panel offering to rename or delete a name every
+    // expression may be reading.
+    g.call("add_global", j!({ "name": "subject", "value": "P01", "type": "string" }));
+    assert_eq!(g.doc()["globals"]["default_ufreq"]["system"], true);
+    assert_eq!(g.doc()["globals"]["subject"]["system"], false);
+}
+
+#[test]
 fn an_expression_binds_and_the_descriptor_echoes_with_its_error_field() {
     // `set_expression` routes through an `EditParam` command and echoes the runtime-enriched
     // descriptor as a `state_update` — the binding round-trips AND carries `expression_error`, the

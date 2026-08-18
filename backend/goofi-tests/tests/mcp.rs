@@ -336,3 +336,62 @@ async fn the_endpoint_answers_a_get_and_a_notification_as_the_transport_requires
     assert_eq!(status, 202, "a notification is accepted, not answered");
     assert!(body.is_empty(), "a 202 carries no body, got {body:?}");
 }
+
+/// Every tool as the client receives it.
+async fn tools(addr: &str) -> Vec<Value> {
+    rpc(addr, 1, "tools/list", json!({})).await["result"]["tools"].as_array().unwrap().clone()
+}
+
+/// Claude Code and Codex truncate a tool description at 2 KB, so a string that grew past it loses
+/// its TAIL — which is where `Returns:` lives, and where an enumerated vocabulary would land next.
+/// Enumerating the choices is only worth doing if they arrive. Every string a client reads is
+/// checked here, in one place, so a new one cannot be added with its own idea of the budget.
+#[tokio::test]
+async fn every_string_a_client_reads_fits_the_2_kb_it_truncates_at() {
+    let (_g, addr) = start_server().await;
+    let tools = tools(&addr).await;
+    assert!(tools.len() > 30, "the agent surface is generated from the registry");
+    for t in tools {
+        let (name, desc) = (t["name"].as_str().unwrap(), t["description"].as_str().unwrap());
+        assert!(desc.len() <= 2048, "`{name}`'s description is {} bytes", desc.len());
+    }
+}
+
+/// The strongest form of "do not guess": the SCHEMA carries the set, so a client that validates
+/// arguments never lets a wrong word leave, and every model sees the choices beside the field
+/// rather than buried in prose. A list type carries its item type for the same reason.
+#[tokio::test]
+async fn an_argument_advertises_its_vocabulary_and_its_item_type_in_the_schema() {
+    let (_g, addr) = start_server().await;
+    let tools = tools(&addr).await;
+    let schema = |tool: &str, arg: &str| {
+        tools.iter().find(|t| t["name"] == tool)
+            .unwrap_or_else(|| panic!("`{tool}` is a tool"))["inputSchema"]["properties"][arg].clone()
+    };
+
+    let types = schema("page_set_panel", "type")["enum"].clone();
+    assert_eq!(types, json!(goofi_bridge::vocab::panel_type_ids()));
+    assert!(types.as_array().is_some_and(|v| v.contains(&json!("parameters"))), "{types}");
+
+    assert_eq!(schema("group_nodes", "members"),
+               json!({ "type": "array", "items": { "type": "string" } }));
+    assert_eq!(schema("page_resize_split", "fractions"),
+               json!({ "type": "array", "items": { "type": "number" } }));
+    // `json` is deliberately unconstrained: it is whatever the op round-trips.
+    assert_eq!(schema("set_node_viewers", "viewers"), json!({}));
+}
+
+/// Rendering is what a model actually reads, and each shape has a caller: the inspect ops answer
+/// `{text}`, `add_node` answers an object, and a bare string is answered as itself.
+#[tokio::test]
+async fn a_tool_answer_is_rendered_as_the_shape_it_came_in() {
+    let (_g, addr) = start_server().await;
+    // `{text}` unwraps to the text alone — a mermaid diagram must not arrive JSON-escaped.
+    let drawn = call_tool(&addr, 1, "inspect_patch", json!({})).await;
+    assert!(drawn.starts_with("patch: "), "a text answer is unwrapped: {drawn}");
+
+    // A multi-key object stays JSON, or `{removed: false}` would render as nothing a model could
+    // tell from an empty answer.
+    let added = call_tool(&addr, 2, "add_node", json!({ "type": "Oscillator" })).await;
+    assert!(added.contains("\"uid\"") && added.starts_with('{'), "{added}");
+}
