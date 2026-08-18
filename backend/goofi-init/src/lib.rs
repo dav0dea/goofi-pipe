@@ -321,6 +321,9 @@ fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
+// The suite lives in `goofi-tests`. This block stays because goofi-init depends on no goofi
+// crate — that is what lets `-p goofi-init` run without triggering the build it configures —
+// and a test crate that named it would put that edge back.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -504,6 +504,8 @@ fn boot_scan(state: &AppState) -> Vec<String> {
     names
 }
 
+// The suite lives in `goofi-tests`. This block stays because goofi-cli is a BINARY: it has no
+// lib target, so nothing outside can name its argument parser at all.
 #[cfg(test)]
 mod tests {
     use super::*;

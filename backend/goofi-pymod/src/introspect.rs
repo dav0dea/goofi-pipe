@@ -155,6 +155,9 @@ fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>)>
 
 // The interpreter these run in comes from the `host` feature (pyo3 auto-initialize); the
 // `extension-module` build links no libpython and cannot host one.
+// The suite lives in `goofi-tests`. This block stays because goofi-pymod is the `goofi` PYTHON
+// package: reaching it from Rust needs the `host` feature, which links it as an rlib, and
+// `cargo test -p goofi-pymod --features host` is the documented way to run exactly this.
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
