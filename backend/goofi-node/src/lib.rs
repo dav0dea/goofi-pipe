@@ -4,7 +4,7 @@
 //! Every node — native Rust, in-process pyo3 (free-threaded), or subprocess —
 //! implements [`Node`]. The scheduler never branches on backend. A node holds
 //! its own current param values as fields (seeded by `make`, updated via
-//! `on_param_changed`); `process` reads them directly, so the tick path never
+//! `on_param_changed`); `process` reads them directly, so a run never
 //! does a param-map lookup. The engine owns trigger arbitration, rate limiting,
 //! index stamping, and output gating *outside* the node.
 
@@ -170,7 +170,7 @@ pub fn params_from_decls(decls: &[ParamDecl]) -> ParamGroups {
 /// so a *cold* param (read occasionally, mirrored to no field, with no side effect)
 /// can be read live — needing no field and no `on_param_changed` arm. The engine's
 /// `NodeEntry.params` is the source of truth, so a live edit is visible on the next
-/// tick. Read each param into a local once at the top of `process`; the per-*sample*
+/// run. Read each param into a local once at the top of `process`; the per-*sample*
 /// hot loop then reads the local, never the map.
 pub struct Params<'a>(&'a ParamGroups);
 
@@ -200,10 +200,10 @@ impl<'a> Params<'a> {
 // Tick I/O
 // ---------------------------------------------------------------------------
 
-/// The per-tick input view handed to a node. Single-source slots hold the latest
+/// The per-run input view handed to a node. Single-source slots hold the latest
 /// `Data` (`None` if unwired / no frame yet); `multi` slots hold an ordered list of
 /// the latest frame from each connected wire (present-only, connection order —
-/// materialized by the engine). Borrowed for the duration of a tick. The two maps
+/// materialized by the engine). Borrowed for the duration of one run. The two maps
 /// are keyed disjointly by slot name (a slot is single XOR multi).
 pub struct Inputs<'a> {
     singles: &'a IndexMap<&'static str, Option<Data>>,
@@ -265,15 +265,16 @@ impl<'a> Outputs<'a> {
     }
 }
 
-/// Per-tick engine context handed to a node.
+/// Per-run engine context handed to a node.
 #[derive(Debug, Default, Clone)]
 pub struct NodeCtx {
-    /// Wall-clock seconds since the graph's first tick (monotonic, `0.0` on the
-    /// first tick). Wall-clock-paced generators (audio) read this to emit exactly
-    /// the samples that elapsed, drift-free; most nodes ignore it.
+    /// Wall-clock seconds since the PATCH began (monotonic). One clock across every
+    /// node thread rather than one per birth, so a node born later does not start at
+    /// `0.0`. Wall-clock-paced generators (audio) read this to emit exactly the
+    /// samples that elapsed, drift-free; most nodes ignore it.
     pub now: f64,
-    /// The patch globals as of this tick. `process` reads them live (a mid-run edit is seen next
-    /// tick); `setup` latches them once at setup time. Empty for a node run outside a graph.
+    /// The patch globals as of this run. `process` reads them live (a mid-run edit is seen on the
+    /// next run); `setup` latches them once at setup time. Empty for a node run outside a graph.
     pub globals: goofi_core::globals::GlobalsSnapshot,
 }
 
@@ -294,24 +295,27 @@ impl NodeCtx {
 const FREQ_MODE_UPDATES_PER_SECOND: &str = "updates-per-second";
 const FREQ_MODE_SECONDS_PER_UPDATE: &str = "seconds-per-update";
 
-/// When a node's `process` may run, lifted out of the params so the tick path
-/// never does a map lookup. This is the single-process engine's adaptation of the
-/// Python node loop's autotrigger gate + `_rate_limit_sleep`: because one shared
-/// loop drives every node, a node cannot *sleep* to pace itself (that would stall
-/// the others) — instead the scheduler *gates* each node's run on elapsed
-/// wall-clock, so a node capped at N Hz simply runs on the ticks where its period
-/// has elapsed and is skipped on the rest.
+/// When a node's `process` may run, lifted out of the params so a run never does a
+/// map lookup.
+///
+/// Every node owns a thread and decides for itself when to run, so a capped node
+/// PARKS for the remainder of its period rather than being skipped by a shared
+/// scheduler — see `goofi_engine::runtime`'s `next_wake`. That is the difference
+/// from the retired central loop, where a node could not sleep without stalling
+/// every other node.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RunPolicy {
-    /// Run every allowed tick even with no fresh input — a free-running producer.
-    /// Only takes effect when the node has no *wired* triggering input; a node
-    /// whose trigger input is connected runs on that input's rate regardless (the
-    /// engine enforces this, since wiring isn't visible here). See [`Self::should_run`].
+    /// Run whenever the rate cap allows, with no fresh input — a free-running producer.
+    ///
+    /// Independent of the input slots: it is one of the three reasons a node wakes, and
+    /// none of them consults topology. An earlier version of this doc said it "only takes
+    /// effect when the node has no *wired* triggering input". That was never true after the
+    /// cutover, and it is the opposite of what `goofi_engine::runtime` states.
     /// Defaults to `false` (triggered).
     pub autotrigger: bool,
     /// Max run rate in **updates-per-second** (Hz). `<= 0` is unbounded (the default): an
-    /// input-triggered node then runs at its input's rate, a free-running one every
-    /// tick (so it must set a finite cap to not saturate the loop). A node authored
+    /// input-triggered node then runs at its input's rate, a free-running one as fast as
+    /// its thread allows (so it must set a finite cap to not saturate a core). A node authored
     /// in `seconds-per-update` mode is normalized to Hz by [`Self::from_params`], so
     /// this is always a rate — the mode is a pure input convenience.
     pub max_frequency: f64,
@@ -381,7 +385,7 @@ fn autotrigger(m: &NodeManifest) -> ParamDecl {
         spec: ParamSpec::Bool { default: m.producer },
         expression: None,
         doc: Some(
-            "Run every tick on the node's own schedule, instead of waiting for an input frame. \
+            "Run on the node's own schedule, instead of waiting for an input frame. \
              Turn this on for sources; leave it off for transforms driven by their input.",
         ),
     }
@@ -482,7 +486,7 @@ pub trait Node: Send {
     fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
-    /// The tick body: read latest inputs + live params, write outputs. Pure w.r.t.
+    /// The run body: read latest inputs + live params, write outputs. Pure w.r.t.
     /// transport. Cold params are read from `p`; hot/stateful params are mirrored to
     /// fields via `on_param_changed`.
     fn process(
@@ -503,7 +507,7 @@ pub trait Node: Send {
     /// Optional: re-enumerate a `Str` param's options for the UI's ⟳ button
     /// (device/stream pickers). Paired with `on_param_changed` by name. `p` is the node's LIVE
     /// params — a picker usually enumerates against its current settings (which host, which
-    /// driver, which directory), and a node that never ticks would otherwise see only the values
+    /// driver, which directory), and a node that never runs would otherwise see only the values
     /// it was constructed with.
     fn on_param_refreshed(&mut self, _key: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
         None
@@ -752,7 +756,7 @@ pub struct SlotDecl {
     /// latest-wins per wire, in connection order. Fixed by the node author here —
     /// a slot is single or multi for the life of the node type, never toggled.
     pub multi: bool,
-    /// A **required** slot must hold data when the node ticks. The engine checks the slot's
+    /// A **required** slot must hold data when the node runs. The engine checks the slot's
     /// last-store — presence, never wiring — before `process` is invoked, and reports an error
     /// instead of running. So a required slot is one a node may read unconditionally; a
     /// non-required slot may be absent and the node handles that itself.

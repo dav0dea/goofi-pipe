@@ -2144,7 +2144,7 @@ async fn native_chain_streams_frames_over_the_data_plane() {
 #[tokio::test]
 async fn data_plane_sustains_streaming_over_a_window() {
     // Stability/throughput smoke: a live Oscillator→Buffer chain must keep delivering frames
-    // over a wall-clock window (not just one), proving the tick + data plane sustain streaming
+    // over a wall-clock window (not just one), proving the node threads + data plane sustain streaming
     // without stalling. Loose lower bound so it's not CI-timing-flaky; the measured rate is
     // logged for a latency/throughput read.
     let base = start_server().await;
@@ -2174,7 +2174,7 @@ async fn data_plane_sustains_streaming_over_a_window() {
 async fn data_plane_reduces_to_the_declared_viewspec() {
     // A viewer declares its need inband on the /data socket (line: array, ≤2-D, envelope
     // dim -1 → 32). The bridge reduces the buffered frame ONCE for this connection and
-    // stamps `meta.reduced` — proving reduction runs on the data plane, off the node tick,
+    // stamps `meta.reduced` — proving reduction runs on the data plane, off the node's own thread,
     // never in the node process.
     let base = start_server().await;
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
@@ -2222,7 +2222,7 @@ async fn data_plane_reduces_to_the_declared_viewspec() {
     // the definitive proof the plan was applied (passthrough never stamps it). Requiring a
     // real shrink (not merely `reduced.is_some()`) avoids a boundary race: envelope fires at
     // axis len ≥ 2·W = 64 producing exactly 64 samples, so a frame caught with the Buffer at
-    // *exactly* 64 (which happens when the tick thread is starved under parallel test load)
+    // *exactly* 64 (which happens when the node's thread is starved under parallel test load)
     // has orig_len == output == 64 — reduced-meta present but no shrink. Keep consuming until
     // the buffer has grown past the envelope floor, so the assertions below see a true
     // reduction. Bounded so a stuck plane still fails loudly.
@@ -2792,7 +2792,7 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
     // else the node header never shows a live update rate — the `node_stats` producer was
     // orphaned in the now-removed `serve()` and the CLI called only `spawn_tick`.
     let state = AppState::new();
-    spawn_workers(&state); // tick loop + 2 Hz stats, exactly as the CLI startup does
+    spawn_workers(&state); // the status-drain worker, exactly as the CLI startup does
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -2802,7 +2802,7 @@ async fn node_stats_broadcasts_the_measured_ufreq() {
 
     let (mut ws, _) = connect_async(format!("{base}/control")).await.unwrap();
     let _hello = recv_text(&mut ws).await;
-    // A free-running source measures a ufreq after a few ticks.
+    // A free-running source measures a ufreq after a few runs.
     let src = call(&mut ws, 1, "add_node", json!({ "type": "Oscillator" })).await["result"]["uid"]
         .as_str()
         .unwrap()
@@ -2836,7 +2836,7 @@ async fn param_values_broadcasts_live_expression_values() {
     // is what this drives — reporting nothing and asserting the event never arrives would pass
     // against a broadcaster that was deleted.
     let state = AppState::new();
-    spawn_workers(&state); // tick loop + 2 Hz stats/param_values, as the CLI startup does
+    spawn_workers(&state); // the status-drain worker, as the CLI startup does
     let graph = state.graph.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -184,7 +184,7 @@ async fn run(
         println!("{} node types: {}", names.len(), names.join(", "));
         0
     } else {
-        spawn_workers(&state); // adaptive tick loop + 2 Hz node-stats (header ufreq + errors)
+        spawn_workers(&state); // the status-drain worker: 1 ms drain, 2 Hz broadcast
         match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
             Err(e) => {
                 eprintln!("failed to bind {bind}:{port}: {e}");

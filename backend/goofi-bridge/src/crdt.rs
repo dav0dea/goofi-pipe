@@ -53,8 +53,8 @@ impl SyncMsg {
 /// This must be checked BEFORE handing the bytes to `yrs`: `StateVector::decode_v1` allocates a
 /// `HashMap` from the DECLARED count before reading a single entry, so six bytes off the wire
 /// declaring ~4e9 entries abort the whole process through `handle_alloc_error` — which is neither
-/// an `Err` nor a catchable panic, and takes the engine, the tick thread and the unsaved patch
-/// with it. An unterminated or over-wide var-uint is rejected for the same reason.
+/// an `Err` nor a catchable panic, and takes the whole process with it — every node thread and the
+/// unsaved patch alike. An unterminated or over-wide var-uint is rejected for the same reason.
 fn declared_len_is_backed(bytes: &[u8]) -> bool {
     let mut declared: u64 = 0;
     let mut shift = 0u32;

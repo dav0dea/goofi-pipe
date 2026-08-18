@@ -256,9 +256,11 @@ pub fn node(
     if manifest.outputs.is_empty() {
         out.push_str("  (none)\n");
     }
-    // The rate is the NODE's, not the slot's — a node emits all of its outputs in one run — so
-    // every slot line carries the same one. Repeated rather than hoisted because `slot=` narrows
-    // this list to a single line, and that line has to be able to answer the question on its own.
+    // The rate is the NODE's, not the slot's: `ufreq` measures how often the node RUNS, and the
+    // graph holds no per-slot rate to report. So every slot line carries the same number, and a
+    // node that writes only some of its outputs in a given run still reads as one rate here.
+    // Repeated rather than hoisted because `slot=` narrows this list to a single line, and that
+    // line has to be able to answer the question on its own.
     let rate = match g.node_ufreq(uid) {
         Some(hz) => format!("emitting at {hz:.1} Hz"),
         None => "nothing emitted yet".to_string(),

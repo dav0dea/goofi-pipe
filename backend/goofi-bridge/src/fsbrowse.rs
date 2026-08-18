@@ -2,7 +2,8 @@
 //!
 //! Deliberately **unjailed** — this is a single-user, local/trusted-LAN app and the user
 //! saves patches wherever they like. Nothing here touches graph state, so `dispatch` serves
-//! it without the graph mutex (a slow or huge directory would otherwise stall the tick).
+//! it without the graph mutex — a slow or huge directory would otherwise hold that mutex, and
+//! every graph EDIT waits on it.
 //!
 //! Navigation must never fail: an unreadable or not-yet-existing directory lists *empty*
 //! rather than erroring, because the browser keeps the previous directory's entries on an

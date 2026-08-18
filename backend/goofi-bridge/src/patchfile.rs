@@ -41,7 +41,7 @@ fn download_name(state: &AppState) -> String {
 /// `GET /patch.gfi` — pack the open patch and hand it over.
 ///
 /// Packed **under the graph lock**, exactly as `save` does: the manifest and the workspace must
-/// describe one moment, and taking them separately would let a tick land between them. The pack
+/// describe one moment, and taking them separately would let a graph EDIT land between them. The pack
 /// goes through a temp file rather than a `Vec` because `archive::write_gfi` writes to a path and
 /// names its errors by that path — reusing it verbatim keeps one packer instead of two.
 pub(crate) async fn download(State(state): State<AppState>) -> Response {

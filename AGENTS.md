@@ -16,7 +16,7 @@ end-to-end before touching code, then read the specific subsystem you're changin
 **The "How we work" section is not optional — it is how changes are expected to be
 made here.**
 
-## Mandatory work ethic 
+## Mandatory work ethic
 
 All communication, whether internal thought, explaining work, planning, sub-agent communication or exchanges with the user, must be held in ASD-STE100 Simplified Technical English only.
 
@@ -149,7 +149,7 @@ is tiered; the browser is a read-only replica driven by commands.
    └───────┬───────────────────────────────────┘
    ┌───────▼───────────────────────────────────┐
    │  goofi-engine — Graph, wiring, scopes      │
-   │   no tick: the mutex guards EDITS only     │
+   │   no tick: no node RUNS under the mutex    │
    └───┬───────────────┬───────────────┬────────┘
        │ native Rust   │ in-process    │ subprocess
        │ (inventory)   │ Python (FT)   │ Python (GIL)
@@ -202,7 +202,7 @@ dim-count comparisons, per-dim length comparisons, a desired reduction length pe
 dim) — inband as `{op:"view", specs:[…]}`. The bridge folds all specs against the
 real frame (richest-per-dim: envelope > area > subsample), reduces on **its own
 subscription** to the producer's output service — the same door a test's `OutputProbe`
-opens, so the steady state never takes the graph lock at all — and ships one reduced frame
+opens, so no number of viewers can slow a `process()` down — and ships one reduced frame
 to all subscribers. Array `Data` is always **f32**; viewers render full-dtype reduced
 frames (there are no per-kind adapters and no `__view__` sidecar).
 
@@ -211,15 +211,18 @@ frames (there are no per-kind adapters and no `__view__` sidecar).
 and wakes for a `Control` message (a param edit, a wire change, a ⟳, a stop), a frame on an
 input slot, a frame on a producer one of its **expression bindings** references, or its own
 rate cap elapsing. Frames travel node to node over iceoryx2 shared memory, never through the
-graph — so the graph mutex guards **edits**, and no user action ever waits on a `process()`.
+graph — so **no node runs under the graph mutex**, and no user action ever waits on a `process()`.
+The steady state is not lock-FREE, though: the `/data` reducer re-derives its slot's service name
+under a brief lock once a second (`REHOME_INTERVAL`), so a restart re-homes the stream instead of
+leaving the viewer on the dead generation's name.
 
 A node's state travels the other way, on its **status** service: `Ready`, `Stage`, `Fault`,
 `BindingErrors`, `ParamValues`, `Ufreq`, `RefreshOptions`, and the `Ack` that advances a
 wire's three-phase attach. The **status-drain worker** (`goofi-bridge`'s `spawn_stats`) is
-the one thing that applies them — so it drains at 1 ms while broadcasting its four events
-(`node_stats`, `param_values`, `error`, `node_stage`) at 2 Hz: the drain is the runtime's
-clock (a node is not addressable, and a cable does not attach, until it runs), the broadcast
-is the UI's.
+the one thing that applies them — so it drains at 1 ms while broadcasting its five events at 2 Hz:
+`node_stats`, `param_values`, `error`, `node_stage`, and the `state_update` that echoes a
+`RefreshOptions`. The drain is the runtime's clock (a node is not addressable, and a cable does not
+attach, until it runs); the broadcast is the UI's.
 
 Two consequences worth holding: a node is **known when `add_node` answers and addressable
 only when it reports `Ready`** (§4's birth barrier — pub/sub has no history, so a `Control`

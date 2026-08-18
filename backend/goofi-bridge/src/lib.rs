@@ -262,7 +262,7 @@ pub(crate) fn nonce_hex() -> String {
 /// bare `fs::write` this replaces could mostly only lose the new content; a multi-entry zip
 /// truncates the old file first and then has many more chances to fail.
 ///
-/// Runs under the graph lock the caller already holds, so the tick stalls for the duration (tens of
+/// Runs under the graph lock the caller already holds, so every graph EDIT stalls for the duration (tens of
 /// ms for a workspace of code files) — accepted by decision, because taking the pack off-lock means
 /// guarding a graph-versus-workspace race that only exists once it is off-lock.
 fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Path) -> Result<(), String> {
@@ -491,8 +491,8 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
             // Diff + build payloads after releasing the lock (both inputs are owned).
             let changed = error_transitions(&errs, &mut last_errors);
             for (node, ufreq) in rates {
-                // Only send what we actually measure — no fabricated process-time /
-                // tick-count placeholders (the frontend treats those as optional).
+                // Only send what we actually measure — no fabricated process-time or
+                // run-count placeholders (the frontend treats those as optional).
                 let ev = json!({
                     "event": "node_stats",
                     "payload": { "node": node, "stats": { "updates_per_second": ufreq } }
@@ -555,7 +555,7 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
     }
 }
 
-/// Start the background workers a live server needs: the adaptive tick loop AND the 2 Hz
+/// Start the background workers a live server needs: the status-drain worker AND the 2 Hz
 /// node-stats broadcaster — the latter pushes each node's measured ufreq to the node header
 /// and the async error-transition that reddens a node border mid-run. The binary calls this
 /// once at startup (alongside its own bind + `serve_app`), so both are wired in one place;
@@ -877,7 +877,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     let mut sync_updates = state.sync_updates.subscribe();
 
     // Answered BEFORE the graph lock is taken: it walks the workspace mount (see `is_dirty`), and
-    // no filesystem walk may run while the tick thread is waiting on that lock.
+    // no filesystem walk may run while the status-drain worker is waiting on that lock.
     let unsaved = state.is_dirty();
     let saved_at = state.save_path();
     let hello = {
@@ -995,7 +995,7 @@ impl AppState {
     /// watcher (decision, 2026-08-09), so the question is answered by WALKING the mount at the
     /// moment a client asks it — an external edit surfaces on the asker's next `hello`, and no
     /// thread wakes up to hunt for one. Walk it OFF the graph lock: a workspace of code files is a
-    /// stat per file, and the tick holds that lock.
+    /// stat per file, and the status-drain worker takes that lock every millisecond.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
             || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
@@ -1265,7 +1265,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
         }
         // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
         // directory and stats every child, which can block for a long time on a huge or network
-        // path — under the lock that would stall the tick thread for the whole walk. `get_patch`
+        // path — under the lock that would stall the status-drain worker for the whole walk. `get_patch`
         // is here for the same reason: `is_dirty` walks the workspace mount.
         if op == "list_dir" {
             return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
