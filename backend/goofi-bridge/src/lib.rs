@@ -608,6 +608,109 @@ mod status_worker_tests {
         }
         panic!("the consumer emitted nothing in {budget:?}: the wire is advancing at the event rate");
     }
+
+    /// Read the broadcast until an event satisfies `want`, or the budget runs out. The worker also
+    /// pushes `node_stats` and `param_values`, so a test cannot assume the event it wants is first.
+    fn await_event(
+        rx: &mut broadcast::Receiver<String>,
+        budget: Duration,
+        want: impl Fn(&Value) -> bool,
+    ) -> Option<Value> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(s) => {
+                    let v: Value = serde_json::from_str(&s).expect("an event is JSON");
+                    if want(&v) {
+                        return Some(v);
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                Err(e) => panic!("the event channel closed or lagged: {e}"),
+            }
+        }
+        None
+    }
+
+    /// A node that always fails, so the graph has a fault to report. `producer: true` so it runs
+    /// on its own without a wire feeding it.
+    struct Boom;
+    impl goofi_node::Node for Boom {
+        fn process(
+            &mut self,
+            _i: &goofi_node::Inputs<'_>,
+            _o: &mut goofi_node::Outputs<'_>,
+            _c: &mut goofi_node::NodeCtx,
+            _p: &goofi_node::Params<'_>,
+        ) -> goofi_node::NodeResult {
+            Err("the sensor is unplugged".into())
+        }
+    }
+    static BOOM_OUT: &[goofi_node::OutputDecl] =
+        &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    static BOOM: goofi_node::NodeManifest = goofi_node::NodeManifest {
+        type_name: "_StatusBoom",
+        category: "test",
+        doc: "always fails",
+        inputs: &[],
+        outputs: BOOM_OUT,
+        params: &[],
+        isolation: goofi_node::Isolation::InProcess,
+        producer: true,
+        factory: || Box::new(Boom),
+    };
+
+    #[test]
+    fn a_node_that_reaches_ready_is_broadcast_as_a_stage_change() {
+        // `node_stage` had NO test: deleting the send while keeping the `last_stages` insert left
+        // 245 tests green. The frontend drives its boot spinner from this event, so a node would
+        // have spun for ever.
+        //
+        // Driven through the real `spawn_stats` and read off the real broadcast channel, because
+        // the defect is that the SEND is missing, not that the diff is wrong — a test on the
+        // `last_stages` map alone passes against it.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        let hex = n.to_hex();
+
+        let (events, mut rx) = broadcast::channel(256);
+        spawn_stats(Arc::new(Mutex::new(g)), events, 20);
+
+        let ev = await_event(&mut rx, Duration::from_secs(5), |v| {
+            v["event"] == "node_stage" && v["payload"]["stage"] == "ready"
+        })
+        .expect("the worker never announced that the node reached `ready`");
+        assert_eq!(ev["payload"]["node"], hex, "and it named the node that reached it");
+    }
+
+    #[test]
+    fn a_node_that_faults_is_broadcast_as_an_error() {
+        // The `error` event had no test either: deleting the whole `for hex in changed` send loop
+        // left 245 tests green. `error_transitions` is pinned as a pure function, and that is the
+        // trap — one rule with two readers, and only the cheap one under test.
+        //
+        // So this test must fail when the SEND is deleted, not only when the diff is wrong. It
+        // asserts on a message that came out of the channel, which the pure function cannot
+        // produce on its own.
+        let mut g = Graph::new();
+        g.register_dyn_type(&BOOM, Box::new(|_| Box::new(Boom)));
+        let n = g.add_node("_StatusBoom", None).unwrap();
+        let hex = n.to_hex();
+
+        let (events, mut rx) = broadcast::channel(256);
+        spawn_stats(Arc::new(Mutex::new(g)), events, 20);
+
+        let ev = await_event(&mut rx, Duration::from_secs(5), |v| {
+            v["event"] == "error" && v["payload"]["node"] == hex.as_str()
+        })
+        .expect("the worker never pushed the node's fault");
+        assert_eq!(
+            ev["payload"]["error"], "the sensor is unplugged",
+            "and it carried what the node reported",
+        );
+    }
 }
 
 /// Serve on an already-bound listener with optional static SPA serving. Passing `None` serves the
