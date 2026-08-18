@@ -287,14 +287,17 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
 #[test]
 fn python_nodes_run_concurrently() {
     // One source fans out to N Python nodes, each of which sleeps 25 ms inside Python on every
-    // run. The source is a producer paced at the patch's `default_ufreq` (30 Hz), so a node that
-    // overlaps with its siblings keeps up with it — while N nodes taking it in turns would manage
-    // 1/(N*25ms) = 5 Hz each. The rate each node SUSTAINS is therefore the oracle, and it
-    // discriminates by a factor of six.
+    // run. Overlapping, each keeps its own ~40 runs/s; taking turns, all N share one 25 ms slot and
+    // manage 1/(N*25ms) = 5 each. The rate a node SUSTAINS is therefore the oracle, and the two
+    // answers are eight times apart.
     //
     // Restated from a per-tick duration, which no longer exists: every node has its own thread by
     // construction now. What is still worth pinning is that nothing SERIALIZES them — a shared
     // lock in the host, or a pyo3 attach that queued, would show up here exactly as the GIL did.
+    //
+    // The counter is the NODE's own, carried in the payload, and it has to be: `meta["index"]`
+    // rides through from the input frame, so counting it measured the SOURCE's rate — 24 000/s
+    // against a consumer sleeping 25 ms per run, and green against a fixture mutated to 200 ms.
     const N: usize = 8;
     let mut g = Graph::new();
     register_py(
@@ -308,9 +311,12 @@ fn python_nodes_run_concurrently() {
             "        return {'data': goofi.DataType.ARRAY}\n",
             "    def config_output_slots(self):\n",
             "        return {'out': goofi.DataType.ARRAY}\n",
+            "    def setup(self):\n",
+            "        self.runs = 0\n",
             "    def process(self, data):\n",
             "        time.sleep(0.025)\n",
-            "        return {'out': data.data}\n",
+            "        self.runs += 1\n",
+            "        return {'out': np.array([float(self.runs)], dtype=np.float32)}\n",
         ),
     );
 
@@ -323,32 +329,30 @@ fn python_nodes_run_concurrently() {
         g.add_link(src, "out", py, "data").unwrap();
     }
 
-    // Counted from `meta["index"]`, which advances once per emit, rather than from how many frames
-    // a probe catches: the data services are latest-wins one deep. Waiting for each node's FIRST
-    // frame is also the warm-up — every interpreter is up and running by the time the clock starts.
-    let index = |d: &goofi_core::Data| d.meta().index().expect("every emit is stamped");
-    let first: Vec<u64> = probes
+    // Waiting for each node's first frame is also the warm-up: every interpreter is up and every
+    // link attached by the time the clock starts.
+    let first: Vec<f32> = probes
         .iter()
-        .map(|p| index(&p.expect_frame(&mut g, "each python node to emit")))
+        .map(|p| first_f32(&p.expect_frame(&mut g, "each python node to emit")))
         .collect();
     let t = std::time::Instant::now();
     std::thread::sleep(std::time::Duration::from_secs(2));
-    let secs = t.elapsed().as_secs_f64();
+    let secs = t.elapsed().as_secs_f32();
 
-    let rates: Vec<f64> = probes
+    let rates: Vec<f32> = probes
         .iter()
         .zip(&first)
         .map(|(p, start)| {
-            let now = index(&p.latest().expect("a node that emitted once keeps emitting"));
-            now.saturating_sub(*start) as f64 / secs
+            let now = first_f32(&p.latest().expect("a node that emitted once keeps emitting"));
+            (now - start) / secs
         })
         .collect();
-    let slowest = rates.iter().cloned().fold(f64::INFINITY, f64::min);
+    let slowest = rates.iter().cloned().fold(f32::INFINITY, f32::min);
     assert!(
-        slowest >= 15.0,
-        "{N} Python nodes each sleeping 25ms sustained {rates:?} frames/s; taking turns would be \
-         ~{:.1} Hz each, overlapping keeps up with the 30 Hz source",
-        1.0 / (N as f64 * 0.025),
+        slowest >= 20.0,
+        "{N} Python nodes each sleeping 25ms sustained {rates:?} runs/s; taking turns would be \
+         ~{:.1} each",
+        1.0 / (N as f32 * 0.025),
     );
     assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled under concurrency");
 }
