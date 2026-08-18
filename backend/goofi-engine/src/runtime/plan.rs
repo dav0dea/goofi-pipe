@@ -623,18 +623,18 @@ mod tests {
         // does not go through `insert_node_at`.
         let mut g = Graph::new();
         let uid = source(&mut g);
-        assert_eq!(g.node_generation(uid), 0);
+        assert_eq!(g.wire.generation(uid), 0);
 
         g.restart_node(uid).unwrap();
-        assert_eq!(g.node_generation(uid), 1, "a restart is a birth at the same uid");
+        assert_eq!(g.wire.generation(uid), 1, "a restart is a birth at the same uid");
 
         g.remove_node(uid).unwrap();
         g.add_node_at("_TestGated", None, uid, "").unwrap();
-        assert_eq!(g.node_generation(uid), 2, "and so is an undo of a delete");
+        assert_eq!(g.wire.generation(uid), 2, "and so is an undo of a delete");
 
         g.clear();
         g.add_node_at("_TestGated", None, uid, "").unwrap();
-        assert_eq!(g.node_generation(uid), 3, "a load does not put the counter back");
+        assert_eq!(g.wire.generation(uid), 3, "a load does not put the counter back");
     }
 
     #[test]

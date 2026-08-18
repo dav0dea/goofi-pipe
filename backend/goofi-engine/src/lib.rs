@@ -113,11 +113,12 @@ impl Drop for NodeHost {
 struct NodeEntry {
     manifest: &'static NodeManifest,
     host: NodeHost,
-    /// The param RECORD — literals and, through `bindings`, expression source. Held behind an
-    /// [`ArcSwap`] so the graph's readers never block on a write (spec §5.1). The node's own thread
-    /// keeps its own copy, fed by the `SetParam` every write announces: an evaluated value must not
-    /// reach this record, because this is what `serialize` writes.
-    params: Arc<ArcSwap<ParamGroups>>,
+    /// The param RECORD — literals and, through `bindings`, expression source. An `Arc` so a
+    /// reader gets a cheap owned snapshot; every write happens under the graph mutex, so nothing
+    /// shares it mutably. The node's own thread holds an unrelated copy, fed by the `SetParam`
+    /// every write announces: an evaluated value must not reach this record, because this is what
+    /// `serialize` writes.
+    params: Arc<ParamGroups>,
     /// Param-expression bindings on this node, keyed by `(group, name)`. The graph resolves each
     /// one's references and ships it; the NODE evaluates it (spec §5.3).
     bindings: HashMap<ParamKey, ExprBinding>,
@@ -463,14 +464,11 @@ impl Drop for Graph {
     }
 }
 
-/// Write a node's param record: load, clone, mutate, swap. Copy-on-write because the record is
-/// SHARED with the node's own thread (§5.1) — a reader mid-`process` keeps the version it loaded,
-/// and the next load sees the whole edit or none of it. Param edits are user-paced, so the clone
-/// costs nothing that matters.
-fn edit_params(entry: &NodeEntry, edit: impl FnOnce(&mut ParamGroups)) {
-    let mut next = (*entry.params.load_full()).clone();
-    edit(&mut next);
-    entry.params.store(Arc::new(next));
+/// Write a node's param record in place. `Arc::make_mut` clones only while a reader still holds
+/// the previous snapshot, so a caller that took one keeps a consistent version and an unshared
+/// record is edited without a copy at all.
+fn edit_params(entry: &mut NodeEntry, edit: impl FnOnce(&mut ParamGroups)) {
+    edit(Arc::make_mut(&mut entry.params));
 }
 
 /// A global's value as the [`Param`] an expression variable carries (§5.3: the graph resolves a
@@ -995,7 +993,7 @@ impl Graph {
             NodeEntry {
                 manifest,
                 host,
-                params: Arc::new(ArcSwap::from_pointee(params)),
+                params: Arc::new(params),
                 bindings: HashMap::new(),
                 evaluated: IndexMap::new(),
                 param_errors: IndexMap::new(),
@@ -1105,23 +1103,12 @@ impl Graph {
             .or_else(|| self.scopes.get(&uid).map(|s| s.pos))
     }
 
-    /// A node's params as of now. An owned snapshot rather than a borrow, because the record is an
-    /// [`ArcSwap`] a node thread writes nothing to and the graph replaces wholesale (§5.1) — cloning
-    /// the `Arc` is what makes the read lock-free, and holding a `&` into it would pin the version.
+    /// A node's params as of now. An owned snapshot rather than a borrow: cloning the `Arc` is
+    /// cheap, and a `&` would borrow the whole graph for as long as the caller held it.
     pub fn params(&self, uid: Uid) -> Option<Arc<ParamGroups>> {
-        self.nodes.get(&uid).map(|e| e.params.load_full())
-    }
-
-    /// The node's param record itself — the handle its own thread keeps, so it reads params without
-    /// ever taking the graph lock. The graph writes through it; nobody else does.
-    pub fn param_record(&self, uid: Uid) -> Option<Arc<ArcSwap<ParamGroups>>> {
         self.nodes.get(&uid).map(|e| e.params.clone())
     }
 
-    /// The globals as the node threads read them (§5.2), by the same rule and for the same reason.
-    pub fn globals_record(&self) -> Arc<ArcSwap<goofi_core::globals::GlobalsSnapshot>> {
-        self.globals_record.clone()
-    }
 
     /// Write the globals store and re-publish the node-side view. The ONE writer, so the two can
     /// never drift — a store mutated anywhere else would leave every node reading the old values.
@@ -1920,7 +1907,7 @@ impl Graph {
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
-        let held = entry.params.load_full();
+        let held = entry.params.clone();
         // Fold what the node HAS onto what its type declares NOW, rather than replaying the old map
         // verbatim: a rescan restart is usually prompted by an edit to the file, and an edit that
         // adds a param would otherwise leave the instance without it while the palette advertises
@@ -1968,7 +1955,7 @@ impl Graph {
         self.wire.detach(uid);
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
-        entry.params.store(Arc::new(params));
+        entry.params = Arc::new(params);
         // A fresh generation boots healthy and reports its own state; the corpse's error and stage
         // describe a node that no longer exists (§4). `boot_error` is this birth's own.
         entry.setup_error = boot_error;
@@ -2019,7 +2006,7 @@ impl Graph {
             .nodes
             .get_mut(&uid)
             .ok_or_else(|| format!("no such node {uid}"))?;
-        if entry.params.load().get(group).is_none() {
+        if entry.params.get(group).is_none() {
             return Err(format!("no such param group `{group}`"));
         }
         edit_params(entry, |p| {
@@ -2063,7 +2050,7 @@ impl Graph {
     /// nothing to undo.
     pub fn refresh_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
-        let live = entry.params.load_full();
+        let live = entry.params.clone();
         let param = goofi_node::param(&live, group, name)
             .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
         if !matches!(param, Param::Str { refresh: true, .. }) {
@@ -2111,7 +2098,7 @@ impl Graph {
         // A non-empty source binds a real param — reject a dangling binding (invisible in
         // the descriptor, unclearable from the UI, phantom scheduling edges), like
         // update_param guards param existence.
-        if goofi_node::param(&self.nodes[&uid].params.load(), group, name).is_none() {
+        if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
         let bind_id = self.bind_id(uid, &key);
@@ -2505,11 +2492,6 @@ impl Graph {
     }
 
     /// The generation the node at `uid` was born at — the third component of its service names, and
-    /// what keeps a rebirth clear of a predecessor whose teardown does not block.
-    pub fn node_generation(&self, uid: Uid) -> u64 {
-        self.wire.generation(uid)
-    }
-
     /// One output slot's data service name — the whole of a wire's identity, which is why a slot
     /// message carries names and never a source uid. Public because it is also the `/data` plane's
     /// subscribe address: a viewer resolves `(uid, slot)` here once and is lock-free after (§7).
@@ -2767,7 +2749,7 @@ impl Graph {
                 id: b.id,
             },
             None => {
-                runtime::ParamValue::Literal(goofi_node::param(&entry.params.load(), &key.group, &key.name)?.clone())
+                runtime::ParamValue::Literal(goofi_node::param(&entry.params, &key.group, &key.name)?.clone())
             }
         };
         Some((uid, runtime::Control::SetParam { key: key.clone(), value }))
@@ -2920,7 +2902,7 @@ impl Graph {
         for uid in self.node_uids() {
             let e = &self.nodes[&uid];
             let mut params = Map::new();
-            let live = e.params.load_full();
+            let live = e.params.clone();
             for (group, names) in &*live {
                 let mut gmap = Map::new();
                 for (name, p) in names {
@@ -3546,59 +3528,7 @@ mod tests {
         assert_eq!(g.last_error(uid), None, "only the binding evaluating clears it");
     }
 
-    #[test]
-    fn a_param_read_is_never_blocked_by_a_concurrent_edit() {
-        // §5.1: the record is an `ArcSwap` the graph and the node hold TOGETHER. That is the READ
-        // path — a node's `process()` loads it without the graph mutex, so an edit storm cannot
-        // stall a run — while `Control::SetParam` stays the NOTIFICATION path, because a bare swap
-        // cannot say which key changed and a node parked with `next_wake() == None` is never rung.
-        //
-        // The reader deliberately runs while the WRITER holds the graph mutex for its whole burst:
-        // a handle that needed that lock would deadlock here rather than merely be slow.
-        use std::sync::Mutex;
-        let graph = Arc::new(Mutex::new(Graph::new()));
-        let uid = graph.lock().unwrap().add_node("_TestConst", None).unwrap();
-        let record = graph.lock().unwrap().param_record(uid).expect("the node's own handle");
 
-        let reader = {
-            let record = record.clone();
-            std::thread::spawn(move || {
-                (0..10_000).filter(|_| record.load().contains_key("constant")).count()
-            })
-        };
-        let mut g = graph.lock().unwrap();
-        for i in 0..10_000 {
-            g.update_param(uid, "constant", "value", Param::float(i as f64, -1e9, 1e9)).unwrap();
-        }
-        drop(g);
-        assert_eq!(reader.join().unwrap(), 10_000, "every read completed, none torn");
-
-        // …and the handle IS the record rather than a copy of it: a snapshot handed out once would
-        // pass everything above and never see an edit.
-        assert_eq!(
-            goofi_node::param(&record.load(), "constant", "value").and_then(Param::as_f64),
-            Some(9_999.0),
-        );
-    }
-
-    #[test]
-    fn a_restart_swaps_the_record_rather_than_replacing_it() {
-        // A restart replaces the INSTANCE, not the node — and the node's own thread is holding this
-        // handle (§5.1). Installing a fresh `ArcSwap` would leave every holder reading the corpse's
-        // params forever, while `params(uid)` — which reads the entry — went on looking right.
-        // Driven by an edit made AFTER the restart, because the restart carries the held values
-        // over and a stale handle answers those correctly.
-        let mut g = Graph::new();
-        let uid = g.add_node("_TestConst", None).unwrap();
-        let record = g.param_record(uid).unwrap();
-        g.restart_node(uid).unwrap();
-        g.update_param(uid, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
-        assert_eq!(
-            goofi_node::param(&record.load(), "constant", "value").and_then(Param::as_f64),
-            Some(9.0),
-            "a handle taken before the restart still sees the graph",
-        );
-    }
 
     #[test]
     fn the_globals_record_is_a_handle_too() {
@@ -3607,7 +3537,7 @@ mod tests {
         // read one.
         use goofi_core::globals::GlobalValue;
         let mut g = Graph::new();
-        let record = g.globals_record();
+        let record = g.globals_record.clone();
         assert_eq!(record.load().f64("default_ufreq"), Some(30.0));
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(45.0))).unwrap();
         assert_eq!(record.load().f64("default_ufreq"), Some(45.0), "the edit reached the handle");
