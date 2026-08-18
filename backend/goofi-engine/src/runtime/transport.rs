@@ -68,6 +68,10 @@ const MESSAGE_BUFFER: usize = 1024;
 /// stream is a 17 GB shared-memory file, and a node owns two of them. Measured before it was cut:
 /// 7.5 s and 130 MB of resident shared memory per `add_node`.
 const MESSAGE_READERS: usize = 1;
+/// How long an empty `<root>/nodes/<id>` directory is left alone before [`remove_empty_node_dirs`]
+/// takes it. iceoryx2 creates the directory and then writes into it, so a just-created one belongs
+/// to a node another process is starting; a minute is far past that and far short of a session.
+const NODE_DIR_GRACE: Duration = Duration::from_secs(60);
 /// The pool a message publisher starts with. A control or status message is tens to hundreds of
 /// bytes, and `PowerOfTwo` grows the segment for the rare large one (a `RefreshParam` answer naming
 /// many devices) rather than reserving 64 KiB per slot against it.
@@ -431,6 +435,10 @@ pub(crate) fn iox_config() -> &'static Config {
         let mut config = Config::global_config().clone();
         config.global.service.cleanup_dead_nodes_on_open = false;
         config.global.node.cleanup_dead_nodes_on_creation = false;
+        // The third one is the one that hides the other two: it fires in `Node::drop`, so with it
+        // left on every node teardown in the process quietly did the sweep's job — which made the
+        // sweep's own test pass with the sweep gutted, as long as any other test ran beside it.
+        config.global.node.cleanup_dead_nodes_on_destruction = false;
         config
     })
 }
@@ -448,6 +456,39 @@ pub fn reclaim_stale_resources() {
         }
         CallbackProgression::Continue
     });
+    remove_empty_node_dirs();
+}
+
+/// The inode half. iceoryx2 0.9.3 removes a dropped node's FILES and leaves its directory, so
+/// `<root>/nodes/` grows by one empty entry per node for ever — 12 666 measured on one development
+/// machine — and `IoxNode::list` walks every one of them at each process start, which makes startup
+/// slower the longer the machine has been used.
+///
+/// Only EMPTY directories, and only ones nothing has touched for [`NODE_DIR_GRACE`]: iceoryx2
+/// creates the directory and then writes its files, so a fresh empty one may belong to a node
+/// another process is starting right now. Every error is ignored — this is housekeeping, and a
+/// directory that cannot be removed simply stays.
+fn remove_empty_node_dirs() {
+    let Ok(root) = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()) else {
+        return;
+    };
+    let Ok(nodes) = String::from_utf8(iox_config().global.node.directory.as_bytes().to_vec()) else {
+        return;
+    };
+    let dir = format!("{}/{}", root.trim_end_matches('/'), nodes);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .ok()
+            .filter(|m| m.is_dir())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > NODE_DIR_GRACE);
+        if stale {
+            let _ = std::fs::remove_dir(entry.path());
+        }
+    }
 }
 
 /// Everything that happens once per PROCESS, before its first port exists. A `Once` rather than a
@@ -590,8 +631,46 @@ mod tests {
         // then not handed to `NodeBuilder` is exactly the failure this has to be able to see.
         let node = iox_node().expect("an iceoryx2 node");
         let cfg = node.config();
+        // Enumerated, not echoed. The first version of this asserted exactly the two flags the code
+        // set — so it could not see that the THIRD was still on, which is the one that fires in
+        // `Node::drop` and was silently doing the sweep's job for it. If iceoryx2 grows a fourth,
+        // this list is where it has to be decided rather than inherited.
         assert!(!cfg.global.service.cleanup_dead_nodes_on_open, "no rescan per service open");
         assert!(!cfg.global.node.cleanup_dead_nodes_on_creation, "and none per service creation");
+        assert!(!cfg.global.node.cleanup_dead_nodes_on_destruction, "and none per node drop");
+    }
+
+    /// The directory iceoryx2 keeps its node records in, as the sweep computes it.
+    fn node_dir() -> String {
+        let root = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()).unwrap();
+        let nodes = String::from_utf8(iox_config().global.node.directory.as_bytes().to_vec()).unwrap();
+        format!("{}/{}", root.trim_end_matches('/'), nodes)
+    }
+
+    #[test]
+    fn the_sweep_takes_the_empty_directories_iceoryx2_leaves_and_spares_the_fresh_ones() {
+        // iceoryx2 0.9.3 removes a dropped node's FILES and leaves its directory. `IoxNode::list`
+        // walks every one of them at each process start, so an untended machine gets slower for
+        // ever: 12 666 accumulated here before this was written.
+        //
+        // Both halves, because only the pair states the rule. Removing an aged directory is the
+        // point; SPARING a fresh one is the safety property — iceoryx2 creates the directory and
+        // then writes into it, so an empty one may belong to a node another process is starting,
+        // and a sweep pinned only on removal passes while deleting it out from under them.
+        let dir = node_dir();
+        std::fs::create_dir_all(&dir).expect("the node directory");
+        let aged = format!("{dir}/goofitest_aged_{}", service_instance());
+        let fresh = format!("{dir}/goofitest_fresh_{}", service_instance());
+        std::fs::create_dir(&aged).expect("the aged directory");
+        std::fs::create_dir(&fresh).expect("the fresh directory");
+        let epoch = std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH);
+        std::fs::File::open(&aged).unwrap().set_times(epoch).expect("backdate it");
+
+        reclaim_stale_resources();
+
+        assert!(!std::path::Path::new(&aged).exists(), "the aged empty directory was taken");
+        assert!(std::path::Path::new(&fresh).exists(), "and one that may still be filling was not");
+        let _ = std::fs::remove_dir(&fresh);
     }
 
     #[test]
