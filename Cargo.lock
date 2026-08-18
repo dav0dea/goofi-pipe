@@ -673,6 +673,7 @@ dependencies = [
 name = "goofi-tests"
 version = "3.1.0"
 dependencies = [
+ "bytes",
  "futures-util",
  "goofi-bridge",
  "goofi-codec",

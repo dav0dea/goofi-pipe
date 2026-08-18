@@ -27,6 +27,8 @@ futures-util = "0.3"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 tempfile = "3"
+# The frame type a reducer subscription yields.
+bytes = "1"
 # Pin a tiny SO_RCVBUF on a test client so a stalled reader deterministically lags the broadcast
 # ring, instead of the OS silently autotuning a huge buffer.
 socket2 = "0.6"

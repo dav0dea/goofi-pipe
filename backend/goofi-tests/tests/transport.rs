@@ -221,6 +221,32 @@ async fn a_replica_converges_off_the_binary_sync_relay() {
 }
 
 #[tokio::test]
+async fn a_removal_reaches_a_replica_too_and_is_not_skipped_as_an_empty_delta() {
+    // The broadcast gate once used a state-vector empty-diff check, which is DELETION-BLIND: a Yjs
+    // delete does not advance the state vector, so a delete-only diff was byte-identical to the
+    // empty baseline and every removal silently never reached a client. The gate compares the doc's
+    // logical state instead.
+    let g = Goofi::new();
+    let (mut c, _) = Client::connect(&g.serve().await).await;
+    let _server_sv = c.binary().await;
+    let n = g.add("Buffer");
+
+    let mut replica = c.replica(|d| d.node_ids().contains(&hex(n))).await;
+    assert!(replica.node_ids().contains(&hex(n)), "the add reached the replica");
+
+    g.call("remove_node", j!({ "node": hex(n) }));
+    for _ in 0..20 {
+        if let Some(m) = SyncMsg::decode(&c.binary().await) {
+            replica.on_sync(m);
+        }
+        if !replica.node_ids().contains(&hex(n)) {
+            return;
+        }
+    }
+    panic!("a removal was never broadcast: the replica still holds {}", hex(n));
+}
+
+#[tokio::test]
 async fn a_layout_change_reaches_a_peers_replica_as_an_ordinary_delta() {
     // Layout used to be client-owned: a peer learned an arrangement only on `hello`. As the fifth
     // doc root it rides the SAME delta broadcast as a node add, which is what made the frontend's

@@ -98,6 +98,20 @@ fn a_live_evaluation_is_broadcast_so_the_inspector_preview_tracks_it() {
 }
 
 #[test]
+fn set_expression_answers_with_the_binding_error_rather_than_a_bare_ok() {
+    // A binding that cannot compile is STORED — the source is kept so it can be fixed — so the
+    // refusal has to travel in the reply or it is invisible.
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let bind = |expr: &str| g.call("set_expression", j!({ "node": hex(osc), "group": "oscillator",
+                                                        "name": "amplitude", "expression": expr,
+                                                        "enabled": true }));
+    assert!(bind("@@ not an expression @@")["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "the compile error must ride the reply");
+    assert!(bind("")["error"].is_null(), "an empty expression clears the binding");
+}
+
+#[test]
 fn renaming_a_node_rewrites_the_nd_references_that_name_it() {
     let g = Goofi::new();
     let producer = g.add("Oscillator");

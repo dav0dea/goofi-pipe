@@ -205,3 +205,29 @@ fn deleting_a_busy_node_never_waits_for_it_under_the_graph_lock() {
     assert!(held < std::time::Duration::from_millis(100),
             "delete returned in {held:?} — it waited on the busy node under the graph lock");
 }
+
+#[test]
+fn the_status_worker_drains_far_faster_than_it_broadcasts() {
+    // The drain is the RUNTIME's clock, not the UI's, and the two are separated inside one worker.
+    // Draining is what makes a node addressable and what advances every wire's three-phase attach,
+    // so pacing it at the rate the events go out at would make a cable take three broadcast periods
+    // — a second and a half at 2 Hz — to carry its first frame.
+    let g = Goofi::new();
+    let src = g.add("_TestCounter");
+    let buf = g.add("Buffer");
+    let probe = g.probe(buf, "out"); // opened before the link: the data services keep no history
+    g.link(src, "out", buf, "data");
+
+    // Under the broadcast period, because a worker draining on the broadcast's clock cannot have
+    // drained anything yet at this point — and generously over what the sequence costs when the
+    // drain runs on its own: three acks and the source's first emit, a few tens of ms.
+    let budget = std::time::Duration::from_millis(400);
+    let t = std::time::Instant::now();
+    while t.elapsed() < budget {
+        if probe.latest().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the consumer emitted nothing in {budget:?}: the wire is advancing at the event rate");
+}
