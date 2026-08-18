@@ -117,8 +117,23 @@ impl Goofi {
     pub async fn serve(&self) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // As the CLI does once it knows the bound port: a URL a spawned harness is handed has to be
+        // one this very process answers, which is the whole claim `/mcp/<instance>` makes.
+        self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
         tokio::spawn(async move { goofi_bridge::serve_app(listener, served, None).await.unwrap() });
+        format!("ws://{addr}")
+    }
+
+    /// As [`Goofi::serve`], but also mounting a built SPA on the fallback route — so the static
+    /// page is a real route rather than an argued one.
+    pub async fn serve_spa(&self, dir: std::path::PathBuf) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = self.state.clone();
+        tokio::spawn(async move {
+            goofi_bridge::serve_app(listener, served, Some(dir)).await.unwrap()
+        });
         format!("ws://{addr}")
     }
 
@@ -451,4 +466,55 @@ pub async fn holds_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool 
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     f()
+}
+
+/// The `host:port` inside a `ws://` base, for the HTTP half of the same server.
+pub fn host(base: &str) -> &str {
+    base.trim_start_matches("ws://")
+}
+
+/// One HTTP request over a raw `TcpStream`, answering `(status, head, body)`.
+///
+/// Hand-rolled for two reasons. `Connection: close` makes a reply "read to EOF", which is smaller
+/// than the dev-dependency an HTTP client crate would add; and an HTTP client crate cannot ask the
+/// WebSocket-upgrade question the Origin guard has to be asked. The body stays BYTES — a `.gfi` is
+/// a zip, and lossy-decoding it to a string would corrupt exactly what those tests are about.
+pub async fn http(
+    addr: &str,
+    method: &str,
+    path: &str,
+    headers: &str,
+    body: &[u8],
+) -> (u16, String, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).await.unwrap();
+    s.write_all(body).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(WAIT, s.read_to_end(&mut raw))
+        .await
+        .expect("the endpoint answered before the deadline")
+        .unwrap();
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("a well-formed HTTP reply");
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head, raw[split + 4..].to_vec())
+}
+
+/// One MCP `tools/call`, answering the tool's rendered text. Fails if the tool reported an error.
+pub async fn tool(addr: &str, name: &str, args: Value) -> String {
+    let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": { "name": name, "arguments": args } });
+    let (status, _, body) =
+        http(addr, "POST", "/mcp", "Content-Type: application/json\r\n", req.to_string().as_bytes())
+            .await;
+    assert_eq!(status, 200, "{name} answered {status}");
+    let reply: Value = serde_json::from_slice(&body).expect("a JSON-RPC reply");
+    assert_eq!(reply["result"]["isError"], json!(false), "{name} failed: {}", reply["result"]);
+    reply["result"]["content"][0]["text"].as_str().unwrap().to_string()
 }

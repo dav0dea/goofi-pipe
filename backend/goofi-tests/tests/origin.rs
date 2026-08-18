@@ -19,7 +19,7 @@
 //! the WS question and a WS client crate cannot ask the HTTP one, and the point here is that ONE
 //! guard answers both the same way.
 
-use goofi_bridge::{serve_app, AppState};
+use goofi_tests::{host, Goofi};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Every route the server serves, and how it is reached. The instance and node paths name nothing
@@ -59,13 +59,12 @@ fn spa() -> std::path::PathBuf {
     dir.path().to_path_buf()
 }
 
-async fn start_server() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    tokio::spawn(async move {
-        serve_app(listener, AppState::new(), Some(spa())).await.unwrap();
-    });
-    addr
+/// A server, and the instance that must outlive it — every test binds both, because dropping the
+/// `Goofi` releases the workspace mount the server is answering from.
+async fn start_server() -> (Goofi, String) {
+    let g = Goofi::new();
+    let addr = host(&g.serve_spa(spa()).await).to_string();
+    (g, addr)
 }
 
 /// Ask one route the guard's question and return the HTTP status. `method` is `WS` for an upgrade
@@ -120,7 +119,7 @@ async fn ask_as(addr: &str, path: &str, method: &str, o: &str, host: &str) -> u1
 /// `/control`, not a stream on `/data`, and above all not a shell on `/term`.
 #[tokio::test]
 async fn every_route_refuses_a_page_that_was_served_somewhere_else() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for (path, method) in ROUTES {
         let got = ask(&addr, path, method, Some("https://evil.example"), &addr).await;
         assert_eq!(got, 403, "`{path}` served a foreign origin");
@@ -132,7 +131,7 @@ async fn every_route_refuses_a_page_that_was_served_somewhere_else() {
 /// same-origin test above would go on passing while the door stood open.
 #[tokio::test]
 async fn a_rebound_name_is_refused_even_though_it_matches_the_host_it_sent() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let port = addr.rsplit(':').next().unwrap();
     let rebound = format!("evil.example:{port}");
     for (path, method) in ROUTES {
@@ -146,7 +145,7 @@ async fn a_rebound_name_is_refused_even_though_it_matches_the_host_it_sent() {
 /// the `/term` socket the agent panel opens, and the SPA that opened all three.
 #[tokio::test]
 async fn every_route_serves_the_page_goofi_served_itself() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for (path, method) in ROUTES {
         let got = ask(&addr, path, method, Some(&format!("http://{addr}")), &addr).await;
         assert_eq!(got, served(method), "`{path}` refused its own page");
@@ -160,7 +159,7 @@ async fn every_route_serves_the_page_goofi_served_itself() {
 /// so it says "a page caused this" for the requests `Origin` is silent about.
 #[tokio::test]
 async fn a_cross_site_request_is_refused_even_when_it_names_no_origin() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for site in ["cross-site", "same-site"] {
         for (path, method) in ROUTES {
             let sent = format!("Sec-Fetch-Site: {site}\r\n");
@@ -184,7 +183,7 @@ async fn a_cross_site_request_is_refused_even_when_it_names_no_origin() {
 /// this whole sub-project exists to serve while stopping nothing.
 #[tokio::test]
 async fn every_route_serves_a_client_that_is_not_a_browser_at_all() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for (path, method) in ROUTES {
         let got = ask(&addr, path, method, None, &addr).await;
         assert_eq!(got, served(method), "`{path}` refused a tool");
@@ -196,7 +195,7 @@ async fn every_route_serves_a_client_that_is_not_a_browser_at_all() {
 /// nothing — `:5173` talking to `:8000` is the whole frontend workflow.
 #[tokio::test]
 async fn a_second_loopback_port_is_a_developer_not_an_attacker() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for origin in ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"] {
         for (path, method) in ROUTES {
             let got = ask(&addr, path, method, Some(origin), &addr).await;
@@ -211,7 +210,7 @@ async fn a_second_loopback_port_is_a_developer_not_an_attacker() {
 /// can go without becoming one that authenticates.
 #[tokio::test]
 async fn a_lan_address_serves_its_own_page_and_not_its_neighbours() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let port = addr.rsplit(':').next().unwrap();
     let lan = format!("192.168.7.5:{port}");
     for (path, method) in ROUTES {

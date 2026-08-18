@@ -10,7 +10,8 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::{serve_app, term, AppState};
+use goofi_bridge::{term, AppState};
+use goofi_tests::{host, Goofi};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::connect_async;
@@ -20,19 +21,13 @@ type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// A live server, answering `/control`, `/term` and both MCP addresses from one `AppState`. The
-/// MCP port is pointed at the ephemeral listener, so the URL a spawn mints is one this very test
-/// can call back into — which is the whole claim `/mcp/<id>` makes.
-async fn start_server() -> (String, AppState) {
-    let state = AppState::new();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    state.set_mcp_port(addr.port());
-    let served = state.clone();
-    tokio::spawn(async move {
-        serve_app(listener, served, None).await.unwrap();
-    });
-    (addr.to_string(), state)
+/// A live server answering `/control`, `/term` and both MCP addresses from one instance. The
+/// `Goofi` comes back too: dropping it releases the workspace mount the harnesses run in.
+async fn start_server() -> (Goofi, String, AppState) {
+    let g = Goofi::new();
+    let addr = host(&g.serve().await).to_string();
+    let state = g.state.clone();
+    (g, addr, state)
 }
 
 async fn recv_text(ws: &mut Ws) -> Value {
@@ -137,7 +132,7 @@ async fn read_until(ws: &mut Ws, want: &str) -> String {
 /// child with the exit code it really chose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_harness_spawns_carries_bytes_and_is_reaped_with_its_exit_code() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await; // hello
 
@@ -217,7 +212,7 @@ fn field<'a>(seen: &'a str, key: &str) -> &'a str {
 /// variable without setting it for every other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_harness_runs_in_the_workspace_with_the_terminal_contract_overlaid() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
@@ -289,7 +284,7 @@ fn tail(seen: &str) -> String {
 /// `child.wait()` returns, which is exactly the race that dropped it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dying_harness_delivers_its_last_output_before_its_exit_code() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
@@ -339,7 +334,7 @@ async fn await_exit(ctl: &mut Ws, id: &str) -> Value {
 /// installed would prove nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_signals_first_and_kills_after_the_grace() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_deaf" })).await["instance_id"]
@@ -377,7 +372,7 @@ async fn a_stop_signals_first_and_kills_after_the_grace() {
 /// roster still calls it running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_patch_tears_down_the_harnesses_the_old_one_spawned() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
@@ -408,7 +403,7 @@ async fn a_new_patch_tears_down_the_harnesses_the_old_one_spawned() {
 /// central `/mcp` every external agent uses stays open, and the two undo stacks stay apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_instances_address_refuses_while_the_central_one_stays_open() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
@@ -475,7 +470,7 @@ async fn recv_size(ws: &mut Ws) -> (u64, u64) {
 /// because there is no change event coming to tell it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn several_views_of_one_terminal_agree_on_one_size() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await;
     let id = call(&mut ctl, 1, "spawn_harness", json!({ "harness": "_sh" })).await["instance_id"]
@@ -526,7 +521,7 @@ async fn several_views_of_one_terminal_agree_on_one_size() {
 /// switcher over a running harness.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_roster_survives_a_reconnect() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     let hello = recv_text(&mut ctl).await;
     assert_eq!(
@@ -565,7 +560,7 @@ async fn the_roster_survives_a_reconnect() {
 /// that attached LATE proves the child was running the whole time it was unobserved.
 #[tokio::test]
 async fn a_harness_runs_with_nobody_watching_and_is_still_going_when_a_viewer_arrives() {
-    let (addr, state) = start_server().await;
+    let (_g, addr, state) = start_server().await;
     let (mut ctl, _) = connect_async(format!("ws://{addr}/control")).await.unwrap();
     recv_text(&mut ctl).await; // hello
 

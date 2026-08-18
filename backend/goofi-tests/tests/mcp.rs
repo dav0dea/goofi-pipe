@@ -3,47 +3,27 @@
 //! goofi instance (user, 2026-08-10 — "Claude never spawns a server, it only creates its client"),
 //! so these tests drive one server from several clients rather than one server per client.
 //!
-//! The HTTP client is hand-rolled over a `TcpStream`: the requests are four fixed lines and
-//! `Connection: close` makes the reply "read to EOF", which is smaller than the dev-dependency an
-//! HTTP client crate would add for it.
-
 use goofi_bridge::ops::{Surface, MCP_PREFIX, REGISTRY};
-use goofi_bridge::{serve_app, spawn_stats, AppState};
+use goofi_tests::{host, http, Goofi};
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-async fn start_server() -> String {
-    let state = AppState::new();
-    spawn_stats(state.graph.clone(), state.events.clone(), 2);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        serve_app(listener, state, None).await.unwrap();
-    });
-    addr.to_string()
+/// A server, and the instance that must outlive it.
+async fn start_server() -> (Goofi, String) {
+    let g = Goofi::new();
+    let addr = host(&g.serve().await).to_string();
+    (g, addr)
 }
 
-/// One HTTP request to the MCP endpoint, returning `(status, body)`. `Connection: close` is what
-/// makes the reply readable without parsing `Content-Length`.
+/// One request to the MCP endpoint. The extra headers are what a model provider's client sends.
 async fn request(addr: &str, method: &str, body: &str) -> (u16, String) {
-    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let head = format!(
-        "{method} /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
-         Accept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2025-06-18\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    s.write_all(head.as_bytes()).await.unwrap();
-    s.write_all(body.as_bytes()).await.unwrap();
-    let mut raw = Vec::new();
-    tokio::time::timeout(std::time::Duration::from_secs(5), s.read_to_end(&mut raw))
-        .await
-        .expect("the endpoint answered within 5s")
-        .unwrap();
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let (head, body) = text.split_once("\r\n\r\n").expect("a well-formed HTTP reply");
-    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
-    (status, body.to_string())
+    let headers = "Content-Type: application/json
+\
+                   Accept: application/json, text/event-stream
+\
+                   MCP-Protocol-Version: 2025-06-18
+";
+    let (status, _, body) = http(addr, method, "/mcp", headers, body.as_bytes()).await;
+    (status, String::from_utf8_lossy(&body).into_owned())
 }
 
 /// A JSON-RPC call, asserting the reply carries the id it was sent with — the property that makes
@@ -107,7 +87,7 @@ async fn tool_names(addr: &str) -> Vec<String> {
 /// a surface decision fails HERE rather than shipping silently.
 #[tokio::test]
 async fn the_tool_list_is_exactly_the_registrys_mcp_surface() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let mut served = tool_names(&addr).await;
     let mut want: Vec<String> = REGISTRY
         .iter()
@@ -136,7 +116,7 @@ async fn the_tool_list_is_exactly_the_registrys_mcp_surface() {
 /// registry; this pins it on the artifact actually served, which is what a provider reads.
 #[tokio::test]
 async fn every_served_tool_name_fits_the_prefixed_budget() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     for name in tool_names(&addr).await {
         assert!(
             name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
@@ -155,7 +135,7 @@ async fn every_served_tool_name_fits_the_prefixed_budget() {
 /// the op cannot run without.
 #[tokio::test]
 async fn each_tool_advertises_its_arguments_and_which_are_required() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let reply = rpc(&addr, 1, "tools/list", json!({})).await;
     let tools = reply["result"]["tools"].as_array().unwrap().clone();
     let add = tools.iter().find(|t| t["name"] == json!("add_node")).expect("add_node is a tool");
@@ -175,7 +155,7 @@ async fn each_tool_advertises_its_arguments_and_which_are_required() {
 /// call reads the mutation back out of the live engine.
 #[tokio::test]
 async fn a_tool_call_round_trips_against_a_live_backend() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let init = rpc(&addr, 1, "initialize", json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {},
@@ -213,7 +193,7 @@ async fn a_tool_call_round_trips_against_a_live_backend() {
 /// must land, since they share the one graph rather than one graph each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_concurrent_clients_share_the_one_server() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let a = {
         let addr = addr.clone();
         tokio::spawn(async move {
@@ -251,7 +231,7 @@ async fn two_concurrent_clients_share_the_one_server() {
 /// against `true`.
 #[tokio::test]
 async fn undos_advertised_result_is_the_shape_its_arm_answers() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     call_tool(&addr, 1, "add_node", json!({ "type": "Oscillator" })).await;
     let answered: Value = serde_json::from_str(&call_tool(&addr, 2, "undo", json!({})).await)
         .expect("undo answers a JSON object");
@@ -271,7 +251,7 @@ async fn undos_advertised_result_is_the_shape_its_arm_answers() {
 /// but the truth in front of it.
 #[tokio::test]
 async fn remove_node_is_idempotent_and_says_so_where_an_agent_reads_it() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let answered = call_tool(&addr, 1, "remove_node", json!({ "node": "aaaaaaaaaaaa" })).await;
     assert!(answered.contains("\"removed\": false"), "a no-op success has to SAY so: {answered}");
     let existing = add_node(&addr, 2, "Oscillator").await;
@@ -290,7 +270,7 @@ async fn remove_node_is_idempotent_and_says_so_where_an_agent_reads_it() {
 /// are here — so a client told "yes" fails later on the missing fields instead of falling back now.
 #[tokio::test]
 async fn initialize_answers_with_a_revision_this_server_implements() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     // A supported ask comes back unchanged — the half that makes this a negotiation, not a constant.
     for asked in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
         let reply = rpc(&addr, 1, "initialize", json!({ "protocolVersion": asked })).await;
@@ -318,7 +298,7 @@ async fn initialize_answers_with_a_revision_this_server_implements() {
 /// second, silently-truncated copy of it to drift from.
 #[tokio::test]
 async fn initialize_carries_no_orientation_because_agents_md_is_the_only_channel() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let reply = rpc(&addr, 1, "initialize", json!({})).await;
     let result = &reply["result"];
     assert_eq!(result.get("instructions"), None, "the handshake still orients: {reply}");
@@ -333,7 +313,7 @@ async fn initialize_carries_no_orientation_because_agents_md_is_the_only_channel
 /// be answered. Batching was removed in 2025-06-18; the honest answer is a readable refusal.
 #[tokio::test]
 async fn a_batch_body_is_refused_rather_than_swallowed_as_a_notification() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let batch = json!([
         { "jsonrpc": "2.0", "id": 4, "method": "tools/list" },
         { "jsonrpc": "2.0", "id": 5, "method": "ping" }
@@ -350,7 +330,7 @@ async fn a_batch_body_is_refused_rather_than_swallowed_as_a_notification() {
 /// has no reply: 202 with an empty body, or a client hangs waiting for one.
 #[tokio::test]
 async fn the_endpoint_answers_a_get_and_a_notification_as_the_transport_requires() {
-    let addr = start_server().await;
+    let (_g, addr) = start_server().await;
     let (status, _) = request(&addr, "GET", "").await;
     assert_eq!(status, 405, "a GET must be refused, not answered with a stream");
     let (status, body) =

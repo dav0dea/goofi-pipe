@@ -19,7 +19,7 @@ goofi-view = { path = "../goofi-view" }
 goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
 serde_json = "1"
 # `Events` wraps the bridge's own broadcast receiver.
-tokio = { version = "1", features = ["sync", "rt", "net", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "net", "time", "io-util"] }
 # The `Client` below IS a WebSocket client — the transport suite's half of the harness.
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
