@@ -12,9 +12,11 @@
 //! The subprocess tier talks iceoryx2, so point GOOFI_SUBPROC_PYTHON at an
 //! iceoryx2-capable interpreter (e.g. the repo .gfivenv); it falls back to PYO3_PYTHON.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use goofi_core::globals::GlobalValue;
 use goofi_core::{Data, Param, Value};
+use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{
     Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
@@ -93,28 +95,41 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
 
 type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
-/// Build _TestConst(len) -> `n` fanned `type_name` nodes (all at one topo level,
-/// so they run concurrently on the pool), warm up, gate correctness, time `iters`
-/// whole-graph ticks, then a stability pass. Returns per-tick microseconds.
-fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, iters: u32) -> (f64, bool) {
+/// Build _TestConst(len) -> `n` fanned `type_name` nodes, warm up, gate correctness, measure the
+/// rate each one SUSTAINS over `window`, then re-check its error channel. Returns the per-node
+/// frames/s and whether every node stayed clean.
+///
+/// There is no tick to time: each node runs on its own thread and paces itself, so what compares
+/// three backends is the throughput each holds, counted from `meta["index"]` (which advances once
+/// per emit — a latest-wins subscriber legitimately catches fewer frames than were sent).
+fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, window: Duration) -> (f64, bool) {
     let mut g = Graph::new();
+    // Every producer carries `globals.default_ufreq` as its rate cap, so leaving it at the patch
+    // default would measure 30 Hz for all three backends alike.
+    g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6))).unwrap();
     g.register_dyn_type(manifest, factory);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();
     let mut nodes = Vec::new();
+    let mut probes = Vec::new();
     for _ in 0..n {
         let node = g.add_node(manifest.type_name, None).unwrap();
+        probes.push(OutputProbe::open(&g, node, "out"));
         g.add_link(src, "out", node, "data").unwrap();
         nodes.push(node);
     }
 
-    for _ in 0..100 {
-        g.tick();
+    // The links attach over a three-phase sequence that advances on acks, so nothing flows until
+    // the status drain has run a few times; a subprocess node also has an interpreter to start.
+    let warm = Instant::now();
+    while warm.elapsed() < Duration::from_secs(3) {
+        g.drain_status();
+        std::thread::sleep(Duration::from_millis(1));
     }
     // Correctness + clean-error gate on every node: 0.5*2+1 = 2.0.
-    for &node in &nodes {
-        let frame = g.latest_frame(node, "out").expect("backend produced a frame");
+    for (&node, probe) in nodes.iter().zip(&probes) {
+        let frame = probe.expect_frame(&mut g, "the backend to emit");
         if let Value::Array(s) = frame.value() {
             let first = f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap());
             assert!((first - 2.0).abs() < 1e-4, "wrong result {first}");
@@ -122,17 +137,22 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
         assert!(g.last_error(node).is_none(), "faulted: {:?}", g.last_error(node));
     }
 
+    let index = |g: &mut Graph, p: &OutputProbe| {
+        p.expect_frame(g, "the backend to emit").meta().index().unwrap_or(0)
+    };
+    let first: Vec<u64> = probes.iter().map(|p| index(&mut g, p)).collect();
     let t = Instant::now();
-    for _ in 0..iters {
-        g.tick();
-    }
-    let per_us = t.elapsed().as_secs_f64() / iters as f64 * 1e6;
+    std::thread::sleep(window);
+    let emitted: u64 = probes
+        .iter()
+        .zip(&first)
+        .map(|(p, start)| index(&mut g, p).saturating_sub(*start))
+        .sum();
+    let per_node = emitted as f64 / n as f64 / t.elapsed().as_secs_f64();
 
-    for _ in 0..2000 {
-        g.tick();
-    }
+    g.drain_status();
     let stable = nodes.iter().all(|&node| g.last_error(node).is_none());
-    (per_us, stable)
+    (per_node, stable)
 }
 
 fn main() {
@@ -149,27 +169,27 @@ fn main() {
         ("3. subprocess Python", &SUBPY_M),
     ];
 
-    println!("Backend parity — x*2+1 on a length-{len} f32 array, ticked by the one engine.\n");
-    println!("{:<26} {:>14} {:>18}   stability", "backend", "1 node", "8-node fan-out");
-    println!("{}", "-".repeat(74));
+    println!("Backend parity — x*2+1 on a length-{len} f32 array, in the one engine.\n");
+    println!("{:<26} {:>16} {:>18}   stability", "backend", "1 node", "8-node fan-out");
+    println!("{}", "-".repeat(78));
     for (label, m) in backends {
         // A fresh factory per pass (closures aren't Clone) via `rebuild`.
-        let (one, s1) = bench(m, rebuild(m, &python), len, 1, 4000);
-        let (eight, s8) = bench(m, rebuild(m, &python), len, 8, 2000);
+        let (one, s1) = bench(m, rebuild(m, &python), len, 1, Duration::from_secs(2));
+        let (eight, s8) = bench(m, rebuild(m, &python), len, 8, Duration::from_secs(2));
         println!(
-            "{label:<26} {one:>8.2} us/tick {eight:>10.2} us/tick   {} / {}",
+            "{label:<26} {one:>8.0} frames/s {eight:>10.0} frames/s   {} / {}",
             if s1 { "clean" } else { "FAULT" },
             if s8 { "clean" } else { "FAULT" }
         );
     }
 
     println!(
-        "\nInterpretation: native is the RT floor and stays flat under fan-out (parallel, no\n\
-         contention). In-process FT Python is fast for ONE node (it runs inline on the numpy\n\
-         owner thread) but the 8-node fan-out exposes the free-threaded biased-refcount penalty\n\
-         on worker threads. The subprocess tier pays a fixed pipe round-trip but its separate\n\
-         interpreters DON'T contend, so it scales near-flat — the empirical basis for routing\n\
-         hot fine-grained work to native/FT and GIL-unsafe-or-heavy work to the subprocess tier."
+        "\nInterpretation: native is the RT ceiling and holds its per-node rate under fan-out (one\n\
+         thread each, no contention). In-process FT Python is fast for ONE node but the 8-node\n\
+         fan-out exposes the free-threaded biased-refcount penalty across threads. The subprocess\n\
+         tier pays a fixed round-trip but its separate interpreters DON'T contend, so it scales\n\
+         near-flat — the empirical basis for routing hot fine-grained work to native/FT and\n\
+         GIL-unsafe-or-heavy work to the subprocess tier."
     );
 }
 

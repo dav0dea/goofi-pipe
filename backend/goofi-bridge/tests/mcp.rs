@@ -8,13 +8,13 @@
 //! HTTP client crate would add for it.
 
 use goofi_bridge::ops::{Surface, MCP_PREFIX, REGISTRY};
-use goofi_bridge::{serve_app, spawn_tick, AppState};
+use goofi_bridge::{serve_app, spawn_stats, AppState};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn start_server() -> String {
     let state = AppState::new();
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

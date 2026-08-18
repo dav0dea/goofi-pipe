@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::{serve_app, spawn_tick, spawn_workers, AppState};
+use goofi_bridge::{serve_app, spawn_stats, spawn_workers, AppState};
 use goofi_view::Reducible; // shape()/ndim() accessors on a decoded frame
 use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
@@ -43,7 +43,7 @@ async fn start_server() -> String {
 /// REPLACES the path and a copy taken beforehand would name the mount that load just released.
 async fn start_server_with_state() -> (String, AppState) {
     let state = AppState::new();
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let served = state.clone();
@@ -82,7 +82,7 @@ async fn start_server_with_runtime_type() -> String {
         .lock()
         .unwrap()
         .register_dyn_type(&SERVE_MANIFEST, Box::new(|_| unreachable!()));
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -4046,7 +4046,7 @@ async fn start_server_with_flaky_type() -> String {
             Box::new(FlakyBoot { fail: n == 0 })
         }),
     );
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -4193,7 +4193,7 @@ async fn start_server_with_picker_lacking_a_hook() -> String {
         .lock()
         .unwrap()
         .register_dyn_type(&MUTE_MANIFEST, Box::new(|_| Box::<MutePicker>::default()));
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -4209,7 +4209,7 @@ async fn start_server_with_picker() -> String {
         .lock()
         .unwrap()
         .register_dyn_type(&PICKER_MANIFEST, Box::new(|_| Box::<Picker>::default()));
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -4445,7 +4445,7 @@ async fn restarting_a_node_recovers_it_without_dirtying_the_patch() {
 async fn start_server_with_liveness(live: goofi_bridge::DataLiveness) -> (String, AppState) {
     let mut state = AppState::new();
     state.data_liveness = live;
-    spawn_tick(state.graph.clone());
+    spawn_stats(state.graph.clone(), state.events.clone(), 2);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let served = state.clone();

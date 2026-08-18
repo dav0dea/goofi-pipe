@@ -1,8 +1,8 @@
 //! End-to-end proof of the rewrite's core thesis: a real Python node (numpy,
 //! free-threaded) is hosted inside the live engine `Graph` through the runtime
-//! node-hosting seam (`register_dyn_type`), ticked by the same scheduler as
-//! native nodes, and — because the GIL is disabled — several Python nodes run
-//! *concurrently* on the scheduler's rayon pool.
+//! node-hosting seam (`register_dyn_type`), run by the same machinery as native
+//! nodes, and — because the GIL is disabled — several Python nodes run
+//! *concurrently*, each on its own thread.
 //!
 //! Runs only with the `embed` feature + a free-threaded interpreter, e.g.:
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib \
@@ -11,6 +11,7 @@
 #![cfg(feature = "embed")]
 
 use goofi_core::{Param, Value};
+use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{
     Isolation, Node, NodeManifest, OutputDecl, ParamDecl, SlotDecl,
@@ -86,18 +87,20 @@ fn real_python_node_runs_inside_the_engine_graph() {
     g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(4, 1, 1_000_000)).unwrap();
     let py = g.add_node("PyNode", None).unwrap();
+    // Opened before the link: the data services keep no history, so a probe attached after the
+    // node's first emit would have missed it.
+    let out = OutputProbe::open(&g, py, "out");
     g.add_link(src, "out", py, "data").unwrap();
 
-    g.tick();
-
-    // x=[3,3,3,3] -> x*2+1 = [7,7,7,7], produced by real numpy in-process.
-    let f = g.latest_frame(py, "out").expect("python node produced a frame");
+    // x=[3,3,3,3] -> x*2+1 = [7,7,7,7], produced by real numpy in-process. `wait_until` and not
+    // "the first frame": the source's params and the link both reach it asynchronously, so an
+    // earlier frame may carry the type defaults.
+    let f = out.wait_until(&mut g, "carries x*2+1 of the source", |d| first_f32(d) == 7.0);
     if let Value::Array(s) = f.value() {
         assert_eq!(s.shape(), &[4]);
     } else {
         panic!("expected array");
     }
-    assert_eq!(first_f32(&f), 7.0);
     assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled");
 }
 
@@ -116,13 +119,12 @@ fn lempel_ziv_runs_in_process_inline() {
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "length", Param::int(8, 1, 1_000_000)).unwrap();
     let lz = g.add_node("PyNode", None).unwrap();
+    let out = OutputProbe::open(&g, lz, "out");
     g.add_link(src, "out", lz, "data").unwrap();
 
-    g.tick();
-
-    // LZ76 of a constant (mean-thresholded to all-zeros, length 8) is 2 — a finite result
-    // from real numpy running inline on the tick.
-    assert_eq!(first_f32(&g.latest_frame(lz, "out").expect("LempelZiv produced a frame")), 2.0);
+    // LZ76 of a constant (mean-thresholded to all-zeros, length 8) is 2 — a finite result from
+    // real numpy running in-process.
+    out.wait_until(&mut g, "carries LZ76 of the constant", |d| first_f32(d) == 2.0);
     assert!(!PyNode::gil_enabled().unwrap(), "GIL stayed disabled");
 }
 
@@ -275,19 +277,24 @@ fn discovers_and_hosts_python_nodes_from_a_directory() {
     g.update_param(src, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(3, 1, 1_000_000)).unwrap();
     let py_node = g.add_node("Triple", None).unwrap();
+    let out = OutputProbe::open(&g, py_node, "out");
     g.add_link(src, "out", py_node, "data").unwrap();
-    g.tick();
-    assert_eq!(first_f32(&g.latest_frame(py_node, "out").unwrap()), 6.0);
+    out.wait_until(&mut g, "carries 3x the source", |d| first_f32(d) == 6.0);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn python_nodes_run_concurrently_in_the_scheduler() {
-    // One source fans out to N Python nodes, all at topological level 1, so the
-    // scheduler runs them concurrently. Each sleeps 25ms inside Python: with the
-    // GIL disabled the whole level overlaps, so the tick finishes far under the
-    // N*25ms a serialized (or GIL-bound) execution would take.
+fn python_nodes_run_concurrently() {
+    // One source fans out to N Python nodes, each of which sleeps 25 ms inside Python on every
+    // run. The source is a producer paced at the patch's `default_ufreq` (30 Hz), so a node that
+    // overlaps with its siblings keeps up with it — while N nodes taking it in turns would manage
+    // 1/(N*25ms) = 5 Hz each. The rate each node SUSTAINS is therefore the oracle, and it
+    // discriminates by a factor of six.
+    //
+    // Restated from a per-tick duration, which no longer exists: every node has its own thread by
+    // construction now. What is still worth pinning is that nothing SERIALIZES them — a shared
+    // lock in the host, or a pyo3 attach that queued, would show up here exactly as the GIL did.
     const N: usize = 8;
     let mut g = Graph::new();
     register_py(
@@ -309,21 +316,39 @@ fn python_nodes_run_concurrently_in_the_scheduler() {
 
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(1.0, -1e9, 1e9)).unwrap();
+    let mut probes = Vec::new();
     for _ in 0..N {
         let py = g.add_node("PyNode", None).unwrap();
+        probes.push(OutputProbe::open(&g, py, "out"));
         g.add_link(src, "out", py, "data").unwrap();
     }
 
-    g.tick(); // warm the pool + the interpreter threads
+    // Counted from `meta["index"]`, which advances once per emit, rather than from how many frames
+    // a probe catches: the data services are latest-wins one deep. Waiting for each node's FIRST
+    // frame is also the warm-up — every interpreter is up and running by the time the clock starts.
+    let index = |d: &goofi_core::Data| d.meta().index().expect("every emit is stamped");
+    let first: Vec<u64> = probes
+        .iter()
+        .map(|p| index(&p.expect_frame(&mut g, "each python node to emit")))
+        .collect();
     let t = std::time::Instant::now();
-    g.tick();
-    let elapsed = t.elapsed();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let secs = t.elapsed().as_secs_f64();
 
+    let rates: Vec<f64> = probes
+        .iter()
+        .zip(&first)
+        .map(|(p, start)| {
+            let now = index(&p.latest().expect("a node that emitted once keeps emitting"));
+            now.saturating_sub(*start) as f64 / secs
+        })
+        .collect();
+    let slowest = rates.iter().cloned().fold(f64::INFINITY, f64::min);
     assert!(
-        elapsed < std::time::Duration::from_millis(120),
-        "{N} Python nodes each sleeping 25ms took {elapsed:?}; expected GIL-free concurrent \
-         execution on the scheduler (sequential/GIL-bound would be ~{}ms)",
-        N * 25
+        slowest >= 15.0,
+        "{N} Python nodes each sleeping 25ms sustained {rates:?} frames/s; taking turns would be \
+         ~{:.1} Hz each, overlapping keeps up with the 30 Hz source",
+        1.0 / (N as f64 * 0.025),
     );
     assert!(!PyNode::gil_enabled().unwrap(), "GIL must stay disabled under concurrency");
 }

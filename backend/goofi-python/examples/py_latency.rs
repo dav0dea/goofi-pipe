@@ -3,12 +3,17 @@
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
 //!     cargo run -p goofi-python --features embed --example py_latency --release
 //!
-//! Measures (1) per-tick latency of a single Python node ticked by the engine and
-//! (2) how an N-wide fan-out of Python nodes scales on the parallel scheduler,
-//! which only overlaps because the interpreter is free-threaded (GIL off).
-use std::time::Instant;
+//! Measures (1) the rate a single engine-hosted Python node SUSTAINS and (2) how an N-wide
+//! fan-out of Python nodes scales, which only overlaps because the interpreter is free-threaded
+//! (GIL off).
+//!
+//! There is no tick to time any more — every node paces itself on its own thread — so the number
+//! is the throughput the graph actually holds, counted from each consumer's `meta["index"]`.
+use std::time::{Duration, Instant};
 
+use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
+use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 use goofi_python::inproc::PyNode;
@@ -40,8 +45,12 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     factory: py_stub_factory,
 };
 
-fn build(n: usize, src: &'static str, len: i64) -> Graph {
+fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     let mut g = Graph::new();
+    // Every producer carries `globals.default_ufreq` as its rate cap, so a benchmark that left it
+    // at the patch default would measure 30 Hz and nothing else. Raise the reference instead of
+    // unbinding each node: it is the one knob the whole graph reads.
+    g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6))).unwrap();
     g.register_dyn_type(
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
@@ -49,23 +58,41 @@ fn build(n: usize, src: &'static str, len: i64) -> Graph {
     let osc = g.add_node("_TestConst", None).unwrap();
     g.update_param(osc, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(osc, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();
+    let mut probes = Vec::new();
     for _ in 0..n {
         let py = g.add_node("PyNode", None).unwrap();
+        probes.push(OutputProbe::open(&g, py, "out"));
         g.add_link(osc, "out", py, "data").unwrap();
     }
-    g
+    (g, probes)
 }
 
-fn bench(label: &str, g: &mut Graph, iters: u32) {
-    for _ in 0..50 {
-        g.tick();
+/// The rate the fan-out sustains, summed over its consumers.
+///
+/// Counted from `meta["index"]`, which advances once per emit, rather than from how many frames a
+/// probe catches: the data services are latest-wins one deep, so a subscriber that looks less often
+/// than the producer emits legitimately sees fewer.
+fn bench(label: &str, g: &mut Graph, probes: &[OutputProbe], window: Duration) {
+    // The links attach over a three-phase sequence that advances on acks, so the chain carries
+    // nothing until the status drain has run a few times.
+    let warm = Instant::now();
+    while warm.elapsed() < Duration::from_secs(2) {
+        g.drain_status();
+        std::thread::sleep(Duration::from_millis(1));
     }
+    let index = |g: &mut Graph, p: &OutputProbe| {
+        p.expect_frame(g, "a python node to emit").meta().index().unwrap_or(0)
+    };
+    let first: Vec<u64> = probes.iter().map(|p| index(g, p)).collect();
     let t = Instant::now();
-    for _ in 0..iters {
-        g.tick();
-    }
-    let per = t.elapsed().as_secs_f64() / iters as f64;
-    println!("{label:<44} {:>8.1} us/tick  ({:>7.0} ticks/s)", per * 1e6, 1.0 / per);
+    std::thread::sleep(window);
+    let emitted: u64 = probes
+        .iter()
+        .zip(&first)
+        .map(|(p, start)| index(g, p).saturating_sub(*start))
+        .sum();
+    let per_node = emitted as f64 / probes.len() as f64 / t.elapsed().as_secs_f64();
+    println!("{label:<44} {per_node:>8.0} frames/s per node  ({:>7.0} total)", per_node * probes.len() as f64);
 }
 
 fn main() {
@@ -112,18 +139,18 @@ fn main() {
         "        return {'out': np.tanh(data.data) * 2.0 - data.data.mean()}\n",
     );
 
-    // (1) Single-node per-tick latency at a few array sizes.
+    // (1) Single-node sustained rate at a few array sizes.
     for len in [64i64, 1024, 16384] {
-        let mut g = build(1, work, len);
-        bench(&format!("1 Python node, len={len}"), &mut g, 5000);
+        let (mut g, probes) = build(1, work, len);
+        bench(&format!("1 Python node, len={len}"), &mut g, &probes, Duration::from_secs(2));
     }
 
-    // (2) Concurrency scaling: fan out N nodes over one source (all at level 1).
-    // Ideal free-threaded scaling keeps per-tick ~flat until cores saturate.
-    println!("--- fan-out scaling via the engine scheduler (len=1024, real numpy) ---");
+    // (2) Concurrency scaling: fan out N nodes over one source. Ideal free-threaded scaling keeps
+    // the PER-NODE rate ~flat until cores saturate.
+    println!("--- fan-out scaling on the async runtime (len=1024, real numpy) ---");
     for n in [1usize, 2, 4, 8, 16] {
-        let mut g = build(n, work, 1024);
-        bench(&format!("{n} Python nodes (parallel level)"), &mut g, 2000);
+        let (mut g, probes) = build(n, work, 1024);
+        bench(&format!("{n} Python nodes"), &mut g, &probes, Duration::from_secs(2));
     }
 
     // (3) Isolation: run the SAME numpy work on N raw std::threads, no engine,
