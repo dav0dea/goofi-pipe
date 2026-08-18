@@ -337,7 +337,18 @@ message** when none can `import goofi` — they never skip, and nothing in the s
 `#[ignore]`d. `GOOFI_SUBPROC_TEST_PYTHON` / `GOOFI_PYMOD_TEST_PYTHON` / `GOOFI_FT_PYTHON`
 override the interpreter choice.
 
-If `/dev/shm/iox2_*` accumulates after a crash, delete the stale files before rerunning.
+**`/dev/shm/iox2_*` is not a leak, and two reviews have now misread it as one.** The count PEAKS
+during a run — 1181 measured across a full workspace run — and settles back to 1, because every
+node releases its shared memory when it drops. A crashed run drops nothing, and the next process's
+startup sweep (`runtime::reclaim_stale_resources`) reclaims what it left. Delete the files by hand
+only when you want a clean measurement, never as a fix.
+
+`/tmp/iceoryx2/nodes` used to grow by about 1000 empty directories per `goofi-engine` run, which
+made every later test binary slower — `goofi-python`'s subprocess tests took 529 s instead of 8.8 s.
+That was a drop-ORDER defect, not a sweep failure: four structs declared their iceoryx2 node before
+the ports built from it, and Rust drops a struct's fields in declaration order, so the node could
+not remove its own directory. Fixed in `11bf182c`. **A struct that owns an iceoryx2 node beside its
+ports must declare the node LAST.**
 
 **Never** background CPU load with `(cmd &)` subshells when benchmarking — leaked
 processes outlive the test and corrupt every later latency measurement.
