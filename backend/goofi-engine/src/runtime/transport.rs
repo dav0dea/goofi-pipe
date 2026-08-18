@@ -689,7 +689,10 @@ mod tests {
         let cfg = *service.static_config();
 
         assert_eq!(cfg.max_subscribers(), 1, "one reader, by construction");
-        assert_eq!(cfg.subscriber_max_buffer_size(), MESSAGE_BUFFER, "and it is a STREAM, not a cell");
+        // Spelled out, not read back off `MESSAGE_BUFFER`: an oracle that asks the constant under
+        // test what to expect moves with it, so `MESSAGE_BUFFER = 1` passed this while failing 36
+        // other tests.
+        assert_eq!(cfg.subscriber_max_buffer_size(), 1024, "and it is a STREAM, not a cell");
         assert!(
             reserved_bytes(&cfg, MESSAGE_SLICE) <= 4 * 1024 * 1024,
             "a node owns two of these: {} bytes",

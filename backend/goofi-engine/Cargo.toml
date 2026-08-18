@@ -21,7 +21,7 @@ iceoryx2 = "0.9.3"
 # One line: the random scope a graph's service names live in.
 getrandom = "0.3"
 indexmap = "2"
-rayon = "1"
+
 # Control and status travel msgpack-encoded, so the thread and subprocess cases are one codec.
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }

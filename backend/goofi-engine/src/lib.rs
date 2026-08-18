@@ -4981,13 +4981,19 @@ mod tests {
         // D1 again, from the other side: an unwired node with no autotrigger is "a disconnected
         // node floating in space" — we never asked it to run, so it has nothing to report.
         let mut g = Graph::new();
-        let n = g.add_node("_TestRequired", None).unwrap();
+        let n = capped(&mut g, "_TestRequired", 5.0);
         let out = OutputProbe::open(&g, n, "out");
         assert!(out.silent(&mut g), "it emitted nothing");
         assert!(
             stays(&mut g, |g| g.last_error(n).is_none()),
             "a node that never ran cannot be missing an input",
         );
+        // The control, without which this holds just as well for a node that can never run at all:
+        // the SAME node, asked to run and fed, does.
+        g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
+        let src = const_src(&mut g, 4.0);
+        g.add_link(src, "out", n, "data").unwrap();
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the fed node to run")), 1.0);
     }
 
     #[test]
@@ -5013,6 +5019,12 @@ mod tests {
             g.last_error(n) == Some("required input slot `data` has no data")
         });
         assert!(out.silent(&mut g), "so `process` was never entered");
+
+        // The control: give the wired-but-empty producer something to say, and the same node runs.
+        // Without it the silence holds for a node that could never have run at all, which is the
+        // opposite of what D1 says.
+        g.add_link(src, "out", silent, "data").unwrap();
+        assert!(out.frame(&mut g).is_some(), "the same node, with its required slot fed, runs");
     }
 
     // ---- the initialization gate (D3) --------------------------------------
@@ -5120,14 +5132,22 @@ mod tests {
 
     #[test]
     fn remove_node_drops_links() {
+        // The LINK TABLE is the oracle, because the stream cannot be one: the echo falls silent
+        // whether or not the link record went with its producer — the producer is gone either way.
+        // Measured: deleting `remove_node`'s `links.retain` left this test green on the silence
+        // alone, and a link naming a dead uid rides the `.gfi` and re-resolves onto whatever is
+        // born there next.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
         g.add_link(src, "out", echo, "in").unwrap();
         let out = OutputProbe::open(&g, echo, "out");
+        assert_eq!(g.links_view().len(), 1);
+
         g.remove_node(src).unwrap();
         assert!(!g.contains(src));
-        assert!(out.silent(&mut g), "the echo has no input left, so nothing triggers it");
+        assert!(g.links_view().is_empty(), "the link went with the node it named");
+        assert!(out.silent(&mut g), "and nothing is left to trigger the echo");
     }
 
     #[test]
@@ -5457,6 +5477,50 @@ mod tests {
         wait_for(&mut g, "the scan to reach the record", |g| {
             options_of(g, uid, "audio", "device") == Some(vec!["dev0".to_string()])
         });
+    }
+
+    /// A node that will not stop: its `process` sleeps far past [`SHUTDOWN_WAIT`], so the halt flag
+    /// is not looked at again within the window.
+    struct Wedged;
+    impl Node for Wedged {
+        fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            std::thread::sleep(Duration::from_secs(10));
+            Ok(())
+        }
+    }
+    static WEDGED: NodeManifest = NodeManifest {
+        type_name: "_TestWedged",
+        category: "test",
+        doc: "sleeps far past the shutdown ceiling",
+        inputs: &[],
+        outputs: P_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::InProcess,
+        producer: true,
+        factory: || Box::new(Wedged),
+    };
+
+    #[test]
+    fn a_shutdown_gives_up_rather_than_waiting_out_a_wedged_node() {
+        // `shutdown` waits, and the whole reason it is a CEILING and not a join is that a node
+        // which will not stop must not be able to stop the process from exiting. What such a node
+        // leaves behind is exactly what the startup sweep is for.
+        //
+        // Both bounds, because either alone is satisfied by the wrong thing: without the upper one
+        // a join passes, and without the lower one a shutdown that never waits at all does.
+        let mut g = Graph::new();
+        g.register_dyn_type(&WEDGED, Box::new(|_| Box::new(Wedged)));
+        let n = g.add_node("_TestWedged", None).unwrap();
+        wait_for(&mut g, "the node to be inside its long process", |g| g.node_stage(n) == "ready");
+
+        let t = Instant::now();
+        drop(g);
+        assert!(t.elapsed() >= SHUTDOWN_WAIT, "it did wait: {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < SHUTDOWN_WAIT + Duration::from_secs(2),
+            "but it gave up rather than joining: {:?}",
+            t.elapsed(),
+        );
     }
 
     #[test]
@@ -6772,6 +6836,22 @@ mod tests {
         // twice the samples per frame. A meta-only assertion would hold for a value that reached
         // the label and never the pacing.
         assert!(as_f32_vec(&f).len() > 30, "the block doubled: {} samples", as_f32_vec(&f).len());
+    }
+
+    #[test]
+    fn a_constant_expression_drives_the_node_too() {
+        // §2.1 has TWO doors onto the same field, and `a_bound_param_drives_what_the_node_emits`
+        // pins only one. A stream value arrives as a frame and is picked up by the run that reads
+        // it; a constant names no variable, so it is evaluated once inside `set_param` at the
+        // authoring moment — measured, that path survives deleting the pre-run evaluation entirely,
+        // which is exactly why it needs its own test rather than sharing one.
+        let mut g = eval_graph();
+        let osc = capped(&mut g, "Oscillator", 10.0);
+        let out = OutputProbe::open(&g, osc, "out");
+        out.wait_until(&mut g, "the literal sample rate", |d| d.meta().sfreq() == Some(250.0));
+
+        g.set_expression(osc, "oscillator", "sfreq", "500", true, false).unwrap();
+        out.wait_until(&mut g, "the constant to reach the field", |d| d.meta().sfreq() == Some(500.0));
     }
 
     #[test]
