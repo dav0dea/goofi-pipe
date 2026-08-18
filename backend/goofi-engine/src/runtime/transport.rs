@@ -450,12 +450,20 @@ pub fn reclaim_stale_resources() {
     });
 }
 
-/// The startup sweep, run before this process's first port exists. A `Once` rather than a call in
-/// `main`, because a test binary has no `main` of ours — and once per PROCESS is the point: it is
-/// exactly what replaced iceoryx2's own once-per-open rescan.
+/// Everything that happens once per PROCESS, before its first port exists. A `Once` rather than a
+/// call in `main`, because a test binary has no `main` of ours — and once per process is the point
+/// for the sweep: it is exactly what replaced iceoryx2's own once-per-service-open rescan.
 fn sweep_once() {
     static SWEPT: Once = Once::new();
     SWEPT.call_once(|| {
+        // iceoryx2 logs at Info by default and reads `IOX2_LOG_LEVEL` only when something asks it
+        // to — so setting that variable alone changes nothing, which is worth knowing before
+        // trying it. What Info prints here is not diagnostic: a multi-kilobyte `Notifier { .. }`
+        // dump per `FailedToDeliverSignal`, which is a doorbell datagram dropped because the
+        // consumer has not drained its socket yet. §3.3 makes that a NON-event — a ring is a hint,
+        // and a lost one costs a wake rather than a message — but an uncapped producer causes it
+        // at its own rate. Measured on one 306-test run: 41 753 blocks, 108 MB of stderr.
+        set_log_level_from_env_or(LogLevel::Error);
         reclaim_stale_resources();
     });
 }
