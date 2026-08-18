@@ -7,7 +7,7 @@
 //! Runs only with the `embed` feature + a free-threaded interpreter, e.g.:
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib \
 //!     PYTHONPATH=<ft-venv site-packages> \
-//!     cargo test -p goofi-python --features embed --test engine_integration
+//!     cargo test -p goofi-tests --features embed --test python_engine_integration
 #![cfg(feature = "embed")]
 
 use goofi_core::{Param, Value};

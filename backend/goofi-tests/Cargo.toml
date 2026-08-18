@@ -7,6 +7,11 @@ license.workspace = true
 # binary, so a release build links none of it.
 publish = false
 
+[features]
+# Forwards to goofi-python's, which LINKS libpython. Off by default, so `cargo test --workspace`
+# needs no interpreter; `cargo test -p goofi-tests --features embed` runs the in-process tier too.
+embed = ["goofi-python/embed", "dep:pyo3"]
+
 [dependencies]
 goofi-bridge = { path = "../goofi-bridge" }
 goofi-core = { path = "../goofi-core" }
@@ -17,6 +22,11 @@ goofi-view = { path = "../goofi-view" }
 # The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release
 # build of goofi-nodes leaves them out entirely.
 goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
+# The manager side of both Python tiers. `subproc` is unconditional — it only SPAWNS an
+# interpreter — so its suite runs in the default build.
+goofi-python = { path = "../goofi-python" }
+# The embed-only suites drive the interpreter directly (module hygiene, bootstrap order).
+pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 serde_json = "1"
 # `Events` wraps the bridge's own broadcast receiver.
 tokio = { version = "1", features = ["sync", "rt", "net", "time", "io-util"] }

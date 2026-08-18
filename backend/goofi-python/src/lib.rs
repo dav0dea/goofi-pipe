@@ -68,16 +68,3 @@ mod pyinit {
 #[cfg(feature = "embed")]
 pub(crate) use pyinit::attach;
 
-/// The whole crate's tests share ONE embedded interpreter while cargo runs them on parallel
-/// threads, so anything that reads process-global interpreter state (`sys._is_gil_enabled`) can
-/// otherwise observe a sibling mid-import and fail spuriously. Every test that drives the
-/// interpreter — in `inproc`'s `host`, `expr` and `discover` alike — holds this for its duration.
-#[cfg(all(test, feature = "embed"))]
-pub(crate) mod testlock {
-    static INTERP: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    pub(crate) fn interp() -> std::sync::MutexGuard<'static, ()> {
-        // Recover from a poisoned lock: one failing test must not cascade into all the others.
-        INTERP.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}

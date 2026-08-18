@@ -3,7 +3,7 @@
 //! other in-process host tests — every one of them would trip on its own first tick.
 //!
 //! Runs only with `embed` + a free-threaded interpreter:
-//!   cargo test -p goofi-python --features embed --test gil_tripwire
+//!   cargo test -p goofi-tests --features embed --test python_gil_tripwire
 #![cfg(feature = "embed")]
 
 use goofi_core::Data;

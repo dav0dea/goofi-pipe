@@ -7,7 +7,7 @@
 //! Runs only with `embed` + a free-threaded interpreter (the in-process host). The subprocess
 //! interpreter defaults to the same one (it has goofi+numpy); override with
 //! GOOFI_SUBPROC_TEST_PYTHON. Example:
-//!   cargo test -p goofi-python --features embed --test parity
+//!   cargo test -p goofi-tests --features embed --test python_parity
 #![cfg(feature = "embed")]
 
 use goofi_core::{Data, Meta, Param, Value};

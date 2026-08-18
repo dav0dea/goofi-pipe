@@ -88,7 +88,12 @@ fn py_type_from_discovered(path: &Path, d: Discovered) -> PyNodeType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testlock::interp;
+    /// Serializes access to the process-global interpreter, as `python_inproc.rs` does for its own
+/// binary. One line here beats a `pub(crate)` module in the crate root for one test.
+fn interp() -> std::sync::MutexGuard<'static, ()> {
+    static INTERP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    INTERP.lock().unwrap_or_else(|e| e.into_inner())
+}
     use goofi_node::ParamGroups;
 
     // `camel` is unit-tested in goofi-node (its owner); no need to re-test the re-export here.

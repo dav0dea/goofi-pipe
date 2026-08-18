@@ -258,11 +258,11 @@ cargo run                       # launches the backend + bridge, prints the URL
 # the interpreter is selectable: one probe per node file routes, and the subprocess tier
 # always runs .gfivenv, which `cargo run -p goofi-init` provisions.
 
-cargo test --workspace                      # must stay green, and warning-free
-cargo test -p goofi-python --features embed # BOTH Python tiers; `embed` adds the in-process
-#                                             # host, which needs .gfivenv-ft. Without it only
-#                                             # the subprocess tier's tests compile.
-cargo test -p goofi-pymod --features host   # the goofi package's own decode tests (InputSlot → probe::Slot)
+cargo test --workspace                     # must stay green, and warning-free
+cargo test -p goofi-tests --features embed # the suite PLUS the in-process Python tier, which
+#                                            # LINKS libpython and needs .gfivenv-ft. Without the
+#                                            # feature only the subprocess tier's suite compiles.
+cargo test -p goofi-pymod --features host  # the goofi package's own decode tests (InputSlot → probe::Slot)
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # ALWAYS check before declaring done
 #   `--all-targets` is load-bearing: a plain `cargo build` never compiles the integration-test
 #   targets, so a warning inside `tests/*.rs` (a non-snake-case test name, an unused import)
