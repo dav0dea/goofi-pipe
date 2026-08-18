@@ -14,6 +14,7 @@ members = [
     "backend/goofi-view",
     "backend/goofi-bridge",
     "backend/goofi-cli",
+    "backend/goofi-tests",
 ]
 
 # Everything except `goofi-init`. Two binaries in the default set make a bare `cargo run`
@@ -32,6 +33,7 @@ default-members = [
     "backend/goofi-view",
     "backend/goofi-bridge",
     "backend/goofi-cli",
+    "backend/goofi-tests",
 ]
 
 [workspace.package]

@@ -1,0 +1,29 @@
+[package]
+name = "goofi-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Nothing depends on this crate; it holds the suite and the harness the suite runs on. It builds no
+# binary, so a release build links none of it.
+publish = false
+
+[dependencies]
+goofi-bridge = { path = "../goofi-bridge" }
+goofi-core = { path = "../goofi-core" }
+goofi-codec = { path = "../goofi-codec" }
+goofi-engine = { path = "../goofi-engine" }
+goofi-node = { path = "../goofi-node" }
+goofi-view = { path = "../goofi-view" }
+# The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release
+# build of goofi-nodes leaves them out entirely.
+goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
+serde_json = "1"
+# `Events` wraps the bridge's own broadcast receiver.
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+# The transport suite alone speaks the real socket. Every other test drives `Goofi::call`.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+tempfile = "3"

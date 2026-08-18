@@ -672,6 +672,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-tests"
+version = "3.1.0"
+dependencies = [
+ "futures-util",
+ "goofi-bridge",
+ "goofi-codec",
+ "goofi-core",
+ "goofi-engine",
+ "goofi-node",
+ "goofi-nodes",
+ "goofi-view",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+]
+
+[[package]]
 name = "goofi-view"
 version = "3.1.0"
 dependencies = [
