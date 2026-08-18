@@ -973,8 +973,8 @@ impl Graph {
     ///
     /// This is where a node gets its manager-side thread (§5). The transport is created HERE rather
     /// than on that thread because it is the one step whose failure has nowhere to be reported to —
-    /// without services there is no status service to carry a fault — so it becomes a
-    /// [`runtime::NodeFault::Boot`] on the entry directly. Everything after it, `setup()` included,
+    /// without services there is no status service to carry a fault — so it is written straight
+    /// into the entry's `setup_error`. Everything after it, `setup()` included,
     /// runs on the node's own thread and off the graph lock.
     fn insert_node_at(
         &mut self,
@@ -2620,15 +2620,7 @@ impl Graph {
                     entry.last_error = None;
                 }
                 Some(runtime::NodeFault::Setup { msg, .. }) => entry.setup_error = Some(msg),
-                // `Boot` shares `last_error` with `Process` on purpose: the graph projects one
-                // node-level error string, and the two differ only in which side of the manager
-                // thread failed — which the node has already said in the message.
-                Some(runtime::NodeFault::Process { msg, .. } | runtime::NodeFault::Boot { msg, .. }) => {
-                    entry.last_error = Some(msg)
-                }
-                // The roll-up, not the record: a node reports `Expr` only as the badge-level
-                // derivation of its binding-error map, and that map arrives as `BindingErrors`.
-                Some(runtime::NodeFault::Expr { .. }) => {}
+                Some(runtime::NodeFault::Process { msg, .. }) => entry.last_error = Some(msg),
             },
             runtime::Status::BindingErrors { errors } => {
                 for (key, msg) in errors {
@@ -3475,10 +3467,7 @@ mod tests {
         // has (§6.2), which is the projection's own way of saying "built, not yet heard from".
         wait_for(&mut g, "the node to report itself ready", |g| g.node_stage(uid) == "ready");
 
-        for (fault, msg) in [
-            (runtime::NodeFault::Process { msg: "boom".into(), since: 1.0 }, "boom"),
-            (runtime::NodeFault::Boot { msg: "no worker".into(), since: 1.0 }, "no worker"),
-        ] {
+        for (fault, msg) in [(runtime::NodeFault::Process { msg: "boom".into(), since: 1.0 }, "boom")] {
             g.apply_status(uid, runtime::Status::Fault { fault: Some(fault) });
             assert_eq!(g.last_error(uid), Some(msg));
             assert_eq!(g.node_stage(uid), "error");

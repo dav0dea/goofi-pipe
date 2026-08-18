@@ -191,17 +191,12 @@ fn expr_wire_key(slot: &str) -> Option<ParamKey> {
 pub enum NodeFault {
     Setup { msg: String, since: f64, last_attempt: f64 },
     Process { msg: String, since: f64 },
-    Boot { msg: String, since: f64 },
-    Expr { key: ParamKey, msg: String, since: f64 },
 }
 
 impl NodeFault {
     pub fn msg(&self) -> &str {
         match self {
-            NodeFault::Setup { msg, .. }
-            | NodeFault::Process { msg, .. }
-            | NodeFault::Boot { msg, .. }
-            | NodeFault::Expr { msg, .. } => msg,
+            NodeFault::Setup { msg, .. } | NodeFault::Process { msg, .. } => msg,
         }
     }
 }
@@ -268,11 +263,9 @@ pub struct NodeRuntime {
     pub(crate) fault: Option<NodeFault>,
     /// Binding errors are a MAP, not a fault variant: several bindings can be errored at once and
     /// each renders on its own inspector field. [`NodeFault::Expr`] is the derived node-level
-    /// roll-up ([`Self::node_fault`]), not the record.
+    /// roll-up, not the record: the GRAPH folds this map into the one node-level badge, ordering
+    /// by key (`entry_error`).
     pub(crate) binding_errors: HashMap<ParamKey, String>,
-    /// When the binding-error set last changed — the roll-up's `since`, which the map itself has
-    /// no room for.
-    binding_errors_since: f64,
     initialized: bool,
 }
 
@@ -342,7 +335,6 @@ impl NodeRuntime {
             stage: NodeStage::Setup,
             fault: None,
             binding_errors: HashMap::new(),
-            binding_errors_since: 0.0,
             initialized: false,
         };
         // §4's birth barrier: the graph addresses nothing until this lands, because the control
@@ -738,7 +730,6 @@ impl NodeRuntime {
         if errors.is_empty() {
             return;
         }
-        self.binding_errors_since = now_ms();
         self.transport.report(Status::BindingErrors { errors });
     }
 
@@ -929,17 +920,6 @@ impl NodeRuntime {
 
     /// The node-level roll-up the editor's badge draws: the standing fault, or — when there is
     /// none — the lowest-keyed binding error, which is `entry_error`'s precedence.
-    pub fn node_fault(&self) -> Option<NodeFault> {
-        if let Some(fault) = &self.fault {
-            return Some(fault.clone());
-        }
-        self.binding_errors.iter().min_by(|a, b| a.0.cmp(b.0)).map(|(key, msg)| NodeFault::Expr {
-            key: key.clone(),
-            msg: msg.clone(),
-            since: self.binding_errors_since,
-        })
-    }
-
     /// Run the node until it is halted — the body of its manager-side thread (§2). One loop for
     /// every execution kind: a native Rust node, an in-process Python node and a subprocess node's
     /// proxy differ only in what `process()` does.
@@ -1219,19 +1199,24 @@ mod tests {
     fn several_bindings_can_be_errored_at_once() {
         // spec §6: binding errors are a MAP, not a variant — each renders on its own inspector
         // field. Driven through the binding path, because a map filled by hand cannot show that
-        // the code keeps more than one; and the roll-up is read by key, because `matches!` on the
-        // variant alone would accept any of them.
+        // the code keeps more than one. Asserted per KEY, because a length check alone would pass
+        // against a map that stored one message under both keys.
+        //
+        // The graph is what folds this map into the single node badge, and it orders the fold by
+        // key — pinned there, on the live reader, by
+        // `Graph::multiple_binding_errors_surface_deterministically`.
         let (mut r, _t) = consumer_fixture();
         r.set_param(ParamKey::new("osc", "freq"), missing_expr("no node named `lfo`"));
         r.set_param(ParamKey::new("osc", "amp"), missing_expr("no node named `env`"));
         assert_eq!(r.binding_errors.len(), 2);
-        match r.node_fault() {
-            Some(NodeFault::Expr { key, msg, .. }) => {
-                assert_eq!(key, ParamKey::new("osc", "amp"), "the lowest key, as entry_error orders them");
-                assert_eq!(msg, "no node named `env`");
-            }
-            other => panic!("expected a rolled-up Expr fault for the badge, got {other:?}"),
-        }
+        assert_eq!(
+            r.binding_errors.get(&ParamKey::new("osc", "freq")).map(String::as_str),
+            Some("no node named `lfo`"),
+        );
+        assert_eq!(
+            r.binding_errors.get(&ParamKey::new("osc", "amp")).map(String::as_str),
+            Some("no node named `env`"),
+        );
     }
 
     #[test]
@@ -1568,7 +1553,6 @@ mod tests {
             },
         );
         assert_eq!(r.binding_errors.get(&key).map(String::as_str), Some("no node named `ghost`"));
-        assert!(matches!(r.node_fault(), Some(NodeFault::Expr { .. })));
 
         // What clears it is the GRAPH re-resolving and re-sending, never an arrival: a `Missing`
         // variable is by construction absent from the binding's `streams`, so no wire addresses it
