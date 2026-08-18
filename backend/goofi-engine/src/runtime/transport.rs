@@ -11,9 +11,11 @@
 //! code serves a thread and a subprocess.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock, Once};
 use std::time::Duration;
 
+use iceoryx2::config::Config;
+use iceoryx2::node::NodeState;
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
@@ -410,7 +412,52 @@ impl ControlSink for NodeChannel {
 /// `max_nodes`, so minting one per wire would both leak per re-plan and lower the real fan-out
 /// ceiling below the configured one.
 pub fn iox_node() -> Result<IoxNode, String> {
-    NodeBuilder::new().create::<Svc>().map_err(|e| format!("iox node: {e}"))
+    sweep_once();
+    NodeBuilder::new().config(iox_config()).create::<Svc>().map_err(|e| format!("iox node: {e}"))
+}
+
+/// The iceoryx2 configuration every goofi port is built against: the global defaults with the two
+/// AUTOMATIC dead-node cleanup passes turned off.
+///
+/// They reclaim what a crashed run left, and they do it by rescanning every stale
+/// `/tmp/iceoryx2/nodes/<id>` on every service open and every service creation — work that only
+/// ever needs doing once per process. Measured on a machine that had accumulated 853 of them: a
+/// multi-kilobyte `[W] SharedNodeState` dump per hit, one rescan per port, and 105 such blocks in a
+/// short test run. [`reclaim_stale_resources`] does the same job once, at startup, where it can
+/// also be reasoned about — which is the only reason turning these off is safe.
+pub(crate) fn iox_config() -> &'static Config {
+    static CONFIG: OnceLock<Config> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let mut config = Config::global_config().clone();
+        config.global.service.cleanup_dead_nodes_on_open = false;
+        config.global.node.cleanup_dead_nodes_on_creation = false;
+        config
+    })
+}
+
+/// Remove the shared memory a CRASHED run left behind. A graceful exit needs none of this — an iceoryx2 node removes its own resources when
+/// it drops — but a killed process drops nothing, and its segments stay allocated against RAM until
+/// something takes them.
+///
+/// Called once per process by [`sweep_once`]; public so a host can also run it explicitly at
+/// startup, which is the same call and therefore the same single sweep.
+pub fn reclaim_stale_resources() {
+    let _ = IoxNode::list(iox_config(), |state| {
+        if let NodeState::Dead(view) = state {
+            let _ = view.try_remove_stale_resources();
+        }
+        CallbackProgression::Continue
+    });
+}
+
+/// The startup sweep, run before this process's first port exists. A `Once` rather than a call in
+/// `main`, because a test binary has no `main` of ours — and once per PROCESS is the point: it is
+/// exactly what replaced iceoryx2's own once-per-open rescan.
+fn sweep_once() {
+    static SWEPT: Once = Once::new();
+    SWEPT.call_once(|| {
+        reclaim_stale_resources();
+    });
 }
 
 /// The event service every door is: the three id ranges of §3.2 budgeted against one ceiling, and
@@ -522,6 +569,21 @@ mod tests {
         let samples = cfg.max_subscribers() * (cfg.subscriber_max_buffer_size() + cfg.subscriber_max_borrowed_samples())
             + cfg.history_size();
         samples * slice
+    }
+
+    #[test]
+    fn the_ports_are_built_against_a_config_with_the_automatic_sweeps_off() {
+        // iceoryx2 reclaims dead nodes by rescanning every stale `/tmp/iceoryx2/nodes/<id>` on
+        // every service open AND every service creation. Measured against 853 accumulated records:
+        // a multi-kilobyte `[W] SharedNodeState` dump per hit and one rescan per port. It is safe
+        // to turn off only because `reclaim_stale_resources` does the same job once at startup.
+        //
+        // Read back off a real NODE, not off the constant: a config that is built correctly and
+        // then not handed to `NodeBuilder` is exactly the failure this has to be able to see.
+        let node = iox_node().expect("an iceoryx2 node");
+        let cfg = node.config();
+        assert!(!cfg.global.service.cleanup_dead_nodes_on_open, "no rescan per service open");
+        assert!(!cfg.global.node.cleanup_dead_nodes_on_creation, "and none per service creation");
     }
 
     #[test]

@@ -429,6 +429,24 @@ impl Default for Graph {
     }
 }
 
+/// How long [`Graph::shutdown`] waits for its node threads to release their shared memory. A node
+/// looks at its halt flag at every wake, so the usual cost is well under `PARK_CEILING`; the
+/// ceiling is for one inside a long `process()`. A ceiling and not a join, because a wedged node
+/// must not be able to wedge the exit — the leftovers of one that misses it are exactly what
+/// [`runtime::reclaim_stale_resources`] takes on the next startup.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+
+impl Drop for Graph {
+    /// Release this graph's shared memory before the process can leave without it. An iceoryx2 node
+    /// removes its segments when it DROPS, and a node's transport is owned by the node's own
+    /// thread — so raising the halt flags and returning leaves every segment allocated if the
+    /// process exits before the threads notice. Measured after one such run: 82 leaked
+    /// `/dev/shm/iox2_*` files holding 4.7 GB, and shared memory counts against RAM.
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 /// Write a node's param record: load, clone, mutate, swap. Copy-on-write because the record is
 /// SHARED with the node's own thread (§5.1) — a reader mid-`process` keeps the version it loaded,
 /// and the next load sees the whole edit or none of it. Param edits are user-paced, so the clone
@@ -491,6 +509,31 @@ impl Graph {
 
     /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
     /// `.gfi`, and (via `snapshot()`) expression eval + node setup/process.
+    /// Stop every node and WAIT for each to release its shared memory, up to [`SHUTDOWN_WAIT`].
+    ///
+    /// The waiting is the whole point, and it is why this is not what `clear()` does: a load
+    /// destroys nodes under the graph mutex the bridge holds, and the segments of a node that has
+    /// not noticed yet are released a moment later by its own thread. Only a process about to EXIT
+    /// has no "a moment later".
+    pub fn shutdown(&mut self) {
+        for entry in self.nodes.values() {
+            entry.host.halt.stop();
+            if let Some(channel) = &entry.host.channel {
+                channel.wake();
+            }
+        }
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        while self.nodes.values().any(|e| !e.host.halt.released()) {
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The graph's OWN end of each node goes here too: `NodeChannel` holds an iceoryx2 node of
+        // its own, and it is dropped with the entry.
+        self.nodes.clear();
+    }
+
     pub fn globals(&self) -> &goofi_core::globals::GlobalStore {
         &self.globals
     }
@@ -5325,6 +5368,80 @@ mod tests {
         wait_drops(&drops, 2, "a dropped graph left threads running");
     }
 
+    /// Whether a publish/subscribe service by this name exists — the graph's own view of whether a
+    /// node's shared memory is still allocated, asked of iceoryx2 rather than of the graph.
+    fn data_service_exists(name: &str) -> bool {
+        <iceoryx2::service::ipc_threadsafe::Service as iceoryx2::service::Service>::does_exist(
+            &name.try_into().expect("a valid service name"),
+            crate::runtime::iox_config(),
+            iceoryx2::service::messaging_pattern::MessagingPattern::PublishSubscribe,
+        )
+        .unwrap_or(false)
+    }
+
+    #[test]
+    fn dropping_a_graph_releases_the_shared_memory_its_nodes_held() {
+        // Stopping the threads is not the same as releasing what they hold. An iceoryx2 node
+        // removes its segments when it DROPS, and a node's transport is owned by that node's own
+        // thread — so a teardown that raises the halt flags and returns has released nothing at the
+        // moment the process is free to exit. Measured after one interrupted run: 82 leaked
+        // `/dev/shm/iox2_*` files holding 4.7 GB, and shared memory counts against RAM.
+        //
+        // The oracle is iceoryx2's own record, not a drop counter: the node INSTANCE being dropped
+        // is what `dropping_the_graph_stops_every_node_thread` already pins, and it was true
+        // throughout the leak.
+        let service = {
+            let mut g = Graph::new();
+            let n = g.add_node("_TestConst", None).unwrap();
+            let service = g.output_service_of(n, "out");
+            assert!(data_service_exists(&service), "the running node's output service is allocated");
+            service
+        };
+        assert!(!data_service_exists(&service), "and the graph took it with it");
+    }
+
+    #[test]
+    fn a_startup_sweep_reclaims_what_a_crashed_run_left_behind() {
+        // The other half: a killed process drops nothing, so its segments stay allocated until
+        // something takes them. iceoryx2 can only see such a node as `Dead` once its OWNING PROCESS
+        // is gone — a leak inside a live process is still `Alive` — so the leftovers have to be
+        // made by a real child that really dies, which is what this re-runs itself to do.
+        //
+        // The sweep is what replaced iceoryx2's own automatic cleanup, turned off in `iox_config`
+        // because that one rescans every stale node record on every service open.
+        let service = format!("goofi_{}_crashed_out_x", crate::runtime::service_instance());
+        let child = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", "--nocapture", "tests::leak_a_service_and_abort"])
+            .env("GOOFI_TEST_LEAK_SERVICE", &service)
+            .output()
+            .expect("run the leaking child");
+        assert!(!child.status.success(), "the child is meant to die, not to exit: {:?}", child.status);
+        assert!(data_service_exists(&service), "the dead child's service is still allocated");
+
+        // Swept in a bounded loop rather than once: `Node::list` walks a directory other tests in
+        // this binary are creating and removing entries in, and it answers Err rather than a
+        // partial list when one vanishes underneath it. Nothing but the sweep ever removes this,
+        // so the loop can only make a real failure slower.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while data_service_exists(&service) && Instant::now() < deadline {
+            crate::runtime::reclaim_stale_resources();
+        }
+        assert!(!data_service_exists(&service), "the sweep reclaimed what the dead node was holding");
+    }
+
+    /// The child half of [`a_startup_sweep_reclaims_what_a_crashed_run_left_behind`]: create a
+    /// service, leak the node that owns it, and die without unwinding. Inert unless the parent asks
+    /// for it by name AND sets the variable, so a normal run of the suite passes straight through.
+    #[test]
+    fn leak_a_service_and_abort() {
+        let Ok(name) = std::env::var("GOOFI_TEST_LEAK_SERVICE") else { return };
+        let node = crate::runtime::iox_node().expect("an iceoryx2 node");
+        let subscriber = crate::runtime::open_output_subscriber(&node, &name).expect("the service");
+        std::mem::forget(subscriber);
+        std::mem::forget(node);
+        std::process::abort();
+    }
+
 
     // ---- restart_node (in-place respawn) ----
 
@@ -6584,6 +6701,9 @@ mod tests {
         assert_eq!(info.source, "5", "authored source survives the toggle-off");
         // A disabled binding is not evaluated (the param keeps its literal default 0).
         let out = OutputProbe::open(&g, host, "out");
+        // The first frame is waited for rather than assumed: `stays` fails on its very first look
+        // if the node has not emitted yet, which reads as "the binding drove it" and is a race.
+        out.expect_frame(&mut g, "the node to emit at all");
         assert!(
             stays(&mut g, |_| out.latest().is_some_and(|d| first_f32(&d) == 0.0)),
             "disabled binding is inert",

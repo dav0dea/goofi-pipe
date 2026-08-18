@@ -79,9 +79,13 @@ mod wire;
 
 pub use mailbox::{Binding, Mailbox};
 pub use transport::{
-    door_service, iox_node, open_output_subscriber, output_service, service_base, ByteSubscriber,
-    Doorbell, IoxNode, IoxTransport, NodeChannel,
+    door_service, iox_node, open_output_subscriber, output_service, reclaim_stale_resources,
+    service_base, ByteSubscriber, Doorbell, IoxNode, IoxTransport, NodeChannel,
 };
+/// The iceoryx2 configuration every goofi port is built against — crate-visible because the tests
+/// ask iceoryx2 directly whether a service is still allocated, and it has to be the same config.
+#[cfg(test)]
+pub(crate) use transport::iox_config;
 /// Only [`Graph`] mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;
 #[cfg(test)]
@@ -124,14 +128,27 @@ struct UfreqMeter {
 /// and not a `Control::Terminate`: a node removed before it answered [`Status::Ready`] has no sink,
 /// and a whole-graph `clear` has no sequence to order.
 #[derive(Default)]
-pub struct Halt(AtomicBool);
+pub struct Halt {
+    stop: AtomicBool,
+    /// Set by the node's own thread once its [`NodeRuntime`] — and with it every iceoryx2 port and
+    /// the node behind them — has been DROPPED. That drop is what releases the node's shared
+    /// memory, and it is the only thing a teardown can usefully wait for: the halt flag says the
+    /// thread was asked, this says it is done.
+    released: AtomicBool,
+}
 
 impl Halt {
     pub fn stop(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
     }
     fn stopped(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.stop.load(Ordering::Relaxed)
+    }
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
     }
 }
 
@@ -947,7 +964,13 @@ pub fn spawn(
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name(format!("goofi-{}", manifest.type_name))
-        .spawn(move || NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt))
+        .spawn(move || {
+            // `run_forever` takes the runtime by value, so returning from it drops this node's
+            // whole iceoryx2 end. Only after that is the node's shared memory actually gone, which
+            // is why the flag is raised HERE and not inside the loop.
+            NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt.clone());
+            halt.release();
+        })
 }
 
 /// The number of frames a `Data` spans — its total element count (numpy `.size` for an array, `len`
