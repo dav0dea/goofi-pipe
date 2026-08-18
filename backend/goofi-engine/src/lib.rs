@@ -30,8 +30,6 @@ pub mod layout;
 pub mod command;
 pub use command::{Command, CommandHistory, ExprState, Outcome};
 
-/// The isolated-node execution tier (off-tick detached workers + latest-wins mailboxes).
-
 /// The expression rewrite: an authored source becomes a variable-keyed one plus its variable map.
 pub mod expr_rewrite;
 
@@ -6665,6 +6663,36 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_param_drives_what_the_node_emits() {
+        // Ledger item 7, end to end — and the only test that has it. Every other expression test
+        // here asserts a broken, disabled or unresolved binding falling back to the LITERAL, and
+        // all of them pass against an engine that never evaluates anything at all.
+        //
+        // Oscillator is the shape that makes the whole chain visible in one frame: `sfreq` is
+        // mirrored to a FIELD through `on_param_changed` (§2.1's only door for an evaluated value),
+        // and `process` reads that field to decide both how many samples a block carries and what
+        // the frame's `sfreq` meta says. So this fails if the value is not evaluated, if it is
+        // evaluated but never dispatched to the hook, or if the hook runs before the record moved.
+        let mut g = eval_graph();
+        let osc = capped(&mut g, "Oscillator", 10.0);
+        let out = OutputProbe::open(&g, osc, "out");
+        out.wait_until(&mut g, "the literal sample rate", |d| d.meta().sfreq() == Some(250.0));
+
+        // Driven by a PRODUCER, not by a constant. A constant is evaluated once at the authoring
+        // moment inside `set_param`, so it reaches the field even with §2.1's pre-run evaluation
+        // deleted — measured, and the first version of this test passed against exactly that.
+        // A stream value arrives later, as a frame, and only the run that reads it can pick it up.
+        let rate = const_src(&mut g, 500.0);
+        g.rename_node(rate, "rate").unwrap();
+        g.set_expression(osc, "oscillator", "sfreq", "nd('rate')", true, false).unwrap();
+        let f = out.wait_until(&mut g, "the EVALUATED sample rate", |d| d.meta().sfreq() == Some(500.0));
+        // And the block really was re-rated, not just re-labelled: 500 Hz into a 10 Hz node is
+        // twice the samples per frame. A meta-only assertion would hold for a value that reached
+        // the label and never the pacing.
+        assert!(as_f32_vec(&f).len() > 30, "the block doubled: {} samples", as_f32_vec(&f).len());
+    }
+
+    #[test]
     fn missing_ref_errors_and_keeps_last_value() {
         let mut g = eval_graph();
         let host = g.add_node("_TestConst", None).unwrap();
@@ -7778,9 +7806,9 @@ mod tests {
 
     #[test]
     fn ufreq_survives_the_data_plane_wire() {
-        // End-to-end through the bridge's exact seam: an engine-stamped frame,
-        // encoded as `goofi_codec::encode(latest_frame(..))` (see bridge/lib.rs),
-        // carries ufreq across the wire so the browser inspector shows it.
+        // End-to-end through the data plane's exact seam: an engine-stamped frame, encoded the way
+        // the reducer encodes what it read off a producer's output service, carries ufreq across
+        // the wire so the browser inspector shows it.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         let out = OutputProbe::open(&g, src, "out");

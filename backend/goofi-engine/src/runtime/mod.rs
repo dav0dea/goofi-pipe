@@ -30,13 +30,21 @@
 //!    slots and for an expression variable's pseudo-slot alike.
 //! 6. **The birth barrier** — a node publishes [`Status::Ready`] once its own services exist, and
 //!    the graph attaches its control sink on that report and not before. A `Control` sent earlier
-//!    would be published to a subscriber that does not exist yet, and pub/sub has no history.
+//!    would be published to a subscriber that does not exist yet, and pub/sub has no history. The
+//!    barrier is a WINDOW, though, and `add_node` answers inside it: what was said during it is
+//!    re-PLANNED on attach for anything with graph state to re-derive it from (item 9), and HELD
+//!    for anything without — a `RefreshParam` is a request, not a state, so `WirePlanner::send`
+//!    queues it rather than dropping it.
 //! 7. **Expressions are evaluated** — in the node, immediately before the run that reads them
 //!    (§2.1), from the mailboxes its variables name.
 //! 8. **[`Binding::evaluate`] holds the evaluator** — a rewritten source richer than one variable
 //!    goes to [`goofi_node::ExprEvaluator`] with §5.3's locals channel.
 //! 9. **`replan_slot`'s callers** — birth, removal, restart and load join the link and binding
-//!    changes, all of them through `Graph::attach_control_sink` / `Graph::slots_touching`.
+//!    changes, all of them through `Graph::attach_control_sink` / `Graph::slots_touching`. What
+//!    that walk names is every subscription touching the node — its input slots, the bindings on
+//!    either end of it, and **every param channel the graph has ever spoken on for it**. The last
+//!    is not a nicety: a plain literal param is neither a link nor a binding, so without it the
+//!    ordinary `add_node(); update_param()` pair fell into the birth window and was lost.
 //! 10. **`WirePlanner::is_idle`** — deleted. Every live node has a channel.
 //!
 //! Two things were DROPPED on purpose rather than deferred, and are listed so neither reads as an
