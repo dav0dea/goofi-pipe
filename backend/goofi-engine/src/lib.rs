@@ -542,8 +542,11 @@ impl Graph {
             std::thread::sleep(Duration::from_millis(1));
         }
         // The graph's OWN end of each node goes here too: `NodeChannel` holds an iceoryx2 node of
-        // its own, and it is dropped with the entry.
+        // its own — and the wire planner keeps a SECOND handle on it, which is why `remove_node`
+        // forgets a uid there as well as dropping its entry. Clearing the entries alone released a
+        // node's own transport and kept the graph's half of it for the process lifetime.
         self.nodes.clear();
+        self.wire.reset_channels();
     }
 
     /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
@@ -5483,6 +5486,24 @@ mod tests {
 
         g.remove_node(n).unwrap();
         gone_within(&door, "a removed node's doorbell outlived it");
+    }
+
+    #[test]
+    fn a_shutdown_releases_the_graphs_own_end_too() {
+        // The same second handle, one level up. `shutdown` cleared the ENTRIES and left the wire
+        // planner's sink map alone — so a graceful exit released each node's own transport and kept
+        // the graph's half of it, which is the half `remove_node` above has to forget by hand.
+        //
+        // It was invisible until the exit path actually called `shutdown`: measured on the real
+        // binary with two nodes, ctrl-C took `/dev/shm/iox2_*` from 25 files to 15, not to 0.
+        let mut g = Graph::new();
+        let n = g.add_node("_TestConst", None).unwrap();
+        let door = g.door_of(n);
+        wait_for(&mut g, "the node to become addressable", |g| g.node_stage(n) == "ready");
+        assert!(event_service_exists(&door), "the live node's doorbell is allocated");
+
+        g.shutdown();
+        gone_within(&door, "a stopped node's doorbell outlived the shutdown");
     }
 
     #[test]
