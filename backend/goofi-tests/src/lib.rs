@@ -12,6 +12,7 @@
 
 use std::time::{Duration, Instant};
 
+use futures_util::{SinkExt, StreamExt};
 use goofi_bridge::AppState;
 use serde_json::{json, Value};
 
@@ -44,6 +45,19 @@ impl Goofi {
     /// advances a wire's three-phase attach — without it nothing in the runtime ever completes.
     pub fn new() -> Goofi {
         let state = AppState::new();
+        goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
+        Goofi { state, session: "test".into() }
+    }
+
+    /// Boot one whose `/data` sockets probe on a short clock: fast enough that the suite never
+    /// waits on a production deadline, slow enough that ordinary scheduler jitter cannot trip it.
+    pub fn impatient() -> Goofi {
+        let mut state = AppState::new();
+        state.data_liveness = goofi_bridge::DataLiveness {
+            ping_interval: Duration::from_millis(100),
+            pong_deadline: Duration::from_millis(1000),
+            send_timeout: Duration::from_millis(200),
+        };
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
         Goofi { state, session: "test".into() }
     }
@@ -95,6 +109,17 @@ impl Goofi {
     /// arrangement.
     pub fn doc(&self) -> Value {
         self.call("get_state", json!({}))
+    }
+
+    /// Bind a real server on a free port and answer its `ws://host:port` base. For the suite that
+    /// tests the TRANSPORT — the `hello` snapshot, the binary sync relay, `/data`, `/term`, `/mcp`,
+    /// the Origin guard. Everything else drives [`Goofi::call`] and needs no socket at all.
+    pub async fn serve(&self) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let served = self.state.clone();
+        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, None).await.unwrap() });
+        format!("ws://{addr}")
     }
 
     /// Register a node type with a PER-INSTANCE factory — what the CLI does for a discovered
@@ -235,4 +260,195 @@ fn keys(v: &Value) -> Vec<String> {
     let mut k: Vec<String> = v.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
     k.sort();
     k
+}
+
+// ---------------------------------------------------------------------------
+// The transport half: a real WebSocket client, for the suite that tests the wire
+// ---------------------------------------------------------------------------
+
+pub use goofi_bridge::crdt::{GraphDoc, SyncMsg};
+pub use tokio_tungstenite::tungstenite::Message;
+
+pub type Ws = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+/// A `/control` client — what a browser tab is. Two interleaved channels on one socket: JSON for
+/// RPC and events, binary for CRDT sync frames.
+pub struct Client {
+    pub ws: Ws,
+    next_id: i64,
+    session: String,
+}
+
+impl Client {
+    /// Connect and take the `hello` snapshot, which every client is sent unprompted.
+    pub async fn connect(base: &str) -> (Client, Value) {
+        Client::connect_as(base, "test").await
+    }
+
+    pub async fn connect_as(base: &str, session: &str) -> (Client, Value) {
+        let (ws, _) = tokio_tungstenite::connect_async(format!("{base}/control")).await.unwrap();
+        let mut c = Client { ws, next_id: 1, session: session.into() };
+        let hello = c.text().await;
+        (c, hello["payload"].clone())
+    }
+
+    /// Send an RPC and return its result, skipping the events interleaved with the reply.
+    pub async fn call(&mut self, op: &str, payload: Value) -> Value {
+        match self.try_call(op, payload.clone()).await {
+            Ok(r) => r,
+            Err(e) => panic!("{op} {payload} was refused: {e}"),
+        }
+    }
+
+    pub async fn try_call(&mut self, op: &str, payload: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let req = json!({ "id": id, "op": op, "payload": payload, "session": self.session });
+        self.ws.send(Message::Text(req.to_string().into())).await.unwrap();
+        loop {
+            let m = self.text().await;
+            if m.get("id").and_then(Value::as_i64) == Some(id) {
+                return match m.get("error") {
+                    Some(e) => Err(e.as_str().map(str::to_owned).unwrap_or_else(|| e.to_string())),
+                    None => Ok(m["result"].clone()),
+                };
+            }
+        }
+    }
+
+    /// The next event named `name`, skipping the others.
+    pub async fn event(&mut self, name: &str) -> Value {
+        loop {
+            let m = self.text().await;
+            if m.get("event").and_then(Value::as_str) == Some(name) {
+                return m["payload"].clone();
+            }
+        }
+    }
+
+    /// The next TEXT frame, as JSON.
+    pub async fn text(&mut self) -> Value {
+        loop {
+            if let Message::Text(t) = self.next().await {
+                return serde_json::from_str(t.as_str()).expect("an event is JSON");
+            }
+        }
+    }
+
+    /// The next BINARY frame, skipping text.
+    pub async fn binary(&mut self) -> Vec<u8> {
+        loop {
+            if let Message::Binary(b) = self.next().await {
+                return b.to_vec();
+            }
+        }
+    }
+
+    async fn next(&mut self) -> Message {
+        tokio::time::timeout(WAIT, self.ws.next())
+            .await
+            .expect("the socket said nothing before the deadline")
+            .expect("the stream ended")
+            .expect("a websocket error")
+    }
+
+    /// Sync a FRESH replica off this socket and drain sync frames until `ready` holds. A fresh
+    /// replica advertises an empty state vector, so the server's reply is the COMPLETE current doc.
+    ///
+    /// `ready` must be POSITIVE about something the sync will deliver: an "absence" predicate is
+    /// already true of the empty replica, before a single frame lands.
+    pub async fn replica(&mut self, ready: impl Fn(&GraphDoc) -> bool) -> GraphDoc {
+        let mut doc = GraphDoc::new();
+        self.ws.send(Message::Binary(doc.sync_hello().into())).await.unwrap();
+        for _ in 0..60 {
+            if let Some(m) = SyncMsg::decode(&self.binary().await) {
+                doc.on_sync(m);
+            }
+            if ready(&doc) {
+                break;
+            }
+        }
+        doc
+    }
+}
+
+impl Client {
+    /// Send a raw text frame — for a test driving the envelope itself rather than an op.
+    pub async fn send(&mut self, text: String) {
+        self.ws.send(Message::Text(text.into())).await.unwrap();
+    }
+}
+
+/// The panel ids in an arrangement, as a replica reads them.
+pub fn panels(doc: &GraphDoc) -> Vec<String> {
+    doc.to_json()["arrangement"].as_object()
+        .map(|m| m.iter().filter(|(_, e)| e["kind"] == "panel").map(|(id, _)| id.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// A `/data` viewer — one subscriber on one (node, slot) stream. Binary frames are GOOF; a text
+/// frame is the inband ViewSpec a viewer publishes to say what it can draw.
+pub struct Viewer {
+    pub ws: Ws,
+}
+
+impl Viewer {
+    pub async fn open(base: &str, node: &str, slot: &str) -> Viewer {
+        let (ws, _) = tokio_tungstenite::connect_async(format!("{base}/data/{node}/{slot}"))
+            .await
+            .unwrap();
+        Viewer { ws }
+    }
+
+    /// Publish this viewer's constraints inband. The bridge folds every viewer's specs against the
+    /// real frame and reduces ONCE, on its own subscription to the producer.
+    pub async fn view(&mut self, specs: Value) {
+        self.ws.send(Message::Text(json!({ "op": "view", "specs": specs }).to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    /// The next GOOF frame, raw.
+    pub async fn frame(&mut self) -> Vec<u8> {
+        loop {
+            match tokio::time::timeout(WAIT, self.ws.next()).await {
+                Ok(Some(Ok(Message::Binary(b)))) => return b.to_vec(),
+                Ok(Some(Ok(_))) => {}
+                other => panic!("the data socket stopped before a frame arrived: {other:?}"),
+            }
+        }
+    }
+
+    /// The next frame, decoded — panics on anything the codec will not take.
+    pub async fn decoded(&mut self) -> goofi_core::Data {
+        let raw = self.frame().await;
+        goofi_codec::decode(&raw).expect("a decodable GOOF frame")
+    }
+
+    /// The close code the bridge answered with, for a subscription it refuses.
+    pub async fn close_code(&mut self) -> Option<u16> {
+        loop {
+            match tokio::time::timeout(WAIT, self.ws.next()).await {
+                Ok(Some(Ok(Message::Close(Some(f))))) => return Some(u16::from(f.code)),
+                Ok(Some(Ok(_))) => continue,
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// Poll until `f` holds or `limit` elapses, and answer whether it held. Asserting the PROPERTY
+/// ("reclaimed by T") rather than a window is what keeps a liveness test stable under cargo's
+/// parallel runner.
+pub async fn holds_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if f() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    f()
 }

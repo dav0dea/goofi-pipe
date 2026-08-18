@@ -183,9 +183,13 @@ fn a_patch_round_trips_through_its_own_serialization() {
 
 #[test]
 fn concurrent_writers_all_land_and_none_deadlock() {
-    // Every write races through the same `apply -> graph -> re-mirror` chain (graph, then history,
-    // then crdt). Two properties at once: the contended chain never deadlocks, and a reader
-    // converges on ALL the distinct final values, so not one command was dropped by the re-mirror.
+    // Every write races through the same `apply → graph → re-mirror` chain (graph, then history,
+    // then crdt), and EACH re-mirror re-asserts every node. Two properties at once: the contended
+    // chain never deadlocks, and every one of the N distinct final values survives — with a
+    // wholesale map replacement instead of an idempotent upsert, concurrent writes were dropped.
+    //
+    // Both the param path and the position path, because they are separate mirror writers and the
+    // audit found the loss on the position one.
     const N: usize = 8;
     const ROUNDS: usize = 5;
 
@@ -198,14 +202,17 @@ fn concurrent_writers_all_land_and_none_deadlock() {
                 for r in 1..=ROUNDS {
                     client.call("update_param", j!({ "node": hex(*u), "group": "common",
                                                     "name": "max_frequency", "value": r as f64 }));
+                    client.call("set_node_pos", j!({ "node": hex(*u), "pos": [r as f64, r as f64] }));
                 }
             });
         }
     });
 
     let doc = g.doc();
-    let got: Vec<_> = uids.iter()
-        .map(|u| doc["nodes"][hex(*u)]["params"]["common"]["max_frequency"]["value"].as_f64())
-        .collect();
-    assert!(got.iter().all(|v| *v == Some(ROUNDS as f64)), "a write was lost: {got:?}");
+    for u in &uids {
+        let n = &doc["nodes"][hex(*u)];
+        assert_eq!(n["params"]["common"]["max_frequency"]["value"].as_f64(), Some(ROUNDS as f64),
+                   "a param write was lost on {u}");
+        assert_eq!(n["pos"]["x"].as_f64(), Some(ROUNDS as f64), "a drag was lost on {u}");
+    }
 }

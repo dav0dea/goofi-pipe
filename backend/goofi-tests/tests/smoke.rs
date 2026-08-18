@@ -51,3 +51,18 @@ fn a_refusal_says_what_was_wrong() {
                                         "node_in": goofi_tests::hex(n), "slot_in": "in" }));
     assert!(why.contains("nope"), "the refusal names the slot: {why}");
 }
+
+/// The replicated projection — the five doc roots a client mirrors — read as plain JSON through the
+/// ordinary op path. Without this a test can only reach it by speaking the CRDT sync protocol,
+/// which pins the projection to whichever transport happens to carry it.
+#[test]
+fn the_state_clients_replicate_is_readable_as_plain_json() {
+    let g = Goofi::new();
+    let n = g.add("_TestEcho");
+    let doc = g.doc();
+    assert_eq!(doc["nodes"][goofi_tests::hex(n)]["type"], "_TestEcho", "{doc}");
+    assert!(doc["globals"]["default_ufreq"].is_object(), "the seeded system globals: {doc}");
+
+    g.call("remove_node", j!({ "node": goofi_tests::hex(n) }));
+    assert!(g.doc()["nodes"].get(goofi_tests::hex(n)).is_none(), "and a removal leaves no tombstone");
+}

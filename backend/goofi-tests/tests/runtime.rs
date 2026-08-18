@@ -182,3 +182,26 @@ fn the_dirty_flag_tracks_mutations_and_a_save_clears_both_halves_of_it() {
     g.call("serialize", j!({}));
     assert!(!dirty(&g), "a read must not re-dirty the patch");
 }
+
+#[test]
+fn deleting_a_busy_node_never_waits_for_it_under_the_graph_lock() {
+    // The one lock property the async runtime does NOT get for free. `remove_node` runs under the
+    // same mutex every control RPC needs, and a node only observes its halt flag BETWEEN runs — so
+    // waiting on one parked inside `process()` would freeze the whole app for that window (a real
+    // subprocess node waits out its 10 s timeout).
+    //
+    // Its sibling — "a running node never strands the lock" — went with the tick it described:
+    // nothing holds the lock across a `process()` any more, so that assertion now holds against
+    // every implementation, correct or not. This one is real code that could wait, and
+    // `Graph::shutdown`, which waits on purpose at exit, is the proof that waiting is one line away.
+    let g = Goofi::new();
+    let uid = g.add("_TestSlow");
+    // Long enough for the node's own thread to be inside its run, and far short of its end.
+    std::thread::sleep(std::time::Duration::from_millis(60));
+
+    let t0 = std::time::Instant::now();
+    g.call("remove_node", j!({ "node": hex(uid) }));
+    let held = t0.elapsed();
+    assert!(held < std::time::Duration::from_millis(100),
+            "delete returned in {held:?} — it waited on the busy node under the graph lock");
+}
