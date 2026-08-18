@@ -97,8 +97,8 @@ verify every candidate** before believing it.
 - **Verify is a gate, not a rubber stamp.** Each finding earns an explicit verdict:
   - *correctness* → `real && reachable`. The hard lesson: a verifier readily confirms
     "this path crashes" but misses "**is it reachable**" — so it must trace a real
-    caller (bridge RPC dispatch, the tick thread, a frontend event, a normal node
-    tick) and **check the upstream guards**, not just the local function.
+    caller (bridge RPC dispatch, the status-drain worker, a frontend event, a node's own
+    wake loop) and **check the upstream guards**, not just the local function.
   - *leanness* → `safe && !falsePositive && !servesArchitecture && !overAbstraction`.
     Cut **inflation** (dead code, duplication, parallel paths) but **reject reshapes /
     speculative abstractions** — over-abstraction is itself inflation. Before calling
@@ -139,17 +139,20 @@ is tiered; the browser is a read-only replica driven by commands.
    │  goofi-bridge  (axum)                     │
    │   · command dispatch + per-session history│
    │   · CRDT mirror of graph state (yrs)      │
-   │   · ViewSpec reduction, off the tick path │
+   │   · status-drain worker (the node reports)│
+   │   · ViewSpec reduction, on its own sub    │
    │   · serves the built SPA from frontend/build/
    └───────┬───────────────────────────────────┘
    ┌───────▼───────────────────────────────────┐
-   │  goofi-engine — Graph, scheduler, scopes   │
-   │   adaptive tick under one graph mutex      │
+   │  goofi-engine — Graph, wiring, scopes      │
+   │   no tick: the mutex guards EDITS only     │
    └───┬───────────────┬───────────────┬────────┘
-       │ native Rust   │ in-process    │ detached worker
-       │ (inventory)   │ Python (FT)   │ + iceoryx2 SHM
+       │ native Rust   │ in-process    │ subprocess
+       │ (inventory)   │ Python (FT)   │ Python (GIL)
        ▼               ▼               ▼
     goofi-nodes  goofi-python::inproc  goofi-python::subproc → `python -c "import goofi; goofi.serve()"`
+       └───────────────┴───────────────┴──── one THREAD each, self-scheduled,
+                                             talking iceoryx2 shared memory
 ```
 
 ### Control plane — `/control` WS
@@ -165,8 +168,9 @@ assembles each node from doc + catalog. (It once carried both; they drifted, key
 scope members by display name on one side and by uid on the other.) What the snapshot
 does carry is the session frame — instance id, palette, save path, layout — plus a
 `runtime` overlay (`{uid: {stage, error}}`): the one per-node truth the doc never holds,
-seeded here because its live stream (the 2 Hz sweep) pushes only *transitions*, so a
-client joining a running graph would otherwise draw an errored node as healthy.
+seeded here because its live stream (the status-drain worker) pushes only *transitions* —
+each one stamped by the node itself — so a client joining a running graph would otherwise
+draw an errored node as healthy.
 `node_added` is a bare `{uid}` announcement. **Do not re-add graph state to a payload** —
 if a client needs it, it is in the doc.
 
@@ -192,22 +196,47 @@ strictness to the fresh caller — separated at one seam rather than duplicated 
 Each viewer publishes a **ViewSpec** — a payload-free constraint algebra (dtype,
 dim-count comparisons, per-dim length comparisons, a desired reduction length per
 dim) — inband as `{op:"view", specs:[…]}`. The bridge folds all specs against the
-real frame (richest-per-dim: envelope > area > subsample), reduces **after the graph
-lock drops** so it never blocks a tick, and ships one reduced frame to all
-subscribers. Array `Data` is always **f32**; viewers render full-dtype reduced
+real frame (richest-per-dim: envelope > area > subsample), reduces on **its own
+subscription** to the producer's output service — the same door a test's `OutputProbe`
+opens, so the steady state never takes the graph lock at all — and ships one reduced frame
+to all subscribers. Array `Data` is always **f32**; viewers render full-dtype reduced
 frames (there are no per-kind adapters and no `__view__` sidecar).
 
-### Node execution tiers
+### Node execution — every node schedules itself
+**There is no tick.** Each node owns one manager-side thread that parks on its own doorbell
+and wakes for a `Control` message (a param edit, a wire change, a ⟳, a stop), a frame on an
+input slot, a frame on a producer one of its **expression bindings** references, or its own
+rate cap elapsing. Frames travel node to node over iceoryx2 shared memory, never through the
+graph — so the graph mutex guards **edits**, and no user action ever waits on a `process()`.
+
+A node's state travels the other way, on its **status** service: `Ready`, `Stage`, `Fault`,
+`BindingErrors`, `ParamValues`, `Ufreq`, `RefreshOptions`, and the `Ack` that advances a
+wire's three-phase attach. The **status-drain worker** (`goofi-bridge`'s `spawn_stats`) is
+the one thing that applies them — so it drains at 1 ms while broadcasting its four events
+(`node_stats`, `param_values`, `error`, `node_stage`) at 2 Hz: the drain is the runtime's
+clock (a node is not addressable, and a cable does not attach, until it runs), the broadcast
+is the UI's.
+
+Two consequences worth holding: a node is **known when `add_node` answers and addressable
+only when it reports `Ready`** (§4's birth barrier — pub/sub has no history, so a `Control`
+sent before its subscriber exists is simply lost, which is why the graph queues them); and
+a test observes a node the way `/data` does, through `goofi_engine::testing`'s `wait_for`
+and `OutputProbe`, never by stepping it.
+
 | tier | where | when |
 |---|---|---|
-| **native Rust** | inline on the tick thread | `goofi-nodes`, registered via `inventory` |
-| **in-process Python** | inline, free-threaded 3.14t via pyo3 | a node whose imports are free-threading-safe |
-| **subprocess Python** | a **detached off-tick worker**, iceoryx2 SHM | a node that needs the GIL or is missing on the FT interpreter |
+| **native Rust** | its own thread in this process | `goofi-nodes`, registered via `inventory` |
+| **in-process Python** | its own thread, free-threaded 3.14t via pyo3 | a node whose imports are free-threading-safe |
+| **subprocess Python** | a child interpreter, iceoryx2 SHM | a node that needs the GIL or is missing on the FT interpreter |
 
 Both Python tiers run the **same `goofi.Node` contract** and share one marshalling
 seam (`goofi_pymod::exec::{run_setup, run_process}`), so they cannot drift — proven
-by a cross-tier parity test. The detached tier is why a slow or hung subprocess node
-can no longer stall the tick.
+by a cross-tier parity test.
+
+**Exit is a real teardown.** Ctrl-C and SIGTERM reach `Graph::shutdown` through the CLI's one
+exit path: every node is stopped and *waited for* (a ceiling, not a join — a wedged node must
+not wedge the exit), which is what releases its shared memory. What a crash leaves behind is
+reclaimed by the next start's sweep.
 
 ---
 
@@ -316,9 +345,9 @@ processes outlive the test and corrupt every later latency measurement.
 | `goofi-codec` | the binary `Data` wire format (GOOF frame: header, msgpack meta, f32 body) + the subprocess request/response frames. Mirrored in `frontend/src/lib/codec/`. |
 | `goofi-node` | the `Node` trait, `NodeManifest`, `SlotDecl`/`OutputDecl`/`ParamDecl`, the `ExprEvaluator` seam, and `discover.rs` (the Python introspection probe → a rich multi-slot + param manifest). |
 | `goofi-nodes` | the native node library — deliberately **Oscillator + Buffer** (+ a test source) after the tabula-rasa reset. |
-| `goofi-engine` | `Graph`: nodes, links, scheduling (adaptive tick, `next_run_delay`), param expressions (`nd()`), `.gfi` v7 save/load — a zip of `patch.yaml` + `workspace/` (`archive.rs`), incl. the opaque frontend `layout` blob, `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), `detached.rs` (the off-tick worker tier). |
+| `goofi-engine` | `Graph`: nodes, links, param expressions (`nd()`), `.gfi` v7 save/load — a zip of `patch.yaml` + `workspace/` (`archive.rs`), `subpatch.rs` (flat scopes + stubs), `command.rs` (commands + inverses + `CommandHistory`), and `runtime/` — the per-node threads and their iceoryx2 transport (`mod.rs` the wake loop, `wire.rs` the message shapes, `plan.rs` the three-phase wire planner, `mailbox.rs` a node's inputs, `transport.rs` the ports and the startup sweep). `testing.rs` is `wait_for`/`OutputProbe`, public because the bridge and Python suites need the same two shapes. |
 | `goofi-view` | the payload-free ViewSpec algebra: `plan(specs, frame)` folds many viewers' constraints into one reduction. |
-| `goofi-bridge` | the axum server: `/control` dispatch + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the tick/stats workers, and the yrs document itself — `crdt.rs` (shape-agnostic: graph mirror, sync handshake, idempotent reconcile) beside `crdt_mirror.rs`, its only caller and the one place the doc's roots are named. |
+| `goofi-bridge` | the axum server: `/control` dispatch + `/data` reduction/fan-out + `schemas.rs` (wire shapes) + the status-drain worker (`spawn_stats`), and the yrs document itself — `crdt.rs` (shape-agnostic: graph mirror, sync handshake, idempotent reconcile) beside `crdt_mirror.rs`, its only caller and the one place the doc's roots are named. |
 | `goofi-python` | the manager side of BOTH Python tiers, one crate because the probe that routes between them is the same probe: `inproc` (`PyNode` — a `Node` adapter over a live `goofi.Node` — plus the pyo3 param-expression evaluator; feature-gated `embed`, since it LINKS libpython) and `subproc` (`RemoteNode`: spawn, seq-framed iceoryx2 round-trip, error frames; unconditional, since it only spawns one). Both expose the same `probe`/`node_type_from` pair. |
 | `goofi-pymod` | the `goofi` Python package itself, in Rust (pyo3): `Node`/`Data`/`Meta`/params, `introspect()`, the shared `exec` marshalling, and `serve()` — the iceoryx2 child loop. Dual-built: an abi3 wheel for GIL pythons, an rlib linked into the FT host. |
 | `goofi-cli` | the `goofi-pipe` binary: arg parsing, tier routing/registration, `build.rs` (frontend build + pyo3 config). |
@@ -366,13 +395,15 @@ seeds a live binding instead of a literal.
 `config_output_slots()` / `config_params()`, implement `setup()` and `process()`.
 An input slot is a bare `goofi.DataType` or a `goofi.InputSlot(dtype, required=…, trigger=…)`, and
 `process()` receives one kwarg per **declared** slot — `None` when that slot holds no frame.
-A `required=True` slot never arrives empty (the engine refuses the tick and records the error
+A `required=True` slot never arrives empty (the node refuses the run and reports the error
 before `process` is entered), so it may be read unconditionally; `trigger=` is authorable the same
 way, defaulting to today's `True`.
 A `StringParam(..., refresh=True)` gets a ⟳ button in the UI; the node answers it with a
 `refresh_{group}_{name}(self) -> list[str]` method (the Rust analogue is
-`Node::on_param_refreshed`). The hook runs under the graph lock, so keep it quick — a
-multi-second device scan stalls the tick. Not yet wired for the subprocess tier.
+`Node::on_param_refreshed`). The hook runs on the node's OWN thread, so a multi-second device
+scan costs that node its runs and nothing else — and the RPC cannot carry its answer: the reply
+says only that the request went out, and the options reach the client on the status worker's
+echo. Not yet wired for the subprocess tier.
 Plain top-level imports for all deps. The same file works on **both** Python tiers —
 the discovery probe imports it in a real interpreter and reports whether it is
 free-threading-safe; a node that isn't (or whose deps are missing on `.gfivenv-ft`)
@@ -381,9 +412,9 @@ each row carries its *provenance*, builtin vs this patch, not its tier.)
 A node whose deps are missing on BOTH interpreters fails its probe and is registered as
 **unavailable**: it appears in the palette greyed and unclickable, labelled `unavailable` and
 with its tooltip naming the missing module — a node that cannot load explains itself
-instead of silently vanishing. A raise inside `process()` is a per-tick error frame, not a
+instead of silently vanishing. A raise inside `process()` is a per-run error frame, not a
 crash. A raise inside `setup()` leaves the node uninitialized — its error stands and nothing runs
-against it, `process()` included — until a later tick or param interaction retries the whole
+against it, `process()` included — until a later wake or param interaction retries the whole
 initialization on the same instance.
 
 ---
@@ -396,7 +427,7 @@ relevant one before changing the area.
 - **Rust backend architecture** (`2026-07-16-rust-backend-architecture.md`) — the
   adopted design + the M1–M9 build plan.
 - **ViewSpec data-plane reduction** (`2026-07-16-viewspec-data-plane-reduction-design.md`)
-  — one stream per slot, constraint merge, reduce off the tick path.
+  — one stream per slot, constraint merge, reduce off the graph lock.
 - **Flat sub-patch scopes** (`2026-07-18-flat-subpatch-scopes-design.md`) — a scope
   tree of uids + `Stub` symlinks; `scope_of` is the single SSOT; sharing was
   deliberately **dropped**. `.gfi` v7.
@@ -406,11 +437,16 @@ relevant one before changing the area.
 - **CRDT control plane** (`2026-07-17-crdt-control-plane-design.md`) — the doc as the
   control-plane SSOT, mirror/reconcile, sync handshake.
 - **Param expressions** (`2026-07-16-param-expressions-design.md`) — `nd('node')`
-  in a param, lifted into the DAG so the reference runs first (same-tick, no latency).
+  in a param. **Superseded in part:** the lifting into a topo DAG went with the tick — a node
+  evaluates its own bindings from the frames its references publish (see the async runtime spec).
 - **Globals panel** (`2026-07-17-globals-panel-design.md`) — patch-scoped system +
   user globals as a doc root; `default_ufreq` is the producer rate reference.
-- **Isolated node tier** (`2026-07-19-isolated-node-tier-design.md`) — off-tick
-  detached execution + the typed-sfreq/opaque-meta SHM transport.
+- **Async node runtime** (`2026-08-14-async-node-runtime-design.md`) — the CURRENT execution
+  model: no tick, one self-scheduling thread per node, iceoryx2 between them, the status-drain
+  worker, the three-phase wire attach. Read this before anything else in the engine.
+- **Isolated node tier** (`2026-07-19-isolated-node-tier-design.md`) — **superseded** by the
+  above (every node is off-tick now, not just one tier); still the reference for the
+  typed-sfreq/opaque-meta SHM transport.
 - **Python node unification** (`2026-07-20-python-node-unification-design.md`) — one
   `goofi.Node` contract across both tiers, `goofi.serve`, the shared exec seam.
 - **f32-only + Meta-as-map** (`2026-07-20-f32-only-and-meta-map-design.md`).
