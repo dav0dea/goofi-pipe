@@ -568,6 +568,7 @@ dependencies = [
  "goofi-bridge",
  "goofi-engine",
  "goofi-init",
+ "goofi-node",
  "goofi-python",
  "tokio",
 ]

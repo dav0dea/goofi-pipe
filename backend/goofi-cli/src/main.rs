@@ -230,6 +230,13 @@ async fn run(
             }
         }
     };
+    // The graceful exit, in the order it has to happen: every node stops and its own thread drops
+    // the ports holding its shared memory, and only then does the workspace those nodes were
+    // running in go. This is the ONLY path that runs either — `std::process::exit` unwinds nothing,
+    // so `AppState`'s `Arc<Mutex<Graph>>` has no destructor that could stand in, and iceoryx2's own
+    // termination handling does not run one either. Without it every ctrl-C was a crash exit,
+    // leaving segments for the next start's sweep to reclaim.
+    state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code
 }
@@ -606,6 +613,68 @@ mod tests {
             assert!(err.contains("unknown argument"), "and says so plainly: {err}");
             assert!(err.contains(retired[0]), "…naming the flag the user typed: {err}");
         }
+    }
+
+    /// A node that records its own destruction. `Drop` runs on the NODE's thread, at the moment
+    /// its runtime — and with it every iceoryx2 port it owns — goes; that is the release a
+    /// graceful exit exists to get, and nothing on the manager side can fake it.
+    struct Tracked(Arc<std::sync::atomic::AtomicBool>);
+    impl goofi_node::Node for Tracked {
+        fn process(
+            &mut self,
+            _i: &goofi_node::Inputs<'_>,
+            _o: &mut goofi_node::Outputs<'_>,
+            _c: &mut goofi_node::NodeCtx,
+            _p: &goofi_node::Params<'_>,
+        ) -> goofi_node::NodeResult {
+            Ok(())
+        }
+    }
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    static TRACKED: goofi_node::NodeManifest = goofi_node::NodeManifest {
+        type_name: "_TestTracked",
+        category: "test",
+        doc: "records its own teardown",
+        inputs: &[],
+        outputs: &[],
+        params: &[],
+        isolation: goofi_node::Isolation::InProcess,
+        producer: true,
+        factory: || unreachable!("built by the registered factory"),
+    };
+
+    /// Ctrl-C and SIGTERM are the ONLY exits a user takes, and each has to leave the machine as it
+    /// found it. `AppState` holds the graph for the process lifetime and `std::process::exit`
+    /// unwinds nothing, so nothing on the way out ever reached `Graph::shutdown` — every user exit
+    /// was a crash exit, and each one's shared memory sat allocated until the next start swept it.
+    ///
+    /// Counted through the node's own `Drop` rather than through the graph's bookkeeping: the
+    /// segments go when the node's runtime is dropped on its own thread, and `shutdown` waiting for
+    /// exactly that is the whole reason it is not `clear()`. A run that forgot the call leaves this
+    /// flag false for ever — the node is still parked, waiting for a stop nobody asked it for.
+    #[tokio::test]
+    async fn a_signal_stops_every_node_before_the_run_returns() {
+        let state = AppState::new();
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let graph = state.graph.clone();
+        {
+            let mut g = graph.lock().unwrap();
+            let flag = released.clone();
+            g.register_dyn_type(&TRACKED, Box::new(move |_| Box::new(Tracked(flag.clone()))));
+            g.add_node("_TestTracked", None).expect("a test node");
+        }
+        // An already-resolved shutdown takes the same path ctrl-C does; port 0 binds ephemerally.
+        let cli = Cli { port: 0, ..Cli::default() };
+        assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
+        assert!(
+            released.load(std::sync::atomic::Ordering::Acquire),
+            "the node's runtime was dropped — its shared memory went with it — before the exit"
+        );
+        assert_eq!(graph.lock().unwrap().node_count(), 0, "…and the graph is holding nothing");
     }
 
     /// The workspace mount's lifetime is the run's: present while the server is up, gone once it

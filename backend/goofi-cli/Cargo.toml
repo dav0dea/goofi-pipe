@@ -33,3 +33,8 @@ goofi-init = { path = "../goofi-init" }
 [features]
 default = ["python"]
 python = ["dep:goofi-python", "goofi-python/embed"]
+
+[dev-dependencies]
+# A node with a `Drop` — how the graceful-exit test proves a node's own teardown RAN, rather than
+# that the graph merely forgot it.
+goofi-node = { path = "../goofi-node" }
