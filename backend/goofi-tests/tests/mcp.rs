@@ -16,12 +16,9 @@ async fn start_server() -> (Goofi, String) {
 
 /// One request to the MCP endpoint. The extra headers are what a model provider's client sends.
 async fn request(addr: &str, method: &str, body: &str) -> (u16, String) {
-    let headers = "Content-Type: application/json
-\
-                   Accept: application/json, text/event-stream
-\
-                   MCP-Protocol-Version: 2025-06-18
-";
+    let headers = "Content-Type: application/json\r\n\
+                   Accept: application/json, text/event-stream\r\n\
+                   MCP-Protocol-Version: 2025-06-18\r\n";
     let (status, _, body) = http(addr, method, "/mcp", headers, body.as_bytes()).await;
     (status, String::from_utf8_lossy(&body).into_owned())
 }
