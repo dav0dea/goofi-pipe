@@ -46,6 +46,13 @@
 //!    is not a nicety: a plain literal param is neither a link nor a binding, so without it the
 //!    ordinary `add_node(); update_param()` pair fell into the birth window and was lost.
 //! 10. **`WirePlanner::is_idle`** — deleted. Every live node has a channel.
+//! 11. **`spawn_stats`** — the bridge's 2 Hz sweep is gone, and so is the polling it did. Every one
+//!     of the four events it sourced (`error`, `node_stage`, `node_stats`, `param_values`) is now a
+//!     node's own report: [`Status::Fault`] / [`Status::BindingErrors`], [`Status::Stage`],
+//!     [`Status::Ufreq`] and [`Status::ParamValues`], applied by `Graph::apply_status`. Every one
+//!     is a TRANSITION the node stamps itself, which is why nothing here diffs — the exception is
+//!     `Ufreq`, a measurement rather than a transition, paced at [`UFREQ_REPORT_MS`]. The worker
+//!     that drains them, and its rule against dirtying the patch, belong to the bridge.
 //!
 //! Two things were DROPPED on purpose rather than deferred, and are listed so neither reads as an
 //! oversight:

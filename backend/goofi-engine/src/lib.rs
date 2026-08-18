@@ -1,10 +1,14 @@
-//! goofi-engine — the graph and its tick scheduler.
+//! goofi-engine — the graph, and the nodes that schedule themselves.
 //!
-//! `tick()` walks the graph in topological LEVELS, running each level's nodes in
-//! parallel (rayon) and then moving their outputs into their consumers' inputs
-//! (latest-wins), so one pass propagates through an acyclic graph. Nodes land on
-//! one of two execution tiers (see `make_exec`): inline, or detached onto an
-//! off-tick worker. Each node's latest output frame is exposed for the data plane.
+//! There is no tick. [`Graph`] owns the patch — nodes, links, scopes, params, expression bindings,
+//! the layout and the `.gfi` — and gives every node a thread of its own ([`runtime`]), which
+//! decides for itself when to run. What the graph does with a node afterwards is talk to it: it
+//! plans its wiring and sends it ([`runtime::plan`]), and it applies what the node reports back
+//! ([`Graph::drain_status`]).
+//!
+//! A node's DATA never comes back here. Frames go out on that node's own shared-memory service and
+//! a consumer — an input slot, an expression variable, a `/data` viewer — subscribes to it (§7), so
+//! there is no last-output cache to read and no privileged path into a running node.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,9 +38,11 @@ pub use command::{Command, CommandHistory, ExprState, Outcome};
 pub mod expr_rewrite;
 
 /// The per-node runtime: the wake loop, the three run paths, and a node's faults (see `runtime/`).
-/// Public because it is a standalone module today — nothing in [`Graph`] drives it yet, and the
-/// cutover from `tick_at` is its own step.
+/// Public because a host needs its wire vocabulary — service names to subscribe to, [`runtime::Status`]
+/// to drain, and [`runtime::reclaim_stale_resources`] to call at startup.
 pub mod runtime;
+/// Watching an asynchronous graph from a test. Public rather than `#[cfg(test)]` so the bridge and
+/// `goofi-python` suites share one deadline loop rather than growing three.
 pub mod testing;
 
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
@@ -177,15 +183,16 @@ struct Link {
 }
 
 /// Extract a readable message from a caught panic payload.
-/// Run a node LIFECYCLE hook, converting a panic into an error string — the same trade
-/// [`execute_node`] already makes for `process`, and for the same reason: a node is third-party
-/// code (a native crate registered through `inventory`, or a `.py` the user just edited).
+/// Run a node lifecycle hook or `process`, converting a panic into an error string. A node is
+/// third-party code — a native crate registered through `inventory`, or a `.py` the user just
+/// edited — and every entry point into it goes through here.
 ///
-/// The difference that makes this load-bearing is WHERE these run. `process` executes on the tick
-/// thread; `setup`, `on_param_changed` and `on_param_refreshed` execute under the graph mutex the
-/// bridge is holding, and this codebase locks with `.lock().unwrap()` throughout. An unguarded
-/// panic there poisons the mutex, so every subsequent lock in the bridge AND the tick thread
-/// panics too — one node's bug becomes total, permanent loss of the control plane.
+/// What the guard buys MOVED with the cutover, and the old reason is worth keeping straight: these
+/// hooks used to run under the graph mutex the bridge holds, where an unguarded panic poisoned it
+/// and took the control plane down permanently. They now run on the node's own thread, which the
+/// mutex never reaches — so what a panic costs today is that THREAD, silently and for good, and
+/// the node stops answering anything for the rest of the session. The containment is the same; the
+/// failure it prevents is not.
 fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
 }
@@ -788,8 +795,8 @@ impl Graph {
     }
 
     /// The node's current error, derived fresh on read so recovery is always surfaced.
-    /// A detached worker's bootstrap failure wins, then a process error (`last_error`), then the
-    /// errored expression binding with the smallest `ParamKey` — a deterministic pick, since
+    /// The node's initialization failure wins, then a process error (`last_error`), then the
+    /// errored param with the smallest `ParamKey` — a deterministic pick, since
     /// `bindings` is a `HashMap` whose iteration order is randomized. Deriving on read (rather
     /// than caching into `last_error`) means a binding that recovers on a node that never runs
     /// again still clears, and the channels can't drift apart.
@@ -2432,8 +2439,8 @@ impl Graph {
 
     // ── The wire plane (spec §3.1, §4) ──────────────────────────────────────────────────────
     // The async runtime's topology side: what each node is told about its slots, and in what order.
-    // `add_link` and `remove_link` above already replan through it; it stays inert until a node's
-    // control channel is attached, which nothing does until the cutover.
+    // Every link and binding change replans through it, and a node is addressable from the moment
+    // it reports `Ready` — [`Graph::attach_control_sink`] — until the graph destroys it.
 
     /// Register the graph's end of one node's control channel. §4's birth barrier: this happens on
     /// [`runtime::Status::Ready`] and never at birth, because a `Control` published before the
@@ -2759,8 +2766,9 @@ impl Graph {
     ///
     /// For an input slot: many for a `multi` slot, at most one for a single one. `links` is the
     /// order for both — a wire is appended there as it is added, which IS `Inputs::get_multi`'s
-    /// connection order, and the per-wire cells the tick path keeps are rebuilt from this same list
-    /// by `restart_node`. Reading those cells here instead would be a second record of one order.
+    /// connection order, and the per-wire cells the NODE keeps are set from this same list by the
+    /// `InSlot` a re-plan sends. Reading those cells here instead would be a second record of one
+    /// order, on the far side of a wire.
     ///
     /// For a binding: the producers its variables resolved to, in variable order.
     ///
@@ -3209,19 +3217,15 @@ impl Graph {
 
 }
 
-/// One node's current error, derived fresh from the three places one can arise — see
-/// [`Graph::last_error`], whose contract this is. A free function so the per-tick onset sweep can
-/// read it while holding a `&mut NodeEntry`, which keeps derivation and stamping on one rule.
+/// One node's current error, derived fresh from the places one can arise — see
+/// [`Graph::last_error`], whose contract this is. A free function so [`Graph::stamp_error_onset`]
+/// can read it while holding a `&mut NodeEntry`, which keeps derivation and stamping on one rule.
 fn entry_error(e: &NodeEntry) -> Option<&str> {
     // The node's initialization failure outranks a process error, and D3 makes it the only thing
     // that CAN be true beside one: if `setup` failed, `process` never runs. The order therefore
     // encodes which of the two is possible, not which one wins a contest. A node whose services
     // could not be created carries its boot failure here too — it is the same "this node never
     // started" fact, one layer further out.
-    // An inline node's initialization failure, for the same reason and one tier down: it is the
-    // root cause, and D3 makes it the only thing that CAN be true here — if `setup` failed,
-    // `process` never runs, so a process error cannot arise beside it. The order therefore encodes
-    // which of the two is possible, not which one wins a contest.
     if let Some(err) = e.setup_error.as_deref() {
         return Some(err);
     }
@@ -3266,12 +3270,13 @@ pub(crate) fn seed_node(
     last_error
 }
 
-/// How long the TICK waits between retries of a failed initialization (D3). The retry is the whole
-/// [`seed_node`] unit — every param's `on_param_changed` plus `setup()` — and it runs on the tick
-/// thread inside the mutex the bridge holds across a whole tick. A `setup()` that fails is exactly
-/// the kind that BLOCKS first (opening a device, dialling a socket) and the kind that leaks a
-/// handle per attempt, since `Drop` never fires between them. One second bounds both to roughly one
-/// per second, and is still well inside the time a user watching the node would wait for it to heal.
+/// How long a NODE waits between retries of a failed initialization (D3). The retry is the whole
+/// [`seed_node`] unit — every param's `on_param_changed` plus `setup()` — and it runs on that
+/// node's own thread, at its own wake rate. A `setup()` that fails is exactly the kind that BLOCKS
+/// first (opening a device, dialling a socket) and the kind that leaks a handle per attempt, since
+/// `Drop` never fires between them; a free-running producer would attempt tens of times a second.
+/// One second bounds both, and is still well inside the time a user watching the node would wait
+/// for it to heal. Only a WAKE is paced: a param edit is a user asking, and retries at once.
 const SETUP_RETRY_INTERVAL: f64 = 1.0;
 
 #[cfg(test)]
@@ -4276,7 +4281,7 @@ mod tests {
     }
 
     // A source that emits the live `default_ufreq` global from its NodeCtx — proving the
-    // engine feeds `process` the current globals snapshot each tick (a mid-run edit is seen
+    // engine feeds `process` the current globals snapshot before each run (a mid-run edit is seen
     // on the next run, not latched at setup).
     #[derive(Default)]
     struct GlobalSource;

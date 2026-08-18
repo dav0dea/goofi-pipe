@@ -26,8 +26,14 @@
 //! before it arrived — and every EXPRESSION BINDING change: binding, unbinding, a rename, a globals
 //! edit, a referenced node being added, removed or restarted (§5.3). A binding is a consumer
 //! subscription like any other ([`Slot::Bind`]); what differs is only that its phase 2 is a
-//! `SetParam`. The cutover adds the rest of §4's callers, all of them about a NODE rather than a
-//! wire: birth, removal, `restart_node` and a load.
+//! `SetParam`.
+//!
+//! The rest of §4's callers are about a NODE rather than a wire, and they arrive through the two
+//! ends of a node's life: a birth, a `restart_node` and a load all become addressable by reporting
+//! `Ready`, which is [`WirePlanner::attach`]; a removal and the corpse a restart replaces are
+//! [`WirePlanner::detach`]. Neither is optional — a sink is the graph's END of that node's
+//! services, so one kept past its node's death both leaks them and makes the next node born at
+//! that uid read as addressable while it is not.
 //!
 //! [`Graph::add_link`]: crate::Graph::add_link
 //! [`Graph::remove_link`]: crate::Graph::remove_link
