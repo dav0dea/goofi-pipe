@@ -211,7 +211,16 @@ fn spawn_reducer(
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
         // Latest-wins: a deadline missed while this task was starved is a sample that no longer
         // exists, not a debt. Tokio's default (Burst) would repay every one of them back-to-back
-        // over the same frame, the moment the worker is unblocked.
+        // the moment the worker is unblocked.
+        //
+        // What that repayment costs is LOOP ITERATIONS — a spin of non-blocking receives — and not
+        // reduce+encode+broadcast passes. The de-dup gate below (`!fresh && served == Some(g_now)`)
+        // returns before any pass is counted or sent, so a repaid deadline over an unchanged frame
+        // already does no work. Measured: switching this line to `Burst` changes nothing any test
+        // can see, and the burst counter reads 2 either way.
+        //
+        // So this line is cheap insurance against a spin, and the guarantee a reader cares about
+        // lives in that gate, pinned by `an_unchanged_frame_is_not_rebroadcast`.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut feed = open_feed(&graph, uid, &slot);
         let mut rehomed = std::time::Instant::now();
@@ -505,45 +514,6 @@ mod tests {
             "the reducer followed the restart to the new service"
         );
 
-        reducers.unsubscribe(&key, c);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn a_starved_reducer_does_not_repay_the_deadlines_it_missed() {
-        // A blocked runtime worker starves this task past many 16 ms deadlines. A latest-wins
-        // sampler must resume at the next deadline — repaying the backlog would fire a burst of
-        // full reduce+encode+broadcast passes over ONE unchanged frame, on a worker that was just
-        // unblocked, which is precisely when the process is least able to afford them.
-        //
-        // The starvation is the RUNTIME's now, not the graph lock's: §7 took the lock out of the
-        // sweep, so holding it no longer starves anything here.
-        let mut g = Graph::new();
-        let osc = g.add_node("Oscillator", None).unwrap();
-        let graph = Arc::new(Mutex::new(g));
-        let _drainer = Drainer::spawn(graph.clone());
-
-        let reducers = SlotReducers::new(graph.clone());
-        let key: SlotKey = (osc, "out".to_string());
-        let c = reducers.new_conn();
-        let mut rx = reducers.subscribe(key.clone(), c);
-        // A frame first: a starved sweep over NO frame reduces nothing whatever it does with its
-        // deadlines, which would pass this test against a `Burst` interval.
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.is_ok_and(|r| r.is_ok()),
-            "the stream is live before the starvation"
-        );
-
-        // The only worker thread is held for ~20 deadlines, then a short window is sampled after
-        // it is handed back.
-        tokio::spawn(async { std::thread::sleep(Duration::from_millis(320)) });
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        let before = reducers.reductions(&key);
-        tokio::time::sleep(Duration::from_millis(48)).await;
-        let burst = reducers.reductions(&key) - before;
-
-        // 48 ms of resumed 16 ms sampling is 3-4 passes; the backlog would add ~20 on top. The
-        // bound is one-sided on purpose — scheduler pressure can only make this SMALLER.
-        assert!(burst <= 8, "{burst} passes in 48 ms after starvation: the missed deadlines were repaid");
         reducers.unsubscribe(&key, c);
     }
 
