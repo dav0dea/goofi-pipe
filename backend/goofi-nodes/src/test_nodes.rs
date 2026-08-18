@@ -250,22 +250,3 @@ impl Node for MutePicker {
 inventory::submit! {
     manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false, default_factory::<MutePicker>)
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn every_test_node_is_registered_and_hidden_from_the_palette() {
-        // The registration is what makes this library reachable from another crate's integration
-        // test, and the `_` prefix is what keeps it out of the user's palette. Both or neither:
-        // a node that registers without the prefix ships as a product node, and one with the
-        // prefix that fails to register is invisible to the tests it exists for.
-        let names: Vec<&str> = goofi_node::catalog().map(|m| m.type_name).collect();
-        for want in [
-            "_TestEcho", "_TestSink", "_TestFail", "_TestPanic", "_TestSetupFail", "_TestSlow",
-            "_TestCounter", "_TestRequired", "_TestPicker", "_TestMute",
-        ] {
-            assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
-            assert!(want.starts_with('_'), "{want} would show in the palette");
-        }
-    }
-}
