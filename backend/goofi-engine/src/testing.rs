@@ -173,6 +173,13 @@ impl OutputProbe {
     /// Whether the slot emitted nothing at all within the settle window — the "a refused run emits
     /// nothing" oracle. Frames already taken do not count against it, so a probe may be used to
     /// watch a node start, stop, and stay stopped.
+    ///
+    /// **This is the one call the module's `history_size(0)` hazard degrades SILENTLY.** A probe
+    /// opened after its producer emitted has missed that frame for ever: [`Self::frame`] and
+    /// [`Self::wait_until`] then fail loudly at their deadline, but `silent` simply answers `true`
+    /// — a false PASS, and one that reads as the property holding. Open the probe before the node
+    /// can have run, or give the assertion a positive counterpart on the same probe (a node that
+    /// is silent here and emits once it is fed), which is what every caller in this crate does.
     pub fn silent(&self, g: &mut Graph) -> bool {
         let deadline = Instant::now() + SETTLE;
         while Instant::now() < deadline {
