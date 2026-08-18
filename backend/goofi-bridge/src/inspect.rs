@@ -571,15 +571,21 @@ errors (whole patch):
         );
         // The slot line: name, kind, and whether the node is emitting — never the frame. There is
         // one door onto a node's data and it is `/data` (§7).
-        assert!(out.contains("  out: array — emitting at "), "the emitting line: {out}");
+        assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
         assert!(!out.contains("f32["), "no frame contents leak into an inspection: {out}");
         // A node's own error is age-annotated here too, for the same settling-vs-broken reason.
-        assert!(out.contains("\nerror: no expression evaluator available — for 0."), "{out}");
+        // The wording is the NODE's — it is the node that evaluates a binding and the node that
+        // reports the failure, so the graph's own compile-time message is not what surfaces here.
+        let err_line = out.lines().find(|l| l.starts_with("error: ")).unwrap_or_else(|| panic!("{out}"));
+        assert!(
+            err_line.contains("needs the expression evaluator") && err_line.contains(" — for 0."),
+            "{out}"
+        );
 
         // A node that has never emitted says so, rather than reading as healthy silence.
         let idle = g.add_node("Buffer", None).unwrap();
         let idle_out = node(&g, idle, None, false, true).unwrap();
-        assert!(idle_out.contains("  out: array — nothing emitted yet"), "{idle_out}");
+        assert!(idle_out.contains("  out: ARRAY — nothing emitted yet"), "{idle_out}");
         assert!(idle_out.ends_with("error: none\n"));
 
         // The flags actually gate their sections.

@@ -363,6 +363,32 @@ mod tests {
         (graph, uid, go, drainer)
     }
 
+    /// Fire the armed producer until a frame reaches `rx`; answer whether one ever did.
+    ///
+    /// A single arming cannot establish the stream: the reducer opens its subscriber on its OWN
+    /// task — after an `iox_node()` and a graph lock — while the producer is already running, and
+    /// the data services keep no history (§3.5). A frame emitted in that window is gone for ever,
+    /// and with it every assertion downstream. Re-arming until one lands is also the positive
+    /// counterpart each silence assertion needs: `silent` alone cannot tell a quiet stream from a
+    /// stream that was never connected.
+    async fn arm_until_received(go: &AtomicBool, rx: &mut broadcast::Receiver<Bytes>) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            go.store(true, Ordering::Release);
+            if matches!(tokio::time::timeout(Duration::from_millis(50), rx.recv()).await, Ok(Ok(_))) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Let a still-in-flight arming land and take it off the channel, so a silence window that
+    /// follows is measuring the sweep rule rather than the tail of the warm-up.
+    async fn settle(rx: &mut broadcast::Receiver<Bytes>) {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        while rx.try_recv().is_ok() {}
+    }
+
     #[test]
     fn union_specs_concatenates_every_connections_specs() {
         let mut by_conn: HashMap<ConnId, Vec<ViewSpec>> = HashMap::new();
@@ -419,12 +445,8 @@ mod tests {
         let c = reducers.new_conn();
         let mut rx = reducers.subscribe(key.clone(), c);
 
-        // The producer's service carries no history (§3.5), so the emit is fired only once the
-        // reducer is subscribed — and the assertion below is what proves it was: a lost frame
-        // fails here rather than reading as the silence the next assertion wants.
-        go.store(true, Ordering::Release);
-        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-        assert!(first.is_ok_and(|r| r.is_ok()), "the emitted frame reached the subscriber");
+        assert!(arm_until_received(&go, &mut rx).await, "the emitted frame reached the subscriber");
+        settle(&mut rx).await;
 
         // The producer emits nothing more → the stream is SILENT. Ten sweep deadlines pass; the
         // old loop shipped ~10 copies of the same frame here.
@@ -465,21 +487,20 @@ mod tests {
         let key: SlotKey = (uid, "out".to_string());
         let c = reducers.new_conn();
         let mut rx = reducers.subscribe(key.clone(), c);
-        go.store(true, Ordering::Release);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.is_ok_and(|r| r.is_ok()),
-            "the stream is live before the restart"
-        );
+        assert!(arm_until_received(&go, &mut rx).await, "the stream is live before the restart");
+        settle(&mut rx).await;
 
         let before = graph.lock().unwrap().output_service_of(uid, "out");
         graph.lock().unwrap().restart_node(uid).unwrap();
         assert_ne!(graph.lock().unwrap().output_service_of(uid, "out"), before, "a rebirth is a new name");
 
-        // The reborn node is a fresh instance, so it is disarmed: arm it again and the frame has
-        // to arrive on the new name, within a re-home interval plus a sweep.
-        go.store(true, Ordering::Release);
-        let after = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
-        assert!(after.is_ok_and(|r| r.is_ok()), "the reducer followed the restart to the new service");
+        // The reborn node is a fresh instance, so it is disarmed. Arming until a frame lands is
+        // what the re-home costs: for up to a `REHOME_INTERVAL` the reducer is still listening on
+        // the corpse's name, and anything emitted meanwhile is emitted into it.
+        assert!(
+            arm_until_received(&go, &mut rx).await,
+            "the reducer followed the restart to the new service"
+        );
 
         reducers.unsubscribe(&key, c);
     }

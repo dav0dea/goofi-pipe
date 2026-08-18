@@ -531,6 +531,12 @@ mod tests {
         let b = g.add_node("Buffer", None).unwrap();
         g.add_link(a, "out", b, "data").unwrap();
         g.set_expression(a, "common", "max_frequency", "@@@ not an expression @@@", true, false).unwrap();
+        // A stage is the node's OWN report and reaches the graph over its status service, so a
+        // snapshot taken before anyone drained would say `creating` for a node that is running —
+        // which is the very thing the overlay exists to stop a reconnecting client from drawing.
+        goofi_engine::testing::wait_for(&mut g, "the nodes to report themselves ready", |g| {
+            g.node_stage(b) == "ready"
+        });
 
         let snap = snapshot(&g, "iid", true, false, Some("/patches/demo.gfi"), json!({}));
         for dead in ["nodes", "links", "instances"] {
