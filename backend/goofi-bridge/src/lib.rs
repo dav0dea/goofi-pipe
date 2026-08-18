@@ -1161,84 +1161,26 @@ fn bindable_node(g: &Graph, node: &str) -> bool {
 /// what keeps a foreign undo from deleting a subtree a peer grew under the newcomer. See
 /// [`goofi_engine::Command::LayoutBirth`]. An op that only rearranges what already exists passes
 /// `None` and inverts slot by slot.
+/// Apply one layout command through the session's history and answer with the arrangement it
+/// produced — drawn exactly as `inspect_layout` draws it, because a caller with no screen (an
+/// agent) would otherwise have to follow every write with an `inspect_layout` to see the tree it
+/// was building. The op is already holding it.
+///
+/// **The rule the layout commands exist to keep, stated once here rather than four times:** no
+/// layout inverse restores raw state. Every one re-plans through the forward planners
+/// (`LayoutClose`, `LayoutMove`, `LayoutContents`, `LayoutBirth`). Pinning an entry back into the
+/// slot it held resurrects the split that the forward op promoted away, on top of whatever a
+/// concurrent peer has since built there — which strands their panels and corrupts the
+/// arrangement at the next save. `goofi-engine`'s registry-driven guard walks every layout write
+/// op and asserts the safe and unsafe sets both ways.
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
     session: &str,
-    writes: Vec<goofi_engine::layout::Write>,
-    born: Option<(&str, &str)>,
+    cmd: goofi_engine::Command,
 ) -> Result<Value, String> {
-    let cmd = match born {
-        Some((page, born)) => goofi_engine::Command::LayoutBirth {
-            writes,
-            page: page.to_string(),
-            born: born.to_string(),
-        },
-        None => goofi_engine::Command::Compound(
-            writes
-                .into_iter()
-                .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
-                .collect(),
-        ),
-    };
     state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(arrangement_reply(g))
-}
-
-/// What every layout write answers: the arrangement it just produced, drawn exactly as
-/// `inspect_layout` draws it. A bare `{ok: true}` said the write was accepted and nothing about
-/// what it made, so a caller with no screen — an agent — had to follow each op with an
-/// `inspect_layout` to see the tree it was building. The op is already holding it.
-fn arrangement_reply(g: &Graph) -> Value {
-    json!({ "text": inspect::layout_tree(g.arrangement(), None) })
-}
-
-/// Like [`apply_layout`], but for an op that CLOSES the subtree rooted at `born` (a page goes with
-/// its own, like `session_remove_page`). Its inverse restores those dead entries and then re-homes
-/// their root through the forward planners — pinning it back into the slot it held resurrects the
-/// split the close promoted away, on top of whatever a peer built there. See
-/// [`goofi_engine::Command::LayoutClose`].
-fn apply_layout_close(
-    state: &AppState,
-    g: &mut Graph,
-    session: &str,
-    page: &str,
-    born: &str,
-) -> Result<Value, String> {
-    let cmd = goofi_engine::Command::LayoutClose { page: page.to_string(), born: born.to_string() };
-    state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(arrangement_reply(g))
-}
-
-/// Like [`apply_layout`], but for an op that MOVES the subtree rooted at `root`. Its inverse is
-/// another move, re-planned at undo time (see [`goofi_engine::Command::LayoutMove`]) — restoring the
-/// slots a move displaced resurrects the split it promoted away, and strands whatever a peer built
-/// where that split used to stand.
-fn apply_layout_move(
-    state: &AppState,
-    g: &mut Graph,
-    session: &str,
-    writes: Vec<goofi_engine::layout::Write>,
-    root: &str,
-) -> Result<Value, String> {
-    let cmd =
-        goofi_engine::Command::LayoutMove { writes: Some(writes), root: root.to_string(), home: None };
-    state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(arrangement_reply(g))
-}
-
-/// Like [`apply_layout`], but for an op that edits what entries HOLD rather than where they sit (a
-/// panel's type/state, a split's shares). Its inverse re-reads each slot at flip time instead of
-/// restoring the whole entry — see [`goofi_engine::Command::LayoutContents`].
-fn apply_layout_contents(
-    state: &AppState,
-    g: &mut Graph,
-    session: &str,
-    writes: Vec<goofi_engine::layout::Write>,
-) -> Result<Value, String> {
-    let cmd = goofi_engine::Command::LayoutContents { writes };
-    state.history.lock().unwrap().apply(g, session, cmd)?;
-    Ok(arrangement_reply(g))
+    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
 }
 
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
@@ -1590,8 +1532,15 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // back, where closing the page would delete it. A page born with its own fresh panel
                 // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
                 match subtree.as_deref() {
-                    Some(s) => apply_layout_move(state, &mut g, &session, writes, s)?,
-                    None => apply_layout(state, &mut g, &session, writes, Some((&page, &page)))?,
+                    Some(s) => {
+                        let root = s.to_string();
+                        let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root, home: None };
+                        apply_layout(state, &mut g, &session, cmd)?
+                    }
+                    None => {
+                        let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: page.clone() };
+                        apply_layout(state, &mut g, &session, cmd)?
+                    }
                 };
                 // The page's id and its root panel's — a caller's next act is to give that panel
                 // content, which needs an id it cannot otherwise know (`page_split_panel`'s rule).
@@ -1604,20 +1553,25 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // this same lock, and DEGRADES rather than errors, which a user's own op must not.
                 g.arrangement().remove_page(&name)?;
                 let page = g.arrangement().page_named(&name).unwrap_or_default();
-                apply_layout_close(state, &mut g, &session, &page, &page)
+                let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: page.clone() };
+                apply_layout(state, &mut g, &session, cmd)
             }
             "session_rename_page" => {
                 let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
                 let writes = g.arrangement().rename_page(from, to)?;
                 // A name is contents; the tab index is the slot, and a peer's new page may hold the
                 // one this page had when the rename was planned.
-                apply_layout_contents(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
             }
             "session_reorder_page" => {
                 let name = parse_str(&payload, "name")?;
                 let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
                 let writes = g.arrangement().reorder_page(name, to as usize)?;
-                apply_layout(state, &mut g, &session, writes, None)
+                let edits = writes
+                    .into_iter()
+                    .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
+                    .collect();
+                apply_layout(state, &mut g, &session, goofi_engine::Command::Compound(edits))
             }
             "page_split_panel" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1628,7 +1582,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                 let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
                 let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, before, ratio)?;
-                apply_layout(state, &mut g, &session, writes, Some((&page, &fresh)))?;
+                let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
+                apply_layout(state, &mut g, &session, cmd)?;
                 // The uid, because a split births an EMPTY panel and the caller's next act is to
                 // give it content — which needs the id it cannot otherwise know.
                 Ok(json!(fresh))
@@ -1665,7 +1620,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .and_then(Uid::from_hex);
                 vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
                 let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
-                apply_layout_contents(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
             }
             "page_move_panel" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1673,7 +1628,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let dest = parse_str(&payload, "new_parent")?.to_string();
                 let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
                 let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
-                apply_layout_move(state, &mut g, &session, writes, &panel)
+                let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: panel.clone(), home: None };
+                apply_layout(state, &mut g, &session, cmd)
             }
             // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
             // arrangement that was not on somebody's screen. Composed from the primitive ops they
@@ -1689,7 +1645,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
                 let writes =
                     g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
-                apply_layout_move(state, &mut g, &session, writes, &subtree)
+                let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: subtree.clone(), home: None };
+                apply_layout(state, &mut g, &session, cmd)
             }
             "page_resize_split" => {
                 let page = resolve_page(&g, &payload)?;
@@ -1704,14 +1661,15 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     .map(|v| v.as_f64().unwrap_or(f64::NAN))
                     .collect();
                 let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
-                apply_layout_contents(state, &mut g, &session, writes)
+                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
             }
             "page_remove_panel" => {
                 let page = resolve_page(&g, &payload)?;
                 let panel = parse_str(&payload, "panel")?.to_string();
                 // Planned only for its teachable refusal — see `session_remove_page` above.
                 g.arrangement().remove_subtree(&page, &panel)?;
-                apply_layout_close(state, &mut g, &session, &page, &panel)
+                let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: panel.clone() };
+                apply_layout(state, &mut g, &session, cmd)
             }
             "set_node_viewers" => {
                 // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
