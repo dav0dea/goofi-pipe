@@ -36,6 +36,9 @@ which = "8"
 libc = "0.2"
 
 [dev-dependencies]
+# The shared `_Test*` node library. A dev-dependency only: it flips the feature on for test
+# builds, and a release build never sees it. The link edge itself comes via goofi-engine.
+goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
 tokio-tungstenite = "0.24"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 futures-util = "0.3"

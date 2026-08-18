@@ -7,14 +7,17 @@
 //!
 //! **Blank-slate reset:** the library is intentionally seeded with just two nodes,
 //! `Oscillator` and `Buffer`, to be co-designed into an orthogonal set from here.
-//! `test_source` and `test_nodes` are hidden test/bench scaffolding (every type `_`-prefixed),
-//! not part of the user-facing library. They are NOT behind `cfg(test)`: an integration test is a
-//! separate crate linking the ordinary build, so a node registered only under `cfg(test)` cannot be
-//! named from one. That is what forced every integration test to hand-roll its own fixtures.
+//! `test_nodes` is `_`-prefixed scaffolding behind the `test-nodes` feature, off by default, so a
+//! release binary carries none of it. It is a FEATURE rather than `cfg(test)` because an
+//! integration test is a separate crate linking the ordinary build: a node registered under
+//! `cfg(test)` is invisible to it, which is what forced every integration test to hand-roll its own
+//! fixtures.
 
 mod buffer;
 mod oscillator;
+#[cfg(feature = "test-nodes")]
 pub mod test_nodes;
+#[cfg(feature = "test-nodes")]
 mod test_source;
 
 /// Force-links this crate's node registrations and reports how many native node

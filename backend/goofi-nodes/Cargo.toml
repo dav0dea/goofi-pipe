@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The `_`-prefixed scaffolding nodes. OFF by default so no test code reaches a release binary;
+# `goofi-tests` and any crate whose tests need a deterministic source turn it on as a dev-dependency.
+test-nodes = []
+
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }

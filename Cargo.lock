@@ -664,6 +664,7 @@ dependencies = [
  "goofi-core",
  "goofi-engine",
  "goofi-node",
+ "goofi-nodes",
  "goofi-pymod",
  "iceoryx2",
  "indexmap",

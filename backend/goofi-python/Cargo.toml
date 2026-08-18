@@ -25,6 +25,9 @@ goofi_pymod = { path = "../goofi-pymod", package = "goofi-pymod", features = ["h
 pyo3 = { version = "0.28", features = ["auto-initialize"], optional = true }
 
 [dev-dependencies]
+# The shared `_Test*` node library. A dev-dependency only: it flips the feature on for test
+# builds, and a release build never sees it. The link edge itself comes via goofi-engine.
+goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
 indexmap = "2"
 # For the engine-integration test (runs only under `--features embed`): proves a
 # real PyNode is hosted + ticked inside a live Graph, concurrently on the pool.
