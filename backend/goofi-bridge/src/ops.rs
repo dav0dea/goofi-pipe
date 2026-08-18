@@ -18,6 +18,11 @@
 pub enum Surface {
     /// Mirrored as an MCP tool for an agent.
     Mcp,
+    /// `/control` only, and INTERNAL: state a test needs to observe deterministically, which no
+    /// product surface consumes. Kept out of the MCP tool list and out of the frontend's `OpName`
+    /// union, so neither grows a name it will never call — reachable through the one op vocabulary
+    /// all the same, rather than through a second back door with its own schema and its own drift.
+    Internal,
     /// `/control` only. An agent calling `load` would replace the patch it is working in — and
     /// itself, once the harness lives inside that patch's workspace; `save`/`serialize`/`list_dir`
     /// are the human file-browser's half of the same door. `new` shares that very arm: it empties
@@ -72,7 +77,7 @@ impl Op {
 /// names are checked against.
 pub const MCP_PREFIX: &str = "mcp__goofi__";
 
-use Surface::{ControlOnly, Mcp};
+use Surface::{ControlOnly, Internal, Mcp};
 
 pub static REGISTRY: &[Op] = &[
     Op { name: "list_dir", surface: ControlOnly, writes: false, args: "path:string",
@@ -236,6 +241,9 @@ pub static REGISTRY: &[Op] = &[
          args: "node:uid! slot:string params:bool error:bool",
          doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output. The FRAMES are not here and cannot be: subscribe to `/data/<node>/<slot>` to see a node's data, exactly as a viewer does.",
          result: "{text: string}" },
+    Op { name: "get_state", surface: Internal, writes: false, args: "",
+         doc: "The replicated control-plane projection — nodes, links, instances, globals, arrangement — as plain JSON. What every client mirrors, read without the sync protocol that carries it.",
+         result: "{nodes, links, instances, globals, arrangement} — each an object keyed by id." },
     Op { name: "get_patch", surface: Mcp, writes: false, args: "",
          doc: "Where the open patch lives, where its workspace is, and whether it differs from disk.",
          result: "{save_path: string | null, workspace: string, dirty: bool}" },
@@ -265,7 +273,11 @@ pub fn find(name: &str) -> Option<&'static Op> {
 /// [`tests::the_frontend_op_union_is_generated_from_the_registry`]) rather than emitted by a build
 /// script: the artifact is small, reviewable in a diff, and needs no new build machinery.
 pub fn typescript() -> String {
-    let names: Vec<String> = REGISTRY.iter().map(|o| format!("\t| '{}'", o.name)).collect();
+    let names: Vec<String> = REGISTRY
+        .iter()
+        .filter(|o| o.surface != Surface::Internal)
+        .map(|o| format!("\t| '{}'", o.name))
+        .collect();
     format!(
         "// GENERATED from backend/goofi-bridge/src/ops.rs — do not edit by hand.\n\
          // The manager's op registry is the only place an op name is declared: naming one that is\n\

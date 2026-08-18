@@ -1209,7 +1209,11 @@ impl AppState {
             if op == "list_dir" {
                 return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
             }
-            if op == "get_patch" {
+            // Off the graph lock: the doc is its own mutex, and this reads only the doc.
+        if op == "get_state" {
+            return Ok(state.crdt.lock().unwrap().to_json());
+        }
+        if op == "get_patch" {
                 return Ok(json!({
                     "save_path": state.save_path(),
                     "workspace": goofi_core::path::to_slash(&state.mount()),

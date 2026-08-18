@@ -48,3 +48,20 @@ fn an_unknown_op_is_refused_by_name() {
     let err = state.call("no_such_op", json!({}), "s1").unwrap_err();
     assert!(err.contains("no_such_op"), "{err}");
 }
+
+/// The replicated projection — the five doc roots a browser replica mirrors — read as plain JSON
+/// through the ordinary op path. Without this a test can only reach it by speaking the CRDT sync
+/// protocol, which pins the projection to the transport that happens to carry it today.
+#[test]
+fn the_state_clients_replicate_is_readable_as_plain_json() {
+    let state = AppState::new();
+    let n = uid(&state.call("add_node", json!({ "type": "_TestEcho" }), "s1").unwrap(), "uid");
+
+    let doc = state.call("get_state", json!({}), "s1").unwrap();
+    assert_eq!(doc["nodes"][&n]["type"], "_TestEcho", "{doc}");
+    assert!(doc["globals"]["default_ufreq"].is_object(), "the seeded system globals: {doc}");
+
+    state.call("remove_node", json!({ "node": n }), "s1").unwrap();
+    let doc = state.call("get_state", json!({}), "s1").unwrap();
+    assert!(doc["nodes"].get(&n).is_none(), "and a removal leaves no tombstone behind: {doc}");
+}
