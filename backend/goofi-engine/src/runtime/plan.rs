@@ -180,11 +180,23 @@ impl WirePlanner {
     ///
     /// Only what this node CONSUMED is dropped. What it produced belongs to its consumers'
     /// sequences, which their own re-plan settles.
+    ///
+    /// [`Self::pending`] SURVIVES, which is what tells this apart from [`Self::forget`]: a rebirth
+    /// is the same node, so a request queued for it before it ever attached is still a request for
+    /// it. Dropping one here would silently discard a ⟳ clicked on a node that was restarted before
+    /// it first answered — the very case `pending` exists for.
     pub(crate) fn detach(&mut self, uid: Uid) {
         self.sinks.remove(&uid);
         self.sequences.retain(|(consumer, _), _| *consumer != uid);
         self.awaiting.retain(|_, (consumer, _)| *consumer != uid);
         self.planned.retain(|(consumer, _), _| *consumer != uid);
+    }
+
+    /// [`Self::detach`], plus the queue: the node at this uid is RETIRED rather than reborn, so
+    /// anything still held for it addresses nobody. Delivering it to whatever is added at that uid
+    /// next — an undo of the delete, say — would run one node's device scan against another's.
+    pub(crate) fn forget(&mut self, uid: Uid) {
+        self.detach(uid);
         self.pending.retain(|(to, _)| *to != uid);
     }
 

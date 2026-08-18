@@ -1864,8 +1864,9 @@ impl Graph {
         self.release_entry_bindings(&removed);
         // The planner holds its OWN handle on this node's channel, and that handle is the graph's
         // end of its services. Dropping the entry alone leaves them allocated for the process
-        // lifetime, where no sweep can reach them.
-        self.wire.detach(uid);
+        // lifetime, where no sweep can reach them. `forget` rather than `detach`: this uid is
+        // retired, so anything still queued for it addresses nobody.
+        self.wire.forget(uid);
         // §5.3: every binding that referenced this node by name is now unresolvable, and must be
         // told so — a variable still naming a dead producer's service is one the node waits on
         // forever.
@@ -3043,15 +3044,15 @@ impl Graph {
             // NON-seeding instantiation: load is a restore, so the doc is authoritative for BOTH
             // params and expressions. Going through `add_node` (which seeds `default_expr` bindings)
             // would re-synthesize a binding for any `default_expr` param the user had UNBOUND to a
-            // literal — the reseed would then clobber the saved literal on the next tick. The doc's
+            // literal — the reseed would then clobber the saved literal on the node's next run. The doc's
             // own `expressions` block (restored below) round-trips every binding the user actually has.
             //
             // The saved params are folded in BEFORE construction, because `insert_node` runs the
             // node's `setup()` — a one-time init that reads its params (allocate a buffer of `size`,
             // open device `name`) and never runs again. Applying them afterwards would boot every
-            // node against the type's defaults; on the detached tier, where a param edit is an
-            // explicit no-op, the child would never see them at all. This is the same order the
-            // undo/redo restore path uses (`Command::AddNode` carries the captured params).
+            // node against the type's defaults and leave the saved values to arrive as a `SetParam`
+            // AFTER `setup()` had already read the wrong ones. This is the same order the undo/redo
+            // restore path uses (`Command::AddNode` carries the captured params).
             let mut params = self.default_params_of(ty)?;
             if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
                 for (group, names) in groups {
@@ -3750,7 +3751,7 @@ mod tests {
     fn load_preserves_a_literal_that_overrode_a_default_expr_binding() {
         // A user who UNBINDS a default_expr param (clearing the binding) and sets a fixed literal must
         // keep that literal across save/load — load must NOT re-seed the default_expr binding, which
-        // would clobber the literal on the next tick and silently re-rate the node to the global.
+        // would clobber the literal on the node's next run and silently re-rate it to the global.
         let mut g = eval_graph();
         let n = g.add_node("_TestDefaultExpr", None).unwrap();
         // Clear the seeded binding (empty source removes it) and pin a fixed literal.
@@ -5458,6 +5459,22 @@ mod tests {
     }
 
     #[test]
+    fn a_request_queued_before_the_first_birth_survives_a_restart() {
+        // `pending` exists because a request has no graph state to re-derive it from, so the birth
+        // barrier has to HOLD it rather than drop it. A restart is a rebirth of the same node, not
+        // its retirement — so a ⟳ clicked on a node that has never attached, and then restarted
+        // before it did, is still a ⟳ on that node and still has to be answered.
+        let (mut g, uid) = picker_graph();
+        assert_eq!(g.node_stage(uid), "creating", "nothing has attached, so the ask is queued");
+        g.refresh_param(uid, "audio", "device").unwrap();
+        g.restart_node(uid).unwrap();
+
+        wait_for(&mut g, "the queued scan to reach the record", |g| {
+            options_of(g, uid, "audio", "device") == Some(vec!["dev0".to_string()])
+        });
+    }
+
+    #[test]
     fn restarting_a_node_releases_the_generation_it_replaced() {
         // The same leak once per restart, and a second symptom with it: a sink outliving its node
         // makes the REBORN node look addressable while it is not, so `WirePlanner::send` publishes
@@ -5513,14 +5530,13 @@ mod tests {
         let n = g.add_node("_TestWedged", None).unwrap();
         wait_for(&mut g, "the node to be inside its long process", |g| g.node_stage(n) == "ready");
 
+        // Spelled out, not read off `SHUTDOWN_WAIT`: bounds taken from the constant under test move
+        // with it, and `SHUTDOWN_WAIT = ZERO` left this green. The node sleeps 10 s, so anything
+        // under that is a give-up and anything over ~1.5 s is a real wait.
         let t = Instant::now();
         drop(g);
-        assert!(t.elapsed() >= SHUTDOWN_WAIT, "it did wait: {:?}", t.elapsed());
-        assert!(
-            t.elapsed() < SHUTDOWN_WAIT + Duration::from_secs(2),
-            "but it gave up rather than joining: {:?}",
-            t.elapsed(),
-        );
+        assert!(t.elapsed() >= Duration::from_millis(1500), "it did wait: {:?}", t.elapsed());
+        assert!(t.elapsed() < Duration::from_secs(4), "but it gave up rather than joining: {:?}", t.elapsed());
     }
 
     #[test]
@@ -6840,11 +6856,15 @@ mod tests {
 
     #[test]
     fn a_constant_expression_drives_the_node_too() {
-        // §2.1 has TWO doors onto the same field, and `a_bound_param_drives_what_the_node_emits`
-        // pins only one. A stream value arrives as a frame and is picked up by the run that reads
-        // it; a constant names no variable, so it is evaluated once inside `set_param` at the
-        // authoring moment — measured, that path survives deleting the pre-run evaluation entirely,
-        // which is exactly why it needs its own test rather than sharing one.
+        // §2.1 has TWO doors onto the same field: a stream value arrives as a frame and is picked
+        // up by the run that reads it, while a constant names no variable and is evaluated inside
+        // `set_param` at the authoring moment. This pins that a CONSTANT reaches `process` at all,
+        // end to end — a shape `a_bound_param_drives_what_the_node_emits` never exercises.
+        //
+        // It does NOT isolate which door delivered it: measured, this passes with either one
+        // deleted, because the surviving one covers for the other. Isolation lives where the doors
+        // are, in `runtime::tests` — `a_settled_binding_re_dispatches_nothing` drives the per-run
+        // path with the authoring one held still.
         let mut g = eval_graph();
         let osc = capped(&mut g, "Oscillator", 10.0);
         let out = OutputProbe::open(&g, osc, "out");
@@ -8204,7 +8224,7 @@ mod tests {
         // to trip over. Taking the best is what makes it a statement about the code — noise can
         // only ever make it pass, and a real regression takes every window with it.
         const WINDOW: Duration = Duration::from_millis(200);
-        const FLOOR: usize = 1000; // 5 kHz, against ~26 kHz measured unobstructed
+        const FLOOR: usize = 1000; // 5 kHz, against ~20 kHz (~4000 per window) measured across machines
         let best = (0..3).map(|_| runs_in(WINDOW, false)).max().expect("three windows");
         assert!(best >= FLOOR, "an unobstructed node managed {best} runs in {WINDOW:?}, floor {FLOOR}");
     }

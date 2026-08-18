@@ -70,7 +70,7 @@ pub struct Scope {
 /// The walk carries a visited set because it CANNOT assume the chain is acyclic: a `.gfi` is
 /// hand-editable and `reload_scopes` admits whatever stub graph it finds, so a stub pointing back
 /// into its own chain is representable persisted state. Recursing on it does not raise a
-/// recoverable panic — a Rust stack overflow aborts the process, taking the tick thread and every
+/// recoverable panic — a Rust stack overflow aborts the process, taking every node thread and every
 /// connected client with it, and `/data/<scope>/<stub>` reaches here from an ordinary subscribe.
 /// A cycle is malformed, so it answers `None`, the same answer an unknown stub already gives.
 pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> Option<(Uid, String)> {
@@ -128,7 +128,7 @@ mod tests {
     fn a_self_referential_stub_resolves_to_none_instead_of_exhausting_the_stack() {
         // A `.gfi` is hand-editable and `reload_scopes` validates no stub chain, so this walk
         // cannot assume acyclicity. Recursing forever here does not panic recoverably — a Rust
-        // stack overflow ABORTS the process, taking the tick thread and every connected client
+        // stack overflow ABORTS the process, taking every node thread and every connected client
         // with it, and `/data/<scope>/<stub>` reaches this from an ordinary subscribe.
         assert_eq!(resolve_stub(&self_referential(), Uid(10), "out0"), None);
     }
