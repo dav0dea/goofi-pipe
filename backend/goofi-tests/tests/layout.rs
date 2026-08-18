@@ -393,3 +393,231 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
     let empty: [&str; 0] = [];
     assert_eq!(stranded, empty, "an undo left an arrangement the manager cannot itself open");
 }
+
+/// The page names `inspect_layout` draws, in tab order — one line per page, `page \`name\`  [id]`.
+fn page_names(g: &Goofi) -> Vec<String> {
+    g.call("inspect_layout", j!({}))["text"].as_str().expect("a tree").lines()
+        .filter_map(|l| Some(l.trim().strip_prefix("page `")?.split_once('`')?.0.to_string()))
+        .collect()
+}
+
+#[test]
+fn a_redo_after_a_peers_edit_re_plans_rather_than_replaying_the_slots_it_found() {
+    // The narrower half, and the one an undo test cannot see: what a REDO replays is the close's
+    // own inverse. Handing it the slots the close found puts the dead split back on top of whatever
+    // the peer built where it stood — undo, peer edit, redo, two roots on one page.
+    let one = Goofi::new();
+    let two = one.client("s2");
+    let a = first_panel(&one);
+    let born = split(&one, "Layout", &a, "row");
+
+    assert_eq!(one.call("undo", j!({}))["changed"], true);
+    assert_eq!(page_roots(&one, "Layout"), vec![a.clone()], "the survivor took the page root");
+
+    let peer = split(&two, "Layout", &a, "column");
+    assert_eq!(one.call("redo", j!({}))["changed"], true);
+
+    assert!(panels(&one).contains(&born) && panels(&one).contains(&peer));
+    assert_eq!(page_roots(&one, "Layout").len(), 1, "a dead split did not come back");
+    assert_eq!(reload_warning(&one), Value::Null);
+}
+
+#[test]
+fn every_layout_write_op_reads_the_argument_its_registry_row_advertises() {
+    // The dispatch arms are pure argument plumbing over planners proven elsewhere, so what is NOT
+    // otherwise checked is that each arm reads the argument NAME its row advertises. One pass
+    // exercises all of them, including a subtree move across pages.
+    let g = Goofi::new();
+    let first = first_panel(&g);
+
+    g.call("session_add_page", j!({ "name": "Second" }));
+    g.call("session_rename_page", j!({ "from": "Second", "to": "Signals" }));
+    g.call("session_reorder_page", j!({ "name": "Signals", "to_index": 0 }));
+    assert_eq!(page_names(&g), ["Signals", "Layout"], "rename and reorder both landed");
+
+    let theirs = panels(&g).into_iter().find(|p| *p != first).expect("the new page's panel");
+    let sibling = split(&g, "Signals", &theirs, "row");
+    let dest = parent(&g, &sibling);
+
+    let mine = g.call("page_split_panel", j!({ "page": "Layout", "panel": first,
+                                              "direction": "column", "ratio": 0.25 }))
+        .as_str().unwrap().to_string();
+    g.call("page_move_panel", j!({ "page": "Layout", "panel": mine,
+                                  "new_parent": dest, "order_index": 0 }));
+    let page = g.call("inspect_layout", j!({ "page": "Signals" }))["text"].as_str().unwrap().to_string();
+    assert!(page.contains(&mine), "the moved panel is on the destination page now: {page}");
+
+    g.call("page_remove_panel", j!({ "page": "Signals", "panel": mine }));
+    g.call("session_remove_page", j!({ "name": "Signals" }));
+    assert_eq!(page_names(&g), ["Layout"], "the page and its panels went");
+    // The last page refuses, rather than leaving nothing to look at.
+    let why = g.refuse("session_remove_page", j!({ "name": "Layout" }));
+    assert!(why.contains("last page"), "{why}");
+}
+
+#[test]
+fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
+    // The drag feel is FROZEN UX. Expressed as the primitive ops, a drop costs three to five
+    // commands — three to five ctrl-Z for one drag, and every peer watching two arrangements that
+    // were never on anybody's screen.
+    let g = Goofi::new();
+    let first = first_panel(&g);
+    let mine = split(&g, "Layout", &first, "row");
+    g.call("session_add_page", j!({ "name": "Signals", "index": 0 }));
+    assert_eq!(page_names(&g).first().map(String::as_str), Some("Signals"),
+               "the page landed at the tab index asked for");
+    let target = panels(&g).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
+    let before = entries(&g);
+
+    // dropOnPanel — one op, and one undo.
+    g.call("page_insert_at_panel", j!({ "page": "Signals", "subtree": mine, "target": target,
+                                       "direction": "column", "place_before": true, "ratio": 0.3 }));
+    let page = g.call("inspect_layout", j!({ "page": "Signals" }))["text"].as_str().unwrap().to_string();
+    assert!(page.contains(&mine), "the panel crossed pages in ONE op: {page}");
+    assert_ne!(entries(&g), before, "the drop actually moved something");
+    assert_eq!(g.call("undo", j!({}))["changed"], true);
+    assert_eq!(entries(&g), before, "ONE ctrl-Z put the whole drag back");
+
+    // dropPanelOnTabBar — a page built around an existing panel, also one op and one undo.
+    g.call("session_add_page", j!({ "name": "Torn off", "index": 0, "subtree": mine }));
+    assert_eq!(size_of(&g, &mine), 1.0, "the dragged panel is the new page's whole root");
+    g.call("undo", j!({}));
+    assert_eq!(entries(&g), before, "and one ctrl-Z put that back too");
+
+    // page_resize_split — the drag-commit, and the only op that sizes anything.
+    let wrapper = parent(&g, &mine);
+    g.call("page_resize_split", j!({ "page": "Layout", "split": wrapper, "fractions": [0.2, 0.8] }));
+    assert_eq!(size_of(&g, &first), 0.2);
+    assert_eq!(size_of(&g, &mine), 0.8, "both children landed on the fractions the drag drew");
+    let why = g.refuse("page_resize_split", j!({ "page": "Layout", "split": wrapper, "fractions": [0.5] }));
+    assert!(why.contains("children"), "{why}");
+}
+
+#[test]
+fn a_panel_takes_a_type_and_a_binding_together_and_merges_later_state_writes() {
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let panel = first_panel(&g);
+    let state = |g: &Goofi| g.doc()["arrangement"][&panel]["state"].as_str().unwrap_or("").to_string();
+
+    // Type is applied BEFORE state: switching type clears the old type's state, so a combined
+    // `{type, state}` landed the other way round would store a wiped binding.
+    g.call("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "viewer",
+                                 "state": { "node": hex(osc), "slot": "out" } }));
+    assert_eq!(g.doc()["arrangement"][&panel]["panel_type"], "viewer");
+    assert!(state(&g).contains(&hex(osc)), "the binding survived the type change: {}", state(&g));
+
+    // Two state writes back to back with no delta between them — the shape every caller has (read
+    // the bag, edit one key, write it back). The second must not replace a bag it has not seen the
+    // first land in.
+    for patch in [j!({ "kind": "line" }), j!({ "slot": "out" })] {
+        g.call("page_set_panel", j!({ "page": "Layout", "panel": panel, "state": patch }));
+    }
+    let s = state(&g);
+    assert!(s.contains(&hex(osc)) && s.contains("line") && s.contains("\"slot\":\"out\""),
+            "a state write merges, so neither earlier key was dropped: {s}");
+
+    // A bind to a node that is not there renders an EMPTY panel and says nothing.
+    let why = g.refuse("page_set_panel", j!({ "page": "Layout", "panel": panel,
+                                             "state": { "node": "deadbeefdead" } }));
+    assert!(why.contains("deadbeefdead"), "{why}");
+
+    // A DISPLAY NAME is not a binding: it resolves today and stops the moment the node is renamed.
+    let name = g.doc()["nodes"][hex(osc)]["name"].as_str().unwrap().to_string();
+    let why = g.refuse("page_set_panel", j!({ "page": "Layout", "panel": panel,
+                                             "state": { "node": name } }));
+    assert!(why.contains(&name), "a panel binds by uid, never by name: {why}");
+}
+
+#[test]
+fn a_layout_write_answers_with_the_arrangement_it_produced() {
+    // A bare success told a caller its write was accepted and nothing about what it made, so an
+    // agent editing the layout had to follow every op with an `inspect_layout`. The write already
+    // knows: it is holding the arrangement it just planned against.
+    let g = Goofi::new();
+    let panel = first_panel(&g);
+
+    let typed = g.call("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "console" }));
+    let text = typed["text"].as_str().unwrap_or_default();
+    assert!(text.contains("console") && text.contains(&panel), "{typed}");
+
+    // …and it is the arrangement AFTER the write, not the one the op was handed.
+    let renamed = g.call("session_rename_page", j!({ "from": "Layout", "to": "Signals" }));
+    let text = renamed["text"].as_str().unwrap_or_default();
+    assert!(text.contains("Signals") && !text.contains("Layout"), "{renamed}");
+
+    // Every family answers the same way — the close and move planners are separate code paths from
+    // the contents one the two above take.
+    let page = g.call("session_add_page", j!({ "name": "Second" }));
+    let moved = g.call("page_insert_at_panel", j!({ "page": "Second", "subtree": panel,
+                                                   "target": page["panel"] }));
+    assert!(moved["text"].as_str().is_some_and(|t| t.contains("Second")), "{moved}");
+    g.call("session_add_page", j!({ "name": "Third" }));
+    let closed = g.call("session_remove_page", j!({ "name": "Third" }));
+    let text = closed["text"].as_str().unwrap_or_default();
+    assert!(!text.contains("Third") && text.contains("Second"), "{closed}");
+}
+
+#[test]
+fn a_word_outside_the_vocabulary_is_refused_by_naming_the_set() {
+    // The user's own repro (2026-08-10), driving a real agent against the live system: it guessed
+    // `params` for the panel type — the real one is `parameters` — and was told it succeeded while
+    // the panel dropped into an "Unknown panel type" state. A plausible guess told it succeeded is
+    // worse than a refusal: nothing downstream can teach the caller it guessed.
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let panel = first_panel(&g);
+
+    let why = g.refuse("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "params",
+                                             "state": { "node": hex(osc) } }));
+    assert!(why.contains("params"), "the refusal names what was asked for: {why}");
+    assert!(why.contains("parameters"), "…and the set it could have meant: {why}");
+    assert_ne!(g.doc()["arrangement"][&panel]["panel_type"], "params",
+               "and it refused BEFORE writing — a panel holding a type nothing renders is the bug");
+
+    // A viewer's `kind` is the same problem one level down: a free string inside the state bag.
+    let why = g.refuse("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "viewer",
+                                             "state": { "node": hex(osc), "kind": "waveform" } }));
+    assert!(why.contains("waveform") && why.contains("line"), "{why}");
+
+    // …and a slot the bound node does not have, which renders the panel's own empty state.
+    g.call("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "viewer",
+                                 "state": { "node": hex(osc) } }));
+    let why = g.refuse("page_set_panel", j!({ "page": "Layout", "panel": panel,
+                                             "state": { "slot": "spectrum" } }));
+    assert!(why.contains("spectrum") && why.contains("out"), "{why}");
+}
+
+#[test]
+fn a_viewpoint_rides_the_patch_without_dirtying_it() {
+    // Where a client is LOOKING is per-client, so it is deliberately not a doc root — it cannot drag
+    // a peer or raise the unsaved dot. Persistence is the other axis: it still rides the `.gfi`.
+    // (That a fresh connection gets it back on `hello` is the transport suite's.)
+    let g = Goofi::new();
+    let vp = j!({ "activePage": "Layout", "maximized": null, "subpatchPath": { "panel-2": ["a1b2c3"] } });
+    g.call("set_viewpoint", j!({ "viewpoint": vp }));
+    assert_eq!(g.call("get_patch", j!({}))["dirty"], false,
+               "looking around is not authoring, on any platform");
+    assert!(g.call("serialize", j!({}))["yaml"].as_str().unwrap().contains("a1b2c3"));
+}
+
+#[test]
+fn a_corrupt_arrangement_still_opens_the_patch_and_says_what_it_dropped() {
+    // The graph is the value, the arrangement is chrome: a layout the flat model admits but cannot
+    // render must never make a patch unopenable — and the fallback must be stated, not silent.
+    //
+    // This is also what proves `reload_warning` above is a live judge rather than a constant: it is
+    // the one case where the loader DOES refuse, and it refuses here.
+    let g = Goofi::new();
+    g.add("Oscillator");
+    let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
+    let broken = yaml.replace("parent: page-1", "parent: gone"); // a panel parented to nothing
+    assert_ne!(broken, yaml, "the fixture actually corrupted something");
+
+    let r = g.call("load_text", j!({ "content": broken }));
+    assert_eq!(r["ok"], true, "the patch still opens: {r}");
+    assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("reaches no page")),
+            "the reply says why the arrangement was dropped: {r}");
+    assert_eq!(panels(&g).len(), 1, "opened on the default arrangement");
+    assert_eq!(g.nodes().len(), 1, "with the graph intact");
+}
