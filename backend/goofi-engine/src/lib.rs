@@ -491,7 +491,8 @@ fn next_event_id(taken: &[runtime::EventId]) -> Option<runtime::EventId> {
 
 impl Graph {
     pub fn new() -> Graph {
-        // Reference goofi-nodes so the linker keeps its inventory registrations.
+        // Reference goofi-nodes so the linker keeps its inventory registrations. This is the ONLY
+        // anchor: the bridge carried a second one, and dropping it left the catalog intact.
         let _ = goofi_nodes::native_node_count();
         Graph {
             nodes: IndexMap::new(),

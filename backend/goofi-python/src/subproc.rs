@@ -332,9 +332,9 @@ pub struct SubprocNodeType {
 
 use crate::Discovery;
 
-/// Probe one file for this tier, reporting all three outcomes. The CLI uses this (rather than
-/// [`discover_one`]) because it needs the failure REASON to list the node as unavailable, and one
-/// probe spawn must answer both questions.
+/// Probe one file for this tier, reporting all three outcomes — the ONE discovery door. The CLI
+/// needs the failure REASON to list a node as unavailable, and one probe spawn must answer both
+/// questions, so a caller pairs this with [`node_type_from`] rather than asking twice.
 pub fn probe(path: &Path, python: &str) -> Discovery {
     goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
 }
@@ -355,19 +355,6 @@ fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType 
         Box::new(RemoteNode::new(&python, &source, in_slots.clone())) as Box<dyn Node>
     });
     SubprocNodeType { manifest, factory }
-}
-
-/// Build a subprocess-backed node type from a single file by running the `goofi.introspect`
-/// probe on `python` (a GIL interpreter with `goofi` importable): the probe's rich manifest
-/// gives multi-slot + params; the factory spawns a [`RemoteNode`]. `None` if it is not a node
-/// file or the probe fails (missing dep / no `Node` subclass) — greyed out, never a catalog crash.
-pub fn discover_one(path: &Path, python: &str) -> Option<SubprocNodeType> {
-    let goofi_node::discover::Discovery::Found(d) =
-        goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
-    else {
-        return None;
-    };
-    Some(subproc_type_from_discovered(python, d))
 }
 
 #[cfg(test)]
@@ -653,7 +640,8 @@ class Scale(goofi.Node):
         let py = require_python();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nodes/psd.py");
         // Discovery: CamelCase "Psd" on the subprocess tier, with its declared welch.nperseg param.
-        let ty = discover_one(&path, &py).expect("psd.py discovers as a subprocess node");
+        let Discovery::Found(d) = probe(&path, &py) else { panic!("psd.py probes as a node") };
+        let ty = node_type_from(&py, d);
         assert_eq!(ty.manifest.type_name, "Psd");
         assert_eq!(ty.manifest.isolation, Isolation::Subprocess);
         assert_eq!(ty.manifest.outputs[0].name, "psd");
@@ -1159,7 +1147,7 @@ class Slow(goofi.Node):
     /// Asserted over a directory rather than a lone file because the two files that must NOT
     /// become nodes are the ones a real scan puts in its way.
     #[test]
-    fn discover_one_yields_subprocess_types_that_run_and_passes_over_the_rest() {
+    fn the_probe_yields_subprocess_types_that_run_and_passes_over_the_rest() {
         let py = require_python();
         let dir = std::env::temp_dir().join(format!("goofi_subdisc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1180,9 +1168,11 @@ class Negate(goofi.Node):
         std::fs::write(dir.join("_hidden.py"), negate).unwrap(); // underscore → skipped
         std::fs::write(dir.join("nope.py"), "x = 1\n").unwrap(); // no Node subclass → probe skips
 
-        assert!(discover_one(&dir.join("_hidden.py"), &py).is_none(), "`_`-prefixed is not a node");
-        assert!(discover_one(&dir.join("nope.py"), &py).is_none(), "no Node subclass → no type");
-        let ty = discover_one(&dir.join("negate.py"), &py).expect("a real node file");
+        // Through the pair the CLI uses, so the test covers the path production takes.
+        assert!(!matches!(probe(&dir.join("_hidden.py"), &py), Discovery::Found(_)), "`_`-prefixed is not a node");
+        assert!(!matches!(probe(&dir.join("nope.py"), &py), Discovery::Found(_)), "no Node subclass → no type");
+        let Discovery::Found(d) = probe(&dir.join("negate.py"), &py) else { panic!("a real node file") };
+        let ty = node_type_from(&py, d);
         assert_eq!(ty.manifest.type_name, "Negate");
         assert_eq!(ty.manifest.category, "subprocess");
         assert_eq!(ty.manifest.isolation, Isolation::Subprocess);

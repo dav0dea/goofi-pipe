@@ -723,10 +723,9 @@ pub async fn serve_app(
     axum::serve(listener, app(state, static_dir)).await
 }
 
-/// Native node type names visible in the catalog (`--list-nodes`; also ensures linkage).
+/// Native node type names visible in the catalog (`--list-nodes`).
 /// Hides `_`-prefixed test nodes, exactly as the palette projection does.
 pub fn catalog_type_names() -> Vec<String> {
-    let _ = goofi_nodes::native_node_count();
     goofi_node::catalog()
         .filter(|m| !m.type_name.starts_with('_'))
         .map(|m| m.type_name.to_string())
