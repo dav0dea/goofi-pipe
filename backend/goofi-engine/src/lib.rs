@@ -215,13 +215,23 @@ fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// The persisted scalar value of a param (flat form; triggers persist `false`).
-fn param_value_json(p: &Param) -> serde_json::Value {
+/// A param's VALUE as JSON — the inverse of [`param_from_json`], and the one definition of it.
+///
+/// `fire_triggers` decides what a fired momentary trigger reads as, and the two callers want
+/// opposite answers: a PERSISTED value (`serialize`, `restart_node`) must never record a trigger as
+/// fired, or reloading the patch would fire it again, while a UI PROJECTION (the param descriptors
+/// and the CRDT mirror) must show the live state. The flag is named for its inverse's, which gates
+/// the same distinction on the way back in.
+///
+/// Two copies of this used to exist — this one and `goofi_bridge::schemas`' — under the same name,
+/// in two crates, differing in exactly that arm and nothing else.
+pub fn param_value_json(p: &Param, fire_triggers: bool) -> serde_json::Value {
     use serde_json::json;
     match p {
         Param::Float { value, .. } => json!(value),
         Param::Int { value, .. } => json!(value),
         Param::Bool { value } => json!(value),
-        Param::Trigger { .. } => json!(false),
+        Param::Trigger { fired } => json!(fire_triggers && *fired),
         Param::Str { value, .. } => json!(value),
     }
 }
@@ -1922,7 +1932,7 @@ impl Graph {
             for (name, value) in held {
                 if let Some(slot) = g.get_mut(name) {
                     // `fire_triggers: false` — a rescan must not trip a node's trigger.
-                    *slot = param_from_json(slot, &param_value_json(value), false);
+                    *slot = param_from_json(slot, &param_value_json(value, false), false);
                 }
             }
         }
@@ -2899,7 +2909,7 @@ impl Graph {
             for (group, names) in &*live {
                 let mut gmap = Map::new();
                 for (name, p) in names {
-                    gmap.insert(name.clone(), param_value_json(p));
+                    gmap.insert(name.clone(), param_value_json(p, false));
                 }
                 params.insert(group.clone(), Value::Object(gmap));
             }
@@ -3850,6 +3860,30 @@ mod tests {
             inputs: SINK_IN,
             outputs: &[],
             params: SINK_PARAMS,
+            isolation: Isolation::InProcess,
+            producer: false,
+            factory: default_factory::<Sink>,
+        }
+    }
+
+    /// A node declaring a momentary trigger, so a test can save one that has fired. The type has
+    /// to DECLARE it: `load_doc` folds a saved value over the type's default params with `get_mut`
+    /// and never inserts, so a param no manifest declares is dropped on load rather than restored.
+    static TRIGGER_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "control",
+        name: "fire",
+        spec: ParamSpec::Trigger,
+        expression: None,
+        doc: None,
+    }];
+    inventory::submit! {
+        NodeManifest {
+            type_name: "_TestTrigger",
+            category: "test",
+            doc: "declares a momentary trigger",
+            inputs: SINK_IN,
+            outputs: &[],
+            params: TRIGGER_PARAMS,
             isolation: Isolation::InProcess,
             producer: false,
             factory: default_factory::<Sink>,
@@ -5127,6 +5161,49 @@ mod tests {
         let cnt = g.add_node("_TestCounter", None).unwrap();
         let out = OutputProbe::open(&g, cnt, "out");
         assert!(out.silent(&mut g), "a triggered node with no wired input must never run");
+    }
+
+    #[test]
+    fn a_fired_trigger_does_not_survive_a_save() {
+        // A momentary trigger is an ACTION, not a value. Persisting one as fired would re-fire it
+        // on every load of the patch — a "reset device" or "recalibrate" param firing itself each
+        // time the file opens.
+        //
+        // `param_value_json`'s `fire_triggers` flag is what decides this, and the two callers want
+        // opposite answers: `serialize` passes false, while the UI projection passes true so the
+        // inspector can show the live state. Nothing pinned the persistence half — flipping
+        // `serialize`'s argument to `true` left all 760 tests green, which is what this closes.
+        //
+        // Asserted through a real load rather than on the YAML text: the rule is about what comes
+        // BACK, and a text assertion would pass against a loader that read the field wrongly.
+        let mut g = Graph::new();
+        let c = g.add_node("_TestTrigger", None).unwrap();
+        g.update_param(c, "control", "fire", Param::Trigger { fired: true }).unwrap();
+        assert_eq!(
+            goofi_node::param(&g.params(c).unwrap(), "control", "fire"),
+            Some(&Param::Trigger { fired: true }),
+            "the live record holds it fired, so the save has something to drop",
+        );
+
+        // The SAVE is asserted as well as the reload, because two independent guards enforce this
+        // and the reload alone cannot see either: `serialize` writes the trigger unfired, and
+        // `load_doc` refuses to fire one. A test that checked only the round trip stayed green with
+        // `serialize`'s argument flipped to `true`.
+        //
+        // The other guard is pinned where it can actually be seen — on a file that DOES say
+        // `true`, which only a hand-edited `.gfi` produces — by
+        // `param_from_json_coerces_each_type_and_gates_trigger_firing`.
+        let yaml = g.serialize();
+        assert!(yaml.contains("fire: false"), "the save records it unfired:\n{yaml}");
+
+        let mut g2 = Graph::new();
+        g2.load_doc(&yaml).unwrap();
+        let restored = g2.node_uids()[0];
+        assert_eq!(
+            goofi_node::param(&g2.params(restored).unwrap(), "control", "fire"),
+            Some(&Param::Trigger { fired: false }),
+            "a reload must not re-fire it",
+        );
     }
 
     #[test]

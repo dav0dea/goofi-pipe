@@ -13,22 +13,14 @@ pub const PROTOCOL_VERSION: i64 = 1;
 /// A single param's current value as the frontend's `descriptor.value` JSON. The one
 /// place param → wire-value lives, shared by [`describe_param`] and the live
 /// `param_values` projection so the preview and the descriptor always agree.
-pub fn param_value_json(p: &Param) -> Value {
-    match p {
-        Param::Float { value, .. } => json!(value),
-        Param::Int { value, .. } => json!(value),
-        Param::Bool { value } => json!(value),
-        Param::Trigger { fired } => json!(fired),
-        Param::Str { value, .. } => json!(value),
-    }
-}
+
 
 /// A single param descriptor (discriminated on `type`). `expr` is the instance's
 /// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is
 /// the static help text from the type's declaration, which the runtime [`Param`] cannot carry.
 pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
-    m.insert("value".into(), param_value_json(p));
+    m.insert("value".into(), goofi_engine::param_value_json(p, true));
     m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
     m.insert(
         "refreshable".into(),
@@ -130,7 +122,7 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     for (group, name, p) in g.expression_values(uid) {
         let entry = groups.entry(group.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(names) = entry {
-            names.insert(name.to_string(), param_value_json(p));
+            names.insert(name.to_string(), goofi_engine::param_value_json(p, true));
         }
     }
     Value::Object(groups)
@@ -144,7 +136,7 @@ pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
         params
             .iter()
             .map(|(gname, group)| {
-                let names = group.iter().map(|(n, p)| (n.clone(), param_value_json(p)));
+                let names = group.iter().map(|(n, p)| (n.clone(), goofi_engine::param_value_json(p, true)));
                 (gname.clone(), Value::Object(names.collect()))
             })
             .collect(),

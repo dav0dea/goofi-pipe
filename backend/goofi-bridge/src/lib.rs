@@ -1518,7 +1518,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                     "value": g
                         .params(uid)
                         .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                        .map(|p| schemas::param_value_json(&p))
+                        .map(|p| goofi_engine::param_value_json(&p, true))
                 }))
             }
             "set_expression" => {

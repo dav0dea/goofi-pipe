@@ -7,7 +7,7 @@ use goofi_engine::subpatch::Dir;
 use goofi_engine::Graph;
 use serde_json::{json, Map, Value};
 
-use crate::schemas::{param_value_json, ROOT_ID};
+use crate::schemas::ROOT_ID;
 
 /// Rebuild `doc` to mirror `g`'s control-plane state (nodes, params, pos, viewers, links, forest).
 /// Builds ONE JSON projection of the engine graph — exactly the doc's field shape — and hands it to
@@ -29,7 +29,7 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
                 let mut gmap = Map::new();
                 for (pname, p) in pg {
                     let mut entry = Map::new();
-                    entry.insert("value".into(), param_value_json(p));
+                    entry.insert("value".into(), goofi_engine::param_value_json(p, true));
                     // A cleared binding omits `expr` entirely → the reconciler prunes any stale one.
                     if let Some(e) = g.param_expression(uid, group, pname) {
                         entry.insert(
