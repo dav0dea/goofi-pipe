@@ -8094,11 +8094,34 @@ mod tests {
         if with_sleeper {
             g.add_node("_TestSleeping", None).unwrap();
         }
+        // Zeroed once BOTH nodes exist. The counter free-runs from the moment it is added, and
+        // adding the sleeper takes 33-50 ms, so a window opened before that gave `beside` a head
+        // start of a thousand-odd runs against its own 500 ms — measured at 1397/1084/1211, which
+        // is what made `beside` come out ABOVE `alone`. Corrected, the ratio is 1.02/1.00/0.99.
+        runs.store(0, std::sync::atomic::Ordering::Relaxed);
         // Nothing to drive: each node runs itself on its own thread. What the test measures is the
         // rate that arrangement gives the counter, so the measurement is a wall-clock window and
         // the graph is simply alive for it.
         std::thread::sleep(window);
         runs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[test]
+    fn an_unobstructed_node_runs_thousands_of_times_a_second() {
+        // The floor underneath the headline test, which pins a RATIO — and a ratio survives both
+        // arms collapsing together. Measured: a 1.5 ms stall added to every run is a ~20x collapse
+        // and passes every other test in this crate; a 20 ms stall passes the headline test too.
+        // This project exists to make nodes fast, so one assertion has to be about the absolute
+        // number.
+        //
+        // The BEST of several windows, never the median or the mean: the suite runs eight of these
+        // at once on a shared machine, so a stolen window is noise the assertion must not be able
+        // to trip over. Taking the best is what makes it a statement about the code — noise can
+        // only ever make it pass, and a real regression takes every window with it.
+        const WINDOW: Duration = Duration::from_millis(200);
+        const FLOOR: usize = 1000; // 5 kHz, against ~26 kHz measured unobstructed
+        let best = (0..3).map(|_| runs_in(WINDOW, false)).max().expect("three windows");
+        assert!(best >= FLOOR, "an unobstructed node managed {best} runs in {WINDOW:?}, floor {FLOOR}");
     }
 
     #[test]
