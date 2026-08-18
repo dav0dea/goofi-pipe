@@ -166,8 +166,6 @@ struct InputWire {
 
 /// A node's end of every service it owns.
 pub struct IoxTransport {
-    /// Must outlive every port built from it, this node's doorbells included.
-    node: IoxNode,
     door: EventService,
     listener: iceoryx2::port::listener::Listener<Svc>,
     control: ByteSubscriber,
@@ -176,6 +174,13 @@ pub struct IoxTransport {
     outputs: HashMap<&'static str, OutputPort>,
     /// Grown and shrunk by `InSlot`, which is why it is the one map behind a lock.
     inputs: Mutex<Vec<(String, Vec<InputWire>)>>,
+    /// Must outlive every port built from it, this node's doorbells included — so it is declared
+    /// LAST, because Rust drops a struct's fields in declaration order. Declared first, the node
+    /// cleaned up while its own ports still held records inside its directory: it could not remove
+    /// the directory, the ports then emptied it, and the empty directory stayed for ever. One
+    /// `goofi-engine` suite run left 977 of them, and `IoxNode::list` walks every one at each
+    /// process start — which took `goofi-python`'s subprocess tests from 8.8 s to 529 s.
+    node: IoxNode,
 }
 
 impl IoxTransport {
@@ -360,10 +365,13 @@ impl Transport for IoxTransport {
 /// that node's doorbell. Opened by name from the same base the node built its services from, which
 /// is the whole of what the graph needs to know about where a node lives.
 pub struct NodeChannel {
-    _node: IoxNode,
     control: BytePublisher,
     status: ByteSubscriber,
     door: Doorbell,
+    /// Last, for the reason [`IoxTransport::node`] states: the node has to drop AFTER every port
+    /// built from it, or it leaves its own directory behind. The graph holds one of these for each
+    /// node, so this half leaked at the same rate as the node's own half.
+    _node: IoxNode,
 }
 
 impl NodeChannel {
@@ -671,6 +679,81 @@ mod tests {
         assert!(!std::path::Path::new(&aged).exists(), "the aged empty directory was taken");
         assert!(std::path::Path::new(&fresh).exists(), "and one that may still be filling was not");
         let _ = std::fs::remove_dir(&fresh);
+    }
+
+    /// Where iceoryx2 keeps THIS node's record. Named from the node's own id rather than diffed
+    /// out of a directory listing: 314 tests in this binary create and drop nodes in parallel, so a
+    /// before/after diff picks up whatever a neighbour made — it picked up a `.node_monitor` file
+    /// on the first run of these two tests. `Node::drop` builds the same name from
+    /// `self.id().0.value().to_string()`, so this is that name and not a guess at it.
+    fn record_of(node: &IoxNode) -> String {
+        format!("{}/{}", node_dir(), node.id().value())
+    }
+
+    #[test]
+    fn a_dropped_node_takes_its_own_record_with_it() {
+        // The sweep test above proves `remove_empty_node_dirs` over directories the TEST made. It
+        // cannot see the fault that matters, because a synthetic directory is not a node: the real
+        // question is whether the ~1000 iceoryx2 nodes one suite run creates take their own
+        // records away when they drop. One `cargo test -p goofi-engine` run raised
+        // `/tmp/iceoryx2/nodes` from 0 to 977, and `IoxNode::list` walks every entry at each
+        // process start — which took `goofi-python`'s subprocess tests from 8.8 s and 19 passes to
+        // 529 s and 3 failures.
+        //
+        // A node on its own always passed this. It is here as the CONTROL for the test below: the
+        // pair is what shows the fault is the drop order and not the node.
+        std::fs::create_dir_all(node_dir()).expect("the node directory");
+        let node = iox_node().expect("an iceoryx2 node");
+        let path = record_of(&node);
+        assert!(std::path::Path::new(&path).exists(), "a live node has a record at {path}");
+
+        drop(node);
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "a dropped node left its record behind at {path}",
+        );
+    }
+
+    /// The smallest manifest [`IoxTransport::create`] accepts. It reads the slot declarations only,
+    /// so the factory is never called.
+    static ONE_OUT: &[goofi_node::OutputDecl] =
+        &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    static DIRLEAK_MANIFEST: NodeManifest = NodeManifest {
+        type_name: "_DirLeak",
+        category: "test",
+        doc: "",
+        inputs: &[],
+        outputs: ONE_OUT,
+        params: &[],
+        isolation: goofi_node::Isolation::InProcess,
+        producer: false,
+        factory: || unreachable!("the transport never builds the node"),
+    };
+
+    #[test]
+    fn a_dropped_transport_takes_its_node_record_with_it() {
+        // The real type, because the fault is in ITS field order and nowhere else. A bare
+        // `iox_node()` removes its record (the test above), so the graph's ~1000 stale records for
+        // each suite run come from the two structs that own a node beside its ports:
+        // `IoxTransport` and `NodeChannel`. Both declared the node FIRST, and Rust drops a struct's
+        // fields in declaration order — so the node cleaned up while its own ports still held
+        // records inside its directory, could not remove the directory, and the ports then emptied
+        // it. An empty directory is what stays, which is exactly what was measured.
+        //
+        // `IoxTransport`'s own doc says the node "must outlive every port built from it". The field
+        // order is what makes that true, so this test is what keeps the sentence honest.
+        std::fs::create_dir_all(node_dir()).expect("the node directory");
+        let transport =
+            IoxTransport::create(&service_instance(), Uid(1), 0, &DIRLEAK_MANIFEST).expect("a transport");
+        let path = record_of(&transport.node);
+        assert!(std::path::Path::new(&path).exists(), "a live transport has a record at {path}");
+
+        drop(transport);
+
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "a dropped transport left its node record behind at {path}",
+        );
     }
 
     #[test]

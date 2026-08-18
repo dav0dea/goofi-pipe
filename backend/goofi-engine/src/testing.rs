@@ -82,13 +82,15 @@ pub fn stays(g: &mut Graph, mut holds: impl FnMut(&mut Graph) -> bool) -> bool {
 
 /// A subscriber on one output slot — a viewer, with no privileged path into the node (§7).
 pub struct OutputProbe {
-    /// Must outlive the subscriber built from it.
-    _node: IoxNode,
     subscriber: crate::runtime::ByteSubscriber,
     /// The newest frame seen so far. Kept because the subscriber's queue is one deep and
     /// latest-wins: a caller that looks twice must not have to race the producer for the frame it
     /// already saw.
     latest: std::cell::RefCell<Option<Data>>,
+    /// Must outlive the subscriber built from it, so it is declared LAST — Rust drops a struct's
+    /// fields in declaration order, and a node that drops before its ports cannot remove its own
+    /// directory. See [`crate::runtime::IoxTransport`], which had the same fault.
+    _node: IoxNode,
 }
 
 impl OutputProbe {

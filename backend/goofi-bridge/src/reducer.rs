@@ -165,9 +165,12 @@ const REHOME_INTERVAL: Duration = Duration::from_secs(1);
 /// One end of a slot's data service: the subscriber, the iceoryx2 node it was built from (which
 /// must outlive it), and the service name it was opened on — the thing a re-home compares against.
 struct SlotFeed {
-    _node: goofi_engine::runtime::IoxNode,
     subscriber: goofi_engine::runtime::ByteSubscriber,
     service: String,
+    /// Last, because Rust drops a struct's fields in declaration order and the node must outlive
+    /// the subscriber built from it. A node that drops first cannot remove its own directory, and
+    /// a re-home builds one of these for each slot every second.
+    _node: goofi_engine::runtime::IoxNode,
 }
 
 /// Open a subscriber on `(uid, slot)`'s current output service, or `None` while the node is not
