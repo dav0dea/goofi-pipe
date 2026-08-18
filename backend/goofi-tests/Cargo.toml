@@ -29,6 +29,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"]
 tempfile = "3"
 # The frame type a reducer subscription yields.
 bytes = "1"
+# The Meta map type the codec round-trips.
+indexmap = "2"
+# The node catalog is an `inventory` registry, and one suite registers into it.
+inventory = "0.3"
 # Pin a tiny SO_RCVBUF on a test client so a stalled reader deterministically lags the broadcast
 # ring, instead of the OS silently autotuning a huge buffer.
 socket2 = "0.6"

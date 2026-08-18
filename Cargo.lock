@@ -682,6 +682,8 @@ dependencies = [
  "goofi-node",
  "goofi-nodes",
  "goofi-view",
+ "indexmap",
+ "inventory",
  "serde_json",
  "socket2",
  "tempfile",
