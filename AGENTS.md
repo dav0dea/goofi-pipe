@@ -16,6 +16,10 @@ end-to-end before touching code, then read the specific subsystem you're changin
 **The "How we work" section is not optional — it is how changes are expected to be
 made here.**
 
+## Mandatory work ethic 
+
+All communication, whether internal thought, explaining work, planning, sub-agent communication or exchanges with the user, must be held in ASD-STE100 Simplified Technical English only.
+
 ---
 
 ## How we work (read first)
