@@ -47,23 +47,14 @@ fn served(method: &str) -> u16 {
     }
 }
 
-/// A one-file SPA build, so the static fallback above is a real route here and not an argued one.
-/// Leaked into a `OnceLock` because it has to outlive every server these tests start.
-fn spa() -> std::path::PathBuf {
-    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let dir = DIR.get_or_init(|| {
-        let d = tempfile::tempdir().expect("a temp dir");
-        std::fs::write(d.path().join("index.html"), "<!doctype html>goofi").expect("an index");
-        d
-    });
-    dir.path().to_path_buf()
-}
+/// A one-file bundle, so the static fallback is a real route here and not an argued one.
+const SPA: goofi_bridge::Spa = &[("index.html", b"<!doctype html>goofi")];
 
 /// A server, and the instance that must outlive it — every test binds both, because dropping the
 /// `Goofi` releases the workspace mount the server is answering from.
 async fn start_server() -> (Goofi, String) {
     let g = Goofi::new();
-    let addr = host(&g.serve_spa(spa()).await).to_string();
+    let addr = host(&g.serve_spa(SPA).await).to_string();
     (g, addr)
 }
 

@@ -444,3 +444,27 @@ async fn a_slow_but_alive_viewer_keeps_its_reducer_and_its_frames() {
     assert!(produced > 50 && received > 0,
             "the reducer outpaced the stalling viewer ({received} received of {produced} produced)");
 }
+
+#[tokio::test]
+async fn the_built_spa_is_served_out_of_the_binary_itself() {
+    // goofi ships as ONE file: the SPA is embedded, not read from a `frontend/build/` that has to
+    // travel beside the binary and can silently go stale against it.
+    let g = Goofi::new();
+    let addr = goofi_tests::host(&g.serve_spa(goofi_bridge::SPA).await).to_string();
+
+    let (status, head, body) = goofi_tests::http(&addr, "GET", "/index.html", "", b"").await;
+    assert_eq!(status, 200, "{head}");
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html"), "the real index");
+    assert!(head.contains("text/html"), "…served with its content type: {head}");
+
+    // A hashed asset the page links, served with ITS type.
+    let (status, head, _) = goofi_tests::http(&addr, "GET", "/_app/version.json", "", b"").await;
+    assert_eq!(status, 200, "{head}");
+    assert!(head.contains("application/json"), "{head}");
+
+    // Anything else is the SPA's own route, so it falls back to the page rather than 404ing —
+    // the client router owns `/` and everything under it.
+    let (status, _, body) = goofi_tests::http(&addr, "GET", "/some/client/route", "", b"").await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html"));
+}

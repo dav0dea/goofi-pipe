@@ -121,19 +121,18 @@ impl Goofi {
         // one this very process answers, which is the whole claim `/mcp/<instance>` makes.
         self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
-        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, None).await.unwrap() });
+        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, &[]).await.unwrap() });
         format!("ws://{addr}")
     }
 
-    /// As [`Goofi::serve`], but also mounting a built SPA on the fallback route — so the static
-    /// page is a real route rather than an argued one.
-    pub async fn serve_spa(&self, dir: std::path::PathBuf) -> String {
+    /// As [`Goofi::serve`], but also serving a bundle on the fallback route — so the page is a
+    /// real route rather than an argued one. Pass `goofi_bridge::SPA` for the one that ships.
+    pub async fn serve_spa(&self, spa: goofi_bridge::Spa) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
-        tokio::spawn(async move {
-            goofi_bridge::serve_app(listener, served, Some(dir)).await.unwrap()
-        });
+        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, spa).await.unwrap() });
         format!("ws://{addr}")
     }
 

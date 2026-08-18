@@ -22,19 +22,62 @@ All communication, whether internal thought, explaining work, planning, sub-agen
 
 ---
 
+## Design principles
+
+These are ours. They are the standard this codebase is held to — not a general-purpose
+methodology, and not an installed skill. Where an outside practice disagrees, this section wins.
+
+1. **One programmatic interface.** Everything goofi can do, it does through one op vocabulary.
+   `/control`, `/mcp`, a script and a test are TRANSPORTS over `AppState::call`, never four
+   surfaces with four sets of behaviour. A capability only the UI can reach is a defect, and a
+   test that needs a door of its own is telling you the API is incomplete.
+
+2. **The code is the source of truth.** A comment that restates the code duplicates it, and the
+   duplicate goes stale. Write a comment only for a deliberate choice that reads as WRONG without
+   it — an order that looks arbitrary and is load-bearing, a tolerance that exists because of a
+   defect, a platform quirk. If the code needs prose to be understood, make the code simpler.
+
+3. **Make the error impossible, don't handle it.** Prefer a type, a bounded domain, a shared
+   schema or an unconstructible invalid state over a runtime guard. Keep genuine boundary errors:
+   a Python node CAN raise, so propagate it — never panic.
+
+4. **Delete before adding.** The cost of a feature is the lines it leaves behind. A rewrite that
+   is smaller is the fix; a fix that is bigger needs a reason. Two code paths that should agree
+   get unified at one source of truth rather than patched in both.
+
+5. **One artifact.** `goofi-pipe` is a single binary with the frontend compiled in. It launches
+   the app; `--headless` is the only way not to.
+
+6. **One system, several representations.** Phone and desktop, agent and human, are the same
+   machinery with different presentations — never a second track, never a per-device guard.
+
+7. **Root cause before fix.** Trace it to its origin and fix it there. Three failed fixes means
+   the architecture is wrong; stop and reconsider it rather than adding a fourth patch.
+
+---
+
 ## How we work (read first)
 
-These are hard expectations, in priority order. They override speed.
+How the principles above are carried out, in priority order. They override speed.
 
-1. **Test-driven development.** No production code without a failing test first.
-   Write the test, watch it fail for the right reason, write the minimal code to
-   pass, then refactor green. This is the Iron Law for new behavior, bug fixes,
-   and refactors alike. A bug fix starts with a test that reproduces the bug.
-   - Rust: unit tests in-module (`#[cfg(test)]`), cross-crate behavior in
-     `tests/` (the bridge's `protocol.rs` drives the real WS surface).
+1. **Test the software in use, not its functions.** A test launches the system,
+   commands a range of actions through the one programmatic interface, and asserts
+   the state that results. That is the standard — **not** a unit test per function,
+   and no longer test-first as an Iron Law. A suite of green functions that break
+   when assembled is the failure this replaces.
+   - Every Rust test lives in `backend/goofi-tests`. It is a separate crate, so it
+     reaches only public API and is structurally incapable of pinning implementation
+     detail. `Goofi::call` is the door; `Client`/`Viewer` are for the socket itself.
+   - A test earns its place by covering a way the system is USED. Prefer one
+     scenario that crosses four layers to four tests that each pin one. When a bug
+     is fixed, extend the scenario that would have caught it rather than adding a
+     test beside it.
+   - The few inline `#[cfg(test)]` blocks that remain each say in the file why they
+     cannot live outside — a binary with no lib target, private process-liveness
+     machinery. Adding one needs the same justification.
    - Svelte component/rune glue can't mount in vitest — verify it by typecheck +
      a `tests/e2e/` Playwright test, and keep the testable logic in a `.ts`/`.svelte.ts`
-     module that *is* unit-tested.
+     module a scenario can drive.
 
 2. **Root cause before fix.** Investigate until you understand *why* something
    breaks — read the error, reproduce it, trace the data flow to its origin.
@@ -54,7 +97,7 @@ These are hard expectations, in priority order. They override speed.
 4. **Deep code analysis.** Before changing a subsystem, hold enough of it in
    context to reason about the change's blast radius. Trust documented internal
    contracts; verify the ones you're about to depend on. Skim the relevant spec in
-   `docs/superpowers/specs/` (**gitignored** — present on disk, not in git).
+   `docs/specs/` (**gitignored** — present on disk, not in git).
 
 5. **Minimum diff, maximum clarity.** Match the surrounding code's idiom, naming,
    and comment density. Comments explain *why*, not *what*. Don't reformat code
@@ -252,7 +295,7 @@ reclaimed by the next start's sweep.
 ```bash
 cargo run                       # launches the backend + bridge, prints the URL
 #   flags: --port N (default 8000), --bind HOST (default 127.0.0.1),
-#          --extra-nodes DIR, --list-nodes
+#          --extra-nodes DIR, --list-nodes, --headless (do not open a browser)
 # It scans ./nodes/ when present and routes each node by tier; --extra-nodes ADDS a
 # directory to that (repeatable, later wins a shared type name). NEITHER the tier nor
 # the interpreter is selectable: one probe per node file routes, and the subprocess tier
@@ -439,7 +482,7 @@ initialization on the same instance.
 
 ## Key subsystems & their specs
 
-Specs live in `docs/superpowers/specs/` (**gitignored** — on disk only). Read the
+Specs live in `docs/specs/` (**gitignored** — on disk only). Read the
 relevant one before changing the area.
 
 - **Rust backend architecture** (`2026-07-16-rust-backend-architecture.md`) — the

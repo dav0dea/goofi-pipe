@@ -1,0 +1,148 @@
+//! Build the SPA this crate serves, and embed it.
+//!
+//! `goofi-pipe` ships as ONE file, so the built bundle is compiled in rather than read from a
+//! `frontend/build/` that has to travel beside the binary and can silently go stale against it.
+//! Both halves live here, in the crate that SERVES the bundle: putting the npm build in
+//! `goofi-cli` instead left cargo free to compile this crate first, against whatever `build/`
+//! happened to be on disk.
+//!
+//! The npm build runs only when a frontend source is newer than the last build, and degrades
+//! gracefully — no tree, no `npm`, or a failed build leaves the previous one in place and never
+//! fails the Rust build. Opt out with `GOOFI_SKIP_FRONTEND_BUILD=1`.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::SystemTime;
+
+fn main() {
+    let frontend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../frontend");
+    sync_frontend(&frontend);
+    embed_spa(&frontend.join("build"));
+}
+
+/// Frontend inputs (relative to `frontend/`) whose change should trigger a rebuild. Deliberately
+/// NOT `build/`, `.svelte-kit/`, or `node_modules/` — watching those would self-retrigger or be
+/// enormous.
+const INPUTS: &[&str] = &[
+    "src",
+    "static",
+    "package.json",
+    "package-lock.json",
+    "svelte.config.js",
+    "vite.config.ts",
+    "tsconfig.json",
+];
+
+/// Rebuild the served SPA when its sources are newer than the last build (see the module doc).
+fn sync_frontend(frontend: &Path) {
+    // No frontend source tree (e.g. the crate vendored alone) → nothing to manage.
+    if !frontend.join("src").is_dir() {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=GOOFI_SKIP_FRONTEND_BUILD");
+
+    // Watch every source path + track the newest source mtime in one walk.
+    let mut newest_src: Option<SystemTime> = None;
+    for input in INPUTS {
+        if let Some(t) = newest_mtime(&frontend.join(input), true) {
+            if newest_src.is_none_or(|n| t > n) {
+                newest_src = Some(t);
+            }
+        }
+    }
+
+    // `build/` is the output — walk it for its newest mtime but do NOT watch it (avoid self-retrigger).
+    let built = newest_mtime(&frontend.join("build"), false);
+
+    let stale = match (newest_src, built) {
+        (_, None) => true,                 // no build yet
+        (Some(src), Some(out)) => src > out, // a source is newer than the build
+        (None, Some(_)) => false,          // nothing to build from
+    };
+    if !stale {
+        return;
+    }
+
+    // Only a truthy value opts out — `=0`/empty must NOT skip (a user setting `=0` wants a build).
+    if matches!(std::env::var("GOOFI_SKIP_FRONTEND_BUILD").as_deref(), Ok("1") | Ok("true")) {
+        println!("cargo:warning=frontend/build is stale but GOOFI_SKIP_FRONTEND_BUILD is set — not rebuilding");
+        return;
+    }
+
+    // Report AFTER the build, in the PAST tense with the measured duration. Cargo caches a build
+    // script's `cargo:warning` lines and REPLAYS them on every later build until the script next
+    // re-runs — so a present-tense "rebuilding…" reads as a fresh claim on a no-op build where npm
+    // never ran (the confusing case: the line appears, then cargo finishes in milliseconds). Past
+    // tense + a duration describe a completed event, so the line stays true when it is replayed.
+    // Nothing is printed before the build because cargo captures build-script output and only shows
+    // it once the script finishes — a pre-announcement could not act as live progress anyway.
+    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let started = SystemTime::now();
+    match Command::new(npm).args(["run", "build"]).current_dir(&frontend).status() {
+        Ok(s) if s.success() => {
+            let secs = started.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
+            println!(
+                "cargo:warning=rebuilt the served SPA (frontend/build) from changed sources in \
+                 {secs:.1}s — cargo REPLAYS this line on later no-op builds, where npm did not re-run"
+            );
+        }
+        Ok(s) => println!("cargo:warning=`npm run build` failed ({s}); serving the previous frontend/build"),
+        Err(e) => println!("cargo:warning=could not run `npm` ({e}); serving the previous frontend/build"),
+    }
+}
+
+
+/// Newest modification time of `path` (a file) or anything under it (a dir), or `None` if absent.
+/// When `watch`, also emits `cargo:rerun-if-changed` for every path visited — a per-path emit (not a
+/// bare directory) is robust across cargo versions, which differ on whether a watched directory is
+/// scanned recursively. Sources pass `watch = true`; the `build/` output passes `false` (watching it
+/// would self-retrigger).
+fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if watch {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let mut newest = meta.modified().ok();
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Some(t) = newest_mtime(&entry.path(), watch) {
+                    if newest.is_none_or(|n| t > n) {
+                        newest = Some(t);
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Emit `$OUT_DIR/spa.rs`: every file under `build/`, keyed by the URL path it is served at.
+///
+/// An absent or empty tree emits an empty table rather than failing — a crate vendored without the
+/// frontend still builds, and serves no page.
+fn embed_spa(build: &Path) {
+    let mut files = Vec::new();
+    walk(build, build, &mut files);
+    files.sort();
+    let rows: String = files
+        .iter()
+        .map(|(url, abs)| format!("    ({url:?}, include_bytes!({abs:?})),\n"))
+        .collect();
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("spa.rs");
+    std::fs::write(&out, format!("pub static SPA: Spa = &[\n{rows}];\n")).expect("write spa.rs");
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        let path = e.path();
+        if path.is_dir() {
+            walk(root, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            // `/` in the URL on every platform, and the absolute path for `include_bytes!`.
+            let url = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            out.push((url, path.to_string_lossy().into_owned()));
+        }
+    }
+}

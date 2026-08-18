@@ -9,7 +9,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use goofi_bridge::{resolve_frontend_dir, serve_app, spawn_workers, AppState, ScannedType, Tier};
+use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, SPA};
 use goofi_engine::{Graph, Registration};
 
 /// The shipped node directory, scanned whenever it exists — no flag turns it on, and none turns
@@ -37,6 +37,7 @@ struct Cli {
     /// name — see `goofi_bridge::rescan`.
     extra_nodes: Vec<String>,
     list_nodes: bool,
+    headless: bool,
     help: bool,
 }
 
@@ -47,13 +48,14 @@ impl Default for Cli {
             bind: String::from("127.0.0.1"),
             extra_nodes: Vec::new(),
             list_nodes: false,
+            headless: false,
             help: false,
         }
     }
 }
 
 const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
-     [--extra-nodes DIR] [--list-nodes]";
+     [--extra-nodes DIR] [--list-nodes] [--headless]";
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
 /// exiting 2 — every malformed invocation reports, none is silently ignored: a value-taking flag
@@ -73,6 +75,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
             "--bind" => cli.bind = need(args.next())?,
             "--extra-nodes" => cli.extra_nodes.push(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
+            "--headless" => cli.headless = true,
             "-h" | "--help" => cli.help = true,
             other => return Err(format!("unknown argument `{other}` (try --help)")),
         }
@@ -123,6 +126,29 @@ fn default_subproc_python() -> Result<String, String> {
         .ok_or_else(|| format!("no {} — {}", goofi_init::GIL_VENV, goofi_init::RUN_ME))
 }
 
+/// Show the app. One command per platform and no dependency for it: the whole job is handing a URL
+/// to whatever the desktop already uses. Failure is reported and never fatal — a machine with no
+/// browser (a container, an ssh session) still has a server, and the URL is on the line above.
+fn open_browser(url: &str) {
+    let (cmd, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+    match std::process::Command::new(cmd)
+        .args(args)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => println!("  opened it in your browser (--headless to skip)"),
+        Err(e) => println!("  could not open a browser ({e}) — the URL is above"),
+    }
+}
+
 /// The warning a `--bind` beyond this machine earns, or `None` for the loopback default.
 ///
 /// Said out loud because the consequence is not the one the flag looks like it has. goofi spawns
@@ -162,7 +188,7 @@ async fn run(
 
     // `subproc_python` arrives as its own argument (see `main`) — it is resolved from the
     // filesystem, never parsed, so it was never a field on `Cli` to begin with.
-    let Cli { port, bind, extra_nodes, list_nodes, help: _ } = cli;
+    let Cli { port, bind, extra_nodes, list_nodes, headless, help: _ } = cli;
 
     if !list_nodes {
         register_evaluator(&state);
@@ -196,16 +222,19 @@ async fn run(
                 // loopback whatever `--bind` says — only the port, which `--port 0` makes knowable
                 // nowhere else, has to be handed over.
                 state.set_mcp_port(addr.port());
-                let dir = resolve_frontend_dir();
-                println!("goofi-pipe (rust backend) → http://{addr}");
+                let url = format!("http://{addr}");
+                println!("goofi-pipe → {url}");
                 // Printed beside the app URL because it is what a user pastes into an MCP client's
                 // config, and what H's harness launcher passes to a spawned agent in its
                 // environment. There is one server per goofi instance, so this URL is the address
                 // of the whole agent surface — no client ever spawns one of its own.
                 println!("  MCP endpoint → http://{addr}/mcp");
-                match &dir {
-                    Some(d) => println!("  serving SPA from {}", d.display()),
-                    None => println!("  API only — no SPA build found (set GOOFI_FRONTEND_BUILD or build frontend/)"),
+                if SPA.is_empty() {
+                    println!("  API only — this build embeds no frontend");
+                } else if headless {
+                    println!("  --headless: not opening a browser");
+                } else {
+                    open_browser(&url);
                 }
                 // Last, and on stderr, so it is the line still on screen and survives a `> log`.
                 if let Some(warning) = exposure_warning(&bind) {
@@ -218,7 +247,7 @@ async fn run(
                 // open for the life of a tab delays neither — and with a handler installed, a
                 // second ctrl-C no longer reaches the default disposition that would have killed us.
                 tokio::select! {
-                    served = serve_app(listener, state.clone(), dir) => match served {
+                    served = serve_app(listener, state.clone(), SPA) => match served {
                         Ok(()) => 0,
                         Err(e) => {
                             eprintln!("server error: {e}");

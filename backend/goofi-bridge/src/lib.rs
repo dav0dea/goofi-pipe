@@ -35,7 +35,6 @@ use std::time::{Duration, Instant};
 /// as finished — which is the whole point when nothing is attached to notice.
 const EXIT_SETTLE: Duration = Duration::from_millis(250);
 
-use tower_http::services::{ServeDir, ServeFile};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -46,6 +45,11 @@ use futures_util::{SinkExt, StreamExt};
 use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
+
+/// The built SPA as it ships: a URL path and its bytes, compiled into the binary. Empty when the
+/// crate was built without a frontend tree beside it.
+pub type Spa = &'static [(&'static str, &'static [u8])];
+include!(concat!(env!("OUT_DIR"), "/spa.rs"));
 
 #[derive(Clone)]
 pub struct AppState {
@@ -520,7 +524,7 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
 /// The API router, with no SPA — `app(state, None)`, kept as a name because that is what it reads
 /// as at a call site.
 pub fn router(state: AppState) -> Router {
-    app(state, None)
+    app(state, &[])
 }
 
 /// The full router, optionally serving the built SPA (SPA-fallback to index.html)
@@ -529,56 +533,64 @@ pub fn router(state: AppState) -> Router {
 /// The [`origin`] guard goes on LAST, so it wraps the API routes, the SPA and the fallback alike —
 /// including the three WebSocket upgrades, which a CORS-based defence would miss entirely. There is
 /// exactly one place it is applied, and every server in this repo goes through here.
-pub fn app(state: AppState, static_dir: Option<PathBuf>) -> Router {
+pub fn app(state: AppState, spa: Spa) -> Router {
     let base = routes(state);
-    let served = match static_dir {
-        Some(dir) => {
-            let index = dir.join("index.html");
-            base.fallback_service(ServeDir::new(&dir).not_found_service(ServeFile::new(index)))
-        }
-        None => base,
-    };
+    let served = if spa.is_empty() { base } else { base.fallback(serve_spa_file) };
     served.layer(axum::middleware::from_fn(origin::guard))
 }
 
-/// Resolve the built SPA directory: `$GOOFI_FRONTEND_BUILD` or `./frontend/build`.
-/// Returns a canonical absolute path so static + SPA-fallback serving is
-/// independent of the process working directory.
-pub fn resolve_frontend_dir() -> Option<PathBuf> {
-    let candidate = match std::env::var("GOOFI_FRONTEND_BUILD") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from("frontend/build"),
+/// One embedded file, or the page itself for anything else — the client router owns every route
+/// under `/`, so an unknown path is one of ITS routes and not a 404.
+async fn serve_spa_file(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    let (name, body) = match SPA.iter().find(|(p, _)| *p == path) {
+        Some(&(p, b)) => (p, b),
+        None => match SPA.iter().find(|(p, _)| *p == "index.html") {
+            Some(&(p, b)) => (p, b),
+            None => return axum::response::IntoResponse::into_response(
+                (axum::http::StatusCode::NOT_FOUND, "no frontend build")),
+        },
     };
-    if candidate.is_dir() {
-        Some(goofi_core::path::canonical(&candidate).unwrap_or(candidate))
-    } else {
-        None
+    axum::response::IntoResponse::into_response((
+        [(axum::http::header::CONTENT_TYPE, content_type(name))],
+        body,
+    ))
+}
+
+/// The types the built bundle actually contains, plus the image and font formats a `static/` asset
+/// may add. Anything else is served as bytes, which every browser downloads rather than mis-renders.
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "txt" => "text/plain; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "wasm" => "application/wasm",
+        _ => "application/octet-stream",
     }
 }
 
-/// Start the background workers a live server needs: the status-drain worker AND the 2 Hz
-/// node-stats broadcaster — the latter pushes each node's measured ufreq to the node header
-/// and the async error-transition that reddens a node border mid-run. The binary calls this
-/// once at startup (alongside its own bind + `serve_app`), so both are wired in one place;
-/// `serve_app` itself stays pure, letting a test bind an ephemeral listener without the stats
-/// thread when it doesn't need it. (This replaces the old bundled `serve()`, which the CLI
-/// couldn't use — it must register evaluators/nodes and print the URL around the bind — so the
-/// stats worker rotted into dead code and the header rate silently stopped updating.)
+/// The background workers a live server needs: the status-drain worker, and a primed harness
+/// detection cache so the first tab already has its launch buttons.
 pub fn spawn_workers(state: &AppState) {
     spawn_stats(state.graph.clone(), state.events.clone(), 2);
-    // Prime the harness detection cache, so the first tab to connect already has the launch
-    // buttons its snapshot's roster describes rather than an empty list it must refresh out of.
     state.harnesses.refresh_in_background(state.events.clone());
 }
 
-/// Serve on an already-bound listener with optional static SPA serving. Passing `None` serves the
-/// API only (`app(state, None)` is exactly `router(state)`) — what tests use for an ephemeral port.
 pub async fn serve_app(
     listener: tokio::net::TcpListener,
     state: AppState,
-    static_dir: Option<PathBuf>,
+    spa: Spa,
 ) -> std::io::Result<()> {
-    axum::serve(listener, app(state, static_dir)).await
+    axum::serve(listener, app(state, spa)).await
 }
 
 /// Native node type names visible in the catalog (`--list-nodes`).
