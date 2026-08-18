@@ -97,6 +97,16 @@ impl Goofi {
         self.call("get_state", json!({}))
     }
 
+    /// The uids in the replicated projection, sorted.
+    pub fn nodes(&self) -> Vec<String> {
+        keys(&self.doc()["nodes"])
+    }
+
+    /// The live sub-patch scopes, sorted.
+    pub fn instances(&self) -> Vec<String> {
+        keys(&self.doc()["instances"])
+    }
+
     /// Subscribe to the event broadcast. Take this BEFORE the action that should emit: the channel
     /// keeps no history, so a receiver opened afterwards hears nothing and reads as a pass.
     pub fn events(&self) -> Events {
@@ -208,4 +218,10 @@ impl Events {
 /// A uid as the wire spells it.
 pub fn hex(u: Uid) -> String {
     u.to_string()
+}
+
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+    k.sort();
+    k
 }
