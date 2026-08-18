@@ -25,7 +25,7 @@ pub mod vocab;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a `/term` socket waits for the PTY's own end-of-stream after the child has been reaped,
 /// before announcing the exit anyway. ConPTY keeps its pseudoconsole open past the child's death, so
@@ -394,20 +394,25 @@ fn error_transitions(
     changed
 }
 
-/// Broadcast each node's measured update frequency (`node_stats`) at `hz`, and push an
-/// `error` event whenever a node's error state changes.
+/// How often the worker takes what the nodes have reported — deliberately NOT the event rate.
 ///
-/// **This is the status-drain worker's predecessor** (spec §6.2); the cutover replaces its SOURCE,
-/// not its four events, and `goofi_engine::runtime`'s divergence ledger says why the swap waits.
-/// Two obligations bind THIS code and must survive it: never `set_dirty(true)` — a node reporting
-/// its own state is not a user edit — and always FORGET a uid on removal, in `error_transitions`
-/// (`last.retain`) and in `last_stages.retain` below, so a stale error cannot outlive its node or
-/// suppress a re-created uid's first report.
+/// Draining is the runtime's own clock: it is what makes a node addressable (§4, the birth
+/// barrier) and what advances every wire's three-phase sequence, one phase per ack. Pacing it at
+/// `hz` would put a link three broadcast periods away from carrying its first frame.
+const DRAIN_PERIOD: Duration = Duration::from_millis(1);
+
+/// **The status-drain worker** (spec §6.2): take every node's reports, apply them to the graph, and
+/// broadcast the four events that carry them to the editor — `node_stats`, `param_values`, `error`
+/// and `node_stage` — at `hz`.
 ///
-/// The tick loop emits nothing, so
-/// without this a RUNTIME error that appears mid-run (an expression that compiles but
-/// fails on later data, a process error) would not turn the node border red until an
-/// unrelated RPC or a reconnect. De-duped: one push per transition, not per tick.
+/// Two obligations bind it: never `set_dirty(true)` — a node reporting its own state is not a user
+/// edit — and always FORGET a uid on removal, in `error_transitions` (`last.retain`) and in
+/// `last_stages.retain` below, so a stale error cannot outlive its node or suppress a re-created
+/// uid's first report.
+///
+/// Nothing else pushes these. A runtime error that appears mid-run (an expression that compiles
+/// but fails on later data, a process error) would otherwise not turn the node border red until an
+/// unrelated RPC or a reconnect. De-duped: one push per transition.
 ///
 /// The transition push is the identity-only `error` event (node + error), NOT a
 /// full-params `state_update`: this async 2 Hz snapshot must never carry params. The
@@ -432,45 +437,54 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
         // A node's stage now changes on its own thread, with no RPC to ride on — the same reason
         // the error transition is pushed from here.
         let mut last_stages: HashMap<String, &'static str> = HashMap::new();
+        let mut next_broadcast = Instant::now() + period;
         loop {
-            std::thread::sleep(period);
-            let (rates, errs, expr_vals, stages, refreshed) = {
+            std::thread::sleep(DRAIN_PERIOD);
+            let due = Instant::now() >= next_broadcast;
+            let collected = {
                 let mut g = graph.lock().unwrap();
                 // THE SOURCE (§6.2). Every field read below is filed by `apply_status` from a
                 // report the node published; nothing here polls the node itself. A drain that
                 // applied nothing still costs one non-blocking receive per node.
-                let applied = g.drain_status();
-                // Options are the one thing a node reports that the CRDT doc has no field for, so
-                // they cannot be recovered from a re-mirror — the node has to name the params it
-                // re-enumerated, and this is the only echo that reaches the client.
-                let refreshed = g.take_refreshed();
-                let g = &*g;
-                let mut rates: Vec<(String, f64)> = Vec::new();
-                let mut errs: Vec<(String, Option<String>)> = Vec::new();
-                let mut stages: Vec<(String, &'static str)> = Vec::new();
-                let mut expr_vals: Vec<(String, Value)> = Vec::new();
-                for u in g.node_uids() {
-                    let hex = u.to_hex();
-                    if let Some(f) = g.node_ufreq(u) {
-                        rates.push((hex.clone(), f));
+                g.drain_status();
+                if !due {
+                    None
+                } else {
+                    // Options are the one thing a node reports that the CRDT doc has no field for,
+                    // so they cannot be recovered from a re-mirror — the node has to name the
+                    // params it re-enumerated, and this is the only echo that reaches the client.
+                    let refreshed = g.take_refreshed();
+                    let g = &*g;
+                    let mut rates: Vec<(String, f64)> = Vec::new();
+                    let mut errs: Vec<(String, Option<String>)> = Vec::new();
+                    let mut stages: Vec<(String, &'static str)> = Vec::new();
+                    let mut expr_vals: Vec<(String, Value)> = Vec::new();
+                    for u in g.node_uids() {
+                        let hex = u.to_hex();
+                        if let Some(f) = g.node_ufreq(u) {
+                            rates.push((hex.clone(), f));
+                        }
+                        let vals = schemas::expression_value_map(&g, u);
+                        if vals.as_object().is_some_and(|o| !o.is_empty()) {
+                            expr_vals.push((hex.clone(), vals));
+                        }
+                        stages.push((hex.clone(), g.node_stage(u)));
+                        errs.push((hex, g.last_error(u).map(str::to_string)));
                     }
-                    let vals = schemas::expression_value_map(&g, u);
-                    if vals.as_object().is_some_and(|o| !o.is_empty()) {
-                        expr_vals.push((hex.clone(), vals));
-                    }
-                    stages.push((hex.clone(), g.node_stage(u)));
-                    errs.push((hex, g.last_error(u).map(str::to_string)));
+                    let refreshed: Vec<String> = refreshed
+                        .into_iter()
+                        .filter(|(uid, _)| g.node_uids().contains(uid))
+                        .map(|(uid, key)| {
+                            param_state_update_refreshed(g, uid, &[(&key.group, &key.name)])
+                        })
+                        .collect();
+                    Some((rates, errs, expr_vals, stages, refreshed))
                 }
-                let refreshed: Vec<String> = refreshed
-                    .into_iter()
-                    .filter(|(uid, _)| g.node_uids().contains(uid))
-                    .map(|(uid, key)| {
-                        param_state_update_refreshed(g, uid, &[(&key.group, &key.name)])
-                    })
-                    .collect();
-                let _ = applied;
-                (rates, errs, expr_vals, stages, refreshed)
             };
+            let Some((rates, errs, expr_vals, stages, refreshed)) = collected else { continue };
+            // From NOW, not from the deadline just passed: a worker held off the lock owes no
+            // burst of catch-up broadcasts over state it has only just read.
+            next_broadcast = Instant::now() + period;
             for ev in refreshed {
                 let _ = events.send(ev);
             }
@@ -554,6 +568,46 @@ pub fn spawn_workers(state: &AppState) {
     // Prime the harness detection cache, so the first tab to connect already has the launch
     // buttons its snapshot's roster describes rather than an empty list it must refresh out of.
     state.harnesses.refresh_in_background(state.events.clone());
+}
+
+#[cfg(test)]
+mod status_worker_tests {
+    use super::*;
+    use goofi_engine::testing::OutputProbe;
+
+    /// The drain is the RUNTIME's clock, not the UI's — and the two are separated inside the one
+    /// worker. Draining is what makes a node addressable (§4) and what advances every wire's
+    /// three-phase sequence, so pacing it at the rate the events go out at would make a cable take
+    /// three broadcast periods — a second and a half at 2 Hz — to carry its first frame.
+    ///
+    /// Written against the real `spawn_stats` rather than a hand-rolled loop, because the defect
+    /// this pins is precisely that the worker used ONE period for both jobs.
+    #[test]
+    fn the_status_worker_drains_far_faster_than_it_broadcasts() {
+        let mut g = Graph::new();
+        let src = g.add_node("_TestConst", None).unwrap();
+        let buf = g.add_node("Buffer", None).unwrap();
+        // Opened before the link: the data services keep no history (§3.5).
+        let probe = OutputProbe::open(&g, buf, "out");
+        g.add_link(src, "out", buf, "data").unwrap();
+
+        let graph = Arc::new(Mutex::new(g));
+        let (events, _rx) = broadcast::channel(64);
+        spawn_stats(graph.clone(), events, 2);
+
+        // Under the broadcast period, because a worker that drains on the broadcast's clock cannot
+        // have drained ANYTHING yet at this point — and generously over what the sequence costs
+        // when the drain runs on its own: three acks and the source's first emit, a few tens of ms.
+        let budget = Duration::from_millis(400);
+        let t = Instant::now();
+        while t.elapsed() < budget {
+            if probe.latest().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the consumer emitted nothing in {budget:?}: the wire is advancing at the event rate");
+    }
 }
 
 /// Serve on an already-bound listener with optional static SPA serving. Passing `None` serves the
@@ -2497,8 +2551,14 @@ mod result_enrichment_tests {
         factory: || Box::new(Picker),
     };
 
+    /// What a ⟳ answers now, and where the options actually land. The hook runs on the NODE's own
+    /// thread, so the RPC cannot carry its result: the reply says only that the request went out,
+    /// and the options reach the graph over the node's status service — plus a `take_refreshed`
+    /// entry, which is the one thing the CRDT doc has no field for and the status worker's only
+    /// cue to echo them. Both halves are asserted here, because a fix that filed the options and
+    /// forgot the cue would leave the client's spinner turning until its 15 s timeout.
     #[test]
-    fn refresh_param_answers_with_the_options_it_just_enumerated() {
+    fn refresh_param_lands_the_options_on_the_node_and_names_the_param_for_the_echo() {
         let state = AppState::new();
         let uid = {
             let mut g = state.graph.lock().unwrap();
@@ -2510,7 +2570,23 @@ mod result_enrichment_tests {
             "refresh_param",
             json!({ "node": uid.to_hex(), "group": "io", "name": "device" }),
         );
-        assert_eq!(r["result"]["options"], json!(["mic-a", "mic-b"]), "{r}");
+        assert_eq!(r["result"], json!({ "ok": true }), "the reply carries no options: {r}");
+
+        let options = |g: &Graph| match g.params(uid).and_then(|p| p.get("io")?.get("device").cloned()) {
+            Some(goofi_core::Param::Str { options, .. }) => options,
+            _ => None,
+        };
+        let mut g = state.graph.lock().unwrap();
+        goofi_engine::testing::wait_for(&mut g, "the node's re-enumerated options", |g| {
+            options(g).is_some()
+        });
+        assert_eq!(options(&g), Some(vec!["mic-a".to_string(), "mic-b".to_string()]));
+        assert_eq!(
+            g.take_refreshed(),
+            vec![(uid, goofi_node::ParamKey::new("io", "device"))],
+            "the status worker is told which param to echo"
+        );
+        drop(g);
         state.release_mount();
     }
 }
@@ -2572,26 +2648,17 @@ mod inspect_dispatch_tests {
     fn inspect_node_defaults_every_section_on_and_takes_a_no_for_each() {
         let state = AppState::new();
         let uid = state.graph.lock().unwrap().add_node("Oscillator", None).unwrap();
-        // The oscillator emits by wall clock, so the meta line needs time to pass, not just a tick.
-        for _ in 0..50 {
-            let mut g = state.graph.lock().unwrap();
-            g.tick();
-            if g.latest_frame(uid, "out").is_some() {
-                break;
-            }
-            drop(g);
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        // No warm-up: the outputs section reports the node's rate, and "nothing emitted yet" is as
+        // valid a line as a rate — what this pins is the arm's section switches, not the content.
         let full = text(&state, "inspect_node", json!({ "node": uid.to_hex() }));
         assert!(full.contains("params:"), "params default on: {full}");
-        assert!(full.contains("meta: "), "meta defaults on: {full}");
         assert!(full.contains("error:"), "error defaults on: {full}");
         let bare = text(
             &state,
             "inspect_node",
-            json!({ "node": uid.to_hex(), "params": false, "meta": false, "error": false }),
+            json!({ "node": uid.to_hex(), "params": false, "error": false }),
         );
-        assert!(!bare.contains("params:") && !bare.contains("meta: ") && !bare.contains("error:"), "{bare}");
+        assert!(!bare.contains("params:") && !bare.contains("error:"), "{bare}");
         state.release_mount();
     }
 }
@@ -2729,6 +2796,7 @@ mod workspace_dirty_tests {
 mod node_scan_tests {
     use super::*;
     use goofi_core::{Data, Meta};
+    use goofi_engine::testing::OutputProbe;
     use goofi_node::{
         Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl, Outputs,
         Params,
@@ -2790,8 +2858,20 @@ mod node_scan_tests {
         out
     }
 
-    fn emitted(g: &Graph, uid: goofi_engine::Uid) -> f32 {
-        match g.latest_frame(uid, "out").expect("the node emitted").value() {
+    /// Watch one node's `out` slot until it carries `want`, and fail if it never does.
+    ///
+    /// The probe is opened here rather than once per test because a restart is a rebirth: the new
+    /// instance publishes on the next generation's service, so a probe held across
+    /// `restart_changed` would wait on the corpse's address for ever. `Emit` is a producer, so it
+    /// keeps emitting and a probe opened at any moment still sees a frame — which is also why
+    /// `wait_until` and not "the next frame": the frame already in flight may be the old code's.
+    fn emits(g: &mut Graph, uid: goofi_engine::Uid, want: f32) {
+        let probe = OutputProbe::open(g, uid, "out");
+        probe.wait_until(g, &format!("carries {want}"), |d| first_f32(d) == want);
+    }
+
+    fn first_f32(d: &Data) -> f32 {
+        match d.value() {
             goofi_core::Value::Array(s) => f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()),
             _ => panic!("not an array"),
         }
@@ -2828,8 +2908,7 @@ mod node_scan_tests {
             "a rescan of an unchanged tree changes nothing"
         );
         let live = g.add_node("MyThing", None).expect("a patch node is addable");
-        g.tick();
-        assert_eq!(emitted(&g, live), 1.0);
+        emits(&mut g, live, 1.0);
 
         // Edited: the type is re-registered and the LIVE instance is restarted onto it.
         write_node(&nodes, "my_thing.py", "2.0");
@@ -2837,8 +2916,7 @@ mod node_scan_tests {
         assert_eq!(diff.changed, ["MyThing"], "an edited file reports as changed");
         assert!(diff.added.is_empty() && diff.removed.is_empty());
         restart_changed(&mut g, &diff);
-        g.tick();
-        assert_eq!(emitted(&g, live), 2.0, "the running node is the new code");
+        emits(&mut g, live, 2.0); // the running node is the new code
 
         // Deleted: unaddable, but the instance is left alone (removal closes the door, it does not
         // reach into the graph).
@@ -2846,8 +2924,7 @@ mod node_scan_tests {
         let diff = rescan(&state, &mut g, &state.mount()).0;
         assert_eq!(diff.removed, ["MyThing"]);
         assert!(g.add_node("MyThing", None).is_err(), "a vanished type is no longer addable");
-        g.tick();
-        assert_eq!(emitted(&g, live), 2.0, "its instance still runs");
+        emits(&mut g, live, 2.0); // …and its instance still runs
     }
 
     /// The two directories are one registry, and the patch is scanned SECOND so its own file wins a
@@ -2866,8 +2943,7 @@ mod node_scan_tests {
         let mut g = state.graph.lock().unwrap();
         rescan(&state, &mut g, &state.mount());
         let uid = g.add_node("MyThing", None).unwrap();
-        g.tick();
-        assert_eq!(emitted(&g, uid), 9.0, "the patch's own file wins the name");
+        emits(&mut g, uid, 9.0); // the patch's own file wins the name
         assert!(g.is_patch_type("MyThing"), "…and says where it came from");
         assert!(!g.is_patch_type("OnlyShipped"), "the shipped tree's own node is not the patch's");
     }
@@ -2892,15 +2968,13 @@ mod node_scan_tests {
         rescan(&state, &mut g, &state.mount());
 
         let shadowed = g.add_node("MyThing", None).unwrap();
-        g.tick();
-        assert_eq!(emitted(&g, shadowed), 5.0, "the later --extra-nodes directory wins the name");
+        emits(&mut g, shadowed, 5.0); // the later --extra-nodes directory wins the name
         assert!(!g.is_patch_type("MyThing"), "a shipped tree is not the patch's own, wherever it sits");
 
         // The load-bearing half: adding a directory must not COST one. A replacing flag passes
         // every assertion above and fails this one.
         let kept = g.add_node("OnlyBuiltin", None).unwrap();
-        g.tick();
-        assert_eq!(emitted(&g, kept), 7.0, "the earlier directory's other nodes are still registered");
+        emits(&mut g, kept, 7.0); // the earlier directory's other nodes are still registered
     }
 
     /// …and `read_node_source` has to walk that same list BACKWARDS to agree with it. `rescan`
@@ -2984,8 +3058,7 @@ mod node_scan_tests {
         let mut g = opened.graph.lock().unwrap();
         assert_eq!(g.node_count(), 1);
         let uid = g.node_uids()[0];
-        g.tick();
-        assert_eq!(emitted(&g, uid), 5.0, "the instance runs the patch's code");
+        emits(&mut g, uid, 5.0); // the instance runs the patch's code
         assert!(g.is_patch_type("MyThing"));
         drop(g);
 
