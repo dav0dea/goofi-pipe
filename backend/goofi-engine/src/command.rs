@@ -648,8 +648,13 @@ impl Command {
                         };
                         // Re-point parent stubs Expand re-pointed away — the exact reversal of
                         // expand_instance (empty for a delete-undo, which prunes rather than re-points).
+                        // Written straight onto the stub with NO validation, unlike
+                        // `set_stub_inner`: the Group/Expand round trip restores a known-good
+                        // captured state, which may legitimately name a nested scope.
                         for (p, sid, inner) in r.parent_stubs {
-                            g.restore_stub_inner(p, &sid, inner);
+                            if let Some(st) = g.stub_mut(p, &sid) {
+                                st.inner = inner;
+                            }
                         }
                         scope
                     }
@@ -702,7 +707,9 @@ impl Command {
                         return Ok((Outcome::Ok, Command::Compound(vec![])));
                     }
                     Some((id, stub)) => {
-                        g.insert_stub(scope, id.clone(), stub)?;
+                        if let Some(stubs) = g.stubs_mut(scope) {
+                            stubs.insert(id.clone(), stub);
+                        }
                         id
                     }
                 };
@@ -713,7 +720,11 @@ impl Command {
                 let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id).cloned()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
                 };
-                g.remove_boundary(scope, &stub_id)?;
+                // External flat links stay valid leaf->leaf links — they never referenced the
+                // stub at runtime — so they are left in place.
+                if let Some(stubs) = g.stubs_mut(scope) {
+                    stubs.shift_remove(&stub_id);
+                }
                 let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
                 Ok((Outcome::Ok, Command::AddStub { scope, dir, dtype, pos, restore: Some((stub_id, stub)) }))
             }
@@ -740,8 +751,13 @@ impl Command {
                     // An unwire always applies (the stub exists — checked above).
                     None => g.set_stub_inner(scope, &stub_id, None)?,
                 }
+                // The inverse path forces the captured dtype back: wiring resolves a stub's dtype
+                // from the inner slot, so without this an unwired pill would keep the wired slot's
+                // type instead of its own provisional one.
                 if let Some(dt) = dtype {
-                    g.set_stub_dtype(scope, &stub_id, dt)?; // inverse path: force the captured dtype back
+                    if let Some(st) = g.stub_mut(scope, &stub_id) {
+                        st.dtype = dt;
+                    }
                 }
                 Ok((Outcome::Ok, Command::WireStub { scope, stub_id, inner: old_inner, dtype: Some(old_dtype) }))
             }
@@ -752,11 +768,15 @@ impl Command {
                 };
                 let old_name = name.as_ref().map(|_| st.name.clone());
                 let old_pos = pos.map(|_| st.pos);
-                if let Some(n) = &name {
-                    g.rename_boundary(scope, &stub_id, n)?;
-                }
-                if let Some(p) = pos {
-                    g.set_boundary_pos(scope, &stub_id, p)?;
+                // One handle for the read above and both writes. The `StubId` never changes, so a
+                // rename leaves every external wire intact.
+                if let Some(st) = g.stub_mut(scope, &stub_id) {
+                    if let Some(n) = &name {
+                        st.name = n.clone();
+                    }
+                    if let Some(p) = pos {
+                        st.pos = p;
+                    }
                 }
                 Ok((Outcome::Ok, Command::EditStub { scope, stub_id, name: old_name, pos: old_pos }))
             }
@@ -1808,7 +1828,7 @@ mod tests {
         let x = g.add_node("_TestEcho", None).unwrap();
         g.add_link(a, "out", x, "in").unwrap();
         let s = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
-        g.remove_boundary(s, "out0").unwrap(); // drop the port; the flat link a.out→x.in survives
+        g.stubs_mut(s).unwrap().shift_remove("out0"); // drop the port; the flat link a.out→x.in survives
         assert!(g.scope(s).unwrap().stubs.is_empty(), "s starts with no port");
 
         // Group [s] — group_nodes re-mints a stub on s to expose the orphaned crossing link.

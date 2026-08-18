@@ -1593,10 +1593,21 @@ impl Graph {
     /// Directly set a stub's `inner` with NO validation — the restore path for re-pointing a parent
     /// stub during a Group/Expand round-trip, where the target is a known-good captured state (which
     /// may name a nested scope, unlike the validated `set_stub_inner` wire path).
-    pub fn restore_stub_inner(&mut self, scope: Uid, stub_id: &str, inner: Option<(Uid, String)>) {
-        if let Some(st) = self.scopes.get_mut(&scope).and_then(|s| s.stubs.get_mut(stub_id)) {
-            st.inner = inner;
-        }
+
+    /// One stub of a scope, mutable. Six near-identical setters used to sit here — insert, remove,
+    /// set-dtype, rename, move, restore-inner — each re-doing this lookup and each minting its own
+    /// error string. Those strings were unreachable: every `Command` that edits a boundary already
+    /// guards on the stub existing and answers an idempotent no-op when it does not, so this
+    /// returns `None` and lets the caller keep the guard it already has.
+    pub fn stub_mut(&mut self, scope: Uid, stub: &str) -> Option<&mut subpatch::Stub> {
+        self.scopes.get_mut(&scope)?.stubs.get_mut(stub)
+    }
+
+    /// A scope's whole stub map, for the two edits that are map-shaped rather than field-shaped.
+    /// Deliberately NOT `&mut Scope`: that would hand out `Scope::name` and `Scope::pos` as well,
+    /// and let a caller bypass the validated rename path.
+    pub fn stubs_mut(&mut self, scope: Uid) -> Option<&mut IndexMap<subpatch::StubId, subpatch::Stub>> {
+        self.scopes.get_mut(&scope).map(|s| &mut s.stubs)
     }
 
     /// Inline a scope back into its parent: re-tag each member to the parent scope, then drop the
@@ -1785,54 +1796,10 @@ impl Graph {
     }
 
     /// Insert a full captured stub at a specific id — the restore inverse of removing a stub.
-    pub fn insert_stub(&mut self, scope: Uid, stub_id: subpatch::StubId, stub: subpatch::Stub) -> Result<(), String> {
-        let s = self.scopes.get_mut(&scope).ok_or("insert_stub: no such scope")?;
-        s.stubs.insert(stub_id, stub);
-        Ok(())
-    }
 
-    /// Force a stub's advertised dtype. Wiring resolves the dtype from the inner slot, so the
-    /// `WireStub` inverse uses this to restore the EXACT pre-wire dtype on unwire (else an unwired
-    /// pill would keep the wired slot's type instead of its provisional one).
-    pub fn set_stub_dtype(&mut self, scope: Uid, stub: &str, dtype: goofi_core::SlotType) -> Result<(), String> {
-        let st = self
-            .scopes
-            .get_mut(&scope)
-            .and_then(|s| s.stubs.get_mut(stub))
-            .ok_or("set_stub_dtype: no such stub")?;
-        st.dtype = dtype;
-        Ok(())
-    }
 
-    /// Drop a stub. External flat links stay valid leaf→leaf links (they never referenced the stub
-    /// at runtime), so they are left in place.
-    pub fn remove_boundary(&mut self, scope: Uid, stub: &str) -> Result<(), String> {
-        let s = self.scopes.get_mut(&scope).ok_or("remove_boundary: no such scope")?;
-        s.stubs.shift_remove(stub).ok_or("remove_boundary: no such stub")?;
-        Ok(())
-    }
 
-    /// Relabel a stub's display name. The `StubId` is unchanged, so external wires survive.
-    pub fn rename_boundary(&mut self, scope: Uid, stub: &str, name: &str) -> Result<(), String> {
-        let st = self
-            .scopes
-            .get_mut(&scope)
-            .and_then(|s| s.stubs.get_mut(stub))
-            .ok_or("rename_boundary: no such stub")?;
-        st.name = name.to_string();
-        Ok(())
-    }
 
-    /// Move a stub pill inside the entered view.
-    pub fn set_boundary_pos(&mut self, scope: Uid, stub: &str, pos: [f64; 2]) -> Result<(), String> {
-        let st = self
-            .scopes
-            .get_mut(&scope)
-            .and_then(|s| s.stubs.get_mut(stub))
-            .ok_or("set_boundary_pos: no such stub")?;
-        st.pos = pos;
-        Ok(())
-    }
 
     // The `update_member_param` / `set_member_pos` / `set_member_expression` wrappers are gone
     // (B3a): with sharing dropped a member is just a live node, and every mutation now routes through
@@ -7318,7 +7285,7 @@ mod tests {
         assert!(err.contains("already exposed"), "one-stub-per-inner enforced; got {err}");
 
         // rename keeps the StubId (external wires survive), only the label changes.
-        g.rename_boundary(s, &stub, "signal").unwrap();
+        g.stub_mut(s, &stub).unwrap().name = "signal".to_string();
         assert_eq!(g.scope(s).unwrap().stubs[&stub].name, "signal");
         assert!(g.scope(s).unwrap().stubs.contains_key(&stub), "StubId unchanged after rename");
 
@@ -7478,8 +7445,8 @@ mod tests {
         let s = g.group_nodes(&[a], [0.0, 0.0]).unwrap();
         assert_eq!(g.resolve_stub(s, "out0"), Some((a, "out".to_string())), "s exposes a.out as out0");
 
-        // Drop the port; the flat link a.out→x.in survives leaf→leaf (documented remove_boundary).
-        g.remove_boundary(s, "out0").unwrap();
+        // Drop the port; the flat link a.out→x.in survives leaf→leaf (see `Command::RemoveStub`).
+        g.stubs_mut(s).unwrap().shift_remove("out0");
         assert!(g.scope(s).unwrap().stubs.is_empty(), "boundary port removed");
         assert!(
             g.links_view().iter().any(|l| l.node_out == a && l.node_in == x),
