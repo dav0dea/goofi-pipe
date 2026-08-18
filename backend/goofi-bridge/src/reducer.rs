@@ -3,10 +3,12 @@
 //! so N tabs viewing the same slot cost one reduce+encode — not N. This replaces the former
 //! per-connection reduce loop in `handle_data`, eliminating the multi-tab duplicate reduction.
 //!
-//! The reducer task runs at viewer rate (~16 ms), latest-wins, reading the node's latest
-//! published frame (`Graph::latest_frame`, a cheap `Arc` clone under a brief lock) — decoupled
-//! from the node tick, so any number of viewers never throttle `process()`. A `viewers`
-//! refcount spawns the task on the first subscriber and aborts it on the last leave.
+//! The reducer task runs at viewer rate (~16 ms), latest-wins, **subscribed to the producer's own
+//! output service** — the same door a node's downstream consumer comes in through, and the only
+//! door there is (§7: there is no privileged path into a node for a frame). It resolves that
+//! service name under one brief graph lock and is lock-free after, so no number of viewers can
+//! slow a `process()` down. A `viewers` refcount spawns the task on the first subscriber and
+//! aborts it on the last leave.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -152,12 +154,47 @@ impl SlotReducers {
     }
 }
 
-/// Spawn the per-slot reducer loop: every ~16 ms read the latest frame and — ONLY when the
-/// producer has emitted since the last send, a subscriber joined, or the spec union changed —
+/// How often the slot's subscribe address is re-derived from the graph. A node's service name
+/// carries its GENERATION, so a restart (an explicit `restart_node`, or the automatic one a node-file
+/// rescan does) re-homes the stream to a name this task has never opened — and a subscriber left on
+/// the corpse's name would simply go quiet for ever. Once a second rather than once a sweep because
+/// §7's whole point is that the steady state does not touch the graph lock: a restart is a user
+/// action, and a viewer following it within a second is following it.
+const REHOME_INTERVAL: Duration = Duration::from_secs(1);
+
+/// One end of a slot's data service: the subscriber, the iceoryx2 node it was built from (which
+/// must outlive it), and the service name it was opened on — the thing a re-home compares against.
+struct SlotFeed {
+    _node: goofi_engine::runtime::IoxNode,
+    subscriber: goofi_engine::runtime::ByteSubscriber,
+    service: String,
+}
+
+/// Open a subscriber on `(uid, slot)`'s current output service, or `None` while the node is not
+/// addressable (it has been removed, or its services do not exist yet). A miss is retried on the
+/// next re-home rather than being fatal: a viewer may legitimately subscribe to a node that is
+/// still being born.
+fn open_feed(graph: &Mutex<Graph>, uid: Uid, slot: &str) -> Option<SlotFeed> {
+    let service = {
+        let g = graph.lock().unwrap();
+        g.manifest(uid)?;
+        g.output_service_of(uid, slot)
+    };
+    let node = goofi_engine::runtime::iox_node().ok()?;
+    let subscriber = goofi_engine::runtime::open_output_subscriber(&node, &service).ok()?;
+    Some(SlotFeed { _node: node, subscriber, service })
+}
+
+/// Spawn the per-slot reducer loop: every ~16 ms take whatever the producer has published and —
+/// ONLY when it emitted since the last send, a subscriber joined, or the spec union changed —
 /// reduce it to the union of subscribers' specs (passthrough while none), encode once, and
 /// broadcast to all. The sweep is a sampling deadline, never a send cadence: re-shipping an
 /// unchanged frame every 16 ms put 62.5 frames/s on the wire for a 30 Hz producer, and every
 /// viewer paid decode + (capped) paint for frames that carried nothing new.
+///
+/// The cached frame is also what a JOIN or a spec change is served from (§7): the producer's
+/// service has no history, so a viewer arriving on a stream nobody was subscribed to waits for the
+/// next emit — which is §3.5's no-replay rule and not a gap.
 fn spawn_reducer(
     key: SlotKey,
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
@@ -169,30 +206,48 @@ fn spawn_reducer(
     let (uid, slot) = key;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
-        // Latest-wins: a deadline missed while the tick thread held the graph lock is a sample
-        // that no longer exists, not a debt. Tokio's default (Burst) would repay every one of
-        // them back-to-back over the same frame, the moment the worker is unblocked.
+        // Latest-wins: a deadline missed while this task was starved is a sample that no longer
+        // exists, not a debt. Tokio's default (Burst) would repay every one of them back-to-back
+        // over the same frame, the moment the worker is unblocked.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // What the last broadcast served: the exact frame handle (identity = "has the producer
-        // emitted since", every emit mints a fresh allocation) and the serve generation. Holding
-        // the handle keeps its allocation alive, so the identity check cannot alias.
-        let mut sent: Option<(goofi_core::Data, u64)> = None;
+        let mut feed = open_feed(&graph, uid, &slot);
+        let mut rehomed = std::time::Instant::now();
+        // The newest frame this task has seen, and the serve generation it was last broadcast at.
+        // `None` for the generation means "never broadcast", which is what makes the first frame
+        // go out without waiting for a bump.
+        let mut cached: Option<goofi_core::Data> = None;
+        let mut served: Option<u64> = None;
         loop {
             ticker.tick().await;
-            // Brief graph lock only for the latest-frame Arc clone; plan/reduce/encode run
-            // off-lock so a large kHz/HD reduction never serializes against the scheduler tick.
-            let d = {
-                let g = graph.lock().unwrap();
-                g.latest_frame(uid, &slot)
-            };
-            let Some(d) = d else { continue };
+            if rehomed.elapsed() >= REHOME_INTERVAL {
+                rehomed = std::time::Instant::now();
+                let current = {
+                    let g = graph.lock().unwrap();
+                    g.manifest(uid).map(|_| g.output_service_of(uid, &slot))
+                };
+                // Only a CHANGED name reopens: re-creating the port every second would churn a
+                // service that is working perfectly well.
+                if current.is_some_and(|c| feed.as_ref().is_none_or(|f| f.service != c)) {
+                    feed = open_feed(&graph, uid, &slot);
+                }
+            }
+            let mut fresh = false;
+            if let Some(f) = &feed {
+                while let Ok(Some(sample)) = f.subscriber.receive() {
+                    if let Ok(frame) = goofi_codec::decode(sample.payload()) {
+                        cached = Some(frame);
+                        fresh = true;
+                    }
+                }
+            }
+            let Some(d) = cached.clone() else { continue };
             let g_now = gen.load(Ordering::Acquire);
-            if sent.as_ref().is_some_and(|(prev, g_sent)| prev.same_frame(&d) && *g_sent == g_now) {
+            if !fresh && served == Some(g_now) {
                 continue; // nothing new to say — no emit, no joiner, no spec change
             }
             let merged = union_specs(&specs.lock().unwrap());
             let out = if merged.is_empty() {
-                d.clone()
+                d
             } else {
                 let plan = goofi_view::plan(&merged, &d);
                 goofi_core::reduce::reduce_for_view(&d, &plan)
@@ -200,7 +255,7 @@ fn spawn_reducer(
             reductions.fetch_add(1, Ordering::Relaxed);
             let bytes = Bytes::from(goofi_codec::encode(&out));
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
-            sent = Some((d, g_now));
+            served = Some(g_now);
         }
     })
 }
@@ -209,6 +264,7 @@ fn spawn_reducer(
 mod tests {
     use super::*;
     use goofi_view::{AxisReduce, DimCmp, ReduceMethod, ViewDtype};
+    use std::sync::atomic::AtomicBool;
 
     fn line_spec(width: usize) -> ViewSpec {
         ViewSpec {
@@ -217,6 +273,94 @@ mod tests {
             dims: vec![],
             reduce: vec![AxisReduce { dim: -1, max: width, method: ReduceMethod::Envelope }],
         }
+    }
+
+    /// Production's status worker, in the four lines these tests need of it: a node becomes
+    /// addressable, and its params reach it, only once someone drains its status service. Without
+    /// one running, an `add_node` here would leave the node on its manifest defaults for ever —
+    /// including the `globals.default_ufreq` pacing every producer carries.
+    struct Drainer {
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drainer {
+        fn spawn(graph: Arc<Mutex<Graph>>) -> Drainer {
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread = {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        graph.lock().unwrap().drain_status();
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+            };
+            Drainer { stop, thread: Some(thread) }
+        }
+    }
+
+    impl Drop for Drainer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// A producer that emits exactly one frame per ARMING, and nothing at all until it is armed.
+    /// The oscillator cannot express these tests any more: it free-runs, so "the producer emitted
+    /// nothing" is a state it is never in — and it is the silence between emits that the sweep's
+    /// send rule is about.
+    struct Armed {
+        go: Arc<AtomicBool>,
+        n: f32,
+    }
+
+    impl goofi_node::Node for Armed {
+        fn process(
+            &mut self,
+            _i: &goofi_node::Inputs<'_>,
+            o: &mut goofi_node::Outputs<'_>,
+            _c: &mut goofi_node::NodeCtx,
+            _p: &goofi_node::Params<'_>,
+        ) -> goofi_node::NodeResult {
+            if !self.go.swap(false, Ordering::AcqRel) {
+                return Ok(());
+            }
+            self.n += 1.0;
+            let body = self.n.to_le_bytes().to_vec();
+            o.set("out", goofi_core::Data::array_f32(vec![1], body, goofi_core::Meta::empty()).unwrap());
+            Ok(())
+        }
+    }
+
+    static ARMED_OUT: &[goofi_node::OutputDecl] =
+        &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    static ARMED: goofi_node::NodeManifest = goofi_node::NodeManifest {
+        type_name: "_TestArmed",
+        category: "test",
+        doc: "emits one frame per arming",
+        inputs: &[],
+        outputs: ARMED_OUT,
+        params: &[],
+        isolation: goofi_node::Isolation::InProcess,
+        producer: true,
+        factory: || Box::new(Armed { go: Arc::new(AtomicBool::new(false)), n: 0.0 }),
+    };
+
+    /// A graph holding one armed producer, the flag that fires it, and the drainer that keeps the
+    /// graph hearing from it.
+    fn armed_graph() -> (Arc<Mutex<Graph>>, Uid, Arc<AtomicBool>, Drainer) {
+        let go = Arc::new(AtomicBool::new(false));
+        let mut g = Graph::new();
+        let armed = go.clone();
+        g.register_dyn_type(&ARMED, Box::new(move |_| Box::new(Armed { go: armed.clone(), n: 0.0 })));
+        let uid = g.add_node("_TestArmed", None).unwrap();
+        let graph = Arc::new(Mutex::new(g));
+        let drainer = Drainer::spawn(graph.clone());
+        (graph, uid, go, drainer)
     }
 
     #[test]
@@ -233,25 +377,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_reducer_serves_multiple_subscribers_on_a_slot() {
-        use std::sync::atomic::AtomicBool;
         // Two connections view the SAME slot: exactly ONE reducer task exists, both receive
         // reduced frames, and it tears down on last-leave.
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         let graph = Arc::new(Mutex::new(g));
-
-        // Drive the graph continuously on a background thread (mirrors production spawn_tick),
-        // so the reducer always has a fresh frame regardless of scheduling under load.
-        let stop = Arc::new(AtomicBool::new(false));
-        let ticker = {
-            let (graph, stop) = (graph.clone(), stop.clone());
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    graph.lock().unwrap().tick();
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-            })
-        };
+        let _drainer = Drainer::spawn(graph.clone());
 
         let reducers = SlotReducers::new(graph.clone());
         let key: SlotKey = (osc, "out".to_string());
@@ -273,9 +404,6 @@ mod tests {
         assert_eq!(reducers.active_slots(), 1, "still one subscriber → reducer alive");
         reducers.unsubscribe(&key, c2);
         assert_eq!(reducers.active_slots(), 0, "last subscriber left → reducer dropped");
-
-        stop.store(true, Ordering::Relaxed);
-        ticker.join().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -285,39 +413,29 @@ mod tests {
         // 375 frames / 180 fresh emits over 6 s on a live socket). A frame goes out when the
         // producer EMITS, when a subscriber JOINS, or when the spec union CHANGES — never
         // because a deadline elapsed.
-        let mut g = Graph::new();
-        let osc = g.add_node("Oscillator", None).unwrap();
-        // One published frame, then the graph goes quiet (nothing ticks it below).
-        for _ in 0..200 {
-            g.tick();
-            if g.latest_frame(osc, "out").is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let first_frame = g.latest_frame(osc, "out").expect("the oscillator published a frame");
-        let graph = Arc::new(Mutex::new(g));
-
+        let (graph, uid, go, _drainer) = armed_graph();
         let reducers = SlotReducers::new(graph.clone());
-        let key: SlotKey = (osc, "out".to_string());
+        let key: SlotKey = (uid, "out".to_string());
         let c = reducers.new_conn();
         let mut rx = reducers.subscribe(key.clone(), c);
 
-        // A joining subscriber is served the current frame without waiting for a fresh emit —
-        // for a sparse producer (0.1 Hz) "wait for the next emit" would be a blank viewer.
-        let joined = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
-        assert!(joined.is_ok_and(|r| r.is_ok()), "a joining subscriber is served the current frame");
+        // The producer's service carries no history (§3.5), so the emit is fired only once the
+        // reducer is subscribed — and the assertion below is what proves it was: a lost frame
+        // fails here rather than reading as the silence the next assertion wants.
+        go.store(true, Ordering::Release);
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(first.is_ok_and(|r| r.is_ok()), "the emitted frame reached the subscriber");
 
-        // The producer emits nothing → the stream is SILENT. Ten sweep deadlines pass; the old
-        // loop shipped ~10 copies of the same frame here.
+        // The producer emits nothing more → the stream is SILENT. Ten sweep deadlines pass; the
+        // old loop shipped ~10 copies of the same frame here.
         let silent = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
         assert!(silent.is_err(), "an unchanged frame was re-broadcast on a sweep deadline");
 
-        // A spec change re-serves the CURRENT frame at its new reduction, even with no fresh
-        // emit — a resized viewer of a slow producer must not stare at the stale size.
+        // A spec change re-serves the CACHED frame at its new reduction, even with no fresh emit —
+        // a resized viewer of a slow producer must not stare at the stale size.
         reducers.set_specs(&key, c, vec![line_spec(64)]);
         let respec = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
-        assert!(respec.is_ok_and(|r| r.is_ok()), "a spec change re-serves the current frame");
+        assert!(respec.is_ok_and(|r| r.is_ok()), "a spec change re-serves the cached frame");
         let quiet = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
         assert!(quiet.is_err(), "the spec-change re-serve is one frame, not a new steady stream");
 
@@ -326,60 +444,76 @@ mod tests {
         // "giving up costs one frame" is only true if the frame comes around again.
         reducers.reoffer(&key);
         let reoffered = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
-        assert!(reoffered.is_ok_and(|r| r.is_ok()), "a re-offer serves the current frame again");
+        assert!(reoffered.is_ok_and(|r| r.is_ok()), "a re-offer serves the cached frame again");
 
         // A fresh emit flows through within a sweep.
-        for _ in 0..400 {
-            std::thread::sleep(Duration::from_millis(2));
-            let mut g = graph.lock().unwrap();
-            g.tick();
-            if !g.latest_frame(osc, "out").unwrap().same_frame(&first_frame) {
-                break;
-            }
-        }
-        assert!(
-            !graph.lock().unwrap().latest_frame(osc, "out").unwrap().same_frame(&first_frame),
-            "the oscillator emitted a fresh frame to flow"
-        );
-        let fresh = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+        go.store(true, Ordering::Release);
+        let fresh = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
         assert!(fresh.is_ok_and(|r| r.is_ok()), "a fresh emit flows to the subscriber");
 
         reducers.unsubscribe(&key, c);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restarted_node_re_homes_the_stream_instead_of_going_quiet() {
+        // A node's service name carries its generation, so a restart publishes somewhere this task
+        // has never opened. Nothing else in the loop can notice: the subscriber on the corpse's
+        // name receives cleanly and for ever, it simply never receives anything again — which is a
+        // viewer frozen on its last frame with no error anywhere.
+        let (graph, uid, go, _drainer) = armed_graph();
+        let reducers = SlotReducers::new(graph.clone());
+        let key: SlotKey = (uid, "out".to_string());
+        let c = reducers.new_conn();
+        let mut rx = reducers.subscribe(key.clone(), c);
+        go.store(true, Ordering::Release);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.is_ok_and(|r| r.is_ok()),
+            "the stream is live before the restart"
+        );
+
+        let before = graph.lock().unwrap().output_service_of(uid, "out");
+        graph.lock().unwrap().restart_node(uid).unwrap();
+        assert_ne!(graph.lock().unwrap().output_service_of(uid, "out"), before, "a rebirth is a new name");
+
+        // The reborn node is a fresh instance, so it is disarmed: arm it again and the frame has
+        // to arrive on the new name, within a re-home interval plus a sweep.
+        go.store(true, Ordering::Release);
+        let after = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        assert!(after.is_ok_and(|r| r.is_ok()), "the reducer followed the restart to the new service");
+
+        reducers.unsubscribe(&key, c);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_starved_reducer_does_not_repay_the_deadlines_it_missed() {
-        // The tick thread holds the graph mutex for the whole of an inline node's `process()`,
-        // so a slow node starves this task past many 16 ms deadlines. A latest-wins sampler must
-        // resume at the next deadline — repaying the backlog would fire a burst of full
-        // reduce+encode+broadcast passes over ONE unchanged frame, on a worker that was just
+        // A blocked runtime worker starves this task past many 16 ms deadlines. A latest-wins
+        // sampler must resume at the next deadline — repaying the backlog would fire a burst of
+        // full reduce+encode+broadcast passes over ONE unchanged frame, on a worker that was just
         // unblocked, which is precisely when the process is least able to afford them.
+        //
+        // The starvation is the RUNTIME's now, not the graph lock's: §7 took the lock out of the
+        // sweep, so holding it no longer starves anything here.
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
-        // The oscillator paces itself off the wall clock, so tick it until it has published.
-        for _ in 0..200 {
-            g.tick();
-            if g.latest_frame(osc, "out").is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(g.latest_frame(osc, "out").is_some(), "the oscillator published a frame to sample");
         let graph = Arc::new(Mutex::new(g));
+        let _drainer = Drainer::spawn(graph.clone());
 
         let reducers = SlotReducers::new(graph.clone());
         let key: SlotKey = (osc, "out".to_string());
         let c = reducers.new_conn();
-        let _rx = reducers.subscribe(key.clone(), c);
+        let mut rx = reducers.subscribe(key.clone(), c);
+        // A frame first: a starved sweep over NO frame reduces nothing whatever it does with its
+        // deadlines, which would pass this test against a `Burst` interval.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.is_ok_and(|r| r.is_ok()),
+            "the stream is live before the starvation"
+        );
 
-        // ~20 missed deadlines while the lock is held, then sample a short window after release.
-        let before = {
-            let held = graph.lock().unwrap();
-            std::thread::sleep(Duration::from_millis(320));
-            let n = reducers.reductions(&key);
-            drop(held);
-            n
-        };
+        // The only worker thread is held for ~20 deadlines, then a short window is sampled after
+        // it is handed back.
+        tokio::spawn(async { std::thread::sleep(Duration::from_millis(320)) });
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let before = reducers.reductions(&key);
         tokio::time::sleep(Duration::from_millis(48)).await;
         let burst = reducers.reductions(&key) - before;
 
@@ -391,7 +525,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reduction_cost_is_o1_in_subscriber_count() {
-        use std::sync::atomic::AtomicBool;
         // The thalamus headline claim: N tabs on one slot cost ONE reduce+encode per frame, not
         // N. With many subscribers the reduce-pass count must stay bounded by WALL-CLOCK (one
         // ~16ms task), never multiplied by the subscriber count. Uses the internal counter — no
@@ -400,16 +533,7 @@ mod tests {
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         let graph = Arc::new(Mutex::new(g));
-        let stop = Arc::new(AtomicBool::new(false));
-        let ticker = {
-            let (graph, stop) = (graph.clone(), stop.clone());
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    graph.lock().unwrap().tick();
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
+        let _drainer = Drainer::spawn(graph.clone());
 
         let reducers = SlotReducers::new(graph.clone());
         let key: SlotKey = (osc, "out".to_string());
@@ -439,7 +563,5 @@ mod tests {
         for (_, r) in &subs {
             assert!(!r.is_empty(), "every subscriber received the shared reducer's frames");
         }
-        stop.store(true, Ordering::Relaxed);
-        ticker.join().unwrap();
     }
 }

@@ -2,7 +2,6 @@
 //! text. Pure reads — they clone what they need and format off the graph lock, never wait, never
 //! sample, and never write a file.
 
-use goofi_core::{MetaValue, Value as DataValue};
 use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 
@@ -206,64 +205,19 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
     }
 }
 
-/// The value-health line for one emitted frame: what it is, how much of it is a real number, and
-/// what scale it is on. This is how a NaN, a silent all-zeros or a wrong unit becomes visible
-/// without writing a single byte to disk.
+/// `inspect_node`: the cheap peek — what the node is, what its params say, which output slots it
+/// has and whether it is emitting on them, and whether it is erroring.
 ///
-/// The range is over the FINITE values deliberately: that a non-finite is present is already said
-/// by `finite=`, while a range that reads `nan` would hide the scale, which is the other half of
-/// the question. `finite=` is one bucket, so it does not separate a NaN (0/0) from an overflow
-/// (∞) — the next question, and one an agent asks with `inspect_node slot=…` on the producer.
-///
-/// ONE streaming pass, deliberately: a 4K RGB frame is 25 M elements and this runs under the graph
-/// lock the tick thread needs — materializing it, twice, cost 317 ms and 189 MB of that lock.
-fn health(d: &goofi_core::Data) -> String {
-    match d.value() {
-        DataValue::Array(a) => {
-            let (mut n, mut finite) = (0usize, 0usize);
-            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-            for c in a.as_bytes().chunks_exact(4) {
-                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                n += 1;
-                if v.is_finite() {
-                    (finite, lo, hi) = (finite + 1, lo.min(v), hi.max(v));
-                }
-            }
-            let shape: Vec<String> = a.shape().iter().map(|d| d.to_string()).collect();
-            let range =
-                if finite == 0 { "range=none".to_string() } else { format!("range=[{lo},{hi}]") };
-            format!("f32[{}] finite={finite}/{n} {range}", shape.join(","))
-        }
-        DataValue::Str(s) => format!("string len={}", s.chars().count()),
-        DataValue::Table(t) => format!("table keys={}", t.len()),
-    }
-}
-
-/// A meta value in one short line; `None` for the unset builtins so they do not fill the page.
-fn meta_val(v: &MetaValue) -> Option<String> {
-    Some(match v {
-        MetaValue::Null => return None,
-        MetaValue::Bool(b) => b.to_string(),
-        MetaValue::Int(i) => i.to_string(),
-        MetaValue::Uint(u) => u.to_string(),
-        MetaValue::Float(f) => f.to_string(),
-        MetaValue::Str(s) => s.clone(),
-        MetaValue::List(l) => format!("[{}]", l.iter().filter_map(meta_val).collect::<Vec<_>>().join(", ")),
-        MetaValue::Map(m) => format!("{{{}}}", m.keys().cloned().collect::<Vec<_>>().join(", ")),
-        MetaValue::Bytes(b) => format!("<{} bytes>", b.len()),
-        MetaValue::Axes(a) if a.is_empty() => return None,
-        MetaValue::Axes(a) => format!("{} labelled dims", a.0.len()),
-    })
-}
-
-/// `inspect_node`: the cheap peek — what the node is, what its params say, what its outputs are
-/// actually carrying, and whether it is erroring.
+/// It does NOT report the frames themselves, and has no way to: §7 leaves exactly one door onto a
+/// node's data, and it is `/data/<node>/<slot>`. An agent that wants the values subscribes to that
+/// stream like any viewer. What is left here is the question inspection can answer without one —
+/// *is anything coming out of this slot at all* — and it comes from the same measured `ufreq` the
+/// node header shows, which the status worker collects.
 pub fn node(
     g: &Graph,
     uid: Uid,
     slot: Option<&str>,
     want_params: bool,
-    want_meta: bool,
     want_error: bool,
 ) -> Result<String, String> {
     let manifest = g.manifest(uid).ok_or_else(|| format!("inspect_node: no node `{}`", uid.to_hex()))?;
@@ -302,20 +256,15 @@ pub fn node(
     if manifest.outputs.is_empty() {
         out.push_str("  (none)\n");
     }
+    // The rate is the NODE's, not the slot's — a node emits all of its outputs in one run — so
+    // every slot line carries the same one. Repeated rather than hoisted because `slot=` narrows
+    // this list to a single line, and that line has to be able to answer the question on its own.
+    let rate = match g.node_ufreq(uid) {
+        Some(hz) => format!("emitting at {hz:.1} Hz"),
+        None => "nothing emitted yet".to_string(),
+    };
     for o in manifest.outputs.iter().filter(|o| slot.is_none_or(|s| s == o.name)) {
-        match g.latest_frame(uid, o.name) {
-            None => out.push_str(&format!("  {}: {} — nothing emitted yet\n", o.name, o.kind.name())),
-            Some(d) => {
-                out.push_str(&format!("  {}: {}\n", o.name, health(&d)));
-                if want_meta {
-                    let meta: Vec<String> =
-                        d.meta().iter().filter_map(|(k, v)| meta_val(v).map(|v| format!("{k}={v}"))).collect();
-                    if !meta.is_empty() {
-                        out.push_str(&format!("    meta: {}\n", meta.join(", ")));
-                    }
-                }
-            }
-        }
+        out.push_str(&format!("  {}: {} — {rate}\n", o.name, o.kind.name()));
     }
 
     if want_error {
@@ -442,7 +391,7 @@ pub fn layout_tree(l: &Layout, page: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{Data, Meta, SlotType};
+    use goofi_core::SlotType;
     use goofi_engine::subpatch::Dir;
     use goofi_node::{Inputs, NodeCtx, NodeManifest, NodeResult, Outputs, Params};
 
@@ -473,13 +422,15 @@ mod tests {
         let mut g = Graph::new();
         g.register_dyn_type(&BOOM, Box::new(|_| Box::new(Boom)));
         let osc = g.add_node("Oscillator", None).unwrap();
-        let _boom = g.add_node("Boom", None).unwrap();
+        let boom = g.add_node("Boom", None).unwrap();
         let buf = g.add_node("Buffer", None).unwrap();
         let scope = g.group_nodes(&[buf], [40.0, 10.0]).unwrap();
         let bnd = g.add_boundary(scope, Dir::In, SlotType::Array, [0.0, 0.0]).unwrap();
         g.set_stub_inner(scope, &bnd, Some((buf, "data".into()))).unwrap();
         g.add_link(osc, "out", buf, "data").unwrap();
-        g.tick();
+        // The Boom node's fault is what the error sections here are drawn from, and it is a REPORT
+        // — the graph does not hold it until the node has run and said so.
+        goofi_engine::testing::wait_for(&mut g, "Boom's first failure", |g| g.last_error(boom).is_some());
         (g, scope)
     }
 
@@ -590,46 +541,18 @@ errors (whole patch):
     }
 
     #[test]
-    fn a_frame_with_a_nan_reads_as_unhealthy_while_keeping_its_scale() {
-        let vals: Vec<f32> = vec![0.5, f32::NAN, -0.25, 0.98];
-        let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let d = Data::array_f32(vec![2, 2], bytes, Meta::empty()).unwrap();
-        assert_eq!(health(&d), "f32[2,2] finite=3/4 range=[-0.25,0.98]");
-
-        // An all-NaN frame has no scale to report, and says that instead of inventing one.
-        let nans: Vec<u8> = [f32::NAN; 2].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let d = Data::array_f32(vec![2], nans, Meta::empty()).unwrap();
-        assert_eq!(health(&d), "f32[2] finite=0/2 range=none");
-
-        // An overflow is non-finite too, and it must not drag the range out to infinity — the
-        // scale of the values that ARE real is the whole point of reporting one.
-        let mixed: Vec<u8> =
-            [f32::INFINITY, 2.0, f32::NEG_INFINITY, -1.0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let d = Data::array_f32(vec![4], mixed, Meta::empty()).unwrap();
-        assert_eq!(health(&d), "f32[4] finite=2/4 range=[-1,2]");
-
-        // An empty frame: no elements to fold, and so no scale — the degenerate case a running
-        // min/max has to answer without inventing `inf` as the range.
-        let d = Data::array_f32(vec![0], Vec::new(), Meta::empty()).unwrap();
-        assert_eq!(health(&d), "f32[0] finite=0/0 range=none");
-    }
-
-    #[test]
-    fn inspect_node_reports_params_output_health_and_the_error() {
+    fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         g.set_expression(osc, "oscillator", "amplitude", "globals.default_ufreq / 30", true, false)
             .unwrap();
-        // The oscillator emits by wall clock, so a frame needs time to pass, not just a tick.
-        for _ in 0..50 {
-            g.tick();
-            if g.latest_frame(osc, "out").is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        // A rate is MEASURED, so it needs two emits and a report to have crossed the status
+        // service — which is the very thing the emitting line reads.
+        goofi_engine::testing::wait_for(&mut g, "the oscillator's measured rate", |g| {
+            g.node_ufreq(osc).is_some()
+        });
 
-        let out = node(&g, osc, None, true, true, true).unwrap();
+        let out = node(&g, osc, None, true, true).unwrap();
         assert!(
             out.starts_with(&format!("oscillator0: Oscillator (uid {}, in-process, stage ready)", osc.to_hex())),
             "{out}"
@@ -646,21 +569,25 @@ errors (whole patch):
             out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 (on) [error: "),
             "{out}"
         );
-        assert!(out.contains("  out: f32["), "the value-health line: {out}");
-        assert!(out.contains("    meta: sfreq=250"), "the frame's meta: {out}");
+        // The slot line: name, kind, and whether the node is emitting — never the frame. There is
+        // one door onto a node's data and it is `/data` (§7).
+        assert!(out.contains("  out: array — emitting at "), "the emitting line: {out}");
+        assert!(!out.contains("f32["), "no frame contents leak into an inspection: {out}");
         // A node's own error is age-annotated here too, for the same settling-vs-broken reason.
         assert!(out.contains("\nerror: no expression evaluator available — for 0."), "{out}");
 
-        // A node with nothing wrong says so plainly.
+        // A node that has never emitted says so, rather than reading as healthy silence.
         let idle = g.add_node("Buffer", None).unwrap();
-        assert!(node(&g, idle, None, false, false, true).unwrap().ends_with("error: none\n"));
+        let idle_out = node(&g, idle, None, false, true).unwrap();
+        assert!(idle_out.contains("  out: array — nothing emitted yet"), "{idle_out}");
+        assert!(idle_out.ends_with("error: none\n"));
 
         // The flags actually gate their sections.
-        let bare = node(&g, osc, None, false, false, false).unwrap();
-        assert!(!bare.contains("params:") && !bare.contains("meta:") && !bare.contains("error:"), "{bare}");
+        let bare = node(&g, osc, None, false, false).unwrap();
+        assert!(!bare.contains("params:") && !bare.contains("error:"), "{bare}");
 
         // An unknown slot is refused by naming the ones that exist.
-        let err = node(&g, osc, Some("psd"), true, true, true).unwrap_err();
+        let err = node(&g, osc, Some("psd"), true, true).unwrap_err();
         assert!(err.contains("no output slot `psd`") && err.contains("out"), "{err}");
     }
 

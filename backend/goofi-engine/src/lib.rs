@@ -432,6 +432,11 @@ pub struct Graph {
     /// service name has to be unique on the MACHINE, across this process's own graphs and across
     /// every stale record a previous run left behind.
     instance: String,
+    /// The `(node, param)` pairs whose options a node has re-enumerated since anyone last looked
+    /// ([`Graph::take_refreshed`]). Options are the one thing a node reports that the CRDT doc has
+    /// no field for, so the status worker has to be TOLD which params to echo rather than being
+    /// able to find out on the re-mirror.
+    refreshed: Vec<(Uid, ParamKey)>,
 }
 
 impl Default for Graph {
@@ -511,6 +516,7 @@ impl Graph {
             wire: runtime::plan::WirePlanner::default(),
             bind_keys: Vec::new(),
             instance: runtime::service_instance(),
+            refreshed: Vec::new(),
         }
     }
 
@@ -2042,21 +2048,17 @@ impl Graph {
     /// Ask the node to re-enumerate a refreshable `Str` param's options — the ⟳ button behind a
     /// device or stream picker, whose choices are only knowable at runtime.
     ///
-    /// It ALWAYS answers `Ok(None)` (§8.5). The hook runs on the node's own thread, which is the
-    /// whole point of the move — a multi-second device scan no longer stalls anything — so the RPC
-    /// that asked cannot carry the list back. The options arrive as
-    /// [`runtime::Status::RefreshOptions`] and reach the client on the doc re-mirror the status
-    /// worker drives. `Err` is still a real refusal: an unknown node, an unknown param, or one the
-    /// type never declared refreshable (the UI shows no button for one).
+    /// It answers only that the request was DISPATCHED (§8.5). The hook runs on the node's own
+    /// thread, which is the whole point of the move — a multi-second device scan no longer stalls
+    /// anything — so the caller cannot carry the list back. The options arrive later as
+    /// [`runtime::Status::RefreshOptions`], land in the param record, and reach the client on the
+    /// echo the status worker drives off [`Graph::take_refreshed`]. `Err` is still a real refusal:
+    /// an unknown node, an unknown param, or one the type never declared refreshable (the UI shows
+    /// no button for one).
     ///
     /// Not a command: nothing persisted changes (options never reach the `.gfi`), so there is
     /// nothing to undo.
-    pub fn refresh_param(
-        &mut self,
-        uid: Uid,
-        group: &str,
-        name: &str,
-    ) -> Result<Option<Vec<String>>, String> {
+    pub fn refresh_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let live = entry.params.load_full();
         let param = goofi_node::param(&live, group, name)
@@ -2065,7 +2067,7 @@ impl Graph {
             return Err(format!("param `{group}.{name}` is not refreshable"));
         }
         self.wire.send(uid, runtime::Control::RefreshParam { key: ParamKey::new(group, name) });
-        Ok(None)
+        Ok(())
     }
 
     /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
@@ -2596,6 +2598,9 @@ impl Graph {
             }
             return;
         }
+        // Set by the `RefreshOptions` arm and drained after the match: `entry` holds a mutable
+        // borrow of `self` for the whole of it, so the queue cannot be pushed to from inside.
+        let mut refreshed: Option<ParamKey> = None;
         let Some(entry) = self.nodes.get_mut(&uid) else { return };
         match status {
             // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
@@ -2617,6 +2622,10 @@ impl Graph {
                         }
                     });
                 }
+                // Queued whether or not there were any: this IS the answer to a ⟳, and the client
+                // that asked lifts its spinner off the echo of it. A node with no hook for the
+                // param answers `None`, and would otherwise spin until a 15 s safety timeout.
+                refreshed = Some(key);
             }
             runtime::Status::Fault { fault } => match fault {
                 // A clean run clears Setup/Process/Boot together and never touches a binding
@@ -2657,7 +2666,21 @@ impl Graph {
                 entry.evaluated = evaluated.into_iter().collect();
             }
         }
+        if let Some(key) = refreshed {
+            self.refreshed.push((uid, key));
+        }
         self.stamp_error_onset(uid);
+    }
+
+    /// Take the `(node, param)` pairs whose options have been re-enumerated since the last call —
+    /// the status worker's cue to echo them.
+    ///
+    /// A queue rather than something derivable on the re-mirror, because a param's OPTIONS are the
+    /// one part of a node the CRDT doc has no field for (they are runtime-only and never persisted,
+    /// so they reach a client as a `state_update` and no other way). Draining it here is what makes
+    /// each answered ⟳ echo exactly once.
+    pub fn take_refreshed(&mut self) -> Vec<(Uid, ParamKey)> {
+        std::mem::take(&mut self.refreshed)
     }
 
     /// Note when this node's error first read the way it does now — the clock [`Graph::error_age`]
@@ -2860,6 +2883,10 @@ impl Graph {
         self.wire.reset_channels();
         // …and the binding ids went with the sequences that named them.
         self.bind_keys.clear();
+        // An un-echoed refresh names a node the patch no longer holds; a fresh patch may well mint
+        // that uid again (a load restores the uids it was saved with), and the echo would then be
+        // read as an answer about a param nobody asked about.
+        self.refreshed.clear();
         // Globals are patch content: a load starts from a fresh system-seeded store (load_doc then
         // repopulates user globals from the `.gfi`). `dyn_types` stays (catalog, not content).
         self.globals_mut(|g| {
@@ -5101,14 +5128,14 @@ mod tests {
 
     #[test]
     fn a_refresh_on_an_uninitialized_node_enumerates_nothing() {
-        // §8.5 moved the answer off the RPC: `refresh_param` always answers `Ok(None)` because the
-        // hook runs on the node's own thread. D3 still gates it there — a picker whose node failed
-        // `setup()` has nothing to scan — so the observable is the OPTIONS in the record, which the
-        // node's report writes. The node's hook does return a list, so a missing gate reads as a
-        // successful scan.
+        // §8.5 moved the answer off the RPC: `refresh_param` reports only that the request was
+        // dispatched, because the hook runs on the node's own thread. D3 still gates it there — a
+        // picker whose node failed `setup()` has nothing to scan — so the observable is the
+        // OPTIONS in the record, which the node's report writes. The node's hook does return a
+        // list, so a missing gate reads as a successful scan.
         let mut g = Graph::new();
         let (n, _counts) = gated_setup_node(&mut g);
-        assert_eq!(g.refresh_param(n, "boot", "device").unwrap(), None, "the answer never rides the RPC");
+        assert_eq!(g.refresh_param(n, "boot", "device"), Ok(()), "the answer never rides the RPC");
         assert!(
             stays(&mut g, |g| device_options(g, n) == vec!["none".to_string()]),
             "an uninitialized node enumerated nothing",
@@ -5841,7 +5868,7 @@ mod tests {
         // §8.5: the answer never rides the RPC — the hook runs on the node's own thread, so a
         // multi-second device scan cannot stall the caller. The options arrive as
         // `Status::RefreshOptions` and land in the record the inspector reads.
-        assert_eq!(g.refresh_param(uid, "audio", "device").unwrap(), None);
+        g.refresh_param(uid, "audio", "device").unwrap();
         wait_for(&mut g, "the scanned options to reach the record", |g| {
             options_of(g, uid, "audio", "device") == Some(vec!["dev0".to_string()])
         });
@@ -5914,7 +5941,7 @@ mod tests {
         g.register_dyn_type(&NO_HOOK, Box::new(|_p| Box::<NoHook>::default()));
         let uid = g.add_node("_RefreshNoHook", None).unwrap();
 
-        assert_eq!(g.refresh_param(uid, "audio", "device"), Ok(None));
+        assert_eq!(g.refresh_param(uid, "audio", "device"), Ok(()));
         assert_eq!(
             options_of(&g, uid, "audio", "device"),
             Some(vec!["none".to_string()]),

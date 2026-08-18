@@ -370,41 +370,6 @@ fn routes(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Spawn the background tick loop. It paces itself to the graph's fastest node via
-/// [`Graph::next_run_delay`] — a producer with `max_frequency <= 0` runs as fast as
-/// possible, a capped producer sleeps its remaining period, and an idle graph falls
-/// back to `IDLE_POLL` so control-plane edits are picked up promptly. There is NO fixed
-/// rate ceiling — `max_frequency` is the only cap (0 = unbounded).
-///
-/// `LOCK_CEDE` is a sub-millisecond floor applied only to the run-now (unbounded) case:
-/// the tick holds the single shared graph mutex, so a truly flat-out spin would starve
-/// the /control and /data planes (which lock the same mutex). It is a lock-fairness
-/// cede for today's single-mutex architecture (~10 kHz, 166× the old 60 Hz ceiling),
-/// NOT a rate policy; genuinely unbounded ticking wants the data plane decoupled from
-/// the graph lock (future work).
-///
-/// An INLINE node — native or in-process Python — runs its `process()` under this mutex, and since
-/// D3 its `setup()` too (the tick retries a failed initialization, throttled to
-/// `SETUP_RETRY_INTERVAL`), so a slow one paces the lock for every other holder. A
-/// Subprocess-isolated node does not: it ticks on its own detached worker, which
-/// `tests/detached_no_freeze.rs` pins.
-pub fn spawn_tick(graph: Arc<Mutex<Graph>>) {
-    std::thread::spawn(move || {
-        const IDLE_POLL: Duration = Duration::from_millis(50);
-        const LOCK_CEDE: Duration = Duration::from_micros(100);
-        loop {
-            let delay = {
-                let mut g = graph.lock().unwrap();
-                g.tick();
-                g.next_run_delay(std::time::Instant::now()).unwrap_or(IDLE_POLL)
-            };
-            // Clamp to [LOCK_CEDE, IDLE_POLL]: never spin the lock flat-out, never sleep
-            // so long that graph edits lag.
-            std::thread::sleep(delay.clamp(LOCK_CEDE, IDLE_POLL));
-        }
-    });
-}
-
 /// Given each node's current error and the last-broadcast errors, return the uids whose
 /// error state changed (appeared, cleared, or message changed) and update `last`. A node
 /// first seen HEALTHY is not a change (so startup doesn't push a `state_update` for every
@@ -464,13 +429,22 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
-        // A detached node bootstraps off-tick, so its stage changes with no RPC to ride on —
-        // same reason the error transition is pushed here.
+        // A node's stage now changes on its own thread, with no RPC to ride on — the same reason
+        // the error transition is pushed from here.
         let mut last_stages: HashMap<String, &'static str> = HashMap::new();
         loop {
             std::thread::sleep(period);
-            let (rates, errs, expr_vals, stages) = {
-                let g = graph.lock().unwrap();
+            let (rates, errs, expr_vals, stages, refreshed) = {
+                let mut g = graph.lock().unwrap();
+                // THE SOURCE (§6.2). Every field read below is filed by `apply_status` from a
+                // report the node published; nothing here polls the node itself. A drain that
+                // applied nothing still costs one non-blocking receive per node.
+                let applied = g.drain_status();
+                // Options are the one thing a node reports that the CRDT doc has no field for, so
+                // they cannot be recovered from a re-mirror — the node has to name the params it
+                // re-enumerated, and this is the only echo that reaches the client.
+                let refreshed = g.take_refreshed();
+                let g = &*g;
                 let mut rates: Vec<(String, f64)> = Vec::new();
                 let mut errs: Vec<(String, Option<String>)> = Vec::new();
                 let mut stages: Vec<(String, &'static str)> = Vec::new();
@@ -487,8 +461,19 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     stages.push((hex.clone(), g.node_stage(u)));
                     errs.push((hex, g.last_error(u).map(str::to_string)));
                 }
-                (rates, errs, expr_vals, stages)
+                let refreshed: Vec<String> = refreshed
+                    .into_iter()
+                    .filter(|(uid, _)| g.node_uids().contains(uid))
+                    .map(|(uid, key)| {
+                        param_state_update_refreshed(g, uid, &[(&key.group, &key.name)])
+                    })
+                    .collect();
+                let _ = applied;
+                (rates, errs, expr_vals, stages, refreshed)
             };
+            for ev in refreshed {
+                let _ = events.send(ev);
+            }
             // Diff + build payloads after releasing the lock (both inputs are owned).
             let changed = error_transitions(&errs, &mut last_errors);
             for (node, ufreq) in rates {
@@ -565,7 +550,6 @@ pub fn resolve_frontend_dir() -> Option<PathBuf> {
 /// couldn't use — it must register evaluators/nodes and print the URL around the bind — so the
 /// stats worker rotted into dead code and the header rate silently stopped updating.)
 pub fn spawn_workers(state: &AppState) {
-    spawn_tick(state.graph.clone());
     spawn_stats(state.graph.clone(), state.events.clone(), 2);
     // Prime the harness detection cache, so the first tab to connect already has the launch
     // buttons its snapshot's roster describes rather than an empty list it must refresh out of.
@@ -1335,17 +1319,19 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
             // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
             // Re-enumerate a refreshable string param (a device/stream picker). NOT a command —
             // options are runtime-only, never persisted, so there is nothing to undo. They are
-            // also invisible to the CRDT doc, so this echo is the ONLY way they reach the client.
+            // also invisible to the CRDT doc, so the status worker's echo is the ONLY way they
+            // reach the client.
+            //
+            // The options do NOT ride this reply, and nothing here waits for them: the hook runs
+            // on the node's own thread (§8.5), which is what stops a multi-second device scan
+            // stalling anything. `Err` is still a real refusal — an unknown node or param, or one
+            // the type never declared refreshable.
             "refresh_param" => {
                 let uid = parse_uid(&payload, "node")?;
                 let group = parse_str(&payload, "group")?.to_string();
                 let name = parse_str(&payload, "name")?.to_string();
-                // The freshly-enumerated list rides the REPLY as well as the event: a caller that
-                // is not the editor (an agent picking a device) would otherwise have to guess
-                // which broadcast belongs to its request.
-                let options = g.refresh_param(uid, &group, &name)?;
-                events.push(param_state_update_refreshed(&g, uid, &[(&group, &name)]));
-                Ok(json!({ "options": options }))
+                g.refresh_param(uid, &group, &name)?;
+                Ok(json!({ "ok": true }))
             }
             "update_param" => {
                 let uid = parse_uid(&payload, "node")?;
@@ -1830,7 +1816,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
                 // wants less says so.
                 let want = |k: &str| payload.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
                 let slot = payload.get("slot").and_then(|v| v.as_str());
-                let text = inspect::node(&g, uid, slot, want("params"), want("meta"), want("error"))?;
+                let text = inspect::node(&g, uid, slot, want("params"), want("error"))?;
                 Ok(json!({ "text": text }))
             }
             "list_globals" => Ok(inspect::globals(&g)),
