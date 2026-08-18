@@ -464,7 +464,7 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                         if let Some(f) = g.node_ufreq(u) {
                             rates.push((hex.clone(), f));
                         }
-                        let vals = schemas::expression_value_map(&g, u);
+                        let vals = schemas::expression_value_map(g, u);
                         if vals.as_object().is_some_and(|o| !o.is_empty()) {
                             expr_vals.push((hex.clone(), vals));
                         }
