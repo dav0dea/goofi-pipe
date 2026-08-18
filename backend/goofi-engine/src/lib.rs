@@ -12,12 +12,11 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 
-use goofi_core::{Data, Param};
+use goofi_core::Param;
 use goofi_node::{
-    ExprMode, Inputs, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy,
+    ExprMode, NodeCtx, NodeManifest, ParamGroups, ParamKey,
 };
 use indexmap::IndexMap;
-use rayon::prelude::*;
 
 /// The `.gfi` zip container: pack and unpack (see `archive.rs`).
 pub mod archive;
@@ -32,7 +31,6 @@ pub mod command;
 pub use command::{Command, CommandHistory, ExprState, Outcome};
 
 /// The isolated-node execution tier (off-tick detached workers + latest-wins mailboxes).
-mod detached;
 
 /// The expression rewrite: an authored source becomes a variable-keyed one plus its variable map.
 pub mod expr_rewrite;
@@ -41,6 +39,7 @@ pub mod expr_rewrite;
 /// Public because it is a standalone module today — nothing in [`Graph`] drives it yet, and the
 /// cutover from `tick_at` is its own step.
 pub mod runtime;
+pub mod testing;
 
 /// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
 /// (the same key those use), a `u64` internally.
@@ -70,63 +69,45 @@ impl std::fmt::Display for Uid {
     }
 }
 
-/// EMA weight for the measured update-frequency (`ufreq`). Smooths the inter-emit
-/// interval: time-constant ≈ `1/α` emits, so a steady slot reads exact from its 2nd
-/// emit and a jittery one settles within ~10–15. Tunable in this one place.
-const UFREQ_EMA_ALPHA: f64 = 0.2;
-
 /// The `.gfi` manifest version: written by [`Graph::serialize`], the sole version
 /// [`Graph::load_doc`] accepts, and the number its refusal quotes. One literal for all three, so a
 /// bump cannot leave the error message lying about what this build actually reads.
 const MANIFEST_VERSION: i64 = 7;
 
-/// Per-NODE measured emit-rate state (see [`stamp_meta`]). Tracks the wall-clock
-/// (`ctx.now`) of the node's previous productive emit and the smoothed inter-emit
-/// interval; `ufreq = 1/ema`. `last_emit == None` until the first emit, `ema == None`
-/// until the second gives one interval to seed it.
-#[derive(Default)]
-pub(crate) struct UfreqMeter {
-    last_emit: Option<f64>,
-    ema: Option<f64>,
+/// One node's manager-side thread, and the graph's end of its wires (§5).
+///
+/// A node is *known* the moment `add_node` answers and *addressable* only once it has published
+/// [`runtime::Status::Ready`] — §4's birth barrier, which exists because pub/sub has no history and
+/// a `Control` sent before the node's subscriber exists is simply lost.
+struct NodeHost {
+    /// What stops the thread. See `runtime::wire`'s note on why the stop is a flag rather than a
+    /// `Control::Terminate`: a node removed before it was addressable has no sink to receive one.
+    halt: Arc<runtime::Halt>,
+    /// The control publisher, status subscriber and doorbell. `None` when this node's services could
+    /// not be created — the node then exists in the patch carrying its boot error and nothing else.
+    channel: Option<Arc<runtime::NodeChannel>>,
 }
 
-/// One wire feeding a `multi` input slot: its source `(uid, out-slot)` identity and
-/// that wire's latest-wins frame (`None` until it first emits).
-type WireCell = (Uid, &'static str, Option<Data>);
-
-/// How a node's `process()` is executed. An `Isolation::InProcess` node runs inline on
-/// the tick's rayon pool (`Inline`); an `Isolation::Subprocess` node runs on a dedicated
-/// off-tick worker (`Detached`) so a blocking backend can't stall
-/// the tick or the graph lock. The tick decides *whether* every node runs identically —
-/// only the execution site differs.
-enum Execution {
-    Inline(Box<dyn goofi_node::Node>),
-    Detached(detached::DetachedHandle),
+impl Drop for NodeHost {
+    /// Removing a node stops its thread — and rings it, so a parked node notices now rather than at
+    /// the end of its park. Never joined: the thread may be inside a long `process()`, and this runs
+    /// under the graph mutex the bridge holds.
+    fn drop(&mut self) {
+        self.halt.stop();
+        if let Some(channel) = &self.channel {
+            channel.wake();
+        }
+    }
 }
 
 struct NodeEntry {
     manifest: &'static NodeManifest,
-    exec: Execution,
+    host: NodeHost,
     /// The param RECORD — literals and, through `bindings`, expression source. Held behind an
-    /// [`ArcSwap`] so the graph and the node's own thread hold the SAME record (spec §5.1): a write
-    /// is one atomic pointer swap under the graph lock, a read is lock-free, and a `process()`
-    /// reading a param can never be delayed by a concurrent edit. `Command::EditParam` stays the
-    /// command-layer writer, so manager-owned undo and the read-only client replica are unchanged;
-    /// only the storage moved.
+    /// [`ArcSwap`] so the graph's readers never block on a write (spec §5.1). The node's own thread
+    /// keeps its own copy, fed by the `SetParam` every write announces: an evaluated value must not
+    /// reach this record, because this is what `serialize` writes.
     params: Arc<ArcSwap<ParamGroups>>,
-    inputs: IndexMap<&'static str, Option<Data>>,
-    /// Per-wire latest-wins cells for each `multi` input slot, in connection order:
-    /// `(src_uid, src_slot) -> latest frame`. Engine-owned; materialized to an ordered
-    /// present-only `&[Data]` for the node at run time. Single slots live in `inputs`;
-    /// the two maps partition the manifest's input slots (a slot is single XOR multi).
-    multi_inputs: IndexMap<&'static str, Vec<WireCell>>,
-    outputs: IndexMap<&'static str, Option<Data>>,
-    /// The last frame this node EMITTED on each slot, persisted across ticks where it
-    /// emitted nothing. `outputs` is reset to `None` every tick for emit detection +
-    /// propagation, so viewers (`latest_frame`) read this instead — a sparse /
-    /// wall-clock-paced producer (e.g. Oscillator ticked faster than its sample rate)
-    /// keeps showing its latest data rather than blinking to None on silent ticks.
-    last_outputs: IndexMap<&'static str, Data>,
     /// Param-expression bindings on this node, keyed by `(group, name)`. The graph resolves each
     /// one's references and ships it; the NODE evaluates it (spec §5.3).
     bindings: HashMap<ParamKey, ExprBinding>,
@@ -137,26 +118,33 @@ struct NodeEntry {
     /// last happened to give the param, and leave nothing to fall back TO when the binding broke
     /// (§2.1).
     evaluated: IndexMap<ParamKey, Param>,
-    ctx: NodeCtx,
+    /// Errors the node reported for params it holds no BINDING for — an `on_param_changed` that
+    /// refused or panicked on a literal the user typed. Kept apart from `ExprBinding::error`
+    /// because the two have different LIFETIMES, not because they mean different things: a
+    /// binding's error may be a compile failure the graph itself recorded and a restart must
+    /// preserve, while this one is only ever the running instance's report. Before the cutover it
+    /// rode the `update_param` reply; the hook runs on the node's own thread now, so a
+    /// binding-keyed projection alone drops it on the floor and the node draws healthy.
+    param_errors: IndexMap<ParamKey, String>,
     /// `Some(msg)` when this node's INITIALIZATION failed — the `on_param_changed` replay and
-    /// `setup()` together, which are one unit: a node that did not finish either never
-    /// initialized, so nothing may run against it (D3, [`ensure_initialized`]). Deliberately NOT
-    /// `last_error`, which [`execute_node`] overwrites every run — that is how a bootstrap failure
-    /// used to erase itself on the node's first clean tick.
+    /// `setup()` together, which are one unit (D3). Deliberately NOT `last_error`, which a process
+    /// failure overwrites — that is how a bootstrap failure used to erase itself on the first clean
+    /// run.
     setup_error: Option<String>,
-    /// The tick clock (`ctx.now`) as of this node's last INITIALIZATION attempt — the backoff
-    /// [`run_node`] paces its retry by (see [`SETUP_RETRY_INTERVAL`]). Every attempt stamps it,
-    /// construction's included; only the tick reads it, so an explicit interaction still retries
-    /// at once. Meaningless (and never read) while `setup_error` is `None`.
-    last_setup_attempt: f64,
     last_error: Option<String>,
     /// The message [`Graph::last_error`] last derived for this node, and WHEN it first read that
     /// way. Re-stamped only when the message changes, so the instant is the error's *onset* — the
-    /// difference between a pipeline settling and one that is broken. Swept once per tick from the
-    /// derived error rather than written at each of the three places an error can arise (a process
-    /// failure, a binding, a detached bootstrap), so the two can never disagree about what the
-    /// node's error is.
+    /// difference between a pipeline settling and one that is broken. Derived from
+    /// [`entry_error`] at every status application rather than written at each site an error can
+    /// arise, so the two can never disagree about what the node's error is.
     error_since: Option<(String, Instant)>,
+    /// The lifecycle stage the node last reported. `creating` until it reports anything — a node
+    /// the graph has built and not yet heard from. The `error` the editor draws is DERIVED from the
+    /// fault ([`Graph::node_stage`]) and is never stored here, so the two cannot disagree.
+    stage: &'static str,
+    /// The measured update rate the node last reported ([`runtime::Status::Ufreq`]), which is the
+    /// same number it stamps as `meta["ufreq"]`. `None` until it has emitted twice.
+    ufreq: Option<f64>,
     /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
     name: String,
     /// Editor position `[x, y]`.
@@ -165,23 +153,6 @@ struct NodeEntry {
     /// blob the backend persists and round-trips but never interprets — view-state is
     /// cross-cutting UI state, not pillar logic. Empty object until the editor sets it.
     viewers: serde_json::Value,
-    /// Whether this node has any triggering input (else it free-runs each tick).
-    has_trigger_inputs: bool,
-    /// Set when a triggering input received a fresh frame; cleared on process.
-    trigger_pending: bool,
-    /// Per-output-slot source-origin emit counter for `meta["index"]`. Advanced
-    /// only when a slot's frame starts a *fresh* timeline (a generator, or a
-    /// length-changing transform); a length-preserving emit mirrors its matching
-    /// input's index instead. Engine-owned — the node never sees it.
-    index_counters: HashMap<&'static str, u64>,
-    /// Per-NODE measured update-rate state for `meta["ufreq"]`. Engine-owned; advanced
-    /// once per productive tick (a tick emitting ≥1 output). The single node-level rate
-    /// is stamped onto every output slot's meta — ufreq describes the node, not a slot.
-    ufreq_meter: UfreqMeter,
-    /// The node's run gate (from its `common` params), consulted each tick.
-    run_policy: RunPolicy,
-    /// Wall-clock instant the node last ran, for rate-cap gating (`None` = never).
-    last_run: Option<Instant>,
 }
 
 /// A resolved link (uids + `&'static` slot names), for snapshot projection.
@@ -418,9 +389,9 @@ pub struct Graph {
     /// node directory — the palette's provenance badge, and the one thing about a type that only
     /// the scan can know. Re-derived wholesale by each scan (see [`Graph::set_patch_types`]).
     patch_types: std::collections::HashSet<String>,
-    /// Wall-clock reference, anchored at the first tick, so `NodeCtx::now` is
-    /// seconds-since-start (deterministic under an injected clock).
-    start: Option<Instant>,
+    /// Wall-clock reference, anchored when the patch begins, so every node's `NodeCtx::now` is
+    /// seconds-since-start — one clock across every node thread rather than one per birth.
+    start: Instant,
     /// The injected param-expression evaluator (pyo3, from goofi-python). `None` → bindings
     /// are stored + round-trip but can't evaluate (graceful degrade to the literal).
     evaluator: Option<Arc<dyn goofi_node::ExprEvaluator>>,
@@ -456,26 +427,6 @@ impl Default for Graph {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// The present frames on each `multi` input slot, in wire order — the shape both execution
-/// tiers hand a node's `process` (inline here, or packed into a detached [`detached::Job`]).
-/// Absent wires are dropped, so a node sees only the frames that actually arrived.
-fn materialize_multis(entry: &NodeEntry) -> IndexMap<&'static str, Vec<Data>> {
-    entry
-        .multi_inputs
-        .iter()
-        .map(|(k, cells)| (*k, cells.iter().filter_map(|(_, _, o)| o.clone()).collect()))
-        .collect()
-}
-
-/// The "this node wants to run" predicate, shared by the tick's two execution sites and the
-/// pacer that decides how long to sleep before the next one. A pure source free-runs; a fresh
-/// trigger fires; `autotrigger` free-runs a node only when it has no *WIRED* trigger input
-/// (Python parity). The three callers MUST agree — the pacer sets the sleep while the other two
-/// decide who runs, so a term added to one alone means spinning hot or sleeping through work.
-fn wants_run(e: &NodeEntry, uid: &Uid, wired: &std::collections::HashSet<Uid>) -> bool {
-    e.trigger_pending || !e.has_trigger_inputs || (e.run_policy.autotrigger && !wired.contains(uid))
 }
 
 /// Write a node's param record: load, clone, mutate, swap. Copy-on-write because the record is
@@ -520,7 +471,7 @@ impl Graph {
             arrangement: layout::Layout::default(),
             arrangement_warning: None,
             viewpoint: serde_json::Value::Null,
-            start: None,
+            start: Instant::now(),
             evaluator: None,
             scopes: IndexMap::new(),
             scope_of: HashMap::new(),
@@ -684,29 +635,23 @@ impl Graph {
 
     /// A node's lifecycle stage for the editor: `creating` / `setup` / `ready` / `error`.
     ///
-    /// Only the DETACHED tier has a real bootstrap to report — an inline node is seeded
-    /// synchronously before it is ever visible, so it is `ready` (or `error`) from the first
-    /// frame the editor sees. A detached node's `setup()` runs on its worker and a Python child
-    /// is spawn + import + setup, which is where the spinner earns its keep.
+    /// `creating` is the graph's own — a node it has built and not yet heard from; `setup` and
+    /// `ready` are the node's, reported as it passes them (§6.2). `error` is DERIVED from the
+    /// fault rather than stored, so a node cannot report itself healthy while carrying one — and
+    /// the uninitialized state is precisely the one the editor must not paint healthy.
     pub fn node_stage(&self, uid: Uid) -> &'static str {
         let Some(entry) = self.nodes.get(&uid) else { return "error" };
-        // Both error channels, or a node whose `setup()` failed would draw as `ready` — the
-        // uninitialized state is precisely the one the editor must not paint healthy.
         if entry.setup_error.is_some() || entry.last_error.is_some() {
             return "error";
         }
-        match &entry.exec {
-            Execution::Inline(_) => "ready",
-            Execution::Detached(h) => match h.stage() {
-                detached::STAGE_CREATING => "creating",
-                detached::STAGE_SETUP => "setup",
-                // A bootstrap failure is latched on the handle, never in `entry.last_error`
-                // (see [`Graph::last_error`]), so the bootstrapped arm must consult it — else a
-                // worker whose `setup` failed draws as healthy.
-                _ if h.boot_error().is_some() => "error",
-                _ => "ready",
-            },
-        }
+        entry.stage
+    }
+
+    /// The node's current measured update frequency (Hz) — the same value it stamps as
+    /// `meta["ufreq"]` on its output, as it last reported it ([`runtime::Status::Ufreq`]). `None`
+    /// until it has been measured (≥2 emits).
+    pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
+        self.nodes.get(&uid).and_then(|e| e.ufreq)
     }
 
     /// The flat arrangement — pages, splits and panels. Reads plan against this; writes go through
@@ -967,6 +912,12 @@ impl Graph {
 
     /// Insert a constructed node at a SPECIFIC uid + display name — the reconcile path, which
     /// spawns sub-patch members at their deterministic uids. The uid must be free.
+    ///
+    /// This is where a node gets its manager-side thread (§5). The transport is created HERE rather
+    /// than on that thread because it is the one step whose failure has nowhere to be reported to —
+    /// without services there is no status service to carry a fault — so it becomes a
+    /// [`runtime::NodeFault::Boot`] on the entry directly. Everything after it, `setup()` included,
+    /// runs on the node's own thread and off the graph lock.
     fn insert_node_at(
         &mut self,
         uid: Uid,
@@ -975,55 +926,65 @@ impl Graph {
         node: Box<dyn goofi_node::Node>,
         params: ParamGroups,
     ) {
-        let mut ctx = NodeCtx::new();
-        // `setup` latches the globals as of insert time (`process` reads them live each tick).
-        ctx.globals = self.globals.snapshot();
-
-        let inputs: IndexMap<&'static str, Option<Data>> =
-            manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
-        let multi_inputs: IndexMap<&'static str, Vec<WireCell>> =
-            manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect();
-        let outputs = manifest.output_buffer();
-
-        let has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
-        let run_policy = RunPolicy::from_params(&params);
-
-        let (exec, setup_error) = make_exec(manifest, node, &params, &mut ctx);
-        // Construction IS the first initialization attempt, so it starts the retry backoff — else
-        // the very next tick would re-run a `setup()` that has just failed.
-        let last_setup_attempt = ctx.now;
         // This IS the birth §3.1 counts, whichever door it came through — a fresh add, a restart,
         // an undo of a delete, a load.
-        self.wire.bump_generation(uid);
-
+        let generation = self.wire.bump_generation(uid);
+        let (host, boot_error) = self.spawn_host(uid, generation, manifest, node, &params);
         self.nodes.insert(
             uid,
             NodeEntry {
                 manifest,
-                exec,
+                host,
                 params: Arc::new(ArcSwap::from_pointee(params)),
-                inputs,
-                multi_inputs,
-                outputs,
-                last_outputs: IndexMap::new(),
                 bindings: HashMap::new(),
                 evaluated: IndexMap::new(),
-                ctx,
-                setup_error,
-                last_setup_attempt,
+                param_errors: IndexMap::new(),
+                setup_error: boot_error,
                 last_error: None,
                 error_since: None,
+                stage: "creating",
+                ufreq: None,
                 name,
                 pos: [0.0, 0.0],
                 viewers: serde_json::json!({}),
-                has_trigger_inputs,
-                trigger_pending: false,
-                index_counters: HashMap::new(),
-                ufreq_meter: UfreqMeter { last_emit: None, ema: None },
-                run_policy,
-                last_run: None,
             },
         );
+    }
+
+    /// Create one node's services, open the graph's end of them, and start its thread.
+    ///
+    /// Answers the host and the boot error, if any. A node whose services could not be created is
+    /// still INSERTED — it holds its place in the patch, its links and its params, and says why it
+    /// is not running — rather than failing an `add_node` the user cannot act on.
+    fn spawn_host(
+        &self,
+        uid: Uid,
+        generation: u64,
+        manifest: &'static NodeManifest,
+        node: Box<dyn goofi_node::Node>,
+        params: &ParamGroups,
+    ) -> (NodeHost, Option<String>) {
+        let halt = Arc::new(runtime::Halt::default());
+        let base = runtime::service_base(&self.instance, uid, generation);
+        let started = runtime::IoxTransport::create(&self.instance, uid, generation, manifest)
+            .and_then(|transport| Ok((transport, runtime::NodeChannel::open(&base)?)))
+            .and_then(|(transport, channel)| {
+                let env = runtime::NodeEnv {
+                    evaluator: self.evaluator.clone(),
+                    globals: self.globals_record.clone(),
+                    started: self.start,
+                };
+                // The join handle is dropped on purpose: a node's thread is stopped by its `Halt`
+                // and reaped by the OS, and holding one would tempt a caller into joining under
+                // the graph mutex while the node is inside a long `process()`.
+                runtime::spawn(manifest, node, params.clone(), Arc::new(transport), env, halt.clone())
+                    .map(|_| channel)
+                    .map_err(|e| format!("could not start the node's thread: {e}"))
+            });
+        match started {
+            Ok(channel) => (NodeHost { halt, channel: Some(Arc::new(channel)) }, None),
+            Err(e) => (NodeHost { halt, channel: None }, Some(e)),
+        }
     }
 
     /// Whether a display name is taken by any live leaf node OR sub-patch scope facade. The two
@@ -1858,7 +1819,9 @@ impl Graph {
         // Drop any membership tag: a removed node has no scope. Leaving it dangling would make a
         // reused uid (a delete→undo that restores the scope) self-parent via `common_parent`.
         self.scope_of.remove(&uid);
-        // Drop links touching the node; clear any downstream input it fed.
+        // Drop links touching the node, then re-plan every consumer slot one of them fed (§4:
+        // removal is a wire change like any other). Links INTO the removed node need no re-plan —
+        // its thread is already halted and its services are going with it.
         let dropped: Vec<Link> = self
             .links
             .iter()
@@ -1867,15 +1830,8 @@ impl Graph {
             .collect();
         self.links
             .retain(|l| l.node_out != uid && l.node_in != uid);
-        for l in dropped {
-            // Purge the removed node's wire from a downstream multi slot; else clear
-            // the single input it fed. (Links into the removed node itself no-op —
-            // its entry is already gone.)
-            if self.is_multi_input(l.node_in, l.slot_in) {
-                self.drop_multi_wire(l.node_in, l.slot_in, l.node_out, l.slot_out);
-            } else {
-                self.clear_input(l.node_in, l.slot_in);
-            }
+        for l in dropped.iter().filter(|l| l.node_in != uid) {
+            self.replan_slot(l.node_in, l.slot_in);
         }
         Ok(())
     }
@@ -1920,50 +1876,18 @@ impl Graph {
         // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
         let (manifest, params, node) = self.build_node(type_name, Some(params))?;
-        let mut ctx = NodeCtx::new();
-        ctx.globals = self.globals.snapshot();
-        let (exec, setup_error) = make_exec(manifest, node, &params, &mut ctx);
-
-        // The per-wire cells live in the entry while the wires themselves live on the graph, so
-        // they must be rebuilt from `links` (in connection order) — a fresh empty map would
-        // leave the multi slot silently dead with every link still shown in the editor. Each
-        // wire KEEPS the frame it was last given: these cells are latest-wins caches, not
-        // instance state, and dropping them stalls the node until every upstream happens to emit
-        // again (for a slow or rate-capped producer, potentially a very long time).
-        let held = &self.nodes.get(&uid).expect("looked up above").multi_inputs;
-        let multi_inputs: IndexMap<&'static str, Vec<WireCell>> = manifest
-            .inputs
-            .iter()
-            .filter(|s| s.multi)
-            .map(|s| {
-                let wires = self
-                    .links
-                    .iter()
-                    .filter(|l| l.node_in == uid && l.slot_in == s.name)
-                    .map(|l| {
-                        let frame = held
-                            .get(s.name)
-                            .and_then(|cells| {
-                                cells.iter().find(|(u, slot, _)| *u == l.node_out && *slot == l.slot_out)
-                            })
-                            .and_then(|(_, _, frame)| frame.clone());
-                        (l.node_out, l.slot_out, frame)
-                    })
-                    .collect();
-                (s.name, wires)
-            })
-            .collect();
 
         // A restart is a BIRTH at this uid (§3.1) — the first case the generation counter names,
         // because the corpse's teardown does not block: without the bump the reborn node re-opens
         // its predecessor's service names while its predecessor's ports are still registered, and
         // `max_publishers(1)` refuses the new publisher. This is the one birth that does not go
         // through `insert_node_at`, which is exactly why it has to be said here too.
-        self.wire.bump_generation(uid);
+        let generation = self.wire.bump_generation(uid);
+        let (host, boot_error) = self.spawn_host(uid, generation, manifest, node, &params);
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
-        // Dropping the old instance never waits: a `DetachedHandle`'s Drop only signals its
-        // worker, which reaps itself off this thread.
+        // Replacing the host halts the corpse's thread (`Drop for NodeHost`), which never waits:
+        // the dying node notices at its next wake and this runs under the graph mutex.
         //
         // The MANIFEST goes with the instance. It is the graph's whole description of this node —
         // link validation, schema projection, `/data` target checks and the scheduler's trigger
@@ -1972,37 +1896,21 @@ impl Graph {
         // boundary-hardening pass) left the graph describing a node that is no longer running:
         // a slot the edit added was unlinkable, and one it removed still accepted wires.
         entry.manifest = manifest;
-        entry.exec = exec;
-        // A swap, not a new record: the node's own thread holds this very handle, so replacing it
-        // would leave the reborn instance reading the corpse's params.
+        entry.host = host;
+        // A swap, not a new record: the graph's readers hold this very handle, so replacing it
+        // would leave them reading the corpse's params.
         entry.params.store(Arc::new(params));
-        // Manifest-derived caches, REBUILT rather than carried. A slot that survived the reshape
-        // by name keeps its last frame (a live graph should not blink — same rationale as the
-        // multi cells above); one that did not is dropped, because its `&'static str` key no
-        // longer names anything the node will read.
-        let mut prior = std::mem::take(&mut entry.inputs);
-        entry.inputs =
-            manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, prior.shift_remove(s.name).flatten())).collect();
-        entry.multi_inputs = multi_inputs;
-        entry.outputs = manifest.output_buffer();
-        entry.last_outputs.retain(|slot, _| manifest.outputs.iter().any(|o| o.name == *slot));
-        entry.has_trigger_inputs = manifest.inputs.iter().any(|i| i.trigger_process);
-        entry.ctx = ctx;
-        entry.setup_error = setup_error;
-        entry.last_setup_attempt = entry.ctx.now;
-        // A fresh instance carries none of the corpse's failures — its predecessor's process error
-        // describes a node that no longer exists.
+        // A fresh generation boots healthy and reports its own state; the corpse's error and stage
+        // describe a node that no longer exists (§4). `boot_error` is this birth's own.
+        entry.setup_error = boot_error;
         entry.last_error = None;
+        entry.stage = "creating";
+        entry.ufreq = None;
         // The evaluated values are the CORPSE's report (§6.2): a fresh instance has evaluated
         // nothing, and leaving them would let the inspector preview show a dead node's numbers
         // until the new one reports its own.
         entry.evaluated.clear();
-        entry.trigger_pending = false;
-        entry.ufreq_meter = UfreqMeter { last_emit: None, ema: None };
-        entry.run_policy = RunPolicy::from_params(&entry.params.load());
-        entry.last_run = None;
-        // `index_counters` deliberately CARRY OVER: `meta["index"]` is a stream-position counter,
-        // and restarting it at 0 would regress the index downstream consumers dirty-check on.
+        entry.param_errors.clear();
         // `bindings` are left untouched — their compiled handles are evaluator-owned and may only
         // be dropped through `release_entry_bindings`.
 
@@ -2063,104 +1971,41 @@ impl Graph {
         if self.nodes[&uid].bindings.get(&key).is_some_and(|b| b.enabled) {
             self.unbind(uid, &key);
         }
+        // The record has moved and the node has been told (§5.1) — nothing else happens here.
+        // `on_param_changed` runs where the node instance lives, which is its own thread: a hook
+        // that mirrors the value onto a field, or reopens a device, no longer runs under the graph
+        // mutex and no longer rides this reply. Its failure arrives as a fault (§8.4).
         self.notify_param(uid, &key);
-        let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
-        // The `common` group is scheduler metadata, not a node param — re-derive the cached run
-        // gate rather than running the node's `on_param_changed` for it. The node still HEARS the
-        // edit (`notify_param` above): it is the scheduler's own param on the far side too, and
-        // §1.1 has the node re-derive its `RunPolicy` from the arrival without running.
-        if group == "common" {
-            entry.run_policy = RunPolicy::from_params(&entry.params.load());
-            return Ok(());
-        }
-        // D3: the new value is stored ABOVE, so the retry's replay delivers it — correcting the
-        // param that broke `setup()` is what re-initializes the node. Two consequences, both
-        // deliberate. A SUCCESSFUL retry has already handed this edit to `on_param_changed`, so
-        // calling it again below would double-apply the handler's side effect. And a FAILED retry
-        // still answers `Ok`: the node's failure belongs on its error channel, not in this reply —
-        // returning `Err` would refuse the very edit that is the retry door, and `update_param` is
-        // a command whose inverse must stay in step with the session's history.
-        if entry.setup_error.is_some() {
-            let _ = ensure_initialized(entry);
-            return Ok(());
-        }
-        match &mut entry.exec {
-            Execution::Inline(node) => {
-                guard_lifecycle(|| node.on_param_changed(&ParamKey::new(group, name), &value))
-                    .and_then(|r| r.map_err(|e| e.0))
-            }
-            // A detached node's instance lives on its worker; the edit is stored in
-            // `entry.params` and rides the next Job's cold read, which is how a param reaches
-            // the subprocess tier at all. Nothing is lost by not forwarding the notification:
-            // `RemoteNode` implements no `on_param_changed`.
-            Execution::Detached(_) => Ok(()),
-        }
+        Ok(())
     }
 
-    /// Re-enumerate a refreshable `Str` param's options by asking the node — the ⟳ button behind
-    /// a device or stream picker, whose choices are only knowable at runtime. Returns the fresh
-    /// list, or `None` when the node declares the param refreshable but implements no hook.
+    /// Ask the node to re-enumerate a refreshable `Str` param's options — the ⟳ button behind a
+    /// device or stream picker, whose choices are only knowable at runtime.
     ///
-    /// A refresh never changes the SELECTION: it rewrites `options` and nothing else, so a device
-    /// that has disappeared stays selected (the UI keeps showing it) rather than silently
-    /// re-pointing the node at a different one.
+    /// It ALWAYS answers `Ok(None)` (§8.5). The hook runs on the node's own thread, which is the
+    /// whole point of the move — a multi-second device scan no longer stalls anything — so the RPC
+    /// that asked cannot carry the list back. The options arrive as
+    /// [`runtime::Status::RefreshOptions`] and reach the client on the doc re-mirror the status
+    /// worker drives. `Err` is still a real refusal: an unknown node, an unknown param, or one the
+    /// type never declared refreshable (the UI shows no button for one).
     ///
-    /// Not a command: nothing persisted changes (options never reach the `.gfi` or the doc), so
-    /// there is nothing to undo.
-    ///
-    /// NOTE: this runs under the graph lock, so a node that blocks here (a slow device scan, an
-    /// LSL resolve) stalls the tick for that long. Node authors must keep the hook quick.
+    /// Not a command: nothing persisted changes (options never reach the `.gfi`), so there is
+    /// nothing to undo.
     pub fn refresh_param(
         &mut self,
         uid: Uid,
         group: &str,
         name: &str,
     ) -> Result<Option<Vec<String>>, String> {
-        let entry = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let live = entry.params.load_full();
         let param = goofi_node::param(&live, group, name)
             .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
-        // Refreshing a param the node never declared refreshable would call a hook it does not
-        // implement and report success — reject it instead (the UI shows no button for one).
         if !matches!(param, Param::Str { refresh: true, .. }) {
             return Err(format!("param `{group}.{name}` is not refreshable"));
         }
-        // D3: a refresh is an interaction, so it retries the initialization first — a picker whose
-        // node failed `setup()` rescans as soon as that node comes up. If it does not, this DOES
-        // refuse: the call answers the UI with a list and there is none, and `Ok(None)` would read
-        // as "this node implements no hook", which is a different and misleading answer.
-        if let Err(e) = ensure_initialized(entry) {
-            return Err(format!("`{group}.{name}` cannot be refreshed — the node is uninitialized: {e}"));
-        }
-        // Disjoint field borrows: the instance mutably, its live params immutably.
-        let live = Params::new(&live);
-        let fresh = match &mut entry.exec {
-            Execution::Inline(node) => {
-                // A device/stream scan is exactly the hook most likely to throw, and it runs under
-                // the graph lock — so its panic has to become a refusal, not a poisoned mutex.
-                guard_lifecycle(|| node.on_param_refreshed(&ParamKey::new(group, name), &live))?
-            }
-            // A detached node's instance lives on its worker and the request/response codec has
-            // no refresh op — the same deferral as live `on_param_changed` propagation. SAY SO
-            // rather than returning Ok with the old list: a silent success would present stale
-            // options as freshly scanned, which is worse than a visible refusal.
-            Execution::Detached(_) => {
-                return Err(format!(
-                    "`{group}.{name}` cannot be refreshed on the subprocess tier yet — its \
-                     request/response codec has no refresh op"
-                ))
-            }
-        };
-        if let Some(options) = &fresh {
-            edit_params(entry, |p| {
-                if let Some(Param::Str { options: slot, .. }) =
-                    p.get_mut(group).and_then(|g| g.get_mut(name))
-                {
-                    *slot = Some(options.clone());
-                }
-            });
-        }
-        Ok(fresh)
+        self.wire.send(uid, runtime::Control::RefreshParam { key: ParamKey::new(group, name) });
+        Ok(None)
     }
 
     /// Bind (or unbind) a param to an expression. An **empty** `source` unbinds (the stored
@@ -2498,19 +2343,12 @@ impl Graph {
         if self.links.contains(&new) {
             return Ok(()); // idempotent
         }
-        if self.is_multi_input(node_in, slot_in) {
-            // A multi slot accepts many wires: append this wire's latest-wins cell in
-            // connection order (no eviction).
-            if let Some(e) = self.nodes.get_mut(&node_in) {
-                if let Some(cells) = e.multi_inputs.get_mut(slot_in) {
-                    cells.push((node_out, slot_out, None));
-                }
-            }
-        } else {
-            // One wire per single input: evict any prior source of this (node_in, slot_in).
+        // A multi slot accepts many wires and keeps them in connection order, which IS `links`'
+        // own order; a single input takes one, so a second wire EVICTS the first. The node hears
+        // both as one declarative set — §4's "a displaced single-input wire needs no special case".
+        if !self.is_multi_input(node_in, slot_in) {
             self.links
                 .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
-            self.clear_input(node_in, slot_in);
         }
         self.links.push(new);
         self.replan_slot(node_in, slot_in);
@@ -2534,25 +2372,10 @@ impl Graph {
         if self.links.len() == before {
             return Err("no such link".into());
         }
-        if self.is_multi_input(node_in, slot_in) {
-            self.drop_multi_wire(node_in, slot_in, node_out, slot_out);
-        } else {
-            self.clear_input(node_in, slot_in);
-        }
         if let Some(slot_in) = self.resolve_input(node_in, slot_in) {
             self.replan_slot(node_in, slot_in);
         }
         Ok(())
-    }
-
-    /// Remove one wire `(src_uid, src_slot)` from a multi input slot, preserving the
-    /// connection order of the survivors.
-    fn drop_multi_wire(&mut self, node_in: Uid, slot_in: &str, src: Uid, src_slot: &str) {
-        if let Some(e) = self.nodes.get_mut(&node_in) {
-            if let Some(cells) = e.multi_inputs.get_mut(slot_in) {
-                cells.retain(|(u, s, _)| !(*u == src && *s == src_slot));
-            }
-        }
     }
 
     // ── The wire plane (spec §3.1, §4) ──────────────────────────────────────────────────────
@@ -2560,7 +2383,9 @@ impl Graph {
     // `add_link` and `remove_link` above already replan through it; it stays inert until a node's
     // control channel is attached, which nothing does until the cutover.
 
-    /// Register the graph's end of one node's control channel. A node's birth attaches it.
+    /// Register the graph's end of one node's control channel. §4's birth barrier: this happens on
+    /// [`runtime::Status::Ready`] and never at birth, because a `Control` published before the
+    /// node's own subscriber exists is lost and pub/sub has no history.
     ///
     /// Attaching RE-PLANS every slot this node touches, from an empty base. A node that was not
     /// addressable when those slots were planned had its message dropped — `dispatch` skips a uid
@@ -2587,6 +2412,17 @@ impl Graph {
                 slots.push(key);
             }
         }
+        // Every param channel this graph has ever spoken on for `uid`, bound or not (§3.4: a
+        // literal edit is announced too). A node becoming addressable is the FIRST moment anything
+        // it was told can actually arrive — `add_node` answers before the barrier lifts, so the
+        // ordinary `add_node(); update_param()` pair falls entirely inside the window where a
+        // `Control` is published to a subscriber that does not exist yet and is lost.
+        for (at, (owner, _)) in self.bind_keys.iter().enumerate() {
+            let key = (*owner, runtime::plan::Slot::Bind(at));
+            if *owner == uid && !slots.contains(&key) {
+                slots.push(key);
+            }
+        }
         // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
         // the same re-plan its input slots get — both ends of one, since a producer that could not
         // be reached was never told to ring the reader.
@@ -2610,8 +2446,9 @@ impl Graph {
     }
 
     /// One output slot's data service name — the whole of a wire's identity, which is why a slot
-    /// message carries names and never a source uid.
-    pub(crate) fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
+    /// message carries names and never a source uid. Public because it is also the `/data` plane's
+    /// subscribe address: a viewer resolves `(uid, slot)` here once and is lock-free after (§7).
+    pub fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
         runtime::output_service(&self.service_base_of(uid), slot)
     }
 
@@ -2639,9 +2476,6 @@ impl Graph {
     }
 
     fn replan(&mut self, uid: Uid, slot: runtime::plan::Slot) {
-        if self.wire.is_idle() {
-            return;
-        }
         let key = (uid, slot);
         let desired = self.desired_wires(key);
         let previous = self.wire.planned(key);
@@ -2659,6 +2493,28 @@ impl Graph {
         }
     }
 
+    /// Take every report waiting on every live node's status service and apply it — the
+    /// status-drain worker's engine-side half (§6.2). Answers how many landed, so a caller can tell
+    /// a quiet graph from one it has stopped hearing from.
+    ///
+    /// The worker owns the loop and the events; this owns the graph. A test drives the same door,
+    /// which is what makes "the node reported it" observable without a bridge.
+    pub fn drain_status(&mut self) -> usize {
+        let channels: Vec<(Uid, Arc<runtime::NodeChannel>)> = self
+            .nodes
+            .iter()
+            .filter_map(|(uid, e)| e.host.channel.clone().map(|c| (*uid, c)))
+            .collect();
+        let mut applied = 0;
+        for (uid, channel) in channels {
+            for status in channel.drain_status() {
+                self.apply_status(uid, status);
+                applied += 1;
+            }
+        }
+        applied
+    }
+
     /// Apply one node's report to the graph — the status-drain worker's whole graph-side job
     /// (§6.2). Every variant is a TRANSITION the node stamped itself, so nothing here diffs.
     ///
@@ -2672,13 +2528,36 @@ impl Graph {
             self.wire_ack(seq, ok);
             return;
         }
+        // …and so is `Ready`: it is what makes a node addressable, and the sink it attaches is the
+        // graph's, not the entry's.
+        if matches!(status, runtime::Status::Ready) {
+            if let Some(channel) = self.nodes.get(&uid).and_then(|e| e.host.channel.clone()) {
+                self.attach_control_sink(uid, channel);
+            }
+            return;
+        }
         let Some(entry) = self.nodes.get_mut(&uid) else { return };
         match status {
             // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
             // the bridge locks with `.lock().unwrap()` throughout, so a panic site here would
             // poison the control plane rather than cost one report — and "genuinely unreachable"
             // is a claim about today's callers, which is what B's hardening pass stopped trusting.
-            runtime::Status::Ack { .. } => {}
+            runtime::Status::Ack { .. } | runtime::Status::Ready => {}
+            runtime::Status::Stage { stage } => entry.stage = stage.as_str(),
+            runtime::Status::Ufreq { hz } => entry.ufreq = Some(hz),
+            // The options are the node's answer to a refresh (§8.5), and they land in the RECORD
+            // rather than in a reply: the RPC that asked has already returned.
+            runtime::Status::RefreshOptions { key, options } => {
+                if let Some(options) = options {
+                    edit_params(entry, |p| {
+                        if let Some(Param::Str { options: slot, .. }) =
+                            p.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
+                        {
+                            *slot = Some(options);
+                        }
+                    });
+                }
+            }
             runtime::Status::Fault { fault } => match fault {
                 // A clean run clears Setup/Process/Boot together and never touches a binding
                 // error, which only that binding evaluating successfully clears (§6).
@@ -2699,14 +2578,38 @@ impl Graph {
             },
             runtime::Status::BindingErrors { errors } => {
                 for (key, msg) in errors {
-                    if let Some(b) = entry.bindings.get_mut(&key) {
-                        b.error = msg;
+                    // A bound param renders its error on its own inspector field; an unbound one
+                    // has no such field, so it goes to the node-level channel instead of nowhere.
+                    match entry.bindings.get_mut(&key) {
+                        Some(b) => b.error = msg,
+                        None => match msg {
+                            Some(msg) => {
+                                entry.param_errors.insert(key, msg);
+                            }
+                            None => {
+                                entry.param_errors.shift_remove(&key);
+                            }
+                        },
                     }
                 }
             }
             runtime::Status::ParamValues { evaluated } => {
                 entry.evaluated = evaluated.into_iter().collect();
             }
+        }
+        self.stamp_error_onset(uid);
+    }
+
+    /// Note when this node's error first read the way it does now — the clock [`Graph::error_age`]
+    /// reports. Derived from [`entry_error`] rather than written at each site that can set one, so
+    /// a process failure, a setup failure and a binding failure are all stamped by the same rule,
+    /// and the stamp cannot outlive the error it belongs to. Run after every applied report, which
+    /// is the only thing that can change any of the three.
+    fn stamp_error_onset(&mut self, uid: Uid) {
+        let Some(e) = self.nodes.get_mut(&uid) else { return };
+        let current = entry_error(e);
+        if e.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
+            e.error_since = current.map(|m| (m.to_string(), Instant::now()));
         }
     }
 
@@ -2773,6 +2676,9 @@ impl Graph {
                 source: b.rewritten.clone(),
                 vars: b.vars.iter().map(|v| self.wire_var(v)).collect(),
                 trigger: b.triggers_process,
+                // The graph compiled it, the node evaluates it (§2.1) — one handle, so the two ends
+                // can never be evaluating different source.
+                id: b.id,
             },
             None => {
                 runtime::ParamValue::Literal(goofi_node::param(&entry.params.load(), &key.group, &key.name)?.clone())
@@ -2877,31 +2783,6 @@ impl Graph {
         (at < 64).then_some(at as runtime::EventId + 1)
     }
 
-    fn clear_input(&mut self, uid: Uid, slot: &str) {
-        if let Some(e) = self.nodes.get_mut(&uid) {
-            if let Some(s) = e.inputs.get_mut(slot) {
-                *s = None;
-            }
-        }
-    }
-
-    /// The latest output frame on `(uid, slot)`, if any (data plane read).
-    pub fn latest_frame(&self, uid: Uid, slot: &str) -> Option<Data> {
-        // The last EMITTED frame (persisted across silent ticks), not the per-tick
-        // output that `run_node` resets to None — so a sparse producer still shows data.
-        self.nodes
-            .get(&uid)
-            .and_then(|e| e.last_outputs.get(slot))
-            .cloned()
-    }
-
-    /// The node's current measured update frequency (Hz) — the same value stamped as
-    /// `meta["ufreq"]` on its output. `None` until it has been measured (≥2 emits).
-    /// The control plane forwards this to the node-header update-rate readout.
-    pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
-        self.nodes.get(&uid).and_then(|e| e.ufreq_meter.ema.map(|ema| 1.0 / ema))
-    }
-
     /// Remove all nodes and links.
     pub fn clear(&mut self) {
         // Release each node's compiled expression handles before dropping them (load_doc
@@ -2926,10 +2807,10 @@ impl Graph {
         })
         .expect("re-seeding cannot fail");
         // The node clock belongs to the PATCH, not the process: a patch loaded an hour in must
-        // compute what it would have computed at boot, so the next tick re-anchors it. Safe only
-        // because every node — and every `UfreqMeter`/`last_emit` reading this clock — was just
-        // dropped above; nothing survives to see the discontinuity.
-        self.start = None;
+        // compute what it would have computed at boot. Safe only because every node — and every
+        // ufreq meter reading this clock — was just dropped above; nothing survives to see the
+        // discontinuity.
+        self.start = Instant::now();
     }
 
     fn force_set_name(&mut self, uid: Uid, name: &str) {
@@ -3274,358 +3155,17 @@ impl Graph {
         }
     }
 
-    /// BFS topological layering (producers before consumers). Each returned level
-    /// is a set of mutually-independent nodes — no edges run between them — and
-    /// every node's predecessors lie in strictly earlier levels. Nodes trapped in
-    /// a cycle form a final level (latest-wins tolerates their back-edges). This
-    /// is what lets a level's nodes run concurrently while the graph as a whole
-    /// still propagates end-to-end in a single tick.
-    /// The scheduling dependency edges `(producer, consumer)`: the wired links.
-    ///
-    /// It used to LIFT each param-expression's `nd()` references in here too, so a referenced node
-    /// ran first and the expression saw this-tick's value. That was load-bearing while the tick
-    /// evaluated bindings; §2.1 moved evaluation into the node, in the same breath as the run that
-    /// reads it, so the lifting ordered nothing and the guarantee it bought no longer exists to buy.
-    /// Dropped rather than left inert with a doc claiming it — the whole tick goes at the cutover.
-    fn scheduling_edges(&self) -> Vec<(Uid, Uid)> {
-        self.links
-            .iter()
-            .filter(|l| self.nodes.contains_key(&l.node_out) && self.nodes.contains_key(&l.node_in))
-            .map(|l| (l.node_out, l.node_in))
-            .collect()
-    }
-
-    fn topo_levels(&self) -> Vec<Vec<Uid>> {
-        let edges = self.scheduling_edges();
-        let mut indeg: HashMap<Uid, usize> = self.nodes.keys().map(|k| (*k, 0)).collect();
-        for (_from, to) in &edges {
-            if let Some(d) = indeg.get_mut(to) {
-                *d += 1;
-            }
-        }
-        let mut levels: Vec<Vec<Uid>> = Vec::new();
-        let mut placed: std::collections::HashSet<Uid> = std::collections::HashSet::new();
-        // Level 0: insertion-order nodes with no incoming edges.
-        let mut current: Vec<Uid> = self
-            .nodes
-            .keys()
-            .copied()
-            .filter(|u| indeg[u] == 0)
-            .collect();
-        while !current.is_empty() {
-            for u in &current {
-                placed.insert(*u);
-            }
-            // Relax edges out of this level; a successor whose indegree hits zero
-            // joins the next level. Reorder by insertion order for determinism.
-            let mut freed: std::collections::HashSet<Uid> = std::collections::HashSet::new();
-            for u in &current {
-                for (from, to) in &edges {
-                    if from == u {
-                        if let Some(d) = indeg.get_mut(to) {
-                            if *d > 0 {
-                                *d -= 1;
-                                if *d == 0 {
-                                    freed.insert(*to);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            levels.push(current);
-            current = self
-                .nodes
-                .keys()
-                .copied()
-                .filter(|u| freed.contains(u))
-                .collect();
-        }
-        // Any node never freed sits in a cycle; run them together, last.
-        let remainder: Vec<Uid> = self
-            .nodes
-            .keys()
-            .copied()
-            .filter(|u| !placed.contains(u))
-            .collect();
-        if !remainder.is_empty() {
-            levels.push(remainder);
-        }
-        levels
-    }
-
-    /// The set of nodes with at least one *wired* triggering input — a link feeds a
-    /// `trigger_process` input slot. Mirrors Python's `_has_no_triggering_inputs`
-    /// (negated): `autotrigger` free-runs a node only when this is empty for it, so
-    /// a connected consumer runs on its producer's rate rather than every tick.
-    fn wired_trigger_nodes(&self) -> std::collections::HashSet<Uid> {
-        self.links
-            .iter()
-            .filter(|l| {
-                self.nodes.get(&l.node_in).is_some_and(|e| {
-                    e.manifest
-                        .inputs
-                        .iter()
-                        .any(|i| i.name == l.slot_in && i.trigger_process)
-                })
-            })
-            .map(|l| l.node_in)
-            .collect()
-    }
-
-    /// Run one tick of the whole graph against the wall clock. See [`Self::tick_at`].
-    pub fn tick(&mut self) {
-        self.tick_at(Instant::now());
-    }
-
-    /// The wall-clock delay until the next node is due to run, as of `now` — the pacing
-    /// signal for an adaptive tick loop that honors each node's `common.max_frequency`
-    /// with NO extra hardcoded ceiling. `Some(ZERO)`: a node wants to run right now (an
-    /// unbounded — `max_frequency <= 0` — or never-run/overdue producer) → tick again
-    /// immediately, i.e. as fast as possible. `Some(d)`: the soonest a rate-capped
-    /// producer's period elapses. `None`: nothing currently self-starts (the caller may
-    /// idle-poll for control-plane edits). Only self-starting producers constrain the
-    /// rate; a purely input-triggered node runs in the same tick as its producer.
-    pub fn next_run_delay(&self, now: Instant) -> Option<Duration> {
-        let wired = self.wired_trigger_nodes();
-        let mut soonest: Option<Duration> = None;
-        for (uid, e) in &self.nodes {
-            if !wants_run(e, uid, &wired) {
-                continue;
-            }
-            // A worker whose bootstrap failed is refused by the dispatch gate in [`Self::tick_at`]
-            // (D3) — permanently, since the latch is write-once per worker and only `restart_node`
-            // clears it by installing a fresh handle. Dispatch is also the sole writer of a
-            // detached node's `last_run`, so leaving it in this scan means the `None` arm below
-            // answers ZERO for the life of the patch and pins the loop at its floor, whatever the
-            // node's cap says.
-            if matches!(&e.exec, Execution::Detached(h) if h.boot_error().is_some()) {
-                continue;
-            }
-            let remaining = match e.run_policy.period() {
-                None => Duration::ZERO, // unbounded → as fast as possible
-                Some(p) => match e.last_run {
-                    None => Duration::ZERO, // never ran → due now
-                    // `try_from_secs_f64` (not `from_secs_f64`, which PANICS on overflow —
-                // poisoning the graph mutex and killing the server) — an out-of-range period
-                // (a huge max_frequency from a .gfi / agent / expression) saturates to MAX,
-                // which the caller then clamps to IDLE_POLL anyway.
-                Some(t) => Duration::try_from_secs_f64(
-                    (p - now.saturating_duration_since(t).as_secs_f64()).max(0.0),
-                )
-                .unwrap_or(Duration::MAX),
-                },
-            };
-            if soonest.is_none_or(|s| remaining < s) {
-                soonest = Some(remaining);
-            }
-            if remaining.is_zero() {
-                break; // can't beat "now"
-            }
-        }
-        soonest
-    }
-
-    /// Run one tick as of instant `now` (injectable so rate gating is
-    /// deterministically testable). Nodes are grouped into topological levels
-    /// ([`Self::topo_levels`]); each level's mutually-independent nodes execute
-    /// concurrently on the rayon work-stealing pool, then their fresh outputs are
-    /// propagated to the next level's inputs before it runs — so an acyclic graph
-    /// still propagates end-to-end within a single tick. A node runs iff it *wants*
-    /// to run — it's a pure source (no triggering inputs), a triggering input
-    /// received a fresh frame, or it autotriggers *and has no wired trigger* — AND
-    /// its [`RunPolicy`] rate cap has elapsed since it last ran. A skipped node
-    /// keeps its outputs. With the default policy (`max_frequency == 0`) the rate
-    /// cap is unbounded, so this reduces to pure trigger arbitration.
-    fn tick_at(&mut self, now: Instant) {
-        // Seconds since the first-ever tick — the monotonic wall clock nodes read.
-        let start = *self.start.get_or_insert(now);
-        let now_secs = now.duration_since(start).as_secs_f64();
-        // One globals snapshot for the whole tick — an Arc-backed view every binding eval and every
-        // running node's `ctx` shares (globals don't change mid-tick; edits land between ticks).
-        let globals = self.globals.snapshot();
-        let wired = self.wired_trigger_nodes();
-        let levels = self.topo_levels();
-        for level in levels {
-            // Expression bindings are NOT evaluated here any more. §2.1 evaluates them in the node,
-            // in the same breath as the run that reads them, from the mailboxes its variables name
-            // — which is what makes an ARRIVAL the thing that triggers and an evaluation merely the
-            // thing that runs. `resolve_level_bindings` could not express that distinction: it set
-            // `trigger_pending` on every evaluation, so a `globals.`-only expression (due every
-            // tick) pinned the flag on permanently. Until the cutover drives `NodeRuntime`, a bound
-            // param therefore holds its LITERAL on this path.
-            let set: std::collections::HashSet<Uid> = level.iter().copied().collect();
-
-            // Detached tier — drain each detached node's completed output (→ `ran`, so
-            // Phase B propagates it like any fresh frame) and dispatch fresh work. The
-            // SAME wants_run/should_run gate as inline; only the execution site differs, so
-            // a detached node never enters Phase A. `last_run` is set on *dispatch*, so the
-            // worker is never fed faster than the node's cap; a still-busy worker coalesces
-            // to the newest inputs (the mailbox is latest-wins).
-            let mut ran: Vec<Uid> = Vec::new();
-            for &uid in &level {
-                let Some(entry) = self.nodes.get_mut(&uid) else { continue };
-                if !matches!(entry.exec, Execution::Detached(_)) {
-                    continue;
-                }
-                let done = match &entry.exec {
-                    Execution::Detached(h) => h.take_output(),
-                    Execution::Inline(_) => None,
-                };
-                if let Some(done) = done {
-                    entry.outputs = done.outputs;
-                    for (slot, o) in entry.outputs.iter() {
-                        if let Some(d) = o {
-                            entry.last_outputs.insert(*slot, d.clone());
-                        }
-                    }
-                    entry.last_error = done.error;
-                    if entry.outputs.values().any(|o| o.is_some()) {
-                        ran.push(uid);
-                    }
-                }
-                // Feed the worker only once it has bootstrapped SUCCESSFULLY. A job built
-                // mid-`setup` is a snapshot of PRE-setup state — stale by the time the worker could
-                // run it — and it lands the instant `setup` returns, which is what used to race the
-                // bootstrap error out of the latest-wins outbox. Skipping it costs nothing:
-                // `last_run` and `trigger_pending` are left untouched, so the node runs on the
-                // first tick after READY rather than losing its turn.
-                //
-                // The `boot_error` term is this tier's half of the initialization gate (D3): a
-                // worker whose `setup` failed is uninitialized, and "ticks of a node that had a
-                // setup() error should not be possible". Unlike the inline gate
-                // ([`ensure_initialized`]) it never RETRIES — that would need a new worker
-                // protocol op — so `restart_node` is the retry door for a detached node.
-                if !matches!(&entry.exec, Execution::Detached(h)
-                    if h.stage() == detached::STAGE_READY && h.boot_error().is_none())
-                {
-                    continue;
-                }
-                let since_last = entry.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
-                if entry.run_policy.should_run(since_last, wants_run(entry, &uid, &wired)) {
-                    entry.last_run = Some(now);
-                    entry.trigger_pending = false;
-                    let multis = materialize_multis(entry);
-                    let job = detached::Job {
-                        inputs: entry.inputs.clone(),
-                        multis,
-                        params: (*entry.params.load_full()).clone(),
-                        now: now_secs,
-                    };
-                    if let Execution::Detached(h) = &entry.exec {
-                        h.dispatch(job);
-                    }
-                }
-            }
-
-            // Phase A — run every runnable INLINE node in this level in parallel. Each
-            // closure touches only its own entry (disjoint `&mut`), so there is no
-            // shared state and the result is independent of thread scheduling.
-            {
-                let batch: Vec<(Uid, &mut NodeEntry)> = self
-                    .nodes
-                    .iter_mut()
-                    .filter(|(uid, e)| {
-                        if !set.contains(uid) || !matches!(e.exec, Execution::Inline(_)) {
-                            return false;
-                        }
-                        let since_last = e.last_run.map(|t| now.saturating_duration_since(t).as_secs_f64());
-                        e.run_policy.should_run(since_last, wants_run(e, uid, &wired))
-                    })
-                    .map(|(uid, e)| {
-                        e.last_run = Some(now);
-                        e.ctx.now = now_secs;
-                        // Live globals for `process` (Arc bump); `setup` latched them at insert time.
-                        e.ctx.globals = globals.clone();
-                        (*uid, e)
-                    })
-                    .collect();
-                ran.extend(batch.iter().map(|(u, _)| *u));
-                batch.into_par_iter().for_each(|(_, entry)| run_node(entry));
-            }
-
-            // Phase B — propagate this level's fresh frames to their consumers
-            // (serial; one-wire-per-input means each input has a single writer).
-            for uid in ran {
-                let produced: Vec<(&'static str, Data)> = self.nodes[&uid]
-                    .outputs
-                    .iter()
-                    .filter_map(|(k, v)| v.as_ref().map(|d| (*k, d.clone())))
-                    .collect();
-                if produced.is_empty() {
-                    continue;
-                }
-                let outgoing: Vec<(&'static str, Uid, &'static str)> = self
-                    .links
-                    .iter()
-                    .filter(|l| l.node_out == uid)
-                    .map(|l| (l.slot_out, l.node_in, l.slot_in))
-                    .collect();
-                for (slot_out, tgt, slot_in) in outgoing {
-                    if let Some(d) = produced
-                        .iter()
-                        .find(|(s, _)| *s == slot_out)
-                        .map(|(_, d)| d.clone())
-                    {
-                        if let Some(te) = self.nodes.get_mut(&tgt) {
-                            if let Some(slot) = te.inputs.get_mut(slot_in) {
-                                *slot = Some(d); // single slot: latest-wins
-                            } else if let Some(cells) = te.multi_inputs.get_mut(slot_in) {
-                                // multi slot: update THIS wire's latest-wins cell,
-                                // keyed by its source (uid, slot_out) — position kept.
-                                if let Some(cell) =
-                                    cells.iter_mut().find(|(u, s, _)| *u == uid && *s == slot_out)
-                                {
-                                    cell.2 = Some(d);
-                                }
-                            }
-                            // A fresh frame on a triggering input wakes the consumer.
-                            if te
-                                .manifest
-                                .inputs
-                                .iter()
-                                .any(|i| i.name == slot_in && i.trigger_process)
-                            {
-                                te.trigger_pending = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.stamp_error_onsets(now);
-    }
-
-    /// Note, for every node, when its current error first read the way it does now — the clock
-    /// [`Graph::error_age`] reports. Derived from [`Graph::last_error`] rather than written at
-    /// each site that can set one, so a process failure, a binding failure and a detached
-    /// bootstrap failure are all stamped by the same rule, and the stamp cannot outlive the error
-    /// it belongs to. Costs one comparison per node per tick and allocates only on a transition.
-    fn stamp_error_onsets(&mut self, now: Instant) {
-        for e in self.nodes.values_mut() {
-            let current = entry_error(e);
-            if e.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
-                let stamped = current.map(|m| (m.to_string(), now));
-                e.error_since = stamped;
-            }
-        }
-    }
 }
 
 /// One node's current error, derived fresh from the three places one can arise — see
 /// [`Graph::last_error`], whose contract this is. A free function so the per-tick onset sweep can
 /// read it while holding a `&mut NodeEntry`, which keeps derivation and stamping on one rule.
 fn entry_error(e: &NodeEntry) -> Option<&str> {
-    // A detached worker's bootstrap failure lives on its handle, not in `last_error`, because
-    // the per-tick `Done` channel is latest-wins and a successful job erases an un-drained one
-    // (see `detached::DetachedHandle::boot_error`). It outranks a process error deliberately:
-    // it is the ROOT CAUSE, and it is a one-shot fact — a process error recurs on every tick
-    // and can be observed again, a failed `setup` never can.
-    if let Execution::Detached(h) = &e.exec {
-        if let Some(err) = h.boot_error() {
-            return Some(err);
-        }
-    }
+    // The node's initialization failure outranks a process error, and D3 makes it the only thing
+    // that CAN be true beside one: if `setup` failed, `process` never runs. The order therefore
+    // encodes which of the two is possible, not which one wins a contest. A node whose services
+    // could not be created carries its boot failure here too — it is the same "this node never
+    // started" fact, one layer further out.
     // An inline node's initialization failure, for the same reason and one tier down: it is the
     // root cause, and D3 makes it the only thing that CAN be true here — if `setup` failed,
     // `process` never runs, so a process error cannot arise beside it. The order therefore encodes
@@ -3636,36 +3176,15 @@ fn entry_error(e: &NodeEntry) -> Option<&str> {
     if let Some(err) = e.last_error.as_deref() {
         return Some(err);
     }
+    // Both param-keyed error records, ordered by key together — the node rolls its own map up the
+    // same way (`NodeRuntime::node_fault`), and folding only one of them here would make which
+    // record an error landed in decide whether the badge ever shows it.
     e.bindings
         .iter()
         .filter_map(|(k, b)| b.error.as_deref().map(|s| (k, s)))
+        .chain(e.param_errors.iter().map(|(k, m)| (k, m.as_str())))
         .min_by(|a, b| a.0.cmp(b.0))
         .map(|(_, s)| s)
-}
-
-/// Route a constructed node onto its execution tier — the ONE place the isolation split
-/// lives, shared by insertion and [`Graph::restart_node`] so the two cannot diverge.
-///
-/// An InProcess node is seeded synchronously (replay `on_param_changed`, then `setup`) and
-/// runs inline. A Subprocess node is detached onto an off-tick worker that seeds ITSELF (its
-/// setup / first-tick spawn may block) and latches a bootstrap failure on its handle, where
-/// [`Graph::last_error`] reads it — so its `last_error` starts, and stays, `None` here.
-fn make_exec(
-    manifest: &'static NodeManifest,
-    mut node: Box<dyn goofi_node::Node>,
-    params: &ParamGroups,
-    ctx: &mut NodeCtx,
-) -> (Execution, Option<String>) {
-    match manifest.isolation {
-        goofi_node::Isolation::InProcess => {
-            let err = seed_node(&mut *node, params, ctx);
-            (Execution::Inline(node), err)
-        }
-        goofi_node::Isolation::Subprocess => {
-            let handle = detached::DetachedHandle::spawn(node, manifest, params.clone(), ctx.clone());
-            (Execution::Detached(handle), None)
-        }
-    }
 }
 
 pub(crate) fn seed_node(
@@ -3703,245 +3222,14 @@ pub(crate) fn seed_node(
 /// per second, and is still well inside the time a user watching the node would wait for it to heal.
 const SETUP_RETRY_INTERVAL: f64 = 1.0;
 
-/// The initialization gate (D3). A node whose `setup()` failed is UNINITIALIZED, so nothing may
-/// run against it — not `process`, not a param callback, not a refresh. Any of those interactions
-/// RETRIES the initialization first ([`seed_node`]: the param replay and `setup()` together, which
-/// are one unit), so a node whose device has since appeared, or whose bad param the user has just
-/// corrected, comes back without an explicit restart. `Err` carries the standing failure: the gate
-/// is shut and the caller must not proceed.
-///
-/// A DETACHED node is a no-op here: its `setup()` runs on the worker and its failure is latched
-/// there (`detached::Channels::boot_error`), so `setup_error` is never set for one. Retrying it
-/// would need a new worker protocol op — `update_param` does not reach the worker at all and
-/// `refresh_param` refuses on that tier — so [`Graph::restart_node`] stays the retry door there.
-/// Not forgotten, scoped out; the job-dispatch gate in [`Graph::tick_at`] is what keeps a failed
-/// worker from being fed in the meantime.
-fn ensure_initialized(entry: &mut NodeEntry) -> Result<(), String> {
-    if entry.setup_error.is_none() {
-        return Ok(());
-    }
-    if let Execution::Inline(node) = &mut entry.exec {
-        // Every attempt stamps itself, so the tick's backoff restarts from an interaction's retry
-        // too — the interaction is unthrottled, but it does not also hand the next tick a free one.
-        entry.last_setup_attempt = entry.ctx.now;
-        let params = entry.params.load_full();
-        entry.setup_error = seed_node(&mut **node, &params, &mut entry.ctx);
-    }
-    match &entry.setup_error {
-        Some(e) => Err(e.clone()),
-        None => Ok(()),
-    }
-}
-
-fn run_node(entry: &mut NodeEntry) {
-    entry.trigger_pending = false;
-    // A tick is an interaction like any other: it retries the initialization, and runs nothing if
-    // that fails. `trigger_pending` is consumed either way — the frame that asked for this run has
-    // been seen, and holding it would make the node fire twice the moment it recovers.
-    //
-    // Unlike `update_param`/`refresh_param` it retries on a TIMER ([`SETUP_RETRY_INTERVAL`]): a
-    // tick is not a user asking, it is one of however many the pacer admits — a rate-capped source
-    // ticks every period and a `trigger_process` consumer once per delivered frame — and this runs
-    // under the graph lock.
-    if entry.setup_error.is_some() && entry.ctx.now - entry.last_setup_attempt < SETUP_RETRY_INTERVAL {
-        return;
-    }
-    if ensure_initialized(entry).is_err() {
-        return;
-    }
-    // Materialize each multi slot's present frames in connection order for the node
-    // (Arc-bump clones). Empty for nodes with no multi slots — the common case pays
-    // nothing beyond an empty map.
-    let multis = materialize_multis(entry);
-    // A detached node runs on its own worker (see `tick_at`), never inline here.
-    let Execution::Inline(node) = &mut entry.exec else { return };
-    let params = entry.params.load_full();
-    entry.last_error = execute_node(
-        entry.manifest,
-        node,
-        &params,
-        &entry.inputs,
-        &multis,
-        &mut entry.outputs,
-        &mut entry.last_outputs,
-        &mut entry.ctx,
-        &mut entry.index_counters,
-        &mut entry.ufreq_meter,
-    );
-}
-
-/// Run a node's `process()` + engine meta-stamping in place against its live state.
-/// Shared by the inline tick path ([`run_node`]) and the detached worker, so both stamp
-/// index/ufreq identically. `catch_unwind` keeps a faulty node from unwinding the
-/// scheduler (and, in the bridge, poisoning the graph mutex). Returns the process/panic
-/// error (`None` on success); a binding error is NOT folded in here — it is derived on
-/// read by `last_error()`, so a recovered binding surfaces even on a node that no longer
-/// runs. The caller owns `trigger_pending`.
-// The parts are the node's live per-tick state, passed individually so both a `NodeEntry`
-// (inline) and a detached worker — which owns the same parts separately — can call it.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_node(
-    manifest: &'static NodeManifest,
-    node: &mut Box<dyn goofi_node::Node>,
-    params: &ParamGroups,
-    inputs: &IndexMap<&'static str, Option<Data>>,
-    multis: &IndexMap<&'static str, Vec<Data>>,
-    outputs: &mut IndexMap<&'static str, Option<Data>>,
-    last_outputs: &mut IndexMap<&'static str, Data>,
-    ctx: &mut NodeCtx,
-    index_counters: &mut HashMap<&'static str, u64>,
-    ufreq_meter: &mut UfreqMeter,
-) -> Option<String> {
-    for v in outputs.values_mut() {
-        *v = None;
-    }
-    // A required slot must HOLD data when the node ticks — presence, never wiring, so a slot
-    // wired to a node that has emitted nothing reads the same as an unwired one (invariant 1).
-    // Checked here, the one seam the inline tick path and the detached worker share, so all
-    // three execution tiers answer identically. `last_outputs` is untouched: a viewer on a
-    // previously-emitting slot keeps its frame.
-    for slot in manifest.inputs.iter().filter(|s| s.required) {
-        let absent = if slot.multi {
-            multis.get(slot.name).is_none_or(|v| v.is_empty())
-        } else {
-            inputs.get(slot.name).and_then(Option::as_ref).is_none()
-        };
-        if absent {
-            return Some(format!("required input slot `{}` has no data", slot.name));
-        }
-    }
-    let inp = Inputs::with_multi(inputs, multis);
-    let p = goofi_node::Params::new(params);
-    // Scope the `Outputs` borrow so `outputs` is free again for stamping below.
-    let result = {
-        let mut out = Outputs::new(outputs);
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.process(&inp, &mut out, ctx, &p)))
-    };
-    let err = match result {
-        Ok(Ok(())) => None,
-        Ok(Err(e)) => Some(e.0),
-        Err(pnc) => Some(panic_message(pnc)),
-    };
-    stamp_meta_parts(manifest, inputs, outputs, ctx.now, index_counters, ufreq_meter);
-    // Persist each freshly-emitted (stamped) frame so `latest_frame` keeps returning it
-    // on later ticks where this node emits nothing — viewers of a sparse producer never
-    // blink to None.
-    for (slot, out) in outputs.iter() {
-        if let Some(d) = out {
-            last_outputs.insert(*slot, d.clone());
-        }
-    }
-    err
-}
-
-/// The number of frames a `Data` spans — its total element count (numpy `.size`
-/// for an array, `len` for a string/table). This, not a static per-slot flag, is
-/// the timeline discriminator: a length-preserving transform's output matches its
-/// input's frame count; a generator or length-changing transform does not.
-fn frame_count(d: &Data) -> usize {
-    match d.value() {
-        goofi_core::Value::Array(s) => s.shape().iter().product(),
-        goofi_core::Value::Str(s) => s.chars().count(),
-        goofi_core::Value::Table(m) => m.len(),
-    }
-}
-
-/// Stamp the engine-owned meta — `index` and `ufreq` — on every frame this node
-/// just emitted (the node never touches either).
-///
-/// **index**: for each output, propagate the index of the SINGLE index-bearing
-/// TRIGGERING input whose frame count equals the output's — that input is the same
-/// data timeline, so an upstream drop stays visible downstream. A non-triggering
-/// (control/reference) input — an oscillator's scalar frequency, say — is never a
-/// timeline candidate even if its length happens to match. With zero, or more than
-/// one, matching inputs (a generator, a length-changing transform, or an ambiguous
-/// fan-in) the slot starts a fresh per-output counter that advances one per emit.
-/// Ported from the Python node's `_next_index`/`_propagated_index`.
-///
-/// **ufreq**: the NODE's measured update rate (Hz) — an EMA of the inter-emit
-/// interval keyed on `ctx.now`, `None` until a second emit gives one interval.
-/// Measured PER NODE (one `ufreq_meter`), advanced once per productive tick (a tick
-/// emitting ≥1 output), and the same value stamped onto every emitted slot — ufreq
-/// describes how often the node updates, not a per-slot cadence. Authoritative —
-/// overwritten every emit, never inherited from upstream meta.
-fn stamp_meta_parts(
-    manifest: &'static NodeManifest,
-    inputs: &IndexMap<&'static str, Option<Data>>,
-    outputs: &mut IndexMap<&'static str, Option<Data>>,
-    now: f64,
-    counters: &mut HashMap<&'static str, u64>,
-    ufreq_meter: &mut UfreqMeter,
-) {
-    // Nothing emitted this tick → no meta to stamp, and the ufreq meter only advances
-    // on a productive emit. Skip the whole index-timeline scan (the common case for a
-    // rate-gated or idle node that ran but produced nothing).
-    if outputs.values().all(|o| o.is_none()) {
-        return;
-    }
-    // Only triggering inputs carry the data timeline; control inputs are excluded.
-    let triggering: std::collections::HashSet<&str> = manifest
-        .inputs
-        .iter()
-        .filter(|s| s.trigger_process)
-        .map(|s| s.name)
-        .collect();
-    // Snapshot the index-bearing triggering inputs (index, frame_count) — no borrow held.
-    let input_frames: Vec<(u64, usize)> = inputs
-        .iter()
-        .filter(|(name, _)| triggering.contains(*name))
-        .filter_map(|(_, o)| o.as_ref())
-        .filter_map(|d| d.meta().index().map(|i| (i, frame_count(d))))
-        .collect();
-    // Node-level ufreq: EMA of the inter-emit interval, inverted. `None` until the
-    // second emit; a non-advancing clock (`dt <= 0`) keeps the prior estimate.
-    let node_ufreq = {
-        let m = ufreq_meter;
-        match m.last_emit {
-            None => {
-                m.last_emit = Some(now); // first emit: no interval yet
-                None
-            }
-            Some(prev) => {
-                let dt = now - prev;
-                m.last_emit = Some(now);
-                if dt > 0.0 {
-                    let ema = m.ema.map_or(dt, |p| UFREQ_EMA_ALPHA * dt + (1.0 - UFREQ_EMA_ALPHA) * p);
-                    m.ema = Some(ema);
-                    Some(1.0 / ema)
-                } else {
-                    m.ema.map(|e| 1.0 / e)
-                }
-            }
-        }
-    };
-    // Rewrite outputs while advancing the index counters.
-    for (slot, slot_opt) in outputs.iter_mut() {
-        let Some(d) = slot_opt else { continue };
-        let of = frame_count(d);
-        // Exactly one index-bearing triggering input with a matching frame count → the
-        // same timeline; zero or more than one → a fresh per-output counter.
-        let mut matches = input_frames.iter().filter(|(_, f)| *f == of).map(|(i, _)| *i);
-        let counter = counters.entry(*slot).or_insert(0);
-        let index = match (matches.next(), matches.next()) {
-            (Some(i), None) => i,
-            _ => *counter,
-        };
-        // Keep the fresh counter monotonically past whatever we emitted. Without this, a
-        // slot that MATCHES on one frame (an accumulator's first output length equals its
-        // input length) then goes fresh would restart the counter at 0 — duplicating or
-        // regressing the index at stream start (the Oscillator→Buffer reference patch).
-        *counter = index + 1;
-        *d = d.with_stamps(index, node_ufreq);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goofi_core::{Meta, SlotType, Value};
+    use crate::testing::{stays, wait_for, OutputProbe};
+    use goofi_core::{Data, Meta, SlotType, Value};
     use goofi_node::{
-        default_factory, ExprDecl, ExprMode, Isolation, Node, NodeManifest, NodeResult,
-        OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl,
+        default_factory, ExprDecl, ExprMode, Inputs, Isolation, Node, NodeManifest, NodeResult,
+        OutputDecl, Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
     };
 
     /// Empty param declaration, shared by the many test nodes with no own params.
@@ -3992,12 +3280,12 @@ mod tests {
         use goofi_core::globals::GlobalValue;
         let mut g = Graph::new();
         let n = g.add_node("_TestGlobal", None).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 30.0, "reads the seeded default_ufreq");
-        // A mid-run edit is visible on the next tick — `process` reads globals live, not latched.
+        let out = OutputProbe::open(&g, n, "out");
+        out.wait_until(&mut g, "reads the seeded default_ufreq", |d| first_f32(d) == 30.0);
+        // An edit is visible on the node's next run — `process` reads the globals RECORD live
+        // through the handle it holds (§5.2), not a snapshot latched at birth.
         g.apply_global_change("default_ufreq", Some(GlobalValue::Float(45.0))).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 45.0, "sees the edited value next tick");
+        out.wait_until(&mut g, "sees the edited value", |d| first_f32(d) == 45.0);
     }
 
     /// What a binding's variables resolved to, spelled out — the graph half of §5.3, which is now
@@ -4113,7 +3401,9 @@ mod tests {
         // storing them anywhere else would leave a node reporting an error the editor never draws.
         let mut g = eval_graph();
         let uid = g.add_node("_TestConst", None).unwrap();
-        assert_eq!(g.node_stage(uid), "ready");
+        // The node reports its own stage, so the graph learns it by draining — `creating` until it
+        // has (§6.2), which is the projection's own way of saying "built, not yet heard from".
+        wait_for(&mut g, "the node to report itself ready", |g| g.node_stage(uid) == "ready");
 
         for (fault, msg) in [
             (runtime::NodeFault::Process { msg: "boom".into(), since: 1.0 }, "boom"),
@@ -4141,11 +3431,11 @@ mod tests {
         assert_eq!(g.last_error(uid), Some("no device"));
         assert_eq!(g.node_stage(uid), "error");
         assert_eq!(g.nodes[&uid].setup_error.as_deref(), Some("no device"), "the RETRY gate is set");
-        // …and the gate is live: a param write takes D3's retry path, which re-runs `setup()` on
-        // the same instance. `_TestConst`'s setup succeeds, so the retry clears the fault — where a
-        // Setup fault filed as `last_error` would leave it standing forever.
-        g.update_param(uid, "constant", "value", Param::float(2.0, -1e9, 1e9)).unwrap();
-        assert!(g.nodes[&uid].setup_error.is_none(), "the interaction retried the initialization");
+        // That the gate is LIVE is not assertable from here any more: the retry runs on the node's
+        // own thread against its own state (D3), and the fault above is one this test injected —
+        // the real `_TestConst` never failed `setup()`, so it has nothing to retry and nothing to
+        // report. The end-to-end door is pinned where it now lives, on a node whose `setup` really
+        // does fail: `correcting_the_param_that_broke_setup_reinitializes_the_node`.
 
         // A clean run clears Setup/Process/Boot TOGETHER — the node stamped one fault at a time,
         // and clearing only the last one reported would leave the earlier field standing forever.
@@ -4338,8 +3628,8 @@ mod tests {
         let mut g = Graph::new();
         let n = g.add_node("_TestDefaultExpr", None).unwrap();
         assert!(g.param_expression(n, "control", "rate").is_none(), "no binding without an evaluator");
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 5.0, "the literal fallback is used");
+        let out = OutputProbe::open(&g, n, "out");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the node to emit")), 5.0, "the literal fallback is used");
     }
 
     #[test]
@@ -4423,9 +3713,9 @@ mod tests {
             g2.param_expression(restored, "control", "rate").is_none(),
             "load must not re-seed a binding the user removed — the doc is authoritative"
         );
-        g2.tick();
+        let out = OutputProbe::open(&g2, restored, "out");
         assert_eq!(
-            first_f32(&g2.latest_frame(restored, "out").unwrap()),
+            first_f32(&out.expect_frame(&mut g2, "the restored node to emit")),
             100.0,
             "the saved literal survives (not re-rated to the global)"
         );
@@ -4436,9 +3726,9 @@ mod tests {
         // A node's one-time init reads its params — it allocates a buffer of `size`, opens device
         // `name`. On load, `setup()` must therefore see the params the user SAVED. The load path
         // built every node from the type's DEFAULTS and applied the saved values only afterwards,
-        // and nothing re-runs `setup`; on the detached tier `update_param` is an explicit no-op, so
-        // the child never saw them at all. The undo/redo restore path already gets this right
-        // (`Command::AddNode` carries the captured params) — the two paths must agree.
+        // and nothing re-runs `setup`. The undo/redo restore path already gets this right
+        // (`Command::AddNode` carries the captured params) — the two paths must agree, and they are
+        // one path now that a node's params travel with it to the thread that runs its `setup`.
         let mut g = Graph::new();
         let n = g.add_node("_TestSetupLatch", None).unwrap();
         g.update_param(n, "control", "value", Param::float(42.0, 0.0, 100.0)).unwrap();
@@ -4451,9 +3741,9 @@ mod tests {
             .into_iter()
             .find(|u| g2.type_name(*u) == Some("_TestSetupLatch"))
             .expect("node restored");
-        g2.tick();
+        let out = OutputProbe::open(&g2, restored, "out");
         assert_eq!(
-            first_f32(&g2.latest_frame(restored, "out").unwrap()),
+            first_f32(&out.expect_frame(&mut g2, "the restored node to emit")),
             42.0,
             "setup() latched the saved value, not the type default"
         );
@@ -5260,40 +4550,6 @@ mod tests {
         }
     }
 
-    // The DETACHED analogue of `_TestRequired`, registered at runtime the way every detached
-    // fixture here is. The required check sits in `execute_node` BECAUSE that is the one seam the
-    // inline tick path and the detached worker share — and every other required-slot fixture is
-    // `Isolation::InProcess`, so lifting the check into `run_node` (the inline caller) would exempt
-    // this whole tier without reddening a single test.
-    struct RequiredDetached {
-        /// One entry per `process` entry, carrying the value it saw on `data` (`NaN` when it saw
-        /// none). Written on the worker, read by the test from the tick thread.
-        arrivals: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
-    }
-    impl Node for RequiredDetached {
-        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let seen = inp.get("data").map(first_f32).unwrap_or(f32::NAN);
-            self.arrivals.lock().unwrap().push(seen);
-            let d = Data::array_f32(vec![1], seen.to_le_bytes().to_vec(), Meta::empty())
-                .map_err(|e| e.to_string())?;
-            out.set("out", d);
-            Ok(())
-        }
-    }
-    static REQ_DET_IN: &[SlotDecl] =
-        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false, required: true }];
-    static REQ_DET_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "_TestRequiredDetached",
-        category: "test",
-        doc: "one required input, run on a detached worker",
-        inputs: REQ_DET_IN,
-        outputs: G_OUT,
-        params: NO_PARAMS,
-        isolation: Isolation::Subprocess,
-        producer: false,
-        factory: rt_stub_factory,
-    };
-
     // A node whose INITIALIZATION the test controls: `setup()` fails unless its `boot.ok` param
     // says otherwise, so correcting that param is a real retry door (D3) rather than a
     // fixture-only hook. Every `process` entry, every `on_param_changed` and every `setup` it
@@ -5402,15 +4658,55 @@ mod tests {
         u
     }
 
+    /// Add a node BORN capped at `hz`. A param edit cannot do this: a node free-runs from birth
+    /// until the `SetParam` reaches it, and uncapped that is thousands of runs — so a test about a
+    /// node's FIRST frame, or its first failure, has to cap it before it has one. The probe's cell
+    /// is one deep and latest-wins, and a 30 kHz producer overwrites frame 1 long before anything
+    /// looks.
+    fn capped(g: &mut Graph, type_name: &str, hz: f64) -> Uid {
+        let mut params = g.default_params_of(type_name).unwrap();
+        params
+            .entry("common".to_string())
+            .or_default()
+            .insert("max_frequency".to_string(), Param::float(hz, 0.0, 1e9));
+        g.add_node(type_name, Some(params)).unwrap()
+    }
+
+    #[test]
+    fn a_param_edited_before_its_node_was_addressable_still_reaches_it() {
+        // §4's birth barrier: a `Control` sent to a node that has not yet reported `Ready` is
+        // published to a subscriber that does not exist, and pub/sub has no history — so it is
+        // simply lost. `add_node` answers long before that report is drained, which makes the
+        // window every ordinary `add_node(); update_param()` pair falls into.
+        //
+        // `attach_control_sink` re-plans what it finds by walking links and BINDINGS, and a plain
+        // literal param is neither. Measured with that gap open: 20 of this crate's own tests, each
+        // one watching a node emit its type default forever.
+        let mut g = Graph::new();
+        let src = g.add_node("_TestConst", None).unwrap();
+        let out = OutputProbe::open(&g, src, "out");
+        // The graph attaches a channel in `apply_status` and nowhere else, and nothing has drained
+        // one yet — which `node_stage` states race-free, since it reads what the graph has APPLIED
+        // rather than what the node has sent.
+        assert_eq!(g.node_stage(src), "creating", "the graph has heard nothing, so there is no sink");
+        g.update_param(src, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
+
+        out.wait_until(&mut g, "carries the value written before the node was addressable", |d| {
+            first_f32(d) == 3.0
+        });
+    }
+
     #[test]
     fn source_streams_latest_frame() {
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "value", Param::float(7.0, -1e9, 1e9))
             .unwrap();
-        g.tick();
-        let f = g.latest_frame(src, "out").expect("frame");
-        assert_eq!(first_f32(&f), 7.0);
+        let out = OutputProbe::open(&g, src, "out");
+        // `wait_until` rather than "the next frame": the node was already running when the param
+        // was written, so the frame in flight may still carry the old value. What the test means is
+        // that the edit reaches the stream, not which emit carries it.
+        out.wait_until(&mut g, "carries the edited value", |d| first_f32(d) == 7.0);
     }
 
     #[test]
@@ -5422,11 +4718,13 @@ mod tests {
         g.update_param(src, "constant", "length", Param::int(2, 1, 10))
             .unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
+        let out = OutputProbe::open(&g, echo, "out");
         g.add_link(src, "out", echo, "in").unwrap();
+        // The link is carried by the three-phase sequence, which advances on acks — so the graph
+        // has to be drained for the wire to exist at all.
+        wait_for(&mut g, "the wire to attach", |_| out.latest().is_some());
 
-        g.tick();
-
-        let f = g.latest_frame(echo, "out").expect("echo produced a frame");
+        let f = out.expect_frame(&mut g, "the echo to emit");
         if let Value::Array(s) = f.value() {
             assert_eq!(s.shape(), &[2]);
         } else {
@@ -5445,13 +4743,30 @@ mod tests {
             .unwrap();
         g.update_param(b, "constant", "value", Param::float(2.0, -1e9, 1e9))
             .unwrap();
+        let out = OutputProbe::open(&g, echo, "out");
         g.add_link(a, "out", echo, "in").unwrap();
         g.add_link(b, "out", echo, "in").unwrap(); // evicts a
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(echo, "out").unwrap()), 2.0);
+        wait_for(&mut g, "the second wire to displace the first", |_| {
+            out.latest().is_some_and(|d| first_f32(&d) == 2.0)
+        });
+        assert!(stays(&mut g, |_| out.latest().is_some_and(|d| first_f32(&d) == 2.0)), "and a is gone");
     }
 
     // ---- multi-input slots -------------------------------------------------
+
+    /// Drain the graph until the collector emits exactly `want`, then hold it there for a settle
+    /// window. Both halves matter: a wire change lands asynchronously, so the first frame after it
+    /// may still be the old set — and a set that is merely PASSED THROUGH on the way to another one
+    /// would satisfy a bare "eventually" on its own.
+    fn collects(g: &mut Graph, out: &OutputProbe, want: &[f32]) {
+        let matches = |d: &Data| as_f32_vec(d) == want;
+        out.wait_until(g, &format!("collects {want:?}"), matches);
+        assert!(
+            stays(g, |_| out.latest().is_some_and(|d| matches(&d))),
+            "and settles there rather than passing through: last was {:?}",
+            out.latest().map(|d| as_f32_vec(&d)),
+        );
+    }
 
     #[test]
     fn multi_input_collects_wires_in_connection_order() {
@@ -5460,12 +4775,12 @@ mod tests {
         let b = const_src(&mut g, 2.0);
         let c = const_src(&mut g, 3.0);
         let col = g.add_node("_TestCollect", None).unwrap();
+        let out = OutputProbe::open(&g, col, "out");
         g.add_link(a, "out", col, "ins").unwrap();
         g.add_link(b, "out", col, "ins").unwrap();
         g.add_link(c, "out", col, "ins").unwrap();
-        g.tick();
         // [count=3, then each wire's value in connection order].
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+        collects(&mut g, &out, &[3.0, 1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -5475,12 +4790,12 @@ mod tests {
         let b = const_src(&mut g, 2.0);
         let c = const_src(&mut g, 3.0);
         let col = g.add_node("_TestCollect", None).unwrap();
+        let out = OutputProbe::open(&g, col, "out");
         g.add_link(a, "out", col, "ins").unwrap();
         g.add_link(b, "out", col, "ins").unwrap();
         g.add_link(c, "out", col, "ins").unwrap();
         g.remove_link(b, "out", col, "ins").unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 3.0]);
+        collects(&mut g, &out, &[2.0, 1.0, 3.0]);
     }
 
     #[test]
@@ -5490,12 +4805,12 @@ mod tests {
         let b = const_src(&mut g, 2.0);
         let c = const_src(&mut g, 3.0);
         let col = g.add_node("_TestCollect", None).unwrap();
+        let out = OutputProbe::open(&g, col, "out");
         g.add_link(a, "out", col, "ins").unwrap();
         g.add_link(b, "out", col, "ins").unwrap();
         g.add_link(c, "out", col, "ins").unwrap();
         g.remove_node(b).unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 3.0]);
+        collects(&mut g, &out, &[2.0, 1.0, 3.0]);
     }
 
     #[test]
@@ -5504,22 +4819,21 @@ mod tests {
         let a = const_src(&mut g, 1.0);
         let b = const_src(&mut g, 2.0);
         let col = g.add_node("_TestCollect", None).unwrap();
+        let out = OutputProbe::open(&g, col, "out");
         g.add_link(a, "out", col, "ins").unwrap();
         g.add_link(b, "out", col, "ins").unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 2.0]);
+        collects(&mut g, &out, &[2.0, 1.0, 2.0]);
         // a's next frame overwrites its cell (latest-wins); b is retained; order stable.
         g.update_param(a, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 9.0, 2.0]);
+        collects(&mut g, &out, &[2.0, 9.0, 2.0]);
     }
 
     #[test]
     fn multi_input_empty_slot_is_empty_list() {
         let mut g = Graph::new();
         let col = g.add_node("_TestCollect", None).unwrap(); // autotriggers with 0 wires
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![0.0]);
+        let out = OutputProbe::open(&g, col, "out");
+        collects(&mut g, &out, &[0.0]);
     }
 
     #[test]
@@ -5543,9 +4857,9 @@ mod tests {
             .into_iter()
             .find(|u| g2.type_name(*u) == Some("_TestCollect"))
             .expect("collect restored");
-        g2.tick();
+        let out = OutputProbe::open(&g2, col2, "out");
         // All 3 wires restored, in connection order (a=1, b=2, c=3).
-        assert_eq!(as_f32_vec(&g2.latest_frame(col2, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+        collects(&mut g2, &out, &[3.0, 1.0, 2.0, 3.0]);
     }
 
     // ---- required input slots ----------------------------------------------
@@ -5553,56 +4867,56 @@ mod tests {
     #[test]
     fn a_required_input_with_no_frame_errors_before_process_is_entered() {
         let mut g = Graph::new();
-        let n = g.add_node("_TestRequired", None).unwrap();
-        // Autotrigger is what makes an unwired node tick at all — D1: the check fires on a TICK,
+        // Born capped, so the run that first HAS data is still on the wire when the probe looks —
+        // the counter is the oracle and an uncapped node has overwritten `1` thousands of times.
+        let n = capped(&mut g, "_TestRequired", 5.0);
+        // Autotrigger is what makes an unwired node run at all — D1: the check fires on a RUN,
         // never on the configuration.
         g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
-        g.tick();
-        assert_eq!(
-            g.last_error(n),
-            Some("required input slot `data` has no data"),
-            "the empty required slot is named"
-        );
-        assert!(g.latest_frame(n, "out").is_none(), "a refused tick emits nothing");
+        let out = OutputProbe::open(&g, n, "out");
+        wait_for(&mut g, "the empty required slot to be named", |g| {
+            g.last_error(n) == Some("required input slot `data` has no data")
+        });
+        assert!(out.silent(&mut g), "a refused run emits nothing");
         // …and `process` was never ENTERED, not merely denied its output. The node counts its own
-        // calls, so once the slot is fed the count must read 1; a check placed AFTER `node.process`
-        // would leave it at 2.
+        // calls, so once the slot is fed the FIRST frame must read 1; a check placed AFTER
+        // `node.process` would have counted every refused run before it.
         let src = const_src(&mut g, 4.0);
         g.add_link(src, "out", n, "data").unwrap();
-        g.tick();
-        assert_eq!(g.last_error(n), None, "the fed slot clears the error");
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "process was entered exactly once");
+        assert_eq!(
+            first_f32(&out.expect_frame(&mut g, "the fed node to run")),
+            1.0,
+            "process was entered exactly once, on the run that had data",
+        );
+        wait_for(&mut g, "the fed slot to clear the error", |g| g.last_error(n).is_none());
     }
 
     #[test]
     fn a_required_input_holding_a_frame_runs_cleanly() {
         let mut g = Graph::new();
         let src = const_src(&mut g, 7.0);
-        let n = g.add_node("_TestRequired", None).unwrap();
+        let n = capped(&mut g, "_TestRequired", 5.0);
+        let out = OutputProbe::open(&g, n, "out");
         g.add_link(src, "out", n, "data").unwrap();
-        g.tick();
-        assert_eq!(g.last_error(n), None, "a satisfied required slot is not an error");
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "process ran");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the node to run")), 1.0, "process ran");
+        wait_for(&mut g, "a satisfied required slot to report no error", |g| g.last_error(n).is_none());
     }
 
     #[test]
     fn a_required_multi_input_with_no_frames_errors() {
         let mut g = Graph::new();
-        let n = g.add_node("_TestRequiredMulti", None).unwrap();
+        let n = capped(&mut g, "_TestRequiredMulti", 5.0);
         g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
-        g.tick();
-        assert_eq!(
-            g.last_error(n),
-            Some("required input slot `ins` has no data"),
-            "an unwired variadic slot holds no frames either"
-        );
-        assert!(g.latest_frame(n, "out").is_none(), "a refused tick emits nothing");
+        let out = OutputProbe::open(&g, n, "out");
+        wait_for(&mut g, "the unwired variadic slot to be named", |g| {
+            g.last_error(n) == Some("required input slot `ins` has no data")
+        });
+        assert!(out.silent(&mut g), "a refused run emits nothing");
         // Wire one source and the same node runs, seeing its one frame.
         let src = const_src(&mut g, 1.0);
         g.add_link(src, "out", n, "ins").unwrap();
-        g.tick();
-        assert_eq!(g.last_error(n), None);
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "one wire present");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the node to run")), 1.0, "one wire present");
+        wait_for(&mut g, "the error to clear", |g| g.last_error(n).is_none());
     }
 
     #[test]
@@ -5611,11 +4925,12 @@ mod tests {
         // node floating in space" — we never asked it to run, so it has nothing to report.
         let mut g = Graph::new();
         let n = g.add_node("_TestRequired", None).unwrap();
-        for _ in 0..3 {
-            g.tick();
-        }
-        assert_eq!(g.last_error(n), None, "a node that never ran cannot be missing an input");
-        assert!(g.latest_frame(n, "out").is_none(), "and it emitted nothing");
+        let out = OutputProbe::open(&g, n, "out");
+        assert!(out.silent(&mut g), "it emitted nothing");
+        assert!(
+            stays(&mut g, |g| g.last_error(n).is_none()),
+            "a node that never ran cannot be missing an input",
+        );
     }
 
     #[test]
@@ -5634,134 +4949,65 @@ mod tests {
         let n = g.add_node("_TestRequiredPair", None).unwrap();
         g.add_link(silent, "out", n, "data").unwrap();
         let src = const_src(&mut g, 1.0);
+        let out = OutputProbe::open(&g, n, "out");
         g.add_link(src, "out", n, "tick").unwrap();
 
-        g.tick();
-
-        assert_eq!(
-            g.last_error(n),
-            Some("required input slot `data` has no data"),
-            "a wire is not a frame"
-        );
-        assert!(g.latest_frame(n, "out").is_none(), "so `process` was never entered");
-    }
-
-    #[test]
-    fn a_required_input_is_refused_on_the_detached_tier_too() {
-        // The check is placed in the seam BOTH tiers share, and this is the only test that holds it
-        // there: hoist it into `run_node` and every inline required-slot test stays green while a
-        // detached node pays a full dispatch and fails inside its worker instead of the engine
-        // refusing the tick.
-        let mut g = Graph::new();
-        let arrivals: std::sync::Arc<std::sync::Mutex<Vec<f32>>> = Default::default();
-        let mine = arrivals.clone();
-        g.register_dyn_type(
-            &REQ_DET_MANIFEST,
-            Box::new(move |_p| Box::new(RequiredDetached { arrivals: mine.clone() })),
-        );
-        let n = g.add_node("_TestRequiredDetached", None).unwrap();
-        g.update_param(n, "common", "autotrigger", Param::boolean(true)).unwrap();
-        // One dispatch per second of the clock this test drives, so the positive control below can
-        // hold that clock still and count exactly one job rather than however many ticks the drain
-        // happened to take.
-        g.update_param(n, "common", "max_frequency", Param::float(1.0, 0.0, 1e9)).unwrap();
-        wait_bootstrapped(&g, n); // dispatch is gated on READY
-
-        // The worker's answer comes back through `Done` and is drained on a LATER tick, so the
-        // error is a bounded poll rather than the tick that dispatched it.
-        let t0 = Instant::now();
-        let mut err = None;
-        for i in 0..200 {
-            g.tick_at(t0 + Duration::from_millis(5 * i));
-            if let Some(e) = g.last_error(n) {
-                err = Some(e.to_string());
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert_eq!(
-            err.as_deref(),
-            Some("required input slot `data` has no data"),
-            "the detached tier names the empty required slot identically"
-        );
-        assert!(arrivals.lock().unwrap().is_empty(), "and `process` was never entered on the worker");
-
-        // The positive control. Without it both assertions above hold just as well for a job that
-        // was never dispatched at all — an unready worker, a `wants_run` that answered false — which
-        // is a test that proves nothing.
-        let src = const_src(&mut g, 4.0);
-        g.add_link(src, "out", n, "data").unwrap();
-        let t1 = t0 + Duration::from_secs(10); // held still: the 1 Hz cap admits exactly one dispatch
-        let mut ran = false;
-        for _ in 0..200 {
-            g.tick_at(t1);
-            if g.latest_frame(n, "out").is_some() {
-                ran = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(ran, "the fed node ran on its worker and its frame came back");
-        assert_eq!(g.last_error(n), None, "the fed slot clears the error");
-        assert_eq!(
-            *arrivals.lock().unwrap(),
-            vec![4.0],
-            "exactly one `process` entry, seeing the frame it was fed"
-        );
+        wait_for(&mut g, "the wired-but-empty slot to be named", |g| {
+            g.last_error(n) == Some("required input slot `data` has no data")
+        });
+        assert!(out.silent(&mut g), "so `process` was never entered");
     }
 
     // ---- the initialization gate (D3) --------------------------------------
 
     #[test]
-    fn a_failed_setup_stands_through_the_ticks_that_used_to_erase_it() {
-        // `run_node` assigned `execute_node`'s result straight into `last_error`, and a
-        // construction failure lived in that SAME field — so a node whose `setup()` raised erased
-        // its own bootstrap failure on its first clean tick and read `ready, no error` though it
-        // had never initialized. The failure now has its own field, which `execute_node` cannot
-        // reach.
-        let mut g = Graph::new();
-        let (n, _counts) = gated_setup_node(&mut g);
-        assert_eq!(g.last_error(n), Some("device is not open"), "setup failed at construction");
-        for _ in 0..5 {
-            g.tick();
-        }
-        assert_eq!(g.last_error(n), Some("device is not open"), "and that is still what it reports");
-        assert_eq!(g.node_stage(n), "error", "the editor draws it errored, not ready");
-    }
-
-    #[test]
-    fn an_uninitialized_node_never_enters_process() {
-        // The message is not enough: a gate that reports the failure and runs `process` anyway
-        // passes every assertion above. The run counter is what fails it — "ticks of a node that
-        // had a setup() error should not be possible".
+    fn a_failed_setup_stands_and_the_node_never_enters_process() {
+        // D3 end to end, across the status service: the failure the node reported at birth is what
+        // the graph keeps reporting, and `process` is unreachable underneath it. The run COUNTER is
+        // the load-bearing half — a gate that reports the failure and runs `process` anyway passes
+        // an assertion on the message alone, which is the bug the contract exists to prevent.
         let mut g = Graph::new();
         let (n, counts) = gated_setup_node(&mut g);
-        for _ in 0..5 {
-            g.tick();
-        }
+        let out = OutputProbe::open(&g, n, "out");
+        wait_for(&mut g, "the setup failure to reach the graph", |g| {
+            g.last_error(n) == Some("device is not open")
+        });
+        assert!(
+            stays(&mut g, |g| g.node_stage(n) == "error"),
+            "the editor draws it errored, not ready, and it stays that way",
+        );
+        assert!(out.silent(&mut g), "the node emitted nothing");
         assert_eq!(counts.lock().unwrap().runs, 0, "process was never entered");
-        assert!(g.latest_frame(n, "out").is_none(), "and the node emitted nothing");
     }
 
     #[test]
     fn correcting_the_param_that_broke_setup_reinitializes_the_node() {
-        // D3's retry door. `update_param` stores the new value BEFORE the gate, so the replay
-        // inside the retry delivers it — which is what makes fixing the param the fix.
+        // D3's retry door, end to end: `update_param` stores the new value and announces it, and
+        // the node's own retry replays the record — which is what makes fixing the param the fix.
+        //
+        // The counters are read as DELTAS across the edit, not as absolutes: the node retries its
+        // own initialization on a wall-clock backoff, so how many attempts it has made by the time
+        // the edit lands is a function of how long the harness took to get here.
         let mut g = Graph::new();
         let (n, counts) = gated_setup_node(&mut g);
-        assert_eq!(g.last_error(n), Some("device is not open"));
+        let out = OutputProbe::open(&g, n, "out");
+        wait_for(&mut g, "the setup failure to reach the graph", |g| {
+            g.last_error(n) == Some("device is not open")
+        });
+        let before = { let c = counts.lock().unwrap(); (c.setups, c.param_calls) };
 
         assert!(g.update_param(n, "boot", "ok", Param::boolean(true)).is_ok(), "the edit is accepted");
-        assert_eq!(g.last_error(n), None, "the retry initialized the node");
+        wait_for(&mut g, "the retry to initialize the node", |g| g.last_error(n).is_none());
         assert_eq!(g.node_stage(n), "ready");
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 1.0, "and it runs — for the first time");
+        // "For the first time" is read off the node's own counter rather than off a frame: the
+        // healed node free-runs, so the probe's one-deep cell has long stopped holding run 1.
+        wait_for(&mut g, "the healed node to run", |_| counts.lock().unwrap().runs > 0);
+        assert!(out.frame(&mut g).is_some(), "and what it ran reached the data plane");
         let c = counts.lock().unwrap();
-        assert_eq!(c.setups, 2, "setup ran again");
-        // The retry replayed BOTH params through `on_param_changed` (2 at construction, 2 on the
-        // retry). `update_param` delivering its own edit on top would read 5 — and double-apply
-        // whatever side effect the handler carries.
-        assert_eq!(c.param_calls, 4, "the edit reached the node once, through the replay");
+        assert_eq!(c.setups, before.0 + 1, "the edit retried the initialization exactly once");
+        // The retry replayed BOTH params through `on_param_changed`. `update_param` delivering its
+        // own edit on top would add a third — and double-apply the handler's side effect.
+        assert_eq!(c.param_calls, before.1 + 2, "the edit reached the node once, through the replay");
     }
 
     #[test]
@@ -5771,104 +5017,48 @@ mod tests {
         // inverse must stay in step with the session's history.
         let mut g = Graph::new();
         let (n, counts) = gated_setup_node(&mut g);
+        wait_for(&mut g, "the setup failure to reach the graph", |g| {
+            g.last_error(n) == Some("device is not open")
+        });
         let picked = Param::Str { value: "hw:1".into(), options: None, refresh: true };
         assert!(g.update_param(n, "boot", "device", picked).is_ok(), "the edit is stored, not refused");
-        assert_eq!(g.last_error(n), Some("device is not open"), "the node is still uninitialized");
-        assert_eq!(g.node_stage(n), "error");
-        {
-            let c = counts.lock().unwrap();
-            assert_eq!(c.setups, 2, "the interaction retried the initialization");
-            assert_eq!(c.param_calls, 4, "the failed retry replayed the params; nothing was applied twice");
-            assert_eq!(c.runs, 0, "and no callback ran against an uninitialized node");
-        }
-        g.tick();
-        assert_eq!(counts.lock().unwrap().runs, 0, "a tick still cannot enter process");
+        assert!(
+            stays(&mut g, |g| g.last_error(n) == Some("device is not open") && g.node_stage(n) == "error"),
+            "the node is still uninitialized",
+        );
+        assert_eq!(counts.lock().unwrap().runs, 0, "and nothing ran against it");
     }
 
     #[test]
-    fn refreshing_a_param_on_an_uninitialized_node_refuses_and_names_the_failure() {
-        // A refresh answers the UI with a LIST, and there is none. `Ok(None)` would read as "this
-        // node implements no hook" — a different, misleading answer — so the refusal says why.
-        // The node's hook DOES return a list, so a missing gate reads as a successful scan.
+    fn a_refresh_on_an_uninitialized_node_enumerates_nothing() {
+        // §8.5 moved the answer off the RPC: `refresh_param` always answers `Ok(None)` because the
+        // hook runs on the node's own thread. D3 still gates it there — a picker whose node failed
+        // `setup()` has nothing to scan — so the observable is the OPTIONS in the record, which the
+        // node's report writes. The node's hook does return a list, so a missing gate reads as a
+        // successful scan.
         let mut g = Graph::new();
         let (n, _counts) = gated_setup_node(&mut g);
-        let err = g
-            .refresh_param(n, "boot", "device")
-            .expect_err("an uninitialized node has no options to give");
-        assert!(err.contains("device is not open"), "the refusal names the setup failure: {err}");
+        assert_eq!(g.refresh_param(n, "boot", "device").unwrap(), None, "the answer never rides the RPC");
+        assert!(
+            stays(&mut g, |g| device_options(g, n) == vec!["none".to_string()]),
+            "an uninitialized node enumerated nothing",
+        );
 
-        // Once it initializes, the same call answers normally.
+        // Once it initializes, the same call reaches the hook and the record moves.
         g.update_param(n, "boot", "ok", Param::boolean(true)).unwrap();
-        assert_eq!(g.refresh_param(n, "boot", "device").unwrap(), Some(vec!["dev0".to_string()]));
+        wait_for(&mut g, "the node to initialize", |g| g.last_error(n).is_none());
+        g.refresh_param(n, "boot", "device").unwrap();
+        wait_for(&mut g, "the scanned options to reach the record", |g| {
+            device_options(g, n) == vec!["dev0".to_string()]
+        });
     }
 
-    #[test]
-    fn a_failed_setup_is_not_re_initialized_on_every_tick() {
-        // The tick's retry is THROTTLED. Unthrottled, every admitted run re-ran the whole
-        // `seed_node` unit — each param's `on_param_changed` plus `setup()` — on the tick thread,
-        // inside the mutex the bridge holds across the entire tick. The counters are the assertion:
-        // an error-message check passes identically with or without the backoff.
-        let mut g = Graph::new();
-        let (_n, counts) = gated_setup_node(&mut g);
-        let t0 = Instant::now();
-        for i in 0..5 {
-            g.tick_at(t0 + Duration::from_millis(i));
+    /// The `boot.device` param's current options — what a refresh rewrites, and nothing else does.
+    fn device_options(g: &Graph, uid: Uid) -> Vec<String> {
+        match goofi_node::param(&g.params(uid).unwrap(), "boot", "device") {
+            Some(Param::Str { options: Some(o), .. }) => o.clone(),
+            other => panic!("expected a Str param with options, got {other:?}"),
         }
-        let c = counts.lock().unwrap();
-        assert_eq!(c.setups, 1, "only construction's setup ran; the ticks inside the window retried nothing");
-        assert_eq!(c.param_calls, 2, "and no param handler was replayed against them");
-    }
-
-    #[test]
-    fn a_failed_setup_retries_once_the_backoff_elapses() {
-        // The throttle must not become a refusal: a node whose device appears later still heals on
-        // its own, one attempt per interval — the recovery half of D3's tick retry.
-        let mut g = Graph::new();
-        let (_n, counts) = gated_setup_node(&mut g);
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        assert_eq!(counts.lock().unwrap().setups, 1, "inside the window");
-
-        g.tick_at(t0 + Duration::from_secs(2));
-        assert_eq!(counts.lock().unwrap().setups, 2, "the elapsed window admits exactly one retry");
-        assert_eq!(counts.lock().unwrap().param_calls, 4, "which replayed the params once");
-
-        // …and the retry restarts the window rather than opening it.
-        g.tick_at(t0 + Duration::from_secs(2) + Duration::from_millis(1));
-        assert_eq!(counts.lock().unwrap().setups, 2, "the tick right behind it retries nothing");
-    }
-
-    #[test]
-    fn an_expression_binding_never_dispatches_into_an_uninitialized_node() {
-        // The binding APPLY phase is a FOURTH caller of `on_param_changed`, and it sat outside the
-        // gate — so a node whose `setup()` failed kept receiving param callbacks, against
-        // `ensure_initialized`'s own contract ("nothing may run against it — not `process`, not a
-        // param callback, not a refresh"). It also DOUBLE-APPLIES: the dispatch runs before
-        // `run_node`'s retry in the same tick, and that retry's `seed_node` replays the same param.
-        let mut g = eval_graph();
-        let src = g.add_node("_TestConst", None).unwrap();
-        g.rename_node(src, "src").unwrap();
-        let (n, counts) = gated_setup_node(&mut g);
-        g.set_expression(n, "boot", "device", "nd('src')", true, false).unwrap();
-
-        // Three ticks inside the backoff window, each evaluating a NEW value for the bound param.
-        let t0 = Instant::now();
-        for i in 0..3 {
-            g.update_param(src, "constant", "value", Param::float(i as f64 + 1.0, -1e9, 1e9)).unwrap();
-            g.tick_at(t0 + Duration::from_millis(i));
-        }
-        {
-            let c = counts.lock().unwrap();
-            assert_eq!(c.setups, 1, "no retry inside the window");
-            assert_eq!(c.param_calls, 2, "and the node heard none of the three evaluated values");
-        }
-
-        // The window elapses: the retry's replay is what finally delivers the bound value — ONCE.
-        g.update_param(src, "constant", "value", Param::float(9.0, -1e9, 1e9)).unwrap();
-        g.tick_at(t0 + Duration::from_secs(2));
-        let c = counts.lock().unwrap();
-        assert_eq!(c.setups, 2, "the elapsed window admitted the retry");
-        assert_eq!(c.param_calls, 4, "each param replayed once — not the binding's dispatch on top");
     }
 
     #[test]
@@ -5877,36 +5067,38 @@ mod tests {
         let src = g.add_node("_TestConst", None).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
         g.add_link(src, "out", echo, "in").unwrap();
+        let out = OutputProbe::open(&g, echo, "out");
         g.remove_node(src).unwrap();
         assert!(!g.contains(src));
-        g.tick(); // must not panic; echo has no input now
-        assert!(g.latest_frame(echo, "out").is_none());
+        assert!(out.silent(&mut g), "the echo has no input left, so nothing triggers it");
     }
 
     #[test]
     fn trigger_arbitration_gates_downstream() {
+        // A consumer runs once per frame its producer emits, and on nothing else. `_TestGated`
+        // emits on every other run of its own, so the counter must stay strictly behind it —
+        // a consumer that free-ran would overtake it immediately.
         let mut g = Graph::new();
-        let src = g.add_node("_TestGated", None).unwrap(); // emits every other tick
+        let src = g.add_node("_TestGated", None).unwrap();
         let cnt = g.add_node("_TestCounter", None).unwrap(); // triggered
+        let gated = OutputProbe::open(&g, src, "out");
+        let counted = OutputProbe::open(&g, cnt, "out");
         g.add_link(src, "out", cnt, "in").unwrap();
-        for _ in 0..6 {
-            g.tick();
-        }
-        // The gated source emits on 3 of 6 ticks, so the counter ran exactly 3 times.
-        assert_eq!(first_f32(&g.latest_frame(cnt, "out").expect("counter ran")), 3.0);
+        wait_for(&mut g, "the wire to carry a frame", |_| counted.latest().is_some());
+
+        // The producer's own index counts its EMITS; the counter counts its RUNS. One run per emit
+        // means the counter can never be ahead, and the emits it skipped keep it behind.
+        let emits = gated.expect_frame(&mut g, "the gated source to emit").meta().index().unwrap_or(0) + 1;
+        let runs = first_f32(&counted.expect_frame(&mut g, "the counter to run")) as u64;
+        assert!(runs <= emits, "the counter ran {runs} times for {emits} emits");
     }
 
     #[test]
     fn unwired_triggered_node_never_runs() {
         let mut g = Graph::new();
         let cnt = g.add_node("_TestCounter", None).unwrap();
-        for _ in 0..5 {
-            g.tick();
-        }
-        assert!(
-            g.latest_frame(cnt, "out").is_none(),
-            "a triggered node with no wired input must never run"
-        );
+        let out = OutputProbe::open(&g, cnt, "out");
+        assert!(out.silent(&mut g), "a triggered node with no wired input must never run");
     }
 
     #[test]
@@ -5941,15 +5133,15 @@ mod tests {
             Some(7.5)
         );
 
-        // The link round-trips: ticking drives the echo from the restored source.
-        g2.tick();
+        // The link round-trips: the restored source drives the restored echo.
         let echo2 = g2
             .node_uids()
             .into_iter()
             .find(|u| g2.type_name(*u) == Some("_TestEcho"))
             .unwrap();
-        assert!(g2.latest_frame(echo2, "out").is_some(), "restored link must carry data");
-        assert_eq!(first_f32(&g2.latest_frame(echo2, "out").unwrap()), 7.5);
+        let out = OutputProbe::open(&g2, echo2, "out");
+        wait_for(&mut g2, "the restored wire to carry data", |_| out.latest().is_some());
+        assert_eq!(first_f32(&out.expect_frame(&mut g2, "the echo to emit")), 7.5);
     }
 
     #[test]
@@ -5966,532 +5158,173 @@ mod tests {
     }
 
     #[test]
-    fn independent_nodes_run_in_parallel() {
-        // Eight sources with no edges between them all sit in topo level 0, so a
-        // parallel scheduler runs them concurrently. Each sleeps 20ms: a
-        // sequential tick would take >= 160ms; a parallel one must finish well
-        // under that. Generous bound to stay robust on a loaded machine.
-        let mut g = Graph::new();
-        for _ in 0..8 {
-            g.add_node("_TestSlow", None).unwrap();
-        }
-        g.tick(); // warm the rayon pool (first use pays thread-spawn cost)
-        let t = std::time::Instant::now();
-        g.tick();
-        let elapsed = t.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_millis(100),
-            "8 independent 20ms nodes took {elapsed:?}; expected concurrent execution (< 100ms)"
-        );
-    }
-
-    #[test]
     fn independent_branches_both_produce_correctly() {
-        // Two disjoint _TestConst -> Echo branches must both propagate in one
-        // tick regardless of the parallel scheduling of their level-0 sources.
+        // Two disjoint _TestConst -> Echo branches, each carrying its OWN value. Distinct values
+        // are the whole oracle: a propagation that crossed the branches, or one wire feeding both
+        // consumers, reads identically to a correct one if both branches carry the same number.
         let mut g = Graph::new();
         let a = g.add_node("_TestConst", None).unwrap();
         let ea = g.add_node("_TestEcho", None).unwrap();
         g.update_param(a, "constant", "value", Param::float(3.0, -1e9, 1e9)).unwrap();
+        let out_a = OutputProbe::open(&g, ea, "out");
         g.add_link(a, "out", ea, "in").unwrap();
 
         let b = g.add_node("_TestConst", None).unwrap();
         let eb = g.add_node("_TestEcho", None).unwrap();
         g.update_param(b, "constant", "value", Param::float(4.0, -1e9, 1e9)).unwrap();
+        let out_b = OutputProbe::open(&g, eb, "out");
         g.add_link(b, "out", eb, "in").unwrap();
 
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(ea, "out").unwrap()), 3.0);
-        assert_eq!(first_f32(&g.latest_frame(eb, "out").unwrap()), 4.0);
-    }
-
-    // ---- detached (Subprocess-isolated) execution scaffolding ----
-    //
-    // A blocking test node that runs on the detached worker WITHOUT a real subprocess: it
-    // records each job's arrival (the input's first f32) then waits for a permit, so a test
-    // controls exactly when the worker proceeds. `open()` releases the gate for good — used
-    // at teardown so a blocked worker can drain, see the shutdown signal and exit.
-    struct Gate {
-        mtx: std::sync::Mutex<GateInner>,
-        cv: std::sync::Condvar,
-    }
-    struct GateInner {
-        permits: u32,
-        calls: Vec<f32>,
-    }
-    impl Gate {
-        fn new() -> std::sync::Arc<Gate> {
-            std::sync::Arc::new(Gate {
-                mtx: std::sync::Mutex::new(GateInner { permits: 0, calls: Vec::new() }),
-                cv: std::sync::Condvar::new(),
-            })
-        }
-        fn release(&self) {
-            self.mtx.lock().unwrap().permits += 1;
-            self.cv.notify_one();
-        }
-        fn open(&self) {
-            self.mtx.lock().unwrap().permits = u32::MAX;
-            self.cv.notify_all();
-        }
-        fn calls(&self) -> Vec<f32> {
-            self.mtx.lock().unwrap().calls.clone()
-        }
-        /// Block the test thread until the worker has started at least `n` jobs.
-        fn wait_calls(&self, n: usize) {
-            for _ in 0..1000 {
-                if self.calls().len() >= n {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            panic!("worker never reached {n} calls (got {})", self.calls().len());
-        }
-    }
-
-    struct GateNode {
-        gate: std::sync::Arc<Gate>,
-        // Bumped on Drop so a teardown test can observe the worker dropping its node.
-        on_drop: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
-        fail: bool,
-    }
-    impl Drop for GateNode {
-        fn drop(&mut self) {
-            if let Some(c) = &self.on_drop {
-                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-    }
-    impl Node for GateNode {
-        fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let first = inp
-                .get("data")
-                .and_then(|d| match d.value() {
-                    Value::Array(s) => Some(f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap())),
-                    _ => None,
-                })
-                .unwrap_or(0.0);
-            self.gate.mtx.lock().unwrap().calls.push(first); // record arrival before blocking
-            if self.fail {
-                return Err("gate failure".into());
-            }
-            {
-                let mut g = self.gate.mtx.lock().unwrap();
-                while g.permits == 0 {
-                    g = self.gate.cv.wait(g).unwrap();
-                }
-                g.permits -= 1;
-            }
-            let d = Data::array_f32(vec![1], first.to_le_bytes().to_vec(), Meta::empty())
-                .map_err(|e| e.to_string())?;
-            out.set("out", d);
-            Ok(())
-        }
-    }
-
-    static GATE_IN: &[SlotDecl] =
-        &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: true, multi: false, required: false }];
-    static GATE_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
-    static GATE_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "GateSubproc",
-        category: "test",
-        doc: "blocking detached test node (no real subprocess)",
-        inputs: GATE_IN,
-        outputs: GATE_OUT,
-        params: NO_PARAMS,
-        isolation: Isolation::Subprocess,
-        producer: false,
-        factory: rt_stub_factory,
-    };
-
-    /// A detached node that blocks inside `setup()` — the shape of a Python child paying its
-    /// spawn + import cost, which is what the boot spinner is for. `fail` makes the bootstrap
-    /// end in an error once released, which is the other half of what that window is for.
-    struct SeedingNode {
-        gate: std::sync::Arc<Gate>,
-        fail: bool,
-    }
-    impl Node for SeedingNode {
-        fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            self.gate.mtx.lock().unwrap().calls.push(0.0); // announce arrival, then block
-            self.gate.cv.notify_all();
-            let mut g = self.gate.mtx.lock().unwrap();
-            while g.permits == 0 {
-                g = self.gate.cv.wait(g).unwrap();
-            }
-            g.permits -= 1;
-            if self.fail {
-                return Err("boot failed".into());
-            }
-            Ok(())
-        }
-        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            // 1.0 marks a dispatched JOB, distinct from setup's 0.0, so a test can tell whether a
-            // job ran at all — and the frame proves its `Done` was drained by a tick.
-            self.gate.mtx.lock().unwrap().calls.push(1.0);
-            let d = Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty())
-                .map_err(|e| e.to_string())?;
-            out.set("out", d);
-            Ok(())
-        }
-    }
-    static SEEDING_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "GateSeeding",
-        category: "test",
-        doc: "detached node that blocks in setup()",
-        inputs: &[],
-        outputs: GATE_OUT,
-        params: NO_PARAMS,
-        isolation: Isolation::Subprocess,
-        producer: true,
-        factory: rt_stub_factory,
-    };
-
-    fn register_gate_seeding(g: &mut Graph, gate: std::sync::Arc<Gate>, fail: bool) {
-        g.register_dyn_type(
-            &SEEDING_MANIFEST,
-            Box::new(move |_p| Box::new(SeedingNode { gate: gate.clone(), fail })),
-        );
-    }
-
-    /// Block until a detached node's worker has finished bootstrapping. Job dispatch is gated on
-    /// `STAGE_READY`, so a test that ticks before its worker is up would silently skip its job.
-    fn wait_bootstrapped(g: &Graph, uid: Uid) {
-        for _ in 0..1000 {
-            if !matches!(g.node_stage(uid), "creating" | "setup") {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        panic!("worker never bootstrapped (stage {})", g.node_stage(uid));
-    }
-
-    fn register_gate(
-        g: &mut Graph,
-        gate: std::sync::Arc<Gate>,
-        on_drop: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
-        fail: bool,
-    ) {
-        g.register_dyn_type(
-            &GATE_MANIFEST,
-            Box::new(move |_p| Box::new(GateNode { gate: gate.clone(), on_drop: on_drop.clone(), fail })),
-        );
-    }
-
-    #[test]
-    fn detached_node_does_not_block_the_tick() {
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), None, false);
-        let src = g.add_node("_TestConst", None).unwrap();
-        let det = g.add_node("GateSubproc", None).unwrap();
-        g.add_link(src, "out", det, "data").unwrap();
-        wait_bootstrapped(&g, det); // dispatch is gated on READY
-
-        let t0 = Instant::now();
-        g.tick_at(t0); // dispatches a job; the worker will block on the permit
-        assert!(t0.elapsed() < Duration::from_millis(50), "tick did not block on the busy worker");
-        gate.wait_calls(1); // the worker took the job (proving it ran off-tick)
-
-        gate.open(); // let it (and future jobs) complete
-        let mut got = false;
-        for i in 1..200 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-            if g.latest_frame(det, "out").is_some() {
-                got = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(3));
-        }
-        assert!(got, "the detached node's output propagated on a later tick");
-    }
-
-    #[test]
-    fn detached_dispatch_coalesces_latest_wins() {
-        // While the worker is blocked on job 1, three more dispatches with changing values
-        // collapse in the latest-wins inbox — the worker runs the FIRST and the LAST only.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), None, false);
-        let src = g.add_node("_TestConst", None).unwrap();
-        g.update_param(src, "constant", "value", Param::float(1.0, -1.0e9, 1.0e9)).unwrap();
-        let det = g.add_node("GateSubproc", None).unwrap();
-        g.add_link(src, "out", det, "data").unwrap();
-        wait_bootstrapped(&g, det); // dispatch is gated on READY
-
-        let t0 = Instant::now();
-        g.tick_at(t0); // dispatch job(value=1); worker takes it and blocks
-        gate.wait_calls(1);
-        for (i, v) in [2.0f32, 3.0, 4.0].iter().enumerate() {
-            g.update_param(src, "constant", "value", Param::float(*v as f64, -1.0e9, 1.0e9)).unwrap();
-            g.tick_at(t0 + Duration::from_millis(10 * (i as u64 + 1))); // 2 and 3 coalesce into 4
-        }
-        gate.release(); // finish job 1 → worker takes the coalesced job(value=4)
-        gate.wait_calls(2);
-        assert_eq!(gate.calls(), vec![1.0, 4.0], "middle jobs coalesced; only first + last ran");
-        gate.open(); // teardown: let the worker drain + idle so it sees the shutdown signal
-    }
-
-    #[test]
-    fn removing_a_detached_node_reaps_its_worker() {
-        // No tick → the worker seeds then idles on the inbox. remove_node drops the handle, which
-        // signals shutdown; the idle worker wakes, exits and drops the node (reaping any child
-        // process through its own Drop). The signal is fire-and-forget — the caller never waits on
-        // the worker — so this is a bounded poll, like its restart sibling.
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let gate = Gate::new();
-        let dropped = std::sync::Arc::new(AtomicUsize::new(0));
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), Some(dropped.clone()), false);
-        let det = g.add_node("GateSubproc", None).unwrap();
-        assert_eq!(dropped.load(Ordering::SeqCst), 0, "node still alive on its worker");
-
-        g.remove_node(det).unwrap();
-
-        for _ in 0..500 {
-            if dropped.load(Ordering::SeqCst) == 1 {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        panic!("the removed instance was never dropped (got {})", dropped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn removing_a_busy_detached_node_does_not_block_the_graph() {
-        // The sibling of `restarting_a_busy_detached_node_does_not_block_the_graph`, for the OTHER
-        // three teardown paths (delete, batch delete, undo-of-add, load). The bridge holds the
-        // graph mutex across `remove_node`, and the worker only observes shutdown between jobs —
-        // so waiting on a worker parked inside a blocked `process()` would freeze the tick, every
-        // viewer and every other RPC for the rest of that call.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), None, false);
-        let src = g.add_node("_TestConst", None).unwrap();
-        let det = g.add_node("GateSubproc", None).unwrap();
-        g.add_link(src, "out", det, "data").unwrap();
-        wait_bootstrapped(&g, det); // dispatch is gated on READY
-        g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
-        gate.wait_calls(1);
-
-        // Stand in for the backend's own timeout releasing the stuck call (a subprocess roundtrip
-        // gives up after 10s). It bounds the failure so a regression is a measured wait rather
-        // than a hung suite, and doubles as the worker's cleanup.
-        let releaser = gate.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(800));
-            releaser.open();
+        wait_for(&mut g, "both branches to carry data", |_| {
+            out_a.latest().is_some() && out_b.latest().is_some()
         });
-
-        let t0 = Instant::now();
-        g.remove_node(det).unwrap();
-        let blocked_for = t0.elapsed();
-
-        assert!(
-            blocked_for < Duration::from_millis(500),
-            "remove_node returned only after {blocked_for:?} — it waited on the busy worker"
-        );
+        out_a.wait_until(&mut g, "carries its own branch's value", |d| first_f32(d) == 3.0);
+        out_b.wait_until(&mut g, "carries its own branch's value", |d| first_f32(d) == 4.0);
     }
 
-    #[test]
-    fn detached_process_error_surfaces_on_the_error_channel() {
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), None, true); // process() returns Err immediately
-        let src = g.add_node("_TestConst", None).unwrap();
-        let det = g.add_node("GateSubproc", None).unwrap();
-        g.add_link(src, "out", det, "data").unwrap();
+    // ---- node lifecycle ----------------------------------------------------
 
-        let t0 = Instant::now();
-        let mut err = None;
-        for i in 0..200 {
-            g.tick_at(t0 + Duration::from_millis(5 * i));
-            if let Some(e) = g.last_error(det) {
-                err = Some(e.to_string());
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
+    /// A latch a node's `setup()` parks on. `Condvar` rather than a poll because the point is that
+    /// the node's thread is genuinely INSIDE `setup` while the test looks at its stage — a sleep
+    /// loop would leave a window where it is not.
+    type SetupGate = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+    fn setup_gate() -> SetupGate {
+        std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()))
+    }
+
+    trait Openable {
+        fn open(&self);
+    }
+
+    impl Openable for SetupGate {
+        fn open(&self) {
+            *self.0.lock().unwrap() = true;
+            self.1.notify_all();
         }
-        assert_eq!(err.as_deref(), Some("gate failure"), "the detached process error surfaced");
     }
 
-    #[test]
-    fn a_worker_whose_bootstrap_failed_is_never_given_a_job() {
-        // Two halves of one contract. The dispatch gate must refuse a worker whose `setup` failed —
-        // it is uninitialized, and "ticks of a node that had a setup() error should not be
-        // possible" (D3). And the failure must STAND: `outbox` is a latest-wins single slot, so a
-        // bootstrap failure posted there would be erased by any later `Done` before a tick drained
-        // it, and the node would report healthy though its `setup` failed (the silent case: a param
-        // `seed_node` folded in). It is latched off that channel for exactly that reason.
-        //
-        // Parking the worker inside `setup` makes the ordering exact rather than a race: the tick
-        // below runs while the bootstrap is still in flight, and the release then fails it.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate_seeding(&mut g, gate.clone(), true);
-        let det = g.add_node("GateSeeding", None).unwrap();
-        gate.wait_calls(1); // parked inside setup()
-
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        gate.open(); // setup returns Err and the worker reaches READY, failed
-        wait_bootstrapped(&g, det);
-
-        // Every tick from here is one the failed worker must NOT be fed.
-        for i in 1..40 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-            std::thread::sleep(Duration::from_millis(1));
+    /// Releases a [`SetupGate`] however the test ends, so a failed assertion never leaves a node
+    /// thread parked inside `setup`.
+    struct OnDrop(SetupGate);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            self.0.open();
         }
-        // `SeedingNode` pushes 0.0 from `setup` and 1.0 from `process`, so the call log says
-        // whether a job ever reached it — an assertion on the error alone would also pass while
-        // jobs ran, which is the hole this used to be written around.
-        assert_eq!(gate.calls(), vec![0.0], "the bootstrap ran; no process() job ever followed it");
-        assert!(g.latest_frame(det, "out").is_none(), "so the node emitted nothing");
-        assert_eq!(g.last_error(det), Some("boot failed"), "and the bootstrap failure stands");
-        assert_eq!(g.node_stage(det), "error", "the editor sees it as errored, not ready");
     }
 
-    #[test]
-    fn no_job_is_dispatched_while_the_worker_is_still_in_setup() {
-        // A job built while `setup` is still running was snapshotted from PRE-setup state, so it is
-        // stale by the time the worker could run it — and racing it against the bootstrap is what
-        // lets a `Done` erase the failure. The gate makes that window observable.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate_seeding(&mut g, gate.clone(), false);
-        let det = g.add_node("GateSeeding", None).unwrap();
-        gate.wait_calls(1); // parked inside setup()
-        assert_eq!(g.node_stage(det), "setup", "still booting");
-
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        g.tick_at(t0 + Duration::from_millis(10));
-
-        gate.open(); // setup completes — nothing may be queued behind it
-        wait_bootstrapped(&g, det);
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(gate.calls(), vec![0.0], "the bootstrap ran; no process() job followed it");
-
-        // ...and the node is not starved for it: the first tick after READY feeds the worker.
-        g.tick_at(t0 + Duration::from_millis(500));
-        gate.wait_calls(2);
-    }
-
-    #[test]
-    fn a_healthy_detached_node_never_reports_a_bootstrap_error() {
-        // The mirror-image of the latch's failure mode: making a failed `setup` visible must never
-        // make a working node look broken.
-        let gate = Gate::new();
-        gate.open();
-        let mut g = Graph::new();
-        register_gate_seeding(&mut g, gate.clone(), false);
-        let det = g.add_node("GateSeeding", None).unwrap();
-        wait_bootstrapped(&g, det);
-        assert_eq!(g.node_stage(det), "ready", "a clean bootstrap is ready, not errored");
-
-        let t0 = Instant::now();
-        for i in 0..400 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-            if g.latest_frame(det, "out").is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(g.latest_frame(det, "out").is_some(), "the worker ran a job");
-        assert_eq!(g.last_error(det), None, "a healthy worker reports no error");
-    }
-
-    /// A detached type whose FIRST instance fails `setup()` and whose later ones succeed — the
-    /// shape `restart_node` exists to rescue.
-    static BOOT_ONCE_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "GateBootOnce",
-        category: "test",
-        doc: "detached node whose first instance fails setup()",
-        inputs: &[],
-        outputs: GATE_OUT,
-        params: NO_PARAMS,
-        isolation: Isolation::Subprocess,
-        producer: true,
-        factory: rt_stub_factory,
-    };
-    struct BootOnceNode {
-        fail: bool,
-    }
-    impl Node for BootOnceNode {
+    struct SlowSetup(SetupGate);
+    impl Node for SlowSetup {
         fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            if self.fail {
-                return Err("boot failed".into());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut open = self.0 .0.lock().unwrap();
+            while !*open && Instant::now() < deadline {
+                // Bounded, so a failing test leaves no thread parked here for the rest of the run.
+                (open, _) = self.0 .1.wait_timeout(open, Duration::from_millis(50)).unwrap();
             }
             Ok(())
         }
         fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-            let d = Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty())
-                .map_err(|e| e.to_string())?;
-            out.set("out", d);
+            out.set("out", Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap());
             Ok(())
         }
     }
+    static SLOW_SETUP: NodeManifest = NodeManifest {
+        type_name: "_TestSlowSetup",
+        category: "test",
+        doc: "blocks inside setup()",
+        inputs: &[],
+        outputs: DROP_COUNTED_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::InProcess,
+        producer: true,
+        factory: rt_stub_factory,
+    };
 
-    #[test]
-    fn a_worker_whose_bootstrap_failed_stops_asking_the_tick_loop_to_wake() {
-        // `next_run_delay` paces the tick loop, and `entry.last_run = Some(now)` on DISPATCH is a
-        // detached node's only writer of `last_run`. Since the dispatch gate refuses a boot-failed
-        // worker permanently, `last_run` stays `None` for the life of the patch — and the scan's
-        // `None => Duration::ZERO` arm then answers "run me now" forever, ignoring the node's own
-        // cap. The bridge clamps ZERO to `LOCK_CEDE`, so one 30 Hz node pinned the loop at ~10 kHz
-        // on the graph mutex.
-        let mut g = Graph::new();
-        g.register_dyn_type(&BOOT_ONCE_MANIFEST, Box::new(|_p| Box::new(BootOnceNode { fail: true })));
-        let det = g.add_node("GateBootOnce", None).unwrap();
-        wait_bootstrapped(&g, det);
-        assert_eq!(g.last_error(det), Some("boot failed"), "the worker latched its bootstrap failure");
+    /// A node that counts its own drops. The counter is what makes "the thread stopped" observable
+    /// from the test's side: a halt that is never noticed leaves the instance alive on a thread
+    /// nothing is watching, and no graph-side read can tell that apart from a clean teardown.
+    struct DropCounted(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for DropCounted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl Node for DropCounted {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            out.set("out", Data::array_f32(vec![1], 7.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap());
+            Ok(())
+        }
+    }
+    static DROP_COUNTED_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
+    static DROP_COUNTED: NodeManifest = NodeManifest {
+        type_name: "_TestDropCounted",
+        category: "test",
+        doc: "counts its own drops",
+        inputs: &[],
+        outputs: DROP_COUNTED_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::InProcess,
+        producer: true,
+        factory: rt_stub_factory,
+    };
 
-        g.update_param(det, "common", "max_frequency", Param::float(30.0, 0.0, 1e9)).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // refused by the dispatch gate, so `last_run` is still None
-        assert_eq!(
-            g.next_run_delay(t0 + Duration::from_millis(1)),
-            None,
-            "a node the tick permanently refuses must not ask the loop to wake for it"
-        );
+    /// Register the drop-counting type and add one instance, with the counter it writes to.
+    fn drop_counted_node(g: &mut Graph) -> (Uid, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let drops: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let mine = drops.clone();
+        g.register_dyn_type(&DROP_COUNTED, Box::new(move |_p| Box::new(DropCounted(mine.clone()))));
+        let uid = g.add_node("_TestDropCounted", None).unwrap();
+        (uid, drops)
     }
 
-    #[test]
-    fn restarting_a_failed_detached_node_clears_its_bootstrap_error() {
-        // A bootstrap error that outlived the instance that earned it would leave a respawned,
-        // healthy node reporting a corpse's failure forever. It is sticky for the WORKER's
-        // lifetime only — `restart_node` installs a fresh handle, whose latch starts empty.
-        let builds = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let b = builds.clone();
-        let mut g = Graph::new();
-        g.register_dyn_type(
-            &BOOT_ONCE_MANIFEST,
-            Box::new(move |_p| {
-                let n = b.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Box::new(BootOnceNode { fail: n == 0 })
-            }),
-        );
-        let det = g.add_node("GateBootOnce", None).unwrap();
-        wait_bootstrapped(&g, det);
-        assert_eq!(g.last_error(det), Some("boot failed"), "the first instance failed to boot");
-
-        g.restart_node(det).unwrap();
-        wait_bootstrapped(&g, det);
-        assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 2, "a fresh instance was built");
-        assert_eq!(g.last_error(det), None, "the respawn does not inherit the corpse's error");
-        assert_eq!(g.node_stage(det), "ready");
-
-        let t0 = Instant::now();
-        for i in 0..400 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-            if g.latest_frame(det, "out").is_some() {
-                break;
+    /// Wait for `count` drops, or fail. The halt is fire-and-forget — a node inside a long
+    /// `process()` notices at its next wake — so this is a bounded poll rather than a join.
+    fn wait_drops(drops: &std::sync::atomic::AtomicUsize, count: usize, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if drops.load(std::sync::atomic::Ordering::SeqCst) == count {
+                return;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert_eq!(first_f32(&g.latest_frame(det, "out").unwrap()), 7.0, "the new instance runs");
-        assert_eq!(g.last_error(det), None, "and stays healthy");
+        panic!("{what}: {} drops, expected {count}", drops.load(std::sync::atomic::Ordering::SeqCst));
     }
+
+    #[test]
+    fn removing_a_node_stops_its_thread_and_drops_its_instance() {
+        // Every node has a manager-side thread (§5), and removal is what stops it. Nothing joins
+        // it — a node inside a long `process()` would hold the graph lock hostage — so the halt has
+        // to be a flag the loop reads, and the instance's own `Drop` is the proof it did.
+        let mut g = Graph::new();
+        let (n, drops) = drop_counted_node(&mut g);
+        let out = OutputProbe::open(&g, n, "out");
+        out.expect_frame(&mut g, "the node to run at all");
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0, "still alive on its thread");
+
+        g.remove_node(n).unwrap();
+        wait_drops(&drops, 1, "the removed instance was never dropped");
+    }
+
+    #[test]
+    fn dropping_the_graph_stops_every_node_thread() {
+        // The other end of the same flag: a `Graph` going out of scope — which every test does, and
+        // which `clear`/`load_doc` do wholesale — must not leave threads publishing into shared
+        // memory for the rest of the process. There is no channel to send a terminate on here,
+        // which is why the halt is a flag.
+        let drops: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        {
+            let mut g = Graph::new();
+            let mine = drops.clone();
+            g.register_dyn_type(&DROP_COUNTED, Box::new(move |_p| Box::new(DropCounted(mine.clone()))));
+            let a = g.add_node("_TestDropCounted", None).unwrap();
+            g.add_node("_TestDropCounted", None).unwrap();
+            OutputProbe::open(&g, a, "out").expect_frame(&mut g, "the nodes to be running");
+            assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+        wait_drops(&drops, 2, "a dropped graph left threads running");
+    }
+
 
     // ---- restart_node (in-place respawn) ----
 
@@ -6539,14 +5372,16 @@ mod tests {
         );
 
         let uid = g.add_node("_RestartBoot", None).unwrap();
-        assert_eq!(g.last_error(uid), Some("boot failed"), "the first instance failed to boot");
+        wait_for(&mut g, "the first instance's boot failure", |g| {
+            g.last_error(uid) == Some("boot failed")
+        });
 
         g.restart_node(uid).unwrap();
 
         assert_eq!(builds.load(std::sync::atomic::Ordering::SeqCst), 2, "a fresh instance was built");
-        assert_eq!(g.last_error(uid), None, "restart clears the recovered node's error");
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 7.0, "the new instance runs");
+        let out = OutputProbe::open(&g, uid, "out");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the new instance to run")), 7.0, "the new instance runs");
+        wait_for(&mut g, "the restart to clear the recovered node's error", |g| g.last_error(uid).is_none());
     }
 
     #[test]
@@ -6565,33 +5400,30 @@ mod tests {
         assert_eq!(g.viewers(uid), Some(&serde_json::json!({ "out": { "kind": "line" } })));
         assert_eq!(g.scope_of(uid), Some(scope), "a sub-patch member stays in its scope");
         // The param edit const_src made must reach the fresh instance, not the type default.
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 5.0, "params carried over");
+        let out = OutputProbe::open(&g, uid, "out");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the restarted node to run")), 5.0, "params carried over");
     }
 
     #[test]
     fn restart_keeps_every_wire_of_a_multi_input_in_connection_order() {
-        // The per-wire cells live inside the node entry while the links live on the graph: a
-        // restart that forgets to rebuild them leaves the slot silently dead.
+        // A reborn node has all-new service names (§3.1), so every wire into it has to be planned
+        // again — a restart that does not re-plan leaves the slot silently dead while the editor
+        // still draws three cables.
         let mut g = Graph::new();
         let a = const_src(&mut g, 1.0);
         let b = const_src(&mut g, 2.0);
         let c = const_src(&mut g, 3.0);
         let col = g.add_node("_TestCollect", None).unwrap();
+        let out = OutputProbe::open(&g, col, "out");
         g.add_link(a, "out", col, "ins").unwrap();
         g.add_link(b, "out", col, "ins").unwrap();
         g.add_link(c, "out", col, "ins").unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![3.0, 1.0, 2.0, 3.0]);
+        collects(&mut g, &out, &[3.0, 1.0, 2.0, 3.0]);
 
         g.restart_node(col).unwrap();
-        g.tick();
-
-        assert_eq!(
-            as_f32_vec(&g.latest_frame(col, "out").unwrap()),
-            vec![3.0, 1.0, 2.0, 3.0],
-            "all three wires still feed the restarted node, in connection order"
-        );
+        // The probe is on the OLD generation's service, which the reborn node never publishes to.
+        let out = OutputProbe::open(&g, col, "out");
+        collects(&mut g, &out, &[3.0, 1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -6616,154 +5448,44 @@ mod tests {
     }
 
     #[test]
-    fn restarting_a_detached_node_reaps_the_old_worker() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let gate = Gate::new();
-        gate.open();
-        let dropped = std::sync::Arc::new(AtomicUsize::new(0));
+    fn restarting_a_node_reaps_its_predecessor() {
+        // A restart replaces the instance, and the corpse's thread has to stop — its services are
+        // already unreachable (the generation moved), so a thread left running would publish into
+        // shared memory nobody reads for the rest of the process.
         let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), Some(dropped.clone()), false);
-        let det = g.add_node("GateSubproc", None).unwrap();
+        let (n, drops) = drop_counted_node(&mut g);
+        OutputProbe::open(&g, n, "out").expect_frame(&mut g, "the first instance to run");
 
-        g.restart_node(det).unwrap();
-
-        // The replaced handle's worker still exits and drops the instance (reaping the child
-        // process through the node's own Drop) — on its own thread rather than under the caller's
-        // graph lock, so this is a bounded poll rather than an immediate read.
-        for _ in 0..500 {
-            if dropped.load(Ordering::SeqCst) == 1 {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        panic!("the replaced instance was never dropped (got {})", dropped.load(Ordering::SeqCst));
-    }
-
-    // A Subprocess-isolated type WITH a refreshable param, for the tier-refusal test.
-    static GATE_PICKER_PARAMS: &[ParamDecl] = &[ParamDecl {
-        group: "audio",
-        name: "device",
-        spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
-        expression: None,
-        doc: None,
-    }];
-    static GATE_PICKER_MANIFEST: NodeManifest = NodeManifest {
-        type_name: "GateSubprocPicker",
-        category: "test",
-        doc: "detached node with a refreshable param",
-        inputs: GATE_IN,
-        outputs: GATE_OUT,
-        params: GATE_PICKER_PARAMS,
-        isolation: Isolation::Subprocess,
-        producer: false,
-        factory: rt_stub_factory,
-    };
-
-    #[test]
-    fn a_detached_node_reports_its_bootstrap_stage() {
-        // The spinner exists for this: a Python child is spawn + import + setup. The gate holds
-        // the worker inside setup, so the stage is observable rather than a race.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate_seeding(&mut g, gate.clone(), false);
-        let det = g.add_node("GateSeeding", None).unwrap();
-
-        // The worker is parked in its `setup()`.
-        gate.wait_calls(1);
-        assert_eq!(g.node_stage(det), "setup", "still booting");
-
-        gate.open();
-        for _ in 0..500 {
-            if g.node_stage(det) == "ready" {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert_eq!(g.node_stage(det), "ready", "bootstrap finished");
+        g.restart_node(n).unwrap();
+        wait_drops(&drops, 1, "the replaced instance was never dropped");
     }
 
     #[test]
-    fn an_inline_node_is_ready_immediately_and_errors_are_reported_as_such() {
-        // Nothing to wait for: an inline node is seeded before it is visible.
+    fn a_node_reports_its_bootstrap_stage_while_setup_is_still_running() {
+        // The spinner exists for this, and it is no longer a subprocess-only window: `setup()` runs
+        // on the node's own thread for every kind of node now, so any node whose init blocks —
+        // opening a device, importing numpy — is observably `setup` before it is `ready`.
+        let gate = setup_gate();
+        let mut g = Graph::new();
+        let mine = gate.clone();
+        g.register_dyn_type(&SLOW_SETUP, Box::new(move |_p| Box::new(SlowSetup(mine.clone()))));
+        let n = g.add_node("_TestSlowSetup", None).unwrap();
+        let _release = OnDrop(gate.clone()); // so a failing assertion never parks the node's thread
+
+        // `creating` until the node says otherwise, then `setup` while it is inside its own.
+        wait_for(&mut g, "the node to report that it is initializing", |g| g.node_stage(n) == "setup");
+        assert!(stays(&mut g, |g| g.node_stage(n) == "setup"), "and it stays there while setup blocks");
+
+        gate.open();
+        wait_for(&mut g, "the bootstrap to finish", |g| g.node_stage(n) == "ready");
+    }
+
+    #[test]
+    fn an_unknown_node_is_not_ready() {
         let mut g = Graph::new();
         let n = g.add_node("_TestConst", None).unwrap();
-        assert_eq!(g.node_stage(n), "ready");
+        wait_for(&mut g, "the node to report ready", |g| g.node_stage(n) == "ready");
         assert_eq!(g.node_stage(Uid(9999)), "error", "an unknown node is not `ready`");
-    }
-
-    #[test]
-    fn restarting_a_busy_detached_node_does_not_block_the_graph() {
-        // The whole point of the restart button is rescuing a node that is stuck. The worker only
-        // observes the shutdown signal between jobs, so waiting on the old handle would hold the
-        // graph mutex for the rest of a blocked process() call (up to a subprocess roundtrip's 10s
-        // timeout), freezing the tick, every viewer and every other RPC. The restart must never be
-        // the thing that freezes the app it is rescuing.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        register_gate(&mut g, gate.clone(), None, false);
-        let src = g.add_node("_TestConst", None).unwrap();
-        let det = g.add_node("GateSubproc", None).unwrap();
-        g.add_link(src, "out", det, "data").unwrap();
-        wait_bootstrapped(&g, det); // dispatch is gated on READY
-        g.tick(); // dispatches a job; the worker blocks on the permit, inside process()
-        gate.wait_calls(1);
-
-        let t0 = Instant::now();
-        g.restart_node(det).unwrap();
-        let blocked_for = t0.elapsed();
-
-        assert!(
-            blocked_for < Duration::from_millis(500),
-            "restart returned only after {blocked_for:?} — it waited on the busy worker"
-        );
-        gate.open(); // let the reaped worker finish rather than leaking it
-    }
-
-    #[test]
-    fn restart_keeps_the_frames_already_delivered_to_its_inputs() {
-        // Input cells are latest-wins caches, not instance state. Keep one producer running and
-        // silence the other: if a restart dropped the cells, the silent producer's wire would
-        // vanish from the fan-in and the node would emit a SHORTER list. (Asserting on
-        // `latest_frame` alone cannot see this — it replays the last emitted frame when the node
-        // does not run at all.)
-        let mut g = Graph::new();
-        let fast = const_src(&mut g, 1.0);
-        let slow = const_src(&mut g, 2.0);
-        let col = g.add_node("_TestCollect", None).unwrap();
-        g.add_link(fast, "out", col, "ins").unwrap();
-        g.add_link(slow, "out", col, "ins").unwrap();
-        g.tick();
-        assert_eq!(as_f32_vec(&g.latest_frame(col, "out").unwrap()), vec![2.0, 1.0, 2.0]);
-
-        // Park the slow producer: a rate cap of 0.001 Hz means it will not run again in this
-        // test. (Clearing `autotrigger` would NOT silence it — a node with no triggering input
-        // has nothing to wait for and free-runs regardless.)
-        g.update_param(slow, "common", "max_frequency", Param::float(0.001, 0.0, 1e9)).unwrap();
-        g.restart_node(col).unwrap();
-        g.tick(); // `fast` emits again and re-triggers the node; `slow` stays quiet
-
-        assert_eq!(
-            as_f32_vec(&g.latest_frame(col, "out").unwrap()),
-            vec![2.0, 1.0, 2.0],
-            "the silent wire kept the frame it was given before the restart"
-        );
-    }
-
-    #[test]
-    fn refreshing_a_param_on_the_subprocess_tier_reports_that_it_cannot() {
-        // The request/response codec has no refresh op, so a detached node cannot answer one.
-        // Reporting success would echo a stale list as though it had just been re-scanned.
-        let gate = Gate::new();
-        let mut g = Graph::new();
-        g.register_dyn_type(
-            &GATE_PICKER_MANIFEST,
-            Box::new(move |_p| Box::new(GateNode { gate: gate.clone(), on_drop: None, fail: false })),
-        );
-        let det = g.add_node("GateSubprocPicker", None).unwrap();
-
-        let err = g.refresh_param(det, "audio", "device").unwrap_err();
-
-        assert!(err.contains("subprocess"), "the error names the tier that cannot answer: {err}");
     }
 
     #[test]
@@ -6839,13 +5561,19 @@ mod tests {
         let (mut g, uid) = picker_graph();
         assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["none".to_string()]));
 
-        let fresh = g.refresh_param(uid, "audio", "device").unwrap();
+        // §8.5: the answer never rides the RPC — the hook runs on the node's own thread, so a
+        // multi-second device scan cannot stall the caller. The options arrive as
+        // `Status::RefreshOptions` and land in the record the inspector reads.
+        assert_eq!(g.refresh_param(uid, "audio", "device").unwrap(), None);
+        wait_for(&mut g, "the scanned options to reach the record", |g| {
+            options_of(g, uid, "audio", "device") == Some(vec!["dev0".to_string()])
+        });
 
-        assert_eq!(fresh, Some(vec!["dev0".to_string()]));
-        assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["dev0".to_string()]));
         // A second click re-scans rather than replaying a cached list.
         g.refresh_param(uid, "audio", "device").unwrap();
-        assert_eq!(options_of(&g, uid, "audio", "device"), Some(vec!["dev0".into(), "dev1".into()]));
+        wait_for(&mut g, "the second scan to answer with its own list", |g| {
+            options_of(g, uid, "audio", "device") == Some(vec!["dev0".into(), "dev1".into()])
+        });
     }
 
     #[test]
@@ -7116,10 +5844,6 @@ mod tests {
         // The manifest-derived caches followed it, which is what makes the new shape usable.
         assert!(g.add_link(src, "out", uid, "beta").is_ok(), "the new input accepts a wire");
         assert!(g.add_link(src, "out", uid, "alpha").is_err(), "the retired input does not");
-        // `has_trigger_inputs` is a CACHED field (set once at construction), and the scheduler's
-        // free-run decision reads it — so a stale one changes when the node runs. Read directly:
-        // a child module sees its parent's private fields, and production gains no test accessor.
-        assert!(!g.nodes[&uid].has_trigger_inputs, "the trigger flag was recomputed, not carried");
         // The wire into the retired slot cannot propagate and cannot be repaired from the palette,
         // so it goes with the slot rather than lingering as a cable the runtime ignores.
         assert!(
@@ -7163,50 +5887,50 @@ mod tests {
     };
 
     #[test]
-    fn a_panicking_lifecycle_hook_becomes_a_node_error_and_leaves_the_lock_usable() {
-        // `execute_node` wraps `process` in catch_unwind precisely because a node is third-party
-        // code. The other hooks run under the SAME graph lock the bridge holds, and this codebase
-        // locks with `.lock().unwrap()` throughout — so an unguarded panic there poisons the mutex
-        // and every later lock in the bridge and the tick thread fails from then on. A node bug
-        // becomes total loss of the control plane. Containment has to be uniform, not per-hook.
-        let g = std::sync::Arc::new(std::sync::Mutex::new(Graph::new()));
-        let uid = {
-            let mut gg = g.lock().unwrap();
-            gg.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
-            gg.add_node("_Panicky", None).unwrap()
-        };
-        {
-            let mut gg = g.lock().unwrap();
-            let r = gg.update_param(uid, "danger", "boom", Param::boolean(true));
-            assert!(r.is_err(), "the panic reaches the caller as an error: {r:?}");
-            assert!(r.unwrap_err().contains("panic"), "and says it was a panic");
-        }
-        // The lock IS the assertion: a poisoned mutex makes every later `.lock().unwrap()` panic.
-        assert!(g.lock().is_ok(), "the graph mutex is not poisoned");
-        assert!(g.lock().unwrap().contains(uid), "and the graph is still readable");
+    fn a_panicking_lifecycle_hook_becomes_a_node_error_rather_than_killing_its_thread() {
+        // A node is third-party code, and `guard_lifecycle` wraps every hook for it. What the guard
+        // BUYS moved with the runtime: the hooks no longer run under the graph mutex, so a panic
+        // can no longer poison it — it kills the node's wake loop instead, silently and forever.
+        // So the load-bearing half is that the node is still THERE afterwards, answering the next
+        // message; the error reaching the graph alone holds just as well for a dead thread.
+        let mut g = Graph::new();
+        g.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
+        let uid = g.add_node("_Panicky", None).unwrap();
+
+        // The RPC succeeds — the hook runs on the node's thread, so its failure cannot ride this
+        // reply (§8.4). It arrives as the node's own error instead.
+        g.update_param(uid, "danger", "boom", Param::boolean(true)).unwrap();
+        wait_for(&mut g, "the panic to reach the graph as this node's error", |g| {
+            g.last_error(uid).is_some_and(|e| e.contains("panic"))
+        });
+
+        // Still running, and still listening. This is the load-bearing half: only a live wake loop
+        // can apply the second edit, and only applying it clears the error the first one left. A
+        // thread the panic killed would sit on that error for ever.
+        g.update_param(uid, "danger", "boom", Param::boolean(false)).unwrap();
+        wait_for(&mut g, "the node to answer the next edit", |g| g.last_error(uid).is_none());
     }
 
     #[test]
     fn a_panicking_setup_is_the_nodes_boot_error_not_a_lost_process() {
-        // `seed_node` runs `on_param_changed` then `setup` at construction — inside `add_node`,
-        // under the same lock. A panic here used to unwind straight through `Graph::add_node`.
-        let g = std::sync::Arc::new(std::sync::Mutex::new(Graph::new()));
-        {
-            let mut gg = g.lock().unwrap();
-            gg.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
-            // A node born with the param already set panics during its seed replay.
-            let mut params = gg.default_params_of("_Panicky").unwrap();
-            params.get_mut("danger").unwrap().insert("boom".into(), Param::boolean(true));
-            let uid = gg.add_node("_Panicky", Some(params)).unwrap();
-            // On the INITIALIZATION channel: the replay is half of `seed_node`, so a panic in it
-            // leaves the node uninitialized exactly as a failed `setup()` does.
-            assert!(
-                gg.nodes[&uid].setup_error.as_deref().is_some_and(|e| e.contains("panic")),
-                "the panic is the node's error: {:?}",
-                gg.nodes[&uid].setup_error
-            );
-        }
-        assert!(g.lock().is_ok(), "the graph mutex is not poisoned");
+        // `seed_node` runs `on_param_changed` then `setup` at construction. That construction moved
+        // ONTO the node's thread (§5) — `add_node` answers before it has happened — so an unguarded
+        // panic there no longer unwinds through `Graph::add_node`; it takes the thread down before
+        // the node has published anything, and the node draws "creating" for ever.
+        let mut g = Graph::new();
+        g.register_dyn_type(&PANICKY_MANIFEST, Box::new(|_| Box::new(PanickyHooks)));
+        // A node born with the param already set panics during its seed replay.
+        let mut params = g.default_params_of("_Panicky").unwrap();
+        params.get_mut("danger").unwrap().insert("boom".into(), Param::boolean(true));
+        let uid = g.add_node("_Panicky", Some(params)).unwrap();
+
+        // On the INITIALIZATION channel: the replay is half of `seed_node`, so a panic in it leaves
+        // the node uninitialized exactly as a failed `setup()` does — which is what `setup_error`
+        // gates the retry on, and what `last_error` alone cannot tell apart.
+        wait_for(&mut g, "the panicking seed to be reported as a boot failure", |g| {
+            g.nodes[&uid].setup_error.as_deref().is_some_and(|e| e.contains("panic"))
+        });
+        assert_eq!(g.node_stage(uid), "error");
     }
 
     #[test]
@@ -7230,15 +5954,20 @@ mod tests {
         let r = g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
         assert_eq!(r, Registration::Added);
         let old = g.add_node("_RuntimeDyn", None).unwrap();
+        let before = OutputProbe::open(&g, old, "out");
 
         let r = g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 2.0 })));
         assert_eq!(r, Registration::Replaced);
         assert_eq!(g.dyn_type_manifests().len(), 1, "a replace does not add a second entry");
 
         let new = g.add_node("_RuntimeDyn", None).unwrap();
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(new, "out").unwrap()), 2.0, "new factory");
-        assert_eq!(first_f32(&g.latest_frame(old, "out").unwrap()), 1.0, "live instance untouched");
+        let after = OutputProbe::open(&g, new, "out");
+        assert_eq!(first_f32(&after.expect_frame(&mut g, "the new instance to run")), 2.0, "new factory");
+        assert_eq!(
+            first_f32(&before.expect_frame(&mut g, "the old instance to still be running")),
+            1.0,
+            "live instance untouched",
+        );
     }
 
     #[test]
@@ -7248,6 +5977,7 @@ mod tests {
         let mut g = Graph::new();
         g.register_dyn_type(&RT_MANIFEST, Box::new(|_| Box::new(RtSource { base: 1.0 })));
         let live = g.add_node("_RuntimeDyn", None).unwrap();
+        let out = OutputProbe::open(&g, live, "out");
 
         assert!(g.remove_dyn_type("_RuntimeDyn"));
         assert!(g.dyn_type_manifests().is_empty(), "gone from the palette");
@@ -7256,8 +5986,7 @@ mod tests {
         assert_eq!(g.add_node("_RuntimeDyn", None).unwrap_err(), "unknown node type `_RuntimeDyn`");
         assert!(!g.remove_dyn_type("_RuntimeDyn"), "nothing left to remove");
 
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(live, "out").unwrap()), 1.0, "the instance still runs");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the live instance to keep running")), 1.0, "the instance still runs");
     }
 
     /// The two registries are one answer to "what is on disk under this name", so the LATEST scan
@@ -7343,8 +6072,8 @@ mod tests {
         let uid = g.add_node("_RuntimeDyn", None).unwrap();
         assert_eq!(g.type_name(uid), Some("_RuntimeDyn"));
         assert_eq!(g.manifest(uid).unwrap().category, "runtime");
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(uid, "out").unwrap()), 42.0);
+        let out = OutputProbe::open(&g, uid, "out");
+        assert_eq!(first_f32(&out.expect_frame(&mut g, "the dyn node to run")), 42.0);
     }
 
     #[test]
@@ -7379,143 +6108,85 @@ mod tests {
     }
 
     #[test]
-    fn diamond_converges_through_levels_in_one_tick() {
-        // src -> echoA, src -> echoB, {echoA,echoB} -> adder. Levels: src(0),
-        // {echoA,echoB}(1, parallel), adder(2). The adder must see BOTH branch
-        // outputs — proving level-2 propagation waits for the whole level-1 batch.
+    fn a_diamond_converges_on_both_branches() {
+        // src -> echoA, src -> echoB, {echoA,echoB} -> adder. The adder reads BOTH branches, so a
+        // sum of 10 means each one carried the source's 5 — one branch feeding both of the adder's
+        // inputs, or a branch stuck empty, reads as a different number.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "value", Param::float(5.0, -1e9, 1e9)).unwrap();
         let ea = g.add_node("_TestEcho", None).unwrap();
         let eb = g.add_node("_TestEcho", None).unwrap();
         let add = g.add_node("_TestAdder", None).unwrap();
+        let out = OutputProbe::open(&g, add, "out");
         g.add_link(src, "out", ea, "in").unwrap();
         g.add_link(src, "out", eb, "in").unwrap();
         g.add_link(ea, "out", add, "a").unwrap();
         g.add_link(eb, "out", add, "b").unwrap();
 
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(add, "out").expect("adder produced")), 10.0);
+        wait_for(&mut g, "the diamond to attach", |_| out.latest().is_some());
+        out.wait_until(&mut g, "sums both branches", |d| first_f32(d) == 10.0);
     }
 
     #[test]
-    fn cycle_is_tolerated_without_hanging() {
-        // A pure 2-cycle of triggered nodes (echoA -> echoB -> echoA) has no
-        // level-0 seed: both land in the cycle-remainder final level. tick() must
-        // terminate (not spin) and, unseeded, produce nothing.
+    fn a_cycle_is_tolerated_rather_than_policed() {
+        // §4: `add_link` has no cycle check and gains none — latest-wins delivery makes a cycle
+        // correct by construction. A pure 2-cycle of triggered nodes has nothing to seed it, so it
+        // settles at rest: the property is that nothing hangs, spins or refuses, and that an
+        // unseeded cycle produces nothing rather than a stream of empty frames.
         let mut g = Graph::new();
         let a = g.add_node("_TestEcho", None).unwrap();
         let b = g.add_node("_TestEcho", None).unwrap();
+        let out_a = OutputProbe::open(&g, a, "out");
+        let out_b = OutputProbe::open(&g, b, "out");
         g.add_link(a, "out", b, "in").unwrap();
         g.add_link(b, "out", a, "in").unwrap();
-        g.tick(); // must return
-        assert!(g.latest_frame(a, "out").is_none());
-        assert!(g.latest_frame(b, "out").is_none());
+        wait_for(&mut g, "both wires to attach", |g| g.links_view().len() == 2);
+        assert!(out_a.silent(&mut g) && out_b.silent(&mut g), "an unseeded cycle produces nothing");
     }
 
     #[test]
     fn sustained_load_reference_stress_shape_stays_stable() {
-        use std::time::Duration;
-        // The reference stress-patch shape: one Oscillator fanning out to 8 Buffers —
-        // all at topo level 1, so they run concurrently on the pool each tick. Drive it
-        // hard and assert every consumer keeps producing with a clean error channel
-        // (sustained parallel stability, no drift into a faulted state).
+        // The reference stress-patch shape: one Oscillator fanning out to 8 Buffers, each on its
+        // own thread. Let it run and assert every consumer keeps producing with a clean error
+        // channel — sustained stability, no drift into a faulted state.
         let mut g = Graph::new();
         let osc = g.add_node("Oscillator", None).unwrap();
         let mut buffers = Vec::new();
         for _ in 0..8 {
             let b = g.add_node("Buffer", None).unwrap();
             g.add_link(osc, "out", b, "data").unwrap();
-            buffers.push(b);
+            buffers.push((b, OutputProbe::open(&g, b, "out")));
         }
 
-        // Advance a synthetic clock 10 ms/tick so the wall-clock-paced Oscillator
-        // emits a real block each tick (default 1 kHz -> ~10 samples) and keeps its
-        // consumers fed — a tight `tick()` loop would pass no time and starve them.
-        let t0 = Instant::now();
-        for i in 0..5000u64 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-        }
-
-        assert!(g.last_error(osc).is_none(), "oscillator faulted: {:?}", g.last_error(osc));
-        for b in &buffers {
+        // Every buffer has to reach a SECOND frame, not merely a first: a node that emitted once
+        // and then faulted, or one whose wire went away under it, passes a first-frame check.
+        for (b, out) in &buffers {
+            wait_for(&mut g, "each buffer to start producing", |_| out.latest().is_some());
+            let first = out.expect_frame(&mut g, "a buffer frame").meta().index().unwrap_or(0);
+            out.wait_until(&mut g, "keeps producing", |d| d.meta().index().unwrap_or(0) > first);
             assert!(g.last_error(*b).is_none(), "buffer faulted: {:?}", g.last_error(*b));
-            assert!(g.latest_frame(*b, "out").is_some(), "each buffer must keep producing");
         }
+        assert!(g.last_error(osc).is_none(), "oscillator faulted: {:?}", g.last_error(osc));
     }
 
     #[test]
     fn generator_stamps_fresh_incrementing_index() {
-        // A source (no index-bearing input) gets a fresh per-output counter that
-        // advances once per emit: after 3 ticks the latest frame carries index 2.
+        // A source (no index-bearing input) gets a fresh per-output counter that advances once per
+        // emit. The oracle is CONSECUTIVE indices, not a final number: a free-running node emits
+        // whatever its thread manages in the window, and what the counter promises is that no emit
+        // is skipped and none is repeated.
+        //
+        // Born capped, because CONSECUTIVE is exactly what a one-deep latest-wins cell cannot show
+        // of an uncapped 30 kHz producer: every look lands thousands of emits on, and waiting for
+        // `first + 1` waits for an index that went past before the poll returned.
         let mut g = Graph::new();
-        let src = g.add_node("_TestConst", None).unwrap();
-        for _ in 0..3 {
-            g.tick();
+        let src = capped(&mut g, "_TestConst", 20.0);
+        let out = OutputProbe::open(&g, src, "out");
+        let first = out.expect_frame(&mut g, "the source to emit").meta().index().expect("stamped");
+        for step in 1..4 {
+            out.wait_until(&mut g, "advances one per emit", |d| d.meta().index() == Some(first + step));
         }
-        let f = g.latest_frame(src, "out").expect("frame");
-        assert_eq!(f.meta().index(), Some(2), "3 emits -> indices 0,1,2 (latest 2)");
-    }
-
-    #[test]
-    fn next_run_delay_zero_for_unbounded_producer() {
-        // A source with no rate cap (max_frequency <= 0) is always due — the adaptive
-        // tick loop must run it as fast as possible, not ceiling it at a fixed rate.
-        let mut g = Graph::new();
-        g.add_node("_TestConst", None).unwrap(); // no `common` group -> unbounded, no inputs
-        g.tick();
-        assert_eq!(
-            g.next_run_delay(Instant::now()),
-            Some(Duration::ZERO),
-            "unbounded producer -> zero delay (as fast as possible)"
-        );
-    }
-
-    #[test]
-    fn next_run_delay_respects_the_rate_cap() {
-        // A 10 Hz autotrigger source: after running, the next run is within its 0.1s
-        // period — the cap, not a hardcoded tick rate, sets the pace.
-        let mut g = Graph::new();
-        g.add_node("_TestCapped", None).unwrap();
-        g.tick();
-        let d = g.next_run_delay(Instant::now()).expect("a capped producer still wants to run");
-        assert!(d <= Duration::from_millis(100), "within the 10 Hz period, got {d:?}");
-    }
-
-    #[test]
-    fn inline_node_still_ticks_through_execution_enum() {
-        // An InProcess node runs via Execution::Inline unchanged.
-        let mut g = Graph::new();
-        let c = g.add_node("_TestConst", None).unwrap();
-        g.tick_at(std::time::Instant::now());
-        assert!(g.latest_frame(c, "out").is_some(), "inline execution path intact");
-    }
-
-    #[test]
-    fn execute_node_stamps_index_like_the_inline_path() {
-        // A pure source (no matching triggering input) gets a fresh per-output counter:
-        // index 0 on its first emit, advancing to 1 on the second — proving the extracted
-        // execute_node/stamp_meta_parts preserve the inline stamping behavior.
-        let mut g = Graph::new();
-        let c = g.add_node("_TestConst", None).unwrap();
-        g.tick_at(std::time::Instant::now());
-        let first = g.latest_frame(c, "out").unwrap().meta().index();
-        g.tick_at(std::time::Instant::now());
-        let second = g.latest_frame(c, "out").unwrap().meta().index();
-        assert_eq!((first, second), (Some(0), Some(1)), "fresh per-output counter advances");
-    }
-
-    #[test]
-    fn latest_frame_persists_across_non_emitting_ticks() {
-        // A gated source emits every OTHER tick. latest_frame must keep returning the
-        // last emitted frame on the silent ticks — viewers of a sparse / fast-ticked
-        // producer see its latest data, not a None gap (the Oscillator-at-high-rate case).
-        let mut g = Graph::new();
-        let s = g.add_node("_TestGated", None).unwrap();
-        g.tick(); // n=0 -> emits
-        assert!(g.latest_frame(s, "out").is_some(), "first emit present");
-        g.tick(); // n=1 -> runs but emits nothing (output reset to None)
-        assert!(g.latest_frame(s, "out").is_some(), "persists last emit across a silent tick");
     }
 
     // A deterministic stand-in for the pyo3 evaluator, so the engine's binding lifecycle +
@@ -7880,13 +6551,15 @@ mod tests {
     fn missing_ref_errors_and_keeps_last_value() {
         let mut g = eval_graph();
         let host = g.add_node("_TestConst", None).unwrap();
+        let out = OutputProbe::open(&g, host, "out");
         g.set_expression(host, "constant", "value", "nd('ghost')", true, false).unwrap();
-        g.tick();
-        assert!(g.last_error(host).is_some(), "missing ref surfaces on the node error channel");
+        wait_for(&mut g, "the unresolved reference to reach the node error channel", |g| {
+            g.last_error(host).is_some()
+        });
         let info = g.param_expression(host, "constant", "value").expect("binding present");
         assert!(info.error.is_some(), "field error indicator set");
         // The literal value (default 0) is kept.
-        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 0.0);
+        out.wait_until(&mut g, "falls back to the literal", |d| first_f32(d) == 0.0);
     }
 
     #[test]
@@ -7910,8 +6583,11 @@ mod tests {
         assert!(!info.enabled, "disabled");
         assert_eq!(info.source, "5", "authored source survives the toggle-off");
         // A disabled binding is not evaluated (the param keeps its literal default 0).
-        g.tick();
-        assert_eq!(first_f32(&g.latest_frame(host, "out").unwrap()), 0.0, "disabled binding is inert");
+        let out = OutputProbe::open(&g, host, "out");
+        assert!(
+            stays(&mut g, |_| out.latest().is_some_and(|d| first_f32(&d) == 0.0)),
+            "disabled binding is inert",
+        );
         // Empty source is the true unbind.
         g.set_expression(host, "constant", "value", "", false, false).unwrap();
         assert!(g.param_expression(host, "constant", "value").is_none(), "empty source unbinds");
@@ -8198,80 +6874,6 @@ mod tests {
         let mut g = Graph::new();
         g.add_node("_TestConst", None).unwrap();
         assert!(!g.serialize().contains("viewers"), "no empty viewers blob in the file");
-    }
-
-    #[test]
-    fn native_tick_latency_and_stability() {
-        // Concrete latency/stability read for the NATIVE (in-process Rust) node path — the
-        // counterpart to the subprocess-tier benchmark. Drive the reference fan-out shape
-        // (Oscillator → 8 Buffers) unbounded (max_frequency 0 → every tick computes) and report
-        // the full-graph per-tick latency distribution. Native nodes share the process (no IPC),
-        // so this is the pure compute+propagate path.
-        let mut g = Graph::new();
-        let unbounded = |g: &mut Graph, uid| {
-            g.update_param(uid, "common", "max_frequency", Param::float(0.0, 0.0, 1e9)).unwrap();
-        };
-        let osc = g.add_node("Oscillator", None).unwrap();
-        unbounded(&mut g, osc);
-        // A sample rate far above the tick rate, so the Oscillator has whole samples to emit on
-        // EVERY tick. At its 250 Hz default an unbounded tick loop outruns the generator and the
-        // node early-returns with nothing — the buffers would then never trigger and the
-        // measurement would be dominated by empty ticks doing no work at all.
-        g.update_param(osc, "oscillator", "sfreq", Param::float(1.0e6, 1.0, 1.0e9)).unwrap();
-        for _ in 0..8 {
-            let b = g.add_node("Buffer", None).unwrap();
-            g.update_param(b, "buffer", "size", Param::int(256, 1, 1_000_000)).unwrap();
-            unbounded(&mut g, b);
-            g.add_link(osc, "out", b, "data").unwrap();
-        }
-
-        for _ in 0..100 {
-            g.tick(); // warm up (buffers fill, buffers/paths hot)
-        }
-        // A buffer's emitted frame carries a source-origin `index`; it advances only on a tick
-        // that actually propagated, so comparing it across the loop proves the ticks did work.
-        let buf_index = |g: &Graph, u: Uid| {
-            g.latest_frame(u, "out").and_then(|d| d.meta().index()).unwrap_or(0)
-        };
-        let a_buffer = *g.node_uids().iter().find(|&&u| g.type_name(u) == Some("Buffer")).unwrap();
-        let index_before = buf_index(&g, a_buffer);
-
-        let iters = 3000usize;
-        let mut lat: Vec<f64> = Vec::with_capacity(iters);
-        for _ in 0..iters {
-            let t0 = Instant::now();
-            g.tick();
-            lat.push(t0.elapsed().as_secs_f64() * 1e6); // microseconds
-        }
-        let advanced = buf_index(&g, a_buffer).saturating_sub(index_before);
-        // Every buffer produced a frame (stability — the graph propagated end-to-end each tick).
-        assert!(g.node_uids().iter().all(|&u| g.latest_frame(u, "out").is_some()), "all nodes emit");
-        // …and the timed ticks were PRODUCTIVE, so the distribution below measures the fan-out
-        // doing real work rather than a graph that idled through most of the loop. (At the
-        // Oscillator's 250 Hz default an unbounded loop outruns the generator and most ticks
-        // emit nothing — the measurement then says nothing about the fan-out cost.)
-        assert!(
-            advanced as usize >= iters,
-            "only {advanced} of {iters} timed ticks propagated — the benchmark is measuring idle ticks"
-        );
-
-        lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mean = lat.iter().sum::<f64>() / iters as f64;
-        let p = |q: f64| lat[((iters as f64 * q) as usize).min(iters - 1)];
-        eprintln!(
-            "native graph tick latency (Oscillator→8 Buffers, {iters} ticks): \
-             min={:.1}us  p50={:.1}us  p99={:.1}us  max={:.1}us  mean={mean:.1}us",
-            lat[0], p(0.50), p(0.99), lat[iters - 1]
-        );
-        // Gate on the MINIMUM. Cargo runs 150+ sibling tests across every core while this loop is
-        // timed, and the machine is a desktop with whatever else the user is running — so every
-        // sample carries preemption the code did not cause. The minimum over 3000 ticks is the
-        // least-preempted one, i.e. the closest thing to the true cost, and it is the only
-        // statistic that actually holds still: measured 262-334 us across idle, full-suite, and
-        // suite+busy-browser runs, while the median swung 566 us → 4060 us over the same range.
-        // (A median gate lived here and flaked exactly that way.) 1 ms is ~3x the observed floor —
-        // tight enough to catch a real regression in the fan-out path, immune to machine load.
-        assert!(lat[0] < 1000.0, "fastest tick {:.1}us exceeds the budget", lat[0]);
     }
 
     #[test]
@@ -8743,12 +7345,12 @@ mod tests {
         let mut g = eval_graph();
         let sink = g.add_node("_TestSink", None).unwrap();
         g.set_expression(sink, "control", "value", "nd('src')", true, false).unwrap();
-        g.tick();
-        assert!(g.last_error(sink).is_some(), "missing ref errors while idle");
+        wait_for(&mut g, "the missing ref to error while idle", |g| g.last_error(sink).is_some());
         let src = g.add_node("_TestConst", None).unwrap();
         g.rename_node(src, "src").unwrap();
-        g.tick();
-        assert!(g.last_error(sink).is_none(), "recovery clears the node error on a never-running node");
+        wait_for(&mut g, "recovery to clear the node error on a never-running node", |g| {
+            g.last_error(sink).is_none()
+        });
     }
 
     #[test]
@@ -8759,7 +7361,9 @@ mod tests {
         let n = g.add_node("_TestConst", None).unwrap();
         g.set_expression(n, "constant", "value", "nd('gv')", true, false).unwrap();
         g.set_expression(n, "constant", "length", "nd('gl')", true, false).unwrap();
-        g.tick();
+        wait_for(&mut g, "both binding errors to reach the graph", |g| {
+            g.last_error(n).is_some_and(|e| e.contains("gl"))
+        });
         let err = g.last_error(n).expect("a binding error surfaces");
         assert!(err.contains("gl"), "deterministic min-ParamKey selection, got: {err}");
     }
@@ -8767,21 +7371,22 @@ mod tests {
     #[test]
     fn length_preserving_node_propagates_source_index() {
         // _TestConst(len 2) -> Echo (echoes -> len 2). The echo's output frame
-        // count matches its single index-bearing input, so it PROPAGATES the
-        // source's origin index rather than starting a fresh counter — an upstream
-        // drop stays visible at the sink. Pre-tick the source unwired so its index
-        // is a non-zero 3, distinguishable from a fresh-from-0 counter.
+        // count matches its single index-bearing input, so it PROPAGATES the source's origin index
+        // rather than starting a fresh counter — an upstream drop stays visible at the sink. The
+        // source runs unwired for a while first, so its index is well past 0 and a fresh-from-0
+        // counter is distinguishable from a propagated one.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
         let echo = g.add_node("_TestEcho", None).unwrap();
-        for _ in 0..3 {
-            g.tick(); // src advances to index 2; echo (unwired, triggered) never runs
-        }
+        let source = OutputProbe::open(&g, src, "out");
+        let out = OutputProbe::open(&g, echo, "out");
+        source.wait_until(&mut g, "the source to be well past its first emit", |d| {
+            d.meta().index().unwrap_or(0) > 10
+        });
         g.add_link(src, "out", echo, "in").unwrap();
-        g.tick(); // src -> index 3; echo runs, matches len -> propagates 3
-        let f = g.latest_frame(echo, "out").expect("echo ran");
-        assert_eq!(f.meta().index(), Some(3), "propagates the source's index, not fresh 0");
+        let echoed = out.expect_frame(&mut g, "the echo to run").meta().index().expect("stamped");
+        assert!(echoed > 10, "propagates the source's index, not a fresh 0: {echoed}");
     }
 
     #[test]
@@ -8793,14 +7398,29 @@ mod tests {
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
-        let buf = g.add_node("Buffer", None).unwrap();
+        // Born capped: the FIRST emit is the whole subject, and a one-deep latest-wins cell holds
+        // it for as long as the next run is away.
+        let buf = capped(&mut g, "Buffer", 20.0);
+        let out = OutputProbe::open(&g, buf, "out");
         g.add_link(src, "out", buf, "data").unwrap();
-        let mut idx = Vec::new();
-        for _ in 0..4 {
-            g.tick();
-            idx.push(g.latest_frame(buf, "out").unwrap().meta().index().unwrap());
+        // The bug this pins stamped [0, 0, 1, 2]: the buffer's first output length equals its
+        // input's, so the index PROPAGATED, and the fresh counter then restarted from 0 and
+        // repeated it. A repeat is invisible to an index-only oracle — through a one-deep
+        // latest-wins cell, "the same index again" and "no new frame yet" read identically — so
+        // the emits are told apart by the ring's GROWING length, which is two more each time.
+        //
+        // The starting number is deliberately not pinned: it is whatever the source had reached
+        // when the wire attached, and asserting 0 was asserting the old tick's lockstep.
+        let first = out
+            .wait_until(&mut g, "the buffer's first emit", |d| as_f32_vec(d).len() == 2)
+            .meta()
+            .index()
+            .expect("stamped");
+        for step in 1..4u64 {
+            let want = 2 * (step as usize + 1);
+            let f = out.wait_until(&mut g, "the next, longer buffered frame", |d| as_f32_vec(d).len() == want);
+            assert_eq!(f.meta().index(), Some(first + step), "one index per emit, never repeated");
         }
-        assert_eq!(idx, vec![0, 1, 2, 3], "buffer index must be a monotonic fresh timeline");
     }
 
     #[test]
@@ -8811,22 +7431,25 @@ mod tests {
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
         g.update_param(src, "constant", "length", Param::int(2, 1, 10)).unwrap();
-        let cnt = g.add_node("_TestCounter", None).unwrap();
-        for _ in 0..3 {
-            g.tick(); // src advances to index 2; counter (unwired) never runs
-        }
+        // Born capped, so its FIRST frame — the one carrying index 0 — is still in the probe's
+        // one-deep cell when the assertion looks.
+        let cnt = capped(&mut g, "_TestCounter", 5.0);
+        let source = OutputProbe::open(&g, src, "out");
+        let out = OutputProbe::open(&g, cnt, "out");
+        source.wait_until(&mut g, "the source to be well past its first emit", |d| {
+            d.meta().index().unwrap_or(0) > 10
+        });
         g.add_link(src, "out", cnt, "in").unwrap();
-        g.tick(); // src -> index 3; counter runs, len mismatch -> fresh index 0
-        let f = g.latest_frame(cnt, "out").expect("counter ran");
-        assert_eq!(f.meta().index(), Some(0), "fresh counter, not the source's 3");
+        let f = out.expect_frame(&mut g, "the counter to run");
+        assert_eq!(f.meta().index(), Some(0), "fresh counter, not the source's index");
     }
 
     #[test]
     fn every_type_that_free_runs_says_so_in_its_own_declaration() {
-        // The scheduler currently free-runs any node with no *triggering* input, whatever its
-        // params say (`wants_run`'s `!has_trigger_inputs` term). That implicit rule is what the
-        // async runtime removes, so a type that relies on it has to declare the pacing itself —
-        // via `producer`, or by declaring `common.autotrigger` in its own params.
+        // The tick free-ran any node with no *triggering* input, whatever its params said. §1
+        // removed that implicit rule — a node that declares no trigger input and leaves autotrigger
+        // off never runs, and that is correct — so a type that relied on it has to declare the
+        // pacing itself, via `producer` or by declaring `common.autotrigger` in its own params.
         //
         // The operative predicate is `!any(trigger_process)`, NOT `inputs.is_empty()`: a node can
         // declare a held reference input and still free-run.
@@ -8875,24 +7498,29 @@ mod tests {
     }
 
     #[test]
-    fn common_max_frequency_caps_a_production_node() {
-        use std::time::Duration;
-        // Cap a real source (_TestConst, a free-running generator) at 10 Hz via
-        // its `common` group; its emit index advances only on admitted ticks.
+    fn common_max_frequency_caps_a_node_by_wall_clock() {
+        // The rate cap is what stops an uncapped producer saturating a core, and it is enforced by
+        // the node against its own clock — there is no scheduler left to enforce it for anyone.
+        //
+        // The gate is a CEILING, not a target: a machine under load admits fewer runs, never more,
+        // so a `<=` bound cannot flake upward. The floor is deliberately loose and exists only to
+        // fail a node that stopped running altogether, which the ceiling alone would pass.
         let mut g = Graph::new();
-        let c = g.add_node("_TestConst", None).unwrap();
-        g.update_param(c, "common", "max_frequency", Param::float(10.0, 0.0, 60.0)).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // run -> index 0
-        g.tick_at(t0 + Duration::from_millis(50)); // skip
-        g.tick_at(t0 + Duration::from_millis(100)); // run -> index 1
-        g.tick_at(t0 + Duration::from_millis(210)); // run -> index 2
-        assert_eq!(g.latest_frame(c, "out").unwrap().meta().index(), Some(2), "capped to 3 emits");
+        let src = g.add_node("_TestConst", None).unwrap();
+        g.update_param(src, "common", "max_frequency", Param::float(10.0, 0.0, 1e9)).unwrap();
+        let out = OutputProbe::open(&g, src, "out");
+        // Take the index AFTER the cap has landed, or the uncapped emits from before it is applied
+        // are counted against the window.
+        std::thread::sleep(Duration::from_millis(200));
+        let first = out.expect_frame(&mut g, "the capped source to emit").meta().index().expect("stamped");
+        std::thread::sleep(Duration::from_millis(1000));
+        let emitted = out.expect_frame(&mut g, "the capped source to keep emitting").meta().index().unwrap() - first;
+        assert!(emitted <= 20, "a 10 Hz cap emitted {emitted} frames in a second");
+        assert!(emitted >= 3, "and it did not stop: {emitted} frames in a second");
     }
 
     #[test]
     fn run_policy_survives_gfi_roundtrip() {
-        use std::time::Duration;
         // A saved max_frequency must re-derive into the loaded node's run gate.
         let mut g = Graph::new();
         let c = g.add_node("_TestConst", None).unwrap();
@@ -8907,32 +7535,13 @@ mod tests {
             Some(10.0),
             "max_frequency round-trips"
         );
-        let t0 = Instant::now();
-        g2.tick_at(t0);
-        g2.tick_at(t0 + Duration::from_millis(50)); // skip -> gate active after load
-        g2.tick_at(t0 + Duration::from_millis(100));
-        assert_eq!(g2.latest_frame(c2, "out").unwrap().meta().index(), Some(1), "gate active post-load");
-    }
-
-    #[test]
-    fn autotrigger_does_not_free_run_a_wired_trigger_node() {
-        // A wired triggered node with common.autotrigger=true must still run ONLY
-        // when a fresh frame arrives on its wired trigger — matching Python's
-        // `autotrigger AND _has_no_triggering_inputs()`. Gated source emits every
-        // other tick; over 6 ticks the counter must run exactly 3 times, not 6.
-        let mut g = Graph::new();
-        let src = g.add_node("_TestGated", None).unwrap();
-        let cnt = g.add_node("_TestCounter", None).unwrap();
-        g.add_link(src, "out", cnt, "in").unwrap();
-        g.update_param(cnt, "common", "autotrigger", Param::boolean(true)).unwrap();
-        for _ in 0..6 {
-            g.tick();
-        }
-        assert_eq!(
-            first_f32(&g.latest_frame(cnt, "out").expect("counter ran")),
-            3.0,
-            "autotrigger must not fire a wired-trigger node on its idle ticks"
-        );
+        // …and the gate it re-derives is ACTIVE, not merely stored: an uncapped node would run
+        // hundreds of times in this window.
+        let out = OutputProbe::open(&g2, c2, "out");
+        let first = out.expect_frame(&mut g2, "the loaded node to emit").meta().index().expect("stamped");
+        std::thread::sleep(Duration::from_millis(500));
+        let emitted = out.expect_frame(&mut g2, "the loaded node to keep emitting").meta().index().unwrap() - first;
+        assert!(emitted <= 15, "the 10 Hz gate is active post-load: {emitted} frames in half a second");
     }
 
     #[test]
@@ -8943,205 +7552,124 @@ mod tests {
         // guards the fix from over-correcting the wired case into this one.
         let mut g = Graph::new();
         let cnt = g.add_node("_TestCounter", None).unwrap();
+        let out = OutputProbe::open(&g, cnt, "out");
+        assert!(out.silent(&mut g), "with autotrigger off and nothing wired, it never runs");
         g.update_param(cnt, "common", "autotrigger", Param::boolean(true)).unwrap();
-        for _ in 0..3 {
-            g.tick();
-        }
-        assert_eq!(
-            first_f32(&g.latest_frame(cnt, "out").expect("free-ran")),
-            3.0,
-            "an unwired trigger node with autotrigger must free-run"
-        );
+        out.wait_until(&mut g, "free-runs past its third call", |d| first_f32(d) >= 3.0);
     }
 
     #[test]
-    fn ctx_now_is_seconds_since_first_tick() {
-        use std::time::Duration;
+    fn ctx_now_is_seconds_since_the_patch_started() {
+        // One clock for the whole patch, not one per node thread: `NodeCtx::now` is the time since
+        // the graph was created, so two nodes born a minute apart agree about what time it is.
         let mut g = Graph::new();
-        let n = g.add_node("_TestNow", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // first tick anchors the reference -> now == 0
-        assert_eq!(first_f32(&g.latest_frame(n, "out").unwrap()), 0.0);
-        g.tick_at(t0 + Duration::from_millis(250)); // 0.25 s later
-        assert!((first_f32(&g.latest_frame(n, "out").unwrap()) - 0.25).abs() < 1e-4);
+        let a = g.add_node("_TestNow", None).unwrap();
+        let out_a = OutputProbe::open(&g, a, "out");
+        out_a.wait_until(&mut g, "the clock to advance past 200 ms", |d| first_f32(d) > 0.2);
+
+        let b = g.add_node("_TestNow", None).unwrap();
+        let out_b = OutputProbe::open(&g, b, "out");
+        let born_late = first_f32(&out_b.expect_frame(&mut g, "the second node to run"));
+        assert!(
+            born_late > 0.2,
+            "a node born into a running patch reads the patch's clock, not its own age: {born_late}",
+        );
     }
 
     #[test]
     fn a_load_restarts_the_node_clock() {
-        use std::time::Duration;
-        // A patch loaded five minutes into a session must behave like the same patch loaded at
-        // boot. The load happens at a genuinely ADVANCED clock — at t0 the broken code and the
-        // fixed one agree, so a fixture that loads at t≈0 proves nothing.
+        // A patch loaded into a running session must behave like the same patch loaded at boot.
+        // The load happens at a genuinely ADVANCED clock — at t≈0 a graph that re-anchors and one
+        // that does not agree, so a fixture that loads immediately proves nothing.
         let mut g = Graph::new();
         let n = g.add_node("_TestNow", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        let t5m = t0 + Duration::from_secs(300);
-        g.tick_at(t5m);
-        assert_eq!(
-            first_f32(&g.latest_frame(n, "out").unwrap()),
-            300.0,
-            "the session clock genuinely advanced before the load"
-        );
+        let out = OutputProbe::open(&g, n, "out");
+        out.wait_until(&mut g, "the session clock to genuinely advance", |d| first_f32(d) > 0.3);
 
         let doc = g.serialize();
         g.load_doc(&doc).unwrap();
-        g.tick_at(t5m); // the loaded patch's first tick re-anchors the reference
-        assert_eq!(
-            first_f32(&g.latest_frame(n, "out").unwrap()),
-            0.0,
-            "a loaded patch starts its clock at zero, whenever it was loaded"
-        );
-        g.tick_at(t5m + Duration::from_millis(250));
+        let loaded = g.node_uids()[0];
+        let out = OutputProbe::open(&g, loaded, "out");
         assert!(
-            (first_f32(&g.latest_frame(n, "out").unwrap()) - 0.25).abs() < 1e-4,
-            "and advances from there"
+            first_f32(&out.expect_frame(&mut g, "the loaded node to run")) < 0.3,
+            "a loaded patch starts its clock at zero, whenever it was loaded",
         );
+        out.wait_until(&mut g, "and advances from there", |d| first_f32(d) > 0.1);
     }
 
     #[test]
-    fn rate_cap_gates_runs_by_wall_clock() {
-        use std::time::Duration;
-        // A 10 Hz (0.1s period) free-running source. Drive tick_at with a synthetic
-        // clock and assert it runs only once the period has elapsed since last run.
-        let mut g = Graph::new();
-        let src = g.add_node("_TestCapped", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // never run -> runs (count 1)
-        g.tick_at(t0 + Duration::from_millis(50)); // 0.05 < 0.1 -> skip
-        g.tick_at(t0 + Duration::from_millis(100)); // 0.10 elapsed -> run (count 2)
-        g.tick_at(t0 + Duration::from_millis(120)); // 0.02 since last -> skip
-        g.tick_at(t0 + Duration::from_millis(210)); // 0.11 since last -> run (count 3)
-        assert_eq!(
-            first_f32(&g.latest_frame(src, "out").unwrap()),
-            3.0,
-            "10 Hz cap admitted exactly 3 of 5 ticks"
-        );
-    }
-
-    fn ufreq(g: &Graph, uid: Uid, slot: &str) -> Option<f64> {
-        g.latest_frame(uid, slot).unwrap().meta().ufreq()
-    }
-
-    #[test]
-    fn ufreq_measures_steady_source_rate() {
-        use std::time::Duration;
-        // A pure source ticked every 10 ms emits at a steady 100 Hz. The first frame
-        // has no interval to measure; from the second on, a steady period reads exact.
+    fn ufreq_measures_a_capped_source_rate() {
+        // The measured rate has to be the node's ACTUAL emit rate, and a rate cap is the one way a
+        // test can name a number for it. A tolerance rather than an equality: the meter is an EMA
+        // over real intervals and the node's thread is scheduled by the OS.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        assert_eq!(ufreq(&g, src, "out"), None, "first emit: no interval yet");
-        g.tick_at(t0 + Duration::from_millis(10));
-        let uf = ufreq(&g, src, "out").expect("measured after 2nd emit");
-        assert!((uf - 100.0).abs() < 1e-6, "10 ms period -> 100 Hz, got {uf}");
-        g.tick_at(t0 + Duration::from_millis(20));
-        let uf3 = ufreq(&g, src, "out").expect("still measured");
-        assert!((uf3 - 100.0).abs() < 1e-6, "steady source stays exact, got {uf3}");
-    }
-
-    #[test]
-    fn ufreq_reflects_the_rate_cap_not_the_tick_rate() {
-        use std::time::Duration;
-        // A 10 Hz-capped source ticked at 100 Hz emits every ~0.1 s. Its ufreq must
-        // read the emit rate (~10 Hz), NOT the tick rate.
-        let mut g = Graph::new();
-        let src = g.add_node("_TestCapped", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // run (emit 1) -> no interval yet
-        assert_eq!(ufreq(&g, src, "out"), None);
-        g.tick_at(t0 + Duration::from_millis(50)); // skipped by the cap
-        g.tick_at(t0 + Duration::from_millis(100)); // run (emit 2): dt = 0.1 s
-        let uf = ufreq(&g, src, "out").expect("measured after 2nd emit");
-        assert!((uf - 10.0).abs() < 1e-6, "capped emit rate -> 10 Hz, got {uf}");
+        g.update_param(src, "common", "max_frequency", Param::float(20.0, 0.0, 1e9)).unwrap();
+        let out = OutputProbe::open(&g, src, "out");
+        out.wait_until(&mut g, "the meter to settle near the cap", |d| {
+            d.meta().ufreq().is_some_and(|hz| (hz - 20.0).abs() < 6.0)
+        });
     }
 
     #[test]
     fn ufreq_is_node_level_same_on_every_slot() {
-        use std::time::Duration;
-        // "fast" emits every 10 ms run; "slow" every other run. ufreq is measured PER
-        // NODE (the node emits every run -> 100 Hz), so BOTH slots carry the node's
-        // 100 Hz — not the slow slot's own 50 Hz cadence.
+        // "fast" emits every run; "slow" every other one. ufreq is measured PER NODE, so BOTH slots
+        // carry the same number — the slow slot must not report its own halved cadence. Equality
+        // rather than a target rate: what this pins is that there is ONE meter, and a per-slot
+        // meter differs by a factor of two here whatever the node's real rate turns out to be.
+        //
+        // Born capped, and read as a RATIO once the meter has settled there: the two slots hold
+        // whatever emit each last caught, and an EMA still climbing off a node's first runs differs
+        // between any two of them for a reason that has nothing to do with how many meters there
+        // are. What a per-slot meter cannot survive is the ratio — it halves the slow slot.
         let mut g = Graph::new();
-        let src = g.add_node("_TestTwoRate", None).unwrap();
-        let t0 = Instant::now();
-        for i in 0..6 {
-            g.tick_at(t0 + Duration::from_millis(10 * i));
-        }
-        let fast = ufreq(&g, src, "fast").expect("fast measured");
-        let slow = ufreq(&g, src, "slow").expect("slow measured");
-        assert!((fast - 100.0).abs() < 1e-6, "node rate on fast slot -> 100 Hz, got {fast}");
-        assert!((slow - 100.0).abs() < 1e-6, "same node rate on slow slot -> 100 Hz, got {slow}");
-    }
-
-    #[test]
-    fn ufreq_guards_nonadvancing_clock() {
-        use std::time::Duration;
-        // Two emits at the SAME instant (dt == 0) must never yield inf/NaN: before a
-        // measurement exists it stays None; afterwards it keeps the prior estimate.
-        let mut g = Graph::new();
-        let src = g.add_node("_TestConst", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0); // emit 1
-        g.tick_at(t0); // emit 2, dt == 0, no prior estimate
-        assert_eq!(ufreq(&g, src, "out"), None, "dt==0 with no estimate stays None");
-        g.tick_at(t0 + Duration::from_millis(10)); // emit 3: dt = 0.01 -> 100 Hz
-        assert!((ufreq(&g, src, "out").unwrap() - 100.0).abs() < 1e-6);
-        g.tick_at(t0 + Duration::from_millis(10)); // emit 4, dt == 0: keep prior estimate
-        let uf = ufreq(&g, src, "out").unwrap();
-        assert!(uf.is_finite(), "dt==0 must not produce inf/NaN, got {uf}");
-        assert!((uf - 100.0).abs() < 1e-6, "keeps the prior 100 Hz estimate, got {uf}");
+        let src = capped(&mut g, "_TestTwoRate", 50.0);
+        let fast = OutputProbe::open(&g, src, "fast");
+        let slow = OutputProbe::open(&g, src, "slow");
+        let fast_hz = fast
+            .wait_until(&mut g, "the meter to settle at the cap", |d| {
+                d.meta().ufreq().is_some_and(|hz| (hz - 50.0).abs() < 10.0)
+            })
+            .meta()
+            .ufreq()
+            .unwrap();
+        let slow_hz = slow
+            .expect_frame(&mut g, "the slow slot to have emitted")
+            .meta()
+            .ufreq()
+            .expect("stamped");
+        assert!(
+            (fast_hz / slow_hz - 1.0).abs() < 0.25,
+            "one meter per node: a per-slot meter halves the slow slot ({slow_hz} vs {fast_hz})",
+        );
     }
 
     #[test]
     fn node_ufreq_exposes_the_measured_rate() {
-        use std::time::Duration;
         // The control-plane accessor the bridge forwards to the node header.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        assert_eq!(g.node_ufreq(src), None, "no rate before the 2nd emit");
-        g.tick_at(t0 + Duration::from_millis(10));
-        let uf = g.node_ufreq(src).expect("measured");
-        assert!((uf - 100.0).abs() < 1e-6, "node_ufreq -> 100 Hz, got {uf}");
+        g.update_param(src, "common", "max_frequency", Param::float(20.0, 0.0, 1e9)).unwrap();
+        assert_eq!(g.node_ufreq(src), None, "no rate before the node has reported one");
+        wait_for(&mut g, "the reported rate to reach the graph", |g| {
+            g.node_ufreq(src).is_some_and(|hz| (hz - 20.0).abs() < 6.0)
+        });
     }
 
     #[test]
     fn ufreq_survives_the_data_plane_wire() {
-        use std::time::Duration;
         // End-to-end through the bridge's exact seam: an engine-stamped frame,
         // encoded as `goofi_codec::encode(latest_frame(..))` (see bridge/lib.rs),
         // carries ufreq across the wire so the browser inspector shows it.
         let mut g = Graph::new();
         let src = g.add_node("_TestConst", None).unwrap();
-        let t0 = Instant::now();
-        g.tick_at(t0);
-        g.tick_at(t0 + Duration::from_millis(10)); // steady 100 Hz
-        let frame = g.latest_frame(src, "out").unwrap();
-        assert!((frame.meta().ufreq().unwrap() - 100.0).abs() < 1e-6);
+        let out = OutputProbe::open(&g, src, "out");
+        let frame = out.wait_until(&mut g, "a measured rate", |d| d.meta().ufreq().is_some());
+        let measured = frame.meta().ufreq().unwrap();
 
         let wire = goofi_codec::encode(&frame);
         let back = goofi_codec::decode(&wire).expect("data-plane frame decodes");
-        assert_eq!(back.meta().ufreq(), frame.meta().ufreq(), "ufreq round-trips the data plane");
-        assert!((back.meta().ufreq().unwrap() - 100.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn default_policy_runs_every_tick_regardless_of_clock() {
-        use std::time::Duration;
-        // A default-policy source (unbounded) must run on every tick even when the
-        // clock barely advances — proving the rate gate is inert without a cap
-        // (backward compatibility with the pre-RunPolicy scheduler).
-        let mut g = Graph::new();
-        let src = g.add_node("_TestConst", None).unwrap();
-        let t0 = Instant::now();
-        for i in 0..5 {
-            g.tick_at(t0 + Duration::from_nanos(i)); // clock essentially frozen
-        }
-        // 5 emits -> the generator's index advanced to 4 (ran every tick).
-        assert_eq!(g.latest_frame(src, "out").unwrap().meta().index(), Some(4));
+        assert_eq!(back.meta().ufreq(), Some(measured), "ufreq round-trips the data plane");
     }
 
     #[test]
@@ -9156,14 +7684,17 @@ mod tests {
         let rs = g.add_node("_TestConst", None).unwrap(); // ref source, len 1
         let ds = g.add_node("_TestConst", None).unwrap();
         g.update_param(ds, "constant", "length", Param::int(4, 1, 10)).unwrap(); // data source, len 4
-        let c = g.add_node("_TestRefLenChange", None).unwrap();
+        let c = capped(&mut g, "_TestRefLenChange", 5.0);
+        let refs = OutputProbe::open(&g, rs, "out");
+        let out = OutputProbe::open(&g, c, "out");
         g.add_link(rs, "out", c, "ref").unwrap();
-        for _ in 0..3 {
-            g.tick(); // rs -> index 2; c dormant (data unwired, triggered node)
-        }
+        // The ref source runs well past 0 while the consumer is dormant (its `data` trigger is
+        // unwired), so a wrongly-propagated ref index is a big number and a fresh one is 0.
+        refs.wait_until(&mut g, "the ref source to be well past its first emit", |d| {
+            d.meta().index().unwrap_or(0) > 10
+        });
         g.add_link(ds, "out", c, "data").unwrap();
-        g.tick(); // rs -> index 3 (len 1); ds -> index 0 (len 4); c emits len 1
-        let f = g.latest_frame(c, "out").expect("consumer ran");
+        let f = out.expect_frame(&mut g, "the consumer to run");
         assert_eq!(f.meta().index(), Some(0), "control input must not be the timeline");
     }
 
@@ -9178,17 +7709,15 @@ mod tests {
         let ok = g.add_node("_TestConst", None).unwrap();
         g.update_param(ok, "constant", "value", Param::float(9.0, -1e9, 1e9))
             .unwrap();
+        let out = OutputProbe::open(&g, ok, "out");
 
-        g.tick(); // must NOT unwind past here (would poison the graph lock)
-
+        // The panic is captured as the node's error, and the healthy node — on its own thread —
+        // keeps running. Neither the graph lock nor the other node's thread may be taken with it.
+        wait_for(&mut g, "the panic to be captured as an error", |g| {
+            g.last_error(boom).unwrap_or("").contains("panic")
+        });
         std::panic::set_hook(prev);
-
-        // The panic is captured as the node's error; the healthy node still ran.
-        assert!(
-            g.last_error(boom).unwrap_or("").contains("panic"),
-            "panic must be captured as an error"
-        );
-        assert_eq!(first_f32(&g.latest_frame(ok, "out").unwrap()), 9.0);
+        out.wait_until(&mut g, "the healthy node to keep running", |d| first_f32(d) == 9.0);
     }
 
     /// A cable between two slots of different dtypes can never carry data — the consumer would
@@ -9222,12 +7751,12 @@ mod tests {
         let mut g = Graph::new();
         let boom = g.add_node("_TestPanic", None).unwrap();
         let ok = g.add_node("_TestEcho", None).unwrap();
-        g.tick();
+        wait_for(&mut g, "the panicking node to report", |g| g.error_age(boom).is_some());
         std::panic::set_hook(prev);
 
         let first = g.error_age(boom).expect("the error is stamped the moment it appears");
         std::thread::sleep(Duration::from_millis(120));
-        g.tick();
+        g.drain_status();
         let later = g.error_age(boom).expect("still errored");
         assert!(
             later >= first + Duration::from_millis(100),
@@ -9262,17 +7791,99 @@ mod tests {
         };
         let mut g = Graph::new();
         g.register_dyn_type(&CHANGING, Box::new(|_| Box::new(Changing(0))));
-        let uid = g.add_node("_TestChangingError", None).unwrap();
-        g.tick();
-        assert_eq!(g.last_error(uid), Some("failure 1"));
+        // Born at 2 Hz: the failures have to be far enough apart that the FIRST one is still what
+        // the graph is holding when the clock is read. Uncapped, this node reaches failure 30000
+        // before anything drains, and "failure 1" never appears at all.
+        let uid = capped(&mut g, "_TestChangingError", 2.0);
+        wait_for(&mut g, "the first failure", |g| g.last_error(uid) == Some("failure 1"));
 
+        // The node reports only TRANSITIONS, so the second message arrives when its complaint
+        // changes — and nothing between the two touches the clock.
         std::thread::sleep(Duration::from_millis(300));
-        g.tick();
-        assert_eq!(g.last_error(uid), Some("failure 2"), "the node is failing differently now");
+        assert_eq!(g.last_error(uid), Some("failure 1"), "still the first one, 300 ms on");
+        wait_for(&mut g, "the node to fail differently", |g| g.last_error(uid) == Some("failure 2"));
         let age = g.error_age(uid).expect("still errored");
         assert!(
             age < Duration::from_millis(150),
             "a new message is a new error, not the old one still standing: {age:?}",
         );
+    }
+
+    // ------------------------------------------------------------------
+    // The headline property (spec §1): a node's rate is its own.
+    // ------------------------------------------------------------------
+
+    /// Counts every `process()` entry in a cell the test reads. The COUNT is the whole oracle —
+    /// asserting that the node "ran" would hold just as well for one run in half a second.
+    struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Node for Counting {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            out.set("out", Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap());
+            Ok(())
+        }
+    }
+
+    /// Sleeps 50 ms inside `process()` — a device read, a subprocess round-trip, a slow FFT.
+    struct Sleeping;
+    impl Node for Sleeping {
+        fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            std::thread::sleep(Duration::from_millis(50));
+            out.set("out", Data::array_f32(vec![1], 1.0f32.to_le_bytes().to_vec(), Meta::empty()).unwrap());
+            Ok(())
+        }
+    }
+
+    static COUNTING: NodeManifest = NodeManifest {
+        type_name: "_TestCounting",
+        category: "test",
+        doc: "counts its runs",
+        inputs: &[],
+        outputs: P_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::InProcess,
+        producer: true,
+        factory: || Box::new(Counting(Default::default())),
+    };
+    static SLEEPING: NodeManifest = NodeManifest {
+        type_name: "_TestSleeping",
+        category: "test",
+        doc: "sleeps 50ms per run",
+        inputs: &[],
+        outputs: P_OUT,
+        params: NO_PARAMS,
+        isolation: Isolation::InProcess,
+        producer: true,
+        factory: || Box::new(Sleeping),
+    };
+
+    /// How many times the counting source runs in `window`, alone or beside the sleeper. The two
+    /// nodes are NEVER linked: whatever one does to the other travelled through the scheduler.
+    fn runs_in(window: Duration, with_sleeper: bool) -> usize {
+        let runs: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
+        let mine = runs.clone();
+        let mut g = Graph::new();
+        g.register_dyn_type(&COUNTING, Box::new(move |_| Box::new(Counting(mine.clone()))));
+        g.register_dyn_type(&SLEEPING, Box::new(|_| Box::new(Sleeping)));
+        g.add_node("_TestCounting", None).unwrap();
+        if with_sleeper {
+            g.add_node("_TestSleeping", None).unwrap();
+        }
+        // Nothing to drive: each node runs itself on its own thread. What the test measures is the
+        // rate that arrangement gives the counter, so the measurement is a wall-clock window and
+        // the graph is simply alive for it.
+        std::thread::sleep(window);
+        runs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[test]
+    fn a_slow_node_does_not_throttle_an_unrelated_one() {
+        // THE headline property. Measured on the old runtime: 18411 runs alone, 10 beside a 50ms
+        // node with no link between them — a 1841x throttle, because rayon's per-level join barrier
+        // and the graph mutex made every node inherit the slowest one's rate.
+        let alone = runs_in(Duration::from_millis(500), false);
+        let beside = runs_in(Duration::from_millis(500), true);
+        assert!(beside as f64 / alone as f64 > 0.5,
+                "an unrelated node must keep its rate: {beside} vs {alone}");
     }
 }

@@ -8,53 +8,44 @@
 //! connected-trigger-input counter, and a node that declares no trigger input and leaves
 //! autotrigger off never runs, which is correct.
 //!
-//! A [`NodeRuntime`] owns one node against a [`Transport`]. [`Graph`] now plans and sends that
-//! node's wiring ([`plan`]), but nothing constructs a `NodeRuntime` or drives its wake loop yet —
-//! the tick path still owns execution.
+//! A [`NodeRuntime`] owns one node against a [`Transport`], and [`spawn`] gives it the thread it
+//! runs on. [`Graph`] builds one per node at birth, plans its wiring ([`plan`]) and reads back what
+//! it reports ([`Status`]); it never runs a node itself. There is no tick.
 //!
-//! ## Where this diverges from the tick path it replaces
+//! ## The ledger the cutover closed
 //!
-//! `NodeRuntime::run` is `run_node` + `execute_node` minus three things, each of which the
-//! cutover must restore or drop on purpose: the engine's meta stamping (`index` and `ufreq`);
-//! `last_outputs`, which §7 removes along with `latest_frame`, so that one is a deliberate drop;
-//! and the **required-input gate**, where `execute_node` refuses to run a node whose `required`
-//! slot holds no frame and records that refusal as its error — nothing here does. `ensure_initialized`
-//! now also exists twice, once per scheduler, and the two must be collapsed rather than kept in step.
+//! Every item the four preceding tasks deferred here is closed, and the closures are stated rather
+//! than left to be re-derived:
 //!
-//! Two more, added with the transport. **Frames do not reach a node from its own wires**: the graph
-//! propagates them on the tick path, while [`IoxTransport::drain_inputs`] is what the wake loop will
-//! read instead — so `deliver_input` is still called by hand. And **no birth barrier**: §4 queues a
-//! node's `Control` until it answers `Status::Ready`, which needs a node lifecycle the graph does
-//! not own yet, so a message sent before its node exists is simply lost (pub/sub has no history).
-//!
-//! And two from the graph/state split, both of which are **live capability gaps until the cutover**,
-//! not merely unfinished plumbing:
-//!
-//! - **No expression is evaluated anywhere.** `Graph::resolve_level_bindings` is deleted — §2.1
-//!   evaluates in the node, immediately before the run that reads the value — but nothing drives a
-//!   [`NodeRuntime`], so on the tick path a bound param simply holds its literal. Three tests were
-//!   deleted with it and name precisely what the cutover must restore: a constant expression driving
-//!   `process`, an evaluated value reaching a mirrored field through `on_param_changed`, and
-//!   `Oscillator.sfreq` re-rating its block from a binding. (Their *other* halves did not go with
-//!   them: "a settled binding re-dispatches nothing" is
-//!   [`tests::a_settled_binding_re_dispatches_nothing`] here, at the seam that owns it now.)
-//! - **[`Binding::evaluate`] handles only a bare-variable source.** A `NodeRuntime` holds no
-//!   [`goofi_node::ExprEvaluator`], so `__v0.mean() * __v1` reports that it needs one rather than
-//!   computing it. The graph compiles the rewritten source (so `set_expression`'s reply stays
-//!   honest) and the evaluator's locals channel is proven end to end in `goofi-python`; what is
-//!   missing is only the node-side handle.
-//!
-//! One more that is plumbing rather than capability: `Status::ParamValues` is now the ONLY source of
-//! `Graph::expression_values`, and so of the bridge's `param_values` event. Nothing reports one yet,
-//! so that event is silent until the cutover.
+//! 1. **Meta stamping** — [`stamp_meta`] runs in [`NodeRuntime::run`], on the frames the node just
+//!    emitted, before they are published. `index` and `ufreq` stay engine-owned.
+//! 2. **`last_outputs`** — dropped on purpose with `Graph::latest_frame` (§7). A viewer subscribes
+//!    to `/data` like any other consumer, so there is nothing left that reads a node for a frame.
+//! 3. **The required-input gate** — [`NodeRuntime::missing_required`], checked over the WIRE CELLS
+//!    rather than over `inputs`: a `multi` slot's frames never enter `inputs`, so a gate reading
+//!    that map alone passes every node with a required multi slot.
+//! 4. **`ensure_initialized`** — one gate, here. The graph-side copy is gone with the tick.
+//! 5. **Frames reach a node from its own wires** — the wake loop drains
+//!    [`Transport::drain_inputs`], which is the only door a frame comes in through, for declared
+//!    slots and for an expression variable's pseudo-slot alike.
+//! 6. **The birth barrier** — a node publishes [`Status::Ready`] once its own services exist, and
+//!    the graph attaches its control sink on that report and not before. A `Control` sent earlier
+//!    would be published to a subscriber that does not exist yet, and pub/sub has no history.
+//! 7. **Expressions are evaluated** — in the node, immediately before the run that reads them
+//!    (§2.1), from the mailboxes its variables name.
+//! 8. **[`Binding::evaluate`] holds the evaluator** — a rewritten source richer than one variable
+//!    goes to [`goofi_node::ExprEvaluator`] with §5.3's locals channel.
+//! 9. **`replan_slot`'s callers** — birth, removal, restart and load join the link and binding
+//!    changes, all of them through `Graph::attach_control_sink` / `Graph::slots_touching`.
+//! 10. **`WirePlanner::is_idle`** — deleted. Every live node has a channel.
 //!
 //! Two things were DROPPED on purpose rather than deferred, and are listed so neither reads as an
-//! oversight at the cutover:
+//! oversight:
 //!
 //! - **`scheduling_edges` no longer lifts `nd()` references into the topo DAG.** That ordering
 //!   existed so a referenced producer ran earlier in the same tick and the expression saw
 //!   this-tick's value. §2.1 moved evaluation into the node, so the lifting ordered nothing and the
-//!   guarantee it bought no longer exists to buy. The whole tick goes next.
+//!   guarantee it bought no longer exists to buy. The whole tick went with it.
 //! - **The pyo3 evaluator's `nd()` proxy and `globals` namespace.** The rules they enforced did not
 //!   all retire with them, and the ones that MOVED are pinned at their new home rather than left to
 //!   the reader: a bare `nd()` on a multi-output producer, an unknown `.slot`, and a `globals.` name
@@ -65,22 +56,20 @@
 //!   `_Globals`' `__getattribute__` shim (a global's NAME never reaches Python any more), and
 //!   `Compiled`'s `refs`/`global_refs` extraction (the compiled source names neither).
 //!
-//! And the status-drain worker (§6.2) is half here. `Graph::apply_status` is the graph-side half and
-//! is complete: every variant lands in the fields `last_error`/`node_stage` already read, an ack
-//! goes to the wire planner, and the evaluated values reach the record the `param_values` event
-//! reads. What is missing is its SOURCE — `goofi_bridge::spawn_stats` still polls, because nothing
-//! publishes a `Status` and `Status::{Ufreq, Stage}` are deliberately absent from the wire contract
-//! until something sends them. The ≤10 Hz coalesced re-mirror belongs with that swap: nothing yet
-//! changes doc-carried state out of band.
-//!
 //! [`Graph`]: crate::Graph
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
+use goofi_core::globals::GlobalsSnapshot;
 use goofi_core::{Data, Param};
-use goofi_node::{Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params, RunPolicy};
+use goofi_node::{
+    ExprEvaluator, Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params,
+    RunPolicy,
+};
 use indexmap::IndexMap;
 
 mod mailbox;
@@ -90,16 +79,16 @@ mod wire;
 
 pub use mailbox::{Binding, Mailbox};
 pub use transport::{
-    door_service, iox_node, output_service, service_base, Doorbell, IoxNode, IoxTransport,
-    NodeChannel,
+    door_service, iox_node, open_output_subscriber, output_service, service_base, ByteSubscriber,
+    Doorbell, IoxNode, IoxTransport, NodeChannel,
 };
 /// Only [`Graph`] mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;
 #[cfg(test)]
 pub use wire::MemoryTransport;
 pub use wire::{
-    Control, ControlSink, Envelope, EventId, ParamValue, ServiceName, Status, Transport, Var,
-    VarName,
+    Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
+    Var, VarName,
 };
 
 /// The scheduling namespace. A `common.*` param decides *when* a node runs, so it is resolved
@@ -109,6 +98,57 @@ const COMMON: &str = "common";
 /// `SETUP_RETRY_INTERVAL` in the wall-clock milliseconds a [`NodeFault`] carries, so the interval
 /// is stated once for the whole engine rather than once per clock.
 const SETUP_RETRY_MS: f64 = crate::SETUP_RETRY_INTERVAL * 1000.0;
+
+/// How often a node reports its measured update rate. Every other [`Status`] is a transition and is
+/// sent when it happens; a rate is a MEASUREMENT and an uncapped producer takes one per emit, so
+/// reporting each would flood the status service with what the bridge coalesces to 10 Hz anyway.
+const UFREQ_REPORT_MS: u128 = 250;
+
+/// How long a parked node waits before looking again when nothing is due. A wake is a hint (§3.3),
+/// so a missed doorbell costs at most this — and it is what makes a node notice its [`Halt`].
+const PARK_CEILING: Duration = Duration::from_millis(50);
+
+/// The smoothing factor of the `ufreq` EMA: how much the newest inter-emit interval moves the
+/// estimate. Low enough that a single slow frame does not swing the readout, high enough that a
+/// real rate change is visible within a second.
+const UFREQ_EMA_ALPHA: f64 = 0.2;
+
+/// The `ufreq` meter's state: when this node last emitted, and the smoothed interval between emits.
+#[derive(Default)]
+struct UfreqMeter {
+    last_emit: Option<f64>,
+    ema: Option<f64>,
+}
+
+/// The one thing that stops a node's manager-side thread. See [`wire`]'s note on why this is a flag
+/// and not a `Control::Terminate`: a node removed before it answered [`Status::Ready`] has no sink,
+/// and a whole-graph `clear` has no sequence to order.
+#[derive(Default)]
+pub struct Halt(AtomicBool);
+
+impl Halt {
+    pub fn stop(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+    fn stopped(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// The pseudo input slot a bound param's producer wires ride. A binding subscribes to a producer
+/// exactly as an input slot does (§5.3), so it goes through the one subscribe door rather than a
+/// second one — and the name is namespaced with a character no declared slot may carry, so it can
+/// never collide with one.
+pub fn expr_wire_slot(key: &ParamKey) -> String {
+    format!("expr:{}:{}", key.group, key.name)
+}
+
+/// The [`ParamKey`] an [`expr_wire_slot`] name refers back to, or `None` for a declared slot.
+fn expr_wire_key(slot: &str) -> Option<ParamKey> {
+    let rest = slot.strip_prefix("expr:")?;
+    let (group, name) = rest.split_once(':')?;
+    Some(ParamKey::new(group, name))
+}
 
 /// What is wrong with a node. `None` is healthy.
 ///
@@ -138,6 +178,17 @@ pub struct NodeRuntime {
     manifest: &'static NodeManifest,
     node: Box<dyn Node>,
     transport: Arc<dyn Transport>,
+    /// The evaluator that compiled this node's bindings, shared with the graph that compiled them
+    /// (§2.1 evaluates in the node; `set_expression` compiles in the graph so the authoring RPC can
+    /// answer with a real compile error). `None` on a graph with no evaluator injected, where every
+    /// bound param falls back to its literal.
+    evaluator: Option<Arc<dyn ExprEvaluator>>,
+    /// The patch globals as the node reads them (§5.2): a lock-free handle onto the graph's record,
+    /// re-read before each run so `process` sees an edit on its next run rather than never.
+    globals: Arc<ArcSwap<GlobalsSnapshot>>,
+    /// The graph's clock origin, so `NodeCtx::now` is seconds-since-start on every node's thread
+    /// rather than seconds-since-this-node's-birth.
+    started: Instant,
 
     /// Path B lives in `run_policy.autotrigger`, beside the cap that paces it — one value derived
     /// by one `RunPolicy::from_params`, so there is nothing to keep in step.
@@ -164,7 +215,22 @@ pub struct NodeRuntime {
 
     /// Latest-wins input cells, one per declared single input slot.
     pub(crate) inputs: IndexMap<&'static str, Option<Data>>,
+    /// Per-WIRE latest-wins cells for each declared `multi` input slot, keyed by the producer's
+    /// service name and held in the order the last `InSlot` set named — which IS
+    /// `Inputs::get_multi`'s connection order (§3.5). Kept apart from [`Self::inputs`] because the
+    /// two partition the manifest's slots, and because the required-input gate has to see both:
+    /// a gate reading only `inputs` passes every node with a required multi slot.
+    pub(crate) multi_wires: IndexMap<&'static str, Vec<(ServiceName, Option<Data>)>>,
     pub(crate) ctx: NodeCtx,
+    /// Per-output-slot emit counter for `meta["index"]` — engine-owned, the node never sees it.
+    index_counters: HashMap<&'static str, u64>,
+    /// Per-NODE measured update rate for `meta["ufreq"]`: one meter, stamped onto every slot this
+    /// node emits, because ufreq describes the node rather than a slot.
+    ufreq_meter: UfreqMeter,
+    /// When the rate was last REPORTED, which is not when it was last measured — see
+    /// [`UFREQ_REPORT_MS`].
+    last_ufreq_report: Option<Instant>,
+    stage: NodeStage,
 
     pub(crate) fault: Option<NodeFault>,
     /// Binding errors are a MAP, not a fault variant: several bindings can be errored at once and
@@ -177,17 +243,55 @@ pub struct NodeRuntime {
     initialized: bool,
 }
 
+/// Everything a node's thread needs that is the GRAPH's rather than the node's: the shared records
+/// it reads through, the evaluator that compiled its bindings, and the clock origin. One struct
+/// because every one of them is handed over at birth and none of them is ever replaced — a restart
+/// builds a new runtime rather than mutating this.
+pub struct NodeEnv {
+    pub evaluator: Option<Arc<dyn ExprEvaluator>>,
+    pub globals: Arc<ArcSwap<GlobalsSnapshot>>,
+    pub started: Instant,
+}
+
+impl NodeEnv {
+    /// The environment of a node that belongs to no graph — what a test driving a [`NodeRuntime`]
+    /// directly gets, and what `NodeCtx::default` already meant by empty globals.
+    pub fn detached() -> NodeEnv {
+        NodeEnv {
+            evaluator: None,
+            globals: Arc::new(ArcSwap::from_pointee(GlobalsSnapshot::default())),
+            started: Instant::now(),
+        }
+    }
+}
+
 impl NodeRuntime {
     /// Build a node from its manifest and initialize it: seed its params, then `setup()`. A
     /// failing `setup` leaves the node UNINITIALIZED with a [`NodeFault::Setup`] standing, and
     /// nothing runs against it until a retry succeeds.
-    pub fn new(manifest: &'static NodeManifest, transport: Arc<dyn Transport>) -> NodeRuntime {
-        let effective = goofi_node::with_common(manifest.default_params(), manifest);
+    ///
+    /// `params` is the record the graph holds for this node — a fresh add's type defaults, or a
+    /// load's saved values — so the node's own literals and the `.gfi` are the same numbers from
+    /// its first `setup()` rather than from its first param message.
+    pub fn new(
+        manifest: &'static NodeManifest,
+        node: Box<dyn Node>,
+        params: ParamGroups,
+        transport: Arc<dyn Transport>,
+        env: NodeEnv,
+    ) -> NodeRuntime {
+        let effective = goofi_node::with_common(params, manifest);
         let run_policy = RunPolicy::from_params(&effective);
+        let mut ctx = NodeCtx::new();
+        // `setup` latches the globals as of birth; `process` re-reads them before every run.
+        ctx.globals = (**env.globals.load()).clone();
         let mut runtime = NodeRuntime {
             manifest,
-            node: (manifest.factory)(),
+            node,
             transport,
+            evaluator: env.evaluator,
+            globals: env.globals,
+            started: env.started,
             trigger_pending: false,
             run_policy,
             last_run: None,
@@ -197,14 +301,36 @@ impl NodeRuntime {
             evaluated: IndexMap::new(),
             bindings: IndexMap::new(),
             inputs: manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect(),
-            ctx: NodeCtx::new(),
+            multi_wires: manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect(),
+            ctx,
+            index_counters: HashMap::new(),
+            ufreq_meter: UfreqMeter::default(),
+            last_ufreq_report: None,
+            stage: NodeStage::Setup,
             fault: None,
             binding_errors: HashMap::new(),
             binding_errors_since: 0.0,
             initialized: false,
         };
+        // §4's birth barrier: the graph addresses nothing until this lands, because the control
+        // SUBSCRIBER now exists and a message published before it did would simply be lost. Sent
+        // before `setup()` runs, so a `setup` that fails at birth still has somewhere to report to.
+        runtime.transport.report(Status::Ready);
+        runtime.transport.report(Status::Stage { stage: NodeStage::Setup });
         runtime.initialize();
+        runtime.publish_stage();
         runtime
+    }
+
+    /// Announce the node's lifecycle stage when it CHANGED. `error` is the graph's derivation from
+    /// the fault and is deliberately not a stage a node can claim, so an initialized node is
+    /// `ready` whatever its last `process` did.
+    fn publish_stage(&mut self) {
+        let next = if self.initialized { NodeStage::Ready } else { NodeStage::Setup };
+        if next != self.stage {
+            self.stage = next;
+            self.transport.report(Status::Stage { stage: next });
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -245,10 +371,13 @@ impl NodeRuntime {
 
     /// One iteration of the wake loop, minus the park: §3.3 makes a notification a pure hint — the
     /// truth is in the control mailbox and the latest-wins cells — so the drain never consults the
-    /// event ids, and the loop that parks on [`Transport::wait`] wraps this rather than replacing
-    /// it. Path A and path C's data half arrive through [`Self::deliver_input`] and
-    /// [`Self::deliver_arrival`] until a real transport subscribes for them.
+    /// event ids, and [`Self::run_forever`] wraps this rather than replacing it.
     pub fn run_once(&mut self) {
+        // Frames FIRST: a control message may re-wire the slot a frame just arrived on, and
+        // applying the wiring before draining would throw away the frame the old wire delivered.
+        for (slot, wire, frame) in self.transport.drain_inputs() {
+            self.deliver_input(&slot, wire, frame);
+        }
         self.drain_control();
 
         // §1.1 — pacing is resolved BEFORE the gates are read, whichever path dirtied it.
@@ -275,14 +404,81 @@ impl NodeRuntime {
         let transport = self.transport.clone();
         for Envelope { seq, control } in transport.drain_control() {
             let ok = match control {
-                Control::InSlot { slot, services } => transport.wire_in(&slot, &services),
+                Control::InSlot { slot, services } => {
+                    let wired = transport.wire_in(&slot, &services);
+                    // The node's own cells follow the set it was told to hold: a slot with no wire
+                    // left holds no frame, and a `multi` slot's cells keep their producers' order.
+                    self.reslot(&slot, &services);
+                    wired
+                }
                 Control::OutSlot { slot, targets } => transport.wire_out(&slot, &targets),
                 Control::SetParam { key, value } => {
                     self.set_param(key, value);
                     Ok(())
                 }
+                Control::RefreshParam { key } => {
+                    self.refresh_param(key);
+                    Ok(())
+                }
             };
             transport.report(Status::Ack { seq, ok });
+        }
+    }
+
+    /// Re-enumerate a refreshable `Str` param's options and report them (§8.5). The hook is
+    /// third-party code and it runs here rather than under the graph lock, which is the whole point
+    /// of the move — but a panic in it still has to become a report rather than kill this thread.
+    fn refresh_param(&mut self, key: ParamKey) {
+        // D3: an interaction retries the initialization first, so a picker whose node failed
+        // `setup()` rescans as soon as that node comes up.
+        let options = if self.ensure_initialized() {
+            let params = Params::new(&self.effective);
+            crate::guard_lifecycle(|| self.node.on_param_refreshed(&key, &params)).unwrap_or(None)
+        } else {
+            None
+        };
+        self.publish_stage();
+        if let Some(options) = &options {
+            // The record moves too, so the next `serialize` and the next inspector read agree with
+            // what was just reported rather than with the type's declaration.
+            if let Some(Param::Str { options: slot, .. }) =
+                self.literals.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
+            {
+                *slot = Some(options.clone());
+            }
+            if let Some(Param::Str { options: slot, .. }) =
+                self.effective.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
+            {
+                *slot = Some(options.clone());
+            }
+        }
+        self.transport.report(Status::RefreshOptions { key, options });
+    }
+
+    /// Apply a slot's new wire set to the node's OWN cells. The transport keeps the subscribers;
+    /// these are the frames already in hand, and what happens to them is the runtime's call: a
+    /// surviving wire keeps its frame, a wire that left takes its frame with it.
+    fn reslot(&mut self, slot: &str, services: &[ServiceName]) {
+        if let Some(cells) = self.multi_wires.get_mut(slot) {
+            let mut previous = std::mem::take(cells);
+            *cells = services
+                .iter()
+                .map(|service| {
+                    let held = previous
+                        .iter_mut()
+                        .find(|(name, _)| name == service)
+                        .and_then(|(_, frame)| frame.take());
+                    (service.clone(), held)
+                })
+                .collect();
+            return;
+        }
+        // A single slot has at most one wire, so an empty set is a disconnection: the cell it fed
+        // must clear, or a node keeps running on the frame of a producer it is no longer wired to.
+        if services.is_empty() {
+            if let Some(cell) = self.inputs.get_mut(slot) {
+                *cell = None;
+            }
         }
     }
 
@@ -302,15 +498,25 @@ impl NodeRuntime {
         // than the one that broke `setup()`.
         let literal = match value {
             ParamValue::Literal(p) => {
-                self.bindings.shift_remove(&key);
+                // An unbind drops the binding's subscriptions with it — the producer is told to
+                // stop ringing by the graph's phase 1, and this is the consumer's own half.
+                if self.bindings.shift_remove(&key).is_some() {
+                    let _ = self.transport.wire_in(&expr_wire_slot(&key), &[]);
+                }
                 self.evaluated.shift_remove(&key);
                 let cleared = self.record_binding_error(&key, None);
                 self.report_binding_errors(cleared.into_iter().collect());
                 self.set_literal(&key, p.clone());
                 Some(p)
             }
-            ParamValue::Expr { source, vars, trigger } => {
-                let binding = Binding::new(source, vars, trigger);
+            ParamValue::Expr { source, vars, trigger, id } => {
+                let binding = Binding::new(source, vars, trigger, id);
+                // §5.3: an expression reference IS a link, so its producers are subscribed through
+                // the one subscribe door every wire goes through — on a pseudo-slot named after the
+                // param, which is what lets a frame arriving there address a variable.
+                let services: Vec<ServiceName> =
+                    binding.streams.iter().map(|(_, service)| service.clone()).collect();
+                let _ = self.transport.wire_in(&expr_wire_slot(&key), &services);
                 match self.bindings.get_mut(&key) {
                     Some(existing) => existing.rebind(binding),
                     None => {
@@ -345,38 +551,43 @@ impl NodeRuntime {
     // The three arrival paths (§1)
     // -----------------------------------------------------------------------
 
-    /// Path A — a frame on an input slot. A `trigger_process` slot wakes the node; a reference
-    /// slot updates the cell and nothing more.
+    /// Paths A and C's data half — a frame off one of this node's wires, addressed by the slot it
+    /// arrived on and that wire's position in the slot's service set.
     ///
-    /// Single slots only: a `multi` slot keeps one cell per WIRE, ordered by that wire's position
-    /// in the slot's service list, so it arrives with the transport that subscribes per wire.
-    pub fn deliver_input(&mut self, slot: &str, frame: Data) {
-        let Some(decl) = self.manifest.inputs.iter().find(|s| s.name == slot && !s.multi) else {
-            // A slot this node does not declare as a single input: a frame from a wire the graph
-            // has since re-planned, or a multi slot. Refused rather than half-served — a
-            // single-source cell would read back as the whole of a multi slot.
+    /// One door for both, because a bound param subscribes through `wire_in` exactly as an input
+    /// slot does (§5.3): an [`expr_wire_slot`] name lands in a binding's mailbox, a declared slot
+    /// name in an input cell. A `trigger_process` slot wakes the node; a reference slot updates the
+    /// cell and nothing more.
+    pub fn deliver_input(&mut self, slot: &str, wire: usize, frame: Data) {
+        if let Some(key) = expr_wire_key(slot) {
+            let Some(binding) = self.bindings.get_mut(&key) else {
+                // A frame for a param this node has no binding on: a producer that emitted between
+                // the unbind and the graph's phase 1. Dropping it converges.
+                return;
+            };
+            binding.deliver(wire, frame);
+            let trigger = binding.trigger;
+            self.arrived(&key, trigger);
+            return;
+        }
+        let Some(decl) = self.manifest.inputs.iter().find(|s| s.name == slot) else {
+            // A slot this node does not declare: a frame from a wire the graph has since re-planned.
             return;
         };
-        self.inputs.insert(decl.name, Some(frame));
+        if decl.multi {
+            match self.multi_wires.get_mut(decl.name).and_then(|cells| cells.get_mut(wire)) {
+                Some(cell) => cell.1 = Some(frame),
+                // A wire index the last `InSlot` set does not name — a frame that crossed the
+                // sequence that removed it. Dropped rather than appended: appending would put the
+                // frame at a position `Inputs::get_multi` reads as a different producer's.
+                None => return,
+            }
+        } else {
+            self.inputs.insert(decl.name, Some(frame));
+        }
         if decl.trigger_process {
             self.trigger_pending = true;
         }
-    }
-
-    /// Path C on the DATA plane — a producer's frame landing in a bound variable's mailbox. Its
-    /// sibling is [`Self::set_param`] on the control plane, which carries the same three §1.1
-    /// arrivals a `Control` message can (a literal, a binding, a global the graph resolved inline);
-    /// §5.3 lands both in the same mailbox, so the two planes differ in how a value gets here and
-    /// in nothing else.
-    pub fn deliver_arrival(&mut self, key: ParamKey, value: Param) {
-        let Some(binding) = self.bindings.get_mut(&key) else {
-            // A value for a param this node has no binding on: a re-send that raced an unbind. The
-            // graph is the only sender and it stops sending on unbind, so dropping it converges.
-            return;
-        };
-        binding.deliver(value);
-        let trigger = binding.trigger;
-        self.arrived(&key, trigger);
     }
 
     /// What an arrival does to the schedule — §1.1's rule, stated ONCE and by key NAMESPACE rather
@@ -419,7 +630,13 @@ impl NodeRuntime {
             // A binding with nothing in its mailbox yet is not an error — the literal simply
             // stands. A binding that cannot be evaluated at all is, and it falls back to the same
             // literal for this run.
-            let evaluated = match self.bindings[&key].evaluate() {
+            // §2.1: the target param is the type template the evaluator coerces its result to,
+            // and it is the LITERAL — the number the user authored — never the last evaluated
+            // value, which would let a binding drift its own type from one run to the next.
+            let target = self.literal(&key).unwrap_or_else(|| Param::float(0.0, f64::NEG_INFINITY, f64::INFINITY));
+            let now = self.ctx.now;
+            let evaluator = self.evaluator.clone();
+            let evaluated = match self.bindings[&key].evaluate(evaluator.as_deref(), now, &target) {
                 Ok(value) => {
                     errors.extend(self.record_binding_error(&key, None));
                     value
@@ -516,11 +733,26 @@ impl NodeRuntime {
         self.trigger_pending = false;
         self.last_run = Some(Instant::now());
         if !self.ensure_initialized_paced() {
+            self.publish_stage();
             return;
         }
+        self.publish_stage();
+        // A required slot must HOLD data when the node runs — presence, never wiring, so a slot
+        // wired to a producer that has emitted nothing reads the same as an unwired one.
+        if let Some(slot) = self.missing_required() {
+            self.set_fault(Some(NodeFault::Process {
+                msg: format!("required input slot `{slot}` has no data"),
+                since: now_ms(),
+            }));
+            return;
+        }
+        // Live globals and the graph's clock for `process`; `setup` latched the globals at birth.
+        self.ctx.now = self.started.elapsed().as_secs_f64();
+        self.ctx.globals = (**self.globals.load()).clone();
+        let multis = self.materialize_multis();
         let mut outputs = self.manifest.output_buffer();
         let result = {
-            let inputs = Inputs::new(&self.inputs);
+            let inputs = Inputs::with_multi(&self.inputs, &multis);
             let params = Params::new(&self.effective);
             let mut out = Outputs::new(&mut outputs);
             crate::guard_lifecycle(|| self.node.process(&inputs, &mut out, &mut self.ctx, &params))
@@ -532,14 +764,61 @@ impl NodeRuntime {
                 // stands, so a clean run PROVES setup succeeded. It does NOT clear a binding
                 // error, which only that binding evaluating successfully clears.
                 self.set_fault(None);
+                // The engine's own meta goes on before anything leaves the node, so a consumer and
+                // a viewer read the same `index`/`ufreq` — there is no second stamping site.
+                let ufreq = stamp_meta(
+                    self.manifest,
+                    &self.inputs,
+                    &mut outputs,
+                    self.ctx.now,
+                    &mut self.index_counters,
+                    &mut self.ufreq_meter,
+                );
                 for (slot, frame) in outputs.iter() {
                     if let Some(frame) = frame {
                         self.transport.publish(slot, frame);
                     }
                 }
+                self.report_ufreq(ufreq);
             }
             Err(e) => self.set_fault(Some(NodeFault::Process { msg: e.0, since: now_ms() })),
         }
+    }
+
+    /// The name of a `required` input slot holding no frame, or `None` when every one of them is
+    /// fed. Read over the WIRE CELLS rather than over `inputs`: a `multi` slot's frames live in
+    /// [`Self::multi_wires`], so a gate reading `inputs` alone silently passes every node with a
+    /// required multi slot.
+    fn missing_required(&self) -> Option<&'static str> {
+        self.manifest.inputs.iter().filter(|s| s.required).find_map(|slot| {
+            let absent = if slot.multi {
+                self.multi_wires.get(slot.name).is_none_or(|c| !c.iter().any(|(_, f)| f.is_some()))
+            } else {
+                self.inputs.get(slot.name).and_then(Option::as_ref).is_none()
+            };
+            absent.then_some(slot.name)
+        })
+    }
+
+    /// The present frames on each `multi` slot, in wire order — absent wires dropped, so a node
+    /// sees only the frames that actually arrived.
+    fn materialize_multis(&self) -> IndexMap<&'static str, Vec<Data>> {
+        self.multi_wires
+            .iter()
+            .map(|(slot, cells)| (*slot, cells.iter().filter_map(|(_, f)| f.clone()).collect()))
+            .collect()
+    }
+
+    /// Report the measured rate, at most every [`UFREQ_REPORT_MS`]. `None` is the first emit, which
+    /// has no interval yet and therefore nothing to say.
+    fn report_ufreq(&mut self, hz: Option<f64>) {
+        let Some(hz) = hz else { return };
+        let now = Instant::now();
+        if self.last_ufreq_report.is_some_and(|t| (now - t).as_millis() < UFREQ_REPORT_MS) {
+            return;
+        }
+        self.last_ufreq_report = Some(now);
+        self.transport.report(Status::Ufreq { hz });
     }
 
     /// The initialization gate (D3): a node whose `setup()` failed is UNINITIALIZED, so nothing
@@ -627,6 +906,134 @@ impl NodeRuntime {
             since: self.binding_errors_since,
         })
     }
+
+    /// Run the node until it is halted — the body of its manager-side thread (§2). One loop for
+    /// every execution kind: a native Rust node, an in-process Python node and a subprocess node's
+    /// proxy differ only in what `process()` does.
+    pub fn run_forever(mut self, halt: Arc<Halt>) {
+        while !halt.stopped() {
+            self.run_once();
+            match self.next_wake() {
+                // Nothing due: park until something rings, or until the ceiling makes the node
+                // look at its halt flag again.
+                None => {
+                    self.transport.wait(Some(PARK_CEILING));
+                }
+                // Due now — an uncapped free-runner. Looping straight back is what §8.9 means by
+                // "an uncapped producer saturates a core"; parking on a zero timeout would add a
+                // syscall per run and change nothing.
+                Some(d) if d.is_zero() => continue,
+                Some(d) => {
+                    self.transport.wait(Some(d.min(PARK_CEILING)));
+                }
+            }
+        }
+    }
+}
+
+/// Give a node its own thread (§5: every node has a manager-side one).
+///
+/// The [`NodeRuntime`] is built INSIDE the thread, which is what takes `setup()` off the graph
+/// lock: a `setup` that opens a device or dials a socket is exactly the one that blocks, and the
+/// caller has already answered its RPC with the node as born. The transport is built by the caller
+/// instead, because creating it is the one step whose failure has nowhere to be reported to.
+pub fn spawn(
+    manifest: &'static NodeManifest,
+    node: Box<dyn Node>,
+    params: ParamGroups,
+    transport: Arc<dyn Transport>,
+    env: NodeEnv,
+    halt: Arc<Halt>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name(format!("goofi-{}", manifest.type_name))
+        .spawn(move || NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt))
+}
+
+/// The number of frames a `Data` spans — its total element count (numpy `.size` for an array, `len`
+/// for a string/table). This, not a static per-slot flag, is the timeline discriminator: a
+/// length-preserving transform's output matches its input's frame count; a generator or
+/// length-changing transform does not.
+fn frame_count(d: &Data) -> usize {
+    match d.value() {
+        goofi_core::Value::Array(s) => s.shape().iter().product(),
+        goofi_core::Value::Str(s) => s.chars().count(),
+        goofi_core::Value::Table(m) => m.len(),
+    }
+}
+
+/// Stamp the engine-owned meta — `index` and `ufreq` — on every frame this node just emitted (the
+/// node never touches either), and answer with the node's measured rate.
+///
+/// **index**: for each output, propagate the index of the SINGLE index-bearing TRIGGERING input
+/// whose frame count equals the output's — that input is the same data timeline, so an upstream
+/// drop stays visible downstream. A non-triggering (control/reference) input — an oscillator's
+/// scalar frequency, say — is never a timeline candidate even if its length happens to match. With
+/// zero, or more than one, matching inputs (a generator, a length-changing transform, or an
+/// ambiguous fan-in) the slot starts a fresh per-output counter that advances one per emit.
+///
+/// **ufreq**: the NODE's measured update rate (Hz) — an EMA of the inter-emit interval keyed on
+/// `ctx.now`, `None` until a second emit gives one interval. Measured PER NODE, advanced once per
+/// productive run, and the same value stamped onto every emitted slot: ufreq describes how often
+/// the node updates, not a per-slot cadence. Authoritative — overwritten every emit, never
+/// inherited from upstream meta.
+fn stamp_meta(
+    manifest: &'static NodeManifest,
+    inputs: &IndexMap<&'static str, Option<Data>>,
+    outputs: &mut IndexMap<&'static str, Option<Data>>,
+    now: f64,
+    counters: &mut HashMap<&'static str, u64>,
+    meter: &mut UfreqMeter,
+) -> Option<f64> {
+    // Nothing emitted → no meta to stamp, and the meter only advances on a productive emit.
+    if outputs.values().all(|o| o.is_none()) {
+        return None;
+    }
+    // Only triggering inputs carry the data timeline; control inputs are excluded.
+    let triggering: std::collections::HashSet<&str> =
+        manifest.inputs.iter().filter(|s| s.trigger_process).map(|s| s.name).collect();
+    let input_frames: Vec<(u64, usize)> = inputs
+        .iter()
+        .filter(|(name, _)| triggering.contains(*name))
+        .filter_map(|(_, o)| o.as_ref())
+        .filter_map(|d| d.meta().index().map(|i| (i, frame_count(d))))
+        .collect();
+    // EMA of the inter-emit interval, inverted. `None` until the second emit; a non-advancing
+    // clock (`dt <= 0`) keeps the prior estimate.
+    let node_ufreq = match meter.last_emit {
+        None => {
+            meter.last_emit = Some(now);
+            None
+        }
+        Some(prev) => {
+            let dt = now - prev;
+            meter.last_emit = Some(now);
+            if dt > 0.0 {
+                let ema = meter.ema.map_or(dt, |p| UFREQ_EMA_ALPHA * dt + (1.0 - UFREQ_EMA_ALPHA) * p);
+                meter.ema = Some(ema);
+                Some(1.0 / ema)
+            } else {
+                meter.ema.map(|e| 1.0 / e)
+            }
+        }
+    };
+    for (slot, slot_opt) in outputs.iter_mut() {
+        let Some(d) = slot_opt else { continue };
+        let of = frame_count(d);
+        let mut matches = input_frames.iter().filter(|(_, f)| *f == of).map(|(i, _)| *i);
+        let counter = counters.entry(*slot).or_insert(0);
+        let index = match (matches.next(), matches.next()) {
+            (Some(i), None) => i,
+            _ => *counter,
+        };
+        // Keep the fresh counter monotonically past whatever we emitted. Without this, a slot that
+        // MATCHES on one frame (an accumulator's first output length equals its input length) then
+        // goes fresh would restart the counter at 0 — duplicating or regressing the index at stream
+        // start (the Oscillator→Buffer reference patch).
+        *counter = index + 1;
+        *d = d.with_stamps(index, node_ufreq);
+    }
+    node_ufreq
 }
 
 /// Wall-clock milliseconds since the epoch — what a [`NodeFault`] timestamp is, because it travels
@@ -700,7 +1107,11 @@ mod tests {
         // subscribers a wire needs is its whole subject — while the ack is the runtime's to send,
         // and the graph's three-phase wire change advances on nothing else. A message applied
         // without an ack stalls the change that sent it, silently and forever.
-        let (mut r, t) = fixture();
+        //
+        // On the fixture with no bindings, because a binding subscribes through `wire_in` too
+        // (§5.3) — so a bound fixture's own pseudo-slots are in this log, and an oracle that had to
+        // skip them could no longer say the slot message was applied EXACTLY once.
+        let (mut r, t) = triggered_fixture();
         t.send(Control::InSlot { slot: "in".to_string(), services: vec!["goofi_a_out_x".to_string()] });
         t.send(Control::OutSlot { slot: "out".to_string(), targets: vec![("goofi_b_door".to_string(), 1)] });
         r.run_once();
@@ -718,7 +1129,7 @@ mod tests {
         let mut r = fixture_no_inputs();
         r.run_policy.autotrigger = false;
         assert_eq!(r.next_wake(), None, "parked");
-        r.deliver_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(true));
+        arrive(&mut r, ParamKey::new("common", "autotrigger"), 1.0);
         r.run_once();
         assert!(r.run_policy.autotrigger, "the toggle landed");
         assert!(r.next_wake().is_some(), "and the node is reachable again");
@@ -732,7 +1143,7 @@ mod tests {
         // The fault is DRIVEN by a failing `setup`, never constructed: an initialized node carrying
         // a Setup fault is a state production cannot reach, and underneath one `process` runs.
         let t = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&FLAKY_SETUP, t.clone());
+        let mut r = runtime(&FLAKY_SETUP, t.clone());
         assert!(matches!(r.fault, Some(NodeFault::Setup { .. })), "the first attempt failed");
         r.run_once();
         assert!(published(&t).is_empty(), "and nothing ran while it stood");
@@ -754,7 +1165,7 @@ mod tests {
         // The other half of "a clean run clears Setup/Process/Boot": a node that failed once and
         // then worked must stop drawing errored, and both edges reach the console.
         let t = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&FLAKY_PROCESS, t.clone());
+        let mut r = runtime(&FLAKY_PROCESS, t.clone());
         r.run_once();
         assert!(matches!(r.fault, Some(NodeFault::Process { .. })));
         assert!(published(&t).is_empty(), "a failing run emits nothing");
@@ -790,7 +1201,7 @@ mod tests {
         // its params and not merely in a poked field: the arrival must land (a value the fixture
         // did not already hold) and must not run the node.
         let (mut r, t) = consumer_fixture();
-        r.deliver_arrival(ParamKey::new("common", "max_frequency"), Param::float(25.0, 0.0, 100.0));
+        arrive(&mut r, ParamKey::new("common", "max_frequency"), 25.0);
         r.run_once();
         assert_eq!(r.run_policy.max_frequency, 25.0, "the delivered value is what re-paced it");
         assert!(!r.run_policy.autotrigger, "and a consumer is still a consumer");
@@ -803,11 +1214,11 @@ mod tests {
         // happens, which is what makes a reference input worth holding at all. The node echoes
         // what it saw, so a `deliver_input` that never wrote a cell cannot pass this.
         let (mut r, t) = triggered_fixture();
-        r.deliver_input("ref", text_frame("R"));
+        r.deliver_input("ref", 0, text_frame("R"));
         assert!(!r.trigger_pending, "a reference input is not a trigger");
         assert!(!r.should_process());
 
-        r.deliver_input("in", text_frame("A"));
+        r.deliver_input("in", 0, text_frame("A"));
         assert!(r.trigger_pending);
         assert!(r.should_process(), "even with autotrigger off");
         r.run_once();
@@ -828,8 +1239,8 @@ mod tests {
     fn a_multi_slot_frame_is_refused_rather_than_half_served() {
         // A multi slot keeps one cell per WIRE, ordered by that wire's position in the slot's
         // service list. Taking the single-source cell for it would read back as the whole slot.
-        let mut r = NodeRuntime::new(&MULTI_IN, Arc::new(MemoryTransport::default()));
-        r.deliver_input("many", text_frame("A"));
+        let mut r = runtime(&MULTI_IN, Arc::new(MemoryTransport::default()));
+        r.deliver_input("many", 0, text_frame("A"));
         assert!(!r.inputs.contains_key("many"), "no single-source cell was minted for it");
         assert!(!r.trigger_pending, "and it did not wake the node");
     }
@@ -845,7 +1256,7 @@ mod tests {
         // nothing to have arrived. Without `set_param`'s `Var::Value` conjunct the act of binding
         // would itself fire a run, which is the §5.2 half of the arrival rule.
         assert!(!r.trigger_pending, "subscribing is not an arrival");
-        r.deliver_arrival(ParamKey::new("osc", "freq"), Param::float(3.0, 0.0, 10.0));
+        arrive(&mut r, ParamKey::new("osc", "freq"), 3.0);
         assert!(r.trigger_pending, "the arrival triggered it");
         r.run_once();
         assert!(!r.trigger_pending, "the run consumed it");
@@ -880,7 +1291,7 @@ mod tests {
         let (mut r, t) = consumer_fixture();
         let key = ParamKey::new("osc", "freq");
         r.set_param(key.clone(), stream_expr(false));
-        r.deliver_arrival(key.clone(), Param::float(3.0, 0.0, 10.0));
+        arrive(&mut r, key.clone(), 3.0);
         assert!(!r.trigger_pending, "the value arrived, the node did not wake");
 
         r.run_once();
@@ -936,7 +1347,7 @@ mod tests {
         // A node whose `setup()` failed is uninitialized: not a run, not an output, and the fault
         // it reported is the one that stays until a retry succeeds.
         let t = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&BAD_SETUP, t.clone());
+        let mut r = runtime(&BAD_SETUP, t.clone());
         assert!(matches!(r.fault, Some(NodeFault::Setup { .. })), "the failure is the node's fault");
         r.run_once();
         assert!(matches!(r.fault, Some(NodeFault::Setup { .. })));
@@ -993,7 +1404,7 @@ mod tests {
         // spec §5.1: a param write runs the D3 initialization retry FIRST. Without it a consumer
         // with no triggers and autotrigger off is broken permanently — `run()` is the only other
         // caller of the gate and it never runs — where `update_param` heals such a node today.
-        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        let mut r = runtime(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
         assert!(matches!(r.fault, Some(NodeFault::Setup { .. })), "setup refused the default");
         assert_eq!(hook_log(), ["cfg.ok", "cfg.scale"], "birth replayed the record");
 
@@ -1018,13 +1429,18 @@ mod tests {
         // name: `run_once` only reaches `eval_bindings` past `should_process()`, and a fixture that
         // never gets there passes against a deleted guard — and against an `eval_bindings` that is
         // nothing but a `panic!`. The first version of this test did exactly that.
-        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        let mut r = runtime(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
         r.set_param(ParamKey::new("cfg", "ok"), ParamValue::Literal(Param::boolean(true)));
         assert!(r.fault.is_none(), "initialized, so the hook is live");
         r.set_param(ParamKey::new("common", "autotrigger"), ParamValue::Literal(Param::boolean(true)));
 
+        // Bound to a PRODUCER rather than to an inline value, because the control at the end has to
+        // change the evaluated value without re-sending the binding — a second `set_param` would
+        // dispatch through the authoring path and pin nothing about the run.
         let key = ParamKey::new("cfg", "scale");
-        r.set_param(key.clone(), value_expr(Param::float(2.0, 0.0, 4.0), false));
+        r.set_param(key.clone(), stream_expr(false));
+        arrive(&mut r, key.clone(), 2.0);
+        r.run_once();
         let settled = hook_log().len();
         assert!(hook_log().ends_with(&["cfg.scale".to_string()]), "the new value reached the field");
 
@@ -1036,7 +1452,7 @@ mod tests {
 
         // The control: a value that really did change is dispatched on the very next run, so the
         // guard above is not "the hook is never called" and not "the node never runs".
-        r.deliver_arrival(key, Param::float(3.0, 0.0, 4.0));
+        arrive(&mut r, key, 3.0);
         r.run_once();
         assert_eq!(hook_log().len(), settled + 1, "a changed value IS dispatched, from inside the run");
     }
@@ -1045,7 +1461,7 @@ mod tests {
     fn an_uninitialized_node_hears_no_param_hook() {
         // D3: nothing runs against a node whose `setup()` failed — not `process`, not a param
         // callback. The value still lands, so it is there for the replay when the retry succeeds.
-        let mut r = NodeRuntime::new(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
+        let mut r = runtime(&NEEDS_PARAM, Arc::new(MemoryTransport::default()));
         r.set_param(ParamKey::new("cfg", "scale"), value_expr(Param::float(2.0, 0.0, 4.0), false));
         assert_eq!(
             hook_log(),
@@ -1062,7 +1478,7 @@ mod tests {
         // rate — a producer at `default_ufreq` would attempt ~30×/s, and `setup` acquires. It is
         // paced from the LAST attempt, so an unchanged fault must still move its `last_attempt`
         // even though it is deliberately not re-broadcast.
-        let mut r = NodeRuntime::new(&RETRY_PROBE, Arc::new(MemoryTransport::default()));
+        let mut r = runtime(&RETRY_PROBE, Arc::new(MemoryTransport::default()));
         assert_eq!(setup_attempts(), 1, "birth is the first attempt");
         for _ in 0..50 {
             r.run_once();
@@ -1084,7 +1500,7 @@ mod tests {
         // console does not repaint the same line at the node's run rate. The comparison is
         // discriminant AND message, because a node failing differently is saying something new.
         let t = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&BAD_PROCESS, t.clone());
+        let mut r = runtime(&BAD_PROCESS, t.clone());
         r.run_once();
         r.run_once();
         assert_eq!(fault_reports(&t), [Some("no".to_string())], "two failing runs, one transition");
@@ -1109,21 +1525,203 @@ mod tests {
                 source: "__v0".to_string(),
                 vars: vec![Var::Missing { name: "__v0".to_string(), reason: "no node named `ghost`".to_string() }],
                 trigger: true,
+                id: None,
             },
         );
         assert_eq!(r.binding_errors.get(&key).map(String::as_str), Some("no node named `ghost`"));
         assert!(matches!(r.node_fault(), Some(NodeFault::Expr { .. })));
 
-        r.deliver_arrival(key.clone(), Param::float(3.0, 0.0, 10.0));
+        // What clears it is the GRAPH re-resolving and re-sending, never an arrival: a `Missing`
+        // variable is by construction absent from the binding's `streams`, so no wire addresses it
+        // and no frame can land in its mailbox. The producer coming back IS a re-send (§5.3).
+        r.set_param(key.clone(), stream_expr(true));
+        arrive(&mut r, key.clone(), 3.0);
         r.run_once();
-        assert!(r.binding_errors.is_empty(), "the value arrived, so the reference resolved");
+        assert!(r.binding_errors.is_empty(), "the reference resolved, so the error cleared");
         let errors: Vec<_> = t.reported().into_iter().filter(|s| matches!(s, Status::BindingErrors { .. })).collect();
         assert_eq!(errors.len(), 2, "both edges reported");
+    }
+
+    #[test]
+    fn the_wake_loop_reads_the_node_s_own_wires() {
+        // The frame goes in through the TRANSPORT and nothing else touches it — which is the whole
+        // of what the cutover added here. Until it, `deliver_input` was called by hand, so a
+        // runtime that never drained its own subscribers passed every path-A test in this module.
+        let (mut r, t) = triggered_fixture();
+        t.arrive("in", 0, text_frame("A"));
+        r.run_once();
+        assert_eq!(published(&t), ["out: A|-"], "the loop drained the wire and ran the node");
+    }
+
+    #[test]
+    fn a_required_input_with_no_frame_refuses_the_run() {
+        // The gate `execute_node` carried and `NodeRuntime` did not. Both halves in one test: a
+        // node whose required slot is empty must not enter `process`, and the same node with a
+        // frame in that slot must.
+        let (mut r, t) = required_fixture();
+        r.trigger_pending = true;
+        r.run_once();
+        assert!(published(&t).is_empty(), "process is not entered");
+        assert_eq!(
+            r.fault.as_ref().map(NodeFault::msg),
+            Some("required input slot `in` has no data"),
+            "and the refusal is the node's error",
+        );
+
+        t.arrive("in", 0, text_frame("A"));
+        r.run_once();
+        assert_eq!(published(&t), ["out: A"], "with data it runs");
+        assert!(r.fault.is_none(), "and the refusal cleared");
+    }
+
+    #[test]
+    fn a_required_multi_input_is_gated_on_its_wire_cells() {
+        // The trap a reviewer found: a gate reading `inputs` alone passes EVERY node with a
+        // required `multi` slot, because a multi slot's frames never enter that map. So the same
+        // two halves again, on the shape that reads clean against the broken gate.
+        let (mut r, t) = required_multi_fixture();
+        r.trigger_pending = true;
+        r.run_once();
+        assert!(published(&t).is_empty(), "an empty multi slot refuses the run");
+        assert_eq!(
+            r.fault.as_ref().map(NodeFault::msg),
+            Some("required input slot `many` has no data"),
+        );
+
+        t.send(Control::InSlot { slot: "many".to_string(), services: vec!["svc_a".to_string()] });
+        r.run_once();
+        t.arrive("many", 0, text_frame("A"));
+        r.run_once();
+        assert_eq!(published(&t), ["out: A"], "one wire with a frame is enough");
+    }
+
+    #[test]
+    fn an_emitted_frame_carries_the_engine_s_own_meta() {
+        // `index` and `ufreq` are engine-owned and the node never touches either, so they have to
+        // be stamped on the way out — `run_node` did it and `NodeRuntime` did not.
+        let (mut r, t) = fixture();
+        r.run_once();
+        r.run_once();
+        let indices: Vec<Option<u64>> = t.published().iter().map(|(_, d)| d.meta().index()).collect();
+        assert_eq!(indices, [Some(0), Some(1)], "a generator advances its own counter per emit");
+        assert!(
+            t.published().last().is_some_and(|(_, d)| d.meta().ufreq().is_some()),
+            "and the second emit gives the rate an interval to measure",
+        );
+    }
+
+    #[test]
+    fn a_slot_that_loses_its_wire_loses_its_frame() {
+        // §4: a slot message is the full desired set, and an EMPTY one means disconnected. Leaving
+        // the cell filled would let a node keep running on the last frame of a producer it is no
+        // longer wired to — indistinguishable, from inside `process`, from a live wire.
+        let (mut r, t) = triggered_fixture();
+        t.arrive("in", 0, text_frame("A"));
+        r.run_once();
+        assert_eq!(published(&t), ["out: A|-"]);
+
+        t.send(Control::InSlot { slot: "in".to_string(), services: vec![] });
+        r.trigger_pending = true;
+        r.run_once();
+        assert_eq!(published(&t), ["out: A|-", "out: -|-"], "the cell cleared with the wire");
+    }
+
+    #[test]
+    fn a_refresh_answers_with_the_options_and_moves_the_record() {
+        // §8.5: the hook runs on the node's own thread, so its answer comes back as a report
+        // rather than on the RPC — and the record moves with it, or the next `serialize` writes
+        // the type's declaration over what was just scanned.
+        let (mut r, t) = required_fixture();
+        let key = ParamKey::new("boot", "device");
+        t.send(Control::RefreshParam { key: key.clone() });
+        r.run_once();
+        assert_eq!(
+            refresh_reports(&t),
+            [(key.clone(), Some(vec!["dev0".to_string()]))],
+            "the node answered with what it enumerated",
+        );
+        assert!(
+            matches!(goofi_node::param(&r.effective, "boot", "device"), Some(Param::Str { options: Some(o), .. }) if o == &["dev0".to_string()]),
+            "and the record carries them",
+        );
     }
 
     // -----------------------------------------------------------------------
     // Fixtures
     // -----------------------------------------------------------------------
+
+    /// An evaluator that coerces its single local to the target param's type — the only part of
+    /// the real pyo3 evaluator this runtime depends on, and the reason a bound param can be driven
+    /// by a FRAME at all: an `nd()` reference delivers one, and a `Param` has to come out.
+    struct Coerce;
+
+    impl ExprEvaluator for Coerce {
+        fn compile(&self, _source: &str) -> Result<goofi_node::Compiled, goofi_node::ExprError> {
+            Ok(goofi_node::Compiled { id: 1 })
+        }
+        fn eval(&self, _id: goofi_node::BindingId, ctx: &goofi_node::EvalCtx<'_>) -> Result<Param, goofi_node::ExprError> {
+            let local = ctx
+                .locals
+                .values()
+                .flatten()
+                .next()
+                .ok_or_else(|| goofi_node::ExprError("nothing to evaluate".to_string()))?;
+            let n = match local {
+                goofi_node::Local::Value(p) => p.as_f64().unwrap_or_default(),
+                goofi_node::Local::Frame(d) => match d.value() {
+                    goofi_core::Value::Array(store) => {
+                        f32::from_le_bytes(store.as_bytes()[0..4].try_into().unwrap()) as f64
+                    }
+                    other => return Err(goofi_node::ExprError(format!("not a number: {other:?}"))),
+                },
+            };
+            Ok(match ctx.target {
+                Param::Bool { .. } => Param::boolean(n != 0.0),
+                Param::Int { vmin, vmax, .. } => Param::int(n as i64, *vmin, *vmax),
+                Param::Str { .. } | Param::Trigger { .. } => ctx.target.clone(),
+                Param::Float { vmin, vmax, .. } => Param::float(n, *vmin, *vmax),
+            })
+        }
+        fn release(&self, _id: goofi_node::BindingId) {}
+    }
+
+    /// Build a runtime the way the graph does, with an evaluator in the environment.
+    fn runtime(manifest: &'static NodeManifest, transport: Arc<MemoryTransport>) -> NodeRuntime {
+        let env = NodeEnv { evaluator: Some(Arc::new(Coerce)), ..NodeEnv::detached() };
+        NodeRuntime::new(manifest, (manifest.factory)(), manifest.default_params(), transport, env)
+    }
+
+    /// Path C's data half: a producer's frame landing on a bound param's own wire. A NUMBER,
+    /// because what a producer emits is a frame and turning one into the target param's type is
+    /// the evaluator's job, not the caller's.
+    fn arrive(r: &mut NodeRuntime, key: ParamKey, value: f64) {
+        r.deliver_input(&expr_wire_slot(&key), 0, number_frame(value));
+    }
+
+    fn number_frame(v: f64) -> Data {
+        Data::array_f32(vec![1], (v as f32).to_le_bytes().to_vec(), Meta::empty()).unwrap()
+    }
+
+    fn refresh_reports(t: &MemoryTransport) -> Vec<(ParamKey, Option<Vec<String>>)> {
+        t.reported()
+            .into_iter()
+            .filter_map(|s| match s {
+                Status::RefreshOptions { key, options } => Some((key, options)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn required_fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
+        let transport = Arc::new(MemoryTransport::default());
+        (runtime(&REQUIRED, transport.clone()), transport)
+    }
+
+    fn required_multi_fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
+        let transport = Arc::new(MemoryTransport::default());
+        (runtime(&REQUIRED_MULTI, transport.clone()), transport)
+    }
+
 
     /// A node with no input slots. It is a PRODUCER, so it runs on its own schedule and the fault
     /// tests can observe a run.
@@ -1144,10 +1742,10 @@ mod tests {
     /// literal 0).
     fn fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
         let transport = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&PRODUCER, transport.clone());
+        let mut r = runtime(&PRODUCER, transport.clone());
         r.set_param(ParamKey::new("common", "max_frequency"), stream_expr(true));
         r.set_param(ParamKey::new("common", "autotrigger"), stream_expr(true));
-        r.deliver_arrival(ParamKey::new("common", "autotrigger"), Param::boolean(false));
+        arrive(&mut r, ParamKey::new("common", "autotrigger"), 0.0);
         r.common_dirty = false;
         (r, transport)
     }
@@ -1160,7 +1758,7 @@ mod tests {
     /// and not merely in a poked field.
     fn consumer_fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
         let transport = Arc::new(MemoryTransport::default());
-        let mut r = NodeRuntime::new(&CONSUMER, transport.clone());
+        let mut r = runtime(&CONSUMER, transport.clone());
         r.set_param(ParamKey::new("common", "max_frequency"), stream_expr(true));
         r.common_dirty = false;
         (r, transport)
@@ -1169,7 +1767,7 @@ mod tests {
     /// A node declaring one trigger input and one reference input, neither wired to anything.
     fn triggered_fixture() -> (NodeRuntime, Arc<MemoryTransport>) {
         let transport = Arc::new(MemoryTransport::default());
-        (NodeRuntime::new(&TRIGGERED, transport.clone()), transport)
+        (runtime(&TRIGGERED, transport.clone()), transport)
     }
 
     fn fixture_with_trigger_input() -> NodeRuntime {
@@ -1183,6 +1781,7 @@ mod tests {
             source: "__v0".to_string(),
             vars: vec![Var::Stream { name: "__v0".to_string(), service: "svc".to_string(), event_id: 65 }],
             trigger,
+            id: Some(1),
         }
     }
 
@@ -1192,6 +1791,7 @@ mod tests {
             source: "__v0".to_string(),
             vars: vec![Var::Missing { name: "__v0".to_string(), reason: reason.to_string() }],
             trigger: false,
+            id: None,
         }
     }
 
@@ -1202,6 +1802,7 @@ mod tests {
             source: "__v0".to_string(),
             vars: vec![Var::Value { name: "__v0".to_string(), value }],
             trigger,
+            id: None,
         }
     }
 
@@ -1415,6 +2016,26 @@ mod tests {
         }
     }
 
+    /// A node whose input slot is REQUIRED, and whose one param is refreshable — the two things
+    /// the cutover moved from the tick path into the node. It echoes whichever slot it declares, so
+    /// a run that happened is told from one that did not by the frame rather than by a counter.
+    #[derive(Default)]
+    struct Requires;
+    impl Node for Requires {
+        fn on_param_refreshed(&mut self, _k: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
+            Some(vec!["dev0".to_string()])
+        }
+        fn process(&mut self, i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+            let seen = i
+                .get("in")
+                .map(text)
+                .or_else(|| i.get_multi("many").first().map(text))
+                .unwrap_or_else(|| "-".to_string());
+            out.set("out", text_frame(&seen));
+            Ok(())
+        }
+    }
+
     static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::String }];
     static NO_PARAMS: &[ParamDecl] = &[];
     static SLOTS: &[SlotDecl] = &[
@@ -1447,6 +2068,33 @@ mod tests {
         multi: true,
         required: false,
     }];
+    static REQUIRED_SLOT: &[SlotDecl] = &[SlotDecl {
+        name: "in",
+        kind: SlotType::String,
+        trigger_process: true,
+        multi: false,
+        required: true,
+    }];
+    static REQUIRED_MULTI_SLOT: &[SlotDecl] = &[SlotDecl {
+        name: "many",
+        kind: SlotType::String,
+        trigger_process: true,
+        multi: true,
+        required: true,
+    }];
+    static DEVICE_PARAMS: &[ParamDecl] = &[ParamDecl {
+        group: "boot",
+        name: "device",
+        spec: ParamSpec::Str { default: "none", options: &["none"], refresh: true },
+        expression: None,
+        doc: None,
+    }];
+    static REQUIRED: NodeManifest = NodeManifest {
+        params: DEVICE_PARAMS,
+        ..manifest("_RuntimeRequired", REQUIRED_SLOT, false, default_factory::<Requires>)
+    };
+    static REQUIRED_MULTI: NodeManifest =
+        manifest("_RuntimeRequiredMulti", REQUIRED_MULTI_SLOT, false, default_factory::<Requires>);
     static BAD_SETUP: NodeManifest = manifest("_RuntimeBadSetup", &[], true, default_factory::<BadSetup>);
     static BAD_PROCESS: NodeManifest = manifest("_RuntimeBadProcess", &[], true, default_factory::<BadProcess>);
     static RETRY_PROBE: NodeManifest = manifest("_RuntimeRetryProbe", &[], true, default_factory::<RetryProbe>);

@@ -14,7 +14,8 @@ use std::time::Duration;
 use goofi_core::{Data, Meta, Param, SlotType, Value};
 use goofi_engine::runtime::{
     door_service, iox_node, output_service, service_base, Control, ControlSink, Doorbell, Envelope,
-    IoxNode, IoxTransport, NodeChannel, NodeFault, NodeRuntime, ParamValue, Status, Transport,
+    IoxNode, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime, ParamValue, Status,
+    Transport,
 };
 use goofi_engine::Uid;
 use goofi_node::{
@@ -117,6 +118,33 @@ fn the_services_are_created_with_limits_the_defaults_do_not_give_us() {
     assert!(d.has_safe_overflow(), "drop-oldest, matching the no-queue delivery model");
 }
 
+#[test]
+fn an_undrained_control_mailbox_keeps_the_whole_burst() {
+    // Control and status are message STREAMS, not the latest-wins CELL a data wire is — and they
+    // were built by the data wire's own builder, so a one-deep buffer silently dropped all but the
+    // newest. An ack the graph never reads parks a wire sequence forever; a fault it never reads is
+    // a node that draws healthy while it is broken.
+    //
+    // The count is past any plausible drain interval on purpose: a node deep inside `process` while
+    // a load wires a hundred slots is exactly the burst this has to survive.
+    const BURST: u64 = 200;
+    let transport = IoxTransport::create(&instance(), Uid(30), 0, manifest()).unwrap();
+    let channel = NodeChannel::open(&base_of(Uid(30))).unwrap();
+    for seq in 1..=BURST {
+        channel.send(Envelope {
+            seq,
+            control: Control::InSlot { slot: "in".to_string(), services: Vec::new() },
+        });
+    }
+
+    let got = transport.drain_control();
+    assert_eq!(
+        got.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        (1..=BURST).collect::<Vec<_>>(),
+        "every message, in the order it was sent",
+    );
+}
+
 /// The doorbell of a node born at `uid`, opened the way a producer opens one: on the ringer's own
 /// iceoryx2 node, which every port owner has exactly one of.
 fn bell_for(uid: Uid, ringer: &IoxNode) -> Doorbell {
@@ -154,7 +182,13 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     // wakes on that, applies the message, and answers with the seq it was sent. The ack is the only
     // thing that orders a wire change, so a message that arrives without one is a stalled sequence.
     let transport = Arc::new(IoxTransport::create(&instance(), Uid(4), 0, manifest()).unwrap());
-    let mut node = NodeRuntime::new(manifest(), transport.clone());
+    let mut node = NodeRuntime::new(
+        manifest(),
+        (manifest().factory)(),
+        manifest().default_params(),
+        transport.clone(),
+        NodeEnv::detached(),
+    );
     let channel = NodeChannel::open(&base_of(Uid(4))).unwrap();
 
     assert_eq!(node.next_wake(), None, "parked: nothing has asked this node to run");

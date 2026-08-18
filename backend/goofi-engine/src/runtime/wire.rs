@@ -6,10 +6,11 @@
 //! in-memory transport in a test and by shared memory in production without a second code path.
 //! [`MemoryTransport`] is the test one; [`super::IoxTransport`] is the shipped one.
 //!
-//! The message sets are the subset this runtime can honestly act on. `Control::{RefreshParam,
-//! Terminate}` and `Status::{Ready, Ufreq, Stage, RefreshOptions}` are still absent: each needs a
-//! node lifecycle the graph does not own yet (a birth barrier to answer `Ready`, a manager-side
-//! thread to terminate), and a variant nothing sends is a wire contract nothing honours.
+//! There is no `Control::Terminate`. A node's manager-side thread is stopped through the
+//! [`Halt`](super::Halt) flag it was born holding, because the one moment a removal has to work is
+//! exactly the one the control channel cannot serve: a node deleted before it answered
+//! [`Status::Ready`] has no sink, so a `Terminate` addressed to it would be dropped and the thread
+//! would outlive its graph. The flag is also what a whole-graph `clear` sets, where there is no sequence to order.
 //!
 //! Both message sets are **msgpack** on the wire, over iceoryx2 rather than a Rust channel, so the
 //! thread and subprocess cases are the same code — a param edit has no latency requirement, but a
@@ -54,6 +55,11 @@ pub enum Control {
     /// Write a param: a literal, or the expression to bind it to. This is the NOTIFICATION path —
     /// a node parked with `next_wake() == None` is never rung by a bare param-record swap.
     SetParam { key: ParamKey, value: ParamValue },
+    /// Re-enumerate a refreshable `Str` param's options. The answer comes back as
+    /// [`Status::RefreshOptions`] rather than on this message's ack (§8.5): the hook runs on the
+    /// node's own thread, so the RPC that asked cannot wait for it without re-introducing the very
+    /// stall the tick's removal was for.
+    RefreshParam { key: ParamKey },
 }
 
 /// A control message and the sequence number the node acks it with (§3.4). `seq` is graph-minted
@@ -89,6 +95,12 @@ pub enum ParamValue {
         /// Whether an arrival on this binding also wakes `process()`. Inert on a `common.*` key,
         /// where re-pacing is never a reason to run (§1.1).
         trigger: bool,
+        /// The evaluator's handle for [`Self::Expr::source`], compiled by the GRAPH. The graph
+        /// compiles because `set_expression` has to answer the authoring RPC with a real compile
+        /// error; the node evaluates because §2.1 puts the evaluation immediately before the run
+        /// that reads it. `None` when there is no evaluator, or when the source did not compile —
+        /// in either case the literal stands and the binding carries the error.
+        id: Option<goofi_node::BindingId>,
     },
 }
 
@@ -113,6 +125,26 @@ impl Var {
     }
 }
 
+/// Where a node is in its own lifecycle. Two variants rather than the projection's four: `creating`
+/// is the GRAPH's — a node it has built and not yet heard from — and `error` is derived from the
+/// fault, so neither is a node's to claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeStage {
+    Setup,
+    Ready,
+}
+
+impl NodeStage {
+    /// The projection the editor draws, which is a string because `runtime_overlay` has always been
+    /// one (§6: what changes is how the graph LEARNS a stage, not how it shows it).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeStage::Setup => "setup",
+            NodeStage::Ready => "ready",
+        }
+    }
+}
+
 /// What a node tells the graph about itself. Every variant is a TRANSITION — the report is the
 /// change, so the status-drain worker needs no diffing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -120,7 +152,21 @@ pub enum Status {
     /// The answer to one [`Envelope`], keyed by its `seq`. Acks are how the graph knows a node is
     /// in sync with it, and they are what orders the three phases of a wire change (§4).
     Ack { seq: u64, ok: Result<(), String> },
+    /// This node's own end of its services exists and it is listening. §4's birth barrier: the
+    /// graph addresses nothing before this arrives, because pub/sub has no history and a `Control`
+    /// published to a node that has not subscribed is simply lost.
+    Ready,
     Fault { fault: Option<NodeFault> },
+    /// Where the node is in its own lifecycle — `setup` while it is initializing, `ready` once it
+    /// has. The graph's `error` stage is DERIVED from a fault and is never reported here, so the
+    /// two cannot disagree about which one wins.
+    Stage { stage: NodeStage },
+    /// The node's measured update rate (`meta["ufreq"]`), which is a MEASUREMENT rather than a
+    /// transition — so unlike every other variant it is paced, at [`super::UFREQ_REPORT_MS`].
+    Ufreq { hz: f64 },
+    /// The answer to [`Control::RefreshParam`]: the freshly enumerated options, or `None` when the
+    /// node implements no hook for that param.
+    RefreshOptions { key: ParamKey, options: Option<Vec<String>> },
     /// Per-binding errors, `None` where one cleared. A map on the node, a delta on the wire: each
     /// renders on its own inspector field.
     BindingErrors { errors: Vec<(ParamKey, Option<String>)> },
@@ -151,6 +197,13 @@ pub trait Transport: Send + Sync {
     fn wire_in(&self, slot: &str, services: &[ServiceName]) -> Result<(), String>;
     /// Ring exactly `targets` after each emit on this output slot — again the full desired set.
     fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String>;
+    /// Take every frame waiting on every wire, as `(slot, wire index, frame)`. The wire index is
+    /// the producer's position in the last `wire_in` set for that slot, which is what a `multi`
+    /// slot's per-wire cells are keyed by.
+    ///
+    /// On the trait rather than on the transport alone because this is how a frame REACHES a node:
+    /// the wake loop drains here, and nothing else delivers one.
+    fn drain_inputs(&self) -> Vec<(String, usize, Data)>;
     /// Emit a frame on an output slot, to every consumer of that slot at once.
     fn publish(&self, slot: &str, frame: &Data);
     /// Report a transition to the graph.
@@ -182,6 +235,7 @@ struct Inner {
     reported: Vec<Status>,
     wired_in: Vec<(String, Vec<ServiceName>)>,
     wired_out: Vec<(String, Vec<(ServiceName, EventId)>)>,
+    arriving: Vec<(String, usize, Data)>,
     next_seq: u64,
 }
 
@@ -195,6 +249,13 @@ impl MemoryTransport {
         inner.next_seq += 1;
         let seq = inner.next_seq;
         inner.control.push(Envelope { seq, control });
+    }
+    /// Put a frame on one of the node's wires — the graph side of [`Transport::drain_inputs`], and
+    /// the ONLY door a frame comes in through. A test that reached past it into `deliver_input`
+    /// would pass against a wake loop that never drains, which is precisely the gap the cutover
+    /// closed.
+    pub fn arrive(&self, slot: &str, wire: usize, frame: Data) {
+        self.inner.lock().unwrap().arriving.push((slot.to_string(), wire, frame));
     }
     /// Every frame the node has published, in emission order.
     pub fn published(&self) -> Vec<(String, Data)> {
@@ -233,6 +294,9 @@ impl Transport for MemoryTransport {
     fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String> {
         self.inner.lock().unwrap().wired_out.push((slot.to_string(), targets.to_vec()));
         Ok(())
+    }
+    fn drain_inputs(&self) -> Vec<(String, usize, Data)> {
+        std::mem::take(&mut self.inner.lock().unwrap().arriving)
     }
     fn publish(&self, slot: &str, frame: &Data) {
         self.inner.lock().unwrap().published.push((slot.to_string(), frame.clone()));
@@ -281,6 +345,7 @@ mod tests {
                 slot: "out".to_string(),
                 targets: vec![("goofi_c_door".to_string(), 1), ("goofi_d_door".to_string(), 65)],
             },
+            Control::RefreshParam { key: ParamKey::new("boot", "device") },
             Control::SetParam {
                 key: ParamKey::new("osc", "freq"),
                 value: ParamValue::Expr {
@@ -295,6 +360,7 @@ mod tests {
                         Var::Missing { name: "__v2".to_string(), reason: "no node named `ghost`".to_string() },
                     ],
                     trigger: true,
+                    id: Some(9),
                 },
             },
         ];
@@ -309,6 +375,13 @@ mod tests {
             Status::Fault { fault: Some(NodeFault::Process { msg: "boom".to_string(), since: 1.5 }) },
             Status::BindingErrors { errors: vec![(ParamKey::new("osc", "freq"), None)] },
             Status::ParamValues { evaluated: vec![(ParamKey::new("osc", "amp"), Param::boolean(true))] },
+            Status::Ready,
+            Status::Stage { stage: NodeStage::Ready },
+            Status::Ufreq { hz: 29.5 },
+            Status::RefreshOptions {
+                key: ParamKey::new("boot", "device"),
+                options: Some(vec!["dev0".to_string()]),
+            },
         ];
         for status in statuses {
             assert_eq!(Status::decode(&status.encode()), Ok(status.clone()), "{status:?}");

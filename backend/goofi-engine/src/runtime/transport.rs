@@ -31,7 +31,9 @@ type Svc = ipc_threadsafe::Service;
 /// port (see [`iox_node`]).
 pub type IoxNode = iceoryx2::node::Node<Svc>;
 type BytePublisher = iceoryx2::port::publisher::Publisher<Svc, [u8], ()>;
-type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<Svc, [u8], ()>;
+/// Public because [`crate::testing::OutputProbe`] holds one: a probe is a `/data` viewer and reads a
+/// producer through the same port kind the reducer does.
+pub type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<Svc, [u8], ()>;
 type ByteService = iceoryx2::service::port_factory::publish_subscribe::PortFactory<Svc, [u8], ()>;
 type EventService = iceoryx2::service::port_factory::event::PortFactory<Svc>;
 
@@ -50,6 +52,24 @@ const MAX_SUBSCRIBERS: usize = 256;
 /// per-peer bound, and it binds below both ceilings above: measured, the 20th consumer of a slot was
 /// refused with `ExceedsMaxNumberOfNodes` while `max_subscribers` said 256. Raised to match.
 const MAX_NODES: usize = 256;
+/// How many messages a control or status subscriber may hold unread. The DATA services are one
+/// deep on purpose — latest-wins is what a wire means — but control and status are message STREAMS:
+/// an ack the graph never reads parks a wire sequence forever, and a fault the graph never reads is
+/// a node that draws healthy while it is broken. Deep enough that a burst (a load's acks, a
+/// restart's stage transitions) survives however long the drain takes to come round.
+const MESSAGE_BUFFER: usize = 1024;
+/// How many readers a control or status service admits — exactly one, by construction: the node
+/// reads its own control and the graph reads that node's status, and nothing else has a reason to.
+///
+/// Not a cosmetic limit. iceoryx2 sizes a publisher's segment so every subscriber can hold its
+/// whole buffer at once, so these three numbers MULTIPLY: 256 readers of a 1024-deep 64 KiB-sliced
+/// stream is a 17 GB shared-memory file, and a node owns two of them. Measured before it was cut:
+/// 7.5 s and 130 MB of resident shared memory per `add_node`.
+const MESSAGE_READERS: usize = 1;
+/// The pool a message publisher starts with. A control or status message is tens to hundreds of
+/// bytes, and `PowerOfTwo` grows the segment for the rare large one (a `RefreshParam` answer naming
+/// many devices) rather than reserving 64 KiB per slot against it.
+const MESSAGE_SLICE: usize = 1024;
 /// The pool a publisher starts with. `PowerOfTwo` grows it for a larger frame; the initial size
 /// only decides how many reallocations a big-frame patch pays before it settles.
 const INITIAL_SLICE: usize = 64 * 1024;
@@ -168,16 +188,16 @@ impl IoxTransport {
         let door = event_service(&node, &door_service(&base))?;
         let listener = door.listener_builder().create().map_err(|e| format!("listener: {e}"))?;
 
-        let control = data_service(&node, &control_service(&base))?
+        let control = message_service(&node, &control_service(&base))?
             .subscriber_builder()
             .create()
             .map_err(|e| format!("control subscriber: {e}"))?;
-        let status = publisher(&data_service(&node, &status_service(&base))?, "status")?;
+        let status = publisher(&message_service(&node, &status_service(&base))?, "status", MESSAGE_SLICE)?;
 
         let mut outputs = HashMap::new();
         for out in manifest.outputs {
             let service = data_service(&node, &output_service(&base, out.name))?;
-            let publisher = publisher(&service, out.name)?;
+            let publisher = publisher(&service, out.name, INITIAL_SLICE)?;
             outputs.insert(
                 out.name,
                 OutputPort { service, publisher, targets: Mutex::new(Vec::new()) },
@@ -199,33 +219,6 @@ impl IoxTransport {
         slot: &str,
     ) -> Option<iceoryx2::service::static_config::publish_subscribe::StaticConfig> {
         self.outputs.get(slot).map(|o| *o.service.static_config())
-    }
-
-    /// Take every frame waiting on every wire, as `(slot, wire index, frame)`. The wire index is the
-    /// producer's position in the last `InSlot` set, which is what a `multi` slot's per-wire cells
-    /// are keyed by — a single slot has only wire 0.
-    ///
-    /// Draining to empty (rather than one frame per wake) is the wake discipline of §3.3: the
-    /// notification is a hint, so a node that drained everything can park knowing there is nothing
-    /// left. A wire that produced several frames since the last drain keeps only its newest, which
-    /// is what latest-wins means and what `subscriber_max_buffer_size(1)` already enforces.
-    pub fn drain_inputs(&self) -> Vec<(String, usize, Data)> {
-        let mut out = Vec::new();
-        for (slot, wires) in self.inputs.lock().unwrap().iter() {
-            for (index, wire) in wires.iter().enumerate() {
-                let mut newest = None;
-                while let Ok(Some(sample)) = wire.subscriber.receive() {
-                    newest = Some(goofi_codec::decode(sample.payload()));
-                }
-                // A frame that cannot be decoded is a wire whose two ends disagree about the format
-                // — dropping it keeps the node running on its other inputs, and the producer is the
-                // only end that could report it anyway.
-                if let Some(Ok(frame)) = newest {
-                    out.push((slot.clone(), index, frame));
-                }
-            }
-        }
-        out
     }
 
     /// Open this end of one wire: the producer's output service, by the name that IS the wire's
@@ -312,6 +305,29 @@ impl Transport for IoxTransport {
         Ok(())
     }
 
+    /// Draining to empty (rather than one frame per wake) is the wake discipline of §3.3: the
+    /// notification is a hint, so a node that drained everything can park knowing there is nothing
+    /// left. A wire that produced several frames since the last drain keeps only its newest, which
+    /// is what latest-wins means and what `subscriber_max_buffer_size(1)` already enforces.
+    fn drain_inputs(&self) -> Vec<(String, usize, Data)> {
+        let mut out = Vec::new();
+        for (slot, wires) in self.inputs.lock().unwrap().iter() {
+            for (index, wire) in wires.iter().enumerate() {
+                let mut newest = None;
+                while let Ok(Some(sample)) = wire.subscriber.receive() {
+                    newest = Some(goofi_codec::decode(sample.payload()));
+                }
+                // A frame that cannot be decoded is a wire whose two ends disagree about the format
+                // — dropping it keeps the node running on its other inputs, and the producer is the
+                // only end that could report it anyway.
+                if let Some(Ok(frame)) = newest {
+                    out.push((slot.clone(), index, frame));
+                }
+            }
+        }
+        out
+    }
+
     fn publish(&self, slot: &str, frame: &Data) {
         let Some(port) = self.outputs.get(slot) else { return };
         let bytes = goofi_codec::encode(frame);
@@ -347,13 +363,20 @@ pub struct NodeChannel {
 impl NodeChannel {
     pub fn open(base: &str) -> Result<NodeChannel, String> {
         let node = iox_node()?;
-        let control = publisher(&data_service(&node, &control_service(base))?, "control")?;
-        let status = data_service(&node, &status_service(base))?
+        let control = publisher(&message_service(&node, &control_service(base))?, "control", MESSAGE_SLICE)?;
+        let status = message_service(&node, &status_service(base))?
             .subscriber_builder()
             .create()
             .map_err(|e| format!("status subscriber: {e}"))?;
         let door = Doorbell::open(&node, &door_service(base))?;
         Ok(NodeChannel { _node: node, control, status, door })
+    }
+
+    /// Ring the node's door with no message behind it — how a parked node is made to look at
+    /// something that is not on its control channel, which is exactly the [`super::Halt`] flag it
+    /// was born holding. A wake is a hint (§3.3), so a failed ring costs at most one park.
+    pub fn wake(&self) {
+        let _ = self.door.ring(CONTROL_EVENT_ID);
     }
 
     /// Every transition the node has reported since the last drain, in order. This is what the
@@ -403,7 +426,22 @@ fn event_service(node: &IoxNode, name: &str) -> Result<EventService, String> {
         .map_err(|e| format!("event service `{name}`: {e}"))
 }
 
-/// The publish/subscribe service every data, control and status wire is. One publisher because a
+/// The control and status services: the same publish/subscribe shape as a data wire, but a message
+/// STREAM rather than a latest-wins cell — see [`MESSAGE_BUFFER`].
+fn message_service(node: &IoxNode, name: &str) -> Result<ByteService, String> {
+    node.service_builder(&parse_name(name)?)
+        .publish_subscribe::<[u8]>()
+        .max_nodes(MAX_NODES)
+        .enable_safe_overflow(true)
+        .history_size(0)
+        .subscriber_max_buffer_size(MESSAGE_BUFFER)
+        .max_publishers(1)
+        .max_subscribers(MESSAGE_READERS)
+        .open_or_create()
+        .map_err(|e| format!("message service `{name}`: {e}"))
+}
+
+/// The publish/subscribe service every data wire is. One publisher because a
 /// slot has exactly one producer; no history because a link never replays a previous output; a
 /// one-deep buffer because that is what latest-wins resolves to per wire.
 fn data_service(node: &IoxNode, name: &str) -> Result<ByteService, String> {
@@ -419,12 +457,22 @@ fn data_service(node: &IoxNode, name: &str) -> Result<ByteService, String> {
         .map_err(|e| format!("data service `{name}`: {e}"))
 }
 
+/// Open a subscriber on an output slot's data service by name — a `/data` consumer's whole end of a
+/// wire, and the one thing a viewer needs that is not already public.
+pub fn open_output_subscriber(node: &IoxNode, service: &str) -> Result<ByteSubscriber, String> {
+    data_service(node, service)?
+        .subscriber_builder()
+        .create()
+        .map_err(|e| format!("subscriber `{service}`: {e}"))
+}
+
 /// A publisher that can grow past its initial pool: a GOOF frame is variable-size, and `Static`
-/// would refuse the first one larger than `INITIAL_SLICE` instead of reallocating.
-fn publisher(service: &ByteService, what: &str) -> Result<BytePublisher, String> {
+/// would refuse the first one larger than `initial` instead of reallocating. The initial size is
+/// the caller's because it is half of what a service's segment costs — see [`MESSAGE_READERS`].
+fn publisher(service: &ByteService, what: &str, initial: usize) -> Result<BytePublisher, String> {
     service
         .publisher_builder()
-        .initial_max_slice_len(INITIAL_SLICE)
+        .initial_max_slice_len(initial)
         .allocation_strategy(AllocationStrategy::PowerOfTwo)
         .create()
         .map_err(|e| format!("publisher `{what}`: {e}"))
@@ -463,5 +511,59 @@ mod tests {
         assert!(scope.chars().all(|c| c.is_ascii_hexdigit()), "{scope}");
         assert!(!scope.contains('_'), "{scope}");
         assert_ne!(scope, service_instance(), "two graphs never share a scope");
+    }
+
+    /// The shared memory ONE publisher on this service reserves. iceoryx2 sizes a publisher's data
+    /// segment so that every subscriber can hold its whole buffer at once, so the three limits
+    /// MULTIPLY — which is why a limit raised for fan-out and a buffer deepened for message
+    /// retention are not independent decisions. Read back off the service rather than computed from
+    /// the constants that built it, so a builder that silently ignored one is visible.
+    fn reserved_bytes(cfg: &iceoryx2::service::static_config::publish_subscribe::StaticConfig, slice: usize) -> usize {
+        let samples = cfg.max_subscribers() * (cfg.subscriber_max_buffer_size() + cfg.subscriber_max_borrowed_samples())
+            + cfg.history_size();
+        samples * slice
+    }
+
+    #[test]
+    fn a_message_service_reserves_megabytes_rather_than_gigabytes() {
+        // Measured, with the control and status services built by `data_service`'s 256 subscribers
+        // and a 64 KiB slice at a 1024-deep buffer: a 17 GB shared-memory file per service, two of
+        // them per node — 7.5 s and 130 MB of resident shared memory for every `add_node`, and a
+        // 298-test suite that could not finish.
+        //
+        // The three numbers are pinned TOGETHER because only their product is the defect: pinning
+        // the buffer alone passes at 256 readers, and pinning the readers alone passes at a 64 KiB
+        // slice.
+        let node = iox_node().expect("an iceoryx2 node");
+        let name = format!("goofi_{}_msgbudget_ctl", service_instance());
+        let service = message_service(&node, &name).expect("the message service");
+        let cfg = *service.static_config();
+
+        assert_eq!(cfg.max_subscribers(), 1, "one reader, by construction");
+        assert_eq!(cfg.subscriber_max_buffer_size(), MESSAGE_BUFFER, "and it is a STREAM, not a cell");
+        assert!(
+            reserved_bytes(&cfg, MESSAGE_SLICE) <= 4 * 1024 * 1024,
+            "a node owns two of these: {} bytes",
+            reserved_bytes(&cfg, MESSAGE_SLICE),
+        );
+    }
+
+    #[test]
+    fn a_data_service_reserves_megabytes_rather_than_gigabytes() {
+        // The same arithmetic on the other service, which is the one that really does need 256
+        // readers — so it pays for them with a one-deep buffer, and the ceiling it is held to is
+        // the fan-out one.
+        let node = iox_node().expect("an iceoryx2 node");
+        let name = format!("goofi_{}_msgbudget_out_x", service_instance());
+        let service = data_service(&node, &name).expect("the data service");
+        let cfg = *service.static_config();
+
+        assert_eq!(cfg.max_subscribers(), MAX_SUBSCRIBERS);
+        assert_eq!(cfg.subscriber_max_buffer_size(), 1, "latest-wins, per wire");
+        assert!(
+            reserved_bytes(&cfg, INITIAL_SLICE) <= 64 * 1024 * 1024,
+            "one per output slot: {} bytes",
+            reserved_bytes(&cfg, INITIAL_SLICE),
+        );
     }
 }

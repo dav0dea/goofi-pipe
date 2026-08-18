@@ -104,20 +104,48 @@ pub(crate) struct WirePlanner {
     /// shrink/grow diff is taken against, and it moves when the plan is made because a slot message
     /// is declarative: the node applies what it was sent whether or not its ack came back.
     planned: HashMap<SlotKey, Vec<Wire>>,
+    /// Unsequenced messages for nodes that are not addressable yet, in the order they were made.
+    /// §4's birth barrier is a WINDOW, not a state: `add_node` answers before the node has reported
+    /// `Ready`, so a ⟳ clicked on a node the user has only just placed falls inside it — and a
+    /// dropped request is a button that does nothing, with nothing to retry it. A wire change has
+    /// no queue because it is re-PLANNED on attach from the graph as it then stands; a request has
+    /// no such state to re-derive, so it is held.
+    pending: Vec<(Uid, Control)>,
     next_seq: u64,
 }
 
 impl WirePlanner {
-    /// Whether there is anyone to plan for. Nothing attaches a channel until the cutover, so this is
-    /// what keeps the planner off the paths that call it — DELETE IT AT THE CUTOVER, when every live
-    /// node has a channel: without it the planner is still correct (a sequence whose recipients have
-    /// no sink simply walks to completion), it just does the work for nobody.
-    pub(crate) fn is_idle(&self) -> bool {
-        self.sinks.is_empty()
+    /// Send one message that belongs to no sequence, and await no ack for it. A `RefreshParam` is
+    /// the case: it is a request, not a wire change, and its answer comes back as its own
+    /// [`super::Status`] rather than on the ack. HELD for a node with no channel yet — see
+    /// [`Self::pending`] — and delivered when its channel attaches.
+    pub(crate) fn send(&mut self, uid: Uid, control: Control) {
+        let Some(sink) = self.sinks.get(&uid).cloned() else {
+            self.pending.push((uid, control));
+            return;
+        };
+        self.next_seq += 1;
+        sink.send(Envelope { seq: self.next_seq, control });
     }
 
     pub(crate) fn attach(&mut self, uid: Uid, sink: Arc<dyn ControlSink>) {
         self.sinks.insert(uid, sink);
+        let held: Vec<Control> = {
+            let mut keep = Vec::new();
+            let mut mine = Vec::new();
+            for (to, control) in std::mem::take(&mut self.pending) {
+                if to == uid {
+                    mine.push(control);
+                } else {
+                    keep.push((to, control));
+                }
+            }
+            self.pending = keep;
+            mine
+        };
+        for control in held {
+            self.send(uid, control);
+        }
     }
 
     /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than the
@@ -140,6 +168,9 @@ impl WirePlanner {
         self.sequences.clear();
         self.awaiting.clear();
         self.planned.clear();
+        // A held request addresses a node this clear destroyed. Delivering it to whatever is born
+        // at that uid next would run one patch's device scan against another's node.
+        self.pending.clear();
     }
 
     /// Start a slot's sequence, cancelling whatever it had in flight.
@@ -314,6 +345,7 @@ mod tests {
         /// is how an unbind announces itself — collapsing the two would make an unbind's message
         /// indistinguishable from a rebind's.
         Param { to: Uid, key: String, vars: Option<Vec<(String, EventId)>> },
+        Refresh { to: Uid, key: String },
     }
 
     fn sent(batch: &[(Uid, Envelope)]) -> Vec<Sent> {
@@ -330,6 +362,9 @@ mod tests {
                     slot: slot.clone(),
                     targets: targets.iter().map(|(door, id)| (scoped(door), *id)).collect(),
                 },
+                // A refresh belongs to no sequence and is never planned, so it can only appear in
+                // a batch by mistake — naming it is what makes that visible instead of silent.
+                Control::RefreshParam { key } => Sent::Refresh { to: *to, key: format!("{}.{}", key.group, key.name) },
                 Control::SetParam { key, value } => Sent::Param {
                     to: *to,
                     key: format!("{}.{}", key.group, key.name),
