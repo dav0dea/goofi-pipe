@@ -21,7 +21,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::AppState;
 
@@ -89,26 +89,14 @@ pub(crate) async fn upload(State(state): State<AppState>, body: Bytes) -> Respon
     if let Err(e) = std::fs::write(&tmp, &body) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", tmp.display())).into_response();
     }
-    let req = json!({
-        "id": 0,
-        "op": "load",
-        "payload": { "path": tmp.to_string_lossy(), "adopt": false },
-    });
-    let reply = crate::dispatch(&state, &req.to_string());
+    let load = state.call("load", json!({ "path": tmp.to_string_lossy(), "adopt": false }), "upload");
     let _ = std::fs::remove_file(&tmp);
 
     // A refused load left the open patch untouched (the arm guarantees it), so the only thing to do
     // here is report why. 400, not 500: the overwhelmingly likely cause is the wrong file in a file
     // dialog, which is the caller's mistake and one they can act on.
-    let error = reply
-        .as_deref()
-        .and_then(|r| serde_json::from_str::<Value>(r).ok())
-        .and_then(|v| v.get("error").cloned());
-    match error {
-        None => (StatusCode::OK, "loaded\n").into_response(),
-        Some(e) => {
-            let msg = e.as_str().map(str::to_owned).unwrap_or_else(|| e.to_string());
-            (StatusCode::BAD_REQUEST, format!("{msg}\n")).into_response()
-        }
+    match load {
+        Ok(_) => (StatusCode::OK, "loaded\n").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),
     }
 }

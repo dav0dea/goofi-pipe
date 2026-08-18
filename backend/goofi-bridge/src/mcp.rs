@@ -148,20 +148,10 @@ fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
     if !ops::find(name).is_some_and(|op| op.surface == Surface::Mcp) {
         return tool_result(format!("unknown tool `{name}`"), true);
     }
-    let req = json!({ "id": 1, "op": name, "payload": arguments, "session": session });
-    // Synchronous, exactly as the `/control` handler calls it — see the module note. `dispatch`
-    // answers `None` only for a request with no numeric id, and this one always has one.
-    let Some(reply) = crate::dispatch(state, &req.to_string()) else {
-        return tool_result(format!("`{name}` returned no reply"), true);
-    };
-    let reply: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
-    if let Some(err) = reply.get("error") {
-        let text = err.as_str().map(str::to_string).unwrap_or_else(|| err.to_string());
-        return tool_result(text, true);
-    }
-    match reply.get("result") {
-        Some(result) => tool_result(render(result), false),
-        None => tool_result(format!("`{name}` answered neither a result nor an error"), true),
+    // Synchronous, exactly as the `/control` handler calls it — see the module note.
+    match state.call(name, arguments, session) {
+        Ok(result) => tool_result(render(&result), false),
+        Err(e) => tool_result(e, true),
     }
 }
 

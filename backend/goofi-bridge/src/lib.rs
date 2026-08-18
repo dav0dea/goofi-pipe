@@ -1185,6 +1185,965 @@ fn apply_layout(
 
 /// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
 /// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
+impl AppState {
+    /// Run one control op. **The single entry point every surface shares** — `/control` and `/mcp`
+    /// are JSON transports over this, and an in-process caller (a script, an integration test) needs
+    /// no transport at all. `session` scopes the undo history the way a browser tab's id does.
+    pub fn call(&self, op: &str, payload: Value, session: &str) -> Result<Value, String> {
+        let state = self;
+        let (op, session) = (op.to_string(), session.to_string());
+        // Every op is declared once, in `ops::REGISTRY`. Refusing an unregistered one HERE makes a
+        // dispatch arm without a row unreachable rather than a second, invisible declaration of the
+        // op set — and it is where `read_only` below comes from, so classifying a new op is part of
+        // declaring it.
+        let spec = ops::find(&op);
+        let mut events: Vec<String> = Vec::new();
+        let result: Result<Value, String> = (|| {
+            if spec.is_none() {
+                return Err(format!("unknown op `{op}`"));
+            }
+            // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
+            // directory and stats every child, which can block for a long time on a huge or network
+            // path — under the lock that would stall the status-drain worker for the whole walk. `get_patch`
+            // is here for the same reason: `is_dirty` walks the workspace mount.
+            if op == "list_dir" {
+                return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
+            }
+            if op == "get_patch" {
+                return Ok(json!({
+                    "save_path": state.save_path(),
+                    "workspace": goofi_core::path::to_slash(&state.mount()),
+                    "dirty": state.is_dirty(),
+                }));
+            }
+            // The harness ops are here for the same reason and one more: they fork children and signal
+            // them, and none of it reads or writes the graph. `dispatch` stays synchronous throughout —
+            // detection and the stop grace both run on their own threads, and the roster converges
+            // through `harness_changed` rather than by making a caller wait.
+            if op == "list_harnesses" {
+                state.harnesses.refresh_in_background(state.events.clone());
+                return Ok(state.harnesses.roster());
+            }
+            if op == "spawn_harness" {
+                let h = payload.get("harness").and_then(|v| v.as_str())
+                    .ok_or("spawn_harness: missing harness")?;
+                // A closed set the caller cannot see from here, so a refusal that does not name it
+                // leaves nothing to try next. `list_harnesses` says which are actually INSTALLED; this
+                // says which words exist at all.
+                let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(),
+                                               &term::parent_env(), state.events.clone())?;
+                events.push(event("harness_changed", state.harnesses.roster()));
+                return Ok(json!({ "instance_id": id }));
+            }
+            if op == "stop_harness" {
+                state.harnesses.stop(payload.get("instance").and_then(|v| v.as_str())
+                    .ok_or("stop_harness: missing instance")?)?;
+                events.push(event("harness_changed", state.harnesses.roster()));
+                return Ok(json!({ "ok": true }));
+            }
+            // …and `inspect_patch`'s header says the same thing, so its walk is taken here too, before
+            // the lock — and only for that op, which is what the short circuit is for.
+            let dirty = op == "inspect_patch" && state.is_dirty();
+            let mut g = state.graph.lock().unwrap();
+            match op.as_str() {
+                "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
+                // Re-derive the node registry from the directories that exist RIGHT NOW. Explicit, not
+                // watched (decision, 2026-08-09): an agent calls it straight after writing a node file,
+                // a human presses the palette's refresh button. The diff comes back so either can say
+                // what happened, and the instances of a type whose file changed restart onto it.
+                "rescan_nodes" => {
+                    let (diff, _) = rescan(state, &mut g, &state.mount());
+                    restart_changed(&mut g, &diff);
+                    events.push(node_types_event(&g));
+                    Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
+                }
+                "add_node" => {
+                    let ty = payload
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .ok_or("add_node: missing type")?
+                        .to_string();
+                    // `member_uid` + `name` place the new node at a CHOSEN uid and display name instead
+                    // of minting fresh ones. This is NOT the undo path — undo/redo are manager-owned
+                    // and a restore goes through `Command::AddNode { uid: Some, name: Some }` built by
+                    // `capture_subtree_restore`, never through this RPC. It is an automation/restore
+                    // door: a caller reconstructing a known graph (a script, a fixture) gets the
+                    // uid-keyed links and panels to reconnect to the same node.
+                    let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
+                    let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                    // `inst_id` is the sub-patch the editor has ENTERED: the node is born INSIDE it.
+                    // Absent/null = ROOT. A malformed id is refused here and an id naming no live scope
+                    // is refused by the command's pre-mutation check — never silently rooted, because
+                    // the canvas draws only the entered scope's children, so a rooted node is invisible
+                    // exactly where the user placed it (while the panel still selects it).
+                    let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
+                        Some(v) => {
+                            Some(v.as_str().and_then(Uid::from_hex).ok_or("add_node: malformed inst_id")?)
+                        }
+                        None => None,
+                    };
+                    // Route through the command history so the add is undoable (its inverse is a
+                    // RemoveNode). Inline params are applied AFTER (below): RemoveNode's inverse
+                    // capture_restores the LIVE node — INCLUDING those params — so an undo→redo restores
+                    // the configured values without threading them through the command here.
+                    let cmd = goofi_engine::Command::AddNode {
+                        type_name: ty,
+                        pos,
+                        uid: restore,
+                        name: (!name.is_empty()).then_some(name),
+                        params: None,
+                        exprs: vec![],
+                        viewers: None,
+                        scope,
+                    };
+                    let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
+                        goofi_engine::Outcome::Uid(u) => u,
+                        _ => return Err("add_node: no uid returned".into()),
+                    };
+                    // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
+                    // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param),
+                    // before the resync mirrors them into the doc.
+                    if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
+                        for (group, names) in groups {
+                            let Some(names) = names.as_object() else { continue };
+                            for (name, vjson) in names {
+                                if let Some(existing) =
+                                    g.params(uid).and_then(|p| goofi_node::param(&p, group, name).cloned())
+                                {
+                                    let newp = goofi_engine::param_from_json(&existing, vjson, true);
+                                    let _ = g.update_param(uid, group, name, newp);
+                                }
+                            }
+                        }
+                    }
+                    // A bare uid announcement: the node itself arrives via the doc mirror, so anything
+                    // more would be a second, drift-prone projection of it.
+                    events.push(event("node_added", json!({ "uid": uid.to_hex() })));
+                    // The REPLY, though, answers a caller with no doc replica. Three of these it
+                    // cannot derive from the type it just named: the display NAME the manager minted
+                    // (which is how `nd()` addresses the node), the slots to wire, and the params as
+                    // BORN — the inline ones above, and any seeded from a `default_expr`.
+                    let m = g.manifest(uid);
+                    Ok(json!({
+                        "uid": uid.to_hex(),
+                        "name": g.name(uid).unwrap_or_default(),
+                        "input_slots": m.map(schemas::input_slots).unwrap_or_else(|| json!({})),
+                        "output_slots": m.map(schemas::output_slots).unwrap_or_else(|| json!({})),
+                        "params": g.params(uid).map(|p| schemas::param_value_map(&p)).unwrap_or_else(|| json!({})),
+                    }))
+                }
+                "remove_node" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    // A top-level leaf, a sub-patch member (leaf or nested instance), or a collapsed
+                    // instance — RemoveNode dispatches internally and CAPTURES the whole subtree
+                    // (members + params + links + stubs + membership) so its inverse restores it
+                    // uid-stably (undoable; B3b closed the delete-undo gap). The result reaches clients
+                    // via the post-dispatch re-mirror.
+                    // Idempotent by design (a redo racing a peer's delete must converge, not wedge),
+                    // which made `{ok: true}` on a uid naming nothing indistinguishable from a real
+                    // delete — so the doc had to tell callers not to read `ok` as proof. Say it here
+                    // instead, where it is a fact rather than a warning.
+                    let existed = bindable_node(&g, &uid.to_hex());
+                    state
+                        .history
+                        .lock()
+                        .unwrap()
+                        .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
+                    Ok(json!({ "removed": existed }))
+                }
+                // Recovery, not an edit: respawn the node's instance in place, keeping its uid, name,
+                // params, expressions, viewers, scope and links. NOT routed through the command history
+                // — the client records no `graph_cmd` for a restart, and the two stacks must stay 1:1.
+                "restart_node" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    g.restart_node(uid)?;
+                    // Push the cleared error straight away so the node's red border lifts on the click
+                    // rather than on the next 2 Hz error-transition sweep.
+                    events.push(param_state_update(&g, uid));
+                    Ok(json!({ "ok": true }))
+                }
+                // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
+                // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
+                "add_link" => {
+                    let (a, so, b, si) = parse_link(&payload)?;
+                    // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, REFUSING one
+                    // that names nothing wirable, THEN route the resolved flat link through the history
+                    // (undoable; inverse is a RemoveLink).
+                    let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
+                    let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::AddLink {
+                            node_out: a,
+                            slot_out: so.clone(),
+                            node_in: b,
+                            slot_in: si.clone(),
+                        },
+                    )?;
+                    // The wire AS MADE. A boundary endpoint resolves to the flat inner leaf it exposes,
+                    // so what got wired is not literally what was named; and the dtype the two slots
+                    // agreed on is what decides whether the next link to the same output can be made
+                    // at all. Neither is derivable from the request.
+                    let dtype = vocab::output_slots(&g, a)
+                        .into_iter()
+                        .find(|(name, _)| *name == so)
+                        .map(|(_, dtype)| dtype);
+                    Ok(json!({
+                        "node_out": a.to_hex(), "slot_out": so,
+                        "node_in": b.to_hex(), "slot_in": si,
+                        "dtype": dtype,
+                    }))
+                }
+                "remove_link" => {
+                    let (a, so, b, si) = parse_link(&payload)?;
+                    let (a, so) = resolve_link_endpoint(&g, a, &so);
+                    let (b, si) = resolve_link_endpoint(&g, b, &si);
+                    // Idempotent for the same reason `remove_node` is, and answered the same way.
+                    let existed = g.has_link(a, &so, b, &si);
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
+                    )?;
+                    Ok(json!({ "removed": existed }))
+                }
+                // The leaf edits (param value / expression / node+instance pos / rename / globals) route
+                // through the command history so each is undoable (B3a). The mutation reaches clients via
+                // the post-dispatch re-mirror; only the runtime-derived, doc-invisible bits (a param's
+                // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
+                // Re-enumerate a refreshable string param (a device/stream picker). NOT a command —
+                // options are runtime-only, never persisted, so there is nothing to undo. They are
+                // also invisible to the CRDT doc, so the status worker's echo is the ONLY way they
+                // reach the client.
+                //
+                // The options do NOT ride this reply, and nothing here waits for them: the hook runs
+                // on the node's own thread (§8.5), which is what stops a multi-second device scan
+                // stalling anything. `Err` is still a real refusal — an unknown node or param, or one
+                // the type never declared refreshable.
+                "refresh_param" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    let group = parse_str(&payload, "group")?.to_string();
+                    let name = parse_str(&payload, "name")?.to_string();
+                    g.refresh_param(uid, &group, &name)?;
+                    Ok(json!({ "ok": true }))
+                }
+                "update_param" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    let group = parse_str(&payload, "group")?.to_string();
+                    let name = parse_str(&payload, "name")?.to_string();
+                    let vjson = payload.get("value").ok_or("missing value")?;
+                    let existing = g
+                        .params(uid)
+                        .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                        .ok_or("no such param")?;
+                    let newp = goofi_engine::param_from_json(&existing, vjson, true);
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditParam {
+                            uid,
+                            group: group.clone(),
+                            name: name.clone(),
+                            value: Some(newp),
+                            expr: None,
+                        },
+                    )?;
+                    // The value AS STORED, which is not always the value asked for: a literal is
+                    // coerced to the param's declared type and clamped to its range. A bare `ok` for a
+                    // 500 that became 100 does not merely say nothing — it asserts a state the patch
+                    // is not in, and every later decision the caller makes is taken against it.
+                    Ok(json!({
+                        "value": g
+                            .params(uid)
+                            .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                            .map(|p| goofi_engine::param_value_json(&p, true))
+                    }))
+                }
+                "set_expression" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    let group = parse_str(&payload, "group")?.to_string();
+                    let name = parse_str(&payload, "name")?.to_string();
+                    // An absent/null/empty `expression` clears the binding (revert to the literal);
+                    // `enabled`/`triggers` default false.
+                    let source = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let triggers = payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false);
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditParam {
+                            uid,
+                            group: group.clone(),
+                            name: name.clone(),
+                            value: None,
+                            expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
+                        },
+                    )?;
+                    // The binding source rides the doc re-mirror; the runtime `expression_error` is
+                    // doc-invisible, so echo the enriched descriptor (what the retired leaf path did).
+                    events.push(param_state_update(&g, uid));
+                    // A binding that does not compile is stored, not rejected — the source is kept so
+                    // it can be fixed. So the REPLY has to carry the compile error, or a caller with no
+                    // inspector open would read a plain `ok` and believe the binding took.
+                    Ok(json!({ "error": g.param_expression(uid, &group, &name).and_then(|e| e.error) }))
+                }
+                "set_node_pos" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    let pos = payload.get("pos").and_then(parse_pos).ok_or("set_node_pos: missing pos")?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditNode { uid, name: None, pos: Some(pos) },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                // Where THIS client is looking. Stored opaquely and NOT a doc root, so it can neither
+                // drag a peer nor raise the unsaved dot; it rides the `.gfi` and `hello` all the same,
+                // because persistence and dirtiness are separate axes.
+                "set_viewpoint" => {
+                    g.set_viewpoint(payload.get("viewpoint").cloned().unwrap_or(Value::Null));
+                    Ok(json!({ "ok": true }))
+                }
+
+                // ── The flat arrangement (the fifth doc root) ────────────────────────────────────
+                // Reads are served straight off the layout the manager holds. Writes are planned
+                // against it and applied as ordinary commands, so every op below is undoable, persisted
+                // and broadcast without a line of its own for any of the three.
+                // The one layout read. `page` narrows it, exactly as `inspect_patch {scope}` narrows
+                // the graph — the reason `page_list_panels` existed, without a second shape to keep
+                // honest or a second name to choose between.
+                "inspect_layout" => {
+                    let page = match payload.get("page").filter(|v| !v.is_null()) {
+                        Some(_) => Some(resolve_page(&g, &payload)?),
+                        None => None,
+                    };
+                    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), page.as_deref()) }))
+                }
+                "session_add_page" => {
+                    let name = parse_str(&payload, "name")?.to_string();
+                    let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
+                    let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
+                    let (writes, page) = g.arrangement().add_page(&name, index, subtree.as_deref())?;
+                    // A page built AROUND an existing subtree is a MOVE: its undo has to put the subtree
+                    // back, where closing the page would delete it. A page born with its own fresh panel
+                    // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
+                    match subtree.as_deref() {
+                        Some(s) => {
+                            let root = s.to_string();
+                            let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root, home: None };
+                            apply_layout(state, &mut g, &session, cmd)?
+                        }
+                        None => {
+                            let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: page.clone() };
+                            apply_layout(state, &mut g, &session, cmd)?
+                        }
+                    };
+                    // The page's id and its root panel's — a caller's next act is to give that panel
+                    // content, which needs an id it cannot otherwise know (`page_split_panel`'s rule).
+                    let panel = g.arrangement().children(&page).first().cloned().unwrap_or_default();
+                    Ok(json!({ "page": page, "panel": panel }))
+                }
+                "session_remove_page" => {
+                    let name = parse_str(&payload, "name")?.to_string();
+                    // Planned here only so a bad name answers teachably: `LayoutClose` re-plans it under
+                    // this same lock, and DEGRADES rather than errors, which a user's own op must not.
+                    g.arrangement().remove_page(&name)?;
+                    let page = g.arrangement().page_named(&name).unwrap_or_default();
+                    let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: page.clone() };
+                    apply_layout(state, &mut g, &session, cmd)
+                }
+                "session_rename_page" => {
+                    let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
+                    let writes = g.arrangement().rename_page(from, to)?;
+                    // A name is contents; the tab index is the slot, and a peer's new page may hold the
+                    // one this page had when the rename was planned.
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
+                }
+                "session_reorder_page" => {
+                    let name = parse_str(&payload, "name")?;
+                    let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
+                    let writes = g.arrangement().reorder_page(name, to as usize)?;
+                    let edits = writes
+                        .into_iter()
+                        .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
+                        .collect();
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::Compound(edits))
+                }
+                "page_split_panel" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let panel = parse_str(&payload, "panel")?.to_string();
+                    let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
+                    let axis = goofi_engine::layout::Axis::parse(dir)
+                        .ok_or("page_split_panel: direction is `row` or `column`")?;
+                    let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                    let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, before, ratio)?;
+                    let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
+                    apply_layout(state, &mut g, &session, cmd)?;
+                    // The uid, because a split births an EMPTY panel and the caller's next act is to
+                    // give it content — which needs the id it cannot otherwise know.
+                    Ok(json!(fresh))
+                }
+                "page_set_panel" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let panel = parse_str(&payload, "panel")?.to_string();
+                    let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
+                    let panel_state = payload.get("state").cloned();
+                    // A panel bound to a node that is not there renders empty and explains nothing, so
+                    // the bind is checked HERE, where the answer can teach. Cheap: no graph mutation.
+                    let named = panel_state
+                        .as_ref()
+                        .and_then(|s| s.get("node"))
+                        .and_then(|v| v.as_str())
+                        .filter(|n| !n.is_empty());
+                    if let Some(node) = named {
+                        if !bindable_node(&g, node) {
+                            return Err(format!("page_set_panel: no node `{node}` in this patch"));
+                        }
+                    }
+                    // …and the same argument, one word further in: the panel type and the viewer kind
+                    // are vocabularies the manager stores as free strings, so a plausible GUESS at one
+                    // used to be answered `{ok: true}`. The slot is checked against the node this write
+                    // LEAVES the panel bound to — its own, or the one already stored, since state
+                    // merges.
+                    let bound = named
+                        .or_else(|| match g.arrangement().get(&panel) {
+                            Some(goofi_engine::layout::Entry::Panel { state, .. }) => {
+                                state.get("node").and_then(|v| v.as_str())
+                            }
+                            _ => None,
+                        })
+                        .and_then(Uid::from_hex);
+                    vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
+                    let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
+                }
+                "page_move_panel" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let panel = parse_str(&payload, "panel")?.to_string();
+                    let dest = parse_str(&payload, "new_parent")?.to_string();
+                    let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
+                    let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: panel.clone(), home: None };
+                    apply_layout(state, &mut g, &session, cmd)
+                }
+                // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
+                // arrangement that was not on somebody's screen. Composed from the primitive ops they
+                // would cost three to five of both.
+                "page_insert_at_panel" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let subtree = parse_str(&payload, "subtree")?.to_string();
+                    let target = parse_str(&payload, "target")?.to_string();
+                    let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
+                    let axis = goofi_engine::layout::Axis::parse(dir)
+                        .ok_or("page_insert_at_panel: direction is `row` or `column`")?;
+                    let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                    let writes =
+                        g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
+                    let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: subtree.clone(), home: None };
+                    apply_layout(state, &mut g, &session, cmd)
+                }
+                "page_resize_split" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let split = parse_str(&payload, "split")?.to_string();
+                    // A non-numeric entry becomes NaN and is refused by the planner alongside a zero or
+                    // a negative one, so the whole "is this a fraction" answer is stated in one place.
+                    let fractions: Vec<f64> = payload
+                        .get("fractions")
+                        .and_then(|v| v.as_array())
+                        .ok_or("page_resize_split: missing fractions")?
+                        .iter()
+                        .map(|v| v.as_f64().unwrap_or(f64::NAN))
+                        .collect();
+                    let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
+                }
+                "page_remove_panel" => {
+                    let page = resolve_page(&g, &payload)?;
+                    let panel = parse_str(&payload, "panel")?.to_string();
+                    // Planned only for its teachable refusal — see `session_remove_page` above.
+                    g.arrangement().remove_subtree(&page, &panel)?;
+                    let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: panel.clone() };
+                    apply_layout(state, &mut g, &session, cmd)
+                }
+                "set_node_viewers" => {
+                    // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
+                    // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
+                    let uid = parse_uid(&payload, "node")?;
+                    let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
+                    // Opaque to the ENGINE, which is why the words in it are checked here — the bag is
+                    // keyed by output slot and each entry names a viewer kind, the same two
+                    // vocabularies `page_set_panel` refuses a guess at.
+                    vocab::check_viewers(&g, uid, &viewers)?;
+                    g.set_node_viewers(uid, viewers)?;
+                    Ok(json!({ "ok": true }))
+                }
+                "rename_node" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    let name = parse_str(&payload, "name")?.to_string();
+                    // Reject a duplicate display name up front (mirrors `rename_global`). The engine's
+                    // `Command::EditNode` tolerates a rename collision as a no-op so a stale undo-replay
+                    // converges instead of wedging the stack — so the user-facing error must be raised
+                    // here, at the forward RPC boundary.
+                    if g.name_taken(&name, uid) {
+                        return Err(format!("rename_node: display name `{name}` already in use"));
+                    }
+                    // A display name is spliced into expression SOURCE by `rewrite_nd_refs`, which
+                    // replaces the literal's content span in place — so a quote or backslash yields
+                    // `nd('a'b')`, invalid Python that the REFERRING node then carries as a binding
+                    // error while this rename reports success. Constraining the name is one line;
+                    // making the rewriter quote-aware is a Python tokenizer.
+                    if name.contains(['\'', '"', '\\']) {
+                        return Err(format!(
+                            "rename_node: `{name}` cannot contain a quote or backslash — a display \
+                             name is spliced into nd() expression source"
+                        ));
+                    }
+                    let out = state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditNode { uid, name: Some(name), pos: None },
+                    )?;
+                    // The new name rides the re-mirror; each referrer whose nd() expression was rewritten
+                    // needs its runtime-enriched descriptor re-pushed (the source is in the doc, the
+                    // runtime error is not).
+                    if let goofi_engine::Outcome::Nodes(referrers) = out {
+                        for r in referrers {
+                            events.push(param_state_update(&g, r));
+                        }
+                    }
+                    Ok(json!({ "ok": true }))
+                }
+                // Globals validation is server-side now (the retired client `docAddGlobal`/`docRename`
+                // guards moved here): `add_global` REJECTS a collision, `set_global` edits an EXISTING
+                // one, `rename_global` refuses a system/colliding/invalid target up front (its Compound
+                // is not atomic, so a mid-sequence failure would leave a phantom). Wire shape carries the
+                // typed value as `{ name, value, type }`.
+                "add_global" => {
+                    let name = parse_str(&payload, "name")?.to_string();
+                    let val = payload.get("value").ok_or("add_global: missing value")?;
+                    let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("add_global: missing type")?;
+                    if g.globals().contains(&name) {
+                        return Err(format!("add_global: global `{name}` already exists"));
+                    }
+                    // On an ABSENT name, EditGlobal routes through GlobalStore::add, which validates the
+                    // name (an invalid name still rejects).
+                    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+                        .ok_or("add_global: malformed value")?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                "set_global" => {
+                    // EDIT an existing global's value (system or user); rejects a non-existent name so it
+                    // cannot silently create one (that is `add_global`'s job).
+                    let name = parse_str(&payload, "name")?.to_string();
+                    let val = payload.get("value").ok_or("set_global: missing value")?;
+                    let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
+                    let Some(held) = g.globals().get(&name).map(goofi_engine::global_to_json) else {
+                        return Err(format!("set_global: no such global `{name}`"));
+                    };
+                    // A global's TYPE is what every expression reading it depends on, so re-typing one
+                    // through a value edit breaks the reference rather than the call. Choosing a type
+                    // is `add_global`'s; this op edits what a global HOLDS.
+                    let held_ty = held["type"].as_str().unwrap_or_default();
+                    if held_ty != ty {
+                        return Err(format!("set_global: `{name}` is a {held_ty} — set_global edits a \
+                                            global's value, not its type"));
+                    }
+                    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+                        .ok_or_else(|| format!("set_global: `{val}` is not a {ty}"))?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+                    )?;
+                    // As STORED: `global_from_json` is type-directed, so a fraction into an int global
+                    // rounds — the same reason `update_param` answers its value.
+                    Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
+                }
+                "remove_global" => {
+                    let name = parse_str(&payload, "name")?.to_string();
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditGlobal { name, value: None, at: None },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                "rename_global" => {
+                    let old = parse_str(&payload, "old")?.to_string();
+                    let new = parse_str(&payload, "new")?.to_string();
+                    // Validate the WHOLE rename up front (the Compound is NOT atomic — a mid-sequence
+                    // failure would leave the add-new applied as a phantom). Refuse a missing/system
+                    // source and a colliding/invalid target, so both children are guaranteed to succeed.
+                    let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
+                    if g.globals().is_system(&old) {
+                        return Err(format!("rename_global: cannot rename system global `{old}`"));
+                    }
+                    if g.globals().contains(&new) {
+                        return Err(format!("rename_global: `{new}` already exists"));
+                    }
+                    if !goofi_core::globals::is_valid_global_name(&new) {
+                        return Err(format!("rename_global: invalid name `{new}`"));
+                    }
+                    // A rename = add-new(with the old value) + remove-old, folded into one undo step.
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::Compound(vec![
+                            goofi_engine::Command::EditGlobal { name: new, value: Some(value), at: None },
+                            goofi_engine::Command::EditGlobal { name: old, value: None, at: None },
+                        ]),
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                // The sub-patch structural ops (group/expand/boundary authoring/share) mutate the forest
+                // and return; the mutated forest reaches every client via the post-dispatch re-mirror,
+                // which the frontend reconciles from the doc. The old `subpatch_changed` snapshot echo is
+                // retired (Phase 4) — the doc read-path covers it.
+                // The structural sub-patch ops route through the command history (undoable, uid-stable on
+                // the flat model). Each parses a Command, applies it, and maps the Outcome to the reply.
+                "group_nodes" => {
+                    let members = payload
+                        .get("members")
+                        .and_then(|v| v.as_array())
+                        .ok_or("group_nodes: missing members")?;
+                    let uids: Vec<Uid> = members.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
+                    if uids.len() != members.len() {
+                        return Err("group_nodes: malformed member uid".into());
+                    }
+                    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                    let out = state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::Group { members: uids, pos, restore: None },
+                    )?;
+                    let inst = match out {
+                        goofi_engine::Outcome::Uid(u) => u,
+                        _ => return Err("group_nodes: no scope uid returned".into()),
+                    };
+                    Ok(json!({ "inst_id": inst.to_hex() }))
+                }
+                "expand_instance" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    state
+                        .history
+                        .lock()
+                        .unwrap()
+                        .apply(&mut g, &session, goofi_engine::Command::Expand { scope: inst })?;
+                    Ok(json!({ "ok": true }))
+                }
+                "add_boundary" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    let dir = match payload.get("dir").and_then(|v| v.as_str()) {
+                        Some("in") => goofi_engine::subpatch::Dir::In,
+                        Some("out") => goofi_engine::subpatch::Dir::Out,
+                        _ => return Err("add_boundary: dir must be \"in\" or \"out\"".into()),
+                    };
+                    let dtype = goofi_core::SlotType::from_name(
+                        payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"),
+                    )
+                    .ok_or("add_boundary: bad dtype")?;
+                    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                    let out = state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::AddStub { scope: inst, dir, dtype, pos, restore: None },
+                    )?;
+                    let bnd = match out {
+                        goofi_engine::Outcome::StubId(id) => id,
+                        _ => return Err("add_boundary: no stub id returned".into()),
+                    };
+                    Ok(json!({ "bnd_id": bnd }))
+                }
+                "wire_boundary" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                    let inner = parse_inner(&payload)?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner, dtype: None },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                "remove_boundary" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::RemoveStub { scope: inst, stub_id: bnd },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                "rename_boundary" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                    let name = parse_str(&payload, "name")?.to_string();
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: Some(name), pos: None },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                "set_boundary_pos" => {
+                    let inst = parse_uid(&payload, "inst_id")?;
+                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
+                    let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
+                    state.history.lock().unwrap().apply(
+                        &mut g,
+                        &session,
+                        goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: None, pos: Some(pos) },
+                    )?;
+                    Ok(json!({ "ok": true }))
+                }
+                // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was
+                // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
+                // The inspect reads. Every one is `writes: false` in the registry, so none re-mirrors
+                // and none dirties the patch — they answer questions, they do not edit.
+                "inspect_patch" => {
+                    let scope = match payload.get("scope").filter(|v| !v.is_null()) {
+                        Some(v) => {
+                            Some(v.as_str().and_then(Uid::from_hex).ok_or("inspect_patch: malformed scope")?)
+                        }
+                        None => None,
+                    };
+                    let workspace = state.mount();
+                    let text =
+                        inspect::patch(&g, scope, state.save_path().as_deref(), &goofi_core::path::to_slash(&workspace), dirty)?;
+                    Ok(json!({ "text": text }))
+                }
+                "inspect_node" => {
+                    let uid = parse_uid(&payload, "node")?;
+                    // The three sections default ON — the op is the cheap peek, and a caller that
+                    // wants less says so.
+                    let want = |k: &str| payload.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
+                    let slot = payload.get("slot").and_then(|v| v.as_str());
+                    let text = inspect::node(&g, uid, slot, want("params"), want("error"))?;
+                    Ok(json!({ "text": text }))
+                }
+                "list_globals" => Ok(inspect::globals(&g)),
+                "read_node_source" => {
+                    // The two trees a scan registers from, patch first — the same precedence the
+                    // palette's `source` badge reports, so provenance cannot disagree with it.
+                    // `.rev()` is load-bearing, not tidiness: `rescan` scans the shipped list forwards
+                    // and lets each directory overwrite the last, so the LAST one holds the name. This
+                    // search runs first-match-wins, so it has to walk the same list backwards to land
+                    // on the same file. Forwards here would hand back a shadowed copy nothing runs.
+                    let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
+                        .into_iter()
+                        .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
+                        .collect();
+                    inspect::node_source(&g, parse_str(&payload, "type")?, &dirs)
+                }
+                "serialize" => Ok(json!({ "yaml": g.serialize() })),
+                // Where this patch's workspace files live right now. The mount is a per-run temp
+                // directory under a random name, so a client — and the agent harness after it — cannot
+                // derive it; asking the manager is the only way to open a browser or a shell on it.
+                "open_workspace" => Ok(json!({ "path": goofi_core::path::to_slash(&state.mount()) })),
+                "save" => {
+                    // Expand `~` exactly as the browser does, or a path the user could navigate to
+                    // would not be writable — the two must agree on what a path means. The path is
+                    // REQUIRED: the old no-path form quietly returned the YAML for a browser
+                    // download ("Save in browser"), a second save semantics that left the dirty
+                    // flag standing and that the save-path design (C38) would have had to carry.
+                    // The user removed the feature; a save writes a file or it is malformed.
+                    let path = payload
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(fsbrowse::resolve)
+                        .ok_or("save: missing path")?;
+                    let mount = state.mount();
+                    // Sampled BEFORE the pack and committed only once it succeeded. A file written
+                    // while the zip is being built may or may not have made it in; baselining
+                    // afterwards would call it packed either way, and that is the one direction that
+                    // loses an edit rather than merely reporting a spurious one.
+                    let packed = goofi_engine::archive::fingerprint(&mount);
+                    save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
+                    // Written to disk ⇒ clean, on both planes — and said so UNCONDITIONALLY, not on the
+                    // flag's transition: a patch dirtied solely by a file written into the mount leaves
+                    // the flag already false, so no transition comes and every tab would keep its dot
+                    // on a patch that is entirely on disk. The duplicate event the common case now gets
+                    // is free — a save is one user action, and every client apply branch is idempotent.
+                    *state.workspace_baseline.lock().unwrap() = packed;
+                    state.set_dirty(false);
+                    events.push(event("unsaved_changes", json!({ "unsaved_changes": false })));
+                    // …and the patch now has a home the MANAGER knows (C38), so a later plain Save
+                    // overwrites this file from any tab, and a reload still names it. Announced as
+                    // well as stored: an already-connected peer gets no new snapshot to read it from.
+                    // Only on success — a failed save wrote nothing, so whatever home the patch had
+                    // (including none) is still the true one, and claiming this one would point the
+                    // next silent overwrite at a file this patch has never been written to.
+                    *state.save_path.lock().unwrap() = Some(path.clone());
+                    events.push(event("save_path_changed", json!({ "save_path": &path })));
+                    Ok(json!({ "path": path }))
+                }
+                // One load path for every source: `load_text` carries the YAML inline (a browser
+                // upload), `load` names a `.gfi` the BACKEND reads, and `new` brings an empty patch
+                // from nowhere. Everything after the read — replace, reset history, announce — must
+                // not drift between them, so they share an arm.
+                "load_text" | "load" | "new" => {
+                    // Every source mounts FRESH, and the live mount is swapped for it only once the
+                    // manifest has parsed. So a refused load leaves the open patch untouched on both
+                    // planes — its graph AND its workspace files — and a loaded patch never inherits
+                    // the files of the patch it replaced.
+                    let fresh = new_mount();
+                    let (content, from_path) =
+                        stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                    // ORDERING, load-bearing: the types the patch SHIPS are registered before the
+                    // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
+                    // nodes the archive brought. They live in the tree just unpacked, so the scan runs
+                    // against `fresh` — which is not the live mount yet.
+                    rescan(state, &mut g, &fresh);
+                    // Parse BEFORE anything is announced or committed: a rejected patch must not leave
+                    // the title bar naming a file the graph was never loaded from.
+                    if let Err(e) = g.load_doc(&content) {
+                        // Refused, so the open patch keeps its graph AND its workspace — and therefore
+                        // its registry, which the scan above swapped for the refused patch's. Re-derive
+                        // it from the mount that is still live.
+                        rescan(state, &mut g, &state.mount());
+                        remove_mount(&fresh);
+                        return Err(e);
+                    }
+                    // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
+                    // live one and the mount it replaced is reclaimed — after the lock drops, since
+                    // deleting a tree is a walk and the lock guards only the swap. The harnesses the
+                    // replaced patch spawned go with it: each was launched INTO that workspace and
+                    // edits that graph through an address goofi minted for it, so one surviving here
+                    // would go on editing a patch it was never launched for out of a directory the
+                    // next line deletes. Announced too — `graph_replaced` below carries the emptied
+                    // roster, but a client tracking only the transitions must not have to infer it.
+                    state.harnesses.stop_all();
+                    events.push(event("harness_changed", state.harnesses.roster()));
+                    let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
+                    remove_mount(&replaced);
+                    // The unpacked tree IS what the archive holds — but every file in it was written
+                    // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
+                    // HERE. Without it a patch would be dirty from the moment it finished loading.
+                    *state.workspace_baseline.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
+                    // A load fully resets the session — there is nothing to undo across it (spec §3:
+                    // no load command / no checkpoint), so drop every session's command history.
+                    state.history.lock().unwrap().clear();
+                    events.extend(state.set_dirty(false));
+                    // The loaded patch's home is the archive it came from — or NONE for `load_text` (an
+                    // upload) and `new`, neither of which has a file behind it. Inheriting a path there
+                    // would aim the next silent Save at an unrelated `.gfi` and overwrite it with a
+                    // patch that never came from it. Stored BEFORE the snapshot is built, so the
+                    // snapshot carries it.
+                    *state.save_path.lock().unwrap() = from_path.clone();
+                    events.push(event(
+                        "graph_replaced",
+                        schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
+                                          state.harnesses.roster()),
+                    ));
+                    // The patch brought its own node types (and dropped the last patch's), which
+                    // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
+                    events.push(node_types_event(&g));
+                    if let Some(path) = from_path {
+                        // The announcement the title bar reads. The ORDER no longer carries meaning:
+                        // the snapshot the client applies wholesale now names the same file, so
+                        // announcing first would be re-affirmed rather than clobbered. It is kept
+                        // after `graph_replaced` because that is the order the two facts happen in,
+                        // and kept at all because `save` — which ships no snapshot — needs the event
+                        // to exist, and one event shape is easier to be right about than two.
+                        events.push(event("save_path_changed", json!({ "save_path": path })));
+                    }
+                    // A stored arrangement the flat model admits but cannot render falls back to the
+                    // default — the graph is the value, the arrangement is chrome. Say so here, or the
+                    // patch would open on a layout the user did not save and nothing would explain it.
+                    Ok(json!({ "ok": true, "layout_warning": g.arrangement_warning() }))
+                }
+                // Session-scoped undo/redo over the central command history. The graph mutation reaches
+                // clients via the post-dispatch re-mirror (doc-authoritative); the reply carries the
+                // session's fresh can-undo/can-redo so the UI can enable its buttons.
+                "undo" => {
+                    let mut hist = state.history.lock().unwrap();
+                    let changed = hist.undo(&mut g, &session)?;
+                    Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
+                }
+                "redo" => {
+                    let mut hist = state.history.lock().unwrap();
+                    let changed = hist.redo(&mut g, &session)?;
+                    Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
+                }
+                other => Err(format!("unknown op `{other}`")),
+            }
+        })();
+
+        // Keep the server-side CRDT doc in agreement with the graph after any successful MUTATING
+        // control op, then broadcast the resulting delta so every connected client's replica converges.
+        // The re-mirror is gated on whether the op *could* have mutated the graph — NOT on `events`,
+        // because link/boundary writes mutate the doc-read graph while emitting no client event (their
+        // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
+        // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
+        // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
+        // `open_workspace` joins them: it answers where the mount is and writes nothing on either
+        // plane. Being here is also what keeps it out of the dirty tail below — the whole block is
+        // skipped — which is the right door for it, since it is a question, not an op that "did not
+        // happen to be an edit".
+        // `new` is deliberately NOT here: it empties the graph, and the re-mirror is the only thing
+        // that empties an already-open tab's canvas with it (`graph_replaced` carries no node list).
+        // The classification lives on the op's registry row, so declaring an op is what classifies it
+        // — there is no second list to forget. An unregistered op never reaches here (its result is
+        // the `unknown op` Err above).
+        let read_only = spec.is_some_and(|o| !o.writes);
+        if result.is_ok() && !read_only {
+            resync_and_broadcast(state);
+            // "Could this have changed the graph?" is a good enough answer to "does the patch now
+            // differ from disk?" for most ops that the two share a gate — but it is an INFERENCE, and
+            // these four are where it is wrong:
+            //   `load`/`load_text`/`new` clear the flag inside their arm, which runs first and is then
+            //     re-set here; re-clear it. `new` is the one where the tail's default is most clearly
+            //     wrong rather than merely conservative: an empty patch with nothing in it and no file
+            //     behind it would be born unsaved, offering to be written over the last real patch.
+            //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
+            //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
+            //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
+            //     click on the inspector's Restart button after a node raised — exactly where a spurious
+            //     unsaved dot is least distinguishable from a real one.
+            //   `rescan_nodes` re-derives the CATALOG, which is not patch content. It still re-mirrors,
+            //     because restarting a node whose type gained a param changes that node's params — and
+            //     it still must not dirty: pressing refresh with nothing edited would otherwise put the
+            //     dot on an untouched patch, while a rescan that DID follow an edit is already dirty
+            //     through the workspace fingerprint (`is_dirty`), which is where a file edit belongs.
+            //   `refresh_param` re-enumerates a device/stream picker's options, which are runtime-only
+            //     and never persisted. Latent today (no shipped node declares `refresh: true`, and the
+            //     engine rejects the op for any param that does not, so the `Err` skips this gate
+            //     entirely) — listed here because it is the same op-is-not-an-edit case, not a
+            //     prediction that it currently misfires.
+            //   `set_viewpoint` is persistence-without-dirtiness, and by CONSTRUCTION rather than by a
+            //     classification the client has to get right: a viewpoint is where a client is LOOKING,
+            //     so writing one is never authoring. It still rides the `.gfi`, which is exactly why it
+            //     needs an arm here and not `writes: false`. Every op that edits the ARRANGEMENT is
+            //     authoring by the same construction, and so needs no arm at all.
+            // These stay OUT of `read_only`: none is an edit, but all still need the re-mirror.
+            match op.as_str() {
+                "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
+                "set_viewpoint" => {}
+                "restart_node" | "refresh_param" | "rescan_nodes" => {}
+                _ => events.extend(state.set_dirty(true)),
+            }
+        }
+
+        for e in events {
+            let _ = state.events.send(e);
+        }
+
+        result
+    }
+}
+
+/// The `/control` envelope over [`AppState::call`]: `{id, op, payload, session}` in, `{id, result}`
+/// or `{id, error}` out. A request with no numeric `id` wants no reply.
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let req: Value = serde_json::from_str(text).ok()?;
     let id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -1194,952 +2153,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     // Absent ⇒ a single shared "default" session, so a client that never presents one still works.
     let session = req.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
 
-    // Every op is declared once, in `ops::REGISTRY`. Refusing an unregistered one HERE is what
-    // makes a dispatch arm without a row unreachable rather than a second, invisible declaration
-    // of the op set — and it is where `read_only` comes from below, so the classification a new op
-    // needs lives beside the op instead of in a parallel list that can disagree with it.
-    let spec = ops::find(&op);
-    let mut events: Vec<String> = Vec::new();
-    let result: Result<Value, String> = (|| {
-        if spec.is_none() {
-            return Err(format!("unknown op `{op}`"));
-        }
-        // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
-        // directory and stats every child, which can block for a long time on a huge or network
-        // path — under the lock that would stall the status-drain worker for the whole walk. `get_patch`
-        // is here for the same reason: `is_dirty` walks the workspace mount.
-        if op == "list_dir" {
-            return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
-        }
-        if op == "get_patch" {
-            return Ok(json!({
-                "save_path": state.save_path(),
-                "workspace": goofi_core::path::to_slash(&state.mount()),
-                "dirty": state.is_dirty(),
-            }));
-        }
-        // The harness ops are here for the same reason and one more: they fork children and signal
-        // them, and none of it reads or writes the graph. `dispatch` stays synchronous throughout —
-        // detection and the stop grace both run on their own threads, and the roster converges
-        // through `harness_changed` rather than by making a caller wait.
-        if op == "list_harnesses" {
-            state.harnesses.refresh_in_background(state.events.clone());
-            return Ok(state.harnesses.roster());
-        }
-        if op == "spawn_harness" {
-            let h = payload.get("harness").and_then(|v| v.as_str())
-                .ok_or("spawn_harness: missing harness")?;
-            // A closed set the caller cannot see from here, so a refusal that does not name it
-            // leaves nothing to try next. `list_harnesses` says which are actually INSTALLED; this
-            // says which words exist at all.
-            let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(),
-                                           &term::parent_env(), state.events.clone())?;
-            events.push(event("harness_changed", state.harnesses.roster()));
-            return Ok(json!({ "instance_id": id }));
-        }
-        if op == "stop_harness" {
-            state.harnesses.stop(payload.get("instance").and_then(|v| v.as_str())
-                .ok_or("stop_harness: missing instance")?)?;
-            events.push(event("harness_changed", state.harnesses.roster()));
-            return Ok(json!({ "ok": true }));
-        }
-        // …and `inspect_patch`'s header says the same thing, so its walk is taken here too, before
-        // the lock — and only for that op, which is what the short circuit is for.
-        let dirty = op == "inspect_patch" && state.is_dirty();
-        let mut g = state.graph.lock().unwrap();
-        match op.as_str() {
-            "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
-            // Re-derive the node registry from the directories that exist RIGHT NOW. Explicit, not
-            // watched (decision, 2026-08-09): an agent calls it straight after writing a node file,
-            // a human presses the palette's refresh button. The diff comes back so either can say
-            // what happened, and the instances of a type whose file changed restart onto it.
-            "rescan_nodes" => {
-                let (diff, _) = rescan(state, &mut g, &state.mount());
-                restart_changed(&mut g, &diff);
-                events.push(node_types_event(&g));
-                Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
-            }
-            "add_node" => {
-                let ty = payload
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .ok_or("add_node: missing type")?
-                    .to_string();
-                // `member_uid` + `name` place the new node at a CHOSEN uid and display name instead
-                // of minting fresh ones. This is NOT the undo path — undo/redo are manager-owned
-                // and a restore goes through `Command::AddNode { uid: Some, name: Some }` built by
-                // `capture_subtree_restore`, never through this RPC. It is an automation/restore
-                // door: a caller reconstructing a known graph (a script, a fixture) gets the
-                // uid-keyed links and panels to reconnect to the same node.
-                let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
-                let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                // `inst_id` is the sub-patch the editor has ENTERED: the node is born INSIDE it.
-                // Absent/null = ROOT. A malformed id is refused here and an id naming no live scope
-                // is refused by the command's pre-mutation check — never silently rooted, because
-                // the canvas draws only the entered scope's children, so a rooted node is invisible
-                // exactly where the user placed it (while the panel still selects it).
-                let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
-                    Some(v) => {
-                        Some(v.as_str().and_then(Uid::from_hex).ok_or("add_node: malformed inst_id")?)
-                    }
-                    None => None,
-                };
-                // Route through the command history so the add is undoable (its inverse is a
-                // RemoveNode). Inline params are applied AFTER (below): RemoveNode's inverse
-                // capture_restores the LIVE node — INCLUDING those params — so an undo→redo restores
-                // the configured values without threading them through the command here.
-                let cmd = goofi_engine::Command::AddNode {
-                    type_name: ty,
-                    pos,
-                    uid: restore,
-                    name: (!name.is_empty()).then_some(name),
-                    params: None,
-                    exprs: vec![],
-                    viewers: None,
-                    scope,
-                };
-                let uid = match state.history.lock().unwrap().apply(&mut g, &session, cmd)? {
-                    goofi_engine::Outcome::Uid(u) => u,
-                    _ => return Err("add_node: no uid returned".into()),
-                };
-                // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
-                // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param),
-                // before the resync mirrors them into the doc.
-                if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
-                    for (group, names) in groups {
-                        let Some(names) = names.as_object() else { continue };
-                        for (name, vjson) in names {
-                            if let Some(existing) =
-                                g.params(uid).and_then(|p| goofi_node::param(&p, group, name).cloned())
-                            {
-                                let newp = goofi_engine::param_from_json(&existing, vjson, true);
-                                let _ = g.update_param(uid, group, name, newp);
-                            }
-                        }
-                    }
-                }
-                // A bare uid announcement: the node itself arrives via the doc mirror, so anything
-                // more would be a second, drift-prone projection of it.
-                events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                // The REPLY, though, answers a caller with no doc replica. Three of these it
-                // cannot derive from the type it just named: the display NAME the manager minted
-                // (which is how `nd()` addresses the node), the slots to wire, and the params as
-                // BORN — the inline ones above, and any seeded from a `default_expr`.
-                let m = g.manifest(uid);
-                Ok(json!({
-                    "uid": uid.to_hex(),
-                    "name": g.name(uid).unwrap_or_default(),
-                    "input_slots": m.map(schemas::input_slots).unwrap_or_else(|| json!({})),
-                    "output_slots": m.map(schemas::output_slots).unwrap_or_else(|| json!({})),
-                    "params": g.params(uid).map(|p| schemas::param_value_map(&p)).unwrap_or_else(|| json!({})),
-                }))
-            }
-            "remove_node" => {
-                let uid = parse_uid(&payload, "node")?;
-                // A top-level leaf, a sub-patch member (leaf or nested instance), or a collapsed
-                // instance — RemoveNode dispatches internally and CAPTURES the whole subtree
-                // (members + params + links + stubs + membership) so its inverse restores it
-                // uid-stably (undoable; B3b closed the delete-undo gap). The result reaches clients
-                // via the post-dispatch re-mirror.
-                // Idempotent by design (a redo racing a peer's delete must converge, not wedge),
-                // which made `{ok: true}` on a uid naming nothing indistinguishable from a real
-                // delete — so the doc had to tell callers not to read `ok` as proof. Say it here
-                // instead, where it is a fact rather than a warning.
-                let existed = bindable_node(&g, &uid.to_hex());
-                state
-                    .history
-                    .lock()
-                    .unwrap()
-                    .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
-                Ok(json!({ "removed": existed }))
-            }
-            // Recovery, not an edit: respawn the node's instance in place, keeping its uid, name,
-            // params, expressions, viewers, scope and links. NOT routed through the command history
-            // — the client records no `graph_cmd` for a restart, and the two stacks must stay 1:1.
-            "restart_node" => {
-                let uid = parse_uid(&payload, "node")?;
-                g.restart_node(uid)?;
-                // Push the cleared error straight away so the node's red border lifts on the click
-                // rather than on the next 2 Hz error-transition sweep.
-                events.push(param_state_update(&g, uid));
-                Ok(json!({ "ok": true }))
-            }
-            // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
-            // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
-            "add_link" => {
-                let (a, so, b, si) = parse_link(&payload)?;
-                // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, REFUSING one
-                // that names nothing wirable, THEN route the resolved flat link through the history
-                // (undoable; inverse is a RemoveLink).
-                let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
-                let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::AddLink {
-                        node_out: a,
-                        slot_out: so.clone(),
-                        node_in: b,
-                        slot_in: si.clone(),
-                    },
-                )?;
-                // The wire AS MADE. A boundary endpoint resolves to the flat inner leaf it exposes,
-                // so what got wired is not literally what was named; and the dtype the two slots
-                // agreed on is what decides whether the next link to the same output can be made
-                // at all. Neither is derivable from the request.
-                let dtype = vocab::output_slots(&g, a)
-                    .into_iter()
-                    .find(|(name, _)| *name == so)
-                    .map(|(_, dtype)| dtype);
-                Ok(json!({
-                    "node_out": a.to_hex(), "slot_out": so,
-                    "node_in": b.to_hex(), "slot_in": si,
-                    "dtype": dtype,
-                }))
-            }
-            "remove_link" => {
-                let (a, so, b, si) = parse_link(&payload)?;
-                let (a, so) = resolve_link_endpoint(&g, a, &so);
-                let (b, si) = resolve_link_endpoint(&g, b, &si);
-                // Idempotent for the same reason `remove_node` is, and answered the same way.
-                let existed = g.has_link(a, &so, b, &si);
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
-                )?;
-                Ok(json!({ "removed": existed }))
-            }
-            // The leaf edits (param value / expression / node+instance pos / rename / globals) route
-            // through the command history so each is undoable (B3a). The mutation reaches clients via
-            // the post-dispatch re-mirror; only the runtime-derived, doc-invisible bits (a param's
-            // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
-            // Re-enumerate a refreshable string param (a device/stream picker). NOT a command —
-            // options are runtime-only, never persisted, so there is nothing to undo. They are
-            // also invisible to the CRDT doc, so the status worker's echo is the ONLY way they
-            // reach the client.
-            //
-            // The options do NOT ride this reply, and nothing here waits for them: the hook runs
-            // on the node's own thread (§8.5), which is what stops a multi-second device scan
-            // stalling anything. `Err` is still a real refusal — an unknown node or param, or one
-            // the type never declared refreshable.
-            "refresh_param" => {
-                let uid = parse_uid(&payload, "node")?;
-                let group = parse_str(&payload, "group")?.to_string();
-                let name = parse_str(&payload, "name")?.to_string();
-                g.refresh_param(uid, &group, &name)?;
-                Ok(json!({ "ok": true }))
-            }
-            "update_param" => {
-                let uid = parse_uid(&payload, "node")?;
-                let group = parse_str(&payload, "group")?.to_string();
-                let name = parse_str(&payload, "name")?.to_string();
-                let vjson = payload.get("value").ok_or("missing value")?;
-                let existing = g
-                    .params(uid)
-                    .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                    .ok_or("no such param")?;
-                let newp = goofi_engine::param_from_json(&existing, vjson, true);
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditParam {
-                        uid,
-                        group: group.clone(),
-                        name: name.clone(),
-                        value: Some(newp),
-                        expr: None,
-                    },
-                )?;
-                // The value AS STORED, which is not always the value asked for: a literal is
-                // coerced to the param's declared type and clamped to its range. A bare `ok` for a
-                // 500 that became 100 does not merely say nothing — it asserts a state the patch
-                // is not in, and every later decision the caller makes is taken against it.
-                Ok(json!({
-                    "value": g
-                        .params(uid)
-                        .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                        .map(|p| goofi_engine::param_value_json(&p, true))
-                }))
-            }
-            "set_expression" => {
-                let uid = parse_uid(&payload, "node")?;
-                let group = parse_str(&payload, "group")?.to_string();
-                let name = parse_str(&payload, "name")?.to_string();
-                // An absent/null/empty `expression` clears the binding (revert to the literal);
-                // `enabled`/`triggers` default false.
-                let source = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                let triggers = payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false);
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditParam {
-                        uid,
-                        group: group.clone(),
-                        name: name.clone(),
-                        value: None,
-                        expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
-                    },
-                )?;
-                // The binding source rides the doc re-mirror; the runtime `expression_error` is
-                // doc-invisible, so echo the enriched descriptor (what the retired leaf path did).
-                events.push(param_state_update(&g, uid));
-                // A binding that does not compile is stored, not rejected — the source is kept so
-                // it can be fixed. So the REPLY has to carry the compile error, or a caller with no
-                // inspector open would read a plain `ok` and believe the binding took.
-                Ok(json!({ "error": g.param_expression(uid, &group, &name).and_then(|e| e.error) }))
-            }
-            "set_node_pos" => {
-                let uid = parse_uid(&payload, "node")?;
-                let pos = payload.get("pos").and_then(parse_pos).ok_or("set_node_pos: missing pos")?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditNode { uid, name: None, pos: Some(pos) },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            // Where THIS client is looking. Stored opaquely and NOT a doc root, so it can neither
-            // drag a peer nor raise the unsaved dot; it rides the `.gfi` and `hello` all the same,
-            // because persistence and dirtiness are separate axes.
-            "set_viewpoint" => {
-                g.set_viewpoint(payload.get("viewpoint").cloned().unwrap_or(Value::Null));
-                Ok(json!({ "ok": true }))
-            }
-
-            // ── The flat arrangement (the fifth doc root) ────────────────────────────────────
-            // Reads are served straight off the layout the manager holds. Writes are planned
-            // against it and applied as ordinary commands, so every op below is undoable, persisted
-            // and broadcast without a line of its own for any of the three.
-            // The one layout read. `page` narrows it, exactly as `inspect_patch {scope}` narrows
-            // the graph — the reason `page_list_panels` existed, without a second shape to keep
-            // honest or a second name to choose between.
-            "inspect_layout" => {
-                let page = match payload.get("page").filter(|v| !v.is_null()) {
-                    Some(_) => Some(resolve_page(&g, &payload)?),
-                    None => None,
-                };
-                Ok(json!({ "text": inspect::layout_tree(g.arrangement(), page.as_deref()) }))
-            }
-            "session_add_page" => {
-                let name = parse_str(&payload, "name")?.to_string();
-                let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
-                let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
-                let (writes, page) = g.arrangement().add_page(&name, index, subtree.as_deref())?;
-                // A page built AROUND an existing subtree is a MOVE: its undo has to put the subtree
-                // back, where closing the page would delete it. A page born with its own fresh panel
-                // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
-                match subtree.as_deref() {
-                    Some(s) => {
-                        let root = s.to_string();
-                        let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root, home: None };
-                        apply_layout(state, &mut g, &session, cmd)?
-                    }
-                    None => {
-                        let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: page.clone() };
-                        apply_layout(state, &mut g, &session, cmd)?
-                    }
-                };
-                // The page's id and its root panel's — a caller's next act is to give that panel
-                // content, which needs an id it cannot otherwise know (`page_split_panel`'s rule).
-                let panel = g.arrangement().children(&page).first().cloned().unwrap_or_default();
-                Ok(json!({ "page": page, "panel": panel }))
-            }
-            "session_remove_page" => {
-                let name = parse_str(&payload, "name")?.to_string();
-                // Planned here only so a bad name answers teachably: `LayoutClose` re-plans it under
-                // this same lock, and DEGRADES rather than errors, which a user's own op must not.
-                g.arrangement().remove_page(&name)?;
-                let page = g.arrangement().page_named(&name).unwrap_or_default();
-                let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: page.clone() };
-                apply_layout(state, &mut g, &session, cmd)
-            }
-            "session_rename_page" => {
-                let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
-                let writes = g.arrangement().rename_page(from, to)?;
-                // A name is contents; the tab index is the slot, and a peer's new page may hold the
-                // one this page had when the rename was planned.
-                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
-            }
-            "session_reorder_page" => {
-                let name = parse_str(&payload, "name")?;
-                let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
-                let writes = g.arrangement().reorder_page(name, to as usize)?;
-                let edits = writes
-                    .into_iter()
-                    .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
-                    .collect();
-                apply_layout(state, &mut g, &session, goofi_engine::Command::Compound(edits))
-            }
-            "page_split_panel" => {
-                let page = resolve_page(&g, &payload)?;
-                let panel = parse_str(&payload, "panel")?.to_string();
-                let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
-                let axis = goofi_engine::layout::Axis::parse(dir)
-                    .ok_or("page_split_panel: direction is `row` or `column`")?;
-                let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
-                let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, before, ratio)?;
-                let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
-                apply_layout(state, &mut g, &session, cmd)?;
-                // The uid, because a split births an EMPTY panel and the caller's next act is to
-                // give it content — which needs the id it cannot otherwise know.
-                Ok(json!(fresh))
-            }
-            "page_set_panel" => {
-                let page = resolve_page(&g, &payload)?;
-                let panel = parse_str(&payload, "panel")?.to_string();
-                let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
-                let panel_state = payload.get("state").cloned();
-                // A panel bound to a node that is not there renders empty and explains nothing, so
-                // the bind is checked HERE, where the answer can teach. Cheap: no graph mutation.
-                let named = panel_state
-                    .as_ref()
-                    .and_then(|s| s.get("node"))
-                    .and_then(|v| v.as_str())
-                    .filter(|n| !n.is_empty());
-                if let Some(node) = named {
-                    if !bindable_node(&g, node) {
-                        return Err(format!("page_set_panel: no node `{node}` in this patch"));
-                    }
-                }
-                // …and the same argument, one word further in: the panel type and the viewer kind
-                // are vocabularies the manager stores as free strings, so a plausible GUESS at one
-                // used to be answered `{ok: true}`. The slot is checked against the node this write
-                // LEAVES the panel bound to — its own, or the one already stored, since state
-                // merges.
-                let bound = named
-                    .or_else(|| match g.arrangement().get(&panel) {
-                        Some(goofi_engine::layout::Entry::Panel { state, .. }) => {
-                            state.get("node").and_then(|v| v.as_str())
-                        }
-                        _ => None,
-                    })
-                    .and_then(Uid::from_hex);
-                vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
-                let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
-                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
-            }
-            "page_move_panel" => {
-                let page = resolve_page(&g, &payload)?;
-                let panel = parse_str(&payload, "panel")?.to_string();
-                let dest = parse_str(&payload, "new_parent")?.to_string();
-                let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
-                let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
-                let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: panel.clone(), home: None };
-                apply_layout(state, &mut g, &session, cmd)
-            }
-            // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
-            // arrangement that was not on somebody's screen. Composed from the primitive ops they
-            // would cost three to five of both.
-            "page_insert_at_panel" => {
-                let page = resolve_page(&g, &payload)?;
-                let subtree = parse_str(&payload, "subtree")?.to_string();
-                let target = parse_str(&payload, "target")?.to_string();
-                let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
-                let axis = goofi_engine::layout::Axis::parse(dir)
-                    .ok_or("page_insert_at_panel: direction is `row` or `column`")?;
-                let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
-                let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                let writes =
-                    g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
-                let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: subtree.clone(), home: None };
-                apply_layout(state, &mut g, &session, cmd)
-            }
-            "page_resize_split" => {
-                let page = resolve_page(&g, &payload)?;
-                let split = parse_str(&payload, "split")?.to_string();
-                // A non-numeric entry becomes NaN and is refused by the planner alongside a zero or
-                // a negative one, so the whole "is this a fraction" answer is stated in one place.
-                let fractions: Vec<f64> = payload
-                    .get("fractions")
-                    .and_then(|v| v.as_array())
-                    .ok_or("page_resize_split: missing fractions")?
-                    .iter()
-                    .map(|v| v.as_f64().unwrap_or(f64::NAN))
-                    .collect();
-                let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
-                apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
-            }
-            "page_remove_panel" => {
-                let page = resolve_page(&g, &payload)?;
-                let panel = parse_str(&payload, "panel")?.to_string();
-                // Planned only for its teachable refusal — see `session_remove_page` above.
-                g.arrangement().remove_subtree(&page, &panel)?;
-                let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: panel.clone() };
-                apply_layout(state, &mut g, &session, cmd)
-            }
-            "set_node_viewers" => {
-                // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
-                // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
-                let uid = parse_uid(&payload, "node")?;
-                let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
-                // Opaque to the ENGINE, which is why the words in it are checked here — the bag is
-                // keyed by output slot and each entry names a viewer kind, the same two
-                // vocabularies `page_set_panel` refuses a guess at.
-                vocab::check_viewers(&g, uid, &viewers)?;
-                g.set_node_viewers(uid, viewers)?;
-                Ok(json!({ "ok": true }))
-            }
-            "rename_node" => {
-                let uid = parse_uid(&payload, "node")?;
-                let name = parse_str(&payload, "name")?.to_string();
-                // Reject a duplicate display name up front (mirrors `rename_global`). The engine's
-                // `Command::EditNode` tolerates a rename collision as a no-op so a stale undo-replay
-                // converges instead of wedging the stack — so the user-facing error must be raised
-                // here, at the forward RPC boundary.
-                if g.name_taken(&name, uid) {
-                    return Err(format!("rename_node: display name `{name}` already in use"));
-                }
-                // A display name is spliced into expression SOURCE by `rewrite_nd_refs`, which
-                // replaces the literal's content span in place — so a quote or backslash yields
-                // `nd('a'b')`, invalid Python that the REFERRING node then carries as a binding
-                // error while this rename reports success. Constraining the name is one line;
-                // making the rewriter quote-aware is a Python tokenizer.
-                if name.contains(['\'', '"', '\\']) {
-                    return Err(format!(
-                        "rename_node: `{name}` cannot contain a quote or backslash — a display \
-                         name is spliced into nd() expression source"
-                    ));
-                }
-                let out = state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditNode { uid, name: Some(name), pos: None },
-                )?;
-                // The new name rides the re-mirror; each referrer whose nd() expression was rewritten
-                // needs its runtime-enriched descriptor re-pushed (the source is in the doc, the
-                // runtime error is not).
-                if let goofi_engine::Outcome::Nodes(referrers) = out {
-                    for r in referrers {
-                        events.push(param_state_update(&g, r));
-                    }
-                }
-                Ok(json!({ "ok": true }))
-            }
-            // Globals validation is server-side now (the retired client `docAddGlobal`/`docRename`
-            // guards moved here): `add_global` REJECTS a collision, `set_global` edits an EXISTING
-            // one, `rename_global` refuses a system/colliding/invalid target up front (its Compound
-            // is not atomic, so a mid-sequence failure would leave a phantom). Wire shape carries the
-            // typed value as `{ name, value, type }`.
-            "add_global" => {
-                let name = parse_str(&payload, "name")?.to_string();
-                let val = payload.get("value").ok_or("add_global: missing value")?;
-                let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("add_global: missing type")?;
-                if g.globals().contains(&name) {
-                    return Err(format!("add_global: global `{name}` already exists"));
-                }
-                // On an ABSENT name, EditGlobal routes through GlobalStore::add, which validates the
-                // name (an invalid name still rejects).
-                let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
-                    .ok_or("add_global: malformed value")?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            "set_global" => {
-                // EDIT an existing global's value (system or user); rejects a non-existent name so it
-                // cannot silently create one (that is `add_global`'s job).
-                let name = parse_str(&payload, "name")?.to_string();
-                let val = payload.get("value").ok_or("set_global: missing value")?;
-                let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
-                let Some(held) = g.globals().get(&name).map(goofi_engine::global_to_json) else {
-                    return Err(format!("set_global: no such global `{name}`"));
-                };
-                // A global's TYPE is what every expression reading it depends on, so re-typing one
-                // through a value edit breaks the reference rather than the call. Choosing a type
-                // is `add_global`'s; this op edits what a global HOLDS.
-                let held_ty = held["type"].as_str().unwrap_or_default();
-                if held_ty != ty {
-                    return Err(format!("set_global: `{name}` is a {held_ty} — set_global edits a \
-                                        global's value, not its type"));
-                }
-                let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
-                    .ok_or_else(|| format!("set_global: `{val}` is not a {ty}"))?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
-                )?;
-                // As STORED: `global_from_json` is type-directed, so a fraction into an int global
-                // rounds — the same reason `update_param` answers its value.
-                Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
-            }
-            "remove_global" => {
-                let name = parse_str(&payload, "name")?.to_string();
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditGlobal { name, value: None, at: None },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            "rename_global" => {
-                let old = parse_str(&payload, "old")?.to_string();
-                let new = parse_str(&payload, "new")?.to_string();
-                // Validate the WHOLE rename up front (the Compound is NOT atomic — a mid-sequence
-                // failure would leave the add-new applied as a phantom). Refuse a missing/system
-                // source and a colliding/invalid target, so both children are guaranteed to succeed.
-                let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
-                if g.globals().is_system(&old) {
-                    return Err(format!("rename_global: cannot rename system global `{old}`"));
-                }
-                if g.globals().contains(&new) {
-                    return Err(format!("rename_global: `{new}` already exists"));
-                }
-                if !goofi_core::globals::is_valid_global_name(&new) {
-                    return Err(format!("rename_global: invalid name `{new}`"));
-                }
-                // A rename = add-new(with the old value) + remove-old, folded into one undo step.
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::Compound(vec![
-                        goofi_engine::Command::EditGlobal { name: new, value: Some(value), at: None },
-                        goofi_engine::Command::EditGlobal { name: old, value: None, at: None },
-                    ]),
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            // The sub-patch structural ops (group/expand/boundary authoring/share) mutate the forest
-            // and return; the mutated forest reaches every client via the post-dispatch re-mirror,
-            // which the frontend reconciles from the doc. The old `subpatch_changed` snapshot echo is
-            // retired (Phase 4) — the doc read-path covers it.
-            // The structural sub-patch ops route through the command history (undoable, uid-stable on
-            // the flat model). Each parses a Command, applies it, and maps the Outcome to the reply.
-            "group_nodes" => {
-                let members = payload
-                    .get("members")
-                    .and_then(|v| v.as_array())
-                    .ok_or("group_nodes: missing members")?;
-                let uids: Vec<Uid> = members.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
-                if uids.len() != members.len() {
-                    return Err("group_nodes: malformed member uid".into());
-                }
-                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                let out = state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::Group { members: uids, pos, restore: None },
-                )?;
-                let inst = match out {
-                    goofi_engine::Outcome::Uid(u) => u,
-                    _ => return Err("group_nodes: no scope uid returned".into()),
-                };
-                Ok(json!({ "inst_id": inst.to_hex() }))
-            }
-            "expand_instance" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                state
-                    .history
-                    .lock()
-                    .unwrap()
-                    .apply(&mut g, &session, goofi_engine::Command::Expand { scope: inst })?;
-                Ok(json!({ "ok": true }))
-            }
-            "add_boundary" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let dir = match payload.get("dir").and_then(|v| v.as_str()) {
-                    Some("in") => goofi_engine::subpatch::Dir::In,
-                    Some("out") => goofi_engine::subpatch::Dir::Out,
-                    _ => return Err("add_boundary: dir must be \"in\" or \"out\"".into()),
-                };
-                let dtype = goofi_core::SlotType::from_name(
-                    payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"),
-                )
-                .ok_or("add_boundary: bad dtype")?;
-                let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                let out = state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::AddStub { scope: inst, dir, dtype, pos, restore: None },
-                )?;
-                let bnd = match out {
-                    goofi_engine::Outcome::StubId(id) => id,
-                    _ => return Err("add_boundary: no stub id returned".into()),
-                };
-                Ok(json!({ "bnd_id": bnd }))
-            }
-            "wire_boundary" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                let inner = parse_inner(&payload)?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner, dtype: None },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            "remove_boundary" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::RemoveStub { scope: inst, stub_id: bnd },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            "rename_boundary" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                let name = parse_str(&payload, "name")?.to_string();
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: Some(name), pos: None },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            "set_boundary_pos" => {
-                let inst = parse_uid(&payload, "inst_id")?;
-                let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
-                state.history.lock().unwrap().apply(
-                    &mut g,
-                    &session,
-                    goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: None, pos: Some(pos) },
-                )?;
-                Ok(json!({ "ok": true }))
-            }
-            // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was
-            // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
-            // The inspect reads. Every one is `writes: false` in the registry, so none re-mirrors
-            // and none dirties the patch — they answer questions, they do not edit.
-            "inspect_patch" => {
-                let scope = match payload.get("scope").filter(|v| !v.is_null()) {
-                    Some(v) => {
-                        Some(v.as_str().and_then(Uid::from_hex).ok_or("inspect_patch: malformed scope")?)
-                    }
-                    None => None,
-                };
-                let workspace = state.mount();
-                let text =
-                    inspect::patch(&g, scope, state.save_path().as_deref(), &goofi_core::path::to_slash(&workspace), dirty)?;
-                Ok(json!({ "text": text }))
-            }
-            "inspect_node" => {
-                let uid = parse_uid(&payload, "node")?;
-                // The three sections default ON — the op is the cheap peek, and a caller that
-                // wants less says so.
-                let want = |k: &str| payload.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
-                let slot = payload.get("slot").and_then(|v| v.as_str());
-                let text = inspect::node(&g, uid, slot, want("params"), want("error"))?;
-                Ok(json!({ "text": text }))
-            }
-            "list_globals" => Ok(inspect::globals(&g)),
-            "read_node_source" => {
-                // The two trees a scan registers from, patch first — the same precedence the
-                // palette's `source` badge reports, so provenance cannot disagree with it.
-                // `.rev()` is load-bearing, not tidiness: `rescan` scans the shipped list forwards
-                // and lets each directory overwrite the last, so the LAST one holds the name. This
-                // search runs first-match-wins, so it has to walk the same list backwards to land
-                // on the same file. Forwards here would hand back a shadowed copy nothing runs.
-                let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
-                    .into_iter()
-                    .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
-                    .collect();
-                inspect::node_source(&g, parse_str(&payload, "type")?, &dirs)
-            }
-            "serialize" => Ok(json!({ "yaml": g.serialize() })),
-            // Where this patch's workspace files live right now. The mount is a per-run temp
-            // directory under a random name, so a client — and the agent harness after it — cannot
-            // derive it; asking the manager is the only way to open a browser or a shell on it.
-            "open_workspace" => Ok(json!({ "path": goofi_core::path::to_slash(&state.mount()) })),
-            "save" => {
-                // Expand `~` exactly as the browser does, or a path the user could navigate to
-                // would not be writable — the two must agree on what a path means. The path is
-                // REQUIRED: the old no-path form quietly returned the YAML for a browser
-                // download ("Save in browser"), a second save semantics that left the dirty
-                // flag standing and that the save-path design (C38) would have had to carry.
-                // The user removed the feature; a save writes a file or it is malformed.
-                let path = payload
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(fsbrowse::resolve)
-                    .ok_or("save: missing path")?;
-                let mount = state.mount();
-                // Sampled BEFORE the pack and committed only once it succeeded. A file written
-                // while the zip is being built may or may not have made it in; baselining
-                // afterwards would call it packed either way, and that is the one direction that
-                // loses an edit rather than merely reporting a spurious one.
-                let packed = goofi_engine::archive::fingerprint(&mount);
-                save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
-                // Written to disk ⇒ clean, on both planes — and said so UNCONDITIONALLY, not on the
-                // flag's transition: a patch dirtied solely by a file written into the mount leaves
-                // the flag already false, so no transition comes and every tab would keep its dot
-                // on a patch that is entirely on disk. The duplicate event the common case now gets
-                // is free — a save is one user action, and every client apply branch is idempotent.
-                *state.workspace_baseline.lock().unwrap() = packed;
-                state.set_dirty(false);
-                events.push(event("unsaved_changes", json!({ "unsaved_changes": false })));
-                // …and the patch now has a home the MANAGER knows (C38), so a later plain Save
-                // overwrites this file from any tab, and a reload still names it. Announced as
-                // well as stored: an already-connected peer gets no new snapshot to read it from.
-                // Only on success — a failed save wrote nothing, so whatever home the patch had
-                // (including none) is still the true one, and claiming this one would point the
-                // next silent overwrite at a file this patch has never been written to.
-                *state.save_path.lock().unwrap() = Some(path.clone());
-                events.push(event("save_path_changed", json!({ "save_path": &path })));
-                Ok(json!({ "path": path }))
-            }
-            // One load path for every source: `load_text` carries the YAML inline (a browser
-            // upload), `load` names a `.gfi` the BACKEND reads, and `new` brings an empty patch
-            // from nowhere. Everything after the read — replace, reset history, announce — must
-            // not drift between them, so they share an arm.
-            "load_text" | "load" | "new" => {
-                // Every source mounts FRESH, and the live mount is swapped for it only once the
-                // manifest has parsed. So a refused load leaves the open patch untouched on both
-                // planes — its graph AND its workspace files — and a loaded patch never inherits
-                // the files of the patch it replaced.
-                let fresh = new_mount();
-                let (content, from_path) =
-                    stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
-                // ORDERING, load-bearing: the types the patch SHIPS are registered before the
-                // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
-                // nodes the archive brought. They live in the tree just unpacked, so the scan runs
-                // against `fresh` — which is not the live mount yet.
-                rescan(state, &mut g, &fresh);
-                // Parse BEFORE anything is announced or committed: a rejected patch must not leave
-                // the title bar naming a file the graph was never loaded from.
-                if let Err(e) = g.load_doc(&content) {
-                    // Refused, so the open patch keeps its graph AND its workspace — and therefore
-                    // its registry, which the scan above swapped for the refused patch's. Re-derive
-                    // it from the mount that is still live.
-                    rescan(state, &mut g, &state.mount());
-                    remove_mount(&fresh);
-                    return Err(e);
-                }
-                // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
-                // live one and the mount it replaced is reclaimed — after the lock drops, since
-                // deleting a tree is a walk and the lock guards only the swap. The harnesses the
-                // replaced patch spawned go with it: each was launched INTO that workspace and
-                // edits that graph through an address goofi minted for it, so one surviving here
-                // would go on editing a patch it was never launched for out of a directory the
-                // next line deletes. Announced too — `graph_replaced` below carries the emptied
-                // roster, but a client tracking only the transitions must not have to infer it.
-                state.harnesses.stop_all();
-                events.push(event("harness_changed", state.harnesses.roster()));
-                let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
-                remove_mount(&replaced);
-                // The unpacked tree IS what the archive holds — but every file in it was written
-                // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
-                // HERE. Without it a patch would be dirty from the moment it finished loading.
-                *state.workspace_baseline.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
-                // A load fully resets the session — there is nothing to undo across it (spec §3:
-                // no load command / no checkpoint), so drop every session's command history.
-                state.history.lock().unwrap().clear();
-                events.extend(state.set_dirty(false));
-                // The loaded patch's home is the archive it came from — or NONE for `load_text` (an
-                // upload) and `new`, neither of which has a file behind it. Inheriting a path there
-                // would aim the next silent Save at an unrelated `.gfi` and overwrite it with a
-                // patch that never came from it. Stored BEFORE the snapshot is built, so the
-                // snapshot carries it.
-                *state.save_path.lock().unwrap() = from_path.clone();
-                events.push(event(
-                    "graph_replaced",
-                    schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
-                                      state.harnesses.roster()),
-                ));
-                // The patch brought its own node types (and dropped the last patch's), which
-                // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
-                events.push(node_types_event(&g));
-                if let Some(path) = from_path {
-                    // The announcement the title bar reads. The ORDER no longer carries meaning:
-                    // the snapshot the client applies wholesale now names the same file, so
-                    // announcing first would be re-affirmed rather than clobbered. It is kept
-                    // after `graph_replaced` because that is the order the two facts happen in,
-                    // and kept at all because `save` — which ships no snapshot — needs the event
-                    // to exist, and one event shape is easier to be right about than two.
-                    events.push(event("save_path_changed", json!({ "save_path": path })));
-                }
-                // A stored arrangement the flat model admits but cannot render falls back to the
-                // default — the graph is the value, the arrangement is chrome. Say so here, or the
-                // patch would open on a layout the user did not save and nothing would explain it.
-                Ok(json!({ "ok": true, "layout_warning": g.arrangement_warning() }))
-            }
-            // Session-scoped undo/redo over the central command history. The graph mutation reaches
-            // clients via the post-dispatch re-mirror (doc-authoritative); the reply carries the
-            // session's fresh can-undo/can-redo so the UI can enable its buttons.
-            "undo" => {
-                let mut hist = state.history.lock().unwrap();
-                let changed = hist.undo(&mut g, &session)?;
-                Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
-            }
-            "redo" => {
-                let mut hist = state.history.lock().unwrap();
-                let changed = hist.redo(&mut g, &session)?;
-                Ok(json!({ "changed": changed, "can_undo": hist.can_undo(&session), "can_redo": hist.can_redo(&session) }))
-            }
-            other => Err(format!("unknown op `{other}`")),
-        }
-    })();
-
-    // Keep the server-side CRDT doc in agreement with the graph after any successful MUTATING
-    // control op, then broadcast the resulting delta so every connected client's replica converges.
-    // The re-mirror is gated on whether the op *could* have mutated the graph — NOT on `events`,
-    // because link/boundary writes mutate the doc-read graph while emitting no client event (their
-    // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
-    // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
-    // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
-    // `open_workspace` joins them: it answers where the mount is and writes nothing on either
-    // plane. Being here is also what keeps it out of the dirty tail below — the whole block is
-    // skipped — which is the right door for it, since it is a question, not an op that "did not
-    // happen to be an edit".
-    // `new` is deliberately NOT here: it empties the graph, and the re-mirror is the only thing
-    // that empties an already-open tab's canvas with it (`graph_replaced` carries no node list).
-    // The classification lives on the op's registry row, so declaring an op is what classifies it
-    // — there is no second list to forget. An unregistered op never reaches here (its result is
-    // the `unknown op` Err above).
-    let read_only = spec.is_some_and(|o| !o.writes);
-    if result.is_ok() && !read_only {
-        resync_and_broadcast(state);
-        // "Could this have changed the graph?" is a good enough answer to "does the patch now
-        // differ from disk?" for most ops that the two share a gate — but it is an INFERENCE, and
-        // these four are where it is wrong:
-        //   `load`/`load_text`/`new` clear the flag inside their arm, which runs first and is then
-        //     re-set here; re-clear it. `new` is the one where the tail's default is most clearly
-        //     wrong rather than merely conservative: an empty patch with nothing in it and no file
-        //     behind it would be born unsaved, offering to be written over the last real patch.
-        //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
-        //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
-        //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
-        //     click on the inspector's Restart button after a node raised — exactly where a spurious
-        //     unsaved dot is least distinguishable from a real one.
-        //   `rescan_nodes` re-derives the CATALOG, which is not patch content. It still re-mirrors,
-        //     because restarting a node whose type gained a param changes that node's params — and
-        //     it still must not dirty: pressing refresh with nothing edited would otherwise put the
-        //     dot on an untouched patch, while a rescan that DID follow an edit is already dirty
-        //     through the workspace fingerprint (`is_dirty`), which is where a file edit belongs.
-        //   `refresh_param` re-enumerates a device/stream picker's options, which are runtime-only
-        //     and never persisted. Latent today (no shipped node declares `refresh: true`, and the
-        //     engine rejects the op for any param that does not, so the `Err` skips this gate
-        //     entirely) — listed here because it is the same op-is-not-an-edit case, not a
-        //     prediction that it currently misfires.
-        //   `set_viewpoint` is persistence-without-dirtiness, and by CONSTRUCTION rather than by a
-        //     classification the client has to get right: a viewpoint is where a client is LOOKING,
-        //     so writing one is never authoring. It still rides the `.gfi`, which is exactly why it
-        //     needs an arm here and not `writes: false`. Every op that edits the ARRANGEMENT is
-        //     authoring by the same construction, and so needs no arm at all.
-        // These stay OUT of `read_only`: none is an edit, but all still need the re-mirror.
-        match op.as_str() {
-            "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
-            "set_viewpoint" => {}
-            "restart_node" | "refresh_param" | "rescan_nodes" => {}
-            _ => events.extend(state.set_dirty(true)),
-        }
-    }
-
-    for e in events {
-        let _ = state.events.send(e);
-    }
-
+    let result = state.call(&op, payload, &session);
     match id {
         Value::Number(_) => Some(match result {
             Ok(r) => json!({ "id": id, "result": r }).to_string(),
