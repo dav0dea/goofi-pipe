@@ -7,7 +7,6 @@
 //! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
 
 /// The `yrs` document itself — shape-agnostic. `pub` because the protocol tests drive a real
-/// replica against the server, which is the only honest way to test the sync handshake.
 pub mod crdt;
 mod crdt_mirror;
 mod fsbrowse;

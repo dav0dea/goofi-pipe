@@ -19,7 +19,6 @@
 
 /// The subprocess tier: `RemoteNode`, the spawn/iceoryx2 round-trip, and the error frames a
 /// raising node replies with. No pyo3 — this end speaks `goofi-codec` frames to a child running
-/// `goofi.serve()` from the wheel.
 pub mod subproc;
 
 /// The in-process tier: `PyNode`, the pyo3 param-expression evaluator, and discovery. Links

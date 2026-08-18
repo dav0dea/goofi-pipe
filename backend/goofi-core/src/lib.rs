@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-/// Signal reduction kernels for the ViewSpec data plane (subsample / envelope / area).
 pub mod globals;
 pub mod path;
 pub mod probe;

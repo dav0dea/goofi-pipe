@@ -18,7 +18,6 @@
 //! authoritative for what the browser receives. The meta dict is *projected* here
 //! from the typed `Meta` + derived shape/dtype (which are not stored in `Meta`).
 
-/// The parent↔child liveness pipe: an orphaned subprocess child stops itself.
 pub mod liveness;
 
 use goofi_core::{ArrayStore, Coord, Data, MetaValue, Value};

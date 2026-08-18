@@ -1,14 +1,7 @@
-//! goofi-engine — the graph, and the nodes that schedule themselves.
+//! The graph, and the nodes that schedule themselves.
 //!
-//! There is no tick. [`Graph`] owns the patch — nodes, links, scopes, params, expression bindings,
-//! the layout and the `.gfi` — and gives every node a thread of its own ([`runtime`]), which
-//! decides for itself when to run. What the graph does with a node afterwards is talk to it: it
-//! plans its wiring and sends it ([`runtime::plan`]), and it applies what the node reports back
-//! ([`Graph::drain_status`]).
-//!
-//! A node's DATA never comes back here. Frames go out on that node's own shared-memory service and
-//! a consumer — an input slot, an expression variable, a `/data` viewer — subscribes to it (§7), so
-//! there is no last-output cache to read and no privileged path into a running node.
+//! A node's DATA never comes back here: frames go out on that node's own shared-memory service and
+//! a consumer subscribes to it, so there is no last-output cache and no privileged path in.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -22,31 +15,21 @@ use goofi_node::{
 };
 use indexmap::IndexMap;
 
-/// The `.gfi` zip container: pack and unpack (see `archive.rs`).
 pub mod archive;
 
-/// Sub-patch forest model + stub resolution (see `subpatch.rs`).
 pub mod subpatch;
-/// The flat, id-keyed editor arrangement (pages, splits, panels) — the fifth CRDT doc root.
 pub mod layout;
 
-/// Semantic patch commands with exact inverses — the manager's undo/redo unit.
 pub mod command;
 pub use command::{Command, CommandHistory, ExprState, Outcome};
 
-/// The expression rewrite: an authored source becomes a variable-keyed one plus its variable map.
 pub mod expr_rewrite;
 
-/// The per-node runtime: the wake loop, the three run paths, and a node's faults (see `runtime/`).
-/// Public because a host needs its wire vocabulary — service names to subscribe to, [`runtime::Status`]
-/// to drain, and [`runtime::reclaim_stale_resources`] to call at startup.
+/// Public because a host needs the wire vocabulary: service names, [`runtime::Status`] to drain,
 pub mod runtime;
-/// Watching an asynchronous graph from a test. Public rather than `#[cfg(test)]` so the bridge and
-/// `goofi-python` suites share one deadline loop rather than growing three.
 pub mod testing;
 
-/// A stable node identity. Encoded as a 12-hex string for the `.gfi` / frontend
-/// (the same key those use), a `u64` internally.
+/// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u64);
 
@@ -73,9 +56,8 @@ impl std::fmt::Display for Uid {
     }
 }
 
-/// The `.gfi` manifest version: written by [`Graph::serialize`], the sole version
-/// [`Graph::load_doc`] accepts, and the number its refusal quotes. One literal for all three, so a
-/// bump cannot leave the error message lying about what this build actually reads.
+/// One literal for the writer, the reader and the refusal message, so a bump cannot leave the
+/// message lying about what this build reads.
 const MANIFEST_VERSION: i64 = 7;
 
 /// One node's manager-side thread, and the graph's end of its wires (§5).
@@ -87,8 +69,8 @@ struct NodeHost {
     /// What stops the thread. See `runtime::wire`'s note on why the stop is a flag rather than a
     /// `Control::Terminate`: a node removed before it was addressable has no sink to receive one.
     halt: Arc<runtime::Halt>,
-    /// The control publisher, status subscriber and doorbell. `None` when this node's services could
-    /// not be created — the node then exists in the patch carrying its boot error and nothing else.
+    /// `None` when this node's services could not be created — it then exists in the patch
+    /// carrying its boot error and nothing else.
     channel: Option<Arc<runtime::NodeChannel>>,
 }
 
@@ -119,8 +101,7 @@ struct NodeEntry {
     /// every write announces: an evaluated value must not reach this record, because this is what
     /// `serialize` writes.
     params: Arc<ParamGroups>,
-    /// Param-expression bindings on this node, keyed by `(group, name)`. The graph resolves each
-    /// one's references and ships it; the NODE evaluates it (spec §5.3).
+    /// The graph resolves each binding's references and ships it; the NODE evaluates it.
     bindings: HashMap<ParamKey, ExprBinding>,
     /// The evaluated values of this node's bound params, as it last reported them
     /// ([`runtime::Status::ParamValues`]). Kept apart from `params`, which holds the literal
@@ -153,20 +134,14 @@ struct NodeEntry {
     /// the graph has built and not yet heard from. The `error` the editor draws is DERIVED from the
     /// fault ([`Graph::node_stage`]) and is never stored here, so the two cannot disagree.
     stage: &'static str,
-    /// The measured update rate the node last reported ([`runtime::Status::Ufreq`]), which is the
-    /// same number it stamps as `meta["ufreq"]`. `None` until it has emitted twice.
+    /// The same number the node stamps as `meta["ufreq"]`. `None` until it has emitted twice.
     ufreq: Option<f64>,
-    /// Globally-unique display name (type-numbered), for the frontend/`.gfi`.
-    name: String,
-    /// Editor position `[x, y]`.
-    pos: [f64; 2],
-    /// Per-slot viewer view-state (chosen kind + settings + collapsed), an OPAQUE JSON
-    /// blob the backend persists and round-trips but never interprets — view-state is
-    /// cross-cutting UI state, not pillar logic. Empty object until the editor sets it.
+        name: String,
+        pos: [f64; 2],
+    /// Opaque: persisted and round-tripped, never interpreted.
     viewers: serde_json::Value,
 }
 
-/// A resolved link (uids + `&'static` slot names), for snapshot projection.
 #[derive(Clone, Copy, Debug)]
 pub struct LinkView {
     pub node_out: Uid,
@@ -198,8 +173,7 @@ fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
 }
 
-/// Fold a caught lifecycle panic into the `NodeResult` the hook would have returned, so the two
-/// failure modes travel the one channel a caller already handles.
+/// So a panic and a returned error travel the one channel a caller already handles.
 fn fold_panic(panicked: String) -> goofi_node::NodeResult {
     Err(goofi_node::NodeError(panicked))
 }

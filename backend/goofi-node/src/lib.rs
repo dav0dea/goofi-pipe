@@ -13,7 +13,6 @@ use std::fmt;
 use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
-/// Runtime node-discovery scaffolding shared by both of `goofi-python`'s tiers.
 pub mod discover;
 
 // ---------------------------------------------------------------------------
