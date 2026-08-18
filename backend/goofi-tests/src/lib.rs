@@ -97,6 +97,17 @@ impl Goofi {
         self.call("get_state", json!({}))
     }
 
+    /// Register a node type with a PER-INSTANCE factory — what the CLI does for a discovered
+    /// Python node. The only way to cover a node whose second instance differs from its first,
+    /// which is what makes a restart observable at all.
+    pub fn register_dyn(
+        &self,
+        manifest: &'static goofi_node::NodeManifest,
+        factory: goofi_node::discover::NodeFactory,
+    ) {
+        self.state.graph.lock().unwrap().register_dyn_type(manifest, factory);
+    }
+
     /// The uids in the replicated projection, sorted.
     pub fn nodes(&self) -> Vec<String> {
         keys(&self.doc()["nodes"])

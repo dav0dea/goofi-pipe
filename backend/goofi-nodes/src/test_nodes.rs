@@ -238,6 +238,19 @@ inventory::submit! {
     manifest("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false, default_factory::<Picker>)
 }
 
+/// The same declaration with NO hook behind it — a node that offers nothing to re-enumerate. The
+/// ⟳ spinner is cleared by the echo, so without one this button spins for its full safety timeout.
+#[derive(Default)]
+struct MutePicker;
+impl Node for MutePicker {
+    fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        Ok(())
+    }
+}
+inventory::submit! {
+    manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false, default_factory::<MutePicker>)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -249,7 +262,7 @@ mod tests {
         let names: Vec<&str> = goofi_node::catalog().map(|m| m.type_name).collect();
         for want in [
             "_TestEcho", "_TestSink", "_TestFail", "_TestPanic", "_TestSetupFail", "_TestSlow",
-            "_TestCounter", "_TestRequired", "_TestPicker",
+            "_TestCounter", "_TestRequired", "_TestPicker", "_TestMute",
         ] {
             assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
             assert!(want.starts_with('_'), "{want} would show in the palette");
