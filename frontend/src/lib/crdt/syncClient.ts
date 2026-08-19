@@ -75,16 +75,26 @@ export class SyncClient {
 	}
 
 	/**
-	 * Apply one delta. A patch that does not follow this replica's version is REFUSED, not merged:
-	 * the events arrive in order on one socket, so a gap means the client fell behind the broadcast
-	 * ring — and the manager answers that by re-sending `doc_state`, which is what heals it. Merging
-	 * anyway would leave a replica that looks healthy and is wrong.
+	 * Apply one delta. A version that does not match means one of two different things.
+	 *
+	 * A patch whose RESULT this replica already holds is STALE, and skipping it is unremarkable:
+	 * the manager subscribes a socket before it snapshots the document, so a peer's edit landing in
+	 * that window is broadcast and then included in the snapshot as well. Re-delivery is the price
+	 * of never losing one, and this is where it is paid.
+	 *
+	 * A patch reaching FORWARD of this replica is a GAP — the client fell behind the broadcast ring
+	 * — and it is refused, not merged. Applying onto the wrong base would leave a replica that
+	 * looks healthy and is wrong. The manager answers that same lag by re-sending the whole
+	 * document, which is what heals it.
 	 *
 	 * Exposed for tests; normally driven from the subscription in [`start`].
 	 */
 	applyPatch(from: number, to: number, patch: Record<string, unknown>): void {
+		if (to <= this._version) return; // stale: the seed already carries it
 		if (from !== this._version) {
-			console.warn(`goofi: doc patch applies to v${from}, this replica is at v${this._version} — waiting for a fresh doc_state`);
+			console.warn(
+				`goofi: doc patch spans v${from}→v${to} but this replica is at v${this._version} — a delta was lost; waiting for a fresh doc_state`
+			);
 			return;
 		}
 		applyMerge(this._doc, patch);

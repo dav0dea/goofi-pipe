@@ -280,7 +280,7 @@ fn keys(v: &Value) -> Vec<String> {
 // The transport half: a real WebSocket client, for the suite that tests the wire
 // ---------------------------------------------------------------------------
 
-pub use goofi_bridge::doc::GraphDoc;
+pub use goofi_bridge::doc::{GraphDoc, Patch};
 pub use tokio_tungstenite::tungstenite::Message;
 
 pub type Ws = tokio_tungstenite::WebSocketStream<
@@ -288,11 +288,17 @@ pub type Ws = tokio_tungstenite::WebSocketStream<
 >;
 
 /// A `/control` client — what a browser tab is. One socket carrying JSON: RPC replies, events, and
-/// the `doc_state` / `doc_patch` events that keep a replica equal to the manager's document.
+/// the `doc_state` / `doc_patch` events that keep its replica equal to the manager's document.
+///
+/// The replica is the CLIENT's, and every frame this type reads feeds it — including the frames
+/// read while waiting for an RPC reply. A browser tab has no way to skip those, so neither does
+/// this: a harness that dropped them would show a client which edits as permanently behind one
+/// that only watches, and it would look like a product defect rather than a test one.
 pub struct Client {
     pub ws: Ws,
     next_id: i64,
     session: String,
+    doc: GraphDoc,
 }
 
 impl Client {
@@ -303,9 +309,29 @@ impl Client {
 
     pub async fn connect_as(base: &str, session: &str) -> (Client, Value) {
         let (ws, _) = tokio_tungstenite::connect_async(format!("{base}/control")).await.unwrap();
-        let mut c = Client { ws, next_id: 1, session: session.into() };
+        let mut c = Client { ws, next_id: 1, session: session.into(), doc: GraphDoc::new() };
         let hello = c.text().await;
         (c, hello["payload"].clone())
+    }
+
+    /// This client's replica of the manager's document.
+    pub fn doc(&self) -> &GraphDoc {
+        &self.doc
+    }
+
+    /// Read frames until the replica satisfies `want`, or fail. Every read feeds the replica, so a
+    /// client that is also issuing RPCs converges on the same terms as one that only listens.
+    ///
+    /// `want` must be POSITIVE about something the document will deliver: an "absence" predicate is
+    /// already true of the empty replica, before a single event lands.
+    pub async fn until_doc(&mut self, want: impl Fn(&GraphDoc) -> bool) {
+        for _ in 0..200 {
+            if want(&self.doc) {
+                return;
+            }
+            self.text().await;
+        }
+        panic!("the replica never reached the state this test waited for");
     }
 
     /// Send an RPC and return its result, skipping the events interleaved with the reply.
@@ -342,12 +368,33 @@ impl Client {
         }
     }
 
-    /// The next TEXT frame, as JSON.
+    /// The next TEXT frame, as JSON — feeding the replica on the way past, whatever the caller was
+    /// waiting for. A GAP panics: the events arrive in order on one socket, so a replica missing one
+    /// is a defect, not a condition to tolerate. A STALE patch does not — see
+    /// [`goofi_bridge::doc::Patch`].
     pub async fn text(&mut self) -> Value {
         loop {
-            if let Message::Text(t) = self.next().await {
-                return serde_json::from_str(t.as_str()).expect("an event is JSON");
+            let Message::Text(t) = self.next().await else { continue };
+            let v: Value = serde_json::from_str(t.as_str()).expect("an event is JSON");
+            match v.get("event").and_then(Value::as_str) {
+                Some("doc_state") => {
+                    let p = &v["payload"];
+                    self.doc.reset_to(p["v"].as_u64().expect("a version"), p["doc"].clone());
+                }
+                Some("doc_patch") => {
+                    let p = &v["payload"];
+                    let out = self.doc.apply_patch(
+                        p["from"].as_u64().expect("a base version"),
+                        p["v"].as_u64().expect("a version"),
+                        &p["patch"],
+                    );
+                    if let Patch::Gap { from, at } = out {
+                        panic!("a delta was lost: this replica is at v{at} and the next patch is from v{from}");
+                    }
+                }
+                _ => {}
             }
+            return v;
         }
     }
 
@@ -368,49 +415,6 @@ impl Client {
             .expect("a websocket error")
     }
 
-    /// A replica of the manager's document, driven off this socket until `ready` holds. Every
-    /// connection is sent `doc_state` unprompted, so nothing is advertised and nothing is asked
-    /// for — the replica simply follows what arrives, exactly as a browser tab does.
-    ///
-    /// `ready` must be POSITIVE about something the document will deliver: an "absence" predicate
-    /// is already true of the empty replica, before a single event lands.
-    pub async fn replica(&mut self, ready: impl Fn(&GraphDoc) -> bool) -> GraphDoc {
-        let mut doc = GraphDoc::new();
-        for _ in 0..120 {
-            self.follow(&mut doc).await;
-            if ready(&doc) {
-                break;
-            }
-        }
-        doc
-    }
-
-    /// Take the next document event off the socket and apply it. A `doc_patch` that does not
-    /// follow this replica's version PANICS rather than being skipped: the wire promises they
-    /// arrive in order on one socket, so a gap is a defect and not a condition to tolerate.
-    pub async fn follow(&mut self, doc: &mut GraphDoc) {
-        loop {
-            let m = self.text().await;
-            match m.get("event").and_then(Value::as_str) {
-                Some("doc_state") => {
-                    let p = &m["payload"];
-                    doc.reset_to(p["v"].as_u64().expect("a version"), p["doc"].clone());
-                    return;
-                }
-                Some("doc_patch") => {
-                    let p = &m["payload"];
-                    doc.apply_patch(
-                        p["from"].as_u64().expect("a base version"),
-                        p["v"].as_u64().expect("a version"),
-                        &p["patch"],
-                    )
-                    .expect("the deltas arrive in order on one socket");
-                    return;
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 impl Client {

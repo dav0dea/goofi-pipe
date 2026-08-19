@@ -54,7 +54,22 @@ describe('SyncClient', () => {
 		expect(nodeView(client.doc, '1')).toBeNull();
 	});
 
-	it('refuses a delta that does not follow this replica, and waits for a fresh doc_state', () => {
+	it('skips a stale delta in silence — the seed already carried it', () => {
+		// The manager subscribes a socket BEFORE it snapshots the document, so a peer's edit landing
+		// in that window is broadcast and then included in the snapshot too. Re-delivery is the
+		// price of never losing one; a replica that treated it as a gap would stall on every
+		// connection made while someone else was editing.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const { ctl, client } = started();
+		ctl.emit({ event: 'doc_state', payload: { v: 5, doc: stateWith({ '1': OSC }) } });
+		ctl.emit({ event: 'doc_patch', payload: { from: 3, v: 4, patch: { nodes: { '1': null } } } });
+		expect(nodeView(client.doc, '1'), 'the already-applied delete was not replayed').not.toBeNull();
+		expect(client.version).toBe(5);
+		expect(warn, 'and it is not worth a word').not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it('refuses a delta that reaches PAST this replica, and waits for a fresh doc_state', () => {
 		// A gap can only mean the client fell behind the broadcast ring. Applying anyway would leave
 		// a replica that looks healthy and is wrong, so it stops until the manager re-seeds it —
 		// which the manager does on exactly that lag.

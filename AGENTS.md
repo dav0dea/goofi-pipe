@@ -125,11 +125,19 @@ manager applies it, and the delta is broadcast. **The document is the only graph
 snapshot that also carried nodes was tried, and the two drifted.
 
 **The document is plain JSON, and a delta is a merge patch.** It was a CRDT, and nothing a CRDT is
-for was in use: the replica never writes, undo is the manager's own command history, and multi-user
-relay was never built. What was left was one-way replication, with the library fighting it — the
+for was in use: the replica never writes, undo is the manager's own command history, and there is
+nothing to merge. What was left was one-way replication, with the library fighting it — the
 broadcast gate could not use the state vector, because a delete does not advance one. Merge patch
 spends `null` on "delete this key", so it is exact only while the document has no null leaf; a test
 pins that, and if a null is ever needed the delta needs an explicit tombstone instead.
+
+**Several devices edit one patch at once, and the manager is what serialises them.** Concurrency is
+resolved where the graph lock already is: an op applies, the delta is computed, and it is broadcast
+— all with the document lock still held, so two writers cannot interleave into out-of-order
+versions. A patch names the version it applies TO, which lets a replica tell the two ways a version
+can mismatch apart. A patch it ALREADY holds is stale, because a socket is subscribed before it is
+snapshotted, so a peer's edit in that window arrives twice; skipping it is routine. A patch reaching
+PAST it is a lost delta, and it is refused rather than merged onto the wrong base.
 
 **Everything is a command with an exact inverse.** Undo/redo is manager-owned and filtered per
 session, so two browser tabs undo their own work. Layout is a document root like any other and

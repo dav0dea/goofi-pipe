@@ -71,6 +71,16 @@ pub fn apply_merge(target: &mut Value, patch: &Value) {
     }
 }
 
+/// What a replica did with a patch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Patch {
+    Applied,
+    /// Already held — the seed included it.
+    Stale,
+    /// This replica is missing everything between `at` and `from`, and can only be re-seeded.
+    Gap { from: u64, at: u64 },
+}
+
 /// The control-plane document, and the version every change advances.
 pub struct GraphDoc {
     state: Value,
@@ -108,15 +118,24 @@ impl GraphDoc {
         Some(patch)
     }
 
-    /// Apply a patch a peer produced. `Err` names the mismatch rather than corrupting the replica:
-    /// a patch is only meaningful onto the version it was computed against.
-    pub fn apply_patch(&mut self, from: u64, to: u64, patch: &Value) -> Result<(), String> {
+    /// Apply a patch a peer produced.
+    ///
+    /// Three answers, because a version that does not match means two different things. A patch
+    /// whose RESULT this replica already holds is stale — the manager subscribes a socket before it
+    /// snapshots the document, so a peer's edit in that window is broadcast and then included in
+    /// the snapshot as well. Skipping it is correct and unremarkable. A patch reaching FORWARD of
+    /// this replica is a gap: the client fell behind the broadcast ring, and applying onto the
+    /// wrong base would leave a replica that looks healthy and is wrong.
+    pub fn apply_patch(&mut self, from: u64, to: u64, patch: &Value) -> Patch {
+        if to <= self.version {
+            return Patch::Stale;
+        }
         if from != self.version {
-            return Err(format!("patch applies to v{from}, this replica is at v{}", self.version));
+            return Patch::Gap { from, at: self.version };
         }
         apply_merge(&mut self.state, patch);
         self.version = to;
-        Ok(())
+        Patch::Applied
     }
 
     /// Adopt a peer's whole document — what a replica does on connect, and what recovers it from a

@@ -668,9 +668,10 @@ async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
 async fn handle_control(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
 
-    // Subscribe BEFORE snapshotting: a mutation landing in the other order is in neither, and the
-    // mirror desyncs silently. This way the worst case is a re-delivery, which every apply
-    // branch absorbs idempotently.
+    // Subscribe BEFORE snapshotting the document: a peer's edit landing in the other order is in
+    // neither, and the replica desyncs silently with nothing to notice it. This way the worst case
+    // is a RE-delivery — a patch whose result the snapshot already carries — which a replica reads
+    // as stale by its version and skips.
     let mut events = state.events.subscribe();
 
     // Answered BEFORE the graph lock is taken: it walks the workspace mount (see `is_dirty`), and

@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use goofi_tests::{hex, host, http, j, panels, tool, Client, Goofi, GraphDoc, Message, Viewer};
+use goofi_tests::{hex, host, http, j, panels, tool, Client, Goofi, Message, Viewer};
 use serde_json::Value;
 
 #[tokio::test]
@@ -70,66 +70,36 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     let (mut c, _) = Client::connect(&base).await;
     let mut peer = Client::connect(&base).await.0;
 
-    let mut replica = GraphDoc::new();
-    c.follow(&mut replica).await; // the unprompted `doc_state` every connection is sent
-    assert!(replica.node_ids().is_empty(), "seeded from the empty graph");
-    assert_eq!(replica.version(), 1, "and at the manager's version, not at its own zero");
+    c.until_doc(|d| d.version() > 0).await; // the unprompted `doc_state` every connection is sent
+    assert!(c.doc().node_ids().is_empty(), "seeded from the empty graph");
+    assert_eq!(c.doc().version(), 1, "and at the manager's version, not at its own zero");
 
     // Its OWN add. The reply carries the uid and the delta carries the change — on ONE socket, in
     // order, which is what lets a replica apply a patch onto the version it names instead of
-    // reconciling two streams.
-    c.send(j!({ "id": 1, "op": "add_node", "payload": { "type": "Oscillator" } }).to_string()).await;
-    let mut uid: Option<String> = None;
-    for _ in 0..20 {
-        match tokio::time::timeout(Duration::from_secs(5), c.ws.next()).await {
-            Ok(Some(Ok(Message::Text(t)))) => {
-                let v: Value = serde_json::from_str(t.as_str()).unwrap();
-                if v.get("id").and_then(Value::as_i64) == Some(1) {
-                    uid = v["result"]["uid"].as_str().map(str::to_string);
-                }
-                if let Some(p) = v.get("payload").filter(|_| v["event"] == "doc_patch") {
-                    replica.apply_patch(p["from"].as_u64().unwrap(), p["v"].as_u64().unwrap(),
-                                        &p["patch"]).expect("in order on one socket");
-                }
-            }
-            Ok(Some(Ok(_))) => {}
-            other => panic!("the socket stopped: {other:?}"),
-        }
-        if uid.as_ref().is_some_and(|u| replica.node_ids().contains(u)) {
-            break;
-        }
-    }
-    let uid = uid.expect("the add was answered");
-    assert_eq!(replica.read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(Value::as_str),
+    // reconciling two streams. `call` reads past the delta on the way to the reply, and the replica
+    // takes it as it goes by: a client that edits is never behind one that only watches.
+    let uid = c.call("add_node", j!({ "type": "Oscillator" })).await["uid"].as_str().unwrap().to_string();
+    c.until_doc(|d| d.node_ids().contains(&uid)).await;
+    assert_eq!(c.doc().read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(Value::as_str),
                Some("Oscillator"), "the delta carried the node");
 
-    // A PEER's layout edit. Layout is the fifth doc root, so it rides the same delta broadcast as
-    // a node add — it used to reach a tab only on `hello`.
-    let panel = panels(&replica).first().cloned().expect("the default page's one panel");
+    // A PEER's layout edit. Layout is the fifth document root, so it rides the same delta broadcast
+    // as a node add — it used to reach a tab only on `hello`.
+    let panel = panels(c.doc()).first().cloned().expect("the default page's one panel");
     let fresh = peer.call("page_split_panel", j!({ "page": "Layout", "panel": panel,
                                                   "direction": "row", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
-    for _ in 0..20 {
-        c.follow(&mut replica).await;
-        if replica.read_at(&["arrangement", fresh.as_str()]).is_some() {
-            break;
-        }
-    }
-    assert_eq!(replica.read_at(&["arrangement", fresh.as_str(), "panel_type"]), Some(j!("empty")),
+    c.until_doc(|d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
+    assert_eq!(c.doc().read_at(&["arrangement", fresh.as_str(), "panel_type"]), Some(j!("empty")),
                "the peer's split converged, and a split births an EMPTY panel");
 
-    // And the GLOBALS root, with the system flag a client gates rename and delete on — the doc is
-    // where they reach a tab, so a replica that carried nodes and no globals would look healthy.
-    assert_eq!(replica.read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
+    // And the GLOBALS root, with the system flag a client gates rename and delete on — the document
+    // is where they reach a tab, so a replica that carried nodes and no globals would look healthy.
+    assert_eq!(c.doc().read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
     peer.call("add_global", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
-    for _ in 0..20 {
-        c.follow(&mut replica).await;
-        if replica.read_at(&["globals", "subject", "value"]).is_some() {
-            break;
-        }
-    }
-    assert_eq!(replica.read_at(&["globals", "subject", "value"]), Some(j!("P07")));
-    assert_eq!(replica.read_at(&["globals", "subject", "system"]), Some(j!(false)),
+    c.until_doc(|d| d.read_at(&["globals", "subject", "value"]).is_some()).await;
+    assert_eq!(c.doc().read_at(&["globals", "subject", "value"]), Some(j!("P07")));
+    assert_eq!(c.doc().read_at(&["globals", "subject", "system"]), Some(j!(false)),
                "a user global is distinguishable from a system one in the replica");
 
     // And a REMOVAL, which is the half a delta format is easiest to get wrong: the gate that
@@ -137,13 +107,7 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     // no removal ever reached a client. A merge patch spells a delete as an explicit `null`, and
     // the gate compares the whole projection.
     peer.call("remove_node", j!({ "node": uid.clone() })).await;
-    for _ in 0..20 {
-        c.follow(&mut replica).await;
-        if !replica.node_ids().contains(&uid) {
-            return;
-        }
-    }
-    panic!("a removal was never broadcast: the replica still holds {uid}");
+    c.until_doc(|d| !d.node_ids().contains(&uid)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -350,5 +314,75 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
             let want = if ok { served(method) } else { 403 };
             assert_eq!(got, want, "`{path}` answered {got} for [{headers:?}] — {why}");
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
+    // The multi-client promise, stated as a scenario rather than as reasoning: one goofi, one
+    // patch, several frontends editing it SIMULTANEOUSLY, and no replica left behind.
+    //
+    // Nothing merges here, and that is the design. Every mutation is an RPC the manager applies
+    // under the graph lock, and the delta it broadcasts is computed and sent while the document
+    // lock is still held — so two writers cannot interleave into out-of-order versions no matter
+    // how they race. A replica only ever follows.
+    //
+    // The two devices edit from SPAWNED TASKS, not one after another: awaiting each reply in turn
+    // would let every delta land before the next call went out, and the race this is about would
+    // never happen. A third device connects while they run, which is the window the manager pays
+    // for by subscribing a socket BEFORE it snapshots — that client is seeded with a document
+    // already holding edits whose deltas are also in its buffer, and it has to read those as stale
+    // rather than as a gap.
+    const BURST: usize = 12;
+    let g = Goofi::new();
+    let base = g.serve().await;
+    let (mut a, _) = Client::connect(&base).await;
+    let (mut b, _) = Client::connect(&base).await;
+    a.until_doc(|d| d.version() > 0).await;
+    b.until_doc(|d| d.version() > 0).await;
+
+    let ta = tokio::spawn(async move {
+        for i in 0..BURST {
+            let uid = a.call("add_node", j!({ "type": "Oscillator" })).await["uid"]
+                .as_str().unwrap().to_string();
+            a.call("rename_node", j!({ "node": uid, "name": format!("osc{i}") })).await;
+            a.call("update_param", j!({ "node": uid, "group": "oscillator", "name": "amplitude",
+                                        "value": 0.1 * i as f64 })).await;
+        }
+        a
+    });
+    let tb = tokio::spawn(async move {
+        for i in 0..BURST {
+            b.call("add_global", j!({ "name": format!("g{i}"), "value": i as f64, "type": "float" })).await;
+        }
+        b
+    });
+
+    // Mid-flight, with both bursts in the air.
+    let (mut c, _) = Client::connect(&base).await;
+    c.until_doc(|d| d.version() > 0).await;
+
+    let mut a = ta.await.expect("device A's task");
+    let mut b = tb.await.expect("device B's task");
+
+    // Every device ends on the manager's document, and therefore on each other's.
+    let want = g.call("get_state", j!({}));
+    for (device, client) in [("built the graph", &mut a), ("edited the globals", &mut b),
+                             ("joined mid-flight", &mut c)] {
+        client.until_doc(|d| d.to_json() == want).await;
+        assert_eq!(client.doc().to_json(), want, "the device that {device}");
+    }
+
+    // …and it is the document BOTH of them authored, not one of the two halves.
+    let d = c.doc();
+    assert_eq!(d.node_ids().len(), BURST, "every node device A added");
+    for i in 0..BURST {
+        let uid = d.to_json()["nodes"].as_object().unwrap().iter()
+            .find(|(_, n)| n["name"] == j!(format!("osc{i}"))).map(|(u, _)| u.clone())
+            .unwrap_or_else(|| panic!("osc{i} is missing from the replica"));
+        assert_eq!(d.read_at(&["nodes", uid.as_str(), "params", "oscillator", "amplitude", "value"]),
+                   Some(j!(0.1 * i as f64)), "A's rename and its param edit both landed on osc{i}");
+        assert_eq!(d.read_at(&["globals", &format!("g{i}"), "value"]), Some(j!(i as f64)),
+                   "device B's global g{i}");
     }
 }
