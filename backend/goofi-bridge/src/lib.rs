@@ -1,10 +1,7 @@
-//! goofi-bridge — the axum HTTP/WebSocket server that exposes the engine to the
-//! browser: the `/control` JSON RPC + broadcast-event plane and the
-//! `/data/<node>/<slot>` binary GOOF plane — ONE reduced stream per (node, slot);
-//! the viewer kind is NOT in the path (viewers send their ViewSpec inband via
-//! `{op:"view"}`). Event-sourced: RPCs return thin acks; real state changes arrive
-//! as broadcast events the client applies. The built SPA is served from disk
-//! (`frontend/build`, or `GOOFI_FRONTEND_BUILD`) via `ServeDir`.
+//! The axum server: `/control` (JSON RPC + broadcast events, interleaved with binary CRDT sync),
+//! `/data/<node>/<slot>` (ONE reduced GOOF stream per slot, whatever the viewer count — the kind
+//! is not in the path, since viewers publish their ViewSpec inband), `/term`, `/mcp`, and the SPA
+//! compiled into the binary.
 
 /// The `yrs` document itself — shape-agnostic. `pub` because the protocol tests drive a real
 pub mod crdt;
@@ -28,11 +25,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a `/term` socket waits for the PTY's own end-of-stream after the child has been reaped,
-/// before announcing the exit anyway. ConPTY keeps its pseudoconsole open past the child's death, so
-/// on Windows that end never comes; this bounds the wait without branching on the platform. Long
-/// enough for bytes already buffered to be published, short enough that a finished agent is reported
-/// as finished — which is the whole point when nothing is attached to notice.
+/// How long a `/term` socket waits for the PTY's end-of-stream after the child is reaped. ConPTY
+/// keeps its pseudoconsole open past the child's death, so on Windows that end never comes; this
+/// bounds the wait without branching on the platform.
 const EXIT_SETTLE: Duration = Duration::from_millis(250);
 
 
@@ -89,13 +84,9 @@ pub struct AppState {
     /// diffs against, and the list it removes from — so a type registered some other way (a
     /// test's direct registration) is never swept up by a rescan of these two trees.
     node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
-    /// Where the open patch's workspace files live while it is open — the tree a `.gfi` packs and
-    /// unpacks. Created at boot, dropped by [`AppState::release_mount`] on a graceful exit; after a
-    /// crash it simply stays, because a reboot clears the system temp directory.
-    ///
-    /// Shared and private because a load REPLACES it (the loaded patch brings its own workspace)
-    /// while every handler holds its own clone of the state — one stored path, read through
-    /// [`AppState::mount`], is the single source of truth for where the workspace is right now.
+    /// The tree a `.gfi` packs and unpacks. Dropped on a graceful exit; after a crash it stays,
+    /// because a reboot clears the system temp directory. Shared and private because a LOAD
+    /// replaces it while every handler holds its own clone of the state.
     mount: Arc<Mutex<PathBuf>>,
     /// What the workspace looked like when it was last packed into a `.gfi` or unpacked from one —
     /// the fingerprint [`AppState::is_dirty`] compares the live mount against. Re-taken at BOTH
@@ -106,11 +97,9 @@ pub struct AppState {
     /// client connects with, so a tab that opens later and a tab that never pressed Save name the
     /// same file as the one that did.
     save_path: Arc<Mutex<Option<String>>>,
-    /// The port a spawned harness is told to reach this server's MCP surface on. Only the PORT is
-    /// carried, never the bind host: a harness is a CHILD of this process, so `127.0.0.1` is right
-    /// for it whatever `--bind` says — and a `--bind 0.0.0.0` would otherwise mint a URL
-    /// (`http://0.0.0.0/…`) that no client can connect to. Set by the CLI once it knows the bound
-    /// port; the default matches the CLI's own so a test that never sets it still mints a URL.
+    /// The port a spawned harness reaches this server's MCP surface on. Only the PORT: a harness
+    /// is a CHILD of this process, so `127.0.0.1` is right whatever `--bind` says — and
+    /// `--bind 0.0.0.0` would mint a URL no client can connect to.
     mcp_port: Arc<std::sync::atomic::AtomicU16>,
     /// The spawned agent harnesses, their PTYs, and the detection cache. See [`term`].
     pub harnesses: Arc<term::Harnesses>,
@@ -226,11 +215,9 @@ impl AppState {
         self.mount.lock().unwrap().clone()
     }
 
-    /// Drop the workspace mount, nonce directory and all. Deleting a *parent* needs no shape check
-    /// to be safe: the field is private and its only two writers — boot, and the load swap — both
-    /// store a `new_mount()` result, so what it names is always that nonce directory. Best-effort by
-    /// decision: a failure leaves one directory in the system temp dir, which a reboot clears — no
-    /// registry, no retry, no reporting.
+    /// Drop the workspace mount, nonce directory and all. Safe to delete a PARENT because the
+    /// field is private and both its writers store a `new_mount()` result. Best-effort: a failure
+    /// leaves one directory in the system temp dir, which a reboot clears.
     pub fn release_mount(&self) {
         remove_mount(&self.mount());
     }
@@ -260,16 +247,13 @@ pub(crate) fn nonce_hex() -> String {
     format!("{:032x}", u128::from_be_bytes(nonce))
 }
 
-/// Pack the patch to `target` as a `.gfi`: `manifest` beside the live workspace `mount`.
+/// Pack the patch to `target`: `manifest` beside the live workspace `mount`.
 ///
-/// The pack goes to a temp sibling and is renamed onto the target, so a write that dies part-way —
-/// a full disk, a workspace file that vanished mid-walk — leaves the PREVIOUS `.gfi` standing. The
-/// bare `fs::write` this replaces could mostly only lose the new content; a multi-entry zip
-/// truncates the old file first and then has many more chances to fail.
+/// To a temp sibling and RENAMED onto the target, so a write that dies part-way leaves the previous
+/// `.gfi` standing — a multi-entry zip truncates the old file first and has many chances to fail.
 ///
-/// Runs under the graph lock the caller already holds, so every graph EDIT stalls for the duration (tens of
-/// ms for a workspace of code files) — accepted by decision, because taking the pack off-lock means
-/// guarding a graph-versus-workspace race that only exists once it is off-lock.
+/// Under the graph lock the caller already holds, so every edit stalls for the duration. Accepted:
+/// taking it off-lock means guarding a race that only exists once it is off-lock.
 pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Path) -> Result<(), String> {
     // The mount's nonce directory is deleted when the patch closes, so a save into it is a save
     // into nothing. Both sides go through `resolve` for the same reason the arm's path does: they
@@ -293,27 +277,18 @@ pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path:
     packed.map_err(|e| format!("save failed: {e}"))
 }
 
-/// The front half of a load, run against a mount that is not yet live: obtain the patch's manifest
-/// and the file it came from. `load` unpacks the archive's workspace tree into `mount`; `load_text`
-/// (a browser upload) and `new` cannot carry a workspace, so their `mount` stays the empty one the
-/// caller made.
-///
-/// It stops at the manifest rather than applying it, because the patch's own node types live in the
-/// tree it just unpacked and have to be registered BEFORE `load_doc` resolves the graph — see the
-/// arm. Nothing here touches state the caller has not already agreed to lose: `mount` is not yet the
-/// live one, and the graph is untouched.
+/// The front half of a load, against a mount that is not yet live. It stops AT the manifest rather
+/// than applying it, because the patch's own node types live in the tree it just unpacked and have
+/// to be registered before `load_doc` resolves the graph.
 fn stage_load(
     mount: &std::path::Path,
     op: &str,
     payload: &Value,
 ) -> Result<(String, Option<String>), String> {
     let (content, from_path) = if op == "new" {
-        // A New patch IS a load — of an empty patch, from nowhere. Routing it through `load_doc`
-        // rather than `Graph::clear` is what stops the two from drifting: `clear` deliberately
-        // keeps the editor layout (it is not graph content, and only a load overwrites it), which
-        // is exactly how New used to inherit the previous patch's panels. Whatever a load resets,
-        // New resets, by construction. The live `g` is reused rather than replaced, so the
-        // catalog — runtime-registered Python types, the expression evaluator — survives.
+        // A New patch IS a load, of an empty patch from nowhere — which is what stops the two
+        // drifting: `clear` keeps the editor layout, and that is how New used to inherit the
+        // previous patch's panels. The live `g` is reused, so the catalog survives.
         (Graph::new().serialize(), None)
     } else if op == "load" {
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
@@ -351,14 +326,11 @@ fn routes(state: AppState) -> Router {
         // One stream per (node, slot) — the kind segment is gone; a single reduced stream
         // serves every viewer kind. Each connection sends its viewers' ViewSpecs inband.
         .route("/data/{node}/{slot}", any(data_ws))
-        // The agent's mirror of the same op set — one MCP server per goofi instance, so it lives
-        // here rather than in a client-spawned sidecar. `post` alone is deliberate: axum answers
-        // the transport's retired GET stream and DELETE teardown with the 405 they expect.
-        // The patch as a FILE, in both directions — the one door onto locations no mount
-        // reaches, because the browser runs on the host. `DefaultBodyLimit` is lifted for it:
-        // axum caps a body at 2 MB by default, and a patch carrying a workspace is routinely
-        // larger. Unbounded matches the size cap `archive` already declines to impose — a `.gfi`
-        // is the user's own file on a single-user local app, not hostile input.
+        // ONE MCP server per goofi instance, so it lives here rather than in a client-spawned
+        // sidecar; `post` alone, so axum answers the retired GET and DELETE with their 405.
+        // `/patch.gfi` is the patch as a FILE, the one door onto locations no mount reaches.
+        // Its body limit is lifted: axum caps at 2 MB and a patch with a workspace is routinely
+        // larger, and a `.gfi` is the user's own file on a single-user local app.
         .route(
             "/patch.gfi",
             get(patchfile::download)
@@ -399,42 +371,23 @@ fn error_transitions(
     changed
 }
 
-/// How often the worker takes what the nodes have reported — deliberately NOT the event rate.
-///
-/// Draining is the runtime's own clock: it is what makes a node addressable (§4, the birth
-/// barrier) and what advances every wire's three-phase sequence, one phase per ack. Pacing it at
-/// `hz` would put a link three broadcast periods away from carrying its first frame.
+/// How often the worker takes what the nodes reported — deliberately NOT the event rate. Draining
+/// is the RUNTIME's clock: it makes a node addressable and advances every wire's three-phase
+/// sequence, one phase per ack. At `hz`, a link would be three broadcast periods from its first
+/// frame.
 const DRAIN_PERIOD: Duration = Duration::from_millis(1);
 
-/// **The status-drain worker** (spec §6.2): take every node's reports, apply them to the graph, and
-/// broadcast the four events that carry them to the editor — `node_stats`, `param_values`, `error`
-/// and `node_stage` — at `hz`.
+/// **The status-drain worker**: take every node's reports, apply them to the graph, and broadcast
+/// the events that carry them — `node_stats`, `param_values`, `error`, `node_stage` — at `hz`.
 ///
-/// Two obligations bind it: never `set_dirty(true)` — a node reporting its own state is not a user
-/// edit — and always FORGET a uid on removal, in `error_transitions` (`last.retain`) and in
-/// `last_stages.retain` below, so a stale error cannot outlive its node or suppress a re-created
-/// uid's first report.
+/// Two obligations bind it. Never `set_dirty(true)`: a node reporting its own state is not a user
+/// edit. And always FORGET a uid on removal, so a stale error cannot outlive its node or suppress
+/// a re-created uid's first report.
 ///
-/// Nothing else pushes these. A runtime error that appears mid-run (an expression that compiles
-/// but fails on later data, a process error) would otherwise not turn the node border red until an
-/// unrelated RPC or a reconnect. De-duped: one push per transition.
-///
-/// The transition push is the identity-only `error` event (node + error), NOT a
-/// full-params `state_update`: this async 2 Hz snapshot must never carry params. The
-/// original reason no longer holds — the frontend stopped replacing params wholesale at
-/// the doc cutover, so a stale snapshot can no longer clobber a concurrent `update_param`
-/// (values are doc-owned; `_mergeParamRuntime` takes only the runtime bits). The shape
-/// still stands on its own: a late snapshot would overwrite a fresher `expression_error`,
-/// and every param of every node twice a second is bandwidth for a payload neither the
-/// node border nor the console reads. The per-param expression-error field refreshes on
-/// the next RPC; the node border + console update live here.
-///
-/// It also pushes the live values of expression-driven params as a `param_values` event,
-/// so the inspector preview tracks each re-evaluation instead of freezing at the
-/// edit-time value. That is safe where a full-params snapshot is not: it carries ONLY the
-/// evaluated values (not descriptors) and the frontend applies them surgically to
-/// expression-bound params — which are never user-editable literals, so there is no
-/// concurrent edit to clobber.
+/// The transition push is the identity-only `error` event, never a full-params snapshot: a late one
+/// would overwrite a fresher `expression_error`, and every param of every node twice a second is
+/// bandwidth nothing reads. `param_values` is safe where that is not — it carries only EVALUATED
+/// values, which are never user-editable literals, so there is no concurrent edit to clobber.
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
@@ -527,12 +480,10 @@ pub fn router(state: AppState) -> Router {
     app(state, &[])
 }
 
-/// The full router, optionally serving the built SPA (SPA-fallback to index.html)
-/// for any non-API path.
+/// The full router, optionally serving the SPA on the fallback.
 ///
 /// The [`origin`] guard goes on LAST, so it wraps the API routes, the SPA and the fallback alike —
-/// including the three WebSocket upgrades, which a CORS-based defence would miss entirely. There is
-/// exactly one place it is applied, and every server in this repo goes through here.
+/// including the three WebSocket upgrades, which a CORS-based defence would miss entirely.
 pub fn app(state: AppState, spa: Spa) -> Router {
     let base = routes(state);
     let served = if spa.is_empty() { base } else { base.fallback(serve_spa_file) };
@@ -633,13 +584,9 @@ pub struct ScannedType {
     pub registration: goofi_engine::Registration,
 }
 
-/// The node-discovery seam: scan ONE directory, registering every node file in it into `g`
-/// (replacing a type of the same name), and report what it did.
-///
-/// Injected by the CLI at boot — per-file TIER ROUTING lives in the binary, which owns the
-/// interpreters and the probe, not here — so boot and [`rescan`] re-derive the registry through the
-/// very same function rather than two implementations that can drift. The default is a no-op: a
-/// bridge with no discovery behind it (every test that does not inject one) discovers nothing.
+/// The node-discovery seam: scan ONE directory and report what it registered. Injected by the CLI,
+/// which owns the interpreters and the probe, so boot and [`rescan`] re-derive the registry through
+/// the same function. The default is a no-op.
 pub type NodeScan = Arc<dyn Fn(&mut Graph, &std::path::Path) -> Vec<ScannedType> + Send + Sync>;
 
 /// What a [`rescan`] changed, for the caller that asked — an agent that just wrote a node file, or
@@ -651,18 +598,13 @@ pub struct ScanDiff {
     pub removed: Vec<String>,
 }
 
-/// Re-derive the runtime node registry from the directories that exist RIGHT NOW: the shipped node
-/// directory, then `<patch>/nodes` — in that order, so a patch-local node of the same name wins,
-/// which is what "patch node" means (it falls out of replace-on-register).
+/// Re-derive the registry from the directories that exist RIGHT NOW — the shipped tree, then
+/// `<patch>/nodes`, in that order, so a patch-local node of the same name wins.
 ///
-/// The previous scan's stamps are the baseline, so what comes back is a diff rather than a listing.
-/// Removal is driven by that baseline too, which is what keeps a type discovered some OTHER way —
-/// a test's direct registration, say — out of the blast radius.
-///
-/// `pub`, and returning the raw per-file outcomes beside the diff, for ONE caller: the CLI's boot
-/// scan runs this rather than the seam directly, so the baseline the first refresh diffs against is
-/// the boot scan itself (otherwise the first press of refresh re-announces the whole shipped tree as
-/// new) — and so boot reports outcomes the seam deliberately does not print.
+/// The previous scan's stamps are the baseline, so this answers a DIFF rather than a listing — and
+/// removal is driven by that baseline too, which keeps a type registered some other way out of the
+/// blast radius. The CLI's boot scan runs this rather than the seam, so the first refresh diffs
+/// against the boot scan rather than re-announcing the whole tree.
 pub fn rescan(
     state: &AppState,
     g: &mut Graph,
@@ -710,12 +652,9 @@ pub fn rescan(
     (diff, outcomes)
 }
 
-/// Restart every live instance of a type whose file changed, so editing a node file makes the nodes
-/// already on the canvas run the new code (decision, 2026-08-09). `setup()` re-runs — a buffer
-/// empties, a device reopens — which is the accepted price of that.
-///
-/// Deliberately NOT part of [`rescan`]: a load re-derives the registry for a graph that is about to
-/// be replaced wholesale, and restarting the outgoing patch's nodes there would be pure cost.
+/// Restart every live instance of a type whose file changed, so an edit reaches the nodes already
+/// on the canvas. `setup()` re-runs — a buffer empties, a device reopens — which is the price.
+/// NOT part of [`rescan`]: a load re-derives the registry for a graph about to be replaced.
 fn restart_changed(g: &mut Graph, diff: &ScanDiff) {
     for uid in g.node_uids() {
         if g.type_name(uid).is_some_and(|t| diff.changed.iter().any(|c| c == t)) {
@@ -737,11 +676,9 @@ async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
 async fn handle_control(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
 
-    // Subscribe to every broadcast plane BEFORE snapshotting. If we snapshotted first and
-    // subscribed second, a mutation landing in that window would be neither in the snapshot nor
-    // delivered — the client's mirror would silently desync. Subscribing first can at worst
-    // re-deliver an event already reflected in the snapshot, which every apply branch absorbs
-    // idempotently. The CRDT plane subscribes first for the same reason.
+    // Subscribe BEFORE snapshotting: a mutation landing in the other order is in neither, and the
+    // mirror desyncs silently. This way the worst case is a re-delivery, which every apply
+    // branch absorbs idempotently.
     let mut events = state.events.subscribe();
     let mut sync_updates = state.sync_updates.subscribe();
 
@@ -781,11 +718,8 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     }
                 }
                 Some(Ok(Message::Binary(b))) => {
-                    // A CRDT sync frame from the client. The client replica is READ-ONLY (B3):
-                    // every mutation is a command RPC, so a StateVector drives the pairwise sync
-                    // handshake (reply with the diff it lacks), and a client `Update` is never
-                    // expected and is IGNORED (the doc is manager-authored; an out-of-band leaf
-                    // write would just be reverted by the next re-mirror anyway).
+                    // The client replica is READ-ONLY: a StateVector drives the sync handshake,
+                    // and a client `Update` is ignored — the next re-mirror would revert it anyway.
                     match crate::crdt::SyncMsg::decode(&b) {
                         Some(msg @ crate::crdt::SyncMsg::StateVector(_)) => {
                             let replies = state.crdt.lock().unwrap().on_sync(msg);
@@ -809,12 +743,9 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                // A slow client lagged past the shared 256-slot channel and dropped events the
-                // ring already evicted. A dropped structural event (node/link add/remove) would
-                // permanently desync its JSON mirror — there is no gap detection. Recover exactly
-                // as the sync_updates plane does: re-send a full `hello` snapshot (the frontend
-                // applies it as a full reset; idempotent apply branches absorb any still-buffered
-                // events delivered after it).
+                // Lagged past the shared ring. A dropped structural event desyncs the mirror for
+                // good — there is no gap detection — so recover as the sync plane does, with a
+                // fresh `hello` the frontend applies as a full reset.
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let unsaved = state.is_dirty(); // off the graph lock, as above
                     let saved_at = state.save_path();
@@ -855,16 +786,12 @@ async fn handle_control(socket: WebSocket, state: AppState) {
 }
 
 impl AppState {
-    /// Whether the patch differs from its last saved/loaded state — the title-bar dot and the
-    /// unload guard.
+    /// Whether the patch differs from its last saved state — the title-bar dot and the unload
+    /// guard. TWO sources, because a patch is a graph AND a workspace: the flag every mutating op
+    /// sets, and a directory the agent or the user's editor writes into with no RPC to ride on.
     ///
-    /// TWO independent sources, because a patch is a graph AND a workspace tree. The graph half is
-    /// the flag every mutating op sets. The workspace half is a directory goofi does not own: the
-    /// agent it will host, or the user's editor, writes into it with no RPC to ride on. There is no
-    /// watcher (decision, 2026-08-09), so the question is answered by WALKING the mount at the
-    /// moment a client asks it — an external edit surfaces on the asker's next `hello`, and no
-    /// thread wakes up to hunt for one. Walk it OFF the graph lock: a workspace of code files is a
-    /// stat per file, and the status-drain worker takes that lock every millisecond.
+    /// No watcher: the workspace half is answered by WALKING the mount when a client asks, OFF the
+    /// graph lock — that walk is a stat per file, and the drain worker takes the lock every ms.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
             || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
@@ -978,16 +905,12 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
 }
 
 /// Resolve a link endpoint AND refuse one that names nothing wirable — the check a caller-initiated
-/// `add_link` gets and a replay does not.
+/// `add_link` gets and a REPLAY does not.
 ///
-/// [`goofi_engine::Command::AddLink`] deliberately tolerates an endpoint naming no node: the same
-/// command is the inverse of every `remove_link` and the trailing child of a `RemoveNode` inverse, so
-/// a toggle replayed against a peer's delete must converge to a no-op rather than error through
-/// `flip()` and wedge that session's undo stack. A REQUEST is not a REPLAY, though — a typo'd uid was
-/// answered with the wire it did not make, dtype and all. So the request is checked here, at the
-/// dispatch boundary, where an `Err` short-circuits before `CommandHistory::apply` records anything
-/// (as a dtype mismatch already does) and the client records no `graph_cmd` for a failed RPC — the
-/// two stacks stay 1:1. The command's replay path keeps its tolerance untouched.
+/// The command itself tolerates an endpoint naming no node, because it is the inverse of every
+/// `remove_link` and a toggle replayed against a peer's delete must converge rather than wedge the
+/// stack. A request is not a replay, so it is checked HERE, where an `Err` short-circuits before
+/// the history records anything and the two stacks stay 1:1.
 fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
     let (node, slot) = resolve_link_endpoint(g, uid, slot);
     if g.contains(node) {
@@ -1022,27 +945,18 @@ fn bindable_node(g: &Graph, node: &str) -> bool {
     Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some())
 }
 
-/// Route a layout planner's per-entry writes through the command history as ONE undo step. This is
-/// the whole of "layout reuses the graph machinery": persistence, the CRDT broadcast and per-session
-/// undo all follow from the write being an ordinary command.
+/// Route a layout planner's per-entry writes through the command history as ONE undo step, and
+/// answer with the arrangement they produced — drawn as `inspect_layout` draws it, so a caller with
+/// no screen does not have to follow every write with a read.
 ///
-/// `born` names the entry an op BRINGS INTO BEING (`(page, id)`), and changes what undo means: the
-/// slots the writes displaced are no longer the inverse — closing `born` with promote is. That is
-/// what keeps a foreign undo from deleting a subtree a peer grew under the newcomer. See
-/// [`goofi_engine::Command::LayoutBirth`]. An op that only rearranges what already exists passes
-/// `None` and inverts slot by slot.
-/// Apply one layout command through the session's history and answer with the arrangement it
-/// produced — drawn exactly as `inspect_layout` draws it, because a caller with no screen (an
-/// agent) would otherwise have to follow every write with an `inspect_layout` to see the tree it
-/// was building. The op is already holding it.
+/// `born` names the entry an op BRINGS INTO BEING, which changes what undo means: the slots the
+/// writes displaced are no longer the inverse — closing `born` with promote is. An op that only
+/// rearranges what already exists passes `None` and inverts slot by slot.
 ///
-/// **The rule the layout commands exist to keep, stated once here rather than four times:** no
-/// layout inverse restores raw state. Every one re-plans through the forward planners
-/// (`LayoutClose`, `LayoutMove`, `LayoutContents`, `LayoutBirth`). Pinning an entry back into the
-/// slot it held resurrects the split that the forward op promoted away, on top of whatever a
-/// concurrent peer has since built there — which strands their panels and corrupts the
-/// arrangement at the next save. `goofi-engine`'s registry-driven guard walks every layout write
-/// op and asserts the safe and unsafe sets both ways.
+/// **The rule, stated once rather than four times:** no layout inverse restores raw state. Every
+/// one re-plans through the forward planners. Pinning an entry back into the slot it held
+/// resurrects the split the forward op promoted away, on top of whatever a peer has since built
+/// there — stranding their panels and corrupting the next save.
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
@@ -1137,12 +1051,9 @@ impl AppState {
                         .and_then(|v| v.as_str())
                         .ok_or("add_node: missing type")?
                         .to_string();
-                    // `member_uid` + `name` place the new node at a CHOSEN uid and display name instead
-                    // of minting fresh ones. This is NOT the undo path — undo/redo are manager-owned
-                    // and a restore goes through `Command::AddNode { uid: Some, name: Some }` built by
-                    // `capture_subtree_restore`, never through this RPC. It is an automation/restore
-                    // door: a caller reconstructing a known graph (a script, a fixture) gets the
-                    // uid-keyed links and panels to reconnect to the same node.
+                    // A CHOSEN uid and name rather than fresh ones — an automation door, not the
+                    // undo path, which is manager-owned and never comes through this RPC. It is
+                    // what lets a caller reconstructing a known graph keep its uid-keyed bindings.
                     let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
                     let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);

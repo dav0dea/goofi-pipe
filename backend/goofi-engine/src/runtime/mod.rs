@@ -1,76 +1,21 @@
-//! The per-node runtime (spec §1, §2, §6): the wake loop's body, the three run paths, and a
-//! node's faults.
+//! The per-node runtime: the wake loop's body, the three run paths, and a node's faults.
 //!
-//! A node decides for itself when to run. There are exactly three reasons, all decided
-//! node-locally: a frame on a `trigger_process` input (path A), `common.autotrigger` (path B), and
-//! a value arriving in a bound non-`common` param's mailbox (path C). Nothing here consults
-//! topology — **autotrigger is independent of input slots**, so there is no `wired` term and no
-//! connected-trigger-input counter, and a node that declares no trigger input and leaves
-//! autotrigger off never runs, which is correct.
+//! A node decides for itself when to run, and there are exactly three reasons, all decided
+//! node-locally: a frame on a `trigger_process` input, `common.autotrigger`, and a value arriving
+//! in a bound non-`common` param's mailbox. Nothing here consults topology — autotrigger is
+//! INDEPENDENT of input slots, so a node that declares no trigger input and leaves autotrigger off
+//! never runs, which is correct.
 //!
 //! A [`NodeRuntime`] owns one node against a [`Transport`], and [`spawn`] gives it the thread it
 //! runs on. [`Graph`] builds one per node at birth, plans its wiring ([`plan`]) and reads back what
 //! it reports ([`Status`]); it never runs a node itself. There is no tick.
 //!
-//! ## The ledger the cutover closed
-//!
-//! Every item the four preceding tasks deferred here is closed, and the closures are stated rather
-//! than left to be re-derived:
-//!
-//! 1. **Meta stamping** — [`stamp_meta`] runs in [`NodeRuntime::run`], on the frames the node just
-//!    emitted, before they are published. `index` and `ufreq` stay engine-owned.
-//! 2. **`last_outputs`** — dropped on purpose with `Graph::latest_frame` (§7). A viewer subscribes
-//!    to `/data` like any other consumer, so there is nothing left that reads a node for a frame.
-//! 3. **The required-input gate** — [`NodeRuntime::missing_required`], checked over the WIRE CELLS
-//!    rather than over `inputs`: a `multi` slot's frames never enter `inputs`, so a gate reading
-//!    that map alone passes every node with a required multi slot.
-//! 4. **`ensure_initialized`** — one gate, here. The graph-side copy is gone with the tick.
-//! 5. **Frames reach a node from its own wires** — the wake loop drains
-//!    [`Transport::drain_inputs`], which is the only door a frame comes in through, for declared
-//!    slots and for an expression variable's pseudo-slot alike.
-//! 6. **The birth barrier** — a node publishes [`Status::Ready`] once its own services exist, and
-//!    the graph attaches its control sink on that report and not before. A `Control` sent earlier
-//!    would be published to a subscriber that does not exist yet, and pub/sub has no history. The
-//!    barrier is a WINDOW, though, and `add_node` answers inside it: what was said during it is
-//!    re-PLANNED on attach for anything with graph state to re-derive it from (item 9), and HELD
-//!    for anything without — a `RefreshParam` is a request, not a state, so `WirePlanner::send`
-//!    queues it rather than dropping it.
-//! 7. **Expressions are evaluated** — in the node, immediately before the run that reads them
-//!    (§2.1), from the mailboxes its variables name.
-//! 8. **[`Binding::evaluate`] holds the evaluator** — a rewritten source richer than one variable
-//!    goes to [`goofi_node::ExprEvaluator`] with §5.3's locals channel.
-//! 9. **`replan_slot`'s callers** — birth, removal, restart and load join the link and binding
-//!    changes, all of them through `Graph::attach_control_sink` / `Graph::slots_touching`. What
-//!    that walk names is every subscription touching the node — its input slots, the bindings on
-//!    either end of it, and **every param channel the graph has ever spoken on for it**. The last
-//!    is not a nicety: a plain literal param is neither a link nor a binding, so without it the
-//!    ordinary `add_node(); update_param()` pair fell into the birth window and was lost.
-//! 10. **`WirePlanner::is_idle`** — deleted. Every live node has a channel.
-//! 11. **`spawn_stats`** — the worker stayed; its POLLING went. It drains at 1 ms and broadcasts at
-//!     2 Hz, because the drain is the runtime's clock and the broadcast is the UI's. Every one
-//!     of the four events it sourced (`error`, `node_stage`, `node_stats`, `param_values`) is now a
-//!     node's own report: [`Status::Fault`] / [`Status::BindingErrors`], [`Status::Stage`],
-//!     [`Status::Ufreq`] and [`Status::ParamValues`], applied by `Graph::apply_status`. Every one
-//!     is a TRANSITION the node stamps itself, which is why nothing here diffs — the exception is
-//!     `Ufreq`, a measurement rather than a transition, paced at [`UFREQ_REPORT_MS`]. The worker
-//!     that drains them, and its rule against dirtying the patch, belong to the bridge.
-//!
-//! Two things were DROPPED on purpose rather than deferred, and are listed so neither reads as an
-//! oversight:
-//!
-//! - **`scheduling_edges` no longer lifts `nd()` references into the topo DAG.** That ordering
-//!   existed so a referenced producer ran earlier in the same tick and the expression saw
-//!   this-tick's value. §2.1 moved evaluation into the node, so the lifting ordered nothing and the
-//!   guarantee it bought no longer exists to buy. The whole tick went with it.
-//! - **The pyo3 evaluator's `nd()` proxy and `globals` namespace.** The rules they enforced did not
-//!   all retire with them, and the ones that MOVED are pinned at their new home rather than left to
-//!   the reader: a bare `nd()` on a multi-output producer, an unknown `.slot`, and a `globals.` name
-//!   the patch does not define are now refused by `Graph::resolve_stream` / `resolve_vars` at bind
-//!   time (pinned in `goofi-engine`), and "a variable that has not arrived raises" is pinned in
-//!   `goofi-python`. What genuinely retired: the proxy's ~28 operator dunders (a numpy array
-//!   supports them natively), its key-absent-vs-value-`None` distinction (there is one `Option` now),
-//!   `_Globals`' `__getattribute__` shim (a global's NAME never reaches Python any more), and
-//!   `Compiled`'s `refs`/`global_refs` extraction (the compiled source names neither).
+//! The birth barrier is the one piece of ordering worth holding: a node publishes [`Status::Ready`]
+//! once its own services exist, and the graph attaches its control sink on that report and not
+//! before, because a `Control` sent earlier is published to a subscriber that does not exist and
+//! pub/sub has no history. `add_node` answers INSIDE that window — so what was said during it is
+//! re-planned on attach where the graph can re-derive it, and queued where it cannot (a
+//! `RefreshParam` is a request, not a state).
 //!
 //! [`Graph`]: crate::Graph
 
@@ -140,10 +85,9 @@ struct UfreqMeter {
 #[derive(Default)]
 pub struct Halt {
     stop: AtomicBool,
-    /// Set by the node's own thread once its [`NodeRuntime`] — and with it every iceoryx2 port and
-    /// the node behind them — has been DROPPED. That drop is what releases the node's shared
-    /// memory, and it is the only thing a teardown can usefully wait for: the halt flag says the
-    /// thread was asked, this says it is done.
+    /// Set once the [`NodeRuntime`] — and with it every iceoryx2 port — has been DROPPED, which is
+    /// what releases the shared memory. The halt flag says the thread was asked; this says it is
+    /// done, and it is the only thing a teardown can usefully wait for.
     released: AtomicBool,
 }
 
@@ -162,10 +106,8 @@ impl Halt {
     }
 }
 
-/// The pseudo input slot a bound param's producer wires ride. A binding subscribes to a producer
-/// exactly as an input slot does (§5.3), so it goes through the one subscribe door rather than a
-/// second one — and the name is namespaced with a character no declared slot may carry, so it can
-/// never collide with one.
+/// The pseudo input slot a bound param's producer wires ride: a binding subscribes exactly as an
+/// input slot does, through the one door. Namespaced with a character no declared slot may carry.
 pub fn expr_wire_slot(key: &ParamKey) -> String {
     format!("expr:{}:{}", key.group, key.name)
 }
@@ -177,10 +119,8 @@ fn expr_wire_key(slot: &str) -> Option<ParamKey> {
     Some(ParamKey::new(group, name))
 }
 
-/// What is wrong with a node. `None` is healthy.
-///
-/// Four variants because `entry_error` folds four sources, and wall-clock `f64` rather than
-/// [`Instant`] because a fault is reported over the wire.
+/// What is wrong with a node. Wall-clock `f64` rather than [`Instant`], because a fault is
+/// reported over the wire.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum NodeFault {
     Setup { msg: String, since: f64, last_attempt: f64 },
@@ -200,10 +140,8 @@ pub struct NodeRuntime {
     manifest: &'static NodeManifest,
     node: Box<dyn Node>,
     transport: Arc<dyn Transport>,
-    /// The evaluator that compiled this node's bindings, shared with the graph that compiled them
-    /// (§2.1 evaluates in the node; `set_expression` compiles in the graph so the authoring RPC can
-    /// answer with a real compile error). `None` on a graph with no evaluator injected, where every
-    /// bound param falls back to its literal.
+    /// Shared with the graph: the node EVALUATES, the graph COMPILES, so the authoring RPC can
+    /// answer with a real compile error. `None` ⇒ every bound param falls back to its literal.
     evaluator: Option<Arc<dyn ExprEvaluator>>,
     /// The patch globals as the node reads them (§5.2): a lock-free handle onto the graph's record,
     /// re-read before each run so `process` sees an edit on its next run rather than never.
@@ -212,10 +150,8 @@ pub struct NodeRuntime {
     /// rather than seconds-since-this-node's-birth.
     started: Instant,
 
-    /// Path B lives in `run_policy.autotrigger`, beside the cap that paces it — one value derived
-    /// by one `RunPolicy::from_params`, so there is nothing to keep in step.
-    ///
-    /// Paths A and C: something asked this node to run and it has not run since.
+    /// Something asked this node to run and it has not run since. Autotrigger is not here — it
+    /// lives in `run_policy`, beside the cap that paces it, so there is nothing to keep in step.
     pub(crate) trigger_pending: bool,
     pub(crate) run_policy: RunPolicy,
     pub(crate) last_run: Option<Instant>,
@@ -237,11 +173,9 @@ pub struct NodeRuntime {
 
     /// Latest-wins input cells, one per declared single input slot.
     pub(crate) inputs: IndexMap<&'static str, Option<Data>>,
-    /// Per-WIRE latest-wins cells for each declared `multi` input slot, keyed by the producer's
-    /// service name and held in the order the last `InSlot` set named — which IS
-    /// `Inputs::get_multi`'s connection order (§3.5). Kept apart from [`Self::inputs`] because the
-    /// two partition the manifest's slots, and because the required-input gate has to see both:
-    /// a gate reading only `inputs` passes every node with a required multi slot.
+    /// Per-WIRE latest-wins cells for each `multi` input slot, in the order the last `InSlot` set
+    /// named — which IS `Inputs::get_multi`'s connection order. Apart from [`Self::inputs`] because
+    /// the two partition the manifest's slots, and the required-input gate has to see both.
     pub(crate) multi_wires: IndexMap<&'static str, Vec<(ServiceName, Option<Data>)>>,
     pub(crate) ctx: NodeCtx,
     /// Per-output-slot emit counter for `meta["index"]` — engine-owned, the node never sees it.
@@ -255,18 +189,14 @@ pub struct NodeRuntime {
     stage: NodeStage,
 
     pub(crate) fault: Option<NodeFault>,
-    /// Binding errors are a MAP, not a fault variant: several bindings can be errored at once and
-    /// each renders on its own inspector field. [`NodeFault::Expr`] is the derived node-level
-    /// roll-up, not the record: the GRAPH folds this map into the one node-level badge, ordering
-    /// by key (`entry_error`).
+    /// A MAP, not a fault variant: several bindings can be errored at once, each rendering on its
+    /// own field. [`NodeFault::Expr`] is the derived node-level roll-up, not the record.
     pub(crate) binding_errors: HashMap<ParamKey, String>,
     initialized: bool,
 }
 
-/// Everything a node's thread needs that is the GRAPH's rather than the node's: the shared records
-/// it reads through, the evaluator that compiled its bindings, and the clock origin. One struct
-/// because every one of them is handed over at birth and none of them is ever replaced — a restart
-/// builds a new runtime rather than mutating this.
+/// Everything a node's thread needs that is the GRAPH's rather than the node's. One struct because
+/// each is handed over at birth and never replaced — a restart builds a new runtime.
 pub struct NodeEnv {
     pub evaluator: Option<Arc<dyn ExprEvaluator>>,
     pub globals: Arc<ArcSwap<GlobalsSnapshot>>,
@@ -286,13 +216,11 @@ impl NodeEnv {
 }
 
 impl NodeRuntime {
-    /// Build a node from its manifest and initialize it: seed its params, then `setup()`. A
-    /// failing `setup` leaves the node UNINITIALIZED with a [`NodeFault::Setup`] standing, and
-    /// nothing runs against it until a retry succeeds.
+    /// Seed the node's params, then `setup()`. A failing `setup` leaves it UNINITIALIZED with a
+    /// [`NodeFault::Setup`] standing, and nothing runs against it until a retry succeeds.
     ///
-    /// `params` is the record the graph holds for this node — a fresh add's type defaults, or a
-    /// load's saved values — so the node's own literals and the `.gfi` are the same numbers from
-    /// its first `setup()` rather than from its first param message.
+    /// `params` is the record the graph holds, so the node's literals and the `.gfi` are the same
+    /// numbers from its first `setup()` rather than from its first param message.
     pub fn new(
         manifest: &'static NodeManifest,
         node: Box<dyn Node>,
@@ -413,12 +341,11 @@ impl NodeRuntime {
         }
     }
 
-    /// Apply every waiting control message and ack each one. The ack is what tells the graph this
-    /// node is in sync with it (§3.4) — and the wire sequence's phases are ordered by nothing else,
-    /// so a message applied but not acked stalls the change that sent it.
+    /// Apply every waiting control message and ACK each one — the wire sequence's phases are
+    /// ordered by nothing else, so a message applied but not acked stalls the change that sent it.
     ///
-    /// The slot messages are handed to the transport rather than acted on here: which subscribers a
-    /// wire needs is the transport's whole subject, and the runtime's is when to run.
+    /// Slot messages go to the transport: which subscribers a wire needs is its subject, not this
+    /// one's, which is when to run.
     fn drain_control(&mut self) {
         let transport = self.transport.clone();
         for Envelope { seq, control } in transport.drain_control() {
@@ -550,10 +477,9 @@ impl NodeRuntime {
             }
         };
         self.arrived(&key, triggering);
-        // §5.1 + D3: a param write is an INTERACTION, and an interaction retries the initialization
-        // first — a node whose `setup()` failed on a bad param has no other way back when it never
-        // runs, since `run()` is the only other caller of the gate. Unthrottled, unlike a wake:
-        // this is a user asking, not one of however many the pacer admits.
+        // A param write is an INTERACTION, and an interaction retries the initialization first: a
+        // node whose `setup()` failed on a bad param has no other way back when it never runs.
+        // Unthrottled, unlike a wake — this is a user asking.
         let was_initialized = self.initialized;
         let healed = self.ensure_initialized() && !was_initialized;
         // `initialize` replays the whole record through `on_param_changed`, so a retry that
@@ -570,13 +496,9 @@ impl NodeRuntime {
     // The three arrival paths (§1)
     // -----------------------------------------------------------------------
 
-    /// Paths A and C's data half — a frame off one of this node's wires, addressed by the slot it
-    /// arrived on and that wire's position in the slot's service set.
-    ///
-    /// One door for both, because a bound param subscribes through `wire_in` exactly as an input
-    /// slot does (§5.3): an [`expr_wire_slot`] name lands in a binding's mailbox, a declared slot
-    /// name in an input cell. A `trigger_process` slot wakes the node; a reference slot updates the
-    /// cell and nothing more.
+    /// A frame off one of this node's wires. ONE door for a declared slot and a bound param alike:
+    /// an [`expr_wire_slot`] name lands in a binding's mailbox, a declared one in an input cell.
+    /// A `trigger_process` slot wakes the node; a reference slot only updates the cell.
     pub fn deliver_input(&mut self, slot: &str, wire: usize, frame: Data) {
         if let Some(key) = expr_wire_key(slot) {
             let Some(binding) = self.bindings.get_mut(&key) else {
@@ -609,17 +531,13 @@ impl NodeRuntime {
         }
     }
 
-    /// What an arrival does to the schedule — §1.1's rule, stated ONCE and by key NAMESPACE rather
-    /// than per arrival path. Both planes call it, which is the point: a `common.autotrigger` bound
-    /// to `nd('gate')` arrives on the data plane while the same key bound to a global arrives on
-    /// the control plane, and covering only one leaves the node parked forever holding the value
-    /// that would have started it.
+    /// What an arrival does to the schedule, stated ONCE and by key NAMESPACE rather than per
+    /// path. Both planes call it: the same `common.autotrigger` arrives on the data plane when
+    /// bound to `nd('gate')` and on the control plane when bound to a global.
     fn arrived(&mut self, key: &ParamKey, trigger: bool) {
         if key.group == COMMON {
-            // Re-pacing is not a reason to run: a producer runs anyway on its own schedule, and a
-            // consumer must not fire because a global changed. `trigger` is therefore IGNORED
-            // here — every node's `common.max_frequency` declares it, and it means nothing on this
-            // namespace.
+            // Re-pacing is not a reason to run, so `trigger` is IGNORED on this namespace: a
+            // producer runs anyway, and a consumer must not fire because a global changed.
             self.common_dirty = true;
         } else if trigger {
             self.trigger_pending = true;
@@ -646,12 +564,9 @@ impl NodeRuntime {
         let mut errors: Vec<(ParamKey, Option<String>)> = Vec::new();
         let mut values_changed = false;
         for key in keys {
-            // A binding with nothing in its mailbox yet is not an error — the literal simply
-            // stands. A binding that cannot be evaluated at all is, and it falls back to the same
-            // literal for this run.
-            // §2.1: the target param is the type template the evaluator coerces its result to,
-            // and it is the LITERAL — the number the user authored — never the last evaluated
-            // value, which would let a binding drift its own type from one run to the next.
+            // An empty mailbox is not an error — the literal stands. The target param is the type
+            // template the evaluator coerces to, and it is the LITERAL rather than the last
+            // evaluated value, which would let a binding drift its own type between runs.
             let target = self.literal(&key).unwrap_or_else(|| Param::float(0.0, f64::NEG_INFINITY, f64::INFINITY));
             let now = self.ctx.now;
             let evaluator = self.evaluator.clone();
@@ -674,11 +589,9 @@ impl NodeRuntime {
                 continue;
             }
             self.set_effective(&key, next.clone());
-            // The hook is the single source of truth for param→field, and the only way an
-            // evaluated value reaches a node's mirrored field. A `common.*` param has no field to
-            // mirror — it is the scheduler's, not the node's — and an UNINITIALIZED node hears
-            // nothing at all (D3); the value is in the record, so the retry's replay delivers it
-            // when `setup` finally succeeds.
+            // The hook is the only way an evaluated value reaches a node's mirrored field. A
+            // `common.*` param has none — it is the scheduler's — and an UNINITIALIZED node hears
+            // nothing: the value is in the record, so the retry's replay delivers it.
             if key.group != COMMON && self.initialized {
                 self.on_param_changed(&key, &next);
             }
@@ -701,10 +614,8 @@ impl NodeRuntime {
         }
     }
 
-    /// Record or clear a binding's error, answering with the wire entry when it CHANGED. The map
-    /// is the record and `Status::BindingErrors` is a delta, so an unchanged error is silent and a
-    /// cleared one is announced — an error that cannot clear leaves a node showing a failure it
-    /// has recovered from.
+    /// Record or clear a binding's error, answering only when it CHANGED. The map is the record
+    /// and the status is a delta, so an unchanged error is silent and a cleared one is announced.
     fn record_binding_error(
         &mut self,
         key: &ParamKey,
@@ -803,10 +714,9 @@ impl NodeRuntime {
         }
     }
 
-    /// The name of a `required` input slot holding no frame, or `None` when every one of them is
-    /// fed. Read over the WIRE CELLS rather than over `inputs`: a `multi` slot's frames live in
-    /// [`Self::multi_wires`], so a gate reading `inputs` alone silently passes every node with a
-    /// required multi slot.
+    /// A `required` input slot holding no frame, or `None`. Read over the WIRE CELLS: a `multi`
+    /// slot's frames live in [`Self::multi_wires`], so reading `inputs` alone passes every node
+    /// with a required multi slot.
     fn missing_required(&self) -> Option<&'static str> {
         self.manifest.inputs.iter().filter(|s| s.required).find_map(|slot| {
             let absent = if slot.multi {
@@ -881,14 +791,11 @@ impl NodeRuntime {
         }
     }
 
-    /// Install a fault, keeping `since` when nothing changed: the node stamps its own `since` when
-    /// its fault CHANGES, and reports only transitions — so a process error recurring every run
-    /// is one console line, not one per run.
+    /// Install a fault, keeping `since` when nothing changed — the node reports only TRANSITIONS,
+    /// so an error recurring every run is one console line rather than one per run.
     ///
-    /// An unchanged fault still moves the parts of the RECORD that are not the transition.
-    /// `last_attempt` is one: it paces the next retry, so freezing it at the first failure turns
-    /// the backoff off entirely and the node re-attempts at its wake rate. `since` is precisely
-    /// the part that must not move.
+    /// An unchanged fault still moves the rest of the record. `last_attempt` is one: freezing it
+    /// at the first failure turns the backoff off entirely. `since` is what must not move.
     fn set_fault(&mut self, next: Option<NodeFault>) {
         let unchanged = match (&self.fault, &next) {
             (Some(current), Some(next)) => {
@@ -938,12 +845,9 @@ impl NodeRuntime {
     }
 }
 
-/// Give a node its own thread (§5: every node has a manager-side one).
-///
-/// The [`NodeRuntime`] is built INSIDE the thread, which is what takes `setup()` off the graph
-/// lock: a `setup` that opens a device or dials a socket is exactly the one that blocks, and the
-/// caller has already answered its RPC with the node as born. The transport is built by the caller
-/// instead, because creating it is the one step whose failure has nowhere to be reported to.
+/// Give a node its own thread. The [`NodeRuntime`] is built INSIDE it, which is what takes
+/// `setup()` off the graph lock — a `setup` that opens a device is exactly the one that blocks.
+/// The transport is the caller's, because its failure has nowhere to be reported to.
 pub fn spawn(
     manifest: &'static NodeManifest,
     node: Box<dyn Node>,
@@ -963,10 +867,8 @@ pub fn spawn(
         })
 }
 
-/// The number of frames a `Data` spans — its total element count (numpy `.size` for an array, `len`
-/// for a string/table). This, not a static per-slot flag, is the timeline discriminator: a
-/// length-preserving transform's output matches its input's frame count; a generator or
-/// length-changing transform does not.
+/// A `Data`'s total element count — the timeline discriminator, rather than a static per-slot
+/// flag: a length-preserving transform's output matches its input's count, and nothing else does.
 fn frame_count(d: &Data) -> usize {
     match d.value() {
         goofi_core::Value::Array(s) => s.shape().iter().product(),
@@ -975,21 +877,15 @@ fn frame_count(d: &Data) -> usize {
     }
 }
 
-/// Stamp the engine-owned meta — `index` and `ufreq` — on every frame this node just emitted (the
-/// node never touches either), and answer with the node's measured rate.
+/// Stamp the engine-owned meta on every frame just emitted, and answer the node's measured rate.
 ///
-/// **index**: for each output, propagate the index of the SINGLE index-bearing TRIGGERING input
-/// whose frame count equals the output's — that input is the same data timeline, so an upstream
-/// drop stays visible downstream. A non-triggering (control/reference) input — an oscillator's
-/// scalar frequency, say — is never a timeline candidate even if its length happens to match. With
-/// zero, or more than one, matching inputs (a generator, a length-changing transform, or an
-/// ambiguous fan-in) the slot starts a fresh per-output counter that advances one per emit.
+/// **index** propagates from the SINGLE index-bearing TRIGGERING input whose frame count equals
+/// the output's — the same data timeline, so an upstream drop stays visible downstream. A
+/// reference input is never a candidate even when its length matches. With zero or several
+/// matches, the slot starts a fresh counter advancing one per emit.
 ///
-/// **ufreq**: the NODE's measured update rate (Hz) — an EMA of the inter-emit interval keyed on
-/// `ctx.now`, `None` until a second emit gives one interval. Measured PER NODE, advanced once per
-/// productive run, and the same value stamped onto every emitted slot: ufreq describes how often
-/// the node updates, not a per-slot cadence. Authoritative — overwritten every emit, never
-/// inherited from upstream meta.
+/// **ufreq** is the NODE's measured rate: an EMA of the inter-emit interval, `None` until a second
+/// emit, the same value on every slot. Authoritative — never inherited from upstream meta.
 fn stamp_meta(
     manifest: &'static NodeManifest,
     inputs: &IndexMap<&'static str, Option<Data>>,
@@ -1039,10 +935,8 @@ fn stamp_meta(
             (Some(i), None) => i,
             _ => *counter,
         };
-        // Keep the fresh counter monotonically past whatever we emitted. Without this, a slot that
-        // MATCHES on one frame (an accumulator's first output length equals its input length) then
-        // goes fresh would restart the counter at 0 — duplicating or regressing the index at stream
-        // start (the Oscillator→Buffer reference patch).
+        // Keep the fresh counter past whatever was emitted: a slot that MATCHES on one frame and
+        // then goes fresh would otherwise restart at 0 and regress the index at stream start.
         *counter = index + 1;
         *d = d.with_stamps(index, node_ufreq);
     }
