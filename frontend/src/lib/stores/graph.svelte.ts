@@ -38,13 +38,13 @@ import {
 	viewersJson,
 	globalViews,
 	arrangementEntries,
+	type Doc,
 	type GlobalView,
 	type GlobalType
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import { assembleInstances, instanceError } from '$lib/crdt/instanceAssembly';
 import type { StringParam } from '$lib/api/types';
-import type * as Y from 'yjs';
 
 /** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
  * the option list was so trivially unchanged the push was coalesced away), lift the
@@ -103,9 +103,7 @@ export class GraphStore {
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
 
-	/** The CRDT sync driver — the browser replica of the manager's control-plane doc. Phase 2:
-	 * `links` are READ from the doc (the retired `link_added`/`link_removed` events no longer
-	 * drive them); other subtrees migrate onto the doc one at a time. */
+	/** The document driver — the browser replica of the manager's control-plane document. */
 	private _sync: SyncClient;
 
 	/** The one thing the UI says about the connection: it was ESTABLISHED and is now gone.
@@ -128,20 +126,16 @@ export class GraphStore {
 			if (c) this._everConnected = true;
 		});
 		ctl.on((ev) => this._handle(ev));
-		// Mount the CRDT replica and source doc-owned subtrees from it. The manager mirrors every
-		// control mutation into the doc and syncs the delta, so a doc transaction (local seed or
-		// remote delta) re-derives the reactive state for each subtree cut over to the doc.
+		// Mount the replica and source the document-owned subtrees from it. The manager projects
+		// every control mutation and broadcasts the delta, so each applied change re-derives the
+		// reactive state.
 		this._sync = new SyncClient(ctl);
-		// Register via onDocChange (not doc.on directly) so the observer follows the doc across a
-		// reset() — a fresh backend session swaps in a new empty doc.
-		this._sync.onDocChange((txn: Y.Transaction) => {
-			if (txn.changed.size > 0) this._syncFromDoc();
-		});
+		this._sync.onDocChange(() => this._syncFromDoc());
 		this._sync.start();
 	}
 
-	/** The CRDT control-plane document (the SSOT clients read; exposed for doc-driven reads). */
-	get doc(): Y.Doc {
+	/** The control-plane document — the one projection a client reads. */
+	get doc(): Doc {
 		return this._sync.doc;
 	}
 
@@ -151,9 +145,8 @@ export class GraphStore {
 		return this._sync.synced;
 	}
 
-	/** Re-derive every doc-owned subtree from the CRDT doc (Phase 2 read-path cutover). Runs on
-	 * every doc transaction (remote delta or local seed). Subtrees migrate here one at a time;
-	 * runtime state (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */
+	/** Re-derive every document-owned subtree, after each applied change. Runtime state
+	 * (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */
 	private _syncFromDoc(): void {
 		const doc = this._sync.doc;
 		// links: the whole set is replaced from the doc.

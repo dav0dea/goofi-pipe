@@ -15,7 +15,6 @@ export class FakeControl implements Control {
 	private calls: Array<{ op: OpName; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();
-	private syncListeners = new Set<(bytes: Uint8Array) => void>();
 	private results = new Map<string, unknown>();
 	private failing = new Set<string>();
 	// Starts connected — matches the real ControlClient, whose `onConnect` fires immediately
@@ -24,9 +23,6 @@ export class FakeControl implements Control {
 	// client is disconnected until its socket opens, and that window is where the difference
 	// between "not yet" and "lost" lives.
 	private _connected: boolean;
-	/** Binary sync frames the code under test sent via `sendSync` (for assertions). */
-	sentSyncFrames: Uint8Array[] = [];
-
 	constructor({ connected = true }: { connected?: boolean } = {}) {
 		this._connected = connected;
 	}
@@ -59,20 +55,6 @@ export class FakeControl implements Control {
 		this.connectListeners.add(fn);
 		fn(this._connected); // fire immediately, like the real ControlClient
 		return () => this.connectListeners.delete(fn);
-	}
-
-	onSyncFrame(fn: (bytes: Uint8Array) => void): () => void {
-		this.syncListeners.add(fn);
-		return () => this.syncListeners.delete(fn);
-	}
-
-	sendSync(bytes: Uint8Array): void {
-		this.sentSyncFrames.push(bytes);
-	}
-
-	/** Drive an inbound binary sync frame to every `onSyncFrame` listener. */
-	emitSync(bytes: Uint8Array): void {
-		for (const fn of this.syncListeners) fn(bytes);
 	}
 
 	/** Synchronously fan an event out to every `on` listener — simulates the

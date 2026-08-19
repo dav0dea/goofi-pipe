@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
 import { ui } from './ui.svelte';
-import * as Y from 'yjs';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
 function catalog(): NodeTypeInfo[] {
@@ -24,12 +24,8 @@ function catalog(): NodeTypeInfo[] {
 	return [mk('Oscillator'), mk('Buffer')];
 }
 
-function seedNode(nodes: Y.Map<Y.Map<unknown>>, uid: string, type: string, name: string): void {
-	const n = new Y.Map<unknown>();
-	n.set('type', type);
-	n.set('name', name);
-	nodes.set(uid, n);
-}
+/** A node, as the projection writes it. */
+const node = (type: string, name: string) => ({ type, name, pos: { x: 0, y: 0 } });
 
 interface Bnd {
 	bnd_id: string;
@@ -41,43 +37,31 @@ interface Bnd {
 	inner_slot?: string;
 }
 
-/** Seed a scope into the doc in the exact flat shape the Rust mirror writes it: `members` keyed by
- * member uid → {is_instance}, `stubs` keyed by stub id → {dir,dtype,name,pos,inner_node?,inner_slot?}. */
-function seedInstance(
-	insts: Y.Map<Y.Map<unknown>>,
-	uid: string,
-	o: { name: string; parent?: string; pos?: [number, number]; members?: Record<string, boolean>; stubs?: Bnd[] }
-): void {
-	const m = new Y.Map<unknown>();
-	m.set('name', o.name);
-	m.set('parent', o.parent ?? ROOT_ID);
-	const p = new Y.Map<unknown>();
-	p.set('x', (o.pos ?? [0, 0])[0]);
-	p.set('y', (o.pos ?? [0, 0])[1]);
-	m.set('pos', p);
-	const mem = new Y.Map<Y.Map<unknown>>();
-	for (const [muid, isInst] of Object.entries(o.members ?? {})) {
-		const e = new Y.Map<unknown>();
-		e.set('is_instance', isInst);
-		mem.set(muid, e);
-	}
-	m.set('members', mem);
-	const stubs = new Y.Map<Y.Map<unknown>>();
+/** A scope in the exact flat shape the projection writes it: `members` keyed by member uid →
+ * {is_instance}, `stubs` keyed by stub id → {dir,dtype,name,pos,inner_node?,inner_slot?}. */
+function scope(o: {
+	name: string;
+	parent?: string;
+	pos?: [number, number];
+	members?: Record<string, boolean>;
+	stubs?: Bnd[];
+}): Record<string, unknown> {
+	const pos = o.pos ?? [0, 0];
+	const members: Record<string, unknown> = {};
+	for (const [muid, isInst] of Object.entries(o.members ?? {})) members[muid] = { is_instance: isInst };
+	const stubs: Record<string, unknown> = {};
 	for (const b of o.stubs ?? []) {
-		const bm = new Y.Map<unknown>();
-		bm.set('dir', b.dir);
-		bm.set('dtype', b.dtype);
-		bm.set('name', b.name);
-		const bp = new Y.Map<unknown>();
-		bp.set('x', (b.pos ?? [0, 0])[0]);
-		bp.set('y', (b.pos ?? [0, 0])[1]);
-		bm.set('pos', bp);
-		if (b.inner_node !== undefined) bm.set('inner_node', b.inner_node);
-		if (b.inner_slot !== undefined) bm.set('inner_slot', b.inner_slot);
-		stubs.set(b.bnd_id, bm);
+		const bp = b.pos ?? [0, 0];
+		stubs[b.bnd_id] = {
+			dir: b.dir,
+			dtype: b.dtype,
+			name: b.name,
+			pos: { x: bp[0], y: bp[1] },
+			...(b.inner_node !== undefined ? { inner_node: b.inner_node } : {}),
+			...(b.inner_slot !== undefined ? { inner_slot: b.inner_slot } : {})
+		};
 	}
-	m.set('stubs', stubs);
-	insts.set(uid, m);
+	return { name: o.name, parent: o.parent ?? ROOT_ID, pos: { x: pos[0], y: pos[1] }, members, stubs };
 }
 
 describe('scope-forest read cutover — scopes built from the doc when the catalog is present', () => {
@@ -85,16 +69,19 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			const nodes = nodesMap(g.doc);
-			seedNode(nodes, 'n0', 'Oscillator', 'osc0'); // top-level node
-			seedNode(nodes, 'm1', 'Buffer', 'buffer0'); // member of i1
-			seedInstance(instancesMap(g.doc), 'i1', {
-				name: 'subpatch0',
-				pos: [5, 6],
-				members: { m1: false },
-				stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm1', inner_slot: 'out' }]
-			});
+		seed(fc).patch({
+			nodes: {
+				n0: node('Oscillator', 'osc0'), // top-level node
+				m1: node('Buffer', 'buffer0') // member of i1
+			},
+			instances: {
+				i1: scope({
+					name: 'subpatch0',
+					pos: [5, 6],
+					members: { m1: false },
+					stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm1', inner_slot: 'out' }]
+				})
+			}
 		});
 
 		// ROOT synthesized: top-level node + the scope, keyed by uid; the member excluded.
@@ -120,15 +107,15 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0');
-			seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { m1: false } });
+		const d = seed(fc).patch({
+			nodes: { m1: node('Buffer', 'buffer0') },
+			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
 		});
 		expect(g.instances.i1).toBeDefined();
 		expect(g.instances[ROOT_ID].members.m1).toBeUndefined(); // owned by i1
 
-		// Expand: the scope is removed from the doc (its member m1 becomes top-level).
-		Y.transact(g.doc, () => instancesMap(g.doc).delete('i1'));
+		// Expand: the scope leaves the document, and its member m1 becomes top-level.
+		d.remove('instances', 'i1');
 		expect(g.instances.i1, 'scope dropped when removed from the doc').toBeUndefined();
 		expect(g.instances[ROOT_ID].members.m1).toEqual({ uid: 'm1', is_instance: false });
 	});
@@ -139,18 +126,18 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		g.nodeTypes = catalog();
 		// m1 exists at top level and goes into error. The bridge only ever emits `error` keyed by a
 		// real NODE uid (never a scope uid) — so the scope error must be DERIVED from members.
-		Y.transact(g.doc, () => seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0'));
+		const d = seed(fc).node('m1', 'Buffer', 'buffer0');
 		fc.emit({ event: 'error', payload: { node: 'm1', error: 'member boom' } });
 		expect(g.nodeById('m1')!.error).toBe('member boom');
 
 		// Grouping m1 into i1 (mirror writes the scope → doc reconcile) must redden the collapsed
 		// sub-patch with its member's deep error, as describe_instance.error did pre-cutover.
-		Y.transact(g.doc, () => seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { m1: false } }));
+		d.instance('i1', scope({ name: 'sp0', members: { m1: false } }));
 		expect(g.instances.i1.error, 'collapsed scope reflects its member deep error').toBe('member boom');
 
 		// Clearing the member error and re-reconciling clears the scope error (no stale chip).
 		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
-		Y.transact(g.doc, () => instancesMap(g.doc).get('i1')!.set('name', 'sp0b'));
+		d.instance('i1', { name: 'sp0b' });
 		expect(g.instances.i1.error, 'cleared member error clears the derived scope error').toBeNull();
 	});
 
@@ -158,9 +145,9 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0');
-			seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { m1: false } });
+		seed(fc).patch({
+			nodes: { m1: node('Buffer', 'buffer0') },
+			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
 		});
 		expect(g.instances.i1.error).toBeNull();
 
@@ -181,14 +168,13 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			seedNode(nodesMap(g.doc), 'm1', 'Buffer', 'buffer0');
-			seedNode(nodesMap(g.doc), 'n0', 'Oscillator', 'osc0');
-			seedInstance(instancesMap(g.doc), 'i1', { name: 'sp0', members: { m1: false } });
+		const d = seed(fc).patch({
+			nodes: { m1: node('Buffer', 'buffer0'), n0: node('Oscillator', 'osc0') },
+			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
 		});
 		const before = g.nodeById('i1');
 		// A change to an UNRELATED node must not churn the sub-patch synth node identity.
-		Y.transact(g.doc, () => nodesMap(g.doc).get('n0')!.set('name', 'osc0b'));
+		d.patch({ nodes: { n0: { name: 'osc0b' } } });
 		expect(g.nodeById('i1'), 'synth node reference stable when the scope is unchanged').toBe(before);
 	});
 });
@@ -198,13 +184,15 @@ describe('a vanished scope is forgotten as thoroughly as a vanished node', () =>
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		Y.transact(g.doc, () => {
-			seedNode(nodesMap(g.doc), 'm9', 'Buffer', 'buffer9');
-			seedInstance(instancesMap(g.doc), 'i9', {
-				name: 'sp9',
-				members: { m9: false },
-				stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm9', inner_slot: 'out' }]
-			});
+		const d = seed(fc).patch({
+			nodes: { m9: node('Buffer', 'buffer9') },
+			instances: {
+				i9: scope({
+					name: 'sp9',
+					members: { m9: false },
+					stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm9', inner_slot: 'out' }]
+				})
+			}
 		});
 
 		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
@@ -214,7 +202,7 @@ describe('a vanished scope is forgotten as thoroughly as a vanished node', () =>
 
 		// Ungroup: the scope leaves the doc. Its uid can be re-minted by a later backend, so every
 		// store keyed by it must be cleared — exactly what `_reconcileNodes` does for a node.
-		Y.transact(g.doc, () => instancesMap(g.doc).delete('i9'));
+		d.remove('instances', 'i9');
 		expect(g.instances.i9).toBeUndefined();
 		expect(rawInlineView('i9', 'out0').kind, 'inline view forgotten with the scope').toBeUndefined();
 		expect(ui().isSlotExpanded('i9', 'out0'), 'slot-expand state forgotten with the scope').toBe(true);

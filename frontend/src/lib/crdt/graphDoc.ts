@@ -1,14 +1,25 @@
 /**
- * The browser replica of goofi's control-plane document — the exact schema the Rust
- * `goofi_bridge::crdt::GraphDoc` mirrors: `nodes: Y.Map<uid, {type, name, pos:{x,y}, params:
- * Y.Map<group, Y.Map<name, {value, expr?}>>, viewers}>` and `links: Y.Array<{node_out,
- * slot_out, node_in, slot_in}>`.
+ * The browser replica of goofi's control-plane document — the exact shape
+ * `goofi_bridge::projection` builds: `nodes: {uid: {type, name, pos:{x,y}, params: {group: {name:
+ * {value, expr?}}}, viewers}}`, `links: [{node_out, slot_out, node_in, slot_in}]`, plus
+ * `instances`, `globals` and `arrangement`.
  *
- * Pure reader helpers over a `Y.Doc` (no Svelte, no WebSocket) so they unit-test directly.
- * The reactive `.svelte.ts` layer subscribes to the doc and re-exposes these as runes.
+ * Plain JSON, and plain readers over it (no Svelte, no WebSocket) so they unit-test directly. The
+ * reactive `.svelte.ts` layer holds the document and re-exposes these as runes.
+ *
+ * Every reader is total: an absent or wrongly-typed leaf answers a default rather than throwing.
+ * The manager is the sole author, so a surprise here means the two ends have drifted — and a
+ * half-drawn graph is a better report of that than a blank page.
  */
-import * as Y from 'yjs';
 import type { Arrangement } from '$lib/workspace/arrangement';
+
+/** The document, as it arrives. */
+export type Doc = Record<string, unknown>;
+
+/** An empty document: the five roots present, so a reader never has to invent one. */
+export function emptyDoc(): Doc {
+	return { nodes: {}, links: [], instances: {}, globals: {}, arrangement: {} };
+}
 
 export interface NodeView {
 	uid: string;
@@ -47,37 +58,61 @@ export interface InstanceView {
 	interface: BoundaryView[];
 }
 
-/** The `nodes` root map. */
-export function nodesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
-	return doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
-}
+type Obj = Record<string, unknown>;
 
-/** The `links` root array. */
-export function linksArray(doc: Y.Doc): Y.Array<Y.Map<unknown>> {
-	return doc.getArray('links') as Y.Array<Y.Map<unknown>>;
-}
-
-function str(m: Y.Map<unknown> | undefined, key: string): string {
-	const v = m?.get(key);
+const obj = (v: unknown): Obj => (v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {});
+const str = (m: Obj | undefined, key: string): string => {
+	const v = m?.[key];
 	return typeof v === 'string' ? v : '';
+};
+const optStr = (m: Obj | undefined, key: string): string | undefined => {
+	const v = m?.[key];
+	return typeof v === 'string' ? v : undefined;
+};
+
+/** The `nodes` root, by uid. */
+export function nodesMap(doc: Doc): Record<string, Obj> {
+	return obj(doc.nodes) as Record<string, Obj>;
+}
+
+/** The `links` root, in order. */
+export function linksArray(doc: Doc): Obj[] {
+	return Array.isArray(doc.links) ? (doc.links as Obj[]) : [];
+}
+
+/** The `instances` root (the sub-patch forest), by uid. */
+export function instancesMap(doc: Doc): Record<string, Obj> {
+	return obj(doc.instances) as Record<string, Obj>;
+}
+
+/** The `globals` root, by name. */
+export function globalsMap(doc: Doc): Record<string, Obj> {
+	return obj(doc.globals) as Record<string, Obj>;
+}
+
+/** The `arrangement` root, by id. */
+export function arrangementMap(doc: Doc): Record<string, unknown> {
+	return obj(doc.arrangement);
+}
+
+/** `{x, y}` as the pair the editor draws with. */
+function pos2(m: Obj | undefined): [number, number] {
+	const p = obj(m?.pos);
+	const n = (k: string) => (typeof p[k] === 'number' ? (p[k] as number) : 0);
+	return [n('x'), n('y')];
 }
 
 /** A node's identity view, or `null` if the uid is absent. */
-export function nodeView(doc: Y.Doc, uid: string): NodeView | null {
-	const n = nodesMap(doc).get(uid);
+export function nodeView(doc: Doc, uid: string): NodeView | null {
+	const n = nodesMap(doc)[uid];
 	if (!n) return null;
-	const pos = n.get('pos') as Y.Map<unknown> | undefined;
-	const num = (k: string) => {
-		const v = pos?.get(k);
-		return typeof v === 'number' ? v : 0;
-	};
-	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: [num('x'), num('y')] };
+	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n) };
 }
 
-/** All node identity views, in the doc's key order. */
-export function nodeViews(doc: Y.Doc): NodeView[] {
+/** All node identity views, in the document's key order. */
+export function nodeViews(doc: Doc): NodeView[] {
 	const out: NodeView[] = [];
-	for (const uid of nodesMap(doc).keys()) {
+	for (const uid of Object.keys(nodesMap(doc))) {
 		const v = nodeView(doc, uid);
 		if (v) out.push(v);
 	}
@@ -90,31 +125,28 @@ export interface ParamExpr {
 	triggers: boolean;
 }
 
-/** The doc-owned param leaves for one node: value + optional expression binding, per group/name.
- * Exactly the `{value, expr?}` structure the doc stores (nodeAssembly merges these with the catalog
- * descriptor + runtime overlay). */
+/** The document-owned param leaves for one node: value + optional expression binding, per
+ * group/name. Exactly the `{value, expr?}` structure the document stores (nodeAssembly merges
+ * these with the catalog descriptor + runtime overlay). */
 export type DocParamLeaves = Record<
 	string,
 	Record<string, { value?: number | string | boolean; expr?: ParamExpr }>
 >;
 
-/** Read a node's committed param leaves (value + expression binding) from the doc, per group/name. */
-export function docParams(doc: Y.Doc, uid: string): DocParamLeaves {
+/** Read a node's committed param leaves (value + expression binding), per group/name. */
+export function docParams(doc: Doc, uid: string): DocParamLeaves {
 	const out: DocParamLeaves = {};
-	const params = nodesMap(doc).get(uid)?.get('params') as
-		| Y.Map<Y.Map<Y.Map<unknown>>>
-		| undefined;
-	if (!params) return out;
-	for (const [group, g] of params.entries()) {
+	const params = obj(nodesMap(doc)[uid]?.params);
+	for (const [group, g] of Object.entries(params)) {
 		out[group] = {};
-		for (const [name, entry] of g.entries()) {
+		for (const [name, raw] of Object.entries(obj(g))) {
+			const entry = obj(raw);
 			const leaf: DocParamLeaves[string][string] = {};
-			const v = entry.get('value');
+			const v = entry.value;
 			if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') leaf.value = v;
-			const expr = entry.get('expr') as Y.Map<unknown> | undefined;
-			const s = expr?.get('source');
-			if (typeof s === 'string') {
-				leaf.expr = { source: s, enabled: expr!.get('enabled') === true, triggers: expr!.get('triggers') === true };
+			const expr = obj(entry.expr);
+			if (typeof expr.source === 'string') {
+				leaf.expr = { source: expr.source, enabled: expr.enabled === true, triggers: expr.triggers === true };
 			}
 			out[group][name] = leaf;
 		}
@@ -122,77 +154,53 @@ export function docParams(doc: Y.Doc, uid: string): DocParamLeaves {
 	return out;
 }
 
-/** Write a param value into the doc IN PLACE at `nodes[uid].params[group][name].value`, matching
- * the Rust `GraphDoc` mirror structure. The browser replica is read-only in production (the manager
- * owns all writes); this remains a TEST-SEED double, letting store tests write a value into the doc
- * to simulate the manager's mirror. No-op (returns false) if the node is absent — never mint a
- * phantom. Returns whether the write landed. */
+/** The `nodes[uid].params[group][name]` entry, get-or-inserted, or `undefined` when the node is
+ * absent from this replica — never mint a phantom node. Backs the test-seed writers below. */
+function paramEntry(doc: Doc, uid: string, group: string, name: string): Obj | undefined {
+	const node = nodesMap(doc)[uid];
+	if (!node) return undefined;
+	const into = (parent: Obj, key: string): Obj => {
+		if (!parent[key] || typeof parent[key] !== 'object') parent[key] = {};
+		return parent[key] as Obj;
+	};
+	return into(into(into(node, 'params'), group), name);
+}
+
+/** Write a param value at `nodes[uid].params[group][name].value`. The replica is READ-ONLY in
+ * production — the manager owns every write — so this is a test-seed double, letting a store test
+ * stand in for the manager's projection. Answers whether it landed. */
 export function setParamValue(
-	doc: Y.Doc,
+	doc: Doc,
 	uid: string,
 	group: string,
 	name: string,
 	value: number | string | boolean
 ): boolean {
-	const entry = paramEntryForWrite(doc, uid, group, name);
+	const entry = paramEntry(doc, uid, group, name);
 	if (!entry) return false;
-	if (entry.get('value') !== value) entry.set('value', value);
+	entry.value = value;
 	return true;
 }
 
-/** Get-or-insert the (stable) `Y.Map` at `parent[key]`. Never replaces an existing map, so nested
- * leaves survive. */
-function getOrInsertMap(parent: Y.Map<unknown>, key: string): Y.Map<unknown> {
-	let m = parent.get(key) as Y.Map<unknown> | undefined;
-	if (!m) {
-		m = new Y.Map<unknown>();
-		parent.set(key, m);
-	}
-	return m;
-}
-
-/** The `nodes[uid].params[group][name]` entry map, get-or-inserted, or `undefined` if the node is
- * absent from this replica (never mint a phantom node). Backs the test-seed `setParam*` doubles. */
-function paramEntryForWrite(
-	doc: Y.Doc,
-	uid: string,
-	group: string,
-	name: string
-): Y.Map<unknown> | undefined {
-	const node = nodesMap(doc).get(uid);
-	if (!node) return undefined;
-	return getOrInsertMap(getOrInsertMap(getOrInsertMap(node, 'params'), group), name);
-}
-
-/** Write (or clear) a param's expression binding into the doc IN PLACE at
- * `…params[group][name].expr = {source, enabled, triggers}`, matching the Rust `GraphDoc` mirror.
- * The browser replica is read-only in production (the manager owns all writes); this remains a
- * TEST-SEED double, letting store tests write a binding into the doc to simulate the manager's
- * mirror. `null` clears the binding. No-op (returns false) if the node is absent — never mint a
- * phantom. Returns whether it landed. */
+/** Write (or, with `null`, clear) a param's expression binding. A test-seed double, as
+ * [`setParamValue`] is. Answers whether it landed. */
 export function setParamExpr(
-	doc: Y.Doc,
+	doc: Doc,
 	uid: string,
 	group: string,
 	name: string,
-	expr: { source: string; enabled: boolean; triggers: boolean } | null
+	expr: ParamExpr | null
 ): boolean {
-	const entry = paramEntryForWrite(doc, uid, group, name);
+	const entry = paramEntry(doc, uid, group, name);
 	if (!entry) return false;
-	if (expr) {
-		const ex = getOrInsertMap(entry, 'expr');
-		if (ex.get('source') !== expr.source) ex.set('source', expr.source);
-		if (ex.get('enabled') !== expr.enabled) ex.set('enabled', expr.enabled);
-		if (ex.get('triggers') !== expr.triggers) ex.set('triggers', expr.triggers);
-	} else if (entry.get('expr') !== undefined) {
-		entry.delete('expr');
-	}
+	if (expr) entry.expr = { ...expr };
+	else delete entry.expr;
 	return true;
 }
 
 /** A node's opaque per-slot viewer blob (`{slot: {collapsed, kind, settings}}`), or `undefined`. */
-export function viewersJson(doc: Y.Doc, uid: string): unknown {
-	const v = nodesMap(doc).get(uid)?.get('viewers');
+export function viewersJson(doc: Doc, uid: string): unknown {
+	const v = nodesMap(doc)[uid]?.viewers;
 	if (typeof v !== 'string') return undefined;
 	try {
 		return JSON.parse(v);
@@ -201,43 +209,26 @@ export function viewersJson(doc: Y.Doc, uid: string): unknown {
 	}
 }
 
-/** The `instances` root map (the sub-patch forest). */
-export function instancesMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
-	return doc.getMap('instances') as Y.Map<Y.Map<unknown>>;
-}
-
-function pos2(m: Y.Map<unknown> | undefined): [number, number] {
-	const p = m?.get('pos') as Y.Map<unknown> | undefined;
-	const n = (k: string) => {
-		const v = p?.get(k);
-		return typeof v === 'number' ? v : 0;
-	};
-	return [n('x'), n('y')];
-}
-
 /** A sub-patch instance's forest view, or `null` if the uid is absent. */
-export function instanceView(doc: Y.Doc, uid: string): InstanceView | null {
-	const inst = instancesMap(doc).get(uid);
+export function instanceView(doc: Doc, uid: string): InstanceView | null {
+	const inst = instancesMap(doc)[uid];
 	if (!inst) return null;
 	const members: Record<string, boolean> = {};
-	const mm = inst.get('members') as Y.Map<Y.Map<unknown>> | undefined;
-	if (mm) for (const [muid, m] of mm.entries()) members[muid] = Boolean(m?.get('is_instance'));
+	for (const [muid, m] of Object.entries(obj(inst.members))) {
+		members[muid] = obj(m).is_instance === true;
+	}
 	const iface: BoundaryView[] = [];
-	const im = inst.get('stubs') as Y.Map<Y.Map<unknown>> | undefined;
-	if (im) {
-		for (const [bnd, b] of im.entries()) {
-			const inner_node = b.get('inner_node');
-			const inner_slot = b.get('inner_slot');
-			iface.push({
-				bnd_id: bnd,
-				dir: str(b, 'dir'),
-				dtype: str(b, 'dtype'),
-				name: str(b, 'name'),
-				pos: pos2(b),
-				inner_node: typeof inner_node === 'string' ? inner_node : undefined,
-				inner_slot: typeof inner_slot === 'string' ? inner_slot : undefined
-			});
-		}
+	for (const [bnd, raw] of Object.entries(obj(inst.stubs))) {
+		const b = obj(raw);
+		iface.push({
+			bnd_id: bnd,
+			dir: str(b, 'dir'),
+			dtype: str(b, 'dtype'),
+			name: str(b, 'name'),
+			pos: pos2(b),
+			inner_node: optStr(b, 'inner_node'),
+			inner_slot: optStr(b, 'inner_slot')
+		});
 	}
 	return {
 		uid,
@@ -249,10 +240,10 @@ export function instanceView(doc: Y.Doc, uid: string): InstanceView | null {
 	};
 }
 
-/** All sub-patch instance views, in the doc's key order. */
-export function instanceViews(doc: Y.Doc): InstanceView[] {
+/** All sub-patch instance views, in the document's key order. */
+export function instanceViews(doc: Doc): InstanceView[] {
 	const out: InstanceView[] = [];
-	for (const uid of instancesMap(doc).keys()) {
+	for (const uid of Object.keys(instancesMap(doc))) {
 		const v = instanceView(doc, uid);
 		if (v) out.push(v);
 	}
@@ -260,20 +251,17 @@ export function instanceViews(doc: Y.Doc): InstanceView[] {
 }
 
 /** All links, in array order. */
-export function linkViews(doc: Y.Doc): LinkView[] {
-	return linksArray(doc)
-		.toArray()
-		.map((m) => ({
-			node_out: str(m, 'node_out'),
-			slot_out: str(m, 'slot_out'),
-			node_in: str(m, 'node_in'),
-			slot_in: str(m, 'slot_in')
-		}));
+export function linkViews(doc: Doc): LinkView[] {
+	return linksArray(doc).map((m) => ({
+		node_out: str(m, 'node_out'),
+		slot_out: str(m, 'slot_out'),
+		node_in: str(m, 'node_in'),
+		slot_in: str(m, 'slot_in')
+	}));
 }
 
 // ── Globals ────────────────────────────────────────────────────────────────────────────────────
-// The `globals` root map — patch-scoped named scalars, the fourth doc root beside nodes/links/
-// instances. Each entry is `{value, type, system}` (the Rust `GraphDoc` globals mirror). `type`
+// The `globals` root — patch-scoped named scalars. Each entry is `{value, type, system}`. `type`
 // disambiguates float↔int after JS's number normalization; `system` marks a code-owned global that
 // the panel locks (no delete/rename) and the manager refuses to delete.
 
@@ -288,62 +276,46 @@ export interface GlobalView {
 	system: boolean;
 }
 
-/** The `globals` root map. */
-export function globalsMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
-	return doc.getMap('globals') as Y.Map<Y.Map<unknown>>;
-}
-
-/** All globals, in the doc's key order (system-first, then user in creation order). */
-export function globalViews(doc: Y.Doc): GlobalView[] {
+/** All globals, in the document's key order (system-first, then user in creation order). */
+export function globalViews(doc: Doc): GlobalView[] {
 	const out: GlobalView[] = [];
-	for (const [name, g] of globalsMap(doc).entries()) {
-		const value = g.get('value');
-		const type = g.get('type');
+	for (const [name, raw] of Object.entries(globalsMap(doc))) {
+		const g = obj(raw);
+		const value = g.value;
+		const type = g.type;
 		if (
 			(typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') &&
 			(type === 'float' || type === 'int' || type === 'bool' || type === 'string')
 		) {
-			out.push({ name, value, type, system: g.get('system') === true });
+			out.push({ name, value, type, system: g.system === true });
 		}
 	}
 	return out;
 }
 
 // ── The arrangement ────────────────────────────────────────────────────────────────────────────
-// The `arrangement` root map — the editor's panel layout, held FLAT and id-keyed (the fifth root).
-// Every page, split and panel is one entry naming its `parent` and its `order`; the tree is rebuilt
-// at render time by `$lib/workspace/arrangement`.
-
-/** The `arrangement` root map. */
-export function arrangementMap(doc: Y.Doc): Y.Map<unknown> {
-	return doc.getMap('arrangement');
-}
+// The `arrangement` root — the editor's panel layout, held FLAT and id-keyed. Every page, split and
+// panel is one entry naming its `parent` and its `order`; the tree is rebuilt at render time by
+// `$lib/workspace/arrangement`.
 
 /** Every arrangement ENTRY, by id. The manager's id counter rides the same root under `#seq` as a
  * bare number, so an entry is recognised by carrying a `kind` — read the values, never the keys. */
-export function arrangementEntries(doc: Y.Doc): Arrangement {
+export function arrangementEntries(doc: Doc): Arrangement {
 	const out: Arrangement = {};
-	for (const [id, raw] of arrangementMap(doc).entries()) {
-		if (!(raw instanceof Y.Map)) continue;
-		const e = raw as Y.Map<unknown>;
-		const kind = e.get('kind');
+	for (const [id, raw] of Object.entries(arrangementMap(doc))) {
+		const e = obj(raw);
+		const kind = e.kind;
 		if (kind !== 'page' && kind !== 'split' && kind !== 'panel') continue;
-		const order = e.get('order');
-		if (typeof order !== 'number') continue;
-		const opt = (k: string): string | undefined => {
-			const v = e.get(k);
-			return typeof v === 'string' ? v : undefined;
-		};
-		const size = e.get('size');
+		if (typeof e.order !== 'number') continue;
 		out[id] = {
 			kind,
-			order,
-			name: opt('name'),
-			parent: opt('parent'),
-			size: typeof size === 'number' ? size : undefined,
-			axis: opt('axis'),
-			panel_type: opt('panel_type'),
-			state: opt('state')
+			order: e.order,
+			name: optStr(e, 'name'),
+			parent: optStr(e, 'parent'),
+			size: typeof e.size === 'number' ? e.size : undefined,
+			axis: optStr(e, 'axis'),
+			panel_type: optStr(e, 'panel_type'),
+			state: optStr(e, 'state')
 		};
 	}
 	return out;
@@ -351,7 +323,7 @@ export function arrangementEntries(doc: Y.Doc): Arrangement {
 
 /** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`:
  * `[A-Za-z_][A-Za-z0-9_]*`, and not the reserved namespace token `globals`. The panel gates a
- * rename/add on this so an illegal name never reaches the doc (the manager would reject it anyway). */
+ * rename/add on this so an illegal name never reaches the manager (which would reject it anyway). */
 export function isValidGlobalName(name: string): boolean {
 	return name !== 'globals' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }

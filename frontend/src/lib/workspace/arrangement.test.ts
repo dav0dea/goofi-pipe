@@ -4,7 +4,6 @@
  * and its order, and the tree the panel system renders is rebuilt from those pointers here.
  */
 import { describe, expect, it } from 'vitest';
-import * as Y from 'yjs';
 import {
 	buildWorkspaces,
 	childIds,
@@ -126,23 +125,8 @@ describe('pageOf / childIds / splitFractions', () => {
 });
 
 describe('arrangementEntries', () => {
-	/** Seed a Y.Doc's `arrangement` root the way the manager's mirror does. */
-	function seed(doc: Y.Doc, arr: Record<string, Record<string, unknown> | number>): void {
-		const m = doc.getMap('arrangement');
-		for (const [id, e] of Object.entries(arr)) {
-			if (typeof e === 'number') {
-				m.set(id, e);
-				continue;
-			}
-			const em = new Y.Map<unknown>();
-			for (const [k, v] of Object.entries(e)) em.set(k, v);
-			m.set(id, em);
-		}
-	}
-
 	it('reads the root’s ENTRIES, skipping the id counter riding beside them', () => {
-		const doc = new Y.Doc();
-		seed(doc, { ...defaultArr(), '#seq': 2 } as Record<string, Record<string, unknown> | number>);
+		const doc = { arrangement: { ...defaultArr(), '#seq': 2 } };
 		const entries = arrangementEntries(doc);
 		expect(Object.keys(entries).sort(), '`#seq` is a number, not an entry').toEqual([
 			'page-1',
@@ -152,9 +136,7 @@ describe('arrangementEntries', () => {
 	});
 
 	it('round-trips a mirrored arrangement into the same tree the manager drew', () => {
-		const doc = new Y.Doc();
-		seed(doc, splitArr() as unknown as Record<string, Record<string, unknown>>);
-		const root = buildWorkspaces(arrangementEntries(doc))[0].root;
+		const root = buildWorkspaces(arrangementEntries({ arrangement: splitArr() }))[0].root;
 		if (root.kind !== 'split') throw new Error('expected a split');
 		expect(root.children.map((c) => c.id)).toEqual(['panel-2', 'panel-3']);
 	});

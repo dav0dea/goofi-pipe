@@ -343,9 +343,14 @@ export type ControlEvent =
 	// A harness was spawned, stopped or reaped — or the detection sweep landed. Carries the WHOLE
 	// roster, the same shape the snapshot seeds, so a client never has to diff transitions.
 	| { event: 'harness_changed'; payload: HarnessRoster }
-	// The panel arrangement has NO event: it is the fifth CRDT doc root, so a peer's edit converges
-	// through the same binary sync the graph does.
-	| { event: 'graph_replaced'; payload: GraphSnapshot };
+	| { event: 'graph_replaced'; payload: GraphSnapshot }
+	// The control-plane document, whole — sent unprompted on connect, and again to recover a client
+	// that lagged past the broadcast ring. The panel arrangement has no event of its own: it is one
+	// of the document's five roots, so a peer's layout edit arrives as a `doc_patch` like any other.
+	| { event: 'doc_state'; payload: { v: number; doc: Record<string, unknown> } }
+	// One delta. `from` is the version it applies TO and `v` the version it produces, so a replica
+	// that missed one can say so instead of merging onto the wrong base.
+	| { event: 'doc_patch'; payload: { from: number; v: number; patch: Record<string, unknown> } };
 
 type EventHandler = (ev: ControlEvent) => void;
 
@@ -365,10 +370,6 @@ export interface Control {
 	call<T = unknown>(op: OpName, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;
 	onConnect(fn: (c: boolean) => void): () => void;
-	/** Subscribe to inbound binary CRDT sync frames. Returns an unsubscribe fn. */
-	onSyncFrame(fn: (bytes: Uint8Array) => void): () => void;
-	/** Send an outbound binary CRDT sync frame (no-op if the socket is not open). */
-	sendSync(bytes: Uint8Array): void;
 }
 
 /** This tab's stable command-session id (scopes the manager's per-client undo/redo). Minted once
@@ -398,7 +399,6 @@ export class ControlClient implements Control {
 	private handlers = new Set<EventHandler>();
 	private connectListeners = new Set<(connected: boolean) => void>();
 	private protocolListeners = new Set<(mismatch: boolean) => void>();
-	private syncListeners = new Set<(bytes: Uint8Array) => void>();
 	private _connected = false;
 	private _protocolMismatch = false;
 	private retryMs = 250;
@@ -415,8 +415,6 @@ export class ControlClient implements Control {
 	private _open(): void {
 		if (this.ws) return;
 		const ws = new WebSocket(this.url);
-		// Binary frames carry CRDT sync updates; receive them as ArrayBuffer, not Blob.
-		ws.binaryType = 'arraybuffer';
 		this.ws = ws;
 
 		ws.addEventListener('open', () => {
@@ -428,19 +426,6 @@ export class ControlClient implements Control {
 	}
 
 	private _onMessage(e: MessageEvent): void {
-		// Binary frames are CRDT sync updates (ArrayBuffer, since binaryType is set) — route
-		// them to the sync layer, which drives the Yjs replica. Text frames are JSON RPC.
-		if (e.data instanceof ArrayBuffer) {
-			const bytes = new Uint8Array(e.data);
-			for (const h of this.syncListeners) {
-				try {
-					h(bytes);
-				} catch (err) {
-					console.error('sync frame handler crashed', err);
-				}
-			}
-			return;
-		}
 		let msg: unknown;
 		try {
 			msg = JSON.parse(e.data);
@@ -517,19 +502,6 @@ export class ControlClient implements Control {
 		this.protocolListeners.add(handler);
 		if (this._protocolMismatch) handler(true);
 		return () => this.protocolListeners.delete(handler);
-	}
-
-	/** Subscribe to inbound binary CRDT sync frames. Returns an unsubscribe fn. */
-	onSyncFrame(fn: (bytes: Uint8Array) => void): () => void {
-		this.syncListeners.add(fn);
-		return () => this.syncListeners.delete(fn);
-	}
-
-	/** Send an outbound binary CRDT sync frame (dropped if the socket is not open). */
-	sendSync(bytes: Uint8Array): void {
-		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-			this.ws.send(bytes);
-		}
 	}
 
 	/** Issue an RPC. Returns a promise resolving to the server's result. */

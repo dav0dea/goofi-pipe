@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap, setParamValue, setParamExpr } from '$lib/crdt/graphDoc';
+import { nodesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
-import * as Y from 'yjs';
 
 /** A minimal hello/graph_replaced snapshot; `node_types` optionally carries the palette inline. */
 function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'] = {}): GraphSnapshot {
@@ -50,27 +50,14 @@ function catalog(): NodeTypeInfo[] {
 	];
 }
 
-/** Seed a node into the store's doc exactly as the manager's mirror (`sync_graph_to_doc`) writes it,
- * in ONE Yjs transaction so the store's afterTransaction → _syncFromDoc → reconcile fires once. */
-function docSeedNode(g: GraphStore, uid: string, type: string, name: string, pos: [number, number]): void {
-	Y.transact(g.doc, () => {
-		const n = new Y.Map<unknown>();
-		n.set('type', type);
-		n.set('name', name);
-		const p = new Y.Map<unknown>();
-		p.set('x', pos[0]);
-		p.set('y', pos[1]);
-		n.set('pos', p);
-		nodesMap(g.doc).set(uid, n);
-	});
-}
 
 describe('node-identity read cutover — nodes built from the doc when the catalog is present', () => {
 	it('assembles a node from doc identity + catalog descriptors', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog(); // catalog present → the doc becomes authoritative for node identity
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [10, 20]);
+		d.node('n1', 'Oscillator', 'osc0', [10, 20]);
 
 		const n = g.nodeById('n1');
 		expect(n, 'node exists purely from the doc — no node_added event').toBeDefined();
@@ -86,29 +73,32 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 	it('reflects a doc param-value leaf-write', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 
-		setParamValue(g.doc, 'n1', 'common', 'max_frequency', 42); // fires a transaction → reconcile
+		d.patch({ nodes: { n1: { params: { common: { max_frequency: { value: 42 } } } } } });
 		expect(g.nodeById('n1')!.params.common.max_frequency.value).toBe(42);
 	});
 
 	it('drops a node when it vanishes from the doc (mirror removal)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 		expect(g.nodeById('n1')).toBeDefined();
 
-		Y.transact(g.doc, () => nodesMap(g.doc).delete('n1'));
+		d.remove('nodes', 'n1');
 		expect(g.nodeById('n1'), 'node removed from the doc → dropped from the store').toBeFalsy();
 	});
 
 	it('ignores a node_added announcement — the doc owns node existence', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 
 		// node_added for a node NOT in the doc must not mint a phantom — the reconcile owns
 		// existence (else the announcement would race/duplicate the doc mirror).
@@ -120,9 +110,10 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 	it('state_update merges runtime bits without clobbering the doc-owned value', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
-		setParamValue(g.doc, 'n1', 'common', 'max_frequency', 55);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.patch({ nodes: { n1: { params: { common: { max_frequency: { value: 55 } } } } } });
 
 		// A state_update carrying a STALE value (999) + an expression_error + stage: the value must
 		// stay the doc's 55 (params are doc-owned), while error/stage/expression_error merge.
@@ -147,8 +138,9 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 	it('an unknown type (missing from the catalog) still renders identity + pos', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog(); // does NOT contain "Mystery"
-		docSeedNode(g, 'n2', 'Mystery', 'mystery0', [5, 6]);
+		d.node('n2', 'Mystery', 'mystery0', [5, 6]);
 
 		const n = g.nodeById('n2');
 		expect(n).toBeDefined();
@@ -163,15 +155,21 @@ describe('expression live value survives a doc rebuild', () => {
 	it('an expression param keeps its param_values live value across an unrelated doc rebuild', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 		// Committed leaf value 99 + an ENABLED expression binding: the displayed value should track
 		// the LIVE evaluation, not this committed literal.
-		setParamValue(g.doc, 'n1', 'common', 'max_frequency', 99);
-		setParamExpr(g.doc, 'n1', 'common', 'max_frequency', {
-			source: "nd('lfo')",
-			enabled: true,
-			triggers: false
+		d.patch({
+			nodes: {
+				n1: {
+					params: {
+						common: {
+							max_frequency: { value: 99, expr: { source: "nd('lfo')", enabled: true, triggers: false } }
+						}
+					}
+				}
+			}
 		});
 
 		// A param_values event delivers the live evaluated value (7) — never written to the doc.
@@ -180,7 +178,7 @@ describe('expression live value survives a doc rebuild', () => {
 
 		// An unrelated doc change rebuilds every node from the doc. The live value must NOT revert to
 		// the committed leaf (99) — the retired fallback path guarded this; the doc path must too.
-		docSeedNode(g, 'n2', 'Oscillator', 'osc1', [1, 1]);
+		d.node('n2', 'Oscillator', 'osc1', [1, 1]);
 		expect(
 			g.nodeById('n1')!.params.common.max_frequency.value,
 			'live expression value preserved across the doc rebuild'
@@ -192,8 +190,9 @@ describe('node runtime survives a doc rebuild', () => {
 	it('a survivor keeps its event-sourced stage, error and stats when an unrelated node lands', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog();
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 
 		// The three node-level fields the doc never holds, each from its own event.
 		fc.emit({ event: 'state_update', payload: { node: 'n1', params: {}, stage: 'ready', error: 'boom' } });
@@ -203,7 +202,7 @@ describe('node runtime survives a doc rebuild', () => {
 		// An unrelated doc write rebuilds every node from doc + catalog. The rebuild carries the
 		// runtime forward through `_extractRuntime` → `assembleNode`, so the survivor must not be
 		// blanked back to a healthy, statless boot state.
-		docSeedNode(g, 'n2', 'Oscillator', 'osc1', [1, 1]);
+		d.node('n2', 'Oscillator', 'osc1', [1, 1]);
 		const n = g.nodeById('n1')!;
 		expect(n.stage, 'stage survives the rebuild').toBe('ready');
 		expect(n.error, 'error survives the rebuild').toBe('boom');
@@ -215,6 +214,7 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 	it('a hello carrying node_types sets the catalog synchronously (doc-authoritative from render 1)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'hello', payload: helloSnap(catalog()) });
 		// The catalog is in hand immediately — the doc becomes authoritative with no fallback window.
 		expect(g.nodeTypes?.length).toBe(1);
@@ -232,7 +232,9 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 			event: 'hello',
 			payload: helloSnap(catalog(), { n1: { stage: 'error', error: 'ImportError: no scipy' } })
 		});
-		docSeedNode(g, 'n1', 'Oscillator', 'osc0', [0, 0]);
+		// The seeder is made AFTER the hello, because that is the order the manager sends: a new
+		// session's `hello` empties the replica, and the `doc_state` that follows fills it.
+		seed(fc).node('n1', 'Oscillator', 'osc0', [0, 0]);
 
 		const n = g.nodeById('n1')!;
 		expect(n.error).toBe('ImportError: no scipy');
@@ -248,7 +250,7 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		fc.emit({ event: 'hello', payload: helloSnap(catalog()) });
-		docSeedNode(g, 'n9', 'Oscillator', 'osc0', [0, 0]);
+		seed(fc).node('n9', 'Oscillator', 'osc0', [0, 0]);
 		expect(g.nodeById('n9')!.error).toBeFalsy();
 
 		fc.emit({

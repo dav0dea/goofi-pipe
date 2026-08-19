@@ -120,13 +120,20 @@ model for every finder and verifier — a weaker finder under-finds.
 The shape of the system, stated where it is a CHOICE. The mechanism is in the code.
 
 **One process, one graph, one document.** The graph, the engine and the web server live in one
-Rust process. A browser's replica of the graph is READ-ONLY: every mutation is a command sent as
-an RPC, the manager applies it, and the delta is broadcast. **The CRDT doc is the only graph
-projection** — a snapshot that also carried nodes was tried, and the two drifted.
+Rust process. A browser's replica is READ-ONLY: every mutation is a command sent as an RPC, the
+manager applies it, and the delta is broadcast. **The document is the only graph projection** — a
+snapshot that also carried nodes was tried, and the two drifted.
+
+**The document is plain JSON, and a delta is a merge patch.** It was a CRDT, and nothing a CRDT is
+for was in use: the replica never writes, undo is the manager's own command history, and multi-user
+relay was never built. What was left was one-way replication, with the library fighting it — the
+broadcast gate could not use the state vector, because a delete does not advance one. Merge patch
+spends `null` on "delete this key", so it is exact only while the document has no null leaf; a test
+pins that, and if a null is ever needed the delta needs an explicit tombstone instead.
 
 **Everything is a command with an exact inverse.** Undo/redo is manager-owned and filtered per
-session, so two browser tabs undo their own work. Layout is a doc root like any other and rides
-the same machinery. **Tolerance belongs to replay, strictness to the fresh caller:** a command's
+session, so two browser tabs undo their own work. Layout is a document root like any other and
+rides the same machinery. **Tolerance belongs to replay, strictness to the fresh caller:** a command's
 own execution is idempotent so a stale toggle converges instead of wedging a session's stack,
 and the first-hand RPC path gates on a precondition instead.
 

@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
-import * as Y from 'yjs';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
 function catalog(): NodeTypeInfo[] {
@@ -37,28 +37,16 @@ function snapshot(): GraphSnapshot {
 }
 
 /** A store holding a collapsed sub-patch instance `sub` (one member `m1`). */
-function withInstance(): { fc: FakeControl; g: GraphStore } {
+function withInstance(): { fc: FakeControl; g: GraphStore; d: DocSeed } {
 	const fc = new FakeControl();
 	const g = new GraphStore(fc);
 	g.nodeTypes = catalog();
-	// Seed the doc exactly as the manager's mirror writes it — the scope forest's single source.
-	Y.transact(g.doc, () => {
-		const n = new Y.Map<unknown>();
-		n.set('type', 'Buffer');
-		n.set('name', 'buffer0');
-		nodesMap(g.doc).set('m1', n);
-
-		const inst = new Y.Map<unknown>();
-		inst.set('name', 'subpatch0');
-		inst.set('parent', ROOT_ID);
-		const members = new Y.Map<Y.Map<unknown>>();
-		const entry = new Y.Map<unknown>();
-		entry.set('is_instance', false);
-		members.set('m1', entry);
-		inst.set('members', members);
-		instancesMap(g.doc).set('sub', inst);
+	// Seed as the manager sends it — the scope forest's single source.
+	const d = seed(fc).patch({
+		nodes: { m1: { type: 'Buffer', name: 'buffer0', pos: { x: 0, y: 0 } } },
+		instances: { sub: { name: 'subpatch0', parent: ROOT_ID, members: { m1: { is_instance: false } } } }
 	});
-	return { fc, g };
+	return { fc, g, d };
 }
 
 describe('a wholesale load resets the client history (lockstep with the manager)', () => {
@@ -126,13 +114,8 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 
 	it('a MIXED batch (instance + node) is ONE undo step delegating per child', async () => {
 		// `sub` (holding member `m1`) plus a top-level node `n1`.
-		const { fc, g } = withInstance();
-		Y.transact(g.doc, () => {
-			const n = new Y.Map<unknown>();
-			n.set('type', 'Buffer');
-			n.set('name', 'buffer1');
-			nodesMap(g.doc).set('n1', n);
-		});
+		const { fc, g, d } = withInstance();
+		d.node('n1', 'Buffer', 'buffer1');
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
 
 		await g.removeNodes(['n1', 'sub']);

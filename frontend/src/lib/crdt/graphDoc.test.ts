@@ -1,72 +1,47 @@
 import { describe, it, expect } from 'vitest';
-import * as Y from 'yjs';
 import {
 	nodesMap,
-	linksArray,
 	nodeView,
 	nodeViews,
 	setParamExpr,
 	linkViews,
-	instancesMap,
 	instanceView,
 	instanceViews,
 	docParams,
-	globalsMap,
 	globalViews,
-	isValidGlobalName
+	isValidGlobalName,
+	type Doc
 } from './graphDoc';
 
-/** Build a doc in the exact shape the Rust `GraphDoc` mirror writes. */
-function seedDoc(): Y.Doc {
-	const doc = new Y.Doc();
-	const nodes = nodesMap(doc);
-
-	const osc = new Y.Map<unknown>();
-	osc.set('type', 'Oscillator');
-	osc.set('name', 'osc0');
-	const pos = new Y.Map<unknown>();
-	pos.set('x', 10);
-	pos.set('y', 20);
-	osc.set('pos', pos);
-	const params = new Y.Map<unknown>();
-	const common = new Y.Map<unknown>();
-	const maxFreq = new Y.Map<unknown>();
-	maxFreq.set('value', 30);
-	common.set('max_frequency', maxFreq);
-	const oscGroup = new Y.Map<unknown>();
-	const waveform = new Y.Map<unknown>();
-	waveform.set('value', 'sine');
-	const expr = new Y.Map<unknown>();
-	expr.set('source', "nd('lfo')");
-	expr.set('enabled', true);
-	expr.set('triggers', false);
-	waveform.set('expr', expr);
-	oscGroup.set('waveform', waveform);
-	params.set('common', common);
-	params.set('oscillator', oscGroup);
-	osc.set('params', params);
-	nodes.set('a', osc);
-
-	const buf = new Y.Map<unknown>();
-	buf.set('type', 'Buffer');
-	buf.set('name', 'buf0');
-	nodes.set('b', buf);
-
-	const link = new Y.Map<unknown>();
-	link.set('node_out', 'a');
-	link.set('slot_out', 'out');
-	link.set('node_in', 'b');
-	link.set('slot_in', 'data');
-	linksArray(doc).push([link]);
-
-	return doc;
+/** A document in the exact shape `goofi_bridge::projection` builds. */
+function seedDoc(): Doc {
+	return {
+		nodes: {
+			a: {
+				type: 'Oscillator',
+				name: 'osc0',
+				pos: { x: 10, y: 20 },
+				params: {
+					common: { max_frequency: { value: 30 } },
+					oscillator: {
+						waveform: { value: 'sine', expr: { source: "nd('lfo')", enabled: true, triggers: false } }
+					}
+				}
+			},
+			b: { type: 'Buffer', name: 'buf0' }
+		},
+		links: [{ node_out: 'a', slot_out: 'out', node_in: 'b', slot_in: 'data' }],
+		instances: {},
+		globals: {},
+		arrangement: {}
+	};
 }
 
 describe('graphDoc readers', () => {
 	it('reads node identity views', () => {
 		const doc = seedDoc();
 		expect(nodeView(doc, 'a')).toEqual({ uid: 'a', type: 'Oscillator', name: 'osc0', pos: [10, 20] });
-		// A node with no pos map defaults to [0,0].
+		// A node with no pos defaults to [0,0].
 		expect(nodeView(doc, 'b')).toEqual({ uid: 'b', type: 'Buffer', name: 'buf0', pos: [0, 0] });
 		expect(nodeView(doc, 'missing')).toBeNull();
 		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b']);
@@ -89,35 +64,28 @@ describe('graphDoc readers', () => {
 	});
 
 	it('reads the sub-patch forest (scopes, members, stubs)', () => {
-		// Build a scope in the exact flat shape the Rust mirror writes: members keyed by uid →
-		// {is_instance}, stubs keyed by id.
-		const doc = new Y.Doc();
-		const inst = new Y.Map<unknown>();
-		inst.set('name', 'subpatch0');
-		inst.set('parent', '__root__');
-		const ipos = new Y.Map<unknown>();
-		ipos.set('x', 5);
-		ipos.set('y', 6);
-		inst.set('pos', ipos);
-		const members = new Y.Map<unknown>();
-		const m1 = new Y.Map<unknown>();
-		m1.set('is_instance', false);
-		members.set('m1', m1);
-		inst.set('members', members);
-		const stubs = new Y.Map<unknown>();
-		const out0 = new Y.Map<unknown>();
-		out0.set('dir', 'out');
-		out0.set('dtype', 'ARRAY');
-		out0.set('name', 'wave');
-		const bpos = new Y.Map<unknown>();
-		bpos.set('x', 1);
-		bpos.set('y', 2);
-		out0.set('pos', bpos);
-		out0.set('inner_node', 'm1');
-		out0.set('inner_slot', 'out');
-		stubs.set('out0', out0);
-		inst.set('stubs', stubs);
-		instancesMap(doc).set('i1', inst);
+		// The flat shape the projection writes: members keyed by uid → {is_instance}, stubs by id.
+		const doc: Doc = {
+			...seedDoc(),
+			instances: {
+				i1: {
+					name: 'subpatch0',
+					parent: '__root__',
+					pos: { x: 5, y: 6 },
+					members: { m1: { is_instance: false } },
+					stubs: {
+						out0: {
+							dir: 'out',
+							dtype: 'ARRAY',
+							name: 'wave',
+							pos: { x: 1, y: 2 },
+							inner_node: 'm1',
+							inner_slot: 'out'
+						}
+					}
+				}
+			}
+		};
 
 		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
 		expect(instanceView(doc, 'i1')).toEqual({
@@ -154,22 +122,34 @@ describe('graphDoc readers', () => {
 		expect(docParams(doc, 'b')).toEqual({});
 	});
 
-	it('reflects live edits (the reactive-read contract)', () => {
-		const doc = seedDoc();
-		(nodesMap(doc).get('a')!.get('params') as Y.Map<Y.Map<Y.Map<unknown>>>)
-			.get('common')!
-			.get('max_frequency')!
-			.set('value', 42);
-		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(42);
+	it('an unwired stub omits its inner pair rather than carrying an empty one', () => {
+		// The projection PRUNES `inner_node`/`inner_slot` when a stub is unwired, and a merge patch
+		// deletes them with a null. A reader that answered `''` would draw a cable to nowhere.
+		const doc: Doc = {
+			...seedDoc(),
+			instances: { i1: { name: 's', parent: '__root__', stubs: { in0: { dir: 'in', dtype: 'ARRAY', name: 'a' } } } }
+		};
+		const stub = instanceView(doc, 'i1')!.interface[0];
+		expect(stub.inner_node).toBeUndefined();
+		expect(stub.inner_slot).toBeUndefined();
+	});
+
+	it('a wrongly-typed or absent root reads as empty rather than throwing', () => {
+		// The manager is the sole author, so this can only mean the two ends have drifted — and a
+		// half-drawn graph reports that better than a blank page does.
+		expect(nodeViews({})).toEqual([]);
+		expect(linkViews({ links: 'not an array' })).toEqual([]);
+		expect(globalViews({ globals: null })).toEqual([]);
+		expect(instanceViews({ instances: 7 })).toEqual([]);
 	});
 });
 
-describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
-	it('writes a binding in place and paramExpr reads it back', () => {
+describe('graphDoc.setParamExpr — the test-seed binding write', () => {
+	it('writes a binding in place and docParams reads it back', () => {
 		const doc = seedDoc();
-		expect(setParamExpr(doc, 'a', 'common', 'max_frequency', { source: "nd('f')", enabled: true, triggers: false })).toBe(
-			true
-		);
+		expect(
+			setParamExpr(doc, 'a', 'common', 'max_frequency', { source: "nd('f')", enabled: true, triggers: false })
+		).toBe(true);
 		expect(docParams(doc, 'a').common?.max_frequency?.expr).toEqual({
 			source: "nd('f')",
 			enabled: true,
@@ -190,38 +170,19 @@ describe('graphDoc.setParamExpr — expression-binding leaf write', () => {
 	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
 		const doc = seedDoc();
 		expect(setParamExpr(doc, 'ghost', 'common', 'x', { source: 'nd()', enabled: true, triggers: false })).toBe(false);
-		expect(nodesMap(doc).get('ghost')).toBeUndefined();
-	});
-
-	it('is idempotent — re-writing the same binding creates no new struct', () => {
-		const doc = seedDoc();
-		const b = { source: "nd('lfo')", enabled: true, triggers: true };
-		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
-		const sv = Y.encodeStateVector(doc);
-		setParamExpr(doc, 'a', 'common', 'max_frequency', b);
-		expect(Y.encodeStateVector(doc)).toEqual(sv);
+		expect(nodesMap(doc).ghost).toBeUndefined();
 	});
 });
 
-/** Seed a globals root in the exact `{value, type, system}` shape the Rust mirror writes. */
-function seedGlobals(doc: Y.Doc): void {
-	const g = globalsMap(doc);
-	const uf = new Y.Map<unknown>();
-	uf.set('value', 30);
-	uf.set('type', 'float');
-	uf.set('system', true);
-	g.set('default_ufreq', uf);
-	const subj = new Y.Map<unknown>();
-	subj.set('value', 'P07');
-	subj.set('type', 'string');
-	subj.set('system', false);
-	g.set('subject', subj);
-}
-
 describe('graphDoc globals', () => {
 	it('reads global views (system-first, typed, with the system flag)', () => {
-		const doc = new Y.Doc();
-		seedGlobals(doc);
+		const doc: Doc = {
+			...seedDoc(),
+			globals: {
+				default_ufreq: { value: 30, type: 'float', system: true },
+				subject: { value: 'P07', type: 'string', system: false }
+			}
+		};
 		expect(globalViews(doc)).toEqual([
 			{ name: 'default_ufreq', value: 30, type: 'float', system: true },
 			{ name: 'subject', value: 'P07', type: 'string', system: false }
@@ -237,5 +198,4 @@ describe('graphDoc globals', () => {
 		expect(isValidGlobalName('a.b')).toBe(false);
 		expect(isValidGlobalName('globals')).toBe(false);
 	});
-
 });

@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap, linksArray } from '$lib/crdt/graphDoc';
+import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { rawInlineView, setInlineKind } from '$lib/viewers/inlineView.svelte';
 import { ui } from './ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
-import * as Y from 'yjs';
 
 /**
  * A fresh backend session is a GENERATION boundary, not merely a document swap.
@@ -30,7 +30,7 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		g.nodeTypes = catalog();
 		fc.emit({ event: 'hello', payload: snap('sess1') });
 
-		hydrate(g);
+		hydrate(fc);
 		expect(g.nodes.length, 'precondition: the old session is on screen').toBe(2);
 		expect(g.links.length).toBe(1);
 		// Set it FALSE: `isSlotExpanded` defaults to true when the entry is absent, so a `true`
@@ -42,17 +42,20 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		// on its presence would hold against any implementation. Assert on the kind it carries.
 		expect(rawInlineView('n1', 'out').kind).toBe('image');
 
-		// A NEW backend session. The store resets the replica; the manager's graph is empty, so
-		// the answering transaction touches nothing.
+		// A NEW backend session. The store resets the replica, and the fresh session's `doc_state`
+		// carries an empty document — which is the case a reset has to survive, because nothing in
+		// the arriving document mentions the old session's uids at all.
 		fc.emit({ event: 'hello', payload: snap('sess2') });
-		Y.transact(g.doc, () => {
-			/* an empty transaction — exactly what an empty manager document produces */
-		});
+		seed(fc);
 
 		expect(g.nodes, 'nodes').toEqual([]);
 		expect(g.links, 'links').toEqual([]);
-		expect(g.instances, 'instances').toEqual({});
 		expect(g.globals, 'globals').toEqual([]);
+		// ROOT is SYNTHESIZED on every reconcile — it is the canvas, not a scope the manager sent —
+		// so the fresh session has one, holding nothing. Asserting `{}` here would only pass against
+		// a fixture that reconciled nothing at all, which is not what a new session does.
+		expect(Object.keys(g.instances), 'instances').toEqual([ROOT_ID]);
+		expect(g.instances[ROOT_ID].members, 'and it kept no member of the old session').toEqual({});
 		expect(rawInlineView('n1', 'out').kind, 'per-uid inline view state').toBeUndefined();
 		expect(ui().isSlotExpanded('n1', 'out'), 'per-uid slot expansion is back to its default').toBe(
 			true
@@ -66,7 +69,7 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		fc.emit({ event: 'hello', payload: snap('sess1') });
-		hydrate(g);
+		hydrate(fc);
 
 		fc.emit({ event: 'hello', payload: snap('sess1') });
 
@@ -75,25 +78,14 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 	});
 });
 
-/** Seed two nodes and a link the way the manager's mirror writes them. */
-function hydrate(g: GraphStore): void {
-	Y.transact(g.doc, () => {
-		for (const uid of ['n1', 'n2']) {
-			const n = new Y.Map<unknown>();
-			n.set('type', 'Oscillator');
-			n.set('name', `osc-${uid}`);
-			const p = new Y.Map<unknown>();
-			p.set('x', 0);
-			p.set('y', 0);
-			n.set('pos', p);
-			nodesMap(g.doc).set(uid, n);
-		}
-		const l = new Y.Map<unknown>();
-		l.set('node_out', 'n1');
-		l.set('slot_out', 'out');
-		l.set('node_in', 'n2');
-		l.set('slot_in', 'in');
-		linksArray(g.doc).push([l]);
+/** Two nodes and a link, the way the manager sends them. */
+function hydrate(fc: FakeControl): DocSeed {
+	return seed(fc).patch({
+		nodes: {
+			n1: { type: 'Oscillator', name: 'osc-n1', pos: { x: 0, y: 0 } },
+			n2: { type: 'Oscillator', name: 'osc-n2', pos: { x: 0, y: 0 } }
+		},
+		links: [{ node_out: 'n1', slot_out: 'out', node_in: 'n2', slot_in: 'in' }]
 	});
 }
 

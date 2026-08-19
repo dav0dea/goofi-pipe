@@ -1,20 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import { docParams, nodesMap, setParamValue } from '$lib/crdt/graphDoc';
 import type { NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
-import * as Y from 'yjs';
 
-/** Seed a node into the store's CRDT doc — a param leaf-write targets the doc's node (which the
- * manager mirrors), so it no-ops unless the node is present in the replica. */
-function docAddNode(g: GraphStore, uid: string): void {
-	const nodes = g.doc.getMap('nodes') as Y.Map<Y.Map<unknown>>;
-	if (nodes.get(uid)) return;
-	const n = new Y.Map<unknown>();
-	n.set('type', 'Oscillator');
-	n.set('name', uid);
-	nodes.set(uid, n);
+/** Seed a node — a param leaf-write targets the replica's node, so it no-ops unless it is there. */
+function docAddNode(d: DocSeed, uid: string): void {
+	d.node(uid, 'Oscillator', uid);
 }
 
 /** The catalog (list_nodes) the manager provides — `g.nodeTypes = catalog()` flips the store
@@ -50,20 +44,6 @@ function catalog(): NodeTypeInfo[] {
 	];
 }
 
-/** Seed a node into the store's doc exactly as the manager's mirror (`sync_graph_to_doc`) writes it,
- * in ONE Yjs transaction so the store's afterTransaction → _syncFromDoc → reconcile fires once. */
-function docSeedNode(g: GraphStore, uid: string, type: string, name: string, pos: [number, number]): void {
-	Y.transact(g.doc, () => {
-		const n = new Y.Map<unknown>();
-		n.set('type', type);
-		n.set('name', name);
-		const p = new Y.Map<unknown>();
-		p.set('x', pos[0]);
-		p.set('y', pos[1]);
-		n.set('pos', p);
-		nodesMap(g.doc).set(uid, n);
-	});
-}
 
 function nodeWithParam(uid: string, value: unknown): NodeInstanceInfo {
 	return {
@@ -89,6 +69,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 	it('throws (recording nothing, sending no RPC) when the param does not exist', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
 
 		// A missing group/name (agent typo, or a pre-hydration race) must not record a
@@ -101,8 +82,9 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 	it('treats a falsy current value (0) as present, not missing', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		g.nodeTypes = catalog(); // catalog present → node identity + params come from the doc
-		docSeedNode(g, 'uidA', 'Oscillator', 'osc0', [0, 0]);
+		d.node('uidA', 'Oscillator', 'osc0', [0, 0]);
 		setParamValue(g.doc, 'uidA', 'common', 'frequency', 0); // the current value the guard must treat as present
 
 		// The guard keys on the param's EXISTENCE, not the truthiness of its value, so editing a
@@ -120,8 +102,9 @@ describe('GraphStore.setExpression — guards a non-existent param', () => {
 	it('throws (recording nothing, minting no phantom doc binding) when the param does not exist', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
-		docAddNode(g, 'uidA'); // the node exists in the doc; the PARAM does not
+		docAddNode(d, 'uidA'); // the node exists in the doc; the PARAM does not
 
 		// A missing group/name (agent typo, or a call racing hydration) must not leaf-write an
 		// `expr` onto a phantom param entry — the graph rejects it and the re-mirror never prunes it.
@@ -135,6 +118,7 @@ describe('GraphStore.refreshParam — asks the node to re-evaluate options', () 
 	it('sends refresh_param with the uid/group/name and records no undo entry', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		history().reset();
 
 		await g.refreshParam('uidA', 'audio', 'device');
@@ -149,6 +133,7 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 	it('marks the param refreshing on refreshParam, then clears it when the node reports done', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
 
 		expect(g.isRefreshing('uidA', 'audio', 'device')).toBe(false);
@@ -173,6 +158,7 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 	it('clears only the completed param, leaving other in-flight refreshes disabled', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
 
 		await g.refreshParam('uidA', 'audio', 'device');
@@ -205,6 +191,7 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 		const fc = new FakeControl();
 		fc.failNext('refresh_param');
 		const g = new GraphStore(fc);
+		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });
 
 		await expect(g.refreshParam('uidA', 'audio', 'device')).rejects.toThrow();

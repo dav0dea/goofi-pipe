@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
-import * as Y from 'yjs';
 
 /**
  * A collapsed sub-patch's health is DERIVED from its descendants and cached in
@@ -58,29 +58,16 @@ function subpatchWithOneMember(): { g: GraphStore; fc: FakeControl } {
 	const g = new GraphStore(fc);
 	g.nodeTypes = catalog();
 	fc.emit({ event: 'hello', payload: snap('sess1') });
-	Y.transact(g.doc, () => {
-		const n = new Y.Map<unknown>();
-		n.set('type', 'Oscillator');
-		n.set('name', 'osc0');
-		const p = new Y.Map<unknown>();
-		p.set('x', 0);
-		p.set('y', 0);
-		n.set('pos', p);
-		nodesMap(g.doc).set('n1', n);
-
-		const inst = new Y.Map<unknown>();
-		inst.set('name', 'sub0');
-		inst.set('parent', 'ROOT');
-		const members = new Y.Map<unknown>();
-		const member = new Y.Map<unknown>();
-		member.set('is_instance', false);
-		members.set('n1', member);
-		inst.set('members', members);
-		const ipos = new Y.Map<unknown>();
-		ipos.set('x', 0);
-		ipos.set('y', 0);
-		inst.set('pos', ipos);
-		instancesMap(g.doc).set('i1', inst);
+	seed(fc).patch({
+		nodes: { n1: { type: 'Oscillator', name: 'osc0', pos: { x: 0, y: 0 } } },
+		instances: {
+			i1: {
+				name: 'sub0',
+				parent: 'ROOT',
+				members: { n1: { is_instance: false } },
+				pos: { x: 0, y: 0 }
+			}
+		}
 	});
 	return { g, fc };
 }
