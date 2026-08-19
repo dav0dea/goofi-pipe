@@ -36,24 +36,11 @@ interface Slot {
 	 * stream whose frame was overwritten, and summing them put a total beside an fps counter that
 	 * is emphatically not a total — two numbers that could not be read together. */
 	drops: RateMeter;
-	/** Pending teardown, armed when the last consumer left and cancelled if one returns. */
-	linger: ReturnType<typeof setTimeout> | null;
 }
 
 const slots = new Map<string, Slot>();
 const dirty = new Set<Slot>();
 const FRAME_BUDGET_MS = 8;
-/**
- * How long a stream outlives its last consumer before it is torn down.
- *
- * A viewer detaching is NOT evidence that the slot is unwatched: an effect re-run detaches and
- * re-attaches the same viewer, and a re-render of a viewer's host does the same — both within a
- * tick. Tearing down on that transient zero closed the WS and dropped the cached frame, and every
- * OTHER viewer of the slot then went to its empty state: collapsing a node's own viewer blanked
- * the viewer PANEL bound to the same slot. Long enough to span a re-render across a frame or two,
- * short enough that a genuinely closed viewer's socket does not linger perceptibly.
- */
-const LINGER_MS = 250;
 
 const nowMs =
 	typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -136,8 +123,7 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 			cbs: new Set(),
 			unsub: () => {},
 			lastFlush: 0,
-			drops: new RateMeter(nowMs()),
-			linger: null
+			drops: new RateMeter(nowMs())
 		};
 		slot_.unsub = subscribeData(node, slot, (frame) => {
 			// A still-pending frame overwritten before it painted is a dropped frame
@@ -149,12 +135,6 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 		});
 		s = slot_;
 		slots.set(k, s);
-	}
-	// A consumer returning inside the linger window claims the stream back, cache and socket
-	// intact — which is what makes the detach/re-attach of a re-render cost nothing.
-	if (s.linger !== null) {
-		clearTimeout(s.linger);
-		s.linger = null;
 	}
 	s.cbs.add(cb);
 	// A joiner of an already-open slot is invisible to the bridge — no worker traffic happens —
@@ -174,14 +154,10 @@ export function subscribeFrames(node: string, slot: string, cb: FrameCallback): 
 		const cur = slots.get(k);
 		if (!cur) return;
 		cur.cbs.delete(cb);
-		if (cur.cbs.size > 0 || cur.linger !== null) return;
-		cur.linger = setTimeout(() => {
-			// Re-read: the slot may have been reclaimed and torn down again while this waited.
-			if (slots.get(k) !== cur || cur.cbs.size > 0) return;
-			cur.unsub();
-			dirty.delete(cur);
-			slots.delete(k);
-		}, LINGER_MS);
+		if (cur.cbs.size > 0) return;
+		cur.unsub();
+		dirty.delete(cur);
+		slots.delete(k);
 	};
 }
 

@@ -266,6 +266,33 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     drop(wide);
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.active_slots() == 0).await,
             "the last viewer left and the reducer went with it");
+
+    // Uncapped for the churn below: every round waits for a frame, so the producer's rate is what
+    // the loop costs. It also has to be a frame — a round that tore the reducer down before its
+    // task first ran would never open the feed, and would exercise nothing.
+    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 0.0 }));
+
+    // The slot is watched, unwatched and watched again — which is what a browser does every time a
+    // viewer is closed and reopened. Each round REBUILDS the reducer, and with it the iceoryx2 node
+    // and subscriber it reads the producer through; those are counted by the data service's own
+    // `max_nodes`, so a round that does not give them back spends a ceiling the viewer count never
+    // reaches. The last round is the assertion: a viewer arriving after all this churn is served.
+    // Past `max_nodes` (256), deliberately: under it the loop only proves there was headroom.
+    for round in 0..300 {
+        let mut v = Viewer::open(&base, &hex(osc), "out").await;
+        v.view(spec(32)).await;
+        v.until(|d| !f32s(d).is_empty()).await;
+        assert_eq!(g.state.reducers.active_slots(), 1, "round {round}: one viewer, one reducer");
+        drop(v);
+        // Tight rather than `holds_within`: 300 rounds at its 25 ms poll is 8 s of sleeping, and
+        // the round must SEE zero — a round that let the next viewer in first would hold the
+        // reducer alive and rebuild nothing.
+        let gone = Instant::now() + Duration::from_secs(5);
+        while g.state.reducers.active_slots() != 0 && Instant::now() < gone {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(g.state.reducers.active_slots(), 0, "round {round}: the reducer went with its viewer");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

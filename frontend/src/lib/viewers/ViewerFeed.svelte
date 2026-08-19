@@ -62,13 +62,26 @@
 		};
 	});
 
+	// The stream's identity, held as a DERIVED so that an equal pair is not a change.
+	//
+	// A host rebuilds the object it destructures these out of on every graph update — the panel's
+	// `{@const {slot} = view(node)}` is one — so the props are RE-ASSIGNED, with the same values,
+	// whenever anything in the patch moves. Reading them straight into the effect below tied the
+	// subscription to that: collapsing one viewer of a slot dropped and re-took every other
+	// viewer's subscription in the same tick, and the refcount passing through zero tore down the
+	// shared stream underneath them all.
+	const streamNode = $derived(node);
+	const streamSlot = $derived(slot);
+
 	$effect(() => {
 		frame = null;
-		if (!visible || !slot) return;
+		const n = streamNode;
+		const s = streamSlot;
+		if (!visible || !s) return;
 		// Subscribe to the slot's single reduced stream (latest decoded frame at
 		// display rate). Kind is NOT part of the stream identity, so a kind switch
 		// keeps this subscription and only re-negotiates the ViewSpec below.
-		const unsub = subscribeFrames(node, slot, (f) => (frame = f));
+		const unsub = subscribeFrames(n, s, (f) => (frame = f));
 		return () => unsub();
 	});
 

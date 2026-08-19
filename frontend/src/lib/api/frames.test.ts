@@ -130,36 +130,12 @@ describe('per-stream drop accounting', () => {
 		offB();
 	});
 
-	it('reports null for a stream nobody is watching, once its linger has run out', async () => {
+	it('reports null for a stream nobody is watching', () => {
 		// Absent is not zero: `0/s` for a stream that is not running asserts something false.
 		expect(dropRate('osc-a', 'out')).toBeNull();
 		const off = subscribeFrames('osc-a', 'out', () => {});
 		expect(dropRate('osc-a', 'out')).toBe(0);
 		off();
-		// The stream OUTLIVES its last consumer by the linger window — a detach is not yet a
-		// departure, because a re-render detaches and re-attaches the same viewer within a tick.
-		expect(dropRate('osc-a', 'out'), 'still there while the linger stands').toBe(0);
-		await vi.advanceTimersByTimeAsync(500);
-		expect(dropRate('osc-a', 'out'), 'and null once nobody came back for it').toBeNull();
-	});
-
-	it('a consumer returning inside the linger window keeps the stream it left', async () => {
-		// The detach/re-attach a re-render performs. Tearing down on that transient zero closed
-		// the socket and dropped the cached frame under every OTHER viewer of the same slot.
-		const off = subscribeFrames('osc-a', 'out', () => {});
-		const w = MockWorker.instances[0];
-		const subs = (): number =>
-			w.posted.filter((m) => (m as { op: string }).op === 'sub').length;
-		const unsubs = (): number =>
-			w.posted.filter((m) => (m as { op: string }).op === 'unsub').length;
-		expect(subs()).toBe(1);
-
-		off();
-		const back = subscribeFrames('osc-a', 'out', () => {});
-		await vi.advanceTimersByTimeAsync(500);
-		expect(unsubs(), 'the socket was never given up').toBe(0);
-		expect(subs(), 'and never re-opened, because it never closed').toBe(1);
-		expect(dropRate('osc-a', 'out')).toBe(0);
-		back();
+		expect(dropRate('osc-a', 'out'), 'and null again once the last viewer leaves').toBeNull();
 	});
 });
