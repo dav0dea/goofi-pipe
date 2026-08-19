@@ -32,6 +32,7 @@ const SETTLE: Duration = Duration::from_millis(250);
 pub struct Goofi {
     pub state: AppState,
     session: String,
+    patience: Duration,
 }
 
 impl Default for Goofi {
@@ -46,7 +47,7 @@ impl Goofi {
     pub fn new() -> Goofi {
         let state = AppState::new();
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
-        Goofi { state, session: "test".into() }
+        Goofi { state, session: "test".into(), patience: WAIT }
     }
 
     /// Boot one whose `/data` sockets probe on a short clock: fast enough that the suite never
@@ -59,12 +60,20 @@ impl Goofi {
             send_timeout: Duration::from_millis(200),
         };
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
-        Goofi { state, session: "test".into() }
+        Goofi { state, session: "test".into(), patience: WAIT }
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
+    /// A longer deadline, for a scenario whose slowness is REAL rather than a hang: a node whose
+    /// dependency takes seconds to import is not late, and the suite runs it beside seven other
+    /// binaries doing the same.
+    pub fn patient(mut self) -> Goofi {
+        self.patience = WAIT * 4;
+        self
+    }
+
     pub fn client(&self, session: &str) -> Goofi {
-        Goofi { state: self.state.clone(), session: session.into() }
+        Goofi { state: self.state.clone(), session: session.into(), patience: self.patience }
     }
 
     /// Run an op and unwrap it. The common case: a test that expected a refusal says so with
@@ -174,7 +183,7 @@ impl Goofi {
     /// this — not a sleep, and not a single look — is how an integration test asserts a positive.
     #[track_caller]
     pub fn until<T>(&self, what: &str, mut f: impl FnMut(&Goofi) -> Option<T>) -> T {
-        let deadline = Instant::now() + WAIT;
+        let deadline = Instant::now() + self.patience;
         loop {
             if let Some(v) = f(self) {
                 return v;

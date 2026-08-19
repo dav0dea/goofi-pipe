@@ -61,23 +61,37 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 5.0 }));
     g.ready(osc);
 
+    // Read from the index STAMP rather than by counting arrivals: a data wire is one deep and
+    // discards what it cannot deliver, so a poll loop counts the rate IT polls at once the cap
+    // climbs past it — which reads as a cap that is honoured when it is not.
     let runs = |window: Duration| {
-        let (mut seen, mut last, end) = (0, None, Instant::now() + window);
+        let (mut first, mut last, end) = (None, 0, Instant::now() + window);
         while Instant::now() < end {
-            let now = probe.latest().map(|d| d.meta().index());
-            if now.is_some() && now != last {
-                seen += 1;
-                last = now;
+            if let Some(i) = probe.latest().and_then(|d| d.meta().index()) {
+                first.get_or_insert(i);
+                last = i;
             }
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(1));
         }
-        seen
+        last - first.unwrap_or(last)
     };
     let slow = runs(Duration::from_millis(800));
     assert!(slow <= 8, "5 Hz produced {slow} frames in 0.8 s — the cap is not honoured");
 
     g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 60.0 }));
     g.until("the re-paced producer", |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
+
+    // The cap says ONE thing — at least `1/max_frequency` between two runs — so the rate it
+    // delivers sits just UNDER it, never over, and the shortfall is the node's own work rather
+    // than anything the pacing added. A cap served by parking on the doorbell missed that by a
+    // mile: the listener's timed wait rounds its timeout up to a scheduler tick, which cost about
+    // 1.3 ms per park, so 200 asked for delivered 160 — and the faster the cap the worse it got.
+    // A low cap hides this entirely, which is why the window that judges it is a fast one.
+    g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 1000.0 }));
+    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 200.0 }));
+    runs(Duration::from_millis(300)); // let the new cap take hold before the window that judges it
+    let fast = runs(Duration::from_millis(1000));
+    assert!((185..=201).contains(&fast), "a 200 Hz cap delivered {fast} frames in a second");
 }
 
 #[test]

@@ -18,6 +18,9 @@ arc-swap = "1"
 # services over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this
 # is a caret requirement, as in the two crates that already depend on it).
 iceoryx2 = "0.9.3"
+# The listener's own fd, multiplexed with `select`. Same version as `iceoryx2`, which already
+# depends on it — see `IoxTransport::wait` for why the listener's own timed wait is not enough.
+iceoryx2-bb-posix = "0.9.3"
 # One line: the random scope a graph's service names live in.
 getrandom = "0.3"
 indexmap = "2"

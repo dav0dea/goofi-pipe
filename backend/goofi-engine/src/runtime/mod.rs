@@ -296,20 +296,25 @@ impl NodeRuntime {
         (self.run_policy.autotrigger || self.trigger_pending).then(|| self.cap_release())
     }
 
+    /// When the cap next admits a run: one period after the last one. `None` means now — an
+    /// uncapped node, or one that has yet to run.
+    ///
+    /// The cap says ONE thing — at least `1/max_frequency` between two runs — and it is read
+    /// fresh from `last_run` every time, never carried as a standing deadline. That is what makes
+    /// a cap edited mid-park take effect on the spot, with nothing to re-anchor and no schedule
+    /// to catch up on.
+    fn due(&self) -> Option<Instant> {
+        Some(self.last_run? + Duration::from_secs_f64(self.run_policy.period()?))
+    }
+
     fn rate_cap_elapsed(&self) -> bool {
-        match self.run_policy.period() {
-            None => true,
-            Some(p) => self.last_run.is_none_or(|t| t.elapsed().as_secs_f64() >= p),
-        }
+        self.due().is_none_or(|d| Instant::now() >= d)
     }
 
     /// How long until the cap admits another run. Zero when it already does — an uncapped node
     /// wakes immediately, which is what free-running means.
     fn cap_release(&self) -> Duration {
-        match (self.run_policy.period(), self.last_run) {
-            (Some(p), Some(last)) => Duration::from_secs_f64(p).saturating_sub(last.elapsed()),
-            _ => Duration::ZERO,
-        }
+        self.due().map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()))
     }
 
     // -----------------------------------------------------------------------

@@ -16,6 +16,7 @@ use std::time::Duration;
 use iceoryx2::config::Config;
 use iceoryx2::node::NodeState;
 use iceoryx2::prelude::*;
+use iceoryx2_bb_posix::file_descriptor_set::{FileDescriptorSet, FileEvent};
 
 use goofi_core::Data;
 use goofi_node::NodeManifest;
@@ -214,7 +215,15 @@ impl IoxTransport {
             );
         }
 
-        Ok(IoxTransport { node, door, listener, control, status, outputs, inputs: Mutex::new(Vec::new()) })
+        Ok(IoxTransport {
+            node,
+            door,
+            listener,
+            control,
+            status,
+            outputs,
+            inputs: Mutex::new(Vec::new()),
+        })
     }
 
     /// The doorbell service's creation-time limits, read back from iceoryx2 itself.
@@ -250,8 +259,23 @@ impl Transport for IoxTransport {
         // taking one id per wake would leave the rest to be re-delivered a wake later. A listener
         // that errors reports no reason to wake, and the caller drains regardless — which is
         // exactly what makes a lost notification cost nothing.
+        // A BOUNDED wait selects on the listener's own descriptor rather than calling its
+        // `timed_wait_all`. That one arms the timeout with `SO_RCVTIMEO`, which the kernel rounds
+        // to a jiffie — about 1.3 ms added to every park, which is most of a 500 Hz node's period
+        // and paced one at 300 Hz. `select` takes a `timeval` and does not round, and a zero
+        // timeout is a poll rather than `SO_RCVTIMEO`'s "no timeout at all".
         let _ = match timeout {
-            Some(t) => self.listener.timed_wait_all(|id| ids.push(id.as_value() as EventId), t),
+            Some(t) => {
+                // `guard` is declared after `set` so it drops FIRST — it borrows the set it
+                // detaches from.
+                let set = FileDescriptorSet::new();
+                let guard = set.add(&self.listener);
+                if guard.is_ok() {
+                    let _ = set.timed_wait(t, FileEvent::Read, |_| {});
+                }
+                drop(guard);
+                self.listener.try_wait_all(|id| ids.push(id.as_value() as EventId))
+            }
             None => self.listener.blocking_wait_all(|id| ids.push(id.as_value() as EventId)),
         };
         ids

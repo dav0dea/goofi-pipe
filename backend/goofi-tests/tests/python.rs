@@ -164,24 +164,31 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     // they all invite is to flatten first, and against a single channel a flattening node and a
     // correct one are indistinguishable.
     let py = require_python();
-    let g = Goofi::new();
+    let g = Goofi::new().patient(); // four interpreters, each importing antropy
     let src = g.add("_TestGrid");
     let buf = g.add("Buffer");
-    g.call("update_param", j!({ "node": hex(src), "group": "common", "name": "max_frequency", "value": 500.0 }));
     g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
     g.link(src, "out", buf, "data");
 
-    for (file, slot) in [
+    // All four wired BEFORE any of them is judged: each is its own interpreter importing antropy,
+    // and waiting one out before starting the next spends that import four times over.
+    let nodes: Vec<_> = [
         ("lempel_ziv.py", "complexity"),
         ("permutation_entropy.py", "entropy"),
         ("spectral_entropy.py", "entropy"),
         ("detrended_fluctuation.py", "exponent"),
-    ] {
+    ]
+    .map(|(file, slot)| {
         let ty = install_shipped(&g, &py.py, file);
         let node = g.add(&ty);
         let probe = g.probe(node, slot);
         g.link(buf, "out", node, "data");
+        (ty, node, probe)
+    })
+    .into_iter()
+    .collect();
 
+    for (ty, node, probe) in nodes {
         // [3, 256] in, [3] out: the measure consumes time and hands back one value per channel.
         let d = g.until(&format!("{ty} to answer"), |_| probe.latest().filter(|d| shape(d) == vec![3]));
         let v = f32s(&d);
@@ -202,7 +209,7 @@ fn a_shipped_entropy_node_reads_a_real_signal_rather_than_answering_a_constant()
     // rows are one signal three times over. A sine says otherwise — permutation entropy of one is
     // solidly inside its range, where a flat or a saturated answer is not.
     let py = require_python();
-    let g = Goofi::new();
+    let g = Goofi::new().patient(); // an interpreter importing antropy
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 256.0 }));

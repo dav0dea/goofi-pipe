@@ -187,6 +187,7 @@ impl Status {
 pub trait Transport: Send + Sync {
     /// Park until something rings, and answer with every [`EventId`] that did. A notification is a
     /// HINT (§3.3) — the truth is in the mailboxes — so a caller drains regardless of what it gets.
+    /// A ZERO timeout takes what is already there and returns at once.
     fn wait(&self, timeout: Option<Duration>) -> Vec<EventId>;
     /// Take every pending control message.
     fn drain_control(&self) -> Vec<Envelope>;
