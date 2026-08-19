@@ -211,7 +211,17 @@ impl AppState {
     /// field is private and both its writers store a `new_mount()` result. Best-effort: a failure
     /// leaves one directory in the system temp dir, which a reboot clears.
     pub fn release_mount(&self) {
-        remove_mount(&self.mount());
+        self.retire_mount(&self.mount());
+    }
+
+    /// Reclaim one mount and everything living IN it: the harnesses spawned into it are asked to
+    /// leave first, because each was launched into that workspace and edits that graph through an
+    /// address goofi minted for it — one surviving this goes on editing a patch it was never
+    /// launched for, out of a directory the next line deletes. The exit and a load are the two
+    /// callers, and they reclaim through here so neither can hold one half of the order.
+    fn retire_mount(&self, mount: &std::path::Path) {
+        self.harnesses.stop_all();
+        remove_mount(mount);
     }
 }
 
@@ -1761,15 +1771,12 @@ impl AppState {
                     // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
                     // live one and the mount it replaced is reclaimed — after the lock drops, since
                     // deleting a tree is a walk and the lock guards only the swap. The harnesses the
-                    // replaced patch spawned go with it: each was launched INTO that workspace and
-                    // edits that graph through an address goofi minted for it, so one surviving here
-                    // would go on editing a patch it was never launched for out of a directory the
-                    // next line deletes. Announced too — `graph_replaced` below carries the emptied
-                    // roster, but a client tracking only the transitions must not have to infer it.
-                    state.harnesses.stop_all();
-                    events.push(event("harness_changed", state.harnesses.roster()));
+                    // replaced patch spawned go with it, in the order `retire_mount` owns. Announced
+                    // too — `graph_replaced` below carries the emptied roster, but a client tracking
+                    // only the transitions must not have to infer it.
                     let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
-                    remove_mount(&replaced);
+                    state.retire_mount(&replaced);
+                    events.push(event("harness_changed", state.harnesses.roster()));
                     // The unpacked tree IS what the archive holds — but every file in it was written
                     // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
                     // HERE. Without it a patch would be dirty from the moment it finished loading.

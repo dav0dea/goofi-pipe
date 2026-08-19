@@ -554,5 +554,13 @@ async fn a_minted_address_serves_its_own_agent_and_dies_with_the_patch_that_spaw
     // …while the central endpoint is untouched by any of it.
     let (ok, err) = tool(&addr, "/mcp", 6, "add_node", json!({ "type": "Buffer" })).await;
     assert!(!err, "replacing the patch closed the central endpoint too: {ok}");
+
+    // The other end of the same lifetime, and the one nothing used to run: goofi's own exit
+    // reclaims the workspace, so a harness that survives it keeps a whole agent alive on a cwd
+    // that was just deleted and an MCP address that no longer answers. `release_mount` is what
+    // ctrl-C and SIGTERM reach, so the exit is DRIVEN here rather than described.
+    let (_ctl, _, mut left) = harness(&addr, "_sh").await;
     state.release_mount();
+    assert!(read_until(&mut left, "exit_code").await.contains("exit_code"),
+            "the harness outlived the goofi that spawned it");
 }
