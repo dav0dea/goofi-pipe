@@ -1,11 +1,12 @@
-//! The axum server: `/control` (JSON RPC + broadcast events, interleaved with binary CRDT sync),
+//! The axum server: `/control` (JSON RPC + broadcast events, doc state and doc deltas among them),
 //! `/data/<node>/<slot>` (ONE reduced GOOF stream per slot, whatever the viewer count — the kind
 //! is not in the path, since viewers publish their ViewSpec inband), `/term`, `/mcp`, and the SPA
 //! compiled into the binary.
 
-/// The `yrs` document itself — shape-agnostic. `pub` because the protocol tests drive a real
-pub mod crdt;
-mod crdt_mirror;
+/// The control-plane document and its deltas — shape-agnostic. `pub` because the transport tests
+/// drive a real replica through the real wire.
+pub mod doc;
+mod projection;
 mod fsbrowse;
 mod inspect;
 mod mcp;
@@ -51,15 +52,10 @@ pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
-    /// Server-side CRDT mirror of the graph's control state, re-synced after every
-    /// successful control op. The shared source of truth clients replicate (Phase 2+).
-    pub crdt: Arc<Mutex<crate::crdt::GraphDoc>>,
-    /// Binary sync-update fan-out: each mutation broadcasts the CRDT delta as a framed
-    /// [`crate::crdt::SyncMsg::Update`] to every connected client's replica.
-    pub sync_updates: broadcast::Sender<Vec<u8>>,
-    /// The doc's state vector as of the last broadcast delta — the baseline the next delta
-    /// is computed against (guarded together with `crdt`: always lock `crdt` first).
-    pub last_sync_sv: Arc<Mutex<Vec<u8>>>,
+    /// The control-plane document every client replicates, re-projected from the graph after each
+    /// successful op. Its deltas ride the `events` channel, so a replica sees them in the same
+    /// order as everything else the manager says.
+    pub doc: Arc<Mutex<crate::doc::GraphDoc>>,
     /// Whether the patch has been mutated since it was last saved or loaded — the title-bar dot
     /// and the unload guard. DERIVED, not stored: nothing persists it, so a fresh session starts
     /// clean and every successful mutating op sets it.
@@ -69,7 +65,7 @@ pub struct AppState {
     pub reducers: reducer::SlotReducers,
     /// The single central per-session command history (unified-command API). A command-backed op
     /// applies through here (recording its inverse tagged with the caller's session); `undo`/`redo`
-    /// replay the inverse/forward for that session. Locked AFTER `graph`, BEFORE `crdt`.
+    /// replay the inverse/forward for that session. Locked AFTER `graph`, BEFORE `doc`.
     pub history: Arc<Mutex<goofi_engine::CommandHistory>>,
     /// Liveness policy for `/data` sockets. Injectable so a test need not sit through a
     /// production-length deadline.
@@ -152,14 +148,12 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let (sync_updates, _) = broadcast::channel(256);
-        // Mirror the INITIAL graph (empty nodes + the seeded system globals) into the doc so a client
-        // connecting to a fresh backend syncs the current state immediately (e.g. `default_ufreq`),
-        // rather than an empty doc that stays blank until the first mutation re-mirrors.
+        // Project the INITIAL graph (no nodes, but the seeded system globals) so a client that
+        // connects to a fresh backend has the current state at once — `default_ufreq` among it —
+        // rather than a blank document that stays blank until the first mutation.
         let graph_val = Graph::new();
-        let mut crdt = crate::crdt::GraphDoc::new();
-        crdt_mirror::sync_graph_to_doc(&graph_val, &mut crdt);
-        let last_sync_sv = Arc::new(Mutex::new(crdt.state_vector()));
+        let mut doc = crate::doc::GraphDoc::new();
+        doc.reconcile_root(&projection::of(&graph_val));
         let graph = Arc::new(Mutex::new(graph_val));
         let reducers = reducer::SlotReducers::new(graph.clone());
         // The baseline is the fingerprint of whatever mount the patch owns — stated that way even
@@ -172,9 +166,7 @@ impl AppState {
             graph,
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
-            crdt: Arc::new(Mutex::new(crdt)),
-            sync_updates,
-            last_sync_sv,
+            doc: Arc::new(Mutex::new(doc)),
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
             history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
@@ -680,7 +672,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     // mirror desyncs silently. This way the worst case is a re-delivery, which every apply
     // branch absorbs idempotently.
     let mut events = state.events.subscribe();
-    let mut sync_updates = state.sync_updates.subscribe();
 
     // Answered BEFORE the graph lock is taken: it walks the workspace mount (see `is_dirty`), and
     // no filesystem walk may run while the status-drain worker is waiting on that lock.
@@ -698,13 +689,10 @@ async fn handle_control(socket: WebSocket, state: AppState) {
         return;
     }
 
-    // CRDT sync handshake: advertise the server replica's state vector as a binary frame.
-    // The client answers with its own state vector; `on_sync` then ships the diff it lacks.
-    {
-        let hello_sv = state.crdt.lock().unwrap().sync_hello();
-        if tx.send(Message::Binary(hello_sv.into())).await.is_err() {
-            return;
-        }
+    // …then the document, whole. It rides the SAME socket as `hello` and as every later delta, so
+    // a replica never has to reconcile two orderings.
+    if tx.send(Message::Text(doc_state(&state).into())).await.is_err() {
+        return;
     }
 
     loop {
@@ -717,22 +705,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         }
                     }
                 }
-                Some(Ok(Message::Binary(b))) => {
-                    // The client replica is READ-ONLY: a StateVector drives the sync handshake,
-                    // and a client `Update` is ignored — the next re-mirror would revert it anyway.
-                    match crate::crdt::SyncMsg::decode(&b) {
-                        Some(msg @ crate::crdt::SyncMsg::StateVector(_)) => {
-                            let replies = state.crdt.lock().unwrap().on_sync(msg);
-                            for r in replies {
-                                if tx.send(Message::Binary(r.encode().into())).await.is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                        Some(crate::crdt::SyncMsg::Update(_)) => {} // read-only client — ignored
-                        None => {}
-                    }
-                }
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
                 _ => {}
@@ -743,9 +715,10 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                // Lagged past the shared ring. A dropped structural event desyncs the mirror for
-                // good — there is no gap detection — so recover as the sync plane does, with a
-                // fresh `hello` the frontend applies as a full reset.
+                // Lagged past the shared ring, so a structural event AND any number of document
+                // deltas are gone. Both halves are re-seeded exactly as a fresh connection seeds
+                // them — `hello` for what is client-local, the whole document for the rest — which
+                // is why the two travel together here as they do above.
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let unsaved = state.is_dirty(); // off the graph lock, as above
                     let saved_at = state.save_path();
@@ -760,22 +733,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                     if tx.send(Message::Text(hello.into())).await.is_err() {
                         break;
                     }
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            },
-            sync = sync_updates.recv() => match sync {
-                Ok(update) => {
-                    if tx.send(Message::Binary(update.into())).await.is_err() {
-                        break;
-                    }
-                }
-                // A lagged client missed one or more deltas the broadcast channel already
-                // dropped. Send the FULL current state (idempotent, resolves any gap incl.
-                // pending updates) — NOT the server's state vector, which a reader answers
-                // with an empty diff and so never actually catches up (permanent desync).
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let full = state.crdt.lock().unwrap().full_state_frame();
-                    if tx.send(Message::Binary(full.into())).await.is_err() {
+                    if tx.send(Message::Text(doc_state(&state).into())).await.is_err() {
                         break;
                     }
                 }
@@ -995,7 +953,7 @@ impl AppState {
             }
             // Off the graph lock: the doc is its own mutex, and this reads only the doc.
         if op == "get_state" {
-            return Ok(state.crdt.lock().unwrap().to_json());
+            return Ok(state.doc.lock().unwrap().to_json());
         }
         if op == "get_patch" {
                 return Ok(json!({
@@ -1948,38 +1906,33 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     }
 }
 
-/// Re-mirror the (already-locked) graph into the (already-locked) doc and broadcast the
-/// resulting delta to every connected client, advancing the shared broadcast baseline. The
-/// caller must hold `graph` then `crdt` (the canonical order); passing the guards in keeps the
-/// whole apply→re-mirror critical section atomic so no concurrent writer can observe a doc
-/// leaf the graph has not yet caught up to.
-fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut crate::crdt::GraphDoc) {
-    // Gate the broadcast on whether the mirror changed the doc's LOGICAL state (`to_json` before vs
-    // after). A state-vector empty-diff check cannot do this: it is deletion-blind — a Yjs delete
-    // does not advance the state vector, so a delete-only `diff(last_sv)` is byte-identical to the
-    // empty baseline `diff(current_sv)`, and every node/link/instance/global REMOVAL would be
-    // silently dropped from the broadcast. `to_json` equality catches adds, edits, and deletes alike
-    // (the same lesson the frontend `SyncClient.commit` learned about the always-embedded delete set).
-    let before = doc.to_json();
-    crdt_mirror::sync_graph_to_doc(g, doc);
-    if doc.to_json() == before {
-        return; // no logical change → nothing to broadcast (no tombstone churn)
-    }
-    let mut last_sv = state.last_sync_sv.lock().unwrap();
-    // `diff(last_sv)` carries the missing structs AND the full delete set — so a peer at `last_sv`
-    // applies the removal even though the state vector is unchanged by it.
-    let delta = doc.diff(&last_sv);
-    *last_sv = doc.state_vector();
-    let _ = state.sync_updates.send(crate::crdt::SyncMsg::Update(delta).encode());
+/// Re-project the (already-locked) graph into the (already-locked) document and broadcast the
+/// delta. The caller holds `graph` then `doc` — the canonical order — and passing the guards in is
+/// what keeps the apply→re-project critical section atomic, so no concurrent writer can observe a
+/// document leaf the graph has not yet caught up to.
+fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut crate::doc::GraphDoc) {
+    let from = doc.version();
+    // `None` means the projection is what the document already holds — a read-only op, or a write
+    // that landed on the value already there. Nothing goes on the wire and the version does not
+    // move, so an idle patch is silent.
+    let Some(patch) = doc.reconcile_root(&projection::of(g)) else { return };
+    let _ = state
+        .events
+        .send(event("doc_patch", json!({ "from": from, "v": doc.version(), "patch": patch })));
 }
 
-/// Re-sync the CRDT doc from the (authoritative) graph and broadcast the resulting delta to
-/// every connected client, advancing the shared broadcast baseline. Called after an RPC dispatch
-/// mutates the graph. The re-mirror also RECONCILES the doc back to the graph's authoritative
-/// structure (idempotent), so any stale doc leaf converges to the graph.
+/// The whole document as an event — what seeds a fresh connection, and what recovers a lagged one.
+fn doc_state(state: &AppState) -> String {
+    let doc = state.doc.lock().unwrap();
+    event("doc_state", json!({ "v": doc.version(), "doc": doc.to_json() }))
+}
+
+/// Re-project the authoritative graph into the document and broadcast the delta. Called after an
+/// RPC dispatch mutates the graph. Because the projection is built WHOLE, this also converges any
+/// stale document leaf back to the graph rather than trusting an op to describe its own change.
 fn resync_and_broadcast(state: &AppState) {
     let g = state.graph.lock().unwrap();
-    let mut doc = state.crdt.lock().unwrap();
+    let mut doc = state.doc.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }
 

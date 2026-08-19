@@ -371,3 +371,65 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
     assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");
     assert!(listed.contains(&"Oscillator") && listed.contains(&"Buffer"), "{listed:?}");
 }
+
+#[test]
+fn the_control_plane_document_carries_no_null_leaf() {
+    // What a delta on the wire is allowed to mean. A delta is an RFC 7386 merge patch, which spends
+    // `null` on "delete this key" — so a document that could hold a null leaf would be ambiguous:
+    // a replica could not tell "this value is null" from "drop this key". The projection has no
+    // null today, and this is what says so. If it ever needs one, this fails and NAMES the path,
+    // which is the moment to give the delta an explicit tombstone instead.
+    //
+    // Driven over a graph that reaches every root and both optional leaves — an expression binding
+    // and a wired boundary — because a null in a shape nothing built would go unseen.
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    g.link(osc, "out", buf, "data");
+    g.call("set_expression", j!({ "node": hex(osc), "group": "oscillator", "name": "frequency",
+                                 "source": "globals.default_ufreq", "enabled": true }));
+    g.call("add_global", j!({ "name": "subject", "value": "P07", "type": "string" }));
+    let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
+        .as_str().unwrap().to_string();
+    // Grouping a node whose input comes from outside mints a WIRED stub for it, which is the
+    // optional `inner_node`/`inner_slot` pair — the leaves the projection omits when unwired.
+    let stubs = g.doc()["instances"][&inst]["stubs"].clone();
+    assert!(stubs.as_object().is_some_and(|m| m.values().any(|s| s.get("inner_node").is_some())),
+            "the group left no wired stub, so this test would not reach the optional leaves: {stubs}");
+    g.call("page_split_panel", j!({ "page": "Layout", "panel": panel_id(&g), "direction": "row",
+                                    "ratio": 0.5 }));
+
+    let doc = g.doc();
+    for root in ["nodes", "links", "instances", "globals", "arrangement"] {
+        assert!(doc.get(root).is_some(), "the document is missing its `{root}` root: {doc}");
+    }
+    let mut nulls = Vec::new();
+    find_nulls(&doc, &mut Vec::new(), &mut nulls);
+    assert!(nulls.is_empty(), "these leaves are null, so a merge patch cannot express them: {nulls:?}");
+}
+
+fn panel_id(g: &Goofi) -> String {
+    g.doc()["arrangement"].as_object().unwrap().iter()
+        .find(|(_, e)| e["kind"] == "panel").map(|(id, _)| id.clone()).expect("the default panel")
+}
+
+fn find_nulls(v: &Value, path: &mut Vec<String>, out: &mut Vec<String>) {
+    match v {
+        Value::Null => out.push(path.join(".")),
+        Value::Object(m) => {
+            for (k, x) in m {
+                path.push(k.clone());
+                find_nulls(x, path, out);
+                path.pop();
+            }
+        }
+        Value::Array(a) => {
+            for (i, x) in a.iter().enumerate() {
+                path.push(i.to_string());
+                find_nulls(x, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}

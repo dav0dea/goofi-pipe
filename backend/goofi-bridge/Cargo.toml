@@ -13,7 +13,6 @@ goofi-view = { path = "../goofi-view" }
 axum = { version = "0.8", features = ["ws"] }
 # The CRDT document (`src/crdt.rs`). This crate is its only consumer — the doc is the control
 # plane's projection, and nothing else in the workspace speaks Yjs.
-yrs = "0.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }
 futures-util = "0.3"

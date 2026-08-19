@@ -1,20 +1,19 @@
-//! Keep a `GraphDoc` in agreement with the engine `Graph`. The mirror is a full re-sync after
-//! each mutating RPC: `reconcile_root` diffs the whole projection and writes only what differs,
-//! so the doc's own delta is what reaches the wire. The client replica never writes the doc.
+//! One JSON projection of the engine `Graph` — exactly the shape of the control-plane document.
+//!
+//! Built whole after each mutating RPC and handed to [`crate::doc::GraphDoc::reconcile_root`],
+//! which answers the delta. Building it whole rather than emitting per-op deltas is what keeps the
+//! manager the sole author: there is no second code path that could describe a change differently
+//! from the state it produced.
 
-use crate::crdt::GraphDoc;
 use goofi_engine::subpatch::Dir;
 use goofi_engine::Graph;
 use serde_json::{json, Map, Value};
 
 use crate::schemas::ROOT_ID;
 
-/// Rebuild `doc` to mirror `g`'s control-plane state (nodes, params, pos, viewers, links, forest).
-/// Builds ONE JSON projection of the engine graph — exactly the doc's field shape — and hands it to
-/// the generic, idempotent, in-place [`GraphDoc::reconcile_root`]. The manager stays the sole author
-/// of every structural field (§4.2); merge-safe leaves a client writes directly are preserved by the
-/// reconciler's recurse-in-place discipline.
-pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
+/// `g`'s whole control-plane state: nodes with their params and viewers, links, the sub-patch
+/// forest, globals, and the panel arrangement.
+pub fn of(g: &Graph) -> Value {
     let pos_json = |p: [f64; 2]| json!({ "x": p[0], "y": p[1] });
 
     let mut nodes = Map::new();
@@ -122,6 +121,6 @@ pub fn sync_graph_to_doc(g: &Graph, doc: &mut GraphDoc) {
 
     // The arrangement projects through the very `to_json` the `.gfi` uses — ONE shape for the
     // persisted patch and the live replica, so a panel cannot mean two things.
-    doc.reconcile_root(&json!({ "nodes": nodes, "links": links, "instances": instances,
-        "globals": globals, "arrangement": g.arrangement().to_json() }));
+    json!({ "nodes": nodes, "links": links, "instances": instances,
+        "globals": globals, "arrangement": g.arrangement().to_json() })
 }

@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use goofi_tests::{hex, host, http, j, panels, tool, Client, Goofi, GraphDoc, Message, SyncMsg, Viewer};
+use futures_util::StreamExt;
+use goofi_tests::{hex, host, http, j, panels, tool, Client, Goofi, GraphDoc, Message, Viewer};
 use serde_json::Value;
 
 #[tokio::test]
@@ -61,22 +61,23 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
 }
 
 #[tokio::test]
-async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing_it() {
-    // The reader half of the control plane. A replica mounts, syncs, and then learns everything
-    // else as a delta — including a PEER's edits, which is what let the frontend stop writing.
+async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_editing_it() {
+    // The reader half of the control plane. A replica is seeded whole on connect and learns
+    // everything after that as a delta — including a PEER's edits, which is what let the frontend
+    // stop writing.
     let g = Goofi::new();
     let base = g.serve().await;
     let (mut c, _) = Client::connect(&base).await;
     let mut peer = Client::connect(&base).await.0;
-    let _server_sv = c.binary().await;
 
     let mut replica = GraphDoc::new();
-    c.ws.send(Message::Binary(replica.sync_hello())).await.unwrap();
-    replica.on_sync(SyncMsg::decode(&c.binary().await).expect("a sync frame"));
-    assert!(replica.node_ids().is_empty(), "converged on the empty graph");
+    c.follow(&mut replica).await; // the unprompted `doc_state` every connection is sent
+    assert!(replica.node_ids().is_empty(), "seeded from the empty graph");
+    assert_eq!(replica.version(), 1, "and at the manager's version, not at its own zero");
 
-    // Its OWN add. Both channels are read in one loop, as a real client does: the reply carries the
-    // uid and the delta carries the change, and a reader draining one throws the other away.
+    // Its OWN add. The reply carries the uid and the delta carries the change — on ONE socket, in
+    // order, which is what lets a replica apply a patch onto the version it names instead of
+    // reconciling two streams.
     c.send(j!({ "id": 1, "op": "add_node", "payload": { "type": "Oscillator" } }).to_string()).await;
     let mut uid: Option<String> = None;
     for _ in 0..20 {
@@ -86,10 +87,9 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
                 if v.get("id").and_then(Value::as_i64) == Some(1) {
                     uid = v["result"]["uid"].as_str().map(str::to_string);
                 }
-            }
-            Ok(Some(Ok(Message::Binary(b)))) => {
-                if let Some(m) = SyncMsg::decode(&b) {
-                    replica.on_sync(m);
+                if let Some(p) = v.get("payload").filter(|_| v["event"] == "doc_patch") {
+                    replica.apply_patch(p["from"].as_u64().unwrap(), p["v"].as_u64().unwrap(),
+                                        &p["patch"]).expect("in order on one socket");
                 }
             }
             Ok(Some(Ok(_))) => {}
@@ -110,9 +110,7 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
                                                   "direction": "row", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
     for _ in 0..20 {
-        if let Some(m) = SyncMsg::decode(&c.binary().await) {
-            replica.on_sync(m);
-        }
+        c.follow(&mut replica).await;
         if replica.read_at(&["arrangement", fresh.as_str()]).is_some() {
             break;
         }
@@ -125,9 +123,7 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
     assert_eq!(replica.read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
     peer.call("add_global", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
     for _ in 0..20 {
-        if let Some(m) = SyncMsg::decode(&c.binary().await) {
-            replica.on_sync(m);
-        }
+        c.follow(&mut replica).await;
         if replica.read_at(&["globals", "subject", "value"]).is_some() {
             break;
         }
@@ -136,14 +132,13 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
     assert_eq!(replica.read_at(&["globals", "subject", "system"]), Some(j!(false)),
                "a user global is distinguishable from a system one in the replica");
 
-    // And a REMOVAL. The broadcast gate once compared state vectors, which is deletion-blind: a Yjs
-    // delete does not advance the vector, so a delete-only diff was byte-identical to the empty
-    // baseline and no removal ever reached a client. The gate compares logical state instead.
+    // And a REMOVAL, which is the half a delta format is easiest to get wrong: the gate that
+    // decides whether to broadcast once compared CRDT state vectors, which are deletion-blind, so
+    // no removal ever reached a client. A merge patch spells a delete as an explicit `null`, and
+    // the gate compares the whole projection.
     peer.call("remove_node", j!({ "node": uid.clone() })).await;
     for _ in 0..20 {
-        if let Some(m) = SyncMsg::decode(&c.binary().await) {
-            replica.on_sync(m);
-        }
+        c.follow(&mut replica).await;
         if !replica.node_ids().contains(&uid) {
             return;
         }

@@ -280,15 +280,15 @@ fn keys(v: &Value) -> Vec<String> {
 // The transport half: a real WebSocket client, for the suite that tests the wire
 // ---------------------------------------------------------------------------
 
-pub use goofi_bridge::crdt::{GraphDoc, SyncMsg};
+pub use goofi_bridge::doc::GraphDoc;
 pub use tokio_tungstenite::tungstenite::Message;
 
 pub type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// A `/control` client — what a browser tab is. Two interleaved channels on one socket: JSON for
-/// RPC and events, binary for CRDT sync frames.
+/// A `/control` client — what a browser tab is. One socket carrying JSON: RPC replies, events, and
+/// the `doc_state` / `doc_patch` events that keep a replica equal to the manager's document.
 pub struct Client {
     pub ws: Ws,
     next_id: i64,
@@ -368,23 +368,48 @@ impl Client {
             .expect("a websocket error")
     }
 
-    /// Sync a FRESH replica off this socket and drain sync frames until `ready` holds. A fresh
-    /// replica advertises an empty state vector, so the server's reply is the COMPLETE current doc.
+    /// A replica of the manager's document, driven off this socket until `ready` holds. Every
+    /// connection is sent `doc_state` unprompted, so nothing is advertised and nothing is asked
+    /// for — the replica simply follows what arrives, exactly as a browser tab does.
     ///
-    /// `ready` must be POSITIVE about something the sync will deliver: an "absence" predicate is
-    /// already true of the empty replica, before a single frame lands.
+    /// `ready` must be POSITIVE about something the document will deliver: an "absence" predicate
+    /// is already true of the empty replica, before a single event lands.
     pub async fn replica(&mut self, ready: impl Fn(&GraphDoc) -> bool) -> GraphDoc {
         let mut doc = GraphDoc::new();
-        self.ws.send(Message::Binary(doc.sync_hello())).await.unwrap();
-        for _ in 0..60 {
-            if let Some(m) = SyncMsg::decode(&self.binary().await) {
-                doc.on_sync(m);
-            }
+        for _ in 0..120 {
+            self.follow(&mut doc).await;
             if ready(&doc) {
                 break;
             }
         }
         doc
+    }
+
+    /// Take the next document event off the socket and apply it. A `doc_patch` that does not
+    /// follow this replica's version PANICS rather than being skipped: the wire promises they
+    /// arrive in order on one socket, so a gap is a defect and not a condition to tolerate.
+    pub async fn follow(&mut self, doc: &mut GraphDoc) {
+        loop {
+            let m = self.text().await;
+            match m.get("event").and_then(Value::as_str) {
+                Some("doc_state") => {
+                    let p = &m["payload"];
+                    doc.reset_to(p["v"].as_u64().expect("a version"), p["doc"].clone());
+                    return;
+                }
+                Some("doc_patch") => {
+                    let p = &m["payload"];
+                    doc.apply_patch(
+                        p["from"].as_u64().expect("a base version"),
+                        p["v"].as_u64().expect("a version"),
+                        &p["patch"],
+                    )
+                    .expect("the deltas arrive in order on one socket");
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
