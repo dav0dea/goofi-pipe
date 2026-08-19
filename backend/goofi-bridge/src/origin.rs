@@ -25,22 +25,53 @@
 //! 192.168.7.5:8000, and on this app's trusted LAN that is goofi.
 
 use axum::extract::Request;
-use axum::http::{header, StatusCode};
+use axum::http::{header, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+/// What the browser said this request IS — the three `Sec-Fetch-*` headers, which script cannot
+/// set (they are forbidden header names) and nothing that is not a browser sends at all.
+struct Fetch<'a> {
+    /// `none` is the user typing the address, `same-origin` a page's own requests; the other two
+    /// mean another site asked for this.
+    site: Option<&'a str>,
+    /// `navigate` is the address bar and every link and reload; anything else is a subresource.
+    mode: Option<&'a str>,
+    /// `document` is the tab itself; `iframe` is a page putting goofi inside itself.
+    dest: Option<&'a str>,
+}
 
 /// Whether a request bearing these headers may be served.
 ///
 /// A missing `Origin` is a client that is not a browser — curl, an MCP client, a harness goofi
 /// spawned itself — and is served: it is not reachable from a web page, so there is nothing here
 /// to stop. Everything else must name a host the browser could only have reached deliberately.
-fn allowed(origin: Option<&str>, host: Option<&str>, fetch_site: Option<&str>) -> bool {
+fn allowed(method: &Method, origin: Option<&str>, host: Option<&str>, fetch: Fetch<'_>) -> bool {
+    // The user ARRIVING: a link, a bookmark, a reload of the tab that is already here. It carries
+    // no `Origin`, a GET writes nothing (every write here is a POST or a socket), and the document
+    // it returns is opaque to whoever linked to it — so there is nothing to refuse.
+    //
+    // Refusing it was this guard's own bug, and a nasty one to describe: a browser REPLAYS the
+    // original navigation's `Sec-Fetch-Site` on every later reload, so a tab first opened from
+    // anywhere but the address bar answered `cross-site` for ever after, and the only way out was
+    // to retype the URL. Restarting goofi and hitting reload is exactly when a user meets it.
+    //
+    // `document` and not `iframe`: a page that FRAMES goofi is the drive-by this guard is for, and
+    // `Sec-Fetch-Dest` is the only thing that tells the two apart. GET or HEAD and not POST: a
+    // cross-site form submission is a navigation too, and it is the very hole the check below
+    // exists to close.
+    if matches!(*method, Method::GET | Method::HEAD)
+        && fetch.mode == Some("navigate")
+        && fetch.dest == Some("document")
+    {
+        return true;
+    }
     // `Origin` alone would leave one hole: a cross-site FORM POST is a page driving goofi, and a
     // browser that omits `Origin` on one (Safari did until 15.4) reads as "not a browser" above.
-    // `Sec-Fetch-Site` closes it — every modern browser sends it on every request, it is a
-    // forbidden header name so script cannot set it, and nothing that is not a browser sends it at
-    // all. `none` is the user typing the address; `same-origin` is that page's own requests.
-    if matches!(fetch_site, Some("cross-site" | "same-site")) {
+    // `Sec-Fetch-Site` closes it. (It does nothing for `/control` and `/term`: Chromium sends no
+    // `Sec-Fetch-*` at all on a WebSocket handshake, so those two rest entirely on the allowlist
+    // below — which is what the module doc says they rest on.)
+    if matches!(fetch.site, Some("cross-site" | "same-site")) {
         return false;
     }
     let Some(origin) = origin else { return true };
@@ -72,7 +103,12 @@ pub(crate) async fn guard(req: Request, next: Next) -> Response {
     let ok = {
         let h = req.headers();
         let get = |n: &str| h.get(n).and_then(|v: &axum::http::HeaderValue| v.to_str().ok());
-        allowed(get(header::ORIGIN.as_str()), get(header::HOST.as_str()), get("sec-fetch-site"))
+        let fetch = Fetch {
+            site: get("sec-fetch-site"),
+            mode: get("sec-fetch-mode"),
+            dest: get("sec-fetch-dest"),
+        };
+        allowed(req.method(), get(header::ORIGIN.as_str()), get(header::HOST.as_str()), fetch)
     };
     if ok {
         return next.run(req).await;

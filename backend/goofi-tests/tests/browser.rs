@@ -315,6 +315,21 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
             assert_eq!(got, want, "`{path}` answered {got} for [{headers:?}] — {why}");
         }
     }
+
+    // A NAVIGATION is not a subresource, and the three cases below cannot share the loop above
+    // because the method is what separates them. This was the guard's own bug: a browser replays
+    // the first navigation's `Sec-Fetch-Site` on every later reload, so a tab opened from anywhere
+    // but the address bar answered `cross-site` for ever after — measured in Chromium — and the
+    // only way back in was to retype the URL. Restarting goofi and hitting reload is when a user
+    // meets it.
+    const NAV: &str = "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\n";
+    let doc = format!("{NAV}Sec-Fetch-Dest: document\r\n");
+    assert_eq!(ask(&addr, "/index.html", "GET", &doc, &addr).await, 200,
+               "reloading the tab is the user arriving, not a page reaching in");
+    assert_eq!(ask(&addr, "/index.html", "GET", &format!("{NAV}Sec-Fetch-Dest: iframe\r\n"), &addr).await,
+               403, "…but a page FRAMING goofi is the drive-by, and only `Dest` tells them apart");
+    assert_eq!(ask(&addr, "/mcp", "POST", &doc, &addr).await, 403,
+               "…and a cross-site form POST is a navigation too, which is why the method is asked");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

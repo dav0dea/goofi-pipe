@@ -19,6 +19,30 @@ test.describe('the app boots', () => {
 		expect(Array.isArray(types)).toBe(true);
 		expect(types.map((t: any) => t.type)).toContain('Oscillator');
 	});
+
+	test('a tab reached from somewhere else still reloads', async ({ page, baseURL }) => {
+		// The drive-by guard refused every cross-site request, and a top-level NAVIGATION is one.
+		// The browser then replays that classification on every later reload of the tab, so a
+		// window opened from a link — or from another port — answered 403 for ever, and the only
+		// way back in was to retype the address. Restarting goofi and hitting reload is exactly
+		// when a user meets it, which is why this drives a real browser rather than a header.
+		//
+		// `localhost` and `127.0.0.1` are the same machine and DIFFERENT sites to Chromium, so the
+		// same backend serves both and the hop between them is genuinely cross-site.
+		const url = new URL(baseURL!);
+		await page.goto(`http://localhost:${url.port}/`);
+		await waitForApp(page);
+
+		await page.evaluate((to) => window.location.assign(to), baseURL!);
+		await waitForApp(page);
+		expect(new URL(page.url()).hostname, 'the hop landed on the other site').toBe('127.0.0.1');
+
+		// …and again, because the replay is what made it stick.
+		await page.reload();
+		await waitForApp(page);
+		await page.reload();
+		await waitForApp(page);
+	});
 });
 
 test.describe('the top bar', () => {
