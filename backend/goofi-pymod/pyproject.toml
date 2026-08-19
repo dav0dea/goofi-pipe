@@ -15,6 +15,13 @@ requires-python = ">=3.8"
 # the package that defines it.
 dependencies = ["numpy"]
 
+# What the SHIPPED node files import, kept out of the package's own contract: goofi runs perfectly
+# well without antropy, and only the entropy nodes in `nodes/` need it. Provisioning installs
+# `goofi[nodes]`, so a fresh clone can run everything it ships without carrying scipy and numba
+# into every embedding of the library.
+[project.optional-dependencies]
+nodes = ["antropy"]
+
 [tool.maturin]
 module-name = "goofi"
 features = ["extension-module"]

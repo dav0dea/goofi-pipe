@@ -22,6 +22,11 @@ fn f32s(d: &Data) -> Vec<f32> {
     a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
 }
 
+fn shape(d: &Data) -> Vec<usize> {
+    let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
+    a.shape().to_vec()
+}
+
 /// Serializes this binary's tier tests. Cargo runs a crate's tests on parallel threads and every
 /// one of these spawns an interpreter, so without this a latency or liveness assertion is taken
 /// while a dozen siblings boot numpy on the same cores.
@@ -140,6 +145,78 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
         probe.latest().filter(|d| f32s(d)[0] == 10.0).map(|_| ())
     });
     assert!(g.error(node).is_none(), "a healthy python node carries no error");
+}
+
+/// One of the `.py` files goofi SHIPS, installed through the same seam a user's own file takes.
+/// Reading the real file is the point: a node that ships broken — an API that moved under it, a
+/// dependency provisioning forgot — is a node every user gets, and no hand-written fixture beside
+/// it would notice.
+fn install_shipped(g: &Goofi, py: &str, file: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nodes").join(file);
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read the shipped node {}: {e}", path.display()));
+    install(g, py, file, &source)
+}
+
+#[test]
+fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alone() {
+    // Four measures over the same window, on a frame that is NOT a vector — because the mistake
+    // they all invite is to flatten first, and against a single channel a flattening node and a
+    // correct one are indistinguishable.
+    let py = require_python();
+    let g = Goofi::new();
+    let src = g.add("_TestGrid");
+    let buf = g.add("Buffer");
+    g.call("update_param", j!({ "node": hex(src), "group": "common", "name": "max_frequency", "value": 500.0 }));
+    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
+    g.link(src, "out", buf, "data");
+
+    for (file, slot) in [
+        ("lempel_ziv.py", "complexity"),
+        ("permutation_entropy.py", "entropy"),
+        ("spectral_entropy.py", "entropy"),
+        ("detrended_fluctuation.py", "exponent"),
+    ] {
+        let ty = install_shipped(&g, &py.py, file);
+        let node = g.add(&ty);
+        let probe = g.probe(node, slot);
+        g.link(buf, "out", node, "data");
+
+        // [3, 256] in, [3] out: the measure consumes time and hands back one value per channel.
+        let d = g.until(&format!("{ty} to answer"), |_| probe.latest().filter(|d| shape(d) == vec![3]));
+        let v = f32s(&d);
+        assert!(v.iter().all(|x| x.is_finite()), "{ty} answered {v:?}");
+        // The three rows are the same signal at three offsets, and every one of these measures
+        // ignores a constant offset — so three answers that DISAGREE mean the rows were mixed.
+        assert!(
+            v.iter().all(|x| (x - v[0]).abs() <= v[0].abs() * 1e-3 + 1e-4),
+            "{ty} read the three channels as three different signals: {v:?}",
+        );
+        assert!(g.error(node).is_none(), "{ty} carries no error: {:?}", g.error(node));
+    }
+}
+
+#[test]
+fn a_shipped_entropy_node_reads_a_real_signal_rather_than_answering_a_constant() {
+    // The scenario above is blind to a node that returns the same number whatever it is given: its
+    // rows are one signal three times over. A sine says otherwise — permutation entropy of one is
+    // solidly inside its range, where a flat or a saturated answer is not.
+    let py = require_python();
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 256.0 }));
+    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
+    let node = g.add(&install_shipped(&g, &py.py, "permutation_entropy.py"));
+    let probe = g.probe(node, "entropy");
+    g.link(osc, "out", buf, "data");
+    g.link(buf, "out", node, "data");
+
+    let d = g.until("a permutation entropy of a full window", |_| {
+        probe.latest().filter(|d| shape(d) == vec![1] && f32s(d)[0] > 0.0)
+    });
+    let e = f32s(&d)[0];
+    assert!((0.3..0.9).contains(&e), "a sine's permutation entropy is neither flat nor maximal: {e}");
 }
 
 #[test]

@@ -1006,7 +1006,7 @@ test.describe('the expression editor', () => {
 			const osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 			await waitForNode(page, osc);
 			// A node whose output slot is NOT called `out`, so "that node's slots" is a real claim.
-			const psd = await addNode(page, 'Psd', 'python', [360, 40]);
+			const psd = await addNode(page, 'Psd', 'signal', [360, 40]);
 			await waitForNode(page, psd);
 			try {
 				const editor = await fxEditor(page, osc);

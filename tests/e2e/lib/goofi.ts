@@ -91,7 +91,8 @@ export function updateParam(
  * nothing connected, so that slot's last-store is empty. `execute_node` refuses the tick and
  * records the error BEFORE `process` is entered — the same per-node `error` field that drives the
  * floating chip, the console rows and the inspector traceback. It is permanent (nothing here ever
- * connects the slot) and environment-independent (no missing dependency; numpy is in both venvs).
+ * connects the slot) and environment-independent: what it imports — numpy, and antropy through the
+ * wheel's `nodes` extra — is what provisioning installs into both venvs.
  *
  * `autotrigger` is what makes it tick at all: the required check fires on a TICK, not on the
  * configuration, and an unwired single-slot Python node has a trigger input with autotrigger off,

@@ -6,11 +6,7 @@
 //! spectrum replaces time with frequency in place. A fixture that only ever carries a vector cannot
 //! tell any of that apart from the flattening it replaced, so the source here emits a grid.
 
-use goofi_core::{Data, SlotType, Value};
-use goofi_node::{
-    Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl, Outputs,
-    Params,
-};
+use goofi_core::{Data, Value};
 use goofi_tests::{hex, j, Goofi};
 
 fn shape(d: &Data) -> Vec<usize> {
@@ -49,7 +45,7 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     set(flt, "filter", "low", j!(5.0));
     set(flt, "filter", "high", j!(20.0));
 
-    let probe = g.probe(psd, "out"); // opened before the wires: the data services keep no history
+    let probe = g.probe(psd, "psd"); // opened before the wires: the data services keep no history
     g.link(osc, "out", flt, "data");
     g.link(flt, "out", buf, "data");
     g.link(buf, "out", psd, "data");
@@ -78,41 +74,9 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     });
 }
 
-/// Emits a `[3, 4]` grid whose every value says which row and which frame it came from:
-/// `row*100 + frame*4 + column`. Two channels that were mixed, or an axis rolled the wrong way,
-/// both show up as arithmetic that stops working.
-struct Grid(u32);
-impl Node for Grid {
-    fn process(&mut self, _i: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        let n = self.0;
-        self.0 += 1;
-        let buf = (0..3u32)
-            .flat_map(move |r| (0..4u32).flat_map(move |t| ((r * 100 + n * 4 + t) as f32).to_le_bytes()))
-            .collect();
-        let d = Data::array_f32(vec![3, 4], buf, goofi_core::Meta::empty())
-            .map_err(|e| NodeError(e.to_string()))?;
-        out.set("out", d);
-        Ok(())
-    }
-}
-
-static GRID_OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
-static GRID: NodeManifest = NodeManifest {
-    type_name: "_TestGrid",
-    category: "python",
-    doc: "a [3, 4] grid whose values name their row and frame",
-    inputs: &[],
-    outputs: GRID_OUT,
-    params: &[],
-    isolation: Isolation::InProcess,
-    producer: true,
-    factory: || unreachable!("registered with a per-instance factory"),
-};
-
 #[test]
 fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
     let g = Goofi::new();
-    g.register_dyn(&GRID, Box::new(|_| Box::new(Grid(0))));
     let src = g.add("_TestGrid");
     let time = g.add("Buffer");
     let chans = g.add("Buffer");
@@ -144,7 +108,7 @@ fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
         // BETWEEN entries is not checked: the data services are latest-wins one deep, so a
         // consumer slower than its producer legitimately never sees some frames.)
         assert!(
-            row.iter().zip(&v[..8]).all(|(x, first)| x - first == r as f32 * 100.0),
+            row.iter().zip(&v[..8]).all(|(x, first)| (x - first - r as f32 * 100.0).abs() < 0.01),
             "row {r} is one channel's own history, not a slice of the flattened lot: {row:?}",
         );
     }
@@ -154,7 +118,7 @@ fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
         pc.latest().filter(|d| shape(d) == vec![2, 4])
     });
     let v = f32s(&across);
-    assert_eq!(v[4] - v[0], 100.0, "the two kept rows are adjacent channels: {v:?}");
+    assert!((v[4] - v[0] - 100.0).abs() < 0.01, "the two kept rows are adjacent channels: {v:?}");
 
     // A window of one is the identity on rank: the frame keeps every axis it arrived with, and the
     // rolled one is simply length 1.

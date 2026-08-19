@@ -204,6 +204,42 @@ inventory::submit! {
     manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false, default_factory::<RequiredCounter>)
 }
 
+/// A `[3, 4]` frame — the only source here that is not a vector, and the reason it exists. A
+/// fixture that only ever carries one dimension cannot tell a node that PRESERVES rank from one
+/// that flattens, which is the failure the whole signal set is built against.
+///
+/// Each row is the same rising signal offset by a round 100, so a channel that leaked into its
+/// neighbour shows up as arithmetic that stops working. Rising strictly, so a window that came out
+/// backwards does too; and carrying a small ripple, so a measure taken over it is not degenerate.
+#[derive(Default)]
+struct Grid {
+    /// Samples emitted so far — the frame's values continue the sequence rather than restarting it.
+    n: u64,
+}
+impl Node for Grid {
+    fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        let (rows, cols) = (3u64, 4u64);
+        let first = self.n;
+        self.n += cols;
+        let buf = (0..rows)
+            .flat_map(|r| {
+                (0..cols).flat_map(move |t| {
+                    let n = (first + t) as f64;
+                    let v = r as f64 * 100.0 + n + 0.4 * (std::f64::consts::TAU * n / 8.0).sin();
+                    (v as f32).to_le_bytes()
+                })
+            })
+            .collect();
+        let meta = Meta::new().with_sfreq(Some(256.0));
+        let shape = vec![rows as usize, cols as usize];
+        o.set("out", Data::array_f32(shape, buf, meta).map_err(|e| e.to_string())?);
+        Ok(())
+    }
+}
+inventory::submit! {
+    manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Grid>)
+}
+
 // ---------------------------------------------------------------------------
 // A refreshable param — the ⟳ round trip, which has no other observable surface
 // ---------------------------------------------------------------------------

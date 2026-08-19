@@ -198,10 +198,12 @@ fn install_wheel(root: &Path, venv: &str, py: &Path) -> Result<(), String> {
         .find(|p| p.extension().is_some_and(|x| x == "whl"))
         .ok_or_else(|| format!("maturin wrote no wheel into {}", out.display()))?;
 
-    // Deps included on purpose: numpy is declared by the wheel itself, so installing goofi is the
-    // whole of provisioning rather than the first half of it.
+    // Deps included on purpose, and the `nodes` extra with them: numpy is declared by the wheel
+    // itself and antropy by that extra, so installing goofi is the whole of provisioning rather
+    // than the first half of it.
+    let spec = format!("{}[nodes]", wheel.display());
     run(
-        uv(["pip", "install", "--python"]).arg(py).arg("--force-reinstall").arg(&wheel),
+        uv(["pip", "install", "--python"]).arg(py).arg("--force-reinstall").arg(&spec),
         "install the goofi wheel",
     )
 }

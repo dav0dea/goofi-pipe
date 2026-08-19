@@ -1,50 +1,38 @@
-"""LempelZiv — LZ76 complexity of a signal (a common EEG complexity measure).
+"""LempelZiv — LZ76 complexity, the EEG regularity measure, from antropy.
 
-A stopgap Python node exercising the in-process (pyo3 free-threaded) class-contract
-tier. Pure numpy: binarize the input against its mean, count Lempel-Ziv 1976 production
-steps, emit a length-1 f32 array.
+The last axis is time and it is what the measure consumes: `[C, T]` in, `[C]` out. Every axis
+before it survives, because a complexity per channel is still a value per channel.
 """
 
-import goofi
+import antropy
 import numpy as np
-
-
-def _lz76(binary):
-    # Kaspar-Schuster LZ76 complexity of a 0/1 sequence.
-    n = len(binary)
-    if n == 0:
-        return 0
-    i, k, l, c, kmax = 0, 1, 1, 1, 1
-    while l + k <= n:
-        if binary[i + k - 1] == binary[l + k - 1]:
-            k += 1
-            if l + k > n:
-                c += 1
-                break
-        else:
-            if k > kmax:
-                kmax = k
-            i += 1
-            if i == l:
-                c += 1
-                l += kmax
-                i = 0
-                k = 1
-                kmax = 1
-            else:
-                k = 1
-    return c
+import goofi
 
 
 class LempelZiv(goofi.Node):
-    """LZ76 complexity of a signal."""
+    """LZ76 complexity: how much a signal repeats itself."""
 
-    # `required`: process() reads `data.data` unconditionally, so a tick with an empty slot cannot
-    # work. The engine refuses the tick before process() is entered.
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
-    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    OUTPUTS = {"complexity": goofi.DataType.ARRAY}
+    PARAMS = {
+        "lz": {
+            "threshold": goofi.StringParam(
+                "median",
+                ["median", "mean"],
+                doc="What each sample is called high or low against before the sequence is counted.",
+            ),
+            "normalize": goofi.BoolParam(
+                True, doc="Divide by the complexity a random sequence of the same length would have."
+            ),
+        }
+    }
 
     def process(self, data):
-        x = np.asarray(data.data).ravel()
-        b = (x > x.mean()).astype(np.uint8)
-        return {"out": np.asarray([float(_lz76(b))], dtype=np.float32)}
+        p = self.params.lz
+
+        def lz(x):
+            level = np.median(x) if p.threshold == "median" else np.mean(x)
+            return antropy.lziv_complexity((x > level).astype(int), normalize=p.normalize)
+
+        x = np.asarray(data.data, dtype=np.float64)
+        return np.apply_along_axis(lz, -1, x).astype(np.float32)

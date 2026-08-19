@@ -106,7 +106,7 @@ impl Node for Psd {
         let axes = meta.channels().clone().with(last, Axis::coords(Arc::from(freqs)));
         meta.set_channels(axes);
         meta.set_sfreq(None);
-        out.set("out", Data::array_f32(shape_out, buf, meta).map_err(|e| e.to_string())?);
+        out.set("psd", Data::array_f32(shape_out, buf, meta).map_err(|e| e.to_string())?);
         Ok(())
     }
 }
@@ -133,7 +133,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
     required: true,
 }];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl {
-    name: "out",
+    name: "psd",
     kind: SlotType::Array,
 }];
 
