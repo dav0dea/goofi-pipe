@@ -56,10 +56,9 @@ pub(crate) enum Phase {
     Grow,
 }
 
-/// One slot's in-flight wire change.
+/// One slot's in-flight wire change. The set it applies is [`WirePlanner::planned`] — one holder,
+/// written by `begin` and taken back by `abandon` together with the sequence itself.
 struct Sequence {
-    /// Every producer that should feed this slot when the sequence completes, in wire order.
-    desired: Vec<Wire>,
     /// The producers that lost this consumer, and the ones that gained it.
     removed: Vec<Wire>,
     added: Vec<Wire>,
@@ -69,7 +68,7 @@ struct Sequence {
 
 impl Sequence {
     /// Whether the consumer has NOT yet acked a set from this sequence — it has been told nothing,
-    /// or has been sent an `InSlot` it has not answered. Past `Apply` it holds `desired`.
+    /// or has been sent an `InSlot` it has not answered. Past `Apply` it holds the planned set.
     fn unapplied(&self) -> bool {
         matches!(self.phase, None | Some(Phase::Shrink) | Some(Phase::Apply))
     }
@@ -93,7 +92,8 @@ pub(crate) struct WirePlanner {
     awaiting: HashMap<u64, SlotKey>,
     /// What each slot was last PLANNED to hold — not what it is confirmed to hold. It is the base a
     /// shrink/grow diff is taken against, and it moves when the plan is made because a slot message
-    /// is declarative: the node applies what it was sent whether or not its ack came back.
+    /// is declarative: the node applies what it was sent whether or not its ack came back. A REFUSAL
+    /// is the one answer that says otherwise, and [`Self::abandon`] takes the base back for it.
     planned: HashMap<SlotKey, Vec<Wire>>,
     /// Messages for nodes that are not addressable yet. The birth barrier is a WINDOW, not a state:
     /// a ⟳ clicked on a node the user has only just placed falls inside it, and a dropped request
@@ -203,14 +203,21 @@ impl WirePlanner {
         let added: Vec<Wire> =
             desired.iter().copied().filter(|w| added.contains(w) || carried.contains(w)).collect();
         self.abandon(key);
-        self.planned.insert(key, desired.clone());
-        self.sequences.insert(key, Sequence { desired, removed, added, phase: None });
+        self.planned.insert(key, desired);
+        self.sequences.insert(key, Sequence { removed, added, phase: None });
     }
 
-    /// Forget a slot's sequence and everything it was waiting on.
+    /// Forget a slot's sequence, everything it was waiting on, and the base that sequence moved to.
+    ///
+    /// The base is taken back because a refusal is what abandons a sequence, and the graph learns
+    /// only THAT the node did not reach the planned set — never which wires it ended up holding. So
+    /// the next change to this slot diffs against nothing and re-sends the whole set: a base that
+    /// claims less than the node holds costs one redundant message, and one that claims more costs a
+    /// producer that is never told to ring this consumer, which no later edit to the slot repairs.
     fn abandon(&mut self, key: SlotKey) {
         self.sequences.remove(&key);
         self.awaiting.retain(|_, waiting| *waiting != key);
+        self.forget_planned(key);
     }
 
     /// What this slot was last planned to hold — the set a change is diffed against.
@@ -258,9 +265,11 @@ impl WirePlanner {
         }
     }
 
-    /// The full desired set of the sequence in flight on this slot.
+    /// The full desired set of the sequence in flight on this slot — the planned base itself, since
+    /// only [`Self::begin`] writes that base and it cancels what was in flight as it does. So a
+    /// phase can never compose against a set a later plan has moved past.
     pub(crate) fn desired(&self, key: SlotKey) -> Vec<Wire> {
-        self.sequences.get(&key).map(|s| s.desired.clone()).unwrap_or_default()
+        self.planned(key)
     }
 
     /// Send one phase's messages and start awaiting their acks. Answers whether anything is now
