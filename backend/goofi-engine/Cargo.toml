@@ -33,6 +33,3 @@ walkdir = "2"
 # spelling that selects a backend without dragging in zopfli.
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
-[dev-dependencies]
-inventory = "0.3"
-tempfile = "3"

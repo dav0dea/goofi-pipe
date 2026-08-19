@@ -580,7 +580,6 @@ dependencies = [
  "libc",
  "rmp-serde",
  "rmpv",
- "serde_json",
  "windows-sys 0.61.2",
 ]
 
@@ -606,12 +605,10 @@ dependencies = [
  "goofi-nodes",
  "iceoryx2",
  "indexmap",
- "inventory",
  "rmp-serde",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "tempfile",
  "walkdir",
  "zip",
 ]
@@ -686,6 +683,7 @@ dependencies = [
  "indexmap",
  "inventory",
  "pyo3",
+ "rmpv",
  "serde_json",
  "socket2",
  "tempfile",

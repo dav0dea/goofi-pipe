@@ -100,8 +100,6 @@ pub use transport::{
 };
 /// Only [`Graph`] mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;
-#[cfg(test)]
-pub use wire::MemoryTransport;
 pub use wire::{
     Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
     Var, VarName,

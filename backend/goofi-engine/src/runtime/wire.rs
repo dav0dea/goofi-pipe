@@ -16,8 +16,6 @@
 //! thread and subprocess cases are the same code — a param edit has no latency requirement, but a
 //! second transport implementation is a correctness surface.
 
-#[cfg(test)]
-use std::sync::Mutex;
 use std::time::Duration;
 
 use goofi_core::{Data, Param};
@@ -212,97 +210,7 @@ pub trait Transport: Send + Sync {
 
 /// The graph's end of ONE node's control channel: it hands over an [`Envelope`] and rings that
 /// node's door. A trait because the wire planner is about ordering, not about iceoryx2 — the
-/// sequence it drives is the same whether the far end is a thread, a subprocess, or a test double
-/// that only writes down what it was sent.
+/// sequence it drives is the same whether the far end is a thread or a subprocess.
 pub trait ControlSink: Send + Sync {
     fn send(&self, envelope: Envelope);
 }
-
-/// The in-memory [`Transport`]: it never parks, and it records everything so a test can read what
-/// the node emitted and told the graph. Test-only, because the transport that ships is the one
-/// built on iceoryx2 — this exists to drive a node without one.
-#[cfg(test)]
-#[derive(Default)]
-pub struct MemoryTransport {
-    inner: Mutex<Inner>,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct Inner {
-    control: Vec<Envelope>,
-    published: Vec<(String, Data)>,
-    reported: Vec<Status>,
-    wired_in: Vec<(String, Vec<ServiceName>)>,
-    wired_out: Vec<(String, Vec<(ServiceName, EventId)>)>,
-    arriving: Vec<(String, usize, Data)>,
-    next_seq: u64,
-}
-
-#[cfg(test)]
-impl MemoryTransport {
-    /// Queue a control message for the node — the graph side of [`Transport::drain_control`]. The
-    /// seq is minted here because in production the graph mints it: a caller that does not care
-    /// about ordering should not have to invent one, and one that does reads it back off the ack.
-    pub fn send(&self, control: Control) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.next_seq += 1;
-        let seq = inner.next_seq;
-        inner.control.push(Envelope { seq, control });
-    }
-    /// Put a frame on one of the node's wires — the graph side of [`Transport::drain_inputs`], and
-    /// the ONLY door a frame comes in through. A test that reached past it into `deliver_input`
-    /// would pass against a wake loop that never drains, which is precisely the gap the cutover
-    /// closed.
-    pub fn arrive(&self, slot: &str, wire: usize, frame: Data) {
-        self.inner.lock().unwrap().arriving.push((slot.to_string(), wire, frame));
-    }
-    /// Every frame the node has published, in emission order.
-    pub fn published(&self) -> Vec<(String, Data)> {
-        self.inner.lock().unwrap().published.clone()
-    }
-    /// Every transition the node has reported, in order.
-    pub fn reported(&self) -> Vec<Status> {
-        self.inner.lock().unwrap().reported.clone()
-    }
-    /// Every input-slot set the node has applied, in order.
-    pub fn wired_in(&self) -> Vec<(String, Vec<ServiceName>)> {
-        self.inner.lock().unwrap().wired_in.clone()
-    }
-    /// Every output-slot target set the node has applied, in order.
-    pub fn wired_out(&self) -> Vec<(String, Vec<(ServiceName, EventId)>)> {
-        self.inner.lock().unwrap().wired_out.clone()
-    }
-}
-
-#[cfg(test)]
-impl Transport for MemoryTransport {
-    /// Nothing rings an in-memory doorbell: a node on this transport is driven directly by its
-    /// caller, so there is never a wake reason to report and never anything to park on.
-    fn wait(&self, _timeout: Option<Duration>) -> Vec<EventId> {
-        Vec::new()
-    }
-    fn drain_control(&self) -> Vec<Envelope> {
-        std::mem::take(&mut self.inner.lock().unwrap().control)
-    }
-    /// Recorded rather than honoured: there is no shared memory here to subscribe to. What the node
-    /// does with a slot message — dispatch it here and ack the result — is what these pin.
-    fn wire_in(&self, slot: &str, services: &[ServiceName]) -> Result<(), String> {
-        self.inner.lock().unwrap().wired_in.push((slot.to_string(), services.to_vec()));
-        Ok(())
-    }
-    fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String> {
-        self.inner.lock().unwrap().wired_out.push((slot.to_string(), targets.to_vec()));
-        Ok(())
-    }
-    fn drain_inputs(&self) -> Vec<(String, usize, Data)> {
-        std::mem::take(&mut self.inner.lock().unwrap().arriving)
-    }
-    fn publish(&self, slot: &str, frame: &Data) {
-        self.inner.lock().unwrap().published.push((slot.to_string(), frame.clone()));
-    }
-    fn report(&self, status: Status) {
-        self.inner.lock().unwrap().reported.push(status);
-    }
-}
-
