@@ -4,6 +4,11 @@
 //! These are goldens on purpose. The text IS the interface — a model reads it and acts on it — so
 //! a drift in the wording is a change to the product, not to a formatting detail.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use goofi_core::Param;
+use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
 use goofi_tests::{hex, j, Goofi};
 use serde_json::Value;
 
@@ -138,6 +143,28 @@ fn an_empty_scope_says_so_rather_than_drawing_an_empty_diagram() {
     g.refuse("inspect_patch", j!({ "scope": hex(n) }));
 }
 
+const BLEW_UP: &str = "the expression blew up";
+
+/// An evaluator that compiles anything and hands the target value straight back — or, while
+/// `broken` is set, refuses. The harness injects none, so an error the NODE reports about a
+/// binding, as against one the graph found before it would ship it, has no other producer here.
+struct Flaky {
+    broken: Arc<AtomicBool>,
+}
+
+impl ExprEvaluator for Flaky {
+    fn compile(&self, _source: &str) -> Result<Compiled, ExprError> {
+        Ok(Compiled { id: 1 })
+    }
+    fn eval(&self, _id: BindingId, ctx: &EvalCtx<'_>) -> Result<Param, ExprError> {
+        if self.broken.load(Ordering::Relaxed) {
+            return Err(BLEW_UP.into());
+        }
+        Ok(ctx.target.clone())
+    }
+    fn release(&self, _id: BindingId) {}
+}
+
 #[test]
 fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
@@ -165,10 +192,10 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     // door onto a node's data and it is `/data`.
     assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
     assert!(!out.contains("f32["), "no frame contents leak into an inspection: {out}");
-    // The wording of the error is the NODE's: it is the node that evaluates a binding and the node
-    // that reports the failure, so the graph's own compile-time message is not what surfaces here.
+    // The wording is the GRAPH's: it could not bind this source at all, so the node was never
+    // handed a binding to have a second opinion about — one error, from the end that found it.
     let err = out.lines().find(|l| l.starts_with("error: ")).unwrap_or_else(|| panic!("{out}"));
-    assert!(err.contains("needs the expression evaluator") && err.contains(" — for <age>"),
+    assert!(err.contains("no expression evaluator available") && err.contains(" — for <age>"),
             "an error line carries its age, so a settling node reads differently from a broken one: {out}");
 
     // A node that has never emitted says so, rather than reading as healthy silence.
@@ -184,6 +211,28 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     // An unknown slot is refused by naming the ones that exist.
     let why = g.refuse("inspect_node", j!({ "node": hex(osc), "slot": "psd" }));
     assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
+
+    // With an evaluator the error line changes hands: the graph can bind the source, so what the
+    // page carries is what the NODE found EVALUATING it. A node is handed the evaluator at BIRTH,
+    // so this one is born after the injection.
+    let broken = Arc::new(AtomicBool::new(true));
+    g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
+    let bound = g.add("Oscillator");
+    g.call("set_expression", j!({ "node": hex(bound), "group": "oscillator", "name": "amplitude",
+                                 "expression": "globals.default_ufreq / 30", "enabled": true }));
+    let live = g.until("the node's own evaluation error", |g| {
+        Some(text(g, "inspect_node", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
+    });
+    assert!(live.contains(&format!("(on) [error: {BLEW_UP}]")),
+            "the bound param's own field carries it too: {live}");
+
+    // That finding belongs to the INSTANCE, and a restart is a new one: it evaluates cleanly and
+    // has nothing to report, so nothing is what the page must say.
+    broken.store(false, Ordering::Relaxed);
+    g.call("restart_node", j!({ "node": hex(bound) }));
+    let reborn = text(&g, "inspect_node", j!({ "node": hex(bound) }));
+    assert!(!reborn.contains(BLEW_UP) && reborn.ends_with("error: none\n"),
+            "a reborn node draws none of the corpse's binding errors: {reborn}");
 }
 
 #[test]

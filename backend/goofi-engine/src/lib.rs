@@ -96,9 +96,9 @@ struct NodeEntry {
     /// What the node last reported evaluating its bindings to. Kept apart from `params` so a
     /// broken binding still has the authored literal to fall back to.
     evaluated: IndexMap<ParamKey, Param>,
-    /// Errors reported for params with no binding — an `on_param_changed` that refused a literal.
-    /// Apart from `ExprBinding::error` because it lives only as long as this instance, where a
-    /// binding's compile failure must survive a restart.
+    /// Every error THIS INSTANCE reported, by param — a refused literal, a binding that would not
+    /// evaluate. A whole-record projection of the node's own map, and it dies with the instance:
+    /// `restart_node` clears it, where `ExprBinding::bind_error` survives because the source does.
     param_errors: IndexMap<ParamKey, String>,
     /// `Some` when INITIALIZATION failed — the param replay and `setup()` together, which are one
     /// unit. Not `last_error`, which a later process failure would overwrite.
@@ -266,8 +266,19 @@ struct ExprBinding {
     /// This binding's identity in the wire planner, stable across a rebind — its index into
     /// [`Graph::bind_keys`].
     bind_id: usize,
-    /// The current expression error (field indicator), or `None` when healthy.
-    error: Option<String>,
+    /// Why the GRAPH could not bind this source: a rewrite, a resolution or a compile failure.
+    /// Written by `set_expression` and nowhere else — it describes the SOURCE, so it outlives any
+    /// one instance, where what the node found evaluating (`NodeEntry::param_errors`) does not.
+    bind_error: Option<String>,
+}
+
+impl ExprBinding {
+    /// Whether the graph SHIPS this binding. A disabled one is source the user is holding, and one
+    /// the graph could not bind is source the node can do nothing with: both leave the param on its
+    /// literal, and the node is TOLD so rather than left to discover a second reason for itself.
+    fn live(&self) -> bool {
+        self.enabled && self.bind_error.is_none()
+    }
 }
 
 /// One resolved expression variable. The wire projection ([`runtime::Var`]) keeps the service name
@@ -1735,9 +1746,12 @@ impl Graph {
         // nothing, and leaving them would let the inspector preview show a dead node's numbers
         // until the new one reports its own.
         entry.evaluated.clear();
+        // …and so are the errors it reported, which is what keeps a healthy reborn node from
+        // drawing the corpse's: it starts with an empty map, so it has nothing to announce clearing.
         entry.param_errors.clear();
         // `bindings` are left untouched — their compiled handles are evaluator-owned and may only
-        // be dropped through `release_entry_bindings`.
+        // be dropped through `release_entry_bindings`. `bind_error` goes on standing with them: it
+        // is the graph's finding about the SOURCE, which this rebirth did not touch.
 
         // A wire onto a slot the reshape retired can never propagate and cannot be repaired — the
         // slot is gone from the palette. Keeping it draws a cable the runtime ignores.
@@ -1893,7 +1907,7 @@ impl Graph {
             vars,
             terms,
             bind_id,
-            error,
+            bind_error: error,
         };
         if let Some(e) = self.nodes.get_mut(&uid) {
             e.bindings.insert(key, binding);
@@ -2003,12 +2017,16 @@ impl Graph {
     /// The expression binding on a param, for the bridge descriptor + `.gfi` (or `None`
     /// if the param is a plain literal).
     pub fn param_expression(&self, uid: Uid, group: &str, name: &str) -> Option<ExprInfo> {
-        let b = self.nodes.get(&uid)?.bindings.get(&ParamKey::new(group, name))?;
+        let entry = self.nodes.get(&uid)?;
+        let key = ParamKey::new(group, name);
+        let b = entry.bindings.get(&key)?;
         Some(ExprInfo {
             source: b.source.clone(),
             enabled: b.enabled,
             triggers_process: b.triggers_process,
-            error: b.error.clone(),
+            // Derived rather than stored: the graph could not bind it, or the node could not
+            // evaluate it, and a binding the graph refused is never shipped for the node to judge.
+            error: b.bind_error.clone().or_else(|| entry.param_errors.get(&key).cloned()),
         })
     }
 
@@ -2339,20 +2357,18 @@ impl Graph {
                 Some(runtime::NodeFault::Setup { msg, .. }) => entry.setup_error = Some(msg),
                 Some(runtime::NodeFault::Process { msg, .. }) => entry.last_error = Some(msg),
             },
+            // One record for what the instance reported, bound param or not — a binding's own
+            // field indicator folds this in on read. Landing it on the binding instead made it
+            // outlive the instance, because a reborn node has nothing to announce clearing.
             runtime::Status::BindingErrors { errors } => {
                 for (key, msg) in errors {
-                    // A bound param renders its error on its own inspector field; an unbound one
-                    // has no such field, so it goes to the node-level channel instead of nowhere.
-                    match entry.bindings.get_mut(&key) {
-                        Some(b) => b.error = msg,
-                        None => match msg {
-                            Some(msg) => {
-                                entry.param_errors.insert(key, msg);
-                            }
-                            None => {
-                                entry.param_errors.shift_remove(&key);
-                            }
-                        },
+                    match msg {
+                        Some(msg) => {
+                            entry.param_errors.insert(key, msg);
+                        }
+                        None => {
+                            entry.param_errors.shift_remove(&key);
+                        }
                     }
                 }
             }
@@ -2440,7 +2456,7 @@ impl Graph {
             return None;
         }
         let entry = self.nodes.get(&uid)?;
-        let value = match entry.bindings.get(key).filter(|b| b.enabled) {
+        let value = match entry.bindings.get(key).filter(|b| b.live()) {
             Some(b) => runtime::ParamValue::Expr {
                 source: b.rewritten.clone(),
                 vars: b.vars.iter().map(|v| self.wire_var(v)).collect(),
@@ -2492,7 +2508,7 @@ impl Graph {
             }
             runtime::plan::Slot::Bind(id) => self
                 .binding_of(key.0, id)
-                .filter(|b| b.enabled)
+                .filter(|b| b.live())
                 .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
                 .unwrap_or_default(),
         }
@@ -2520,7 +2536,7 @@ impl Graph {
             })
             .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)));
         let bound = self.nodes.iter().flat_map(|(consumer, entry)| {
-            entry.bindings.values().filter(|b| b.enabled).flat_map(move |b| {
+            entry.bindings.values().filter(|b| b.live()).flat_map(move |b| {
                 b.vars
                     .iter()
                     .filter(move |v| v.wire() == Some((producer, slot)))
@@ -2924,7 +2940,7 @@ fn entry_error(e: &NodeEntry) -> Option<&str> {
     // record an error landed in decide whether the badge ever shows it.
     e.bindings
         .iter()
-        .filter_map(|(k, b)| b.error.as_deref().map(|s| (k, s)))
+        .filter_map(|(k, b)| b.bind_error.as_deref().map(|s| (k, s)))
         .chain(e.param_errors.iter().map(|(k, m)| (k, m.as_str())))
         .min_by(|a, b| a.0.cmp(b.0))
         .map(|(_, s)| s)

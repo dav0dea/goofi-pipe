@@ -454,7 +454,9 @@ impl NodeRuntime {
                 if self.bindings.shift_remove(&key).is_some() {
                     let _ = self.transport.wire_in(&expr_wire_slot(&key), &[]);
                 }
-                self.evaluated.shift_remove(&key);
+                if self.evaluated.shift_remove(&key).is_some() {
+                    self.report_param_values();
+                }
                 let cleared = self.record_binding_error(&key, None);
                 self.report_binding_errors(cleared.into_iter().collect());
                 self.set_literal(&key, p.clone());
@@ -603,9 +605,15 @@ impl NodeRuntime {
         }
         self.report_binding_errors(errors);
         if values_changed {
-            let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            self.transport.report(Status::ParamValues { evaluated });
+            self.report_param_values();
         }
+    }
+
+    /// The whole sparse map, never a delta — the graph replaces its copy with this, so a value it
+    /// is no longer told about is one it would otherwise preview for ever.
+    fn report_param_values(&mut self) {
+        let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        self.transport.report(Status::ParamValues { evaluated });
     }
 
     /// Run the param hook, recording a rejection or a panic as that binding's error — a node is
@@ -621,6 +629,8 @@ impl NodeRuntime {
 
     /// Record or clear a binding's error, answering only when it CHANGED. The map is the record
     /// and the status is a delta, so an unchanged error is silent and a cleared one is announced.
+    /// A delta is safe only because the graph files it against the INSTANCE: this map is born
+    /// empty, so a reborn node has nothing to announce clearing and must not need to.
     fn record_binding_error(
         &mut self,
         key: &ParamKey,
