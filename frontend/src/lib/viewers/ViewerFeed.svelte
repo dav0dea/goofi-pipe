@@ -6,8 +6,7 @@
   (the node body and the panel body space it differently).
 -->
 <script lang="ts">
-	import { subscribeFrames } from '$lib/api/frames';
-	import { setViewSpec, clearViewSpec } from '$lib/api/data';
+	import { bindViewer } from '$lib/api/frames';
 	import { viewSpecForKind } from './capacity';
 	import type { DataFrame } from '$lib/codec/decode';
 	import ViewerSurface from './ViewerSurface.svelte';
@@ -28,8 +27,8 @@
 	// doesn't renegotiate the reduction (hysteresis); drives the capacity ViewSpec.
 	let capW = $state(0);
 	let capH = $state(0);
-	// Stable per-instance token so multiple viewers of one slot fold (not evict).
-	const specToken =
+	// Stable per-instance token so multiple viewers of one slot collect (not evict).
+	const token =
 		typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `vf-${Math.random()}`;
 
 	function quantize(px: number): number {
@@ -62,40 +61,21 @@
 		};
 	});
 
-	// The stream's identity, held as a DERIVED so that an equal pair is not a change.
-	//
-	// A host rebuilds the object it destructures these out of on every graph update — the panel's
-	// `{@const {slot} = view(node)}` is one — so the props are RE-ASSIGNED, with the same values,
-	// whenever anything in the patch moves. Reading them straight into the effect below tied the
-	// subscription to that: collapsing one viewer of a slot dropped and re-took every other
-	// viewer's subscription in the same tick, and the refcount passing through zero tore down the
-	// shared stream underneath them all.
-	const streamNode = $derived(node);
-	const streamSlot = $derived(slot);
-
+	/**
+	 * ONE hook for everything about this viewer: which stream it is on, whether it is on screen,
+	 * and what it needs the frame reduced to. Binding, unbinding, a resize, a kind switch and a
+	 * scroll out of view are the same event — a viewer changed — and they all land in the registry
+	 * the same way. What reaches the backend is decided there, from the settled registry, so a
+	 * re-run that changes nothing sends nothing, and a re-run while a sibling viewer watches the
+	 * same slot cannot disturb it.
+	 */
 	$effect(() => {
 		frame = null;
-		const n = streamNode;
-		const s = streamSlot;
-		if (!visible || !s) return;
-		// Subscribe to the slot's single reduced stream (latest decoded frame at
-		// display rate). Kind is NOT part of the stream identity, so a kind switch
-		// keeps this subscription and only re-negotiates the ViewSpec below.
-		const unsub = subscribeFrames(n, s, (f) => (frame = f));
-		return () => unsub();
-	});
-
-	// Contribute the capacity-derived ViewSpec whenever the kind or the (quantized)
-	// pixel budget changes, while subscribed. The bridge merges every viewer's spec
-	// for this slot and reduces each frame to their union; the worker re-sends on
-	// reconnect.
-	$effect(() => {
-		if (!visible || !slot || capW === 0 || capH === 0) return;
-		const s = slot;
-		setViewSpec(node, s, specToken, viewSpecForKind(kind, capW, capH));
-		// Drop this contribution when the deps change (kind/size/visibility) or on
-		// unmount, so a stale spec from this viewer can't linger in the merge.
-		return () => clearViewSpec(node, s, specToken);
+		if (!visible || !slot) return;
+		// Kind is not part of the stream's identity — a kind switch re-negotiates the reduction on
+		// the same stream — but it IS part of what this viewer needs, so it belongs in the spec.
+		const spec = capW > 0 && capH > 0 ? viewSpecForKind(kind, capW, capH) : null;
+		return bindViewer(node, slot, token, spec, (f: DataFrame) => (frame = f));
 	});
 </script>
 

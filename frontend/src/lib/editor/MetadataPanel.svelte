@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
-	import { subscribeFrames, dropRate } from '$lib/api/frames';
+	import { bindViewer, dropRate } from '$lib/api/frames';
 	import type { DataFrame } from '$lib/codec/decode';
 	import { metaEntries, formatMetaValue, metaPreview } from './metaFormat';
 	import { nodeStatsRows } from './nodeStats';
@@ -21,6 +21,10 @@
 	const slots = $derived(Object.keys(node.output_slots ?? {}));
 	let internalSlot = $state<string | null>(null);
 	let lastFrame = $state<DataFrame | null>(null);
+	/** This panel's own identity in the slot's viewer registry — it reads frames and constrains
+	 *  nothing, so it binds with a null spec and never narrows what a real viewer asked for. */
+	const token =
+		typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `md-${Math.random()}`;
 
 	// Own the slot only in header mode; otherwise the parent controls it.
 	$effect(() => {
@@ -39,10 +43,9 @@
 		// stream — no viewer contributes a ViewSpec on its behalf, so if the inspector
 		// is the ONLY subscriber the frame arrives full-resolution; that's fine, the
 		// meta it reads is identical either way.
-		const unsub = subscribeFrames(node.uid, slot, (f) => {
+		return bindViewer(node.uid, slot, token, null, (f: DataFrame) => {
 			lastFrame = f;
 		});
-		return () => unsub();
 	});
 
 	// Derive the rendered fields ONCE per frame (the panel re-renders at the data

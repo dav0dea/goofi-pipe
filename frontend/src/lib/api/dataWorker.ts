@@ -20,7 +20,6 @@ interface SlotState {
 	closed: boolean;
 	reconnectMs: number;
 	latestRaw: ArrayBuffer | null;
-	refs: number;
 	/** The ViewSpecs every viewer of this slot has contributed. Sent inband on
 	 * (re)connect and whenever they change; the bridge merges them against the real
 	 * frame and reduces the slot to their union. Empty until a viewer reports its
@@ -80,17 +79,19 @@ function collectBuffers(frame: DataFrame, out: Set<ArrayBufferLike>): void {
 self.addEventListener('message', (e: MessageEvent) => {
 	const m = e.data as { op: string; node: string; slot: string; specs?: unknown[] };
 	const k = streamKey(m.node, m.slot);
+	// One owner decides: the viewer registry in `frames.ts` sends exactly one 'sub' per stream and
+	// one 'unsub' to end it, so there is no count to keep here. A second opinion on how many
+	// viewers a slot has is what this file used to hold, and what it must not hold again.
 	if (m.op === 'sub') {
 		let st = slots.get(k);
 		if (!st) {
 			const proto = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
 			const url = dataUrl(proto, self.location.host, m.node, m.slot);
-			st = { node: m.node, slot: m.slot, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, refs: 0, specs: [] };
+			st = { node: m.node, slot: m.slot, ws: null, url, closed: false, reconnectMs: 250, latestRaw: null, specs: [] };
 			slots.set(k, st);
 			syncTicker();
 			openWs(st);
 		}
-		st.refs++;
 	} else if (m.op === 'spec') {
 		// Viewers reported (or updated) the ViewSpecs for this slot. The 'sub' for a
 		// slot is always posted before any 'spec' (ViewerFeed subscribes in a
@@ -104,13 +105,10 @@ self.addEventListener('message', (e: MessageEvent) => {
 	} else if (m.op === 'unsub') {
 		const st = slots.get(k);
 		if (!st) return;
-		st.refs--;
-		if (st.refs <= 0) {
-			st.closed = true;
-			st.ws?.close();
-			slots.delete(k);
-			syncTicker();
-		}
+		st.closed = true;
+		st.ws?.close();
+		slots.delete(k);
+		syncTicker();
 	}
 });
 
