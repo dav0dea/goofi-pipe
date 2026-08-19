@@ -303,7 +303,9 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
 
     let t0 = Instant::now();
     g.state.graph.lock().unwrap().shutdown();
-    assert!(t0.elapsed() < Duration::from_secs(9),
+    // Five seconds sits between the two answers rather than beside one of them: the ceiling is two
+    // (`SHUTDOWN_WAIT`) and a node that was JOINED costs the full ten this node sleeps.
+    assert!(t0.elapsed() < Duration::from_secs(5),
             "the exit took {:?} — it JOINED the busy node instead of waiting to a ceiling", t0.elapsed());
     let _ = other;
 }

@@ -519,20 +519,34 @@ class Sleeper(goofi.Node):
             Box::new(PyNode::from_source(SLEEPER, vec!["data"], vec!["out"]).expect("PyNode"))
         }));
         let src = g.add("_TestCounter");
+
+        // ONE sleeper first, to learn what a single 150 ms run costs on THIS machine — the wire's
+        // own latency and whatever else the box is doing, included. Everything below is measured
+        // against that rather than against a constant: a budget in milliseconds sits close to the
+        // serialized answer by construction (4 × 150 ms is only 600), and the gap it has to
+        // separate is the one that shrinks first when the machine is busy.
+        let solo = g.add("Sleeper");
+        let solo_probe = g.probe(solo, "out");
+        g.link(src, "out", solo, "data");
+        let t0 = Instant::now();
+        g.until("the lone sleeper to emit", |_| solo_probe.latest());
+        let one = t0.elapsed();
+        g.call("remove_node", j!({ "node": hex(solo) }));
+
         let sleepers: Vec<_> = (0..4).map(|_| g.add("Sleeper")).collect();
         let probes: Vec<_> = sleepers.iter().map(|u| g.probe(*u, "out")).collect();
         for u in &sleepers {
             g.link(src, "out", *u, "data");
         }
-
-        let t0 = std::time::Instant::now();
+        let t0 = Instant::now();
         for p in &probes {
             g.until("every sleeper to emit", |_| p.latest());
         }
-        // Four 150 ms runs overlapping cost about one; serialized they cost 600 ms and could not
-        // fit inside this budget even with the wire's own latency added on.
-        assert!(t0.elapsed() < Duration::from_millis(500),
-                "four python nodes took {:?} — they ran serialized, not concurrently", t0.elapsed());
+        let four = t0.elapsed();
+        // Overlapping, four cost about one; serialized they cost four. Two is the only bar that
+        // sits between, whatever the machine.
+        assert!(four < one * 2,
+                "four python nodes took {four:?} against one node's {one:?} — they ran serialized");
         assert!(!PyNode::gil_enabled().unwrap(), "the GIL must stay disabled");
     }
 
