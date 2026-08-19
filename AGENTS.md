@@ -45,8 +45,9 @@ methodology, and not an installed skill. Where an outside practice disagrees, th
    is smaller is the fix; a fix that is bigger needs a reason. Two code paths that should agree
    get unified at one source of truth rather than patched in both.
 
-5. **One artifact.** `goofi-pipe` is a single binary with the frontend compiled in. It launches
-   the app; `--headless` is the only way not to.
+5. **One artifact.** `goofi-pipe` is a single binary with the frontend compiled in. It serves the
+   app and never opens one — the URL is printed, and what does the opening is the user.
+   `--headless` withholds the app entirely and serves the API alone.
 
 6. **One system, several representations.** Phone and desktop, agent and human, are the same
    machinery with different presentations — never a second track, never a per-device guard.
@@ -70,8 +71,26 @@ How the principles above are carried out, in priority order. They override speed
      detail. `Goofi::call` is the door; `Client`/`Viewer` are for the socket itself.
    - A test earns its place by covering a way the system is USED. Prefer one
      scenario that crosses four layers to four tests that each pin one. When a bug
-     is fixed, extend the scenario that would have caught it rather than adding a
-     test beside it.
+     is fixed, **extend the scenario that would have caught it** rather than adding a
+     test beside it — which is why the suite is a short list of named situations:
+
+     | suite | the situation it drives |
+     |---|---|
+     | `session` | a patch built, saved, found again, opened somewhere else |
+     | `editing` | two people editing: what a write answers, and how it comes back |
+     | `running` | the graph running, failing, recovering, streaming |
+     | `browser` | the socket, the replica, the file door, the page, the Origin guard |
+     | `agent` | the op vocabulary an agent drives, and the PTY it runs on |
+     | `subpatches` | scopes, boundary ports, and what they refuse |
+     | `python` | a `.py` file in the workspace, on both tiers |
+     | `nodes` | node files: written, rescanned, edited, shadowed, reopened |
+     | `inspect` | what an agent READS — goldens, because the text IS the interface |
+     | `contracts` | the tables that generate artifacts outside this process |
+     | `transport`, `probe`, `codec_golden` | the three layers below a scenario's reach |
+     | `smoke` | the harness proving itself |
+
+     Three more are separate BINARIES because each needs a fresh interpreter:
+     `python_gil_tripwire`, `python_module_hygiene`, `python_init_order`.
    - The few inline `#[cfg(test)]` blocks that remain each say in the file why they
      cannot live outside — a binary with no lib target, private process-liveness
      machinery. Adding one needs the same justification.
@@ -295,7 +314,7 @@ reclaimed by the next start's sweep.
 ```bash
 cargo run                       # launches the backend + bridge, prints the URL
 #   flags: --port N (default 8000), --bind HOST (default 127.0.0.1),
-#          --extra-nodes DIR, --list-nodes, --headless (do not open a browser)
+#          --extra-nodes DIR, --list-nodes, --headless (serve the API, not the app)
 # It scans ./nodes/ when present and routes each node by tier; --extra-nodes ADDS a
 # directory to that (repeatable, later wins a shared type name). NEITHER the tier nor
 # the interpreter is selectable: one probe per node file routes, and the subprocess tier

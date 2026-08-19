@@ -37,6 +37,9 @@ struct Cli {
     /// name — see `goofi_bridge::rescan`.
     extra_nodes: Vec<String>,
     list_nodes: bool,
+    /// Serve the API without the app: `/control`, `/data`, `/term` and `/mcp` stay, the SPA's
+    /// routes are never mounted. For a goofi driven by an agent or a script, which has no page to
+    /// show — and for which an unmounted route is one nothing can reach by accident.
     headless: bool,
     help: bool,
 }
@@ -126,29 +129,6 @@ fn default_subproc_python() -> Result<String, String> {
         .ok_or_else(|| format!("no {} — {}", goofi_init::GIL_VENV, goofi_init::RUN_ME))
 }
 
-/// Show the app. One command per platform and no dependency for it: the whole job is handing a URL
-/// to whatever the desktop already uses. Failure is reported and never fatal — a machine with no
-/// browser (a container, an ssh session) still has a server, and the URL is on the line above.
-fn open_browser(url: &str) {
-    let (cmd, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
-        ("open", &[])
-    } else if cfg!(target_os = "windows") {
-        ("cmd", &["/C", "start", ""])
-    } else {
-        ("xdg-open", &[])
-    };
-    match std::process::Command::new(cmd)
-        .args(args)
-        .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => println!("  opened it in your browser (--headless to skip)"),
-        Err(e) => println!("  could not open a browser ({e}) — the URL is above"),
-    }
-}
-
 /// The warning a `--bind` beyond this machine earns, or `None` for the loopback default.
 ///
 /// Said out loud because the consequence is not the one the flag looks like it has. goofi spawns
@@ -229,12 +209,16 @@ async fn run(
                 // environment. There is one server per goofi instance, so this URL is the address
                 // of the whole agent surface — no client ever spawns one of its own.
                 println!("  MCP endpoint → http://{addr}/mcp");
+                // `--headless` withholds the page itself, not merely a browser: an agent or a
+                // script driving `/control` and `/mcp` has no use for the SPA, and a route that is
+                // not mounted is one nothing can reach by accident.
+                let spa = if headless { &[][..] } else { SPA };
                 if SPA.is_empty() {
                     println!("  API only — this build embeds no frontend");
                 } else if headless {
-                    println!("  --headless: not opening a browser");
+                    println!("  --headless: the API only, no app served");
                 } else {
-                    open_browser(&url);
+                    println!("  open {url} to use it");
                 }
                 // Last, and on stderr, so it is the line still on screen and survives a `> log`.
                 if let Some(warning) = exposure_warning(&bind) {
@@ -247,7 +231,7 @@ async fn run(
                 // open for the life of a tab delays neither — and with a handler installed, a
                 // second ctrl-C no longer reaches the default disposition that would have killed us.
                 tokio::select! {
-                    served = serve_app(listener, state.clone(), SPA) => match served {
+                    served = serve_app(listener, state.clone(), spa) => match served {
                         Ok(()) => 0,
                         Err(e) => {
                             eprintln!("server error: {e}");

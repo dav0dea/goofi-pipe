@@ -49,9 +49,7 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		const fd = fs.openSync(log, 'w');
 		// From the repo root, so it serves `frontend/build/`. NOT detached: the fleet stays in the
 		// runner's process group, so a Ctrl-C reaches it even before `reap` gets its turn.
-		// `--headless` because Playwright brings its own browser: without it every worker in the
-		// fleet opens a real tab on the developer's desktop, once per run.
-		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port), '--headless'], {
+		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port)], {
 			cwd: REPO_ROOT,
 			stdio: ['ignore', fd, fd]
 		});
