@@ -1,12 +1,8 @@
-//! goofi-node — the ONE node abstraction plus its runtime plumbing and the
-//! native compile-time catalog.
+//! The ONE node abstraction, its runtime plumbing, and the native compile-time catalog.
 //!
-//! Every node — native Rust, in-process pyo3 (free-threaded), or subprocess —
-//! implements [`Node`]. The scheduler never branches on backend. A node holds
-//! its own current param values as fields (seeded by `make`, updated via
-//! `on_param_changed`); `process` reads them directly, so a run never
-//! does a param-map lookup. The engine owns trigger arbitration, rate limiting,
-//! index stamping, and output gating *outside* the node.
+//! Every node — native Rust, in-process pyo3, or subprocess — implements [`Node`], and nothing
+//! branches on which. A node holds its live param values as fields, so a run does no map lookup;
+//! trigger arbitration, rate limiting, index stamping and output gating are all outside it.
 
 use std::fmt;
 
@@ -78,11 +74,9 @@ pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Para
     p.get(group)?.get(name)
 }
 
-/// A static, declarative parameter descriptor — the param analogue of [`SlotDecl`]/
-/// [`OutputDecl`], holding only `&'static str` + primitives so a node can declare its
-/// params as a `static PARAMS: &[ParamDecl]` (a literal `&[Param]` is impossible —
-/// `Param::Str` owns heap `String`/`Vec`). The runtime [`ParamGroups`] is built from
-/// these on demand by [`NodeManifest::default_params`].
+/// A static param descriptor: only `&'static str` and primitives, so a node declares its params
+/// as a `static PARAMS: &[ParamDecl]` — a literal `&[Param]` is impossible, since `Param::Str`
+/// owns heap data.
 #[derive(Clone, Copy)]
 pub struct ParamDecl {
     pub group: &'static str,
@@ -165,12 +159,9 @@ pub fn params_from_decls(decls: &[ParamDecl]) -> ParamGroups {
     groups
 }
 
-/// A read-only, typed view of a node's current params, handed to `setup`/`process`
-/// so a *cold* param (read occasionally, mirrored to no field, with no side effect)
-/// can be read live — needing no field and no `on_param_changed` arm. The engine's
-/// `NodeEntry.params` is the source of truth, so a live edit is visible on the next
-/// run. Read each param into a local once at the top of `process`; the per-*sample*
-/// hot loop then reads the local, never the map.
+/// A typed read-only view of a node's params, so a COLD param — read occasionally, mirrored to no
+/// field — needs no field and no `on_param_changed` arm. Read each into a local at the top of
+/// `process`; the per-sample loop reads the local, never the map.
 pub struct Params<'a>(&'a ParamGroups);
 
 impl<'a> Params<'a> {
@@ -199,11 +190,9 @@ impl<'a> Params<'a> {
 // Tick I/O
 // ---------------------------------------------------------------------------
 
-/// The per-run input view handed to a node. Single-source slots hold the latest
-/// `Data` (`None` if unwired / no frame yet); `multi` slots hold an ordered list of
-/// the latest frame from each connected wire (present-only, connection order —
-/// materialized by the engine). Borrowed for the duration of one run. The two maps
-/// are keyed disjointly by slot name (a slot is single XOR multi).
+/// The per-run input view. A single slot holds the latest `Data`; a `multi` slot holds one frame
+/// per connected wire, present-only, in connection order. The two maps are keyed disjointly — a
+/// slot is single XOR multi.
 pub struct Inputs<'a> {
     singles: &'a IndexMap<&'static str, Option<Data>>,
     multis: Option<&'a IndexMap<&'static str, Vec<Data>>>,
@@ -287,38 +276,22 @@ impl NodeCtx {
 // RunPolicy — the scheduler's projection of the `common` param group
 // ---------------------------------------------------------------------------
 
-/// The two ways a user can author `common.max_frequency`. These are pure *input*
-/// conventions — [`RunPolicy`] normalizes both to updates-per-second, so the scheduler
-/// only ever reasons in Hz (the sentinels live here so `with_common` and `from_params`
-/// agree on the one spelling).
-/// The two spellings `common.frequency_mode` admits. Public because they ARE the vocabulary —
-/// they reach the catalog, the wire and the inspector.
+/// The two ways a user can author `common.max_frequency`. A pure INPUT convention: [`RunPolicy`]
+/// normalizes both to Hz, so nothing downstream reasons in periods. Public because these strings
+/// ARE the vocabulary — they reach the catalog, the wire and the inspector.
 pub const FREQ_MODE_UPDATES_PER_SECOND: &str = "updates-per-second";
 pub const FREQ_MODE_SECONDS_PER_UPDATE: &str = "seconds-per-update";
 
-/// When a node's `process` may run, lifted out of the params so a run never does a
-/// map lookup.
-///
-/// Every node owns a thread and decides for itself when to run, so a capped node
-/// PARKS for the remainder of its period rather than being skipped by a shared
-/// scheduler — see `goofi_engine::runtime`'s `next_wake`. That is the difference
-/// from the retired central loop, where a node could not sleep without stalling
-/// every other node.
+/// When a node's `process` may run, lifted out of the params so a run does no map lookup. A capped
+/// node PARKS for the remainder of its period rather than being skipped — it owns its thread.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RunPolicy {
-    /// Run whenever the rate cap allows, with no fresh input — a free-running producer.
-    ///
-    /// Independent of the input slots: it is one of the three reasons a node wakes, and
-    /// none of them consults topology. An earlier version of this doc said it "only takes
-    /// effect when the node has no *wired* triggering input". That was never true after the
-    /// cutover, and it is the opposite of what `goofi_engine::runtime` states.
-    /// Defaults to `false` (triggered).
+    /// Run whenever the rate cap allows, with no fresh input — a free-running producer. INDEPENDENT
+    /// of the input slots: it is one of the three wake reasons, and none consults topology.
+    /// Defaults to `false`.
     pub autotrigger: bool,
-    /// Max run rate in **updates-per-second** (Hz). `<= 0` is unbounded (the default): an
-    /// input-triggered node then runs at its input's rate, a free-running one as fast as
-    /// its thread allows (so it must set a finite cap to not saturate a core). A node authored
-    /// in `seconds-per-update` mode is normalized to Hz by [`Self::from_params`], so
-    /// this is always a rate — the mode is a pure input convenience.
+    /// Max run rate in Hz; `<= 0` is unbounded. A free-running node must set a finite cap or it
+    /// saturates a core. Always a RATE — the seconds-per-update mode is normalized on the way in.
     pub max_frequency: f64,
 }
 
@@ -348,13 +321,10 @@ impl RunPolicy {
     }
 }
 
-/// One universal `common` param, expressed as a function of the manifest it is being added to.
-/// The function IS the declaration — there is no base-plus-override pair — so a param is defined
-/// in exactly one place and states its own condition there. Most read nothing from the manifest.
-///
-/// These run while the `common` group is being BUILT, so a declaration may read the manifest's
-/// static shape (`producer`, slots) but must never read `m.params` for a `common` key: that is a
-/// half-built world.
+/// One universal `common` param, as a function of the manifest it is added to. The function IS the
+/// declaration — no base-plus-override pair — so a param is defined once and states its own
+/// condition there. It may read the manifest's static shape, but never `m.params` for a `common`
+/// key: that is a half-built world.
 pub type CommonDecl = fn(&NodeManifest) -> ParamDecl;
 
 /// Run on the node's own schedule instead of waiting for an input frame — which is exactly what
@@ -374,17 +344,12 @@ fn autotrigger(m: &NodeManifest) -> ParamDecl {
     }
 }
 
-/// The rate cap. Every node CARRIES the patch's producer rate as an expression, so any node can be
-/// paced by `globals.default_ufreq` with one inspector toggle; on a producer it is already live,
-/// because a source is what the patch rate is for.
+/// The rate cap. Every node CARRIES the patch rate as an expression, so any node can be paced by
+/// `globals.default_ufreq` with one toggle; on a producer it is already live.
 ///
-/// `trigger: true` unconditionally, and it is INERT here — do not read it as load-bearing. Spec
-/// §1.1: a `common.*` arrival never sets `trigger_pending`, because re-pacing is not a reason to
-/// run. What re-paces a sleeping producer is the graph re-resolving this binding on a
-/// `default_ufreq` edit and re-sending it (`Graph::invalidate_bindings_reading`), and the node's
-/// `common` branch re-deriving `RunPolicy` from the arrival — `trigger` is nowhere in that path. It
-/// is declared for interface completeness: the field is on every `ParamDecl`, the frontend renders
-/// it, and a non-`common` declaration means it.
+/// `trigger: true` is INERT here — a `common.*` arrival never sets `trigger_pending`, because
+/// re-pacing is not a reason to run. What re-paces a sleeping producer is the graph re-resolving
+/// this binding and re-sending it. Declared for interface completeness only.
 fn max_frequency(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
@@ -432,14 +397,10 @@ pub fn common_decls(m: &NodeManifest) -> impl Iterator<Item = ParamDecl> + '_ {
     COMMON_DECLS.iter().map(move |d| d(m))
 }
 
-/// Guarantee a node's params carry the universal `common` scheduling group (the
-/// engine's equivalent of Python's `DEFAULT_PARAMS["common"]`), so rate controls
-/// exist on every node uniformly. **Any key the node declared itself is kept untouched** — this
-/// function never overwrites a manifest's own param definition; `or_insert_with` is the whole of
-/// that rule. Missing ones are materialized from [`common_decls`], which is where the manifest
-/// decides what a missing key defaults to. `common` is placed first for a stable frontend
-/// ordering. Used both when instantiating a node (the engine) and when projecting a node type to
-/// the palette (the bridge), so type-level and instance-level params agree.
+/// Guarantee a node carries the universal `common` group, so rate controls exist on every node
+/// uniformly. **Any key the node declared itself is kept untouched** — `or_insert_with` is the
+/// whole of that rule. Used both when instantiating a node and when projecting a type to the
+/// palette, so type-level and instance-level params agree.
 pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
     let mut common = params.get("common").cloned().unwrap_or_default();
     for d in common_decls(m) {
@@ -460,12 +421,9 @@ pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
 // ---------------------------------------------------------------------------
 
 pub trait Node: Send {
-    /// Derived init, after the node's params have been seeded (via the replay of
-    /// `on_param_changed`). Reads live params from `p`. It runs once if it succeeds; an `Err`
-    /// leaves the node UNINITIALIZED — surfaced on its error channel, nothing else runs against
-    /// it, and the next interaction retries the whole initialization on this same instance.
-    /// (The detached tier is the exception: its worker latches the failure and `restart_node` is
-    /// the retry door — see `goofi_engine::ensure_initialized`.)
+    /// Derived init, after the params have been seeded. Runs once if it succeeds; an `Err` leaves
+    /// the node UNINITIALIZED — nothing runs against it, and the next interaction retries the whole
+    /// initialization on this same instance.
     fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
@@ -479,27 +437,21 @@ pub trait Node: Send {
         ctx: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult;
-    /// Optional: react to a param edit — mirror a hot field or run a side effect
-    /// (re-anchor pacing, reallocate a buffer). This same handler seeds mirrored
-    /// fields at initialization — the engine replays it per declared param, at construction and
-    /// again on every retry of a failed `setup` — so it is the single source of truth for
-    /// param→field. Cold params need no arm here.
+    /// React to a param edit — mirror a hot field, reallocate a buffer. The engine REPLAYS this
+    /// per declared param at initialization, so it is the one source of truth for param→field.
+    /// A cold param needs no arm.
     fn on_param_changed(&mut self, _key: &ParamKey, _v: &Param) -> NodeResult {
         Ok(())
     }
-    /// Optional: re-enumerate a `Str` param's options for the UI's ⟳ button
-    /// (device/stream pickers). Paired with `on_param_changed` by name. `p` is the node's LIVE
-    /// params — a picker usually enumerates against its current settings (which host, which
-    /// driver, which directory), and a node that never runs would otherwise see only the values
-    /// it was constructed with.
+    /// Re-enumerate a `Str` param's options — the ⟳ button. `p` is the node's LIVE params, because
+    /// a picker enumerates against its current settings and a node that never runs would otherwise
+    /// see only what it was constructed with.
     fn on_param_refreshed(&mut self, _key: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
         None
     }
-    // Teardown is `impl Drop for TheNode`, not a trait method — it runs automatically
-    // when the engine drops the boxed node, and can't be forgotten. It is also the ONLY release
-    // mechanism, and it does NOT fire between initialization retries: a `setup` that fails partway
-    // is called again on the same instance, so it must itself release what it acquired before
-    // returning `Err`, or it leaks a handle per retry.
+    // Teardown is `impl Drop`, not a trait method, so it cannot be forgotten. It does NOT fire
+    // between initialization retries: a `setup` that fails partway is called again on the same
+    // instance, so it must release what it acquired before returning `Err`.
 }
 
 /// The generic node factory the manifest stores — construct a default instance,
@@ -542,12 +494,9 @@ pub enum Local {
 
 /// Per-evaluation context handed to [`ExprEvaluator::eval`].
 pub struct EvalCtx<'a> {
-    /// The expression's variables, keyed by the GENERATED name the rewrite minted (`__v0`). A
-    /// `None` value is a variable that has not arrived yet — the expression sees it as absent.
-    ///
-    /// This replaced `refs` (keyed by node name and slot) and `globals` together: the rewrite is
-    /// what makes both unnecessary, and keeping either would leave two ways to reach a reference —
-    /// one the graph resolved and one the evaluator resolved for itself.
+    /// The expression's variables, keyed by the GENERATED name the rewrite minted. `None` is a
+    /// variable that has not arrived yet, which the expression sees as absent. One way to reach a
+    /// reference — the graph resolves it, and the evaluator never resolves one for itself.
     pub locals: &'a std::collections::HashMap<String, Option<Local>>,
     /// Engine wall-clock seconds (`NodeCtx::now`) — for time-based (variable-less) expressions.
     pub t: f64,
@@ -568,21 +517,11 @@ pub trait ExprEvaluator: Send + Sync {
     fn release(&self, id: BindingId);
 }
 
-// ---------------------------------------------------------------------------
-// `nd()` reference scanning — the one source of truth for finding `nd('name')`
-// references in an expression source. Both extraction (which producers an
-// expression depends on) and rewriting (renaming a referenced node) run off this
-// scan, so they can never disagree on what counts as a reference.
-// ---------------------------------------------------------------------------
+// ── `nd()` scanning: extraction and rewriting run off ONE scan, so they cannot disagree ────────
 
-/// One `nd(..)` call [`scan_nd_calls`] found, with every span its two consumers need.
-///
-/// The two spans exist because the two consumers want different halves of one call: a RENAME
-/// replaces the name literal and must leave every other byte alone, while the expression REWRITE
-/// (`goofi_engine::expr_rewrite`) replaces the whole term. They share this scan rather than each
-/// carrying their own, because the drift between two word-boundary rules is invisible — a call one
-/// of them declines to see is a rename that silently stops following, or a reference that never
-/// becomes a variable.
+/// One `nd(..)` call, with both spans its consumers need: a RENAME replaces the name literal and
+/// must leave every other byte alone, while the REWRITE replaces the whole term. Drift between two
+/// word-boundary rules is invisible, which is why there is one scan.
 pub struct NdCall<'a> {
     /// Byte offset of the `n` in `nd` — where the TERM begins.
     pub start: usize,
@@ -596,12 +535,9 @@ pub struct NdCall<'a> {
     pub name: &'a str,
 }
 
-/// Scan `source` for `nd('name')` / `nd("name")` calls, in source order.
-///
-/// A plain lexical scan, not a full parse: `nd` must be a standalone token (word
-/// boundary before it, so `round('x')`, `s.rfind('y')`, `grand('z')` do NOT match),
-/// whitespace between `nd` and `(` is tolerated (`nd ('sig')` is a valid call), and the
-/// first argument must be a single string literal (a non-literal `nd(x)` is skipped).
+/// Scan `source` for `nd('name')` calls, in source order. A lexical scan, not a parse: `nd` must
+/// be a standalone token (so `round('x')` does not match), whitespace before `(` is tolerated, and
+/// the first argument must be a string literal.
 pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
     let b = source.as_bytes();
     let mut out = Vec::new();
@@ -662,12 +598,9 @@ pub struct GlobalRead<'a> {
     pub name: &'a str,
 }
 
-/// Scan `source` for `globals.<name>` reads, in source order. The same word-boundary rule
-/// [`scan_nd_calls`] applies, so `myglobals.x` is not a reference; the name must be a valid
-/// identifier, so a bare `globals.` and a digit-led name are not either.
-///
-/// A byte scan, not a parse: a match inside a string literal is read as a reference. That costs a
-/// variable nothing else names, never a missed one.
+/// Scan `source` for `globals.<name>` reads, on the same word-boundary rule — so `myglobals.x` is
+/// not one. A byte scan: a match inside a string literal costs a variable nothing else names,
+/// never a missed one.
 pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     const PREFIX: &str = "globals.";
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -693,13 +626,9 @@ pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     out
 }
 
-/// Rewrite every `nd('name')` literal for which `rename(name)` returns `Some(new)`,
-/// preserving the literal's quote style and every other byte of the source. Returns
-/// `Some(new_source)` if any literal changed, else `None` (nothing to do). Used when a
-/// referenced node is renamed: `nd('old')` follows to `nd('new')` across the graph.
-///
-/// This edits the AUTHORED source, which is the SSOT — the rewritten form the node runs is derived
-/// from it and re-derived after every rename.
+/// Rewrite every `nd('name')` literal `rename` answers for, preserving quote style and every other
+/// byte. Edits the AUTHORED source, which is the SSOT — the form the node runs is re-derived from
+/// it after every rename.
 pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
     // Collect (start, end, replacement) then splice right-to-left so earlier byte offsets
     // stay valid as the string is edited.
@@ -762,12 +691,10 @@ pub struct NodeManifest {
     /// `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
     pub isolation: Isolation,
-    /// This type is a SOURCE: it makes frames on its own schedule rather than in answer to an
-    /// input. The only pacing an author declares — everything downstream inherits its cadence
-    /// through triggers, so a consumer never states a rate. Today it does exactly one thing:
-    /// default `common.autotrigger` on (see [`with_common`]), and turn [`COMMON_DECLS`]'s carried
-    /// `globals.default_ufreq` expression live — a source is what the patch rate is for, so it is
-    /// paced by it out of the box while a consumer merely carries the source for the fx toggle.
+    /// This type is a SOURCE: it makes frames on its own schedule. The only pacing an author
+    /// declares — everything downstream inherits its cadence through triggers. It defaults
+    /// `common.autotrigger` on and turns the carried `globals.default_ufreq` expression LIVE, so a
+    /// source is paced by the patch rate out of the box where a consumer merely carries it.
     pub producer: bool,
     /// Build a default instance (type-erased). The engine seeds params afterward by
     /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.

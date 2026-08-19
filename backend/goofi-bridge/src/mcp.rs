@@ -16,14 +16,11 @@
 //! rescan-on-lock, and moving the save off-lock once cost a discarded attempt ~450 lines of race
 //! machinery.
 //!
-//! **Protocol shape.** One JSON object per POST, no session state, no SSE, no `Mcp-Session-Id`. The
-//! MCP revisions split into two eras — `2025-11-25` and earlier open with an `initialize`
-//! handshake, `2026-07-28` and later carry version and identity per request and have no handshake
-//! at all — and a stateless tools-only server serves both by answering `initialize` when it comes
-//! and never requiring it. Nothing behaves differently across the revisions in
-//! [`SUPPORTED_PROTOCOLS`], which is why one code path serves them all; a revision outside that set
-//! is negotiated DOWN rather than echoed, because claiming one this server does not implement only
-//! moves the failure later.
+//! **Protocol shape.** One JSON object per POST: no session state, no SSE. The revisions split into
+//! two eras — one opens with an `initialize` handshake, the other carries identity per request —
+//! and a stateless tools-only server serves both by answering `initialize` when it comes and never
+//! requiring it. A revision outside [`SUPPORTED_PROTOCOLS`] is negotiated DOWN rather than echoed:
+//! claiming one this server does not implement only moves the failure later.
 //!
 //! **One deliberate deviation.** An unknown or withheld tool name comes back as a `CallToolResult`
 //! with `isError: true`, where the spec classes it as a protocol error (`-32602`). That is on
@@ -39,12 +36,10 @@ use serde_json::{json, Value};
 use crate::ops::{self, Surface};
 use crate::AppState;
 
-/// The undo/redo scope every MCP call runs in. Undo is per-session so that one browser tab cannot
-/// undo another's edit; an agent has no session identity to present (the modern transport is
-/// stateless by design, and the legacy one's session id is optional and client-opaque), so every
-/// agent call shares one stack. That is the isolation that matters: an agent's undo reaches its own
-/// edits and never into a human tab's stack. Two agents on one patch are collaborators on one
-/// graph — the same thing two humans in two tabs are.
+/// The undo scope every MCP call runs in. An agent has no session identity to present — the
+/// transport is stateless by design — so every agent call shares one stack. That is the isolation
+/// that matters: an agent's undo never reaches into a human tab's. Two agents on one patch are
+/// collaborators, exactly as two humans in two tabs are.
 const AGENT_SESSION: &str = "mcp";
 
 /// The revision to claim when a client names none. `2025-06-18` is the last one that a client which

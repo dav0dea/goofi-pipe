@@ -21,22 +21,10 @@
 //! awaited, so answering it advances nothing. What the cancelled messages already SAID still stands,
 //! because a slot message is declarative and its delivery never depended on the ack.
 //!
-//! What replans today is every link change ([`Graph::add_link`], [`Graph::remove_link`]), a channel
-//! being attached — which plans that node's slots from an empty base, because it heard nothing said
-//! before it arrived — and every EXPRESSION BINDING change: binding, unbinding, a rename, a globals
-//! edit, a referenced node being added, removed or restarted (§5.3). A binding is a consumer
-//! subscription like any other ([`Slot::Bind`]); what differs is only that its phase 2 is a
-//! `SetParam`.
-//!
-//! The rest of §4's callers are about a NODE rather than a wire, and they arrive through the two
-//! ends of a node's life: a birth, a `restart_node` and a load all become addressable by reporting
-//! `Ready`, which is [`WirePlanner::attach`]; a removal and the corpse a restart replaces are
-//! [`WirePlanner::detach`]. Neither is optional — a sink is the graph's END of that node's
-//! services, so one kept past its node's death both leaks them and makes the next node born at
-//! that uid read as addressable while it is not.
-//!
-//! [`Graph::add_link`]: crate::Graph::add_link
-//! [`Graph::remove_link`]: crate::Graph::remove_link
+//! What replans is every link change, every EXPRESSION BINDING change (a binding is a consumer
+//! subscription like any other — what differs is only that its phase 2 is a `SetParam`), and a
+//! channel being attached, which plans that node's slots from an EMPTY base because it heard
+//! nothing said before it arrived.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,13 +36,10 @@ use crate::Uid;
 /// output slot, whichever kind of consumer it feeds.
 pub(crate) type Wire = (Uid, &'static str);
 
-/// What a consumer subscribes THROUGH — the sequence's subject.
-///
-/// §5.3: an expression reference is a link. A bound param subscribes to a producer exactly as an
-/// input slot does, and must be attached and detached through the same three phases: the `SetParam`
-/// carrying its resolved services IS the consumer-apply. So the planner is keyed by consumer
-/// *subscription*, not by input slot, and a binding names itself by a graph-minted id that survives
-/// a rebind — an id rather than the `ParamKey` itself so the key stays `Copy` and cheap to hash.
+/// What a consumer subscribes THROUGH. An expression reference IS a link — a bound param attaches
+/// and detaches through the same three phases, its `SetParam` being the consumer-apply — so the
+/// planner is keyed by subscription rather than by input slot. A binding names itself by a
+/// graph-minted id that survives a rebind, so the key stays `Copy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Slot {
     In(&'static str),
@@ -110,12 +95,10 @@ pub(crate) struct WirePlanner {
     /// shrink/grow diff is taken against, and it moves when the plan is made because a slot message
     /// is declarative: the node applies what it was sent whether or not its ack came back.
     planned: HashMap<SlotKey, Vec<Wire>>,
-    /// Unsequenced messages for nodes that are not addressable yet, in the order they were made.
-    /// §4's birth barrier is a WINDOW, not a state: `add_node` answers before the node has reported
-    /// `Ready`, so a ⟳ clicked on a node the user has only just placed falls inside it — and a
-    /// dropped request is a button that does nothing, with nothing to retry it. A wire change has
-    /// no queue because it is re-PLANNED on attach from the graph as it then stands; a request has
-    /// no such state to re-derive, so it is held.
+    /// Messages for nodes that are not addressable yet. The birth barrier is a WINDOW, not a state:
+    /// a ⟳ clicked on a node the user has only just placed falls inside it, and a dropped request
+    /// is a button that does nothing. A wire change needs no queue — it is re-PLANNED on attach —
+    /// but a request has no state to re-derive from, so it is held.
     pending: Vec<(Uid, Control)>,
     next_seq: u64,
 }
@@ -166,25 +149,17 @@ impl WirePlanner {
         self.generations.get(&uid).copied().unwrap_or(0)
     }
 
-    /// Forget ONE node the graph has destroyed — a removal, or the corpse a restart replaces.
+    /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces.
     ///
-    /// Not tidiness. The sink OWNS the graph's end of that node's services (an iceoryx2 node of its
-    /// own, carrying `_ctl`, `_sts` and `_door`), so a planner that keeps it keeps them allocated
-    /// for the rest of the process — and the startup sweep is structurally blind to that, because a
-    /// live process's own nodes read `Alive` and never `Dead`. It has to be released here or not at
-    /// all.
+    /// Not tidiness. The sink OWNS the graph's end of that node's services, so keeping it keeps them
+    /// allocated for the rest of the process, and the startup sweep is blind to that: a live
+    /// process's own nodes read `Alive`. It has to be released here or not at all. It is also what
+    /// makes the birth barrier hold for a REBIRTH — a sink outliving its node makes the next node
+    /// at that uid look addressable while it is not.
     ///
-    /// It is also what makes §4's birth barrier hold for a REBIRTH: a sink outliving its node makes
-    /// the next node born at that uid look addressable while it is not, so [`Self::send`] publishes
-    /// to the dead generation instead of holding the message.
-    ///
-    /// Only what this node CONSUMED is dropped. What it produced belongs to its consumers'
-    /// sequences, which their own re-plan settles.
-    ///
-    /// [`Self::pending`] SURVIVES, which is what tells this apart from [`Self::forget`]: a rebirth
-    /// is the same node, so a request queued for it before it ever attached is still a request for
-    /// it. Dropping one here would silently discard a ⟳ clicked on a node that was restarted before
-    /// it first answered — the very case `pending` exists for.
+    /// Only what this node CONSUMED is dropped; what it produced belongs to its consumers.
+    /// [`Self::pending`] SURVIVES: a rebirth is the same node, so a request queued before it ever
+    /// attached is still a request for it.
     pub(crate) fn detach(&mut self, uid: Uid) {
         self.sinks.remove(&uid);
         self.sequences.retain(|(consumer, _), _| *consumer != uid);
@@ -215,12 +190,10 @@ impl WirePlanner {
 
     /// Start a slot's sequence, cancelling whatever it had in flight.
     pub(crate) fn begin(&mut self, key: SlotKey, desired: Vec<Wire>, removed: Vec<Wire>, added: Vec<Wire>) {
-        // A cancelled sequence that had not applied yet leaves its OWN additions unapplied, and the
-        // diff base has already moved past them — so unless they are carried, the evidence that this
-        // consumer never subscribed to them disappears with the sequence that held it, and some
-        // other slot's phase 3 tells their producer to ring it. Carrying them also re-owes the grow
-        // the cancelled sequence never sent. Rebuilt in `desired` order, so a phase's messages go
-        // out in the order the set names them however they were merged.
+        // A cancelled sequence that never applied leaves its own additions unapplied while the diff
+        // base has moved past them — so unless they are carried, the evidence that this consumer
+        // never subscribed disappears, and some other slot's phase 3 tells their producer to ring
+        // it. Rebuilt in `desired` order, so a phase's messages go out in the set's own order.
         let carried = self
             .sequences
             .get(&key)

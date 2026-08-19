@@ -1,9 +1,7 @@
-//! `goofi-pipe` — launches the Rust engine + bridge, serving the SPA and the two
-//! WebSocket planes. Flags: `--port N` (default 8000), `--bind HOST` (default
-//! 127.0.0.1), `--extra-nodes DIR` (a node directory scanned in ADDITION to the shipped
-//! `nodes/` tree, repeatable). Every Python node is tier-routed by one probe — in-process
-//! when free-threading-safe, else a subprocess run on the repo-local `.gfivenv`. There is
-//! no flag for either choice — one probe routes, one venv runs.
+//! `goofi-pipe` — the binary: arg parsing, tier routing, and the one exit path.
+//!
+//! Every Python node is routed by ONE probe — in-process when free-threading-safe, else a
+//! subprocess on the repo-local GIL venv. There is no flag for either choice.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -150,12 +148,9 @@ fn exposure_warning(bind: &str) -> Option<String> {
     })
 }
 
-/// Everything the process does once it has a state, as a function that *returns* its exit code:
-/// the workspace mount is reclaimed here, on the one path every outcome takes. The alternative is
-/// three `std::process::exit` calls that each have to remember — and `exit` unwinds nothing, so a
-/// destructor would not save them either. `shutdown` is only awaited once the server is up, so a
-/// signal that lands during boot still takes the default disposition and leaves the mount behind:
-/// one empty temp directory in a rare race, the same as any other crash.
+/// Everything the process does once it has a state, RETURNING its exit code — so the workspace
+/// mount is reclaimed on the one path every outcome takes. `std::process::exit` unwinds nothing, so
+/// a destructor could not stand in for this.
 async fn run(
     cli: Cli,
     subproc_python: String,
@@ -224,12 +219,10 @@ async fn run(
                 if let Some(warning) = exposure_warning(&bind) {
                     eprintln!("{warning}");
                 }
-                // The stop lives here rather than inside `serve_app`: the mount reclaim below is
-                // the CLI's alone, and `serve_app`'s eight other callers are tests that want it to
-                // serve forever. Dropping the server and draining it behave alike here anyway —
-                // axum's per-connection task ends at the WS upgrade, so a `/control` socket held
-                // open for the life of a tab delays neither — and with a handler installed, a
-                // second ctrl-C no longer reaches the default disposition that would have killed us.
+                // The stop is HERE and not inside `serve_app`, whose other callers are tests that
+                // want it to serve forever. Dropping the server and draining it behave alike:
+                // axum's per-connection task ends at the WS upgrade, so a socket held open for the
+                // life of a tab delays neither.
                 tokio::select! {
                     served = serve_app(listener, state.clone(), spa) => match served {
                         Ok(()) => 0,
@@ -244,11 +237,8 @@ async fn run(
         }
     };
     // The graceful exit, in the order it has to happen: every node stops and its own thread drops
-    // the ports holding its shared memory, and only then does the workspace those nodes were
-    // running in go. This is the ONLY path that runs either — `std::process::exit` unwinds nothing,
-    // so `AppState`'s `Arc<Mutex<Graph>>` has no destructor that could stand in, and iceoryx2's own
-    // termination handling does not run one either. Without it every ctrl-C was a crash exit,
-    // leaving segments for the next start's sweep to reclaim.
+    // the ports holding its shared memory, and only THEN does the workspace go. The only path that
+    // runs either — without it every ctrl-C is a crash exit.
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code
@@ -319,18 +309,13 @@ fn register_evaluator(state: &AppState) {
 
 /// Hand the EMBEDDED interpreter the venv pyo3 was linked against.
 ///
-/// pyo3 links `libpython` out of that venv's BASE install, so `sys.prefix` is the base install and
-/// the venv — which is where `goofi` and `numpy` actually are — sits on no search path at all.
-/// `.cargo/config.toml` covers this with a `PYTHONPATH` in its `[env]` block, and cargo applies
-/// that to `cargo run` and to nothing else. So the binary launched any OTHER way — a packaged
-/// build, a bare `./goofi-pipe` — came up with a dead param-expression evaluator
-/// (`No module named 'numpy'`) and in-process Python nodes that cannot import their own package.
+/// pyo3 links `libpython` out of that venv's BASE install, so the venv — where `goofi` and `numpy`
+/// actually are — sits on no search path at all. The cargo config covers this for `cargo run` and
+/// nothing else, so a bare `./goofi-pipe` came up with a dead evaluator and in-process nodes that
+/// cannot import their own package.
 ///
-/// The `--list-nodes` count does not reveal it: registration runs through the discovery probe,
-/// which is a SUBPROCESS and finds its own site-packages via `pyvenv.cfg`. Only execution breaks.
-///
-/// Doing it here makes the binary self-sufficient instead of dependent on the build tool that
-/// happened to launch it — a cargo config is for configuring a *build*.
+/// `--list-nodes` does not reveal it: registration runs through the probe, which is a SUBPROCESS
+/// and finds its own site-packages. Only execution breaks.
 #[cfg(feature = "python")]
 fn point_embedded_python_at_its_venv() {
     // An existing value is the documented override, and under `cargo run` it is already right.
@@ -391,13 +376,11 @@ fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
     Some((m.len(), m.modified().ok()?))
 }
 
-/// GIL-gate auto-router: probe each node file and register it in-process when its imports keep the
-/// free-threaded GIL disabled, else quarantine it to a subprocess. THE node-discovery seam — the
-/// bridge holds it as `AppState::scan_nodes`, so the boot scan below and every later `rescan_nodes`
-/// route the same file the same way, by construction rather than by two implementations agreeing.
+/// The GIL-gate router: probe each file and register it in-process when its imports keep the GIL
+/// disabled, else quarantine it to a subprocess. THE discovery seam — boot and every later rescan
+/// route the same file the same way by construction, not by two implementations agreeing.
 ///
-/// It reports and prints NOTHING: a rescan runs this same function whenever an agent writes a node
-/// file, and it must not spew to stderr for doing its job. `boot_scan` does the talking.
+/// It prints NOTHING: a rescan runs it whenever an agent writes a node file. `boot_scan` talks.
 #[cfg(feature = "python")]
 fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
     let ft = goofi_python::inproc::interpreter_path(); // the embedded FT interpreter, for probing
@@ -471,11 +454,8 @@ const NO_PYTHON_NOTE: &str = "";
 const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node discovery is off)";
 
 /// The boot scan, reported. It runs the bridge's own `rescan` — not merely the same seam — so the
-/// baseline the palette's first refresh diffs against IS this scan, and pressing refresh with
-/// nothing edited says "no changes" instead of re-announcing the whole shipped tree. What it adds
-/// is the talking the seam deliberately does not do, including the collision warning, which is only
-/// TRUE here: the boot registry starts empty, so a `Replaced` can only be a second node file
-/// claiming a name an earlier one took. Returns the type names `--list-nodes` prints.
+/// baseline the first refresh diffs against IS this scan. The collision warning is only TRUE here:
+/// the boot registry starts empty, so a `Replaced` can only be two files claiming one name.
 fn boot_scan(state: &AppState) -> Vec<String> {
     let (found, dirs) = {
         let mut g = state.graph.lock().unwrap();
@@ -662,15 +642,10 @@ mod tests {
         factory: || unreachable!("built by the registered factory"),
     };
 
-    /// Ctrl-C and SIGTERM are the ONLY exits a user takes, and each has to leave the machine as it
-    /// found it. `AppState` holds the graph for the process lifetime and `std::process::exit`
-    /// unwinds nothing, so nothing on the way out ever reached `Graph::shutdown` — every user exit
-    /// was a crash exit, and each one's shared memory sat allocated until the next start swept it.
-    ///
-    /// Counted through the node's own `Drop` rather than through the graph's bookkeeping: the
-    /// segments go when the node's runtime is dropped on its own thread, and `shutdown` waiting for
-    /// exactly that is the whole reason it is not `clear()`. A run that forgot the call leaves this
-    /// flag false for ever — the node is still parked, waiting for a stop nobody asked it for.
+    /// Ctrl-C and SIGTERM are the only exits a user takes, and each has to leave the machine as it
+    /// found it. Counted through the node's own `Drop` rather than the graph's bookkeeping: the
+    /// segments go when the node's runtime drops on its own thread, and `shutdown` waiting for
+    /// exactly that is why it is not `clear()`.
     #[tokio::test]
     async fn a_signal_stops_every_node_before_the_run_returns() {
         let state = AppState::new();

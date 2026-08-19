@@ -1,33 +1,14 @@
-//! The subprocess node tier (Pathway C).
+//! The subprocess Python tier: one GIL interpreter per node, running the SAME `goofi.Node`
+//! contract as the in-process tier through the SAME `goofi_pymod::exec` marshalling — so the two
+//! cannot drift, and the scheduler never branches on which is hosting.
 //!
-//! A [`RemoteNode`] runs a Python node in an isolated **GIL** interpreter, one
-//! process per node. It exists for two reasons: (1) deps that aren't
-//! free-threading-safe can't run in the in-process pyo3 host; (2) per the latency
-//! finding, a *separate interpreter* has its own object ownership, so parallel
-//! heavy-Python compute avoids free-threaded CPython's biased-refcount penalty.
+//! It exists for deps that are not free-threading-safe, and because a separate interpreter has its
+//! own object ownership, so parallel heavy-Python compute avoids the biased-refcount penalty.
 //!
-//! The child is the SAME `goofi.Node` class contract as the in-process tier, run by
-//! `goofi.serve()` from the abi3 wheel — a **Rust** iceoryx2 loop reusing the shared
-//! `goofi_pymod::exec` marshalling. The parent holds the other end of the transport — and the
-//! write end of a **parent-liveness pipe** ([`goofi_codec::liveness`]), which the child watches
-//! for EOF, so a Ctrl-C'd or crashed manager can never orphan a forever-spinning child.
-//!
-//! Each tick is one request/response over **iceoryx2 shared memory**. The parent encodes
-//! `[u32 seq][request]` where the request is the shared [`goofi_codec::encode_request`]
-//! frame (the live params + the present input slots, each a self-describing GOOF frame),
-//! and publishes to the child's per-node `<id>_req` byte-slice service; the child runs the
-//! node and publishes `[u32 seq][response]` back on `<id>_resp`, which the parent decodes
-//! with [`goofi_codec::decode_response`]. The `seq` disambiguates responses so a re-publish
-//! (needed while the child's subscriber is still connecting) never returns a stale frame.
-//!
-//! Both ends use the iceoryx2 **Rust crate** (the child from the wheel) over the 0.9.3 ABI —
-//! the Python `iceoryx2` binding is gone. The child interpreter needs `goofi` (the wheel) +
-//! `numpy`. Because the child shares `goofi_codec`, meta (channels/sfreq/index) crosses with
-//! full fidelity and cast-to-f32 + warn live only in the child's shared `run_process`.
-//!
-//! The node implements the same [`Node`] trait as native and in-process Python
-//! nodes, so the scheduler never branches on backend and the engine hosts it
-//! through the ordinary `register_dyn_type` seam.
+//! One run is one request/response over iceoryx2 shared memory, `[u32 seq][frame]` each way. The
+//! `seq` is what makes a re-publish — needed while the child's subscriber is still connecting —
+//! unable to return a stale frame. The parent also holds the write end of a LIVENESS PIPE the
+//! child watches for EOF, so a crashed manager can never orphan a forever-spinning child.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -313,12 +294,7 @@ impl Drop for RemoteNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Discovery — turn a directory of `goofi.Node` files into subprocess node types the
-// engine hosts via `register_dyn_type`. Uses the SAME probe-based discoverer as the
-// in-process tier (`goofi_node::discover`), so a file yields the same rich manifest
-// (multi-slot + params) whichever backend hosts it; the factory spawns a RemoteNode.
-// ---------------------------------------------------------------------------
+// ── Discovery: the SAME probe the in-process tier uses, so a file yields one manifest either way ─
 
 use std::path::Path;
 

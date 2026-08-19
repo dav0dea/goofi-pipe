@@ -8,14 +8,10 @@
 //! machinery. Flattening also turns move/reorder/reparent into field edits with panel identity
 //! preserved, instead of identity-losing tree surgery.
 //!
-//! The tree algebra that survives flattening — split-or-wrap, close-with-promote and size
-//! renormalization — is ported from `frontend/src/lib/workspace/model.ts`, which is its source of
-//! truth and carries its own tests. Matching it is deliberate, not incidental.
-//!
 //! Every mutation is a PLANNER: it mutates a clone and returns the per-entry writes that turn this
-//! arrangement into that one. That is what makes a layout op an ordinary `Command` compound with an
-//! exact per-entry inverse, and it keeps the genuinely tricky cases (a promote whose survivor is
-//! also the move's destination) out of hand-rolled delta bookkeeping.
+//! arrangement into that one. That is what makes a layout op an ordinary command compound with an
+//! exact inverse, and it keeps the tricky cases — a promote whose survivor is also the move's
+//! destination — out of hand-rolled delta bookkeeping.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -506,14 +502,12 @@ impl Layout {
         Ok(e)
     }
 
-    /// Put `entry` beside `target`, splitting along `axis` — `insertNodeAtPanel`, and the ONE place
-    /// split-or-wrap lives. A parent already running along `axis` gains an adjacent sibling taking
-    /// the newcomer's share of the target's slice; otherwise the target is wrapped in a fresh split
-    /// inheriting its slot. `before` puts the newcomer left/top. `entry`'s own parent and order are
-    /// overwritten and its `size` is READ as the share it asks for, so a caller hands over a lifted
-    /// subtree root or a brand-new panel indifferently. `wrap` names the id a minted wrapper should
-    /// take if it is still free — how an undo gives the split its own forward promoted away its id
-    /// back without restoring its slot.
+    /// Put `entry` beside `target` along `axis` — the ONE place split-or-wrap lives. A parent
+    /// already running along `axis` gains a sibling; otherwise the target is wrapped in a fresh
+    /// split inheriting its slot. `entry`'s `size` is READ as the share it asks for, so a caller
+    /// hands over a lifted subtree or a new panel indifferently. `wrap` names the id a minted
+    /// wrapper takes if still free — how an undo gives a promoted-away split its id back without
+    /// restoring its slot.
     fn insert_at(
         &mut self,
         id: &str,
@@ -661,14 +655,10 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
-    /// Re-assert the shares `home` remembers in every split whose children this plan disturbed, and
-    /// renormalize it — what makes an undisturbed undo exact to the pixel. It is SHARES only: where
-    /// an entry sits is still re-planned and never restored, so this is the same bargain
-    /// [`Self::re_home`] always struck, widened to the splits it was actually missing. A move
-    /// renormalizes the split it leaves and the one it enters, and a promote pushes that a level up
-    /// again, so re-asserting one level of siblings put back one level of a change that touched
-    /// several. A split the plan left alone keeps whatever it holds — a peer's resize elsewhere
-    /// survives — and an id `home` never saw keeps the share the plan gave it.
+    /// Re-assert the shares `home` remembers wherever this plan disturbed them — what makes an
+    /// undisturbed undo exact to the pixel. SHARES only: where an entry sits is still re-planned
+    /// and never restored. A split the plan left alone keeps what it holds, so a peer's resize
+    /// elsewhere survives.
     fn give_back_shares(&mut self, before: &Layout, home: &Home) {
         let disturbed: std::collections::BTreeSet<Id> = self
             .entries
@@ -719,14 +709,10 @@ impl Layout {
         Ok(self.diff(&back))
     }
 
-    /// Land `writes` as CONTENTS edits: what each entry HOLDS arrives, but WHERE it sits — its
-    /// `parent` and its `order` — is read off the arrangement as it stands and never off the write.
-    /// That is what makes the inverse of a type change or a set of shares safe: the slot an entry
-    /// held when the op was planned may be a peer's adjacent split's by undo time, and pinning it
-    /// back is exactly the stranding the re-planning rule exists to prevent. The shares that arrive
-    /// are re-asserted and the parent renormalized, so a peer's own child keeps its slice —
-    /// [`Self::re_home`]'s bargain, not a second one. An id that has since gone is skipped, so a
-    /// stale replay degrades instead of resurrecting an entry.
+    /// Land `writes` as CONTENTS edits: what each entry HOLDS arrives, but WHERE it sits is read
+    /// off the arrangement as it stands and never off the write. That is what makes the inverse of
+    /// a type change safe — the slot an entry held at plan time may be a peer's by undo time. An id
+    /// that has since gone is skipped, so a stale replay degrades instead of resurrecting it.
     pub fn set_contents(&self, writes: &[Write]) -> Vec<Write> {
         let mut next = self.clone();
         let mut parents = std::collections::BTreeSet::new();
@@ -880,17 +866,13 @@ impl Layout {
         writes
     }
 
-    /// Set a panel's type and/or state. `panel_type` is applied FIRST because changing it clears the
-    /// old type's state (a new type cannot interpret it) — which is exactly why a combined
-    /// `{type, state}` has to land the state afterwards, and why re-asserting the SAME type must not
-    /// wipe (an agent passing `type` redundantly beside a state would otherwise destroy a live
-    /// binding). Sizing is [`Self::resize_split`]'s, which sets a whole split at once.
+    /// Set a panel's type and/or state. `panel_type` lands FIRST because changing it clears the old
+    /// type's state — so a combined `{type, state}` must land the state afterwards, and re-asserting
+    /// the SAME type must not wipe, or an agent passing `type` redundantly destroys a live binding.
     ///
-    /// `state` MERGES key by key. Every caller of it reads the bag, edits one key and writes it back,
-    /// so two writes issued inside one round trip would have the second replace a bag that did not
-    /// yet carry the first's key — the bind lost to the slot picked right after it. Merging at the
-    /// one place the write lands kills that class rather than asking each caller to be careful; a key
-    /// is cleared with an explicit null, which is the spelling [`Self::unbind`] already uses.
+    /// `state` MERGES key by key. Every caller reads the bag, edits one key and writes it back, so
+    /// two writes in one round trip would have the second replace a bag missing the first's key.
+    /// Merging where the write lands kills that class rather than asking each caller to be careful.
     pub fn set_panel(
         &self,
         page: &str,

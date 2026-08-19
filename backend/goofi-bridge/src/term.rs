@@ -1,22 +1,19 @@
 //! The harness plane: one PTY per spawned agent harness, and the MCP address goofi minted for it.
 //!
-//! **The address is the design's centre.** A spawns one MCP server at `/mcp`; a spawn here mints
-//! `/mcp/<instance_id>` and writes THAT url into the config it hands its harness. Nothing about the
-//! identity travels through the agent, so there is no id to spoof and none to validate; the route
-//! either exists or it does not, and [`Harnesses::stop`] is what makes it not. A path rather than a
-//! port was deliberate — a port per harness buys network isolation this single-user local app has
-//! no use for, at the cost of a listener, an accept loop and real OS lifecycle.
+//! **The address is the design's centre.** A spawn mints `/mcp/<instance_id>` and writes THAT url
+//! into the config it hands its harness, so no part of the identity travels through the agent —
+//! nothing to spoof, nothing to validate. A path rather than a port: a port per harness buys
+//! network isolation a single-user local app has no use for, at the cost of a real OS lifecycle.
 //!
-//! **The environment is inherited whole**, so the harness's own login and auth work and its
-//! sessions land where it expects. Only the terminal contract is overlaid, because a dumb `TERM` or
-//! a non-UTF-8 locale makes a TUI refuse to start or render mojibake. Nothing redirects `HOME`:
-//! the harness writes its state there rather than into the cwd, so credentials never land in the
-//! workspace — secret hygiene by construction rather than by a rule.
+//! **The environment is inherited whole**, so the harness's own login and auth work. Only the
+//! terminal contract is overlaid, because a dumb `TERM` or a non-UTF-8 locale makes a TUI refuse to
+//! start. Nothing redirects `HOME` — the harness writes its state there rather than into the cwd,
+//! so credentials never land in the workspace.
 //!
-//! **Nothing here emulates a terminal** (user, 2026-08-10). There is no grid, no scrollback and no
-//! replay: the client keeps its own `Terminal` object alive across a panel close, and a re-attach
-//! nudges the size so a full-screen TUI repaints itself. History across a page reload is allowed to
-//! be lost; that is what buys this module its size.
+//! **Nothing here emulates a terminal.** No grid, no scrollback, no replay: the client keeps its
+//! own `Terminal` alive across a panel close, and a re-attach nudges the size so a full-screen TUI
+//! repaints. History across a page reload is allowed to be lost, and that is what buys this
+//! module its size.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -36,11 +33,10 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// already made; blocking the reader instead would stall the child itself.
 const OUTPUT_BACKLOG: usize = 1024;
 
-/// One harness goofi knows how to launch, and how to point it at an MCP address. `file` — written
-/// under `harness/<instance_id>/` — plus `args` and `env` are the whole adapter: `{url}` expands to
-/// the minted address and `{file}` to that file's path, so a harness that changes its config
-/// mechanism is a one-row edit. A `_`-prefixed name is a TEST adapter, hidden from detection
-/// exactly as the node catalog hides its `_` types.
+/// One harness goofi knows how to launch, and how to point it at an MCP address. `file`, `args`
+/// and `env` are the whole adapter — `{url}` expands to the minted address and `{file}` to that
+/// file's path — so a harness that changes its config mechanism is a one-row edit. A `_`-prefixed
+/// name is a TEST adapter, hidden from detection as the node catalog hides its `_` types.
 struct Adapter {
     name: &'static str,
     bin: &'static str,
@@ -67,11 +63,9 @@ static ADAPTERS: &[Adapter] = &[
     // adapter does (and ignores it), so the minting path under test is the shipping one.
     Adapter { name: "_sh", bin: "sh", args: &[], env: &[],
               file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
-    // And one that REPORTS the SIGTERM and then refuses to leave, so a stop can be watched asking
-    // before it insists. It says `armed` on EVERY pass, not once: nothing here replays what a
-    // harness wrote before a socket attached, and a signal delivered before the trap was installed
-    // would prove nothing. The loop matters too — a bare `sleep` is a child of the same group and
-    // would die of the group signal, taking the shell with it when it returned.
+    // And one that REPORTS the SIGTERM and then refuses to leave. It says `armed` on EVERY pass,
+    // because nothing replays what a harness wrote before a socket attached. The loop matters too:
+    // a bare `sleep` is a child of the same group and would die of the group signal.
     Adapter { name: "_deaf", bin: "sh", env: &[], file: None,
               args: &["-c", "trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done"] },
 ];
@@ -95,11 +89,9 @@ pub struct Harnesses {
 }
 
 impl Harnesses {
-    /// Re-detect off the request path, announcing the result when it lands. Detection runs a
-    /// `--version` per binary and a login shell whenever a bare PATH lookup misses — seconds of
-    /// process spawning that must not sit on a socket's request loop, and that the snapshot must
-    /// never pay for on a reconnect. So the roster answers from the cache and converges through
-    /// `harness_changed`, exactly as an exit does.
+    /// Re-detect OFF the request path: detection runs a `--version` per binary and a login shell
+    /// whenever a PATH lookup misses — seconds of spawning that must not sit on a request loop or
+    /// be paid by a reconnect. The roster answers from the cache and converges by broadcast.
     pub fn refresh_in_background(self: &Arc<Self>, events: broadcast::Sender<String>) {
         let harnesses = self.clone();
         std::thread::spawn(move || {
@@ -299,13 +291,10 @@ impl Harnesses {
     }
 
     /// Stop every instance and clear the roster — what opening another patch does. A harness
-    /// belongs to the patch that spawned it: its cwd IS that patch's workspace and its minted
-    /// address edits that patch's graph, so surviving a load would leave it editing a patch it was
-    /// never launched for from a directory that no longer exists. Through the same stop path, and
-    /// dropped from the roster at once rather than when each child is reaped, because the patch
-    /// they belonged to is already gone. The mount they ran in is reclaimed while the grace runs,
-    /// so a doomed child briefly lives on a deleted cwd — cheaper, and less surprising, than
-    /// holding a patch's workspace open behind someone else's five-second timer.
+    /// belongs to the patch that spawned it, so surviving a load would leave it editing a patch it
+    /// was never launched for from a directory that no longer exists. Dropped from the roster at
+    /// once rather than when each child is reaped: the mount is reclaimed while the grace runs, so
+    /// a doomed child briefly lives on a deleted cwd rather than holding a workspace open.
     pub fn stop_all(&self) {
         for (_, inst) in std::mem::take(&mut *self.instances.lock().unwrap()) {
             if inst.exit_code().is_none() {
@@ -327,18 +316,13 @@ fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     Ok(())
 }
 
-/// The terminal size every view of one instance shares, and who last spoke for it.
+/// The terminal size every view of one instance shares. A PTY has ONE window, so the size is
+/// ARBITRATED and **the last view to speak wins** — the answer is the newest proposal still seated.
 ///
-/// A PTY has ONE window, so two panels showing the same harness cannot each have their own: the
-/// size is arbitrated rather than negotiated, and **the last view to speak wins**. Each seat holds
-/// that view's most recent proposal, most-recently-proposed last, so the answer is simply the
-/// newest one still seated.
-///
-/// The two ways a proposal stops counting are the whole reason this is a structure and not a
-/// field. A view **retracts** when its panel unmounts — it keeps its socket, because that is what
-/// keeps its scrollback flowing, but it has nothing on screen to speak for — and a view **leaves**
-/// when its socket closes. Either way the terminal goes back to whichever survivor spoke last;
-/// without that, closing the size-owning view strands every other at a size nobody can see.
+/// The two ways a proposal stops counting are why this is a structure and not a field. A view
+/// RETRACTS when its panel unmounts (it keeps its socket, which is what keeps its scrollback
+/// flowing) and LEAVES when its socket closes. Either way the terminal goes back to whichever
+/// survivor spoke last, or closing the size-owning view strands every other.
 #[derive(Default)]
 struct Sizes {
     seats: Vec<(u64, Option<(u16, u16)>)>,
@@ -442,50 +426,31 @@ impl Instance {
     }
 }
 
-/// The whole of an agent's orientation: what goofi is, that a human is editing the same patch at
-/// the same time, how to see it, how to build in it, and what is not the agent's to touch. It is a
-/// FILE rather than a string literal because it is documentation an agent reads as documentation —
-/// and because it is also the file [`seed_orientation`] lays in the workspace, so a reviewer edits
-/// the same bytes the agent gets. The tool descriptions say what each op does; this says how to
-/// behave. Nothing else claims to orient an agent — see [`seed_orientation`] for why the MCP
-/// handshake deliberately does not.
+/// The whole of an agent's orientation. A FILE rather than a literal, because it is also the file
+/// [`seed_orientation`] lays in the workspace — a reviewer edits the same bytes the agent gets.
+/// The tool descriptions say what each op does; this says how to behave.
 pub(crate) const ORIENTATION: &str = include_str!("orientation.md");
 
-/// Seed a NEW patch workspace with the orientation an agent harness reads — only ever a workspace
-/// goofi minted empty itself (boot, `new`, an upload that carries no files), never one a `.gfi` was
-/// unpacked into. Absent-only on top of that, so it is written once and belongs to the patch from
-/// then on.
+/// Seed a NEW workspace with the orientation an agent reads — only ever one goofi minted empty
+/// itself, never one a `.gfi` was unpacked into, and absent-only on top of that.
 ///
 /// **Why a file and nothing else.** The MCP handshake could answer `initialize.instructions`, and
-/// once did; reading a field is not acting on it. Codex 0.147 receives it intact and surfaces it
-/// only as the description of the `mcp__goofi` tool NAMESPACE — one blurb among ~180 tools — and an
-/// agent given it there answered "add an oscillator" by shelling out to look for a framework,
-/// never calling a goofi tool. As `AGENTS.md` it lands in the model-visible prompt and the agent
-/// adds the node (measured 2026-08-10, real model, real backend). So the field was dropped rather
-/// than kept as a second, 2 KB-truncated copy of a text that has one home (user, 2026-08-10).
+/// once did. Measured: codex receives it intact and surfaces it as one namespace blurb among ~180
+/// tools, and an agent given it there answered "add an oscillator" by shelling out to look for a
+/// framework. As `AGENTS.md` it lands in the model-visible prompt and the agent adds the node.
 ///
-/// **Why IN the workspace.** Only there. The same measurement, run against the nonce directory one
-/// level up, put the text in NO prompt — an agent that answered a question about it had simply
-/// read the file with a shell, which is not the same thing as being oriented by it. The project
-/// doc is found at the project root, so that is where it goes.
+/// **Why IN the workspace.** The same measurement against the directory one level up put the text
+/// in NO prompt. The project doc is found at the project root, so that is where it goes.
 ///
 /// **Why these two names.** `AGENTS.md` is what codex and opencode read; Claude Code reads
-/// `CLAUDE.md`, whose documented `@` import points at the other — so ONE text serves all three, and
-/// a fourth harness following either convention is oriented with no adapter row at all.
+/// `CLAUDE.md`, whose `@` import points at the other — so one text serves all three.
 ///
-/// **Why never rewritten, and why a load never calls this at all.** The agent may edit it: what it
-/// learns about THIS patch belongs to this patch, rides the `.gfi` and comes back on load. A loaded
-/// patch therefore arrives with its own workspace complete, and goofi adds nothing to it — the
-/// accepted price being that a patch saved before this existed carries no orientation ever. Absent-
-/// only guards the remaining case, a spawn into a workspace already seeded. Best-effort for
-/// [`new_mount`]'s reason: a temp dir that cannot be written to surfaces its real error at the
-/// first save, naming the path.
+/// **Why a load never calls this.** The agent may edit it, and what it learns about THIS patch
+/// belongs to this patch, rides the `.gfi` and comes back on load. The accepted price: a patch
+/// saved before this existed carries no orientation ever.
 ///
-/// **Why the packaging ignore list rides along.** It is not orientation, but it is the same act —
-/// what goofi lays into a workspace it minted, once, for its author to own from then on — and
-/// stating it as one loop is what keeps a second seeding path from growing beside this one with
-/// its own answer to "and on load?". Its name and body come from the engine, which is what reads
-/// them back: see [`goofi_engine::archive::IGNORE_FILE`].
+/// The packaging ignore list rides along because it is the same act — what goofi lays into a
+/// workspace it minted, once, for its author to own from then on.
 pub fn seed_orientation(mount: &Path) {
     for (name, body) in [
         ("AGENTS.md", ORIENTATION),
@@ -500,30 +465,22 @@ pub fn seed_orientation(mount: &Path) {
 }
 
 /// Where one instance's config is written: BESIDE the workspace, not inside it. Inside would pack a
-/// stale URL into every `.gfi` the patch is ever saved to, and would DIRTY the patch merely for
-/// launching an agent — the workspace fingerprint has no exclusion list, and growing one to buy this
-/// would be worse than putting a file goofi owns where goofi already owns the ground. It is
-/// reclaimed with the mount, since `release_mount` takes the nonce directory both live under.
+/// stale URL into every `.gfi` and would DIRTY the patch merely for launching an agent, since the
+/// workspace fingerprint has no exclusion list. Reclaimed with the mount either way.
 pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
     mount.parent().unwrap_or(mount).join("harness").join(id)
 }
 
-/// The cursor-position query, and goofi's answer to it while nobody else can give one.
+/// The cursor-position query, answered only while nobody else can answer it.
 ///
-/// ConPTY asks the terminal where the cursor is the moment a child starts, and **blocks the child
-/// until something answers**. goofi keeps no terminal (see the module note), so with no viewer
-/// attached there is nobody to answer and the harness hangs before running a single command — and
-/// attaching later cannot rescue it, because the query went to a broadcast with no subscribers and
-/// is gone. That is not an edge case: an agent spawned over MCP has no panel open, and goofi is
-/// expected to run headless.
+/// ConPTY asks the terminal where the cursor is the moment a child starts and **blocks the child
+/// until something answers**. goofi keeps no terminal, so with no viewer attached the harness hangs
+/// before running one command — and attaching later cannot rescue it, because the query went to a
+/// broadcast with no subscribers. Not an edge case: an agent spawned over MCP has no panel open.
 ///
-/// So goofi answers, but **only while no viewer is attached**. With one attached, xterm.js answers
-/// with the REAL cursor position, so a full-screen TUI asking the same question gets a true answer
-/// instead of this fiction — which is the whole reason this is conditional rather than blanket.
-/// The query goofi answers is also removed from what viewers receive: a socket attaching mid-query
-/// would otherwise answer it a second time, and the second reply arrives at the shell as typed
-/// input. A query split across two reads is not stitched back together; ConPTY emits these four
-/// bytes in one write, and the cost of missing one is a hang no worse than today's.
+/// So goofi answers, but **only while no viewer is attached** — with one there, xterm.js gives the
+/// REAL position. The answered query is also stripped from what viewers receive, or a socket
+/// attaching mid-query answers it a second time and that reply lands on the shell as typed input.
 fn answer_cursor_query(inst: &Instance, bytes: &[u8]) -> Vec<u8> {
     if inst.output.receiver_count() > 0 {
         return bytes.to_vec();
@@ -568,18 +525,14 @@ fn signal(inst: &Instance, how: fn(u32) -> Result<(), String>) -> Result<(), Str
     how(inst.pid.ok_or("the harness reported no pid to signal")?)
 }
 
-/// Resolve `bin` to an executable path: a plain `PATH` walk first, then — only when that misses —
-/// a LOGIN shell's own lookup. The fallback is not hypothetical: a desktop-launched process
-/// inherits none of nvm's shims, and that already cost this repo's own build script an exit 127.
-/// `path` and `shell` are parameters rather than reads of the ambient environment so a test can
-/// drive the fallback without mutating it — cargo runs the suite as threads in ONE process.
+/// Resolve `bin`: a plain `PATH` walk, then — only on a miss — a LOGIN shell's own lookup. The
+/// fallback is not hypothetical, since a desktop-launched process inherits none of nvm's shims.
+/// `path` and `shell` are PARAMETERS so a test can drive the fallback without mutating the
+/// environment every other test shares.
 ///
-/// The walk is `which`'s rather than this module's, so what counts as an executable is the
-/// platform's own answer — the mode bits where those decide, `PATHEXT` where that does — and a
-/// harness npm installed as `claude.cmd` answers to the same one word `claude` that finds it
-/// everywhere else. `which_in_global` rather than `which_in` is deliberate: it searches the named
-/// list ALONE, so nothing sitting in the patch workspace can shadow the harness that was asked for.
-/// An absolute path — what the shell fallback below produces — it validates directly instead.
+/// The walk is `which`'s, so what counts as an executable is the platform's answer.
+/// `which_in_global` searches the named list ALONE, so nothing in the patch workspace can shadow
+/// the harness that was asked for.
 fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
     let found = |name: &OsStr| which::which_in_global(name, path).ok()?.next();
     if let Some(direct) = found(OsStr::new(bin)) {
@@ -616,20 +569,16 @@ fn login_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
 
-/// The environment a spawned harness inherits: goofi's own, whole — so the harness's own login and
-/// auth work and its sessions land where it expects. A PARAMETER of [`Harnesses::spawn`] rather
-/// than a read inside it, the same way [`resolve`] takes its `path` and `shell`: cargo runs the
-/// suite as threads in ONE process, so a test that wanted to state what the parent had would
-/// otherwise have to change it for every other test at the same time.
+/// The environment a spawned harness inherits: goofi's own, whole. A PARAMETER of
+/// [`Harnesses::spawn`] rather than a read inside it, so a test can state what the parent had
+/// without changing it for every other test at the same time.
 pub fn parent_env() -> Vec<(OsString, OsString)> {
     std::env::vars_os().collect()
 }
 
-/// Whether the environment the child will actually see already names a UTF-8 locale, in the
-/// precedence the C library resolves them in — the parent it was handed first, then goofi's own,
-/// which together are what the child ends up with. Only when there is NONE is one imposed; a
-/// parent that named a non-UTF-8 locale deliberately is overridden too, because a TUI drawing
-/// mojibake in a panel is worse than a locale nobody asked for.
+/// Whether what the child will SEE already names a UTF-8 locale, in the precedence the C library
+/// resolves them in. A parent that deliberately named a non-UTF-8 one is overridden too: a TUI
+/// drawing mojibake is worse than a locale nobody asked for.
 fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
     ["LC_ALL", "LC_CTYPE", "LANG"].iter()
         .find_map(|k| {
@@ -682,11 +631,9 @@ mod tests {
         assert!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap().contains("its own"));
     }
 
-    /// The packaging ignore list is seeded on the same terms as the orientation and for the same
-    /// reason: goofi writes it into a workspace it minted, absent-only, and from then on it is the
-    /// patch's — its author's to edit, packaged into the `.gfi`, back on load. Its name and body
-    /// are the engine's, so the header documenting the syntax sits beside the parser implementing
-    /// it, and a `.gfi` is filtered by the very file it packages.
+    /// The ignore list is seeded on the same terms as the orientation: absent-only, into a
+    /// workspace goofi minted, and the patch's from then on. Its name and body are the ENGINE's,
+    /// so the syntax doc sits beside the parser and a `.gfi` is filtered by the file it packages.
     #[test]
     fn a_new_workspace_is_seeded_with_the_packaging_ignore_list() {
         let tmp = tempfile::tempdir().expect("a temp dir");
@@ -700,12 +647,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "*.wav\n");
     }
 
-    /// Taking the cursor query out of the stream — the half of [`answer_cursor_query`] a test can
-    /// reach anywhere. Only ConPTY sends `\x1b[6n`, so on unix no harness in this suite emits one
-    /// and every integration test here would pass unchanged with the loop below deleted; that makes
-    /// this the only thing standing between the stripping and a silent regression on Windows, where
-    /// a query left in the stream is answered twice and the second reply lands on the shell as
-    /// typed input.
+    /// The half of [`answer_cursor_query`] a test can reach anywhere. Only ConPTY sends `\x1b[6n`,
+    /// so on unix every integration test would pass with the stripping deleted — this is the only
+    /// thing standing between it and a silent Windows regression.
     #[test]
     fn a_cursor_query_is_taken_out_of_the_stream_and_everything_else_survives() {
         assert_eq!(take_cursor_queries(b"plain output"), None, "nothing asked, nothing to strip");
@@ -725,12 +669,10 @@ mod tests {
     /// than the fallback.
     const NO_SHELL: &str = "/goofi-no-such-shell";
 
-    /// The direct walk, on the terms the PLATFORM sets rather than the ones this module used to
-    /// assume. Driven against this test binary — the one executable guaranteed to exist wherever the
-    /// suite runs — and by its STEM, because on Windows it sits on disk as `…-<hash>.exe` while a
-    /// caller still types the stem. That is the same shape an npm-installed `claude.cmd` presents,
-    /// and it is precisely what the old hand-rolled walk got wrong: joining the typed name verbatim
-    /// finds this binary on unix and misses it on Windows.
+    /// The direct walk, on the PLATFORM's terms. Driven against this test binary — the one
+    /// executable guaranteed to exist wherever the suite runs — and by its STEM, because on Windows
+    /// it sits on disk as `…-<hash>.exe` while a caller still types the stem, exactly as an
+    /// npm-installed `claude.cmd` does.
     #[test]
     fn a_binary_is_found_by_the_name_a_caller_types_not_the_one_it_has_on_disk() {
         let exe = std::env::current_exe().expect("this test binary's path");
@@ -747,11 +689,9 @@ mod tests {
         assert_eq!(resolve("goofi-not-a-real-binary", Some(&dir), NO_SHELL), None);
     }
 
-    /// The other half of [`resolve`]: a binary the bare walk misses is still found through a LOGIN
-    /// shell — the nvm case the module note names — and a name no shell can resolve stays
-    /// unresolved, so the fallback is a lookup rather than a rubber stamp. Unix-only because the
-    /// MECHANISM is: it asks a POSIX shell a POSIX question. Where no such shell answers, the call
-    /// simply finds nothing, which is the same verdict by a shorter route.
+    /// The other half of [`resolve`]: a binary the bare walk misses is found through a LOGIN shell,
+    /// and a name no shell resolves stays unresolved — a lookup, not a rubber stamp. Unix-only
+    /// because the MECHANISM is: it asks a POSIX shell a POSIX question.
     #[cfg(unix)]
     #[test]
     fn a_binary_the_bare_path_lookup_misses_is_found_through_a_login_shell() {

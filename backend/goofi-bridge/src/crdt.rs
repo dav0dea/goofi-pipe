@@ -122,13 +122,10 @@ fn get_or_insert_map(parent: &MapRef, txn: &mut yrs::TransactionMut, key: &str) 
     }
 }
 
-/// The single generic writer behind the graph→doc mirror: recursively reconcile a live Y.Map to
-/// match `target` (a JSON object). For each target key — a nested object recurses INTO the existing
-/// sub-map (get-or-insert; the sub-map is NEVER replaced, so a concurrent client leaf-write into a
-/// sibling key survives — the "params lesson"); a scalar/string is written only when its Any-space
-/// value differs (idempotent, with int/float normalized by [`scalar_unchanged`]). Finally every doc
-/// key absent from `target` is pruned. An unchanged re-assert produces zero doc ops — which is what
-/// keeps the re-mirror from churning tombstones or manufacturing a write that races a client's edit.
+/// The single generic writer behind the graph→doc mirror. A nested object recurses INTO the
+/// existing sub-map, which is never REPLACED; a scalar is written only when it differs; every doc
+/// key absent from `target` is pruned. An unchanged re-assert produces zero doc ops, which is what
+/// keeps the re-mirror from churning tombstones.
 fn reconcile_map(
     txn: &mut yrs::TransactionMut,
     map: &MapRef,
@@ -253,13 +250,10 @@ impl GraphDoc {
         Some(cur)
     }
 
-    /// Replace the whole link set (wholesale; a fine-grained incremental diff comes later). Guarded
-    /// idempotent: the re-mirror re-asserts this after every op, so when the set is UNCHANGED (the
-    /// common case — links change far less often than params/positions) it must produce no doc ops.
-    /// An unguarded remove-all+re-push would churn the link array (new items + tombstones) on every
-    /// unrelated edit, defeating the empty-diff broadcast-skip for any patch that has links.
-    /// The links root is an ARRAY, not a map, so it is written wholesale rather than reconciled
-    /// key by key. Part of the doc's write API alongside [`GraphDoc::reconcile_root`].
+    /// Replace the whole link set — the links root is an ARRAY, not a map, so it is written
+    /// wholesale rather than reconciled key by key. Guarded idempotent, because the re-mirror
+    /// re-asserts it after every op: an unguarded remove-all+re-push would churn the array on every
+    /// unrelated edit and defeat the empty-diff broadcast skip for any patch that has links.
     pub fn replace_links(&mut self, links: &[serde_json::Value]) {
         // Canonicalize the projection to exactly the four string leaves we store, in order, then
         // compare against the current array read through the generic `ToJson` bridge: order-sensitive

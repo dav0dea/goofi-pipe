@@ -1,14 +1,13 @@
-//! The [`Transport`] over real iceoryx2 (spec §3.1, §3.2, §3.5), and the graph's end of the same
-//! wires.
+//! The [`Transport`] over real iceoryx2, and the graph's end of the same wires.
 //!
-//! Every service a node owns is created at its birth from one base name, `<instance>_<uid>_<gen>`,
-//! and every limit is set explicitly: iceoryx2 fixes them at CREATION, before a single wire exists,
-//! so a default that is too small is not a slow path but a hard patch limit no later call can raise.
+//! Every service a node owns is created at its birth from one base name, and every limit is set
+//! EXPLICITLY: iceoryx2 fixes them at creation, before a single wire exists, so a default that is
+//! too small is a hard patch limit no later call can raise.
 //!
-//! The addressing model is that a service NAME is a wire's identity. A producer holds a
-//! [`Doorbell`] per target and knows nothing else about it; a consumer opens a producer's output
-//! service by name. That is why the slot messages carry names rather than uids, and why the same
-//! code serves a thread and a subprocess.
+//! A service NAME is a wire's identity. A producer holds a [`Doorbell`] per target and knows
+//! nothing else about it; a consumer opens a producer's output service by name. That is why the
+//! slot messages carry names rather than uids, and why the same code serves a thread and a
+//! subprocess.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, Once};
@@ -451,12 +450,9 @@ pub(crate) fn iox_config() -> &'static Config {
     })
 }
 
-/// Remove the shared memory a CRASHED run left behind. A graceful exit needs none of this — an iceoryx2 node removes its own resources when
-/// it drops — but a killed process drops nothing, and its segments stay allocated against RAM until
-/// something takes them.
-///
-/// Called once per process by [`sweep_once`]; public so a host can also run it explicitly at
-/// startup, which is the same call and therefore the same single sweep.
+/// Remove the shared memory a CRASHED run left behind. A graceful exit needs none of it — a node
+/// removes its own resources when it drops — but a killed process drops nothing, and its segments
+/// stay allocated against RAM until something takes them.
 pub fn reclaim_stale_resources() {
     let _ = IoxNode::list(iox_config(), |state| {
         if let NodeState::Dead(view) = state {
