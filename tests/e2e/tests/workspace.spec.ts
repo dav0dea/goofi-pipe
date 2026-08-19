@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { closeAddedTab, waitForApp, closeSplit, splitRight } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addNode, selectNode, waitForNoNode, waitForNode } from '../lib/goofi';
 import { installInkProbe } from '../lib/ink';
 import { barsMatchTheHeader, controlsSitAtOneGap } from '../lib/panelBar';
 
@@ -405,7 +405,7 @@ test.describe('the panel chrome', () => {
 
 		// 7. ParamForm `.pf-name` — the inspector's click-to-rename title. It must read as the heading
 		//    it replaced (600 weight, --fs-strong, no chrome), not as a button.
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		const name = await skin(page.getByTestId('auto-side-panel').getByTestId('node-name'));
 		expectAppFace(name, 'the inspector rename title', 'mono');
 		expect(name.fontSize, 'the title is --fs-strong').toBeCloseTo(name.rem, 0);

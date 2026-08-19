@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { waitForApp, resetPatch } from '../lib/app';
-import { addNode, waitForNode, waitForNoNode, addErroringNode } from '../lib/goofi';
+import { addErroringNode, addNode, selectNode, waitForNoNode, waitForNode } from '../lib/goofi';
 import { AS_ROWS, PRIORITY, inBar, menuRow, openOverflow, settledBar } from '../lib/topbar';
 import { kbInset, setKeyboardInset } from '../lib/touch';
 
@@ -642,7 +642,7 @@ test.describe('a top bar that does not fit', () => {
 			uid
 		);
 		try {
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			await openOverflow(page);
 			// The row a user with a selection came for is live, which is what makes this the ordinary path.
 			await expect(menuRow(page, 'Delete selection')).toBeEnabled();
@@ -923,7 +923,7 @@ test.describe('the icon set', () => {
 		await waitForApp(page);
 		const uid = await addNode(page, 'Oscillator', 'inputs');
 		await waitForNode(page, uid);
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(page.getByTestId('auto-side-panel')).toHaveClass(/open/);
 		return uid;
 	}

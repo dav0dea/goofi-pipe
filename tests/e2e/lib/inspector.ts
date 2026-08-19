@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { settledBox } from './geometry';
-import { addNode, waitForNode, waitForNoNode } from './goofi';
+import { addNode, selectNode, waitForNode, waitForNoNode } from './goofi';
 import { touchSession } from './touch';
 
 /**
@@ -100,7 +100,7 @@ export const sizeOn = (axis: PaneAxis, b: { width: number; height: number }): nu
 export async function openInspector(page: Page): Promise<string> {
 	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 	await waitForNode(page, uid);
-	await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+	await selectNode(page, uid);
 	await expect(pane(page), 'a single selection opens the inspector').toHaveClass(/open/);
 	return uid;
 }

@@ -13,6 +13,32 @@ export function addNode(
 	);
 }
 
+/**
+ * Select a node the way a user does — a press on its card header.
+ *
+ * NOT `commands.select`. The step from a press to a selection to an open inspector is part of what
+ * an end-to-end test is for, and a façade call skips exactly that. The header is the target because
+ * it sits above the viewers and outside the connector overlay, so the press cannot land on a slot.
+ *
+ * Two doors, because they are two doors: a fine pointer clicks and a coarse one taps, and a card
+ * that answers only the mouse would pass [[selectNode]] and fail a phone.
+ */
+async function pressNode(page: Page, uid: string, how: 'click' | 'tap'): Promise<void> {
+	const header = page.locator(`.svelte-flow__node[data-id="${uid}"] .header`);
+	await (how === 'tap' ? header.tap() : header.click());
+	await page.waitForFunction(
+		(u) => ((window as any).goofi.query.selection().nodes as string[]).includes(u),
+		uid,
+		{ timeout: 10_000 }
+	);
+}
+
+/** Select a node with a mouse click on its card. */
+export const selectNode = (page: Page, uid: string): Promise<void> => pressNode(page, uid, 'click');
+
+/** Select a node with a finger tap on its card — the coarse-pointer door. */
+export const tapNode = (page: Page, uid: string): Promise<void> => pressNode(page, uid, 'tap');
+
 /** The current graph nodes (identity view). */
 export function nodes(page: Page): Promise<Array<{ uid: string; type: string; name: string }>> {
 	return page.evaluate(() => (window as any).goofi.query.graph().nodes);

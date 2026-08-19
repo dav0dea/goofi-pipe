@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { waitForApp, resetPatch } from '../lib/app';
 import { outside, settledBox } from '../lib/geometry';
-import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
+import { addNode, tapNode, waitForNoNode, waitForNode } from '../lib/goofi';
 import { AS_ROWS, PRIORITY, menuRow, openOverflow, settledBar } from '../lib/topbar';
 import { emptySpot } from '../lib/touch';
 
@@ -229,7 +229,7 @@ test('the inspector leaves the canvas it overlays reachable', async ({ page }) =
 	const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 	await waitForNode(page, uid);
 	try {
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await tapNode(page, uid);
 		const pane = page.getByTestId('auto-side-panel');
 		// `.open`, not merely attached: the pane is MOUNTED at every moment (`{#if enabled}`) and
 		// hidden off-edge until a selection lands, so attachment can resolve before the pane opens —

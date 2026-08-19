@@ -13,13 +13,15 @@ import {
 } from '../lib/cableDrag';
 import { controlsInset } from '../lib/editor';
 import {
-	addNode,
-	waitForNode,
-	waitForNoNode,
 	addErroringNode,
-	undo,
+	addNode,
+	nodeParams,
+	nodes,
 	redo,
-	nodes
+	selectNode,
+	undo,
+	waitForNoNode,
+	waitForNode
 } from '../lib/goofi';
 import { BAR_PANELS } from '../lib/panelBar';
 import { paletteItem } from '../lib/placement';
@@ -896,7 +898,7 @@ test.describe('what the keyboard reaches', () => {
 		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 		await waitForNode(page, uid);
 		try {
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			expect(await selectedNodes(page)).toEqual([uid]);
 
 			const modal = await openBrowserOnAButton(page);
@@ -934,7 +936,7 @@ test.describe('what the keyboard reaches', () => {
 			const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 			await waitForNode(page, uid);
 			try {
-				await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+				await selectNode(page, uid);
 				expect(await selectedNodes(page)).toEqual([uid]);
 
 				const modal = await openBrowserOnAButton(page);
@@ -997,7 +999,7 @@ test.describe('what the keyboard reaches', () => {
 		const buf = await addNode(page, 'Buffer', 'signal', [320, 40]);
 		await waitForNode(page, buf);
 		try {
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), osc);
+			await selectNode(page, osc);
 			const pane = page.getByTestId('auto-side-panel');
 			await expect(pane).toHaveClass(/open/);
 			await pane.getByTestId('param-fx-toggle').first().click();
@@ -1217,7 +1219,7 @@ test.describe('entering and leaving a sub-patch', () => {
 		try {
 			// Learn the inspector's footprint from the pane it opens for THIS node, then park the group
 			// node exactly under its one structural action — the button a stray second click actuates.
-			await page.evaluate((i) => (window as any).goofi.commands.select([i]), inst);
+			await selectNode(page, inst);
 			const expand = page.getByTestId('subpatch-expand-inspector');
 			await expect(expand).toBeVisible();
 			// Measured only once the 120ms slide has SETTLED — mid-transition the pane's translateX still
@@ -1373,6 +1375,73 @@ test.describe('entering and leaving a sub-patch', () => {
 			const leftovers = [osc, buf, ...(added ? [added] : [])];
 			await page.evaluate((ids) => (window as any).goofi.commands.removeNodes(ids), leftovers);
 			for (const uid of leftovers) await waitForNoNode(page, uid).catch(() => {});
+		}
+	});
+});
+
+test.describe('the whole authoring pass, on a desktop', () => {
+	/**
+	 * The phone has one of these (`touch.spec.ts`) and the desktop did not, which matters because
+	 * the two journeys differ at exactly the step this covers. Placing a node SELECTS it, so neither
+	 * platform has to open the inspector by hand on the way in — and that is how every inspector
+	 * spec came to reach its state through `commands.select`. On a desktop the user clicks the card,
+	 * and until now nothing drove that click. End-to-end with a skip in the middle of it.
+	 *
+	 * Every door here is one a user has: Tab opens the palette, Enter picks the ranked type, a click
+	 * commits the ghost, a click on bare canvas deselects, a click on the card selects again, and
+	 * the parameter is typed into the rendered control.
+	 */
+	test('add a node from the palette, click it, and edit a parameter through its inspector', async ({
+		page
+	}) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const inspector = page.getByTestId('auto-side-panel');
+
+		// --- 1. ADD, through the palette ---------------------------------------------------------
+		// The type is picked from the search field rather than by clicking its row: the unfiltered
+		// menu is a scrolling, grouped list, so a row click hit-tests a box that can still be moving.
+		await page.keyboard.press('Tab');
+		const search = page.getByTestId('add-menu-search');
+		await expect(search, 'Tab opened the palette and it holds the keyboard').toBeFocused();
+		await search.fill('Oscillator');
+		await expect(paletteItem(page, 'Oscillator'), 'the exact match leads the ranked list').toHaveClass(
+			/\bhl\b/
+		);
+		await search.press('Enter');
+		const ghost = page.getByTestId('placement-ghost');
+		await expect(ghost, 'the Oscillator ghost is pending').toBeVisible();
+		const spot = await emptySpot(page);
+		await page.mouse.click(spot.x, spot.y);
+		await expect(ghost, 'the click placed it').toHaveCount(0);
+		await expect.poll(async () => (await nodes(page)).length, { message: 'a node landed' }).toBe(1);
+		const osc = (await nodes(page))[0];
+
+		try {
+			// --- 2. DESELECT, so the click below is what opens the pane --------------------------
+			// Placing already selected it. Click bare canvas to put that back, or step 3 would assert
+			// a pane that was open before it ever pressed anything.
+			await expect(inspector, 'placing a node inspects it').toHaveClass(/open/);
+			await page.locator('.svelte-flow__pane').click({ position: { x: spot.x + 320, y: spot.y } });
+			await expect(inspector, 'clicking off the node closes the inspector').not.toHaveClass(/open/);
+
+			// --- 3. SELECT, by clicking the card -------------------------------------------------
+			await selectNode(page, osc.uid);
+			await expect(inspector, 'the click opened the inspector').toHaveClass(/open/);
+			await expect(inspector.getByTestId('node-name')).toHaveText(osc.name);
+
+			// --- 4. EDIT, through the rendered control -------------------------------------------
+			const amp = inspector.getByTestId('param-field-amplitude').getByTestId('param-number');
+			await amp.fill('0.37');
+			await amp.press('Enter');
+			await expect
+				.poll(async () => (await nodeParams(page, osc.uid))?.oscillator?.amplitude?.value, {
+					message: 'the typed value reached the backend and came back through the doc'
+				})
+				.toBeCloseTo(0.37, 5);
+		} finally {
+			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), osc.uid);
+			await waitForNoNode(page, osc.uid).catch(() => {});
 		}
 	});
 });

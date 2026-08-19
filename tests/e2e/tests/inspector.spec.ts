@@ -5,15 +5,16 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { waitForApp, appReady, closeSplit, splitRight } from '../lib/app';
 import { settledBox } from '../lib/geometry';
 import {
-	addNode,
 	addErroringNode,
-	waitForNode,
-	nodeParams,
 	addGlobal,
-	waitForNoNode,
+	addNode,
 	canUndo,
+	nodeParams,
+	selectNode,
 	undo,
-	updateParam
+	updateParam,
+	waitForNoNode,
+	waitForNode
 } from '../lib/goofi';
 import {
 	dropNode as drop,
@@ -65,7 +66,7 @@ test.describe('editing parameters', () => {
 		const uid = await addNode(page, 'Oscillator', 'inputs');
 		await waitForNode(page, uid);
 		// Selecting exactly one node opens the editor's inspector overlay (enabled by default).
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(panel(page), 'the inspector slides in for a single selection').toHaveClass(/open/);
 		// The backend persists across specs, so the auto-assigned display name is not fixed; assert the
 		// header reflects THIS node's actual name (proving the overlay is bound to the selection).
@@ -153,7 +154,7 @@ test.describe('editing parameters', () => {
 			const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
 			await waitForNode(page, b);
 
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), a);
+			await selectNode(page, a);
 			await expect(panel(page)).toHaveClass(/open/);
 
 			// Enable fx on amplitude and grow the in-panel multi-line editor — it owns the keyboard, so the
@@ -166,7 +167,7 @@ test.describe('editing parameters', () => {
 
 			// Switch selection to B (fx OFF on its amplitude). The field must tear down: no lingering editor,
 			// and the standdown must lift (before the fix `modalOpen` stayed stuck true → undo went dead).
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+			await selectNode(page, b);
 			await expect(panel(page).getByTestId('param-expr-multiline')).toHaveCount(0);
 			await expect.poll(() => modalOpen(page)).toBe(false);
 
@@ -192,7 +193,7 @@ test.describe('editing parameters', () => {
 			await waitForApp(page);
 			const uid = await addNode(page, 'Oscillator', 'inputs');
 			await waitForNode(page, uid);
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			await expect(panel(page)).toHaveClass(/open/);
 
 			// Two registrants at once — one multi-line fx editor on each of two params of the SAME node.
@@ -236,7 +237,7 @@ test.describe('editing parameters', () => {
 			await waitForApp(page);
 			const uid = await addNode(page, 'Oscillator', 'inputs');
 			await waitForNode(page, uid);
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			await expect(panel(page)).toHaveClass(/open/);
 
 			const amp = panel(page).getByTestId('param-field-amplitude');
@@ -279,7 +280,7 @@ test.describe('editing parameters', () => {
 			await waitForNode(page, b);
 
 			// Give B its OWN fx expression on amplitude, so B's row also renders the expression control.
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+			await selectNode(page, b);
 			await panel(page).getByTestId('param-field-amplitude').getByTestId('param-fx-toggle').click();
 			await expect
 				.poll(async () => (await nodeParams(page, b))?.oscillator?.amplitude?.expression_enabled)
@@ -287,7 +288,7 @@ test.describe('editing parameters', () => {
 			const bExpr: string = (await nodeParams(page, b))?.oscillator?.amplitude?.expression ?? '';
 
 			// On A: enable fx, open the multi-line editor, type a DISTINCTIVE expression — but do NOT apply.
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), a);
+			await selectNode(page, a);
 			const ampA = panel(page).getByTestId('param-field-amplitude');
 			await ampA.getByTestId('param-fx-toggle').click();
 			await ampA.getByTestId('param-expr-expand').click();
@@ -295,7 +296,7 @@ test.describe('editing parameters', () => {
 
 			// Switch to B (whose amplitude also has fx on). Before the fix the SAME field survived, keeping A's
 			// buffer in an open textarea now wired to B — one apply-click from silently corrupting B.
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), b);
+			await selectNode(page, b);
 			const ampB = panel(page).getByTestId('param-field-amplitude');
 			// The field remounted for B: no editor carries A's buffer; B shows its own inline expression.
 			await expect(ampB.getByTestId('param-expr-multiline')).toHaveCount(0);
@@ -315,7 +316,7 @@ test.describe('editing parameters', () => {
 			await page.goto('/');
 			await waitForApp(page);
 			const uid = await addErroringNode(page);
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			const pre = panel(page).getByTestId('inspector-error').locator('pre');
 			await expect(pre, 'the real per-tick error reached the inspector').toBeVisible();
 			expect(
@@ -351,7 +352,7 @@ test.describe('dismissing the inspector', () => {
 		await waitForApp(page);
 		const uid = await addNode(page, 'Oscillator', 'inputs');
 		await waitForNode(page, uid);
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(pane(page), 'a single selection opens the inspector').toHaveClass(/open/);
 		return uid;
 	}
@@ -392,15 +393,17 @@ test.describe('dismissing the inspector', () => {
 		// Deselect, re-select the SAME node → the pane returns. A dismissal is scoped to the
 		// selection it was made in, not to the editor's lifetime.
 		await page.evaluate(() => (window as any).goofi.commands.select([]));
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(pane(page), 're-selecting revives the pane').toHaveClass(/open/);
 
 		// Dismiss again, then select a DIFFERENT node directly → the pane returns for it.
 		await pane(page).getByTestId('inspector-close').click();
 		await expectParked(page);
-		const other = await addNode(page, 'Buffer', 'inputs');
+		// Clear of the first node: with a real click the two cards must not overlap, or the press
+		// lands on whichever one is on top.
+		const other = await addNode(page, 'Buffer', 'inputs', [40, 300]);
 		await waitForNode(page, other);
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), other);
+		await selectNode(page, other);
 		await expect(pane(page), 'a different node revives the pane').toHaveClass(/open/);
 
 		// The ◧, by contrast, IS the off-switch: turn the inspector off with it and selection
@@ -411,7 +414,7 @@ test.describe('dismissing the inspector', () => {
 		await expect(pane(page)).toHaveClass(/open/);
 		await page.evaluate(() => (window as any).goofi.commands.select([]));
 		await page.getByTestId('inspector-toggle').click(); // parked + visible → this press disables
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expectParked(page, 'disabled stays disabled across selections');
 	});
 
@@ -643,8 +646,11 @@ test.describe('the inspector reflows with its host', () => {
 			);
 			uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 			await waitForNode(page, uid);
-			await page.evaluate(
-				([u, id]) => (window as any).goofi.commands.select([u], id),
+			// Click the card IN the left panel: which panel a selection lands in is what this
+			// scenario is about, and both panels render the same node.
+			await left.locator(`.svelte-flow__node[data-id="${uid}"] .header`).click();
+			await page.waitForFunction(
+				([u, id]) => ((window as any).goofi.query.selection(id).nodes as string[]).includes(u),
 				[uid, panelId] as const
 			);
 			const sheet = left.getByTestId('auto-side-panel');
@@ -703,7 +709,7 @@ test.describe('the inspector reflows with its host', () => {
 			// Readiness only: this spec's own node is legitimately still on the shared backend, which
 			// is exactly the state `waitForApp`'s hermeticity backstop exists to reject.
 			await appReady(page);
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await selectNode(page, uid);
 			await expect(pane(page)).toHaveClass(/open/);
 			const restored = await settledBox(pane(page));
 			expect(restored.width, 'and it comes back at that width').toBeCloseTo(after.width, 0);
@@ -849,7 +855,7 @@ test.describe('the expression editor', () => {
 
 	/** Boot, add an Oscillator, select it, switch its `amplitude` into fx mode, and return the editor. */
 	async function fxEditor(page: Page, uid: string): Promise<Locator> {
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(pane(page)).toHaveClass(/open/);
 		const field = pane(page).getByTestId('param-field-amplitude');
 		await field.getByTestId('param-fx-toggle').click();
@@ -1174,7 +1180,7 @@ test.describe('the metadata panel', () => {
 		await waitForApp(page);
 		const uid = await addNode(page, 'Oscillator', 'inputs');
 		await waitForNode(page, uid);
-		await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+		await selectNode(page, uid);
 		await expect(page.getByTestId('auto-side-panel')).toHaveClass(/open/);
 		return uid;
 	}

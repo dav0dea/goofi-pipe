@@ -27,11 +27,12 @@ import { settledBox } from '../lib/geometry';
 import {
 	addErroringNode,
 	addGlobal,
-	waitForNoNode,
 	addNode,
-	waitForNode,
+	nodeParams,
 	nodes,
-	nodeParams
+	tapNode,
+	waitForNoNode,
+	waitForNode
 } from '../lib/goofi';
 import { dismiss, spawnSh } from '../lib/harness';
 import {
@@ -286,7 +287,7 @@ test.describe('the coarse tap-target floor, across the app\u2019s real chrome', 
 			setup: async (page) => {
 				const uid = await addNode(page, 'Oscillator', 'inputs');
 				await waitForNode(page, uid);
-				await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+				await tapNode(page, uid);
 				await expect(page.getByTestId('auto-side-panel')).toHaveClass(/open/);
 				return async () => {
 					await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
@@ -871,7 +872,7 @@ test.describe('a door for every affordance hover used to own', () => {
 		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
 		await waitForNode(page, uid);
 		try {
-			await page.evaluate((u) => (window as any).goofi.commands.select([u]), uid);
+			await tapNode(page, uid);
 			const handle = page.getByTestId('panel-resize-handle');
 			await expect(handle).toBeVisible();
 			const painted = await handle.evaluate(
