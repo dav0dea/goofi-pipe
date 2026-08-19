@@ -115,17 +115,6 @@ export function addGlobal(
 		[name, value, type] as const
 	);
 }
-/** Edit an existing global's value (command op — resolves void, rejects on refusal). */
-export function setGlobalValue(
-	page: Page,
-	name: string,
-	value: number | string | boolean
-): Promise<void> {
-	return page.evaluate(
-		([n, v]) => (window as any).goofi.commands.setGlobalValue(n, v),
-		[name, value] as const
-	);
-}
 /** All patch globals (system + user). */
 export function globals(
 	page: Page

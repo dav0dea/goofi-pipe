@@ -120,6 +120,22 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
     assert_eq!(replica.read_at(&["arrangement", fresh.as_str(), "panel_type"]), Some(j!("empty")),
                "the peer's split converged, and a split births an EMPTY panel");
 
+    // And the GLOBALS root, with the system flag a client gates rename and delete on — the doc is
+    // where they reach a tab, so a replica that carried nodes and no globals would look healthy.
+    assert_eq!(replica.read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
+    peer.call("add_global", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
+    for _ in 0..20 {
+        if let Some(m) = SyncMsg::decode(&c.binary().await) {
+            replica.on_sync(m);
+        }
+        if replica.read_at(&["globals", "subject", "value"]).is_some() {
+            break;
+        }
+    }
+    assert_eq!(replica.read_at(&["globals", "subject", "value"]), Some(j!("P07")));
+    assert_eq!(replica.read_at(&["globals", "subject", "system"]), Some(j!(false)),
+               "a user global is distinguishable from a system one in the replica");
+
     // And a REMOVAL. The broadcast gate once compared state vectors, which is deletion-blind: a Yjs
     // delete does not advance the vector, so a delete-only diff was byte-identical to the empty
     // baseline and no removal ever reached a client. The gate compares logical state instead.

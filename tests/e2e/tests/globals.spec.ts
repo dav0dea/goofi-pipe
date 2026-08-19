@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { closeAddedTab, waitForApp } from '../lib/app';
-import { addGlobal, setGlobalValue, globals } from '../lib/goofi';
+import { addGlobal, globals } from '../lib/goofi';
 
 /** Borrow the default node-editor panel as a Globals panel, run `body`, then give it back.
  *
@@ -24,33 +24,24 @@ async function inGlobalsPanel(page: Page, body: () => Promise<void>): Promise<vo
 	}
 }
 
-test('globals: default_ufreq is seeded, a user global adds, edits round-trip', async ({ page }) => {
+/**
+ * The client's REPLICA of the globals, which is all this file can ask: that they arrive over the
+ * doc and carry the system flag the panel gates its rename and delete on. That a global adds,
+ * edits, renames and refuses a re-type is the Rust suite's (`editing.rs`, `session.rs`).
+ */
+test('the patch globals reach the client with their system flag', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
-
-	// The system global is always present (mirrored from the manager on sync).
-	await expect.poll(async () => (await globals(page)).some((g) => g.name === 'default_ufreq')).toBe(true);
-	const seeded = (await globals(page)).find((g) => g.name === 'default_ufreq')!;
-	expect(seeded).toMatchObject({ system: true, type: 'float' });
-
-	// Add a user global + edit the system one (command ops — server-validated, resolve void);
-	// both round-trip through the doc. Handed back in a `finally` like every other resource this
-	// file borrows: globals live in the RUNNING PATCH, one backend per worker, so a
-	// leaked `subject` makes the very next `addGlobal` fail with "already exists" — invisible in a
-	// normal run and instant under `--repeat-each`.
+	await expect
+		.poll(async () => (await globals(page)).find((g) => g.name === 'default_ufreq'))
+		.toMatchObject({ system: true, type: 'float' });
 	try {
 		await addGlobal(page, 'subject', 'P07', 'string');
-		await setGlobalValue(page, 'default_ufreq', 45);
 		await expect
-			.poll(async () => (await globals(page)).find((g) => g.name === 'subject')?.value)
-			.toBe('P07');
-		await expect
-			.poll(async () => (await globals(page)).find((g) => g.name === 'default_ufreq')?.value)
-			.toBeCloseTo(45, 5);
+			.poll(async () => (await globals(page)).find((g) => g.name === 'subject'))
+			.toMatchObject({ system: false, value: 'P07' });
 	} finally {
 		await page.evaluate(() => (window as any).goofi.commands.removeGlobal('subject'));
-		// The system global cannot be removed, so put its seeded value back instead.
-		await setGlobalValue(page, 'default_ufreq', seeded.value as number);
 	}
 });
 

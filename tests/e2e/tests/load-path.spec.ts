@@ -23,7 +23,7 @@ test.afterAll(() => {
 	fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-test('a .gfi round-trips through the manager-owned save path', async ({ page }) => {
+test('the client learns the patch\u2019s name from the manager, on save and on load', async ({ page }) => {
 	await page.goto('/');
 	await waitForApp(page);
 	try {
@@ -32,19 +32,16 @@ test('a .gfi round-trips through the manager-owned save path', async ({ page }) 
 		await waitForNode(page, uid);
 
 		await page.evaluate((p) => (window as any).goofi.commands.save(p), target);
-		// The store learned the path from the MANAGER, not from a client-side write.
+		// The store learned the path from the MANAGER, not from a client-side write — which is the
+		// whole of C38 on this side of the wire. That the archive is a real zip holding a real
+		// patch is the Rust suite's (`session.rs`, `browser.rs`).
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
 			.toBe(target);
-		expect(fs.existsSync(target), 'the .gfi landed on disk').toBe(true);
-
-		// It is a zip archive now, not YAML.
-		expect(fs.readFileSync(target).subarray(0, 2).toString('binary')).toBe('PK');
 
 		await addNode(page, 'Buffer', 'signal'); // diverge
 		await page.evaluate((p) => (window as any).goofi.commands.load(p), target);
 		await expect.poll(async () => (await nodes(page)).map((n) => n.type)).toEqual(['Oscillator']);
-		// A load names the patch too — same manager-owned path, arriving on the load's snapshot.
 		await expect
 			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().savePath))
 			.toBe(target);
