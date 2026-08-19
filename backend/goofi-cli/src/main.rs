@@ -376,67 +376,100 @@ fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
     Some((m.len(), m.modified().ok()?))
 }
 
+/// What one file's probes decided, before anything is registered. Separated from the registration
+/// because the probes RUN IN PARALLEL and registration needs the graph.
+#[cfg(feature = "python")]
+enum Probed {
+    InProcess(goofi_python::Discovered),
+    Subprocess(goofi_python::Discovered),
+    Unavailable { type_name: String, reason: String },
+    Skip,
+}
+
+/// Probe one file on both tiers, in the order that decides the routing. Pure: it spawns
+/// interpreters and reads files, and touches no graph.
+#[cfg(feature = "python")]
+fn probe_one(path: &Path, ft: Option<&str>, subproc_python: &str) -> Probed {
+    // ONE free-threaded probe answers both questions: it imports the module and constructs the
+    // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
+    // whether the GIL is still disabled — `gil_safe` IS the routing gate.
+    let ft_probe =
+        ft.map_or(goofi_python::Discovery::Skip, |ftp| goofi_python::inproc::probe(path, ftp));
+    if let goofi_python::Discovery::Found(d) = ft_probe {
+        if d.gil_safe {
+            return Probed::InProcess(d);
+        }
+        // Loading it re-enabled the GIL — quarantine it to the subprocess tier below. (So does a
+        // failed FT probe: typically a dep present on the subproc python but absent on the FT
+        // interpreter, which must fall through rather than drop the node.)
+    }
+    // One probe, both outcomes: the subprocess tier is the last chance, so its result decides
+    // between "registered" and "listed as unavailable".
+    match goofi_python::subproc::probe(path, subproc_python) {
+        goofi_python::Discovery::Found(d) => Probed::Subprocess(d),
+        goofi_python::Discovery::Unavailable { type_name, reason } => {
+            Probed::Unavailable { type_name, reason }
+        }
+        goofi_python::Discovery::Skip => Probed::Skip,
+    }
+}
+
 /// The GIL-gate router: probe each file and register it in-process when its imports keep the GIL
 /// disabled, else quarantine it to a subprocess. THE discovery seam — boot and every later rescan
 /// route the same file the same way by construction, not by two implementations agreeing.
+///
+/// **The probes run at once, one interpreter each.** A probe is a whole interpreter importing a
+/// whole module, and a node file is entitled to a heavy import — the entropy nodes pull antropy,
+/// which pulls numba, which takes seconds. Serially that is the slowest thing a start does. They
+/// cannot SHARE an interpreter, though: re-enabling the GIL is one-way, so one file's import would
+/// decide the next file's tier.
 ///
 /// It prints NOTHING: a rescan runs it whenever an agent writes a node file. `boot_scan` talks.
 #[cfg(feature = "python")]
 fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
     let ft = goofi_python::inproc::interpreter_path(); // the embedded FT interpreter, for probing
-    let mut found = Vec::new();
-    for path in sorted_dir(dir) {
-        // ONE free-threaded probe answers both questions: it imports the module and constructs the
-        // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
-        // whether the GIL is still disabled — `gil_safe` IS the routing gate.
-        let ft_probe = ft.as_deref().map_or(goofi_python::Discovery::Skip, |ftp| {
-            goofi_python::inproc::probe(&path, ftp)
-        });
-        if let goofi_python::Discovery::Found(d) = ft_probe {
-            if d.gil_safe {
-                let t = goofi_python::inproc::node_type_from(d);
-                found.push(ScannedType {
-                    type_name: t.manifest.type_name.to_string(),
-                    tier: Tier::InProcess,
-                    stamp: stamp(&path),
-                    registration: g.register_dyn_type(t.manifest, t.factory),
-                });
-                continue;
+    let paths = sorted_dir(dir);
+    // One interpreter per file at once, but no more of them than the machine has cores: a
+    // workspace of a hundred node files must not answer a rescan with a hundred pythons.
+    let width = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+    let mut probes = Vec::with_capacity(paths.len());
+    for chunk in paths.chunks(width) {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|p| s.spawn(|| probe_one(p, ft.as_deref(), subproc_python)))
+                .collect();
+            for h in handles {
+                probes.push(h.join().unwrap_or(Probed::Skip));
             }
-            // Loading it re-enabled the GIL — quarantine it to the subprocess tier below. (So does a
-            // failed FT probe: typically a dep present on the subproc python but absent on the FT
-            // interpreter, which must fall through rather than drop the node.)
-        }
-        // One probe, both outcomes: the subprocess tier is the last chance, so its result decides
-        // between "registered" and "listed as unavailable".
-        match goofi_python::subproc::probe(&path, subproc_python) {
-            goofi_python::Discovery::Found(d) => {
+        });
+    }
+
+    let mut found = Vec::new();
+    for (path, probed) in paths.iter().zip(probes) {
+        let (type_name, tier, registration) = match probed {
+            Probed::InProcess(d) => {
+                let t = goofi_python::inproc::node_type_from(d);
+                (t.manifest.type_name.to_string(), Tier::InProcess, g.register_dyn_type(t.manifest, t.factory))
+            }
+            Probed::Subprocess(d) => {
                 let t = goofi_python::subproc::node_type_from(subproc_python, d);
-                found.push(ScannedType {
-                    type_name: t.manifest.type_name.to_string(),
-                    tier: Tier::Subprocess,
-                    stamp: stamp(&path),
-                    registration: g.register_dyn_type(t.manifest, t.factory),
-                });
+                (t.manifest.type_name.to_string(), Tier::Subprocess, g.register_dyn_type(t.manifest, t.factory))
             }
             // Neither tier could load it. Register it as unavailable WITH the reason so the
             // palette explains itself — a node file that silently does not appear reads as
             // "goofi ignored my file" rather than "install this dependency".
-            goofi_python::Discovery::Unavailable { type_name, reason } => {
+            Probed::Unavailable { type_name, reason } => {
                 let registration = if g.register_unavailable(type_name.clone(), reason.clone()) {
                     Registration::Added
                 } else {
                     Registration::Refused // a built-in owns the name
                 };
-                found.push(ScannedType {
-                    type_name,
-                    tier: Tier::Unavailable(reason),
-                    stamp: stamp(&path),
-                    registration,
-                });
+                (type_name, Tier::Unavailable(reason), registration)
             }
-            goofi_python::Discovery::Skip => {}
-        }
+            Probed::Skip => continue,
+        };
+        found.push(ScannedType { type_name, tier, stamp: stamp(path), registration });
     }
     found
 }

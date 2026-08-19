@@ -29,7 +29,7 @@ pub mod inproc;
 /// The probe outcome, shared by both tiers: `Found` / `Unavailable` (a real node that cannot load
 /// here, named with its failing import) / `Skip` (not a node file at all). Re-exported at the
 /// crate root because it is the one vocabulary a tier-routing caller needs from both halves.
-pub use goofi_node::discover::Discovery;
+pub use goofi_node::discover::{Discovered, Discovery};
 
 /// Interpreter bootstrap: register the `goofi` module into the embedded interpreter's
 /// inittab exactly once, BEFORE the interpreter is initialized. Every Python entry point
