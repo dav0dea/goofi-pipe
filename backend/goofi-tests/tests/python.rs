@@ -12,6 +12,7 @@
 //! `python_gil_tripwire`, `python_module_hygiene`, `python_init_order`.
 
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use goofi_core::Data;
 use goofi_tests::{hex, j, Goofi, Uid};
@@ -254,8 +255,12 @@ class LateBoot(goofi.Node):
     let probe = g.probe(node, "out");
     g.link(src, "out", node, "data");
 
-    let why = g.until("the first initialization to fail", |g| g.error(node));
-    assert!(why.contains("the device is not open"), "{why}");
+    // The frame VALUE is the oracle: `process` returns the setup count, so a 2 says the first setup
+    // raised and the WHOLE initialization ran again on the same instance. The standing error is
+    // deliberately not asserted here — the retry clears it about 2 ms later (measured), and no rate
+    // cap widens that: the retry is the node's own next wake, not the next input frame. That a
+    // failed setup reports why and blocks `process` until it succeeds is `running.rs`'s
+    // `each_way_a_node_can_fail_is_reported_…`, where the failure stands instead of passing.
     let d = g.until("the retried initialization", |_| probe.latest());
     assert_eq!(f32s(&d)[0], 2.0, "setup ran a second time and the node came up");
 }
@@ -323,10 +328,18 @@ class Ticker(goofi.Node):
     // requests, which is exactly when a held GIL would starve the node's own thread.
     free_run(&g, node, 2.0);
     let first = f32s(&g.until("the ticker's first frame", |_| probe.latest()))[0];
-    let later = f32s(&g.until("a later frame", |_| probe.latest().filter(|d| f32s(d)[0] > first)))[0];
-    // Half a second at a 1 ms cadence is ~500 increments; a starved thread manages a couple at
-    // most, stolen from the eval loop while `process` itself is running.
-    assert!(later - first > 50.0, "the node's thread must run while the child idles: {first} → {later}");
+    // Measure over a fixed window rather than "the next frame": what separates a RUNNING thread
+    // from a starved one is whether it advances at all, and a threshold calibrated on an idle
+    // machine reads a merely CONTENDED one as starved (31 increments in one 500 ms window,
+    // measured under `--features embed`, against a bar of 50).
+    let opened = Instant::now();
+    let later = f32s(&g.until("a frame a second and a half later", |_| {
+        (opened.elapsed() >= Duration::from_millis(1500)).then(|| probe.latest()).flatten()
+    }))[0];
+    // A starved thread only advances while `process` itself holds the eval loop — three runs at
+    // 2 Hz, so a couple of increments. Ten is five times that and a small fraction of the ~90 a
+    // running thread manages even under contention.
+    assert!(later - first > 10.0, "the node's thread must run while the child idles: {first} → {later}");
 }
 
 // ---------------------------------------------------------------------------
