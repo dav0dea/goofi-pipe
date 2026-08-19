@@ -863,9 +863,17 @@ impl NodeRuntime {
 /// Give a node its own thread. The [`NodeRuntime`] is built INSIDE it, which is what takes
 /// `setup()` off the graph lock — a `setup` that opens a device is exactly the one that blocks.
 /// The transport is the caller's, because its failure has nowhere to be reported to.
+/// How a node's instance is BUILT, deferred so the building happens on the node's own thread.
+///
+/// A Python node's construction executes its module, and a module that imports numba is seconds of
+/// CPU. The caller is `Graph::add_node`, which holds the graph mutex — so constructing there put
+/// the whole control plane behind an import: measured, 8.0 s for the first antropy node, during
+/// which no op answered and no delta reached a browser.
+pub type NodeBuild = Box<dyn FnOnce(&ParamGroups) -> Box<dyn Node> + Send>;
+
 pub fn spawn(
     manifest: &'static NodeManifest,
-    node: Box<dyn Node>,
+    build: NodeBuild,
     params: ParamGroups,
     transport: Arc<dyn Transport>,
     env: NodeEnv,
@@ -874,10 +882,15 @@ pub fn spawn(
     std::thread::Builder::new()
         .name(format!("goofi-{}", manifest.type_name))
         .spawn(move || {
-            // `run_forever` takes the runtime by value, so returning from it drops this node's
-            // whole iceoryx2 end. Only after that is the node's shared memory actually gone, which
-            // is why the flag is raised HERE and not inside the loop.
-            NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt.clone());
+            // A node removed inside its own build window never runs `setup()` — which may open a
+            // device — and releases at once rather than after the import it no longer needs.
+            if !halt.stopped() {
+                // `run_forever` takes the runtime by value, so returning from it drops this node's
+                // whole iceoryx2 end. Only after that is the node's shared memory actually gone,
+                // which is why the flag is raised HERE and not inside the loop.
+                let node = build(&params);
+                NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt.clone());
+            }
             halt.release();
         })
 }

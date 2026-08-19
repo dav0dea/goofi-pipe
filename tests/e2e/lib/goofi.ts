@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { test, type Page } from '@playwright/test';
 
 /** Add a node via the command façade; returns its stable uid. */
 export function addNode(
@@ -108,12 +108,20 @@ export function updateParam(
  * The caller removes the node when done: the backend graph is shared by every spec on the worker.
  */
 export async function addErroringNode(page: Page): Promise<string> {
+	// This node's implementation is a Python module that imports numba, and the module is EXECUTED
+	// to build the instance — seconds, on the node's own thread, after `add_node` has answered. So
+	// the budget is the import's, and the wait below is on the node having actually raised rather
+	// than on it merely existing: the add no longer stands in for "it is running".
+	test.setTimeout(120_000);
 	const uid = await addNode(page, 'LempelZiv', 'python');
 	// `waitForNode` first, and not merely to settle: the client's `updateParam` guards on the param
 	// EXISTING in its replica, so an edit sent before the doc round-trip is refused outright.
 	await waitForNode(page, uid);
 	await updateParam(page, uid, 'common', 'max_frequency', 2);
 	await updateParam(page, uid, 'common', 'autotrigger', true);
+	await page.waitForFunction((u) => !!(window as any).goofi.query.node(u)?.error, uid, {
+		timeout: 90_000
+	});
 	return uid;
 }
 

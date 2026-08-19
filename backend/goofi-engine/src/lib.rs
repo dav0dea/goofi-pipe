@@ -226,10 +226,14 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
 /// a bare `fn` pointer cannot close over. One definition, shared with every discovery backend.
 pub use goofi_node::discover::NodeFactory;
 
+/// A [`NodeFactory`] shared with the node's own thread, which is where the build happens — see
+/// [`runtime::NodeBuild`].
+type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
+
 /// A runtime-registered type. Its `manifest.factory` is never called — `factory` is.
 struct DynType {
     manifest: &'static NodeManifest,
-    factory: NodeFactory,
+    factory: SharedFactory,
 }
 
 /// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the
@@ -557,7 +561,7 @@ impl Graph {
         // rescan after a `pip install` would otherwise leave the greyed row standing beside the
         // working type — two palette rows for one name.
         self.unavailable.remove(name);
-        match self.dyn_types.insert(name, DynType { manifest, factory }) {
+        match self.dyn_types.insert(name, DynType { manifest, factory: Arc::from(factory) }) {
             Some(_) => Registration::Replaced,
             None => Registration::Added,
         }
@@ -751,7 +755,7 @@ impl Graph {
         &self,
         type_name: &str,
         params: Option<ParamGroups>,
-    ) -> Result<(&'static NodeManifest, ParamGroups, Box<dyn goofi_node::Node>), String> {
+    ) -> Result<(&'static NodeManifest, ParamGroups, runtime::NodeBuild), String> {
         let p = match params {
             // Supplied params still get `common` NORMALIZED: a caller may hand over a partial
             // group, and the type decides a missing key's default.
@@ -759,10 +763,11 @@ impl Graph {
             None => self.default_params_of(type_name)?,
         };
         if let Some(m) = goofi_node::find(type_name) {
-            Ok((m, p, (m.factory)()))
+            let f = m.factory;
+            Ok((m, p, Box::new(move |_| f())))
         } else if let Some(dt) = self.dyn_types.get(type_name) {
-            let n = (dt.factory)(&p);
-            Ok((dt.manifest, p, n))
+            let f = dt.factory.clone();
+            Ok((dt.manifest, p, Box::new(move |p| f(p))))
         } else {
             Err(self.reject_type(type_name))
         }
@@ -797,7 +802,7 @@ impl Graph {
             return Err(format!("add_node_at: uid {} already in use", uid.to_hex()));
         }
         let params_arg_was_none = params.is_none();
-        let (manifest, params, node) = self.build_node(type_name, params)?;
+        let (manifest, params, build) = self.build_node(type_name, params)?;
         let name = if name.is_empty() || self.name_in_use(name) {
             self.fresh_name(&manifest.type_name.to_lowercase())
         } else {
@@ -805,7 +810,7 @@ impl Graph {
         };
         let seed = params_arg_was_none;
         let born = name.clone();
-        self.insert_node_at(uid, name, manifest, node, params);
+        self.insert_node_at(uid, name, manifest, build, params);
         if uid.0 >= self.next_uid {
             self.next_uid = uid.0 + 1;
         }
@@ -849,13 +854,13 @@ impl Graph {
         uid: Uid,
         name: String,
         manifest: &'static NodeManifest,
-        node: Box<dyn goofi_node::Node>,
+        build: runtime::NodeBuild,
         params: ParamGroups,
     ) {
         // This IS the birth §3.1 counts, whichever door it came through — a fresh add, a restart,
         // an undo of a delete, a load.
         let generation = self.wire.bump_generation(uid);
-        let (host, boot_error) = self.spawn_host(uid, generation, manifest, node, &params);
+        let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
         self.nodes.insert(
             uid,
             NodeEntry {
@@ -885,7 +890,7 @@ impl Graph {
         uid: Uid,
         generation: u64,
         manifest: &'static NodeManifest,
-        node: Box<dyn goofi_node::Node>,
+        build: runtime::NodeBuild,
         params: &ParamGroups,
     ) -> (NodeHost, Option<String>) {
         let halt = Arc::new(runtime::Halt::default());
@@ -901,7 +906,7 @@ impl Graph {
                 // The join handle is dropped on purpose: a node's thread is stopped by its `Halt`
                 // and reaped by the OS, and holding one would tempt a caller into joining under
                 // the graph mutex while the node is inside a long `process()`.
-                runtime::spawn(manifest, node, params.clone(), Arc::new(transport), env, halt.clone())
+                runtime::spawn(manifest, build, params.clone(), Arc::new(transport), env, halt.clone())
                     .map(|_| channel)
                     .map_err(|e| format!("could not start the node's thread: {e}"))
             });
@@ -1712,13 +1717,13 @@ impl Graph {
         }
         // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
-        let (manifest, params, node) = self.build_node(type_name, Some(params))?;
+        let (manifest, params, build) = self.build_node(type_name, Some(params))?;
 
         // A restart is a BIRTH at this uid, and the corpse's teardown does not block: without the
         // generation bump the reborn node re-opens service names its predecessor's ports still
         // hold, and `max_publishers(1)` refuses it. The one birth not going via `insert_node_at`.
         let generation = self.wire.bump_generation(uid);
-        let (host, boot_error) = self.spawn_host(uid, generation, manifest, node, &params);
+        let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
         // Replacing the host halts the corpse's thread without waiting — it notices at its next
@@ -2773,13 +2778,13 @@ impl Graph {
                     }
                 }
             }
-            let (manifest, params, node) = self.build_node(ty, Some(params))?;
+            let (manifest, params, build) = self.build_node(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
             let uid = self.restore_uid(old, &claimed);
             claimed.insert(uid);
             let name = self.fresh_name(&manifest.type_name.to_lowercase());
-            self.insert_node_at(uid, name, manifest, node, params);
+            self.insert_node_at(uid, name, manifest, build, params);
             idmap.insert(old.clone(), uid);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);

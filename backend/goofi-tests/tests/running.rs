@@ -363,6 +363,63 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     assert!(t0.elapsed() < Duration::from_millis(100),
             "the delete took {:?} — it waited on the busy node under the graph lock", t0.elapsed());
 
+    // A node whose CONSTRUCTION is slow is the other way the control plane used to freeze. A
+    // Python node's build EXECUTES its module, and one that imports numba is seconds of it — built
+    // under the graph mutex, `add_node` for the first antropy node measured 8.0 s through the real
+    // binary, with every other op and every document delta parked behind it. Native factories are
+    // trivial by construction, so the honest fixture is the dyn seam a discovered node arrives
+    // through.
+    struct Echo;
+    impl goofi_node::Node for Echo {
+        fn process(&mut self, i: &goofi_node::Inputs<'_>, o: &mut goofi_node::Outputs<'_>,
+                   _: &mut goofi_node::NodeCtx, _: &goofi_node::Params<'_>)
+                   -> goofi_node::NodeResult {
+            if let Some(d) = i.get("in") {
+                o.set("out", d.clone());
+            }
+            Ok(())
+        }
+    }
+    static SLOW_IN: &[goofi_node::SlotDecl] = &[goofi_node::SlotDecl {
+        name: "in", kind: goofi_core::SlotType::Array,
+        trigger_process: true, multi: false, required: false }];
+    static SLOW_OUT: &[goofi_node::OutputDecl] =
+        &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    static SLOW_BUILD: goofi_node::NodeManifest = goofi_node::NodeManifest {
+        type_name: "_TestSlowBuild", category: "test", doc: "takes 700 ms to construct",
+        inputs: SLOW_IN, outputs: SLOW_OUT, params: &[],
+        isolation: goofi_node::Isolation::InProcess, producer: false,
+        factory: || unreachable!("a dyn type is built by its registered factory"),
+    };
+    g.register_dyn(&SLOW_BUILD, Box::new(|_| {
+        std::thread::sleep(Duration::from_millis(700));
+        Box::new(Echo)
+    }));
+
+    let src = g.add("_TestCounter");
+    let t0 = Instant::now();
+    let heavy = g.add("_TestSlowBuild");
+    let added = t0.elapsed();
+    assert!(added < Duration::from_millis(250),
+            "the add took {added:?} — the instance was built under the graph lock");
+    // KNOWN and saying so. Green here would be a lie the user acts on: nothing is running yet.
+    assert_eq!(g.stage(heavy), "creating", "a node still being built says it is being built");
+    // …and the plane it did not block is still answering while the build runs.
+    let t0 = Instant::now();
+    let quick = g.add("_TestSlow");
+    assert!(t0.elapsed() < Duration::from_millis(250),
+            "an op behind the build took {:?}", t0.elapsed());
+
+    // The un-ready window used to be a moment and is now as long as the import. Everything a user
+    // does inside it — wire it up, and keep working — must still land: a node is ADDRESSABLE only
+    // once it reports ready, so this wire is planned against a node that cannot yet hear about it.
+    let probe = g.probe(heavy, "out");
+    g.link(src, "out", heavy, "in");
+    assert_eq!(g.stage(heavy), "creating", "…and it is still building while that wire is planned");
+    g.ready(heavy);
+    g.until("the wire planned during the build to carry a frame", |_| probe.latest());
+    g.call("remove_node", j!({ "node": hex(quick) }));
+
     let t0 = Instant::now();
     g.state.graph.lock().unwrap().shutdown();
     // Five seconds sits between the two answers rather than beside one of them: the ceiling is two
