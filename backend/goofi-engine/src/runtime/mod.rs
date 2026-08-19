@@ -40,8 +40,9 @@ mod wire;
 
 pub use mailbox::{Binding, Mailbox};
 pub use transport::{
-    door_service, iox_node, open_output_subscriber, output_service, reclaim_stale_resources,
-    service_base, ByteSubscriber, Doorbell, IoxNode, IoxTransport, NodeChannel,
+    door_service, iox_node, nodes_dir, open_output_subscriber, output_service,
+    reclaim_stale_resources, service_base, sweep_once, ByteSubscriber, Doorbell, IoxNode,
+    IoxTransport, NodeChannel,
 };
 /// Only [`Graph`] mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;

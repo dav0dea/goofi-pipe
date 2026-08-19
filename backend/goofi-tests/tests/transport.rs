@@ -358,3 +358,70 @@ fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
         "each cell holds its own producer's newest frame"
     );
 }
+
+/// The env var that turns this binary into the child below. Its value is irrelevant.
+const CRASH_HELPER: &str = "GOOFI_TRANSPORT_CRASH_HELPER";
+
+/// The child: open two iceoryx2 nodes, NAME them, then wait to be killed. Never returns.
+///
+/// It names its own ids rather than letting the parent diff the directory, because that directory
+/// is machine-global: the suite's other binaries create and remove entries there at the same time,
+/// and a diff picked up theirs.
+#[test]
+fn crash_helper() {
+    if std::env::var(CRASH_HELPER).is_err() {
+        return; // the ordinary run: this test is only the child's entry point
+    }
+    let (a, b) = (iox_node().expect("node a"), iox_node().expect("node b"));
+    println!("READY {} {}", a.id().value(), b.id().value());
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[test]
+fn what_a_crash_left_behind_is_gone_by_the_next_start() {
+    // §3's promise: a killed process drops NOTHING, so its node directories and the shared memory
+    // its ports hold stay allocated until the next start takes them. Nothing else does it — the
+    // three automatic cleanup passes are off by design, including the one in `Node::drop` that used
+    // to make this pass with the sweep gutted, as long as any other test ran beside it.
+    let dirs = || -> std::collections::HashSet<String> {
+        std::fs::read_dir(goofi_engine::runtime::nodes_dir().expect("the nodes directory"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    let mut child = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["crash_helper", "--exact", "--nocapture"])
+        .env(CRASH_HELPER, "1")
+        .stdout(std::process::Stdio::piped())
+        // It is SIGKILLed mid-test, so its own harness never finishes: its parting "broken pipe"
+        // would otherwise read as this test's failure.
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the child");
+
+    // Its nodes exist once it says so — not once it started, which would race their creation.
+    let mut out = std::io::BufReader::new(child.stdout.take().expect("the child's stdout"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut line = String::new();
+    while !line.contains("READY") && std::time::Instant::now() < deadline {
+        line.clear();
+        std::io::BufRead::read_line(&mut out, &mut line).expect("read the child");
+    }
+    let ids: Vec<String> = line.split_whitespace().skip(1).map(str::to_string).collect();
+    assert_eq!(ids.len(), 2, "the child named the two nodes it opened: {line:?}");
+    let present = dirs();
+    for id in &ids {
+        assert!(present.contains(id), "the child's node `{id}` has a directory to leave behind");
+    }
+
+    // SIGKILL, because the point is a process that drops nothing. A graceful exit would clean up
+    // after itself and this would pass against a sweep that does nothing at all.
+    let _ = std::process::Command::new("kill").args(["-9", &child.id().to_string()]).status();
+    let _ = child.wait();
+
+    goofi_engine::runtime::reclaim_stale_resources();
+    let left: Vec<&String> = ids.iter().filter(|id| dirs().contains(*id)).collect();
+    assert!(left.is_empty(), "the sweep left {left:?} standing, for every later start to walk again");
+}

@@ -414,6 +414,9 @@ impl Graph {
     pub fn new() -> Graph {
         // The ONE anchor that makes the linker keep goofi-nodes' inventory registrations.
         let _ = goofi_nodes::native_node_count();
+        // What a crashed run left, reclaimed at startup rather than by whoever opens the first
+        // port — which used to be the user's first add (see `runtime::sweep_once`).
+        runtime::sweep_once();
         Graph {
             nodes: IndexMap::new(),
             links: Vec::new(),

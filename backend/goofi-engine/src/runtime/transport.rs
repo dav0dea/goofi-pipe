@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock, Once};
 use std::time::Duration;
 
 use iceoryx2::config::Config;
-use iceoryx2::node::NodeState;
+use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
 use iceoryx2_bb_posix::file_descriptor::FileDescriptorBased;
 
@@ -488,32 +488,62 @@ pub(crate) fn iox_config() -> &'static Config {
 /// removes its own resources when it drops — but a killed process drops nothing, and its segments
 /// stay allocated against RAM until something takes them.
 pub fn reclaim_stale_resources() {
+    let mut abandoned: Vec<u128> = Vec::new();
     let _ = IoxNode::list(iox_config(), |state| {
         if let NodeState::Dead(view) = state {
-            let _ = view.try_remove_stale_resources();
+            // The id BEFORE the attempt: the reclaim consumes the view.
+            let id = view.id().value();
+            if view.try_remove_stale_resources().is_err() {
+                abandoned.push(id);
+            }
         }
         CallbackProgression::Continue
     });
+    for id in abandoned {
+        remove_node_dir(&id.to_string());
+    }
     remove_empty_node_dirs();
 }
 
-/// The inode half. iceoryx2 0.9.3 removes a dropped node's FILES and leaves its directory, so
-/// `<root>/nodes/` grows by one empty entry per node for ever — 12 666 measured on one development
-/// machine — and `IoxNode::list` walks every one of them at each process start, which makes startup
-/// slower the longer the machine has been used.
+/// Where iceoryx2 keeps one directory per node. Public so a test can ask the same question the
+/// sweep answers, rather than spelling the path a second time.
+pub fn nodes_dir() -> Option<String> {
+    let root = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()).ok()?;
+    let nodes = String::from_utf8(iox_config().global.node.directory.as_bytes().to_vec()).ok()?;
+    Some(format!("{}/{}", root.trim_end_matches('/'), nodes.trim_end_matches('/')))
+}
+
+/// The inode half: take `<root>/nodes/<id>` for a dead node iceoryx2 REFUSED to clean up.
+///
+/// It refuses often. `try_remove_stale_resources` gives up as soon as one of the node's services
+/// cannot be un-tagged — and a goofi service is named after the instance, the uid and the
+/// generation, so it is never recreated and that failure is permanent. It returns before it reaches
+/// the port tags, which is why the directory keeps them. So iceoryx2 will never take this
+/// directory, and leaving it costs every LATER start: `IoxNode::list` walks it, the reclaim runs
+/// against it again, and fails again. Measured on a machine that had accumulated 486 of them:
+/// 2.26 s per start, of which 2.17 s was re-failing on long-dead nodes; 486 → 0 in one sweep here.
+///
+/// Only a node iceoryx2 has itself declared dead, so this cannot reach a running one. Every error
+/// is ignored — this is housekeeping, and a directory that will not go simply stays.
+///
+/// NOT pinned by the scenario below, and it cannot be: the refusal needs a node whose services are
+/// already gone, and a freshly killed one's are not — iceoryx2 cleans that case itself. What stands
+/// behind this is the measurement, and the fact that two successive sweeps left the same
+/// directories standing until this took them.
+fn remove_node_dir(id: &str) {
+    let Some(dir) = nodes_dir() else { return };
+    let _ = std::fs::remove_dir_all(format!("{dir}/{id}"));
+}
+
+/// The other half, and a different leak: a node that exits GRACEFULLY has its files removed by
+/// iceoryx2 and its directory left behind, so `<root>/nodes/` grows by one empty entry per node for
+/// ever — 12 666 measured on one development machine — and every later start walks all of them.
 ///
 /// Only EMPTY directories, and only ones nothing has touched for [`NODE_DIR_GRACE`]: iceoryx2
 /// creates the directory and then writes its files, so a fresh empty one may belong to a node
-/// another process is starting right now. Every error is ignored — this is housekeeping, and a
-/// directory that cannot be removed simply stays.
+/// another process is starting right now.
 fn remove_empty_node_dirs() {
-    let Ok(root) = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()) else {
-        return;
-    };
-    let Ok(nodes) = String::from_utf8(iox_config().global.node.directory.as_bytes().to_vec()) else {
-        return;
-    };
-    let dir = format!("{}/{}", root.trim_end_matches('/'), nodes);
+    let Some(dir) = nodes_dir() else { return };
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     for entry in entries.flatten() {
         let stale = entry
@@ -532,7 +562,12 @@ fn remove_empty_node_dirs() {
 /// Everything that happens once per PROCESS, before its first port exists. A `Once` rather than a
 /// call in `main`, because a test binary has no `main` of ours — and once per process is the point
 /// for the sweep: it is exactly what replaced iceoryx2's own once-per-service-open rescan.
-fn sweep_once() {
+///
+/// Called from two places, and both are needed. [`iox_node`] is the CORRECTNESS one — no port may
+/// exist before the sweep. `Graph::new` is the TIMING one: left to `iox_node` alone the bill landed
+/// on whatever created the first port, which is the user's first add, and a machine holding a few
+/// hundred dead nodes made that click take three seconds.
+pub fn sweep_once() {
     static SWEPT: Once = Once::new();
     SWEPT.call_once(|| {
         // iceoryx2 logs at Info by default and reads `IOX2_LOG_LEVEL` only when something asks it
