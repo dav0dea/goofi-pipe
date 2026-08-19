@@ -36,7 +36,6 @@
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { formatName } from '$lib/editor/categoryColor';
-	import { evalShowWhen, type ShowWhenPredicate } from './showWhen';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
@@ -45,7 +44,6 @@
 		node,
 		showHeader = true,
 		onClose,
-		showWhen = {},
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLElement> & {
@@ -57,17 +55,6 @@
 		 * supplies one — the pane's close belongs to the header the user is already reading, not to
 		 * a strip of its own. The dedicated Parameters panel passes nothing and gets no ✕. */
 		onClose?: () => void;
-		/** Declarative field-dependency rules, keyed by param NAME (spec §5). Absent → the field
-		 * always shows.
-		 *
-		 * Nothing supplies these in production, and that is the shipped state, not an omission: no
-		 * backend descriptor carries a rule (`grep -rn show_when backend/ nodes/` is empty) and the
-		 * node library is Oscillator + Buffer, neither of which has a dependent parameter. Both
-		 * product mounts pass nothing; `/dev/inspector` is the only supplier, and
-		 * `inspector-gallery.spec.ts` drives it to prove the mechanism live. D-N5: ship the algebra
-		 * and its proof ahead of a consumer, the way P shipped primitives. The node-type registry an
-		 * earlier draft of this line named was specced and never built. */
-		showWhen?: Record<string, ShowWhenPredicate>;
 	} = $props();
 
 	const g = graph();
@@ -128,38 +115,9 @@
 	// --- show_when + group tabs --------------------------------------------------------------------
 	// Live param values across ALL groups (dependencies may cross groups); rebuilt reactively so a
 	// committed controller re-evaluates its dependents.
-	const liveValues = $derived.by<Record<string, unknown>>(() => {
-		const out: Record<string, unknown> = {};
-		const n = node;
-		if (!n) return out;
-		for (const group of Object.values(n.params)) {
-			for (const [name, d] of Object.entries(group)) {
-				out[name] = (d as ParamDescriptor).value;
-			}
-		}
-		return out;
-	});
-
-	function isVisible(name: string): boolean {
-		const pred = showWhen[name];
-		return pred ? evalShowWhen(pred, liveValues) : true;
-	}
-
 	const groupNames = $derived(paramGroupNames(node));
 
-	// Groups that render a tab: one with ≥1 visible field, OR a genuinely empty group (no fields at
-	// all — keeps its tab + empty-group message). A group whose every field is hidden shows no tab.
-	const visibleGroupNames = $derived.by<string[]>(() => {
-		const n = node;
-		if (!n) return [];
-		return groupNames.filter((gName) => {
-			const entries = Object.entries(n.params[gName] ?? {});
-			if (entries.length === 0) return true;
-			return entries.some(([name]) => isVisible(name));
-		});
-	});
-
-	const tabItems = $derived(visibleGroupNames.map((name) => ({ id: name, label: name })));
+	const tabItems = $derived(groupNames.map((name) => ({ id: name, label: name })));
 
 	// This component owns the tabs. The active group is DERIVED — the group in front when it is still
 	// visible, else the first visible one, else none — and an effect then ADOPTS that fallback.
@@ -174,7 +132,7 @@
 	// group only moves when it actually vanishes.
 	let frontGroup = $state<string | null>(null);
 	const activeGroup = $derived.by<string | null>(() => {
-		const valid = visibleGroupNames;
+		const valid = groupNames;
 		if (valid.length === 0) return null;
 		return frontGroup && valid.includes(frontGroup) ? frontGroup : valid[0];
 	});
@@ -185,8 +143,7 @@
 	const activeParams = $derived.by<[string, ParamDescriptor][]>(() => {
 		const n = node;
 		if (!n || !activeGroup) return [];
-		const group = n.params[activeGroup] ?? {};
-		return (Object.entries(group) as [string, ParamDescriptor][]).filter(([name]) => isVisible(name));
+		return Object.entries(n.params[activeGroup] ?? {}) as [string, ParamDescriptor][];
 	});
 </script>
 

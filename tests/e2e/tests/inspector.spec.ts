@@ -1063,22 +1063,42 @@ test.describe('the expression editor', () => {
 			}
 		});
 
-		/* Criterion 4, on the gallery's fixed errored descriptor so it needs no live eval (the suite's
-		   backend has no numpy, per the README). BOTH surfaces are asserted: the squiggle carries the
-		   position, the row carries the text — a message that existed only behind the squiggle's hover
-		   would be information behind hover, which the project forbids. */
+		/* BOTH surfaces are asserted: the squiggle carries the position, the row carries the text. A
+		   message that existed only behind the squiggle's hover would be information behind hover,
+		   which the project forbids.
+
+		   The error is a REAL one now — a binding onto a node that is not there, committed through
+		   the editor and refused by the manager — where it used to be a fixed descriptor the gallery
+		   held. That matters here more than elsewhere: an error row can only be trusted to render
+		   what the backend said if the backend is what said it. It is also the error a user actually
+		   meets, which a synthetic `NameError` was not: a mistyped node name in `nd(…)`. */
 		test('an errored expression draws an inline diagnostic AND shows the message in the row', async ({
 			page
 		}) => {
-			await page.goto('/dev/inspector');
-			const field = page.getByTestId('inspector-fx-error');
-			const row = field.getByTestId('param-expr-error');
-			await expect(row, 'the always-visible error row').toBeVisible();
-			await expect(row).toContainText('NameError');
-			await expect(
-				field.getByTestId('param-expr-input').locator('.cm-lintRange-error'),
-				'and the source itself is marked'
-			).toHaveCount(1);
+			await page.goto('/');
+			await waitForApp(page);
+			const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+			await waitForNode(page, uid);
+			try {
+				const editor = await fxEditor(page, uid);
+				await retype(page, editor, "nd('ghost').out");
+				await editor.press('Enter');
+				const field = pane(page).getByTestId('param-field-amplitude');
+				const row = field.getByTestId('param-expr-error');
+				await expect(row, 'the always-visible error row').toBeVisible();
+				await expect(row).toContainText('no node named');
+				await expect(
+					field.getByTestId('param-fx-toggle'),
+					'and the chip carries the danger tone, pointing at the row'
+				).toHaveClass(/t-danger/);
+				await expect(
+					field.getByTestId('param-expr-input').locator('.cm-lintRange-error'),
+					'and the source itself is marked'
+				).toHaveCount(1);
+			} finally {
+				await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+				await waitForNoNode(page, uid).catch(() => {});
+			}
 		});
 
 		/* D-X6: a commit is an RPC plus a re-eval, so typing must not commit — only Enter (inline) does. */
@@ -1288,5 +1308,340 @@ test.describe('the metadata panel', () => {
 		} finally {
 			await drop(page, uid);
 		}
+	});
+});
+
+test.describe('every parameter kind, in the real inspector', () => {
+	/**
+	 * The inspector renders a control per parameter kind, and a scenario can only drive the control a
+	 * real node declares. That is why these claims used to be made against a `/dev/inspector` route
+	 * holding synthetic descriptors beside hand-written callbacks that wrote "the flags the way the
+	 * store would" — which proved the control and never the wiring behind it.
+	 *
+	 * They are made here through the doors a user has, against the nodes the SHIPPED binary carries:
+	 * an Oscillator for float, select and bool across two groups, a Buffer for int. The gain is not
+	 * the route — it is the oracle. A read-out the test itself wired can only say the control called
+	 * back; the document says the value reached the manager.
+	 *
+	 * Two kinds are not here, and deliberately: `trigger` and a REFRESHABLE select. No product node
+	 * declares either, because both belong to a device node — a picker with a ⟳ that re-enumerates —
+	 * and none exists yet. Their round trip is proved end-to-end in `goofi-tests` against
+	 * `_TestPicker`; what is missing is the rendering, and it lands with the node that needs it
+	 * rather than with a fixture invented to have one.
+	 */
+	const panel = (page: Page) => page.getByTestId('auto-side-panel');
+	const field = (page: Page, name: string) => panel(page).getByTestId(`param-field-${name}`);
+
+	/** Open the app, add `type`, click it, and answer its uid. */
+	async function inspect(page: Page, type: string): Promise<string> {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, type, 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		await selectNode(page, uid);
+		await expect(panel(page)).toHaveClass(/open/);
+		return uid;
+	}
+
+	const value = (page: Page, uid: string, group: string, name: string) =>
+		nodeParams(page, uid).then((p) => p?.[group]?.[name]?.value);
+
+	test.afterEach(async ({ page }) => {
+		const uids: string[] = await page.evaluate(() =>
+			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
+		);
+		if (uids.length === 0) return;
+		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
+		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
+	});
+
+	test('a float commits UNCLAMPED past its soft bounds, and the slider track follows', async ({ page }) => {
+		// vmin/vmax are SOFT: the engine does not clamp on set, so the NumberInput must not either.
+		// Typing 5 into a [0,1] float commits 5, and the track auto-extends to span it.
+		const uid = await inspect(page, 'Oscillator');
+		const number = field(page, 'frequency').getByTestId('param-number');
+		const range = field(page, 'frequency').getByTestId('param-slider').locator('input[type=range]');
+		await expect(range, 'seeded at its soft upper bound').toHaveAttribute('max', '100');
+		await number.fill('500');
+		await number.press('Enter');
+		await expect
+			.poll(() => value(page, uid, 'oscillator', 'frequency'), {
+				message: 'the out-of-bounds value reached the manager unclamped'
+			})
+			.toBe(500);
+		await expect(range, 'the slider max auto-extends to span the live value').toHaveAttribute('max', '500');
+	});
+
+	test('a float takes a drag-scrub, not only a typed value', async ({ page }) => {
+		// The ParamField→NumberInput `scrub` pass-through. Every other numeric case commits by
+		// fill()+Enter, which leaves the drag forwarding unexercised.
+		const uid = await inspect(page, 'Oscillator');
+		const number = field(page, 'frequency').getByTestId('param-number');
+		// SETTLED, not merely visible: the pane slides in, and a box read mid-flight puts the field
+		// past the right edge of a 1280px viewport — where the press lands on nothing at all and the
+		// test reads as "the scrub does not work".
+		const box = await settledBox(number);
+		const [cx, cy] = [box.x + box.width / 2, box.y + box.height / 2];
+		await page.mouse.move(cx, cy);
+		await page.mouse.down();
+		await page.mouse.move(cx + 40, cy, { steps: 8 }); // rightward past the 3px threshold → the value climbs
+		await page.mouse.up();
+		await expect
+			.poll(() => value(page, uid, 'oscillator', 'frequency'), { message: 'the scrub committed a higher value' })
+			.toBeGreaterThan(1);
+	});
+
+	test('an int commits a whole number, and a toggle commits a boolean', async ({ page }) => {
+		// Two kinds in one pass: each is one control and one round trip, and splitting them would buy
+		// a second node add to assert one more line.
+		const uid = await inspect(page, 'Buffer');
+		const number = field(page, 'size').getByTestId('param-number');
+		await number.fill('64');
+		await number.press('Enter');
+		await expect.poll(() => value(page, uid, 'buffer', 'size')).toBe(64);
+
+		await panel(page).getByTestId('param-tabs').getByRole('tab', { name: 'common' }).click();
+		expect(await value(page, uid, 'common', 'autotrigger')).toBe(false);
+		await field(page, 'autotrigger').getByTestId('param-toggle').click();
+		await expect.poll(() => value(page, uid, 'common', 'autotrigger')).toBe(true);
+	});
+
+	test('a select commits its option, and a non-refreshable one wears no ⟳', async ({ page }) => {
+		// The gate: `ParamForm` wires `onRefresh` unconditionally, so the ⟳ is gated on the
+		// descriptor's `refreshable` and not on the callback being present. Before the gate every
+		// select showed a ⟳ that the engine would refuse by contract.
+		const uid = await inspect(page, 'Oscillator');
+		await field(page, 'waveform').getByTestId('param-select').locator('select').selectOption('square');
+		await expect.poll(() => value(page, uid, 'oscillator', 'waveform')).toBe('square');
+		await expect(field(page, 'waveform').getByTestId('param-refresh'), 'no ⟳ on a non-refreshable param').toHaveCount(0);
+	});
+
+	test('a param VALUE renders mono while its LABEL renders sans (D-T3)', async ({ page }) => {
+		// The two-face taxonomy where it is hardest to see: a value is data and reads in mono, the
+		// label naming it is chrome and reads in sans — one row apart inside one field. The controls
+		// declare no family of their own (`font: inherit`), which is why this is pinned in the
+		// rendered app: nothing in a unit suite can see an inherited face, and a body-level flip
+		// would silently take the values with it.
+		await inspect(page, 'Oscillator');
+		const face = (loc: Locator) =>
+			loc.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, ''));
+		expect(await face(field(page, 'frequency').getByTestId('param-number')), 'the numeric value').toBe('JetBrains Mono');
+		expect(await face(field(page, 'frequency').locator('label.ui-field-label')), 'the label naming it').toBe('Inter');
+	});
+
+	test('the group tabs switch groups, and the active one drops to the body surface', async ({ page }) => {
+		// The connected look: the active tab paints the SAME surface as the rows flush beneath it, so
+		// the two read as one panel, while an inactive tab stays at the header surface. `.ui-tab`
+		// transitions its background, so the active colour is animated and a one-shot read can land
+		// mid-flight — hence the retrying matcher against the rows' own static background.
+		await inspect(page, 'Oscillator');
+		const form = panel(page);
+		const tabs = form.getByTestId('param-tabs');
+		const active = tabs.getByRole('tab', { selected: true });
+		await expect(active, 'the node’s own group leads, ahead of common').toHaveText('oscillator');
+		const rowsBg = await form.getByTestId('param-rows').evaluate((el) => getComputedStyle(el).backgroundColor);
+		await expect(active, 'active tab background equals the body surface (merged)').toHaveCSS('background-color', rowsBg);
+		const inactiveBg = await tabs
+			.getByRole('tab', { selected: false })
+			.first()
+			.evaluate((el) => getComputedStyle(el).backgroundColor);
+		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(rowsBg);
+
+		await expect(field(page, 'frequency')).toBeVisible();
+		await expect(field(page, 'autotrigger'), 'the other group is not rendered').toHaveCount(0);
+		await tabs.getByRole('tab', { name: 'common' }).click();
+		await expect(field(page, 'autotrigger'), 'switching renders the other group').toBeVisible();
+		await expect(field(page, 'frequency'), 'and drops this one').toHaveCount(0);
+	});
+
+	test('the docstring hides behind a Disclosure, whose label is centered on the caret by its INK', async ({
+		page
+	}) => {
+		// Two claims about one control, because the second needs the first to have opened it.
+		//
+		// The caret and the label BOXES were both flex-centered to the hundredth of a pixel, and the
+		// label still read as sitting high: "docs" has no descenders, so its ink stops AT the baseline
+		// while the line box reserves descent space below it, and the glyphs ride above the box centre
+		// by half that reserve. So this pins the INK — the visible glyph run's centre, measured with
+		// canvas TextMetrics against the rendered font — not the box.
+		await inspect(page, 'Oscillator');
+		const form = panel(page);
+		await expect(form.getByTestId('docstring'), 'the docstring starts collapsed').toHaveCount(0);
+		await form.getByTestId('docs-toggle').click();
+		await expect(form.getByTestId('docstring'), 'the disclosure reveals it').toContainText('oscillator');
+
+		const d = await page.evaluate(() => {
+			const toggle = document.querySelector('[data-testid="docs-toggle"]') as HTMLElement;
+			const summary = toggle.closest('.ui-disclosure-summary') as HTMLElement;
+			const cr = (summary.querySelector('.ui-disclosure-caret svg') as SVGElement).getBoundingClientRect();
+			const range = document.createRange();
+			range.selectNodeContents(toggle);
+			const tr = range.getBoundingClientRect();
+			const cs = getComputedStyle(toggle);
+			const cv = document.createElement('canvas').getContext('2d')!;
+			cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			const m = cv.measureText(toggle.textContent ?? '');
+			// The Range rect is the font box (ascent+descent); the canvas font metrics locate the
+			// baseline inside it, and the actual* metrics locate the ink around that baseline.
+			const baseline = tr.top + m.fontBoundingBoxAscent;
+			const inkCenter = baseline - (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+			return {
+				delta: inkCenter - (cr.top + cr.height / 2),
+				fontBoxCheck: m.fontBoundingBoxAscent + m.fontBoundingBoxDescent - tr.height
+			};
+		});
+		expect(
+			Math.abs(d.fontBoxCheck),
+			'canvas font metrics agree with the layout font box, so the baseline estimate is sound'
+		).toBeLessThanOrEqual(1);
+		expect(Math.abs(d.delta), `ink centre sits ${d.delta.toFixed(2)}px from the caret centre`).toBeLessThanOrEqual(0.6);
+
+		await form.getByTestId('docs-toggle').click();
+		await expect(form.getByTestId('docstring'), 'toggling again collapses it').toHaveCount(0);
+	});
+});
+
+test.describe('the fx binding, in the real inspector', () => {
+	/**
+	 * The chips and the editor's own doors — expand, apply, Escape — driven against a live node.
+	 *
+	 * These were proved against `/dev/inspector`, whose fx callbacks wrote "the flags the way the
+	 * store would". That made every enabled-semantic a claim about the fixture: the chip called back
+	 * and the fixture set the flag it was told to. Here the flags are read out of the document, so
+	 * the claim is that the semantic reached the manager.
+	 */
+	const panel = (page: Page) => page.getByTestId('auto-side-panel');
+	const amp = (page: Page) => panel(page).getByTestId('param-field-amplitude');
+
+	/** Boot, add an Oscillator, click it, and answer its uid. */
+	async function inspectOsc(page: Page): Promise<string> {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		await selectNode(page, uid);
+		await expect(panel(page)).toHaveClass(/open/);
+		return uid;
+	}
+
+	/** The `amplitude` binding as the document holds it. */
+	const binding = (page: Page, uid: string) =>
+		nodeParams(page, uid).then((p) => p?.oscillator?.amplitude);
+
+	test.afterEach(async ({ page }) => {
+		const uids: string[] = await page.evaluate(() =>
+			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
+		);
+		if (uids.length === 0) return;
+		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
+		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
+	});
+
+	test('fx ON seeds the value as a literal, and OFF stashes the source rather than dropping it', async ({
+		page
+	}) => {
+		// The stash is what makes the chip a toggle instead of a destructive switch: flipping off
+		// disables the engine and KEEPS the source, so flipping back on does not ask the user to
+		// retype what they just wrote.
+		const uid = await inspectOsc(page);
+		expect((await binding(page, uid))?.expression, 'no source yet').toBeFalsy();
+		await amp(page).getByTestId('param-fx-toggle').click();
+		await expect.poll(async () => (await binding(page, uid))?.expression_enabled, {
+			message: 'fx-on enables the expression'
+		}).toBe(true);
+		expect((await binding(page, uid))?.expression, 'OFF→ON seeds the live value as a literal').toBe('1');
+		await expect(amp(page).getByTestId('param-expr-input'), 'the expr input takes the control region').toBeVisible();
+
+		await amp(page).getByTestId('param-fx-toggle').click();
+		await expect.poll(async () => (await binding(page, uid))?.expression_enabled, {
+			message: 'fx-off disables the engine'
+		}).toBe(false);
+		expect((await binding(page, uid))?.expression, 'ON→OFF stashes the source').toBe('1');
+	});
+
+	test('the trig chip is fx-gated, toggles process-on-change, and both chips say they are pressed', async ({
+		page
+	}) => {
+		// Both adornments are two-state toggles, so both must SAY so. An earlier rewrite passed
+		// tone/onclick/title/testid and dropped `aria-pressed`, which left `trig`'s state living in
+		// its tone alone — which is to say in colour alone.
+		const uid = await inspectOsc(page);
+		await expect(amp(page).getByTestId('param-expr-triggers-process'), 'no trig chip while fx is off').toHaveCount(0);
+
+		const fx = amp(page).getByTestId('param-fx-toggle');
+		await expect(fx, 'fx rests unpressed').toHaveAttribute('aria-pressed', 'false');
+		await fx.click();
+		await expect(fx, 'fx reports itself pressed once active').toHaveAttribute('aria-pressed', 'true');
+
+		const trig = amp(page).getByTestId('param-expr-triggers-process');
+		await expect(trig, 'trig appears once fx is active').toBeVisible();
+		await expect(trig, 'trig rests unpressed').toHaveAttribute('aria-pressed', 'false');
+		await trig.click();
+		await expect(trig, 'trig reports itself pressed').toHaveAttribute('aria-pressed', 'true');
+		await expect.poll(async () => (await binding(page, uid))?.expression_triggers_process, {
+			message: 'and the manager holds process-on-change'
+		}).toBe(true);
+	});
+
+	test('expand grows the editor in place, and Ctrl+Enter applies it and collapses', async ({ page }) => {
+		// In-panel, never a modal: the multi-line editor replaces the single line where it stands, so
+		// the parameter it belongs to stays on screen beside it.
+		const uid = await inspectOsc(page);
+		await amp(page).getByTestId('param-fx-toggle').click();
+		await amp(page).getByTestId('param-expr-expand').click();
+		const ta = amp(page).getByTestId('param-expr-multiline');
+		await expect(ta, 'the editor grows in place — no modal').toBeVisible();
+		await expect(amp(page).getByTestId('param-expr-input'), 'the single line is replaced while expanded').toHaveCount(0);
+
+		await ta.click();
+		await page.keyboard.press('Control+a');
+		await page.keyboard.type('0.25');
+		await page.keyboard.press('Control+Enter');
+		await expect(ta, 'apply collapses the multi-line editor').toHaveCount(0);
+		await expect.poll(async () => (await binding(page, uid))?.expression, {
+			message: 'apply commits the source'
+		}).toBe('0.25');
+		expect((await binding(page, uid))?.expression_enabled, 'apply PRESERVES the flags').toBe(true);
+		await expect(amp(page).getByTestId('param-expr-input'), 'the single-line input returns').toBeVisible();
+	});
+
+	test('the apply Chip commits the editor’s own document, which touch has no chord for', async ({ page }) => {
+		// The Chip is the door a coarse pointer has to ⌃⏎, and it takes a different route: the editor
+		// OWNS its document (a CodeMirror document is not a bindable string), so the Chip asks it to
+		// commit through the `bindCommit` seam rather than reading a mirrored buffer.
+		const uid = await inspectOsc(page);
+		await amp(page).getByTestId('param-fx-toggle').click();
+		await amp(page).getByTestId('param-expr-expand').click();
+		const ta = amp(page).getByTestId('param-expr-multiline');
+		await ta.click();
+		await page.keyboard.press('Control+a');
+		await page.keyboard.type('0.75');
+		await amp(page).getByTestId('param-expr-apply').click();
+		await expect(ta, 'apply collapses the editor').toHaveCount(0);
+		await expect.poll(async () => (await binding(page, uid))?.expression, {
+			message: 'the Chip committed the editor’s document'
+		}).toBe('0.75');
+	});
+
+	test('Escape closes the completion first, then reverts and collapses the editor', async ({ page }) => {
+		// Layered, because a completion popup and an editor both answer Escape and only one of them
+		// should answer any given press. Typing `ME` leaves a popup open — the only thing matching it
+		// is Python's own `MemoryError`, which is the stock language sources answering inside our
+		// editor, worth asserting for its own sake.
+		const uid = await inspectOsc(page);
+		await amp(page).getByTestId('param-fx-toggle').click();
+		await amp(page).getByTestId('param-expr-expand').click();
+		const ta = amp(page).getByTestId('param-expr-multiline');
+		await ta.click();
+		await page.keyboard.press('Control+a');
+		await page.keyboard.type('DISCARD ME', { delay: 10 });
+		const popup = page.locator('.cm-tooltip-autocomplete');
+		await expect(popup, 'Python’s own builtins answer for `ME`').toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(popup, 'the first Escape belongs to the popup').toHaveCount(0);
+		await expect(ta, 'and the editor is still open').toHaveCount(1);
+		await page.keyboard.press('Escape');
+		await expect(ta, 'the next Escape collapses the editor').toHaveCount(0);
+		expect((await binding(page, uid))?.expression, 'Escape reverts — the source is unchanged').toBe('1');
 	});
 });

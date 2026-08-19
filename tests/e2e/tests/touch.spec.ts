@@ -375,8 +375,8 @@ test.describe('the coarse tap-target floor, across the app\u2019s real chrome', 
 	 * The other end of the same rule (R spec §5.4): iOS force-zooms the page when a control under 16px
 	 * takes focus, which on a canvas app means the user is dumped at 2× with no way back to their own
 	 * layout. `app.css` floors `input, select, textarea` at 16px under the coarse idiom — at (0,0,1),
-	 * which ANY product class rule out-specifies. Four did; one test each, because each needs its own
-	 * panel or its own gesture and one long test times out where four short ones do not.
+	 * which ANY product class rule out-specifies. Several did; one test each, because each needs its own
+	 * panel or its own gesture and one long test times out where several short ones do not.
 	 */
 	const fontSize = (loc: Locator): Promise<number> =>
 		loc.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
@@ -423,6 +423,47 @@ test.describe('the coarse tap-target floor, across the app\u2019s real chrome', 
 			);
 		} finally {
 			await restore();
+		}
+	});
+
+	test('the fx multi-line editor clears the focus-zoom threshold', async ({ page }) => {
+		// --fs-micro is ~10px, which the coarse floor has to lift. Driven through the real inspector:
+		// add a node, tap it, turn fx on, and grow the editor — the doors a phone user has.
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		try {
+			await tapNode(page, uid);
+			const field = page.getByTestId('auto-side-panel').getByTestId('param-field-amplitude');
+			await field.getByTestId('param-fx-toggle').tap();
+			await field.getByTestId('param-expr-expand').tap();
+			const ta = field.getByTestId('param-expr-multiline');
+			await expect(ta).toBeVisible();
+			expect(await fontSize(ta), 'textarea font-size >= 16 defeats iOS focus-zoom').toBeGreaterThanOrEqual(16);
+		} finally {
+			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+			await waitForNoNode(page, uid).catch(() => {});
+		}
+	});
+
+	test('the inspector’s header rename field clears the focus-zoom threshold', async ({ page }) => {
+		// --fs-strong is ~14px on a phone. The same door: the identity header's name opens an input.
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		try {
+			await tapNode(page, uid);
+			const form = page.getByTestId('auto-side-panel');
+			await form.getByTestId('node-name').tap();
+			const input = form.getByTestId('node-name-input');
+			await expect(input).toBeVisible();
+			expect(await fontSize(input), 'rename input font-size >= 16 defeats iOS focus-zoom').toBeGreaterThanOrEqual(16);
+			await page.keyboard.press('Escape');
+		} finally {
+			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+			await waitForNoNode(page, uid).catch(() => {});
 		}
 	});
 
@@ -2144,18 +2185,33 @@ test.describe('the expression editor under a finger', () => {
 	 * placed by CodeMirror, whose own default measures `window.innerHeight`, which a soft keyboard does not
 	 * shrink.
 	 *
-	 * Driven on `/dev/inspector`, whose fx sample needs no live graph: what is under test is the editor's
-	 * touch behaviour, and the four names the evaluator injects (`nd`, `t`, `np`, `globals`) are offered
-	 * with no patch at all — through the same merged popup as Python's own builtins.
+	 * Driven against a real node, through the doors a phone has: place an Oscillator, tap it, tap fx
+	 * on. The four names the evaluator injects (`nd`, `t`, `np`, `globals`) are offered with no patch
+	 * content at all, through the same merged popup as Python's own builtins.
 	 */
 
 	const MARGIN = 6; // the popup's viewport-edge margin, matching clampToViewport's
 
-	/** The gallery's fx field, switched into expression mode; returns its inline editor. */
+	// The helper below leaves a node on the shared backend, so hand the patch back per test rather
+	// than per call — a second Oscillator would put a second card under the tap.
+	test.afterEach(async ({ page }) => {
+		const uids: string[] = await page.evaluate(() =>
+			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
+		);
+		if (uids.length === 0) return;
+		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
+		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
+	});
+
+	/** An Oscillator's `amplitude`, switched into expression mode; returns its inline editor. */
 	async function fxEditor(page: Page): Promise<Locator> {
-		await page.goto('/dev/inspector');
-		const field = page.getByTestId('inspector-fx');
-		await field.getByTestId('param-fx-toggle').click();
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		await tapNode(page, uid);
+		const field = page.getByTestId('auto-side-panel').getByTestId('param-field-amplitude');
+		await field.getByTestId('param-fx-toggle').tap();
 		const editor = field.getByTestId('param-expr-input');
 		await expect(editor).toBeVisible();
 		return editor;
