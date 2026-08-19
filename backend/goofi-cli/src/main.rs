@@ -379,6 +379,7 @@ fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
 /// What one file's probes decided, before anything is registered. Separated from the registration
 /// because the probes RUN IN PARALLEL and registration needs the graph.
 #[cfg(feature = "python")]
+#[derive(Clone)]
 enum Probed {
     InProcess(goofi_python::Discovered),
     Subprocess(goofi_python::Discovered),
@@ -386,10 +387,43 @@ enum Probed {
     Skip,
 }
 
-/// Probe one file on both tiers, in the order that decides the routing. Pure: it spawns
-/// interpreters and reads files, and touches no graph.
+/// What the last probe of each file decided, and the stamp it decided it at.
+///
+/// A probe is a whole interpreter importing a whole module, and a rescan re-probes the DIRECTORY —
+/// so without this every refresh pays for every file again, however little changed. The shipped
+/// entropy nodes import antropy, which imports numba: four of them made the palette's own refresh
+/// button a twenty-second wait and a patch load a forty-second one. A file whose size and mtime
+/// have not moved is the same file, which is the same thing `rescan` already trusts to decide that
+/// a type is unchanged.
+#[cfg(feature = "python")]
+static PROBED: std::sync::Mutex<
+    Option<std::collections::HashMap<std::path::PathBuf, (goofi_bridge::Stamp, Probed)>>,
+> = std::sync::Mutex::new(None);
+
+/// Probe one file on both tiers, in the order that decides the routing, unless a probe of this
+/// exact file at this exact stamp already answered. Spawns interpreters and reads files; touches
+/// no graph.
 #[cfg(feature = "python")]
 fn probe_one(path: &Path, ft: Option<&str>, subproc_python: &str) -> Probed {
+    let stamp = stamp(path);
+    if let Some(s) = stamp {
+        let cache = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((seen, probed)) = cache.as_ref().and_then(|c| c.get(path)) {
+            if *seen == s {
+                return probed.clone();
+            }
+        }
+    }
+    let probed = probe_uncached(path, ft, subproc_python);
+    if let Some(s) = stamp {
+        let mut cache = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get_or_insert_with(Default::default).insert(path.to_path_buf(), (s, probed.clone()));
+    }
+    probed
+}
+
+#[cfg(feature = "python")]
+fn probe_uncached(path: &Path, ft: Option<&str>, subproc_python: &str) -> Probed {
     // ONE free-threaded probe answers both questions: it imports the module and constructs the
     // class (so a dep missing on the FT interpreter shows up as a failed probe), then reports
     // whether the GIL is still disabled — `gil_safe` IS the routing gate.

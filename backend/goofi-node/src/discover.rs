@@ -133,6 +133,7 @@ use std::process::{Command, Stdio};
 /// A discovered Python node type: its rich manifest + the routing flag (`gil_safe`
 /// → in-process, else subprocess). The per-instance factory is attached by the
 /// backend in M2/M3; M1 produces the manifest.
+#[derive(Clone)]
 pub struct Discovered {
     pub manifest: &'static NodeManifest,
     pub gil_safe: bool,
