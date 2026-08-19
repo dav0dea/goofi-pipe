@@ -359,6 +359,26 @@ describe('viewpoint stays here', () => {
 		expect(ws.viewpoint().page).toBe('page-7');
 	});
 
+	it('keeps a restored viewpoint through the boundary a fresh session resets across', () => {
+		// The boot order, as `_replaceSnapshot` runs it: the snapshot restores the viewpoint, the
+		// reset then empties the arrangement so the outgoing session's tree cannot be drawn, and the
+		// manager's real document lands only after both. Pruning the viewpoint against that empty
+		// middle threw away everything the restore had just put back — and the debounced
+		// `set_viewpoint` pushed the loss to the manager.
+		const two = split();
+		two['page-7'] = { kind: 'page', order: 1, name: 'Second' };
+		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'node-editor' };
+		const ws = boot({});
+		ws.restoreViewpoint({ page: 'page-7', panel: 'panel-8', paths: { 'panel-8': '/inst0' } });
+		ws.syncFromDoc({});
+		ws.syncFromDoc(two);
+		expect(ws.viewpoint(), 'a reload lands where it left off').toEqual({
+			page: 'page-7',
+			panel: 'panel-8',
+			paths: { 'panel-8': '/inst0' }
+		});
+	});
+
 	it('drops a maximize and a focus a peer’s close took away', () => {
 		const ws = boot(split());
 		ws.setActive('panel-3');

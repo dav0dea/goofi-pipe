@@ -177,6 +177,11 @@ class WorkspaceStore {
 		}
 		// A claim's job is over the moment the name it reserved shows up in the replica.
 		if (this._claimed.size > 0) for (const w of this._workspaces) this._claimed.delete(w.name);
+		// An EMPTY arrangement is a generation boundary, never a settled tree — the reset that hands
+		// one over is followed by the manager's real document, and a replica before its first pull
+		// holds one too. Pruning against it invalidates every id there is, the viewpoint the
+		// snapshot just restored included.
+		if (Object.keys(arr).length === 0) return;
 		if (this._page !== null && !arr[this._page]) this._page = null;
 		const root = this.active?.root;
 		if (!root) return;
