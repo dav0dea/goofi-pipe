@@ -30,7 +30,7 @@ const WORKERS = Number(
 // The gallery specs, named rather than pattern-matched, because what makes one is the ROUTE it
 // drives: `inspector.spec.ts` is a product spec and `touch-inspector.spec.ts` is a gallery one.
 const GALLERY = /\/(ui-gallery|inspector-gallery)\.spec\.ts$/;
-const GALLERY_TOUCH = /\/touch-(ui-gallery|inspector)\.spec\.ts$/;
+const GALLERY_TOUCH = /\/touch-gallery\.spec\.ts$/;
 
 export default defineConfig({
 	testDir: './tests',
@@ -90,10 +90,10 @@ export default defineConfig({
 	// one because the touch pair proves the coarse doors and needs the Pixel 7 descriptor to do it;
 	// `npm run gallery` runs both, which is the inner loop while working on `$lib/ui`.
 	projects: [
-		{ name: 'default', testIgnore: [/touch-.*\.spec\.ts/, GALLERY] },
+		{ name: 'default', testIgnore: [/touch.*\.spec\.ts/, GALLERY] },
 		{
 			name: 'touch',
-			testMatch: /touch-.*\.spec\.ts/,
+			testMatch: /touch.*\.spec\.ts/,
 			testIgnore: GALLERY_TOUCH,
 			use: { ...devices['Pixel 7'] }
 		},
@@ -106,7 +106,7 @@ export default defineConfig({
 		},
 		{
 			name: 'touch-landscape',
-			testMatch: /touch-(reflow|modality|placement)\.spec\.ts/,
+			testMatch: /touch-(reflow|anchor)\.spec\.ts/,
 			use: { ...devices['Pixel 7 landscape'] }
 		},
 		{
