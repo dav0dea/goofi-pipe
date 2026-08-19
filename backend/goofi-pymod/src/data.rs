@@ -14,6 +14,66 @@ pub struct Data {
     inner: CoreData,
 }
 
+/// What `data.assert_ndims` answers: a rank waiting to be compared. Every comparison dunder
+/// checks the claim and raises when it fails, naming the SHAPE rather than only the rank — "needs
+/// ndim > 1, got (512,)" is actionable where "needs > 1, got 1" is a puzzle.
+#[pyclass]
+pub struct Ndims {
+    shape: Vec<usize>,
+}
+
+impl Ndims {
+    fn check(&self, holds: bool, op: &str, n: usize) -> PyResult<bool> {
+        if holds {
+            Ok(true)
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "needs ndim {op} {n}, got {:?}",
+                self.shape
+            )))
+        }
+    }
+}
+
+#[pymethods]
+impl Ndims {
+    fn __gt__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() > n, ">", n)
+    }
+    fn __ge__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() >= n, ">=", n)
+    }
+    fn __lt__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() < n, "<", n)
+    }
+    fn __le__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() <= n, "<=", n)
+    }
+    fn __eq__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() == n, "==", n)
+    }
+    fn __ne__(&self, n: usize) -> PyResult<bool> {
+        self.check(self.shape.len() != n, "!=", n)
+    }
+    fn __int__(&self) -> usize {
+        self.shape.len()
+    }
+    fn __repr__(&self) -> String {
+        format!("ndim {} of shape {:?}", self.shape.len(), self.shape)
+    }
+}
+
+impl Data {
+    /// The array's shape, or empty for a string/table frame — which reports rank 0, the same
+    /// answer the data plane's `Reducible` gives.
+    fn shape_or_empty(&self) -> Vec<usize> {
+        match self.inner.value() {
+            Value::Array(a) => a.shape().to_vec(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 #[pymethods]
 impl Data {
     /// `Data(array, meta=None)` — copy a numpy array (cast to f32) + optional meta dict.
@@ -25,6 +85,22 @@ impl Data {
         let inner = CoreData::array_f32(shape, f32_bytes, m)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(Data { inner })
+    }
+
+    /// The frame's rank, ready to be compared against what this node needs:
+    ///
+    /// ```python
+    /// data.assert_ndims > 1     # raises unless the frame has more than one dimension
+    /// data.assert_ndims == 2
+    /// ```
+    ///
+    /// The comparison IS the assertion — it raises on failure and answers `True` otherwise, so a
+    /// node states its shape requirement on one line and gets an error naming the shape that
+    /// arrived. A plain `assert` would work too, and would vanish under `python -O`; this one
+    /// cannot be optimised away, and it writes the message.
+    #[getter]
+    fn assert_ndims(&self) -> Ndims {
+        Ndims { shape: self.shape_or_empty() }
     }
 
     /// The array as a fresh numpy `<f4` array of the stored shape.

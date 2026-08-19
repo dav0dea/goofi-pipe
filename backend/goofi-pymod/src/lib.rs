@@ -25,6 +25,7 @@ use pyo3::prelude::*;
 #[pymodule]
 pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<data::Data>()?;
+    m.add_class::<data::Ndims>()?;
     m.add_class::<node::Node>()?;
     m.add_class::<params::DataType>()?;
     m.add_class::<params::InputSlot>()?;

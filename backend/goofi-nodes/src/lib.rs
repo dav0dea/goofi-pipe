@@ -14,7 +14,9 @@
 //! fixtures.
 
 mod buffer;
+mod filter;
 mod oscillator;
+mod psd;
 #[cfg(feature = "test-nodes")]
 pub mod test_nodes;
 #[cfg(feature = "test-nodes")]

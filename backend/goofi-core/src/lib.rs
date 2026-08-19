@@ -601,6 +601,76 @@ impl Data {
 
         Ok(Data::array(ArrayStore::new(shape, Arc::from(buf.into_boxed_slice())), meta))
     }
+
+    /// The array this frame carries, or a message naming what it carries instead.
+    pub fn as_array(&self) -> std::result::Result<&ArrayStore, String> {
+        match &self.0.value {
+            Value::Array(a) => Ok(a),
+            Value::Str(_) => Err("expected an array, got a string".into()),
+            Value::Table(_) => Err("expected an array, got a table".into()),
+        }
+    }
+
+    /// State what shape this node can work with, and get the array back if it holds:
+    ///
+    /// ```text
+    /// let a = data.assert_ndims().at_least(2)?;
+    /// ```
+    ///
+    /// The `?` is the whole of the sugar — a node says what it needs on one line and the message
+    /// it would otherwise have written by hand becomes the node's error.
+    pub fn assert_ndims(&self) -> Ndims<'_> {
+        Ndims(self)
+    }
+}
+
+/// A pending claim about a frame's rank. Every method answers the array when the claim holds, and
+/// a message naming both the claim and what arrived when it does not.
+///
+/// It carries the frame rather than the number so the error can say what SHAPE disagreed: "needs
+/// at least 2 dimensions, got [512]" is actionable where "needs at least 2, got 1" is a puzzle.
+pub struct Ndims<'a>(&'a Data);
+
+impl<'a> Ndims<'a> {
+    fn check(
+        self,
+        holds: impl Fn(usize) -> bool,
+        want: &str,
+    ) -> std::result::Result<&'a ArrayStore, String> {
+        let a = self.0.as_array()?;
+        if holds(a.ndim()) {
+            Ok(a)
+        } else {
+            Err(format!("needs {want}, got {:?}", a.shape()))
+        }
+    }
+
+    pub fn at_least(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
+        self.check(|d| d >= n, &format!("at least {n} dimension(s)"))
+    }
+    pub fn at_most(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
+        self.check(|d| d <= n, &format!("at most {n} dimension(s)"))
+    }
+    pub fn exactly(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
+        self.check(|d| d == n, &format!("exactly {n} dimension(s)"))
+    }
+}
+
+/// Resolve a signed axis against a rank, the way numpy does: `-1` is the last dimension, `-2` the
+/// one before it. Out of range is an error rather than a clamp — a node told to work on an axis
+/// that is not there has been misconfigured, and silently working on a different one is worse than
+/// saying so.
+///
+/// **Time is the last dimension and channels the second-to-last**, throughout goofi. A node with an
+/// `axis` param defaults to `-1` for that reason; everything before the axes it names is carried
+/// through untouched.
+pub fn resolve_axis(axis: i64, ndim: usize) -> std::result::Result<usize, String> {
+    let n = ndim as i64;
+    let resolved = if axis < 0 { n + axis } else { axis };
+    if resolved < 0 || resolved >= n {
+        return Err(format!("axis {axis} is out of range for {ndim} dimension(s)"));
+    }
+    Ok(resolved as usize)
 }
 
 // ---------------------------------------------------------------------------
