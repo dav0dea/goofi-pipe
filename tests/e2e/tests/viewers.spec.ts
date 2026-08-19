@@ -1,7 +1,7 @@
 // Watching a node's output: the viewer's own settings, its readouts, and the GL path.
 
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { closeSplit, splitRight, waitForApp } from '../lib/app';
 import { addNode, waitForNode, waitForNoNode } from '../lib/goofi';
 import { VIEWER_HOVER_SURFACES, hoverSettled, surfaceStyles, unhover } from '../lib/viewerChrome';
 
@@ -333,5 +333,116 @@ test.describe('the WebGL image viewer', () => {
 			[r!.gray, r!.rgb, r!.rgba, r!.filter],
 			'every float texture format the renderer uploads must be accepted'
 		).toEqual([r!.NO_ERROR, r!.NO_ERROR, r!.NO_ERROR, r!.NO_ERROR]);
+	});
+});
+
+/**
+ * Two viewers on ONE stream, over a layout the user actually builds: a node's own in-canvas viewer
+ * and a viewer PANEL bound to the same node, then the node's viewer collapsed and reopened again
+ * and again.
+ *
+ * One data stream serves every viewer of a `(node, slot)`, and the two here share it. Collapsing
+ * the node's own viewer detaches ONE of them — and used to take the stream with it: the frames
+ * layer read the momentary zero refcount as "nobody is watching", closed the socket and dropped
+ * the cached frame, so the PANEL — still watching — fell to its empty state. A viewer re-attaching
+ * within the same tick is not a viewer leaving, which is what a re-render does every time.
+ *
+ * Two oracles, because one of them cannot see this. The placeholder is what the USER reports, and
+ * the shared frame cache is what actually died; a "does the viewer hold a frame?" check sees
+ * neither, since a dead stream leaves its last frame on screen.
+ *
+ * The cycling is the fixture, not decoration: the blanking is intermittent — it missed 4 of 12
+ * passes when it was live — so a single collapse/expand cannot express it and would sit green.
+ */
+test.describe('a viewer panel beside the node’s own viewer', () => {
+	/** Every empty-state hint inside each viewer surface, plus whether the shared stream still
+	 *  holds a frame. `''` is a viewer that is drawing; the stream is keyed by (node, slot). */
+	function surfaces(page: Page, a: string, b: string): Promise<Record<string, string>> {
+		return page.evaluate(
+			([ua, ub]) => {
+				const hint = (root: Element | null): string =>
+					root
+						? [...root.querySelectorAll('.ui-empty-hint')].map((e) => e.textContent).join('|')
+						: 'ABSENT';
+				return {
+					inlineA: hint(document.querySelector(`.slot-viewer[data-node="${ua}"]`)),
+					inlineB: hint(document.querySelector(`.slot-viewer[data-node="${ub}"]`)),
+					panel: hint(document.querySelector('[data-testid="node-linked-panel"]')),
+					streamA: (window as any).goofi.query.frameSummary(ua, 'out') ? 'live' : 'DROPPED',
+					streamB: (window as any).goofi.query.frameSummary(ub, 'out') ? 'live' : 'DROPPED'
+				};
+			},
+			[a, b] as const
+		);
+	}
+
+	test('collapsing the node’s own viewer leaves the panel on the same slot drawing', async ({
+		page
+	}) => {
+		await page.goto('/');
+		await waitForApp(page);
+
+		// --- the patch: two producers, so "every other node dies too" is a claim this can see ------
+		const a = await addNode(page, 'Oscillator', 'inputs', [60, 60]);
+		const b = await addNode(page, 'Oscillator', 'inputs', [60, 320]);
+		await waitForNode(page, a);
+		await waitForNode(page, b);
+		await expect
+			.poll(async () => (await surfaces(page, a, b)).streamA)
+			.toBe('live');
+
+		const expand = (on: boolean): Promise<void> =>
+			page.evaluate(
+				([u, v]) => (window as any).goofi.commands.setSlotExpanded(u, 'out', v),
+				[a, on] as const
+			);
+
+		await splitRight(page);
+		try {
+			// --- the layout: a viewer panel bound to the SAME node as its in-canvas viewer ----------
+			const panel: string = await page.evaluate(
+				() => (window as any).goofi.query.panels()[1].panelId
+			);
+			await page.evaluate(
+				([id, u]) => {
+					(window as any).goofi.commands.setPanelType(id, 'viewer');
+					(window as any).goofi.commands.bindNodeToPanel(id, u);
+				},
+				[panel, a] as const
+			);
+			await expect(page.getByTestId('node-linked-panel')).toBeVisible();
+			await expect
+				.poll(async () => (await surfaces(page, a, b)).panel, {
+					message: 'the panel draws the slot it was just bound to'
+				})
+				.toBe('');
+
+			// --- the cycling: collapse and reopen the NODE's viewer, the panel watching throughout --
+			for (let pass = 1; pass <= 8; pass++) {
+				await expand(false);
+				await page.waitForTimeout(250);
+				expect(await surfaces(page, a, b), `pass ${pass}: the node’s viewer let go, the panel did not`).toEqual({
+					inlineA: '', // collapsed: the surface is unmounted, so it hosts no hint either
+					inlineB: '',
+					panel: '',
+					streamA: 'live',
+					streamB: 'live'
+				});
+
+				await expand(true);
+				await page.waitForTimeout(250);
+				expect(await surfaces(page, a, b), `pass ${pass}: reopening it leaves both viewers drawing`).toEqual({
+					inlineA: '',
+					inlineB: '',
+					panel: '',
+					streamA: 'live',
+					streamB: 'live'
+				});
+			}
+		} finally {
+			await expand(true).catch(() => {});
+			await closeSplit(page);
+			await page.evaluate((u) => (window as any).goofi.commands.removeNodes(u), [a, b]);
+		}
 	});
 });
