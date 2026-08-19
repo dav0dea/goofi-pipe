@@ -31,10 +31,11 @@ describe('node lifecycle stage', () => {
 		const d = seed(fc);
 		g.nodeTypes = catalog();
 		d.node('n1', 'PSD', 'psd0', [0, 0]);
-		// The node's identity is doc-owned; its lifecycle stage is event-sourced, so a
-		// freshly doc-seeded node carries no stage until the first state push arrives.
+		// The node's identity is doc-owned; its lifecycle stage is event-sourced. A node the client
+		// has only just learned of has reported nothing yet, and `creating` is exactly what that
+		// means — the add answers before the node's thread has said anything.
 		expect(g.nodeById('n1')).toBeDefined();
-		expect(g.nodeById('n1')?.stage).toBeUndefined();
+		expect(g.nodeById('n1')?.stage).toBe('creating');
 
 		fc.emit({
 			event: 'state_update',

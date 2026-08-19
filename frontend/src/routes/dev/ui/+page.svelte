@@ -572,6 +572,10 @@
 				<StatusDot tone="ok" {size} data-testid={`ui-statusdot-size-${size}`} />
 			{/each}
 		</div>
+		<!-- `pulse` blinks the dot, for a state that is not merely bad but GONE (a dead node). -->
+		<div class="grid">
+			<StatusDot tone="error" pulse data-testid="ui-statusdot-pulse" />
+		</div>
 	</section>
 
 	<section>

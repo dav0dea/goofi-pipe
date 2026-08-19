@@ -830,11 +830,15 @@ export class GraphStore {
 
 	/** The runtime overlay for a node materializing from the doc for the FIRST time: whatever the
 	 * last snapshot reported for that uid. Only the seed — from then on `_extractRuntime` carries
-	 * the live, event-sourced state forward. Empty for a node created after the snapshot (its
-	 * runtime arrives on the stream). */
+	 * the live, event-sourced state forward.
+	 *
+	 * A node created AFTER the snapshot has no entry, and `creating` is what that means: the add
+	 * answers as soon as the node is known, and its thread has yet to report a stage. Defaulting
+	 * to nothing drew a node that is still importing as running, green, for as long as the
+	 * manager's sweep took to notice — which for a heavy import is seconds. */
 	private _seedRuntime(uid: string): RuntimeOverlay {
 		const seed = this._snapshotRuntime[uid];
-		return seed ? { stage: seed.stage, error: seed.error ?? null } : {};
+		return { stage: seed?.stage ?? 'creating', error: seed?.error ?? null };
 	}
 
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc

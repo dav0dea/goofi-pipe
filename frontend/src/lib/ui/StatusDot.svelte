@@ -17,12 +17,15 @@
 	let {
 		tone,
 		size = 'md',
+		pulse = false,
 		'aria-label': ariaLabel,
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLSpanElement> & {
 		tone: StatusTone;
 		size?: StatusDotSize;
+		/** Blink instead of resting — for a state that is not merely bad but GONE. */
+		pulse?: boolean;
 	} = $props();
 </script>
 
@@ -30,7 +33,7 @@
 	{...rest}
 	aria-label={ariaLabel}
 	aria-hidden={ariaLabel ? undefined : true}
-	class={`ui-status-dot t-${tone} s-${size} ${klass}`.trim()}
+	class={`ui-status-dot t-${tone} s-${size}${pulse ? ' pulse' : ''} ${klass}`.trim()}
 ></span>
 
 <style>
@@ -56,5 +59,25 @@
 	}
 	.ui-status-dot.t-warn {
 		background: var(--warning);
+	}
+	/* Opacity only — the dot carries no glow (above) and must not grow one to blink. */
+	.ui-status-dot.pulse {
+		animation: status-blink 1.1s steps(1, end) infinite;
+	}
+	@keyframes status-blink {
+		0%,
+		50% {
+			opacity: 1;
+		}
+		50.01%,
+		100% {
+			opacity: 0.2;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.ui-status-dot.pulse {
+			animation: none;
+			opacity: 0.6;
+		}
 	}
 </style>

@@ -590,12 +590,17 @@ impl Graph {
         }
     }
 
-    /// `creating` / `setup` / `ready` / `error`. Only `creating` is the graph's own — a node it
-    /// has built and not yet heard from. `error` is DERIVED from the fault rather than stored, so
-    /// a node cannot report itself healthy while carrying one.
+    /// `creating` / `setup` / `ready` / `error`. Only `creating` is the graph's own — a node whose
+    /// thread has not reported in yet, which for a Python node covers building the instance (its
+    /// module executes there). `error` means there is NO instance running: the host failed to
+    /// start, or `setup()` raised and nothing runs against a node that never initialized.
     pub fn node_stage(&self, uid: Uid) -> &'static str {
         let Some(entry) = self.nodes.get(&uid) else { return "error" };
-        if entry.setup_error.is_some() || entry.last_error.is_some() {
+        // A `process()` raise is deliberately NOT folded in. The stage says whether the node has an
+        // instance behind it, and a node that ran and raised has one; what its last tick did is the
+        // ERROR, which rides its own field. Folded together, the client could not tell a node that
+        // never started from one that is running badly — and they want different indicators.
+        if entry.setup_error.is_some() {
             return "error";
         }
         entry.stage

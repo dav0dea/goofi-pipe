@@ -841,6 +841,16 @@ test.describe('the primitive gallery', () => {
 				['ok', 'error', 'warn'].map((t) => cssColor(page.getByTestId(`ui-statusdot-${t}`), 'backgroundColor'))
 			);
 			expect(new Set(fills).size, 'ok/error/warn dots are distinct colours').toBe(3);
+
+			// `pulse` blinks the dot instead of resting it — and blinks it with OPACITY, because the
+			// no-glow rule above holds for every state the dot can be in.
+			const pulsing = page.getByTestId('ui-statusdot-pulse');
+			await expect(pulsing).toBeVisible();
+			expect(await pulsing.evaluate((el) => getComputedStyle(el).boxShadow)).toBe('none');
+			expect(
+				await pulsing.evaluate((el) => getComputedStyle(el).animationName),
+				'a dead node blinks'
+			).not.toBe('none');
 		});
 
 		test('EmptyState centres its content on both axes and renders bare without snippets', async ({ page }) => {

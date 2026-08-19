@@ -18,6 +18,7 @@
 	import { linkedNodeName } from '$lib/workspace/panelState';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { Bar, Icon, IconButton, StatusDot, EmptyState } from '$lib/ui';
+	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import NodeSelect from './NodeSelect.svelte';
 	import type { Snippet } from 'svelte';
 
@@ -58,7 +59,15 @@
 	     gets bound without a drag, which is the only door a phone has. -->
 	<Bar>
 		{#snippet start()}
-			{#if node}<StatusDot tone={node.error ? 'error' : 'ok'} size="sm" />{/if}
+			{#if node}
+				{@const health = nodeHealth(node)}
+				<StatusDot
+					tone={health.tone}
+					size="sm"
+					pulse={health.kind === 'dead'}
+					title={health.title}
+				/>
+			{/if}
 			<NodeSelect {panelId} state={linkState} emptyLabel="No node" />
 			{#if node && controls}
 				<div class="controls thin-scrollbar">{@render controls(node)}</div>

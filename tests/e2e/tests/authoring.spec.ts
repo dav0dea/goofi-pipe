@@ -423,6 +423,14 @@ test.describe('the node body seam', () => {
 				await nodeHeader.evaluate((el) => getComputedStyle(el).borderBottomWidth),
 				'the separation is still drawn — once — so an output-less node keeps it'
 			).toBe('1px');
+
+			// One health indicator, and it is the library's dot rather than a shape of the card's own —
+			// the header used to swap a bespoke circle for a bespoke spinner depending on the stage.
+			// It settles green: amber (still coming up) and red (errored / dead) are asserted where
+			// they are deterministic, in the unit tests over `nodeHealth` and in the UI gallery.
+			const dot = nodeHeader.locator('.ui-status-dot');
+			await expect(dot, 'the node header carries exactly one status dot').toHaveCount(1);
+			await expect(dot, 'a running node reads as running').toHaveClass(/t-ok/);
 		} finally {
 			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
 			await waitForNoNode(page, uid);

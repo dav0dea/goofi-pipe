@@ -7,6 +7,7 @@
 	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE, inputPorts, inputUnits } from './nodeMetrics';
 	import { nodeHealth } from './nodeHealth';
+	import { StatusDot } from '$lib/ui';
 	import { formatUpdateRate } from './nodeStats';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
@@ -48,15 +49,14 @@
 		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	// Health: ok / error (code, red border) / booting.
+	// Health: ok / error / dead (both red-bordered) / booting.
 	const health = $derived(nodeHealth(node));
-	const isError = $derived(health.kind === 'error');
-	// Still coming up (child importing its implementation / running setup()) —
-	// spinner + stage label instead of the status dot, body slightly dimmed.
+	const isError = $derived(health.kind === 'error' || health.kind === 'dead');
+	// Still coming up (building its implementation / running setup()) — the dot goes amber and the
+	// stage names itself beside it, body slightly dimmed.
 	const isBooting = $derived(health.kind === 'booting');
 	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
 	const flashing = $derived(flashStore.active(node?.uid));
-	const healthColor = $derived(isError ? 'var(--danger)' : 'var(--success)');
 	// Glanceable update rate at the right of the header — faint by default, brought
 	// forward on hover or selection. Null until the node's first NODE_STATS push. Adds no height.
 	const rateLabel = $derived(formatUpdateRate(node?.stats));
@@ -107,11 +107,15 @@
 	     matter how the slots stack. Nothing inside it needs to round itself. -->
 	<div class="surface">
 		<div class="header">
-			{#if isBooting}
-				<span class="boot-spinner" title={health.title} data-testid="boot-spinner"></span>
-			{:else}
-				<span class="health" style="background: {healthColor};" title={health.title}></span>
-			{/if}
+			<!-- The node card is sized in fixed px, so the dot is told its diameter rather than
+			     tracking the responsive rem the primitive defaults to. -->
+			<StatusDot
+				tone={health.tone}
+				pulse={health.kind === 'dead'}
+				title={health.title}
+				style="--status-dot-size: 8px"
+				data-testid="node-health"
+			/>
 			<span class="name">{label}</span>
 			{#if isBooting}
 				<span class="boot-label" data-testid="boot-label">{health.label}</span>
@@ -212,21 +216,6 @@
 	.goofi-node.booting .surface {
 		opacity: 0.75;
 	}
-	.boot-spinner {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		border: 1.5px solid color-mix(in srgb, var(--accent) 40%, transparent);
-		border-top-color: var(--accent);
-		animation: boot-spin 0.8s linear infinite;
-		box-sizing: border-box;
-	}
-	@keyframes boot-spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
 	.boot-label {
 		flex: 0 0 auto;
 		font-size: 9px;
@@ -251,9 +240,6 @@
 		.goofi-node.undo-flash .surface {
 			animation: none;
 		}
-		.boot-spinner {
-			animation: none;
-		}
 	}
 	.header {
 		flex: 0 0 auto;
@@ -267,12 +253,6 @@
 		border-bottom: 1px solid var(--border);
 		cursor: pointer;
 		user-select: none;
-	}
-	.health {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		flex-shrink: 0;
 	}
 	.name {
 		font-weight: 600;
