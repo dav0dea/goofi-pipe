@@ -27,9 +27,9 @@ const WORKERS = Number(
 	process.env.GOOFI_E2E_WORKERS ?? Math.max(1, Math.min(8, Math.floor(os.cpus().length / 2)))
 );
 
-// The gallery specs, named rather than pattern-matched, because what makes one is the ROUTE it
-// drives: `inspector.spec.ts` is a product spec and `touch-inspector.spec.ts` is a gallery one.
-const GALLERY = /\/(ui-gallery|inspector-gallery)\.spec\.ts$/;
+// The gallery specs, matched on the exact file name because what makes one is the ROUTE it drives,
+// not a word in its name: `inspector.spec.ts` is a product spec that happens to say "inspector".
+const GALLERY = /\/gallery\.spec\.ts$/;
 const GALLERY_TOUCH = /\/touch-gallery\.spec\.ts$/;
 
 export default defineConfig({

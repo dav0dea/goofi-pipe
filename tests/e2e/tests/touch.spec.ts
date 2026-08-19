@@ -2231,7 +2231,7 @@ test.describe('the expression editor under a finger', () => {
 	});
 });
 
-test.describe('at 320px', () => {
+test.describe('the narrowest phone', () => {
 	/**
 	 * R Task 5 (§3.1e/f) — what a narrow viewport clips today.
 	 *
