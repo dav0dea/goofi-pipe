@@ -51,7 +51,7 @@ fn sync_frontend(frontend: &Path) {
         }
     }
 
-    // `build/` is the output — walk it for its newest mtime but do NOT watch it (avoid self-retrigger).
+    // `build/` is the output — walk it for its newest mtime here; `embed_spa` is what watches it.
     let built = newest_mtime(&frontend.join("build"), false);
 
     let stale = match (newest_src, built) {
@@ -95,8 +95,8 @@ fn sync_frontend(frontend: &Path) {
 /// Newest modification time of `path` (a file) or anything under it (a dir), or `None` if absent.
 /// When `watch`, also emits `cargo:rerun-if-changed` for every path visited — a per-path emit (not a
 /// bare directory) is robust across cargo versions, which differ on whether a watched directory is
-/// scanned recursively. Sources pass `watch = true`; the `build/` output passes `false` (watching it
-/// would self-retrigger).
+/// scanned recursively. Sources pass `watch = true`; the `build/` output passes `false`, because
+/// `embed_spa` watches it per embedded file instead.
 fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if watch {
@@ -121,10 +121,21 @@ fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
 ///
 /// An absent or empty tree emits an empty table rather than failing — a crate vendored without the
 /// frontend still builds, and serves no page.
+///
+/// Every embedded file is WATCHED, and the tree's directories with it. `include_bytes!` names an
+/// absolute path, so a `build/` rewritten behind cargo's back — which is what `npm run build` does,
+/// and what `tests/e2e` runs before it builds the binary — leaves this table naming hashed files that
+/// are gone, and the crate stops compiling. Watching does not self-retrigger: `sync_frontend`'s npm
+/// run dirties the tree once, the next build re-runs this script, finds no source newer than the
+/// build, and settles.
 fn embed_spa(build: &Path) {
     let mut files = Vec::new();
     walk(build, build, &mut files);
     files.sort();
+    println!("cargo:rerun-if-changed={}", build.display());
+    for (_, abs) in &files {
+        println!("cargo:rerun-if-changed={abs}");
+    }
     let rows: String = files
         .iter()
         .map(|(url, abs)| format!("    ({url:?}, include_bytes!({abs:?})),\n"))
@@ -138,6 +149,9 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     for e in entries.filter_map(Result::ok) {
         let path = e.path();
         if path.is_dir() {
+            // Watched so a file APPEARING in it re-runs this script — no file's own mtime can say
+            // that, and a fresh bundle is all-new hashed names.
+            println!("cargo:rerun-if-changed={}", path.display());
             walk(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
             // `/` in the URL on every platform, and the absolute path for `include_bytes!`.
