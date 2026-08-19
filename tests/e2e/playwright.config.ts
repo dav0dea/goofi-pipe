@@ -51,44 +51,30 @@ export default defineConfig({
 		headless: true,
 		trace: 'on-first-retry'
 	},
-	// Six projects share the top-level `use`. `default` runs every existing spec EXCEPT the
-	// touch-scoped ones (fine-pointer desktop chrome); `touch` runs only `touch-*` under Pixel 7
-	// emulation, whose hasTouch+isMobile+viewport flip (pointer:coarse)/(hover:none) true so the
-	// coarse density floor engages.
+	// Six projects share the top-level `use`. `default` is the fine-pointer desktop; `touch` runs
+	// the `touch*` files under Pixel 7 emulation, whose hasTouch+isMobile+viewport flip
+	// (pointer:coarse)/(hover:none) true so the coarse density floor engages.
 	//
-	// `touch-landscape` and `tablet` deliberately run a NAMED FEW of the touch specs rather than
-	// the whole suite. Both orientations of phone and tablet are in scope (CLAUDE.md), but almost
-	// everything the touch suite proves is driven by the coarse media query, which answers
-	// identically at 412px and at 1080px: re-running the hit floors, the hover doors and the
-	// long-press doors in three projects would triple the wall clock to re-measure a constant.
-	// What genuinely differs is what FITS — the header's progressive overflow, the inspector's
-	// clamp against its host, a point-anchored popover's clamp against the screen, and whether a
-	// 360px-tall viewport leaves a canvas at all — and that is `touch-reflow.spec.ts`.
+	// `touch-landscape` and `tablet` run a NAMED FEW of the touch files, not the whole set. Both
+	// orientations of phone and tablet are in scope, but almost everything the touch suite proves is
+	// driven by the coarse media query, which answers identically at 412px and at 1080px. What
+	// genuinely differs is what FITS, and that is `touch-reflow.spec.ts`. `touch-anchor.spec.ts`
+	// joins it in landscape for the opposite reason: what it measures is a CONSTANT that must
+	// survive the orientation change — orientation picks only the anchor, input modality picks the
+	// gesture — so running one file in two projects is what makes a re-coupling fail by name.
+	// Neither is in `tablet`, which is portrait and would re-measure `touch`'s answer.
 	//
-	// `touch-modality.spec.ts` and `touch-placement.spec.ts` join it in `touch-landscape` for the
-	// opposite reason: what they measure is a CONSTANT that must survive the orientation change.
-	// The rule both are built on is that orientation picks only the anchor and INPUT MODALITY picks
-	// the gesture and the affordance, so the same assertions have to come back the same answer in
-	// both anchors — and running one file in the two projects is what makes a re-coupling fail by
-	// name instead of going unnoticed. `touch-placement` is the gesture half of that rule: placing
-	// a node by dragging its ghost is gated on `pointerType`, per event, and a media query anywhere
-	// in that path would show up here as a landscape-only red. Neither is in `tablet`: that project
-	// is portrait too, so it would re-measure `touch`'s answer rather than the other anchor.
+	// Tablet LANDSCAPE (1138x712) is not its own project: it sits between tablet portrait and
+	// `default`'s 1280, and every invariant in the reflow file is monotone in width.
 	//
-	// Tablet LANDSCAPE (1138×712) is not its own project: it is wider than the tablet portrait
-	// geometry and narrower than `default`'s 1280, and every invariant in the reflow file is
-	// monotone in width, so it can only land between two geometries already covered.
-	//
-	// Both new descriptors are Chromium ones (`iPad (gen 7)` would pull in WebKit, which nothing
-	// else in this suite needs and which would have to be downloaded before the suite could run).
+	// Both descriptors are Chromium ones (`iPad (gen 7)` would pull in WebKit, which nothing else
+	// here needs and which would have to be downloaded before the suite could run).
 	//
 	// The two GALLERY projects are the only `fullyParallel` ones, because they are the only ones
 	// that can be: `/dev/ui` and `/dev/inspector` mount no AppShell, open no socket and name no
 	// patch, so the isolation the product specs get from a `finally` is theirs by construction.
 	// They are also ~90% fixed cost, so splitting them per TEST rather than per FILE is what lets
-	// the fleet fill its slots with them (33.0s → 7.3s standalone, measured). Two projects and not
-	// one because the touch pair proves the coarse doors and needs the Pixel 7 descriptor to do it;
-	// `npm run gallery` runs both, which is the inner loop while working on `$lib/ui`.
+	// the fleet fill its slots with them (33.0s -> 7.3s standalone, measured).
 	projects: [
 		{ name: 'default', testIgnore: [/touch.*\.spec\.ts/, GALLERY] },
 		{
