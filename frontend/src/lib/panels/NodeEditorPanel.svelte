@@ -26,6 +26,7 @@
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
+	import { camera } from '$lib/editor/camera';
 	import FlowApi from '$lib/editor/FlowApi.svelte';
 	import SubpatchZoomExit from '$lib/editor/SubpatchZoomExit.svelte';
 	import SnapGuides from '$lib/editor/SnapGuides.svelte';
@@ -1311,6 +1312,15 @@
 	let getViewport = $state<(() => FlowViewport) | undefined>(undefined);
 	let setViewport = $state<((v: FlowViewport) => void) | undefined>(undefined);
 
+	// The pan/zoom, bound both ways so every change — a drag, a pinch, a fit — lands in the panel's
+	// camera. A layout reshape or a page switch DESTROYS this component, so the camera outliving it
+	// is what carries the framing across (see `editor/camera.ts`).
+	const cam = camera(untrack(() => panelId));
+	let viewport = $state<FlowViewport>(cam.viewport ?? { x: 0, y: 0, zoom: 0.85 });
+	$effect(() => {
+		cam.viewport = viewport;
+	});
+
 	function fitView(): void {
 		rootEl?.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
@@ -1429,7 +1439,7 @@
 			fitViewOptions={FIT_OPTIONS}
 			minZoom={MIN_ZOOM}
 			maxZoom={MAX_ZOOM}
-			initialViewport={{ x: 0, y: 0, zoom: 0.85 }}
+			bind:viewport
 			zoomOnDoubleClick={false}
 			autoPanOnNodeDrag={false}
 		>
@@ -1438,7 +1448,7 @@
 			     read-only mode and nothing else in the UI would say the canvas is locked, so it reads
 			     as breakage rather than as a mode. -->
 			<Controls showLock={false} />
-			<FitToGraph options={FIT_OPTIONS} />
+			<FitToGraph {panelId} options={FIT_OPTIONS} />
 			<FlowApi bind:screenToFlowPosition={screenToFlow} bind:getViewport bind:setViewport />
 			<SubpatchZoomExit {entered} onExit={() => exitToDepth(enteredPath.length - 1)} />
 			{#if pendingPlacement}

@@ -689,18 +689,45 @@ test.describe('a panel header that does not fit', () => {
 		}
 	});
 
+	/** The first editor's pan/zoom matrix, read off the element the flow actually transforms. */
+	function framing(page: Page): Promise<string> {
+		return page
+			.locator('.svelte-flow__viewport')
+			.first()
+			.evaluate((el) => getComputedStyle(el).transform);
+	}
+
+	/** Drag the canvas so the framing is the USER's, not the default one a remount would land on. */
+	async function panAway(page: Page): Promise<void> {
+		const box = (await page.locator('.svelte-flow__pane').first().boundingBox())!;
+		await page.mouse.move(box.x + box.width - 80, box.y + box.height - 80);
+		await page.mouse.down();
+		await page.mouse.move(box.x + box.width - 220, box.y + box.height - 190, { steps: 8 });
+		await page.mouse.up();
+	}
+
 	test('the header actions act: Split Right, Split Down and Maximize', async ({ page }) => {
 		await page.goto('/');
 		await waitForApp(page);
 		await widthTo(page, 1400);
 		expect(await inHeader(page), 'all three are inline at this width').toEqual(ACTIONS);
 
+		// A node and a framing of the user's own. Every action below reshapes the layout tree, which
+		// DESTROYS the editor's component — so each one is also a chance to throw the pan/zoom away and
+		// re-centre the graph, which is what it used to do.
+		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+		await waitForNode(page, uid);
+		await panAway(page);
+		const framed = await framing(page);
+
 		// Maximize — `maximizedPanelId` lives outside `WorkspaceState`, so this provably cannot reach
 		// the arrangement or the `.gfi`, and it is read back through the button's own label flip.
 		await hdr(page).getByRole('button', { name: 'Maximize panel' }).click();
 		await expect(hdr(page).getByRole('button', { name: 'Restore panel' })).toBeVisible();
+		expect(await framing(page), 'maximizing keeps the framing').toBe(framed);
 		await hdr(page).getByRole('button', { name: 'Restore panel' }).click();
 		await expect(hdr(page).getByRole('button', { name: 'Maximize panel' })).toBeVisible();
+		expect(await framing(page), 'and so does restoring').toBe(framed);
 
 		// Split Right — a row split, so the new panel lands beside this one.
 		await hdr(page).getByTestId('panel-split-row').click();
@@ -710,9 +737,11 @@ test.describe('a panel header that does not fit', () => {
 				els.map((e) => e.getBoundingClientRect())
 			);
 			expect(b.left, 'and it sits beside the original, not under it').toBeGreaterThan(a.left);
+			expect(await framing(page), 'the editor beside the new panel is still framed').toBe(framed);
 		} finally {
 			await closeSplit(page);
 		}
+		expect(await framing(page), 'closing the split leaves the framing alone too').toBe(framed);
 
 		// Split Down — a column split: the new panel lands under this one.
 		await hdr(page).getByTestId('panel-split-column').click();
@@ -722,8 +751,25 @@ test.describe('a panel header that does not fit', () => {
 				els.map((e) => e.getBoundingClientRect())
 			);
 			expect(b.top, 'and it sits under the original, not beside it').toBeGreaterThan(a.top);
+			expect(await framing(page), 'a column split keeps it as well').toBe(framed);
 		} finally {
 			await closeSplit(page);
+		}
+
+		// …and a second layout page, which swaps the whole tree rather than reshaping it.
+		const tabs = page.getByTestId('workspace-tabs').locator('.ui-tab');
+		await page.evaluate(() => (window as any).goofi.commands.addTab());
+		await expect(tabs).toHaveCount(2);
+		try {
+			await tabs.first().click();
+			await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+			expect(await framing(page), 'coming back to a page finds it as it was left').toBe(framed);
+		} finally {
+			// The ✕ only answers on the tab in front, so the added one is brought back to be closed.
+			await tabs.nth(1).click();
+			await closeAddedTab(page);
+			await page.evaluate((u) => (window as any).goofi.commands.removeNode(u), uid);
+			await waitForNoNode(page, uid).catch(() => {});
 		}
 	});
 
