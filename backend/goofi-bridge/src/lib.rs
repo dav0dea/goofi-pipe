@@ -859,7 +859,7 @@ fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
 /// `None` [`goofi_engine::Command::WireStub`] already models ("an unwire always applies"), and the
 /// only shape the edge-delete path sends. Parsing the pair as ONE value is what keeps the
 /// half-specified third state unconstructible: name either half and both are required.
-fn parse_inner(payload: &Value) -> Result<Option<(Uid, String)>, String> {
+fn parse_inner(payload: &Value) -> Result<goofi_engine::subpatch::StubInner, String> {
     let named = |k: &str| payload.get(k).is_some_and(|v| !v.is_null());
     if !named("inner_node") && !named("inner_slot") {
         return Ok(None);

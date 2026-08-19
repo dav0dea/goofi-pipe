@@ -1096,7 +1096,7 @@ impl Graph {
     /// Chain-resolve a scope's stub port to the single physical inner leaf `(uid, slot)` it exposes
     /// (walking nested scopes); `None` if unwired. Used by the snapshot projection and the data
     /// plane (a viewer on `scope/stub` subscribes to this leaf) + link authoring.
-    pub fn resolve_stub(&self, scope: Uid, stub: &str) -> Option<(Uid, String)> {
+    pub fn resolve_stub(&self, scope: Uid, stub: &str) -> subpatch::StubInner {
         subpatch::resolve_stub(&self.scopes, scope, stub)
     }
 
@@ -1403,7 +1403,7 @@ impl Graph {
     /// `Expand` captures these BEFORE dissolving so its `Group` inverse can re-point them back
     /// exactly (Expand re-points them forward to the child stub's inner). Empty if `scope` is at ROOT
     /// or no parent stub references it.
-    pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<(Uid, subpatch::StubId, Option<(Uid, String)>)> {
+    pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<subpatch::ParentStub> {
         let Some(p) = self.scope_of(scope) else {
             return vec![];
         };
@@ -1418,10 +1418,6 @@ impl Graph {
             })
             .unwrap_or_default()
     }
-
-    /// Directly set a stub's `inner` with NO validation — the restore path for re-pointing a parent
-    /// stub during a Group/Expand round-trip, where the target is a known-good captured state (which
-    /// may name a nested scope, unlike the validated `set_stub_inner` wire path).
 
     /// One stub of a scope, mutable. Answers `None` rather than an error string: every `Command`
     /// that edits a boundary already guards on the stub existing.
@@ -1587,7 +1583,7 @@ impl Graph {
 
     /// Set or clear a stub's inner target — the canonical wire/unwire. Check-then-mutate, so a
     /// refused attempt leaves the stub untouched.
-    pub fn set_stub_inner(&mut self, scope: Uid, stub: &str, inner: Option<(Uid, String)>) -> Result<(), String> {
+    pub fn set_stub_inner(&mut self, scope: Uid, stub: &str, inner: subpatch::StubInner) -> Result<(), String> {
         match inner {
             Some(target) => {
                 let dtype = self.stub_wire_dtype(scope, stub, &target)?;
@@ -1611,11 +1607,6 @@ impl Graph {
             }
         }
     }
-
-    /// Insert a full captured stub at a specific id — the restore inverse of removing a stub.
-
-
-
 
 
     // The `update_member_param` / `set_member_pos` / `set_member_expression` wrappers are gone

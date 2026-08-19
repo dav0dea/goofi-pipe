@@ -209,11 +209,11 @@ fn envelope_axis(bytes: &[u8], shape: &[usize], dim: usize, max: usize) -> Optio
             // rather than the (+INF, -INF) pair, which is not in the input and would wreck
             // a viewer's autoscale. A bin of real infinities always sets at least one seed.
             let all_nan = |i: usize| mn[i] == f32::INFINITY && mx[i] == f32::NEG_INFINITY;
-            for i in 0..inner {
-                write_f32(if all_nan(i) { f32::NAN } else { mn[i] }, &mut out);
+            for (i, &v) in mn.iter().enumerate() {
+                write_f32(if all_nan(i) { f32::NAN } else { v }, &mut out);
             }
-            for i in 0..inner {
-                write_f32(if all_nan(i) { f32::NAN } else { mx[i] }, &mut out);
+            for (i, &v) in mx.iter().enumerate() {
+                write_f32(if all_nan(i) { f32::NAN } else { v }, &mut out);
             }
             if o == 0 {
                 let mid = (lo + hi.saturating_sub(1)) / 2;

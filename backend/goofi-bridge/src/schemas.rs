@@ -10,11 +10,6 @@ use serde_json::{json, Map, Value};
 pub const ROOT_ID: &str = "__root__";
 pub const PROTOCOL_VERSION: i64 = 1;
 
-/// A single param's current value as the frontend's `descriptor.value` JSON. The one
-/// place param → wire-value lives, shared by [`describe_param`] and the live
-/// `param_values` projection so the preview and the descriptor always agree.
-
-
 /// A single param descriptor (discriminated on `type`). `expr` is the instance's
 /// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is
 /// the static help text from the type's declaration, which the runtime [`Param`] cannot carry.

@@ -12,7 +12,7 @@
 //! no-op, so two clients undoing the same change converge. What a FRESH caller must satisfy is
 //! [`Command::precondition`], checked in `apply` and never in `flip`.
 
-use crate::subpatch::{Dir, Stub, StubId};
+use crate::subpatch::{self, Dir, Stub, StubId};
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
@@ -57,7 +57,7 @@ pub struct ScopeRestore {
     /// Parent-scope stubs `Expand` re-pointed away from this scope (`(parent, stub_id, old_inner)`),
     /// so the Group inverse re-points them back exactly. Empty for a delete-undo (which prunes, not
     /// re-points) — see [`Graph::parent_stubs_referencing`].
-    pub parent_stubs: Vec<(Uid, StubId, Option<(Uid, String)>)>,
+    pub parent_stubs: Vec<subpatch::ParentStub>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
@@ -216,7 +216,7 @@ pub enum Command {
     WireStub {
         scope: Uid,
         stub_id: StubId,
-        inner: Option<(Uid, String)>,
+        inner: subpatch::StubInner,
         dtype: Option<goofi_core::SlotType>,
     },
     /// Edit a stub's display name and/or pill pos. A `None` field is left untouched; the inverse

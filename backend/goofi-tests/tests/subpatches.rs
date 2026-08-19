@@ -144,7 +144,7 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     let g = Goofi::new();
     let buf = g.add("Buffer");
     let inner = group(&g, &[hex(buf)]);
-    let outer = group(&g, &[inner.clone()]);
+    let outer = group(&g, std::slice::from_ref(&inner));
 
     let ib = boundary(&g, &inner, "out");
     g.call("wire_boundary", j!({ "inst_id": inner, "bnd_id": ib,

@@ -96,11 +96,11 @@ In priority order. These override speed.
    quotes. There is no rustfmt.toml and no Prettier config — **never run Prettier**, hand-match
    the style instead.
 
-6. **Zero warnings.** A task is not done at "finished". Build with `--all-targets` and clear what
-   it prints — that flag is load-bearing, because a plain build never compiles the integration
-   test targets and a warning there ships. Remove the dead field; never silence it with a `_`
-   prefix or an `#[allow]`. Clippy is a separate, currently-unmet bar with a pre-existing
-   backlog: add no new clippy warning in a file you touch, and do not claim the workspace clean.
+6. **Zero warnings, and that includes clippy.** A task is not done at "finished". Build with
+   `--all-targets` and clear what it prints — that flag is load-bearing, because a plain build
+   never compiles the integration test targets and a warning there ships. `cargo clippy --workspace
+   --all-targets` is clean as of 2026-08-18 and stays that way. Remove the dead field; never
+   silence it with a `_` prefix or an `#[allow]`.
 
 7. **Honest reporting.** If tests fail, say so with the output. If a step was skipped, say that.
    State what is verified plainly; never claim done what you have not run.
@@ -212,6 +212,7 @@ cargo test --workspace                      # must stay green, and warning-free
 cargo test -p goofi-tests --features embed  # …plus the in-process Python tier, which LINKS libpython
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # anchor the grep: a test's own
 #   log line can contain "warning:" and read as a failing gate when it is not
+cargo clippy --workspace --all-targets                             # …and this prints nothing
 cd frontend && npm run check && npm run test   # svelte-check + tsc strict, then vitest
 cd tests/e2e && npm run e2e                    # Playwright against the real binary
 ```

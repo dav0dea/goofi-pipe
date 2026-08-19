@@ -18,6 +18,13 @@ use goofi_core::SlotType;
 /// wires (which resolve through it to a flat leaf link) survive a relabel.
 pub type StubId = String;
 
+/// What a stub points at: `(inner member uid, inner slot-or-StubId)`. `None` = UNWIRED.
+pub type StubInner = Option<(Uid, String)>;
+
+/// One parent-scope stub and where it pointed — `(parent scope, stub id, inner)`. `Expand`
+/// captures these so its `Group` inverse can re-point them back exactly.
+pub type ParentStub = (Uid, StubId, StubInner);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dir {
     In,
@@ -44,7 +51,7 @@ pub struct Stub {
     /// The port's advertised dtype — the wired inner slot's type (provisional until wired).
     pub dtype: SlotType,
     /// `(inner member uid, inner slot-or-StubId)`; `None` = UNWIRED.
-    pub inner: Option<(Uid, String)>,
+    pub inner: StubInner,
     /// Pill position inside the entered view.
     pub pos: [f64; 2],
     /// Renameable display label (defaults `in0`/`out0`).
@@ -73,7 +80,7 @@ pub struct Scope {
 /// recoverable panic — a Rust stack overflow aborts the process, taking every node thread and every
 /// connected client with it, and `/data/<scope>/<stub>` reaches here from an ordinary subscribe.
 /// A cycle is malformed, so it answers `None`, the same answer an unknown stub already gives.
-pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> Option<(Uid, String)> {
+pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> StubInner {
     let mut seen: Vec<(Uid, &str)> = Vec::new();
     let (mut scope_uid, mut stub_id) = (scope_uid, stub_id);
     loop {

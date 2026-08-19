@@ -78,7 +78,7 @@ fn sync_frontend(frontend: &Path) {
     // it once the script finishes — a pre-announcement could not act as live progress anyway.
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
     let started = SystemTime::now();
-    match Command::new(npm).args(["run", "build"]).current_dir(&frontend).status() {
+    match Command::new(npm).args(["run", "build"]).current_dir(frontend).status() {
         Ok(s) if s.success() => {
             let secs = started.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
             println!(

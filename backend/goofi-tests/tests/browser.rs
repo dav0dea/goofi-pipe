@@ -71,7 +71,7 @@ async fn a_tab_mirrors_the_graph_off_the_binary_relay_and_follows_a_peer_editing
     let _server_sv = c.binary().await;
 
     let mut replica = GraphDoc::new();
-    c.ws.send(Message::Binary(replica.sync_hello().into())).await.unwrap();
+    c.ws.send(Message::Binary(replica.sync_hello())).await.unwrap();
     replica.on_sync(SyncMsg::decode(&c.binary().await).expect("a sync frame"));
     assert!(replica.node_ids().is_empty(), "converged on the empty graph");
 
