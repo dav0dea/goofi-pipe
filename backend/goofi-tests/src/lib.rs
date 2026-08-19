@@ -20,10 +20,15 @@ pub use goofi_engine::testing::OutputProbe;
 pub use goofi_engine::Uid;
 pub use serde_json::json as j;
 
-/// How long [`Goofi::until`] waits before it calls a condition unmet. Generous: a node reaches
-/// `Ready` on its own thread, and a loaded machine running the whole suite in parallel is the
-/// normal case, not the exception.
-const WAIT: Duration = Duration::from_secs(10);
+/// How long [`Goofi::until`] waits before it calls a condition unmet. Generous, and it has to be:
+/// a node reaches `Ready` on its own thread, a loaded machine running the whole suite in parallel
+/// is the normal case rather than the exception, and cargo runs the test BINARIES in parallel too —
+/// so a scenario here waits behind whatever `nodes_shipped` is doing, which is starting eight
+/// interpreters that each import numba. Ten seconds was calibrated before this repo shipped a node
+/// with a heavy dependency, and it made three different tests fail on three different runs.
+///
+/// Only a FAILING assertion pays this; a passing one returns as soon as its condition holds.
+const WAIT: Duration = Duration::from_secs(30);
 /// How long [`Goofi::stays`] watches a negative. A bare "check once" holds trivially against a
 /// runtime that has not got round to the thing yet.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -64,14 +69,6 @@ impl Goofi {
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
-    /// A longer deadline, for a scenario whose slowness is REAL rather than a hang: a node whose
-    /// dependency takes seconds to import is not late, and the suite runs it beside seven other
-    /// binaries doing the same.
-    pub fn patient(mut self) -> Goofi {
-        self.patience = WAIT * 4;
-        self
-    }
-
     pub fn client(&self, session: &str) -> Goofi {
         Goofi { state: self.state.clone(), session: session.into(), patience: self.patience }
     }

@@ -186,11 +186,7 @@ fn a_python_node_writing_to_stdout_does_not_corrupt_the_transport() {
     // memory frame plane. Two runs, because the first frame alone would not show a stream that
     // went out of sync behind it.
     let py = require_python();
-    // Patient: this waits for a SUBPROCESS node's child to boot — an interpreter importing goofi
-    // and numpy — while this binary's other tier tests are tearing their own children down. The
-    // wait is for something genuinely slow, and a tighter one fails on a busy machine without
-    // anything being wrong.
-    let g = Goofi::new().patient();
+    let g = Goofi::new();
     install(&g, &py.py, "chatty.py", r#"
 import sys
 import goofi

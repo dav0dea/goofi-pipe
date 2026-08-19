@@ -108,7 +108,7 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     // they all invite is to flatten first, and against a single channel a flattening node and a
     // correct one are indistinguishable.
     let py = require_python();
-    let g = Goofi::new().patient(); // four interpreters, each importing antropy
+    let g = Goofi::new();
     let src = g.add("_TestGrid");
     let buf = g.add("Buffer");
     g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
@@ -153,7 +153,7 @@ fn a_shipped_entropy_node_reads_a_real_signal_rather_than_answering_a_constant()
     // rows are one signal three times over. A sine says otherwise — permutation entropy of one is
     // solidly inside its range, where a flat or a saturated answer is not.
     let py = require_python();
-    let g = Goofi::new().patient(); // an interpreter importing antropy
+    let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 256.0 }));
