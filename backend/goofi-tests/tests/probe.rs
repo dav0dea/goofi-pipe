@@ -149,10 +149,12 @@ fn a_python_node_can_declare_itself_a_producer() {
 
 #[test]
 fn a_producer_that_is_not_a_bool_is_refused_rather_than_read_as_false() {
-    // Absent means "not a producer"; PRESENT-but-not-a-bool is an authoring mistake. Swallowing it
-    // costs the author a node that simply never runs once implicit free-run is gone, with no
-    // diagnostic anywhere — so the probe fails the node the way a bad slot or param declaration
-    // already does, and the palette greys it out with the reason.
+    // Absent means "not a producer"; present-but-not-a-bool is an authoring mistake. Swallowing it
+    // costs the author a node that simply never runs, with no diagnostic anywhere. `Manifest`
+    // refuses it where it is WRITTEN, so the import that evaluates the class body is what fails —
+    // and the node greys out with that reason, the way a bad slot or param declaration already
+    // does. The kind moved from a probe check to a construction one; what the palette shows did
+    // not.
     let py = test_python();
     match discover_one(&fixtures().join("bad_producer.py"), &py, "python", Isolation::InProcess) {
         Discovery::Unavailable { type_name, reason } => {
@@ -276,16 +278,16 @@ fn the_probe_itself_is_the_gil_routing_gate() {
 }
 
 #[test]
-fn the_gil_sample_covers_the_config_hooks() {
-    // The gate must read the GIL state AFTER the `config_*` hooks have run. A hook is exactly
-    // where a node does its declaration-time imports (goofi-pymod's own `device_options.py`
-    // fixture documents that as intended usage), and importing a C extension built without
-    // free-threading support re-enables the GIL process-wide. Sampled before the hooks, such a
+fn the_gil_sample_covers_the_whole_import() {
+    // The gate must read the GIL state after the module has been IMPORTED — module body and class
+    // body alike, which is where a node's declaration-time imports live (goofi-pymod's own
+    // `device_options.py` fixture documents that as intended usage). Importing a C extension built
+    // without free-threading support re-enables the GIL process-wide; sampled any earlier, such a
     // node routes to the in-process tier and only fails on its first tick.
     let Discovery::Found(d) =
         discover_one(&fixtures().join("gil_flip.py"), &ft_python(), "python", Isolation::InProcess)
     else {
         panic!("gil_flip.py discovers on the free-threaded interpreter")
     };
-    assert!(!d.gil_safe, "a hook that re-enabled the GIL must route to the subprocess tier");
+    assert!(!d.gil_safe, "an import that re-enabled the GIL must route to the subprocess tier");
 }

@@ -1,7 +1,7 @@
-//! `goofi.introspect(path)` — the discovery probe. Import a node module in THIS
-//! interpreter, find its `Node` subclass, call the `config_*` hooks (real imports
-//! available — that is the point), read the GIL state, and return the declarations as
-//! JSON. Raises on any failure so the Rust discoverer greys the node out.
+//! `goofi.introspect(path)` — the discovery probe. Import a node module in THIS interpreter (real
+//! imports available — that is the point), find its `Node` subclass, read its
+//! `goofi.Manifest` and the GIL state, and return the declarations as JSON. Raises on any failure
+//! so the Rust discoverer greys the node out.
 //!
 //! The JSON is the shared [`goofi_core::probe`] schema, `serde_json`-serialized — so it
 //! can't drift from the discoverer that parses it, and there is no hand-rolled escaper.
@@ -18,17 +18,14 @@ use crate::params::{BoolParam, DataType, FloatParam, InputSlot, IntParam, String
 
 #[pyfunction]
 pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
+    // The IMPORT is what has to happen before the GIL is sampled: a node's declaration-time
+    // imports run in its module body and in its class body, and importing a C extension built
+    // without free-threading support re-enables the GIL process-wide — which the routing gate has
+    // to see. Reading the manifest afterwards cannot change that answer, because a class attribute
+    // was already evaluated by the import that produced it.
     let module = module_from_path(py, path)?;
     let cls = find_node_class(py, &module)?;
-    let instance = cls.call0()?;
-
-    // Run the hooks FIRST, then sample the GIL. A hook is where a node does its
-    // declaration-time imports, and importing a C extension built without free-threading
-    // support re-enables the GIL process-wide — the routing gate has to see that. (Struct
-    // literal fields evaluate in written order, so this cannot be inlined below.)
-    let inputs = slots(&instance.call_method0("config_input_slots")?)?;
-    let outputs = out_slots(&instance.call_method0("config_output_slots")?)?;
-    let params = params(&instance.call_method0("config_params")?)?;
+    let m = cls.getattr("manifest")?;
 
     let intro = Introspection {
         gil_safe: !py
@@ -43,19 +40,10 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|d| d.extract::<String>().ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
-        // A plain class attribute (`producer = True`), not a hook: it is the one pacing an author
-        // declares, and a node that says nothing is not a source. ABSENT is the default; PRESENT
-        // but not a bool is an authoring mistake that raises, like a bad slot or param descriptor
-        // below — swallowing it would cost the author a node that silently never runs.
-        producer: cls
-            .getattr("producer")
-            .ok()
-            .map(|v| v.extract::<bool>())
-            .transpose()?
-            .unwrap_or(false),
-        inputs,
-        outputs,
-        params,
+        producer: m.getattr("producer")?.extract()?,
+        inputs: slots(&m.getattr("inputs")?)?,
+        outputs: out_slots(&m.getattr("outputs")?)?,
+        params: params(&m.getattr("params")?)?,
     };
     serde_json::to_string(&intro)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))

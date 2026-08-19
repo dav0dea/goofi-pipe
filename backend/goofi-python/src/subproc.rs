@@ -353,12 +353,7 @@ mod tests {
     const DOUBLE: &str = r#"
 import goofi
 class Double(goofi.Node):
-    @staticmethod
-    def config_input_slots():
-        return {"data": goofi.DataType.ARRAY}
-    @staticmethod
-    def config_output_slots():
-        return {"out": goofi.DataType.ARRAY}
+    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
     def process(self, data):
         return {"out": data.data * 2.0}
 "#;

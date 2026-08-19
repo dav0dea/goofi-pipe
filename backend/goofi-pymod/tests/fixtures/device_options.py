@@ -2,10 +2,12 @@ import platform
 
 import goofi
 
+# A REAL import at declaration time — the whole reason the probe runs the module instead of
+# AST-sandboxing it. stdlib `platform`, so no extra dep.
+SYSTEMS = [platform.system(), "manual"]
+
 
 class DevicePick(goofi.Node):
-    def config_params(self):
-        # A REAL import at declaration time — the whole reason the probe runs the
-        # module instead of AST-sandboxing it. stdlib `platform`, so no extra dep.
-        systems = [platform.system(), "manual"]
-        return {"device": {"name": goofi.StringParam(systems[0], options=systems)}}
+    manifest = goofi.Manifest(
+        params={"device": {"name": goofi.StringParam(SYSTEMS[0], options=SYSTEMS)}}
+    )

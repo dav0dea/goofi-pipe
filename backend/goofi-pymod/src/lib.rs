@@ -9,6 +9,7 @@ mod data;
 pub mod exec;
 mod introspect;
 pub mod loader;
+mod manifest;
 mod node;
 mod params;
 // The subprocess child loop (Rust iceoryx2 + shared codec) — wheel only.
@@ -25,6 +26,7 @@ use pyo3::prelude::*;
 #[pymodule]
 pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<data::Data>()?;
+    m.add_class::<manifest::Manifest>()?;
     m.add_class::<node::Node>()?;
     m.add_class::<params::DataType>()?;
     m.add_class::<params::InputSlot>()?;

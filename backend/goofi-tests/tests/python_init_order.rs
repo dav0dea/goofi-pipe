@@ -16,10 +16,8 @@ const NODE: &str = concat!(
     "import goofi\n",
     "import numpy as np\n",
     "class Double(goofi.Node):\n",
-    "    def config_input_slots(self):\n",
-    "        return {'data': goofi.DataType.ARRAY}\n",
-    "    def config_output_slots(self):\n",
-    "        return {'out': goofi.DataType.ARRAY}\n",
+    "    manifest = goofi.Manifest(inputs={'data': goofi.DataType.ARRAY},\n",
+    "                              outputs={'out': goofi.DataType.ARRAY})\n",
     "    def process(self, data):\n",
     "        return {'out': data.data * 2.0}\n",
 );

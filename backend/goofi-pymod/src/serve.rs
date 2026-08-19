@@ -55,10 +55,11 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
     let module = module_from_source(py, "goofi_node_main", &source)?;
     let instance = find_node_class(py, &module)?.call0()?;
     // The child is authoritative for BOTH slot lists: outputs name a bare return's slot, and
-    // inputs are the kwarg set `process()` is called with. The request carries only the slots
-    // that hold a frame, so the declared input names are what turn an absent one into `None`.
-    let out_slots = slot_names(&instance, "config_output_slots")?;
-    let in_slots = slot_names(&instance, "config_input_slots")?;
+    // inputs are the kwarg set `process()` is called with. The request carries only the slots that
+    // hold a frame, so the declared input names are what turn an absent one into `None`.
+    let manifest = instance.getattr("manifest")?;
+    let out_slots = slot_names(&manifest, "outputs")?;
+    let in_slots = slot_names(&manifest, "inputs")?;
     let out_refs: Vec<&str> = out_slots.iter().map(|s| s.as_str()).collect();
     let in_refs: Vec<&str> = in_slots.iter().map(|s| s.as_str()).collect();
 
@@ -66,12 +67,11 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
-/// The slot names one `config_*_slots()` hook declares, in declaration order. Only the keys
+/// The slot names one manifest field declares, in declaration order. Only the keys
 /// matter here — the dtypes (and any `InputSlot` options) are the probe's business, and the
 /// parent has already routed on them.
-fn slot_names(instance: &Bound<'_, PyAny>, hook: &str) -> PyResult<Vec<String>> {
-    let cfg = instance.call_method0(hook)?;
-    cfg.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
+fn slot_names(manifest: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<String>> {
+    manifest.getattr(field)?.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
 }
 
 /// Read a required env var, or a clean Python error naming it.

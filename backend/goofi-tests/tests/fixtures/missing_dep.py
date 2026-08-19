@@ -4,5 +4,4 @@ import goofi
 
 
 class Broken(goofi.Node):
-    def config_input_slots(self):
-        return {"data": goofi.DataType.ARRAY}
+    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY})
