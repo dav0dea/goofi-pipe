@@ -57,9 +57,8 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
     // The child is authoritative for BOTH slot lists: outputs name a bare return's slot, and
     // inputs are the kwarg set `process()` is called with. The request carries only the slots that
     // hold a frame, so the declared input names are what turn an absent one into `None`.
-    let manifest = instance.getattr("manifest")?;
-    let out_slots = slot_names(&manifest, "outputs")?;
-    let in_slots = slot_names(&manifest, "inputs")?;
+    let out_slots = slot_names(&instance, "OUTPUTS")?;
+    let in_slots = slot_names(&instance, "INPUTS")?;
     let out_refs: Vec<&str> = out_slots.iter().map(|s| s.as_str()).collect();
     let in_refs: Vec<&str> = in_slots.iter().map(|s| s.as_str()).collect();
 
@@ -67,11 +66,11 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
-/// The slot names one manifest field declares, in declaration order. Only the keys
-/// matter here — the dtypes (and any `InputSlot` options) are the probe's business, and the
-/// parent has already routed on them.
-fn slot_names(manifest: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<String>> {
-    manifest.getattr(field)?.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
+/// The slot names one declaration constant holds, in declaration order. Only the keys matter here
+/// — the dtypes (and any `InputSlot` options) are the probe's business, and the parent has already
+/// routed on them.
+fn slot_names(instance: &Bound<'_, PyAny>, constant: &str) -> PyResult<Vec<String>> {
+    instance.getattr(constant)?.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
 }
 
 /// Read a required env var, or a clean Python error naming it.

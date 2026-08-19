@@ -5,6 +5,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { settledBox } from '../lib/geometry';
 import { waitForApp, resetPatch, splitRight, closeAddedTab } from '../lib/app';
 import {
 	addNode,
@@ -1138,8 +1139,11 @@ test.describe('a node reports an error', () => {
 			created.push(uid);
 			await expect(rows, 'the open list grew a row').toHaveCount(2);
 
-			const chipBox = (await chip.boundingBox())!;
-			const menuBox = (await popover.boundingBox())!;
+			// SETTLED, both: a popover that has just grown a row RE-PLACES itself, and a box read
+			// before that lands describes where it used to be — which reads as an overlap that is not
+			// there, or hides one that is.
+			const chipBox = await settledBox(chip);
+			const menuBox = await settledBox(popover);
 			const overlaps =
 				chipBox.x < menuBox.x + menuBox.width &&
 				menuBox.x < chipBox.x + chipBox.width &&

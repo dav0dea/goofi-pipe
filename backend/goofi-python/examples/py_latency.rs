@@ -131,8 +131,8 @@ fn main() {
         "import goofi\n",
         "import numpy as np\n",
         "class Work(goofi.Node):\n",
-        "    manifest = goofi.Manifest(inputs={'data': goofi.DataType.ARRAY},\n",
-        "                              outputs={'out': goofi.DataType.ARRAY})\n",
+        "    INPUTS = {'data': goofi.DataType.ARRAY}\n",
+        "    OUTPUTS = {'out': goofi.DataType.ARRAY}\n",
         "    def process(self, data):\n",
         "        return {'out': np.tanh(data.data) * 2.0 - data.data.mean()}\n",
     );

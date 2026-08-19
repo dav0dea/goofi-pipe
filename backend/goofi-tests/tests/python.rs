@@ -97,7 +97,9 @@ fn free_run(g: &Goofi, uid: Uid, hz: f64) {
 const AFFINE: &str = r#"
 import goofi
 class Affine(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY}, params={"gain": {"factor": goofi.IntParam(1, 0, 100)}})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    PARAMS = {"gain": {"factor": goofi.IntParam(1, 0, 100)}}
     def setup(self):
         self._base = 10
     def process(self, data):
@@ -150,7 +152,8 @@ fn a_python_node_that_raises_reports_it_and_the_child_carries_on() {
 import goofi
 import numpy as np
 class Boom(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def setup(self):
         self._runs = 0
     def process(self, data):
@@ -188,7 +191,8 @@ fn a_python_node_writing_to_stdout_does_not_corrupt_the_transport() {
 import sys
 import goofi
 class Chatty(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def process(self, data):
         print("debug from the node", flush=True)
         sys.stdout.flush()
@@ -219,7 +223,8 @@ import goofi
 import numpy as np
 class LateBoot(goofi.Node):
     setups = 0
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def setup(self):
         LateBoot.setups += 1
         if LateBoot.setups < 2:
@@ -283,7 +288,8 @@ import threading, time
 import numpy as np
 import goofi
 class Ticker(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def setup(self):
         self.count = 0
         def spin():
@@ -367,7 +373,9 @@ mod inproc {
 import goofi
 import numpy as np
 class Parity(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY}, params={"gain": {"factor": goofi.IntParam(1, 0, 100)}})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    PARAMS = {"gain": {"factor": goofi.IntParam(1, 0, 100)}}
     def setup(self):
         self._base = 10
     def process(self, data):
@@ -381,7 +389,8 @@ class Parity(goofi.Node):
 import goofi
 import numpy as np
 class Absent(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def process(self, data):
         if data is None:
             return {"out": np.array([-1.0], dtype=np.float32)}
@@ -451,7 +460,8 @@ import time
 import numpy as np
 import goofi
 class Sleeper(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY}, outputs={"out": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def process(self, data):
         time.sleep(0.15)
         return {"out": data.data * 2.0}

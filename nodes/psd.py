@@ -15,17 +15,15 @@ import goofi
 class Psd(goofi.Node):
     # `required`: process() reads `data.data` unconditionally, so a tick with an empty slot cannot
     # work. The engine refuses the tick before process() is entered.
-    manifest = goofi.Manifest(
-        inputs={"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)},
-        outputs={"psd": goofi.DataType.ARRAY},
-        params={
-            "welch": {
-                "nperseg": goofi.IntParam(
-                    256, 16, 4096, doc="Window length in samples: longer windows resolve finer frequencies."
-                )
-            }
-        },
-    )
+    INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
+    OUTPUTS = {"psd": goofi.DataType.ARRAY}
+    PARAMS = {
+        "welch": {
+            "nperseg": goofi.IntParam(
+                256, 16, 4096, doc="Window length in samples: longer windows resolve finer frequencies."
+            )
+        }
+    }
 
     def process(self, data):
         x = np.asarray(data.data, dtype=np.float64)

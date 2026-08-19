@@ -1,7 +1,7 @@
 //! `goofi.introspect(path)` — the discovery probe. Import a node module in THIS interpreter (real
-//! imports available — that is the point), find its `Node` subclass, read its
-//! `goofi.Manifest` and the GIL state, and return the declarations as JSON. Raises on any failure
-//! so the Rust discoverer greys the node out.
+//! imports available — that is the point), find its `Node` subclass, read the four declaration
+//! constants and the GIL state, and return them as JSON. Raises on any failure so the Rust
+//! discoverer greys the node out.
 //!
 //! The JSON is the shared [`goofi_core::probe`] schema, `serde_json`-serialized — so it
 //! can't drift from the discoverer that parses it, and there is no hand-rolled escaper.
@@ -25,7 +25,6 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
     // was already evaluated by the import that produced it.
     let module = module_from_path(py, path)?;
     let cls = find_node_class(py, &module)?;
-    let m = cls.getattr("manifest")?;
 
     let intro = Introspection {
         gil_safe: !py
@@ -40,10 +39,13 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|d| d.extract::<String>().ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
-        producer: m.getattr("producer")?.extract()?,
-        inputs: slots(&m.getattr("inputs")?)?,
-        outputs: out_slots(&m.getattr("outputs")?)?,
-        params: params(&m.getattr("params")?)?,
+        // `PRODUCER` not being a bool is an authoring mistake that RAISES, like a bad slot or
+        // param descriptor below — swallowing it would cost the author a node that silently never
+        // runs, with no diagnostic anywhere.
+        producer: cls.getattr("PRODUCER")?.extract()?,
+        inputs: slots(&cls.getattr("INPUTS")?)?,
+        outputs: out_slots(&cls.getattr("OUTPUTS")?)?,
+        params: params(&cls.getattr("PARAMS")?)?,
     };
     serde_json::to_string(&intro)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))

@@ -12,7 +12,5 @@ sys._is_gil_enabled = lambda: True
 class GilFlip(goofi.Node):
     """A node that re-enables the GIL while its module is imported."""
 
-    manifest = goofi.Manifest(
-        inputs={"data": goofi.DataType.ARRAY},
-        outputs={"out": goofi.DataType.ARRAY},
-    )
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}

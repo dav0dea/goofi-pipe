@@ -4,4 +4,4 @@ import goofi
 
 
 class Broken(goofi.Node):
-    manifest = goofi.Manifest(inputs={"data": goofi.DataType.ARRAY})
+    INPUTS = {"data": goofi.DataType.ARRAY}

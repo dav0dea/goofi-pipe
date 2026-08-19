@@ -41,10 +41,8 @@ class LempelZiv(goofi.Node):
 
     # `required`: process() reads `data.data` unconditionally, so a tick with an empty slot cannot
     # work. The engine refuses the tick before process() is entered.
-    manifest = goofi.Manifest(
-        inputs={"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)},
-        outputs={"out": goofi.DataType.ARRAY},
-    )
+    INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
 
     def process(self, data):
         x = np.asarray(data.data).ravel()

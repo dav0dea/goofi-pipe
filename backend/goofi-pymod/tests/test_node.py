@@ -3,36 +3,35 @@ import goofi
 
 def test_defaults_are_empty():
     n = goofi.Node()
-    assert n.manifest.inputs == {}
-    assert n.manifest.outputs == {}
-    assert n.manifest.params == {}
-    assert n.manifest.producer is False
+    assert n.INPUTS == {}
+    assert n.OUTPUTS == {}
+    assert n.PARAMS == {}
+    assert n.PRODUCER is False
     assert n.setup() is None
     assert n.process() is None
 
 
-def test_subclass_declares_one_manifest():
+def test_a_subclass_declares_itself_in_constants():
     class PSD(goofi.Node):
-        manifest = goofi.Manifest(
-            inputs={"data": goofi.DataType.ARRAY},
-            outputs={"psd": goofi.DataType.ARRAY},
-            params={"welch": {"nperseg": goofi.IntParam(256, 16, 4096)}},
-            producer=True,
-        )
+        INPUTS = {"data": goofi.DataType.ARRAY}
+        OUTPUTS = {"psd": goofi.DataType.ARRAY}
+        PARAMS = {"welch": {"nperseg": goofi.IntParam(256, 16, 4096)}}
+        PRODUCER = True
 
     n = PSD()
     assert isinstance(n, goofi.Node)
-    assert n.manifest.inputs["data"].value == "ARRAY"
-    assert n.manifest.outputs["psd"].value == "ARRAY"
-    assert n.manifest.params["welch"]["nperseg"].default == 256
-    assert n.manifest.producer is True
+    assert n.INPUTS["data"].value == "ARRAY"
+    assert n.OUTPUTS["psd"].value == "ARRAY"
+    assert n.PARAMS["welch"]["nperseg"].default == 256
+    assert n.PRODUCER is True
 
 
-def test_producer_must_be_a_bool():
-    # Refused where it is WRITTEN, so a mistyped pacing declaration cannot reach the probe as a
-    # node that silently never runs.
-    try:
-        goofi.Manifest(producer="yes")
-    except TypeError:
-        return
-    raise AssertionError("a non-bool producer must not construct")
+def test_an_omitted_constant_falls_back_to_the_base_class():
+    class OutputOnly(goofi.Node):
+        OUTPUTS = {"out": goofi.DataType.ARRAY}
+
+    n = OutputOnly()
+    assert n.OUTPUTS["out"].value == "ARRAY"
+    assert n.INPUTS == {}
+    assert n.PARAMS == {}
+    assert n.PRODUCER is False

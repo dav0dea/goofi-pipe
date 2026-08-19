@@ -8,6 +8,4 @@ SYSTEMS = [platform.system(), "manual"]
 
 
 class DevicePick(goofi.Node):
-    manifest = goofi.Manifest(
-        params={"device": {"name": goofi.StringParam(SYSTEMS[0], options=SYSTEMS)}}
-    )
+    PARAMS = {"device": {"name": goofi.StringParam(SYSTEMS[0], options=SYSTEMS)}}

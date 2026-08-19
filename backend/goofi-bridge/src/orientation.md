@@ -91,21 +91,21 @@ shipped type of the same name.
     import goofi
 
     class Gain(goofi.Node):
-        @staticmethod
-        def config_input_slots():
-            return {"data": goofi.DataType.ARRAY}
-        @staticmethod
-        def config_output_slots():
-            return {"out": goofi.DataType.ARRAY}
-        @staticmethod
-        def config_params():
-            return {"gain": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
+        INPUTS = {"data": goofi.DataType.ARRAY}
+        OUTPUTS = {"out": goofi.DataType.ARRAY}
+        PARAMS = {"gain": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
+
         def process(self, data):
             if data is None:
                 return None
             return {"out": (data.data * self.params.gain.factor.value, data.meta)}
 
     rescan_nodes {} → {"added": ["Gain"], "changed": [], "removed": []}
+
+Four constants declare the node, and each may be omitted: `INPUTS`, `OUTPUTS`, `PARAMS`, and
+`PRODUCER = True` for a source that paces itself rather than waiting for a frame. An input slot that
+`process()` reads unconditionally should say so — `goofi.InputSlot(goofi.DataType.ARRAY,
+required=True)` — and the engine then refuses the tick rather than calling you with `None`.
 
 Edit the file and rescan again: it returns under `changed`, and every live instance of that type
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens. A

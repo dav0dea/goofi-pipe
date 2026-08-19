@@ -30,8 +30,8 @@ const PY_SRC: &str = concat!(
     "import goofi\n",
     "import numpy as np\n",
     "class Bench(goofi.Node):\n",
-    "    manifest = goofi.Manifest(inputs={'data': goofi.DataType.ARRAY},\n",
-    "                              outputs={'out': goofi.DataType.ARRAY})\n",
+    "    INPUTS = {'data': goofi.DataType.ARRAY}\n",
+    "    OUTPUTS = {'out': goofi.DataType.ARRAY}\n",
     "    def process(self, data):\n",
     "        return {'out': data.data * 2 + 1}\n",
 );

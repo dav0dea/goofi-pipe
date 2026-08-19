@@ -18,7 +18,7 @@ const SRC: &str = r#"
 import goofi, sys
 import numpy as np
 class Tripper(goofi.Node):
-    manifest = goofi.Manifest(outputs={"out": goofi.DataType.ARRAY})
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
     def process(self):
         sys._is_gil_enabled = lambda: True
         return {"out": (np.zeros(1, dtype=np.float32), {})}

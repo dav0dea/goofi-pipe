@@ -13,7 +13,5 @@ sys.stdout.write("and a bare write, with no newline")
 class Chatty(goofi.Node):
     """A node whose dependency prints on import."""
 
-    manifest = goofi.Manifest(
-        inputs={"data": goofi.DataType.ARRAY},
-        outputs={"out": goofi.DataType.ARRAY},
-    )
+    INPUTS = {"data": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
