@@ -16,7 +16,7 @@ use std::time::Duration;
 use iceoryx2::config::Config;
 use iceoryx2::node::NodeState;
 use iceoryx2::prelude::*;
-use iceoryx2_bb_posix::file_descriptor_set::{FileDescriptorSet, FileEvent};
+use iceoryx2_bb_posix::file_descriptor::FileDescriptorBased;
 
 use goofi_core::Data;
 use goofi_node::NodeManifest;
@@ -259,21 +259,31 @@ impl Transport for IoxTransport {
         // taking one id per wake would leave the rest to be re-delivered a wake later. A listener
         // that errors reports no reason to wake, and the caller drains regardless — which is
         // exactly what makes a lost notification cost nothing.
-        // A BOUNDED wait selects on the listener's own descriptor rather than calling its
+        // A BOUNDED wait parks on the listener's own descriptor rather than calling its
         // `timed_wait_all`. That one arms the timeout with `SO_RCVTIMEO`, which the kernel rounds
         // to a jiffie — about 1.3 ms added to every park, which is most of a 500 Hz node's period
-        // and paced one at 300 Hz. `select` takes a `timeval` and does not round, and a zero
-        // timeout is a poll rather than `SO_RCVTIMEO`'s "no timeout at all".
+        // and paced one at 300 Hz.
+        //
+        // `ppoll` and not `select`: `select` was tried and is a defect. Its `fd_set` is a 1024-bit
+        // array, so a descriptor at or past `FD_SETSIZE` indexes off the end of it — a NON-
+        // unwinding panic inside libc's `FD_ISSET`, which aborts the whole process rather than
+        // failing one park. A goofi process holds several descriptors per node and reaches that
+        // ceiling on a large patch; the `editing` suite reached it in thirteen tests. `ppoll`
+        // takes the descriptor by value and has no such ceiling, and its `timespec` does not round.
         let _ = match timeout {
             Some(t) => {
-                // `guard` is declared after `set` so it drops FIRST — it borrows the set it
-                // detaches from.
-                let set = FileDescriptorSet::new();
-                let guard = set.add(&self.listener);
-                if guard.is_ok() {
-                    let _ = set.timed_wait(t, FileEvent::Read, |_| {});
-                }
-                drop(guard);
+                let mut pfd = libc::pollfd {
+                    fd: unsafe { self.listener.file_descriptor().native_handle() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let ts = libc::timespec {
+                    tv_sec: t.as_secs() as libc::time_t,
+                    tv_nsec: t.subsec_nanos() as i64,
+                };
+                // An interrupted or failed park is a park that ended early: the caller drains its
+                // mailboxes regardless, which is what makes a lost notification cost nothing.
+                unsafe { libc::ppoll(&mut pfd, 1, &ts, std::ptr::null()) };
                 self.listener.try_wait_all(|id| ids.push(id.as_value() as EventId))
             }
             None => self.listener.blocking_wait_all(|id| ids.push(id.as_value() as EventId)),

@@ -522,6 +522,7 @@ dependencies = [
  "iceoryx2",
  "iceoryx2-bb-posix",
  "indexmap",
+ "libc",
  "rmp-serde",
  "serde",
  "serde_json",
