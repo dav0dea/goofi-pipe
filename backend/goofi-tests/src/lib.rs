@@ -441,6 +441,19 @@ impl Viewer {
         goofi_codec::decode(&raw).expect("a decodable GOOF frame")
     }
 
+    /// Read frames until one satisfies `want`. A stream carries whatever the producer had emitted
+    /// before this viewer's spec was folded in, so the frame a test is about is rarely the first.
+    pub async fn until(&mut self, mut want: impl FnMut(&goofi_core::Data) -> bool) -> goofi_core::Data {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let d = self.decoded().await;
+            if want(&d) {
+                return d;
+            }
+            assert!(Instant::now() < deadline, "no frame matched before the deadline");
+        }
+    }
+
     /// The close code the bridge answered with, for a subscription it refuses.
     pub async fn close_code(&mut self) -> Option<u16> {
         loop {

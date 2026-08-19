@@ -1,8 +1,9 @@
-//! Flat sub-patch scopes: a tree of uids plus stub "symlinks", and no sharing.
+//! Sub-patches: a flat tree of uids plus stub "symlinks", and no sharing.
 //!
 //! A boundary is a NAMING indirection — the runtime link is always flat, leaf to leaf. Everything
 //! here reads the instance forest out of the replicated projection, which is where it lives; the
-//! structural broadcast events were retired.
+//! structural broadcast events were retired. The boundary ops carry their own half of the
+//! strictness rule, because a stub is the one place where a target can be real and still unwirable.
 
 use serde_json::Value;
 
@@ -178,4 +179,56 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
 
     // Naming ONE half is the third state the pair must not admit: neither a wire nor an unwire.
     g.refuse("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "inner_node": hex(buf) }));
+}
+
+#[test]
+fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    let inst = group(&g, &[hex(buf)]);
+
+    // Every op that names a port refuses one that is not there.
+    for (op, payload) in [
+        ("wire_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "inner_node": hex(buf), "inner_slot": "data" })),
+        ("remove_boundary", j!({ "inst_id": inst, "bnd_id": "in9" })),
+        ("rename_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "name": "left" })),
+        ("set_boundary_pos", j!({ "inst_id": inst, "bnd_id": "in9", "pos": [1.0, 2.0] })),
+    ] {
+        g.refuse(op, payload);
+    }
+
+    // A port that DOES exist, aimed at an inner target that cannot take the wire. `set_stub_inner`
+    // already refused this; the command used to swallow the refusal.
+    let bnd = boundary(&g, &inst, "in");
+    g.refuse("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+                                   "inner_node": hex(buf), "inner_slot": "nope" }));
+
+    // …and a cable onto a real but UNWIRED port has nothing behind it to reach. The reply used to
+    // claim there was; it now names the op that fills the port.
+    let why = g.refuse("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                                        "node_in": inst, "slot_in": bnd }));
+    assert!(why.contains("wire_boundary"), "an unwired port names the op that fills it: {why}");
+    // Once the port IS wired the same call lands, so the refusal gates the impossible rather than
+    // sub-patch wiring itself.
+    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+                                 "inner_node": hex(buf), "inner_slot": "data" }));
+    let made = g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                                       "node_in": inst, "slot_in": bnd }));
+    assert_eq!(made["node_in"], hex(buf), "the boundary resolves to its leaf: {made}");
+}
+
+#[test]
+fn a_stale_boundary_toggle_still_flips_after_a_peer_removed_the_port() {
+    // The replay half of the same rule: an `Err` inside a flip wedges that session's undo stack.
+    let one = Goofi::new();
+    let two = one.client("s2");
+    let buf = one.add("Buffer");
+    let inst = group(&one, &[hex(buf)]);
+    let bnd = boundary(&one, &inst, "in");
+    one.call("rename_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "name": "left" }));
+    two.call("remove_boundary", j!({ "inst_id": inst, "bnd_id": bnd }));
+
+    assert_eq!(one.call("undo", j!({}))["changed"], true);
+    assert_eq!(one.call("redo", j!({}))["changed"], true);
 }
