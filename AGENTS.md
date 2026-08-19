@@ -57,6 +57,29 @@ methodology, and not an installed skill. Where an outside practice disagrees, th
 7. **Root cause before fix.** Trace it to its origin and fix it there. Three failed fixes means
    the architecture is wrong; stop and reconsider it rather than adding a fourth patch.
 
+8. **One owner, and decisions from settled state.** Two halves of one rule, and the pair the rest of
+   this file leans on hardest.
+
+   Every conceptual thing has exactly ONE owner of its state. Everything else derives it on read, or
+   is a strictly one-way projection of it. A mirror, a cache beside its source, a count kept in two
+   layers, a value both stored and derivable — each is a thing every future change must remember to
+   update in lockstep, and eventually one does not.
+
+   And a decision is taken from SETTLED state: a batch of mutations yields at most one decision,
+   taken after the batch. Sequencing work off each individual mutation makes every intermediate a
+   command, and an intermediate is a state nobody intended and nothing asked for.
+
+   What it cost: "how many viewers want this stream" lived in three places, and each acted the
+   instant it was touched. A viewer that detached and re-attached inside one render tick passed
+   through zero on all three, so a batch that ended exactly where it started still closed the
+   socket, destroyed the backend's reducer and dropped the cached frame — under every OTHER viewer
+   of that slot. The end state was correct throughout, which is why every test passed.
+
+   Both halves are audited for on their own, and a finding stands **regardless of its
+   justification** — a good reason is an attribute of the duplication, never an exemption from
+   naming it. "No consequence observed" is a finding too: the cost of this pattern is paid later,
+   by whoever writes the change that forgets one holder.
+
 ---
 
 ## How we work
@@ -99,7 +122,7 @@ In priority order. These override speed.
 6. **Zero warnings, and that includes clippy.** A task is not done at "finished". Build with
    `--all-targets` and clear what it prints — that flag is load-bearing, because a plain build
    never compiles the integration test targets and a warning there ships. `cargo clippy --workspace
-   --all-targets` is clean as of 2026-08-18 and stays that way. Remove the dead field; never
+   --all-targets` is clean as of 2026-08-19 and stays that way. Remove the dead field; never
    silence it with a `_` prefix or an `#[allow]`.
 
 7. **Honest reporting.** If tests fail, say so with the output. If a step was skipped, say that.
