@@ -7,12 +7,17 @@
 //! output service** — the same door a node's downstream consumer comes in through, and the only
 //! door there is (§7: there is no privileged path into a node for a frame). It resolves that
 //! service name under one brief graph lock and is lock-free after, so no number of viewers can
-//! slow a `process()` down. A `viewers` refcount spawns the task on the first subscriber and
-//! aborts it on the last leave.
+//! slow a `process()` down. The first subscriber spawns the task, and **the SLOT owns its
+//! lifetime, not the socket count**: it lives until its node leaves the graph. A closing socket is
+//! no evidence that a slot stopped being watched — a reload, a network blip and the `Beat::Dead`
+//! verdict each close one under a viewer that is still there — and the last-leave teardown threw
+//! away the slot's only copy of the last frame, leaving the viewer that came back with nothing to
+//! draw until the producer's next emit: never, for a stopped one. An idle reducer costs one sweep
+//! of non-blocking receives every 16 ms, and reduces nothing while no connection is subscribed.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -37,7 +42,8 @@ struct SlotReducer {
     /// Encoded reduced-frame fan-out to every subscribing connection. `Bytes` so the socket
     /// task forwards the SHARED buffer — a per-subscriber copy would undo the dedup.
     tx: broadcast::Sender<Bytes>,
-    /// The driving task (aborted on last-leave teardown).
+    /// The driving task, stopped by [`Drop`] so that leaving the map is the ONLY thing a caller
+    /// has to get right.
     task: tokio::task::JoinHandle<()>,
     /// Count of reduce+encode passes — proves dedup in tests (one pass serves all subscribers).
     reductions: Arc<AtomicU64>,
@@ -48,8 +54,14 @@ struct SlotReducer {
     gen: Arc<AtomicU64>,
 }
 
-/// Manages all per-slot reducers, spawning/dropping them by subscriber refcount. Cloneable
-/// (shares one inner map); lives in `AppState`.
+impl Drop for SlotReducer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Manages all per-slot reducers, one per watched `(node, slot)`. Cloneable (shares one inner
+/// map); lives in `AppState`.
 #[derive(Clone)]
 pub struct SlotReducers {
     inner: Arc<Mutex<HashMap<SlotKey, SlotReducer>>>,
@@ -71,9 +83,10 @@ impl SlotReducers {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Subscribe `conn` to `key`'s reduced stream, spawning the slot's reducer task if this is
-    /// the first subscriber. Returns the broadcast receiver of encoded frames.
+    /// Subscribe `conn` to `key`'s reduced stream, spawning the slot's reducer task if the slot
+    /// has none yet. Returns the broadcast receiver of encoded frames.
     pub fn subscribe(&self, key: SlotKey, conn: ConnId) -> broadcast::Receiver<Bytes> {
+        let slots = Arc::downgrade(&self.inner);
         let mut map = self.inner.lock().unwrap();
         let reducer = map.entry(key.clone()).or_insert_with(|| {
             let specs = Arc::new(Mutex::new(HashMap::new()));
@@ -87,6 +100,7 @@ impl SlotReducers {
                 self.graph.clone(),
                 reductions.clone(),
                 gen.clone(),
+                slots,
             );
             SlotReducer { specs, tx, task, reductions, gen }
         });
@@ -120,20 +134,11 @@ impl SlotReducers {
         }
     }
 
-    /// Remove `conn` from `key`; when the last subscriber leaves, abort the task and drop the
-    /// slot so an idle stream costs nothing.
+    /// Withdraw `conn`'s contribution to `key`'s spec union. The reducer itself STAYS — see the
+    /// module doc: the slot owns its lifetime, and a socket closing is not the slot ending.
     pub fn unsubscribe(&self, key: &SlotKey, conn: ConnId) {
-        let mut map = self.inner.lock().unwrap();
-        let Some(r) = map.get(key) else { return };
-        let empty = {
-            let mut specs = r.specs.lock().unwrap();
-            specs.remove(&conn);
-            specs.is_empty()
-        };
-        if empty {
-            if let Some(r) = map.remove(key) {
-                r.task.abort();
-            }
+        if let Some(r) = self.inner.lock().unwrap().get(key) {
+            r.specs.lock().unwrap().remove(&conn);
         }
     }
 
@@ -195,9 +200,10 @@ fn open_feed(graph: &Mutex<Graph>, uid: Uid, slot: &str) -> Option<SlotFeed> {
 /// unchanged frame every 16 ms put 62.5 frames/s on the wire for a 30 Hz producer, and every
 /// viewer paid decode + (capped) paint for frames that carried nothing new.
 ///
-/// The cached frame is also what a JOIN or a spec change is served from (§7): the producer's
-/// service has no history, so a viewer arriving on a stream nobody was subscribed to waits for the
-/// next emit — which is §3.5's no-replay rule and not a gap.
+/// The cached frame is also what a JOIN or a spec change is served from (§7), and it is why the
+/// reducer outlives its last viewer: the producer's service has no history, so a viewer arriving
+/// on a slot whose reducer was torn down waits for the next emit — for ever, for a stopped
+/// producer.
 fn spawn_reducer(
     key: SlotKey,
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
@@ -205,8 +211,9 @@ fn spawn_reducer(
     graph: Arc<Mutex<Graph>>,
     reductions: Arc<AtomicU64>,
     gen: Arc<AtomicU64>,
+    slots: Weak<Mutex<HashMap<SlotKey, SlotReducer>>>,
 ) -> tokio::task::JoinHandle<()> {
-    let (uid, slot) = key;
+    let (uid, slot) = key.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(16));
         // Latest-wins: a deadline missed while this task was starved is a sample that no longer
@@ -237,9 +244,25 @@ fn spawn_reducer(
                     let g = graph.lock().unwrap();
                     g.manifest(uid).map(|_| g.output_service_of(uid, &slot))
                 };
+                let Some(current) = current else {
+                    // The node has left the graph, so nothing will ever publish on this slot
+                    // again. This is the reducer's ONE death — a socket closing is not one — and
+                    // without it a removed node's ports and last frame would be held for the life
+                    // of the process.
+                    if let Some(slots) = slots.upgrade() {
+                        // Only THIS task's entry: an undo puts a removed node back at the same
+                        // uid, and a viewer that re-subscribed in the meantime holds a reducer
+                        // this one must not take away from it.
+                        let mut map = slots.lock().unwrap();
+                        if map.get(&key).is_some_and(|r| Arc::ptr_eq(&r.specs, &specs)) {
+                            map.remove(&key);
+                        }
+                    }
+                    return;
+                };
                 // Only a CHANGED name reopens: re-creating the port every second would churn a
                 // service that is working perfectly well.
-                if current.is_some_and(|c| feed.as_ref().is_none_or(|f| f.service != c)) {
+                if feed.as_ref().is_none_or(|f| f.service != current) {
                     feed = open_feed(&graph, uid, &slot);
                 }
             }
@@ -251,6 +274,11 @@ fn spawn_reducer(
                         fresh = true;
                     }
                 }
+            }
+            // Nobody is watching: the receives above keep the cache warm for whoever comes back,
+            // but an empty fan-out is not worth the frame copy, let alone a reduce+encode.
+            if specs.lock().unwrap().is_empty() {
+                continue;
             }
             let Some(d) = cached.clone() else { continue };
             let g_now = gen.load(Ordering::Acquire);

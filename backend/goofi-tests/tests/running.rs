@@ -263,36 +263,57 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     drop(rest);
     drop(narrow);
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 1).await);
-    drop(wide);
-    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.active_slots() == 0).await,
-            "the last viewer left and the reducer went with it");
 
-    // Uncapped for the churn below: every round waits for a frame, so the producer's rate is what
-    // the loop costs. It also has to be a frame — a round that tore the reducer down before its
-    // task first ran would never open the feed, and would exercise nothing.
-    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 0.0 }));
+    // A producer that has, for everything below, stopped: one emit per hundred seconds. So every
+    // frame from here on can only be the one the reducer already holds, which is what makes the
+    // rest of this test about the CACHE rather than about the producer.
+    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 0.01 }));
+    tokio::time::sleep(Duration::from_millis(250)).await; // the last emit in flight lands
+
+    drop(wide);
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 0).await,
+            "the last viewer left");
+    assert_eq!(g.state.reducers.active_slots(), 1,
+               "the reducer went with its last viewer, and the slot's only copy of the last frame \
+                went with it — the producer keeps no history, so the next viewer has nothing to draw");
+
+    // …which is what this is: the viewer comes back. A closing socket is no evidence that a slot
+    // stopped being watched — a reload, a network blip and the liveness verdict each close one
+    // under a viewer that is still there — so the frame must be waiting, not a hundred seconds away.
+    let mut back = Viewer::open(&base, &hex(osc), "out").await;
+    back.view(spec(32)).await;
+    let cached = back.until(|d| !f32s(d).is_empty()).await.meta().index();
+    assert!(cached.is_some(), "a served frame carries the emit index of the producer's own frame");
+    drop(back);
 
     // The slot is watched, unwatched and watched again — which is what a browser does every time a
-    // viewer is closed and reopened. Each round REBUILDS the reducer, and with it the iceoryx2 node
-    // and subscriber it reads the producer through; those are counted by the data service's own
-    // `max_nodes`, so a round that does not give them back spends a ceiling the viewer count never
-    // reaches. The last round is the assertion: a viewer arriving after all this churn is served.
-    // Past `max_nodes` (256), deliberately: under it the loop only proves there was headroom.
+    // viewer is closed and reopened. Every round is served the SAME frame, because the producer has
+    // emitted nothing since; a round that rebuilt the reducer would have to build the iceoryx2 node
+    // and subscriber it reads the producer through as well, and those are counted by the data
+    // service's own `max_nodes` — 300 rounds is past it (256), deliberately, so a rebuild that does
+    // not give them back spends a ceiling the viewer count never reaches.
     for round in 0..300 {
         let mut v = Viewer::open(&base, &hex(osc), "out").await;
         v.view(spec(32)).await;
-        v.until(|d| !f32s(d).is_empty()).await;
+        let served = v.until(|d| !f32s(d).is_empty()).await;
+        assert_eq!(served.meta().index(), cached, "round {round}: not the frame the slot held");
         assert_eq!(g.state.reducers.active_slots(), 1, "round {round}: one viewer, one reducer");
         drop(v);
         // Tight rather than `holds_within`: 300 rounds at its 25 ms poll is 8 s of sleeping, and
-        // the round must SEE zero — a round that let the next viewer in first would hold the
-        // reducer alive and rebuild nothing.
+        // the round must SEE zero — a round that let the next viewer in first would never cross it,
+        // and crossing zero is the whole subject.
         let gone = Instant::now() + Duration::from_secs(5);
-        while g.state.reducers.active_slots() != 0 && Instant::now() < gone {
+        while g.state.reducers.subscribers(&key) != 0 && Instant::now() < gone {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        assert_eq!(g.state.reducers.active_slots(), 0, "round {round}: the reducer went with its viewer");
+        assert_eq!(g.state.reducers.subscribers(&key), 0, "round {round}: the viewer's socket closed");
     }
+
+    // And what the reducer's life IS bound to: its slot. The node leaves the graph, and nothing
+    // will ever publish there again.
+    g.call("remove_node", j!({ "node": hex(osc) }));
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.active_slots() == 0).await,
+            "the node left and its reducer went with it");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
