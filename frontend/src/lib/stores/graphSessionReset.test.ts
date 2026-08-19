@@ -3,8 +3,7 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import { rawInlineView, setInlineKind } from '$lib/viewers/inlineView.svelte';
-import { ui } from './ui.svelte';
+import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 
@@ -12,8 +11,8 @@ import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
  * A fresh backend session is a GENERATION boundary, not merely a document swap.
  *
  * `SyncClient.reset()` correctly hands the store an empty replica — but the Svelte projections
- * assembled from the OLD document (`nodes`, `links`, `instances`, `globals`, and the per-uid
- * inline-view / slot-expansion stores) are plain state that nothing clears. Reconciliation runs
+ * assembled from the OLD document (`nodes`, `links`, `instances`, `globals` — and the per-slot
+ * viewer state each node record carries) are plain state that nothing clears. Reconciliation runs
  * only from the doc observer, and only when `txn.changed.size > 0`.
  *
  * That is the trap: a fresh manager whose graph is EMPTY produces a sync transaction that changes
@@ -30,17 +29,13 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		g.nodeTypes = catalog();
 		fc.emit({ event: 'hello', payload: snap('sess1') });
 
-		hydrate(fc);
+		hydrate(fc, { out: { collapsed: true, kind: 'image' } });
 		expect(g.nodes.length, 'precondition: the old session is on screen').toBe(2);
 		expect(g.links.length).toBe(1);
-		// Set it FALSE: `isSlotExpanded` defaults to true when the entry is absent, so a `true`
-		// fixture could not tell "cleared" from "still set".
-		ui().setSlotExpanded('n1', 'out', false);
-		expect(ui().isSlotExpanded('n1', 'out')).toBe(false);
-		setInlineKind('n1', 'out', 'image');
-		// `rawInlineView` FALLS BACK to an empty view rather than returning undefined, so asserting
-		// on its presence would hold against any implementation. Assert on the kind it carries.
-		expect(rawInlineView('n1', 'out').kind).toBe('image');
+		// Collapsed, not expanded: `isSlotExpanded` answers true for a slot with no stored flag, so a
+		// `true` fixture could not tell "cleared" from "still set".
+		expect(isSlotExpanded(g.nodeById('n1'), 'out')).toBe(false);
+		expect(slotView(g.nodeById('n1'), 'out').kind).toBe('image');
 
 		// A NEW backend session. The store resets the replica, and the fresh session's `doc_state`
 		// carries an empty document — which is the case a reset has to survive, because nothing in
@@ -56,8 +51,13 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		// a fixture that reconciled nothing at all, which is not what a new session does.
 		expect(Object.keys(g.instances), 'instances').toEqual([ROOT_ID]);
 		expect(g.instances[ROOT_ID].members, 'and it kept no member of the old session').toEqual({});
-		expect(rawInlineView('n1', 'out').kind, 'per-uid inline view state').toBeUndefined();
-		expect(ui().isSlotExpanded('n1', 'out'), 'per-uid slot expansion is back to its default').toBe(
+		expect(g.nodeById('n1'), 'and no node record survives to carry its view state').toBeNull();
+
+		// The new session mints `n1` again, and what it draws is the fresh document's alone: no kind,
+		// and a slot that starts open.
+		hydrate(fc);
+		expect(slotView(g.nodeById('n1'), 'out').kind, 'per-uid inline view state').toBeUndefined();
+		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'per-uid slot expansion is at its default').toBe(
 			true
 		);
 	});
@@ -78,11 +78,17 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 	});
 });
 
-/** Two nodes and a link, the way the manager sends them. */
-function hydrate(fc: FakeControl): DocSeed {
+/** Two nodes and a link, the way the manager sends them. `viewers` rides `n1` when the caller wants
+ * the session to have view state to lose (the leaf is a JSON string, as the projection writes it). */
+function hydrate(fc: FakeControl, viewers?: Record<string, unknown>): DocSeed {
 	return seed(fc).patch({
 		nodes: {
-			n1: { type: 'Oscillator', name: 'osc-n1', pos: { x: 0, y: 0 } },
+			n1: {
+				type: 'Oscillator',
+				name: 'osc-n1',
+				pos: { x: 0, y: 0 },
+				...(viewers ? { viewers: JSON.stringify(viewers) } : {})
+			},
 			n2: { type: 'Oscillator', name: 'osc-n2', pos: { x: 0, y: 0 } }
 		},
 		links: [{ node_out: 'n1', slot_out: 'out', node_in: 'n2', slot_in: 'in' }]

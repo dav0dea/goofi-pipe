@@ -13,19 +13,12 @@ export type SlotClickSeed = {
 	clientY: number;
 };
 
-/** Compose the storage key for a single slot's expand state. */
+/** Compose the key that names a single (node, slot) pair. */
 export function slotKey(node: string, slot: string): string {
 	return `${node}|${slot}`;
 }
 
 export class UIStore {
-	/** Per-slot expand state. Keys are `${node}|${slot}`; entries are the
-	 * explicit user-set values. Slots without an entry default to expanded
-	 * — viewers should be visible the moment a node arrives, and the user
-	 * can collapse individual slots independently.
-	 */
-	expanded = $state<Record<string, boolean>>({});
-
 	/** Ids of the in-panel editors (the fx multi-line, the file browser) that currently own the
 	 * keyboard. A ref-count, not a shared boolean: each registers its own id, so collapsing one
 	 * never yanks another's standdown, and a leaked `true` from a field that unmounted mid-edit
@@ -100,57 +93,6 @@ export class UIStore {
 		const seed = this.pendingSlotClick;
 		this.pendingSlotClick = null;
 		return seed;
-	}
-
-	toggleSlotExpanded(node: string, slot: string): void {
-		const k = slotKey(node, slot);
-		this.expanded = { ...this.expanded, [k]: !this.isSlotExpanded(node, slot) };
-	}
-
-	setSlotExpanded(node: string, slot: string, expanded: boolean): void {
-		this.expanded = { ...this.expanded, [slotKey(node, slot)]: expanded };
-	}
-
-	isSlotExpanded(node: string, slot: string): boolean {
-		return this.expanded[slotKey(node, slot)] ?? true; // absent → the default: visible
-	}
-
-	/** Seed expand state for a freshly-arrived node.
-	 *
-	 * - If the node carries an explicit `viewers` map (loaded from a saved
-	 *   patch), apply each slot's saved `collapsed` flag.
-	 * - Otherwise this is a fresh spawn: default to expanded, except when
-	 *   the node has 3+ outputs, in which case we start everything collapsed
-	 *   to avoid burying the canvas under tall viewers.
-	 */
-	seedNodeViewers(
-		node: string,
-		outputSlots: string[],
-		saved: Record<string, { collapsed?: boolean }> | undefined
-	): void {
-		const next = { ...this.expanded };
-		const hasSaved = saved && Object.keys(saved).length > 0;
-		const defaultCollapsed = !hasSaved && outputSlots.length >= 3;
-		for (const slot of outputSlots) {
-			const savedFor = saved?.[slot];
-			const collapsed = savedFor?.collapsed ?? defaultCollapsed;
-			next[slotKey(node, slot)] = !collapsed;
-		}
-		this.expanded = next;
-	}
-
-	/** Drop bookkeeping for every slot of a node that no longer exists. */
-	forget(name: string): void {
-		const prefix = `${name}|`;
-		let changed = false;
-		const next = { ...this.expanded };
-		for (const k of Object.keys(next)) {
-			if (k.startsWith(prefix)) {
-				delete next[k];
-				changed = true;
-			}
-		}
-		if (changed) this.expanded = next;
 	}
 }
 

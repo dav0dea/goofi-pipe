@@ -5,6 +5,7 @@ import { GraphStore } from './graph.svelte';
 import { nodesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
+import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
 
 /** A minimal hello/graph_replaced snapshot; `node_types` optionally carries the palette inline. */
 function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'] = {}): GraphSnapshot {
@@ -270,5 +271,67 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		fc.emit({ event: 'hello', payload: helloSnap(undefined) });
 		// Backward-compat: the async fetch is the fallback when the snapshot omits the palette.
 		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(true);
+	});
+});
+
+describe('inline viewer state — the document is the one holder, so it follows the document', () => {
+	/** The blob as the projection writes it: a JSON STRING leaf under the node. */
+	const blob = (v: Record<string, unknown>) => ({ viewers: JSON.stringify(v) });
+
+	it('a peer’s collapse and kind land in this tab too', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		g.nodeTypes = catalog();
+		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
+		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'the saved collapse is what we draw').toBe(false);
+		expect(slotView(g.nodeById('n1'), 'out').kind).toBe('image');
+
+		// A SECOND tab expands the slot and picks another viewer. It reaches us as an ordinary doc
+		// patch on a node we already hold — the case a client-side copy, seeded once per new uid,
+		// never hears about: the two tabs then disagree, and whichever edits next overwrites the peer.
+		d.patch({ nodes: { n1: blob({ out: { collapsed: false, kind: 'topomap' } }) } });
+		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'the peer’s expand converges').toBe(true);
+		expect(slotView(g.nodeById('n1'), 'out').kind, 'and so does the peer’s kind').toBe('topomap');
+	});
+
+	it('an in-session load onto a re-used uid draws the loaded patch, not the outgoing one', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = [...catalog(), { ...catalog()[0], type: 'Buffer' }];
+		fc.emit({ event: 'hello', payload: helloSnap() });
+		const d = seed(fc);
+		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
+		expect(isSlotExpanded(g.nodeById('n1'), 'out')).toBe(false);
+
+		// A patch is loaded INTO the running session: same backend (so no generation reset), and it
+		// restores the uids it was saved with — so `n1` is a SURVIVOR carrying a different node.
+		fc.emit({ event: 'graph_replaced', payload: helloSnap() });
+		d.push({ nodes: { n1: { type: 'Buffer', name: 'buf0', pos: { x: 0, y: 0 } } }, links: [], instances: {}, globals: {}, arrangement: {} });
+
+		expect(g.nodeById('n1')!.type, 'precondition: the uid now carries the loaded node').toBe('Buffer');
+		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'the outgoing collapse did not stick').toBe(true);
+		expect(slotView(g.nodeById('n1'), 'out').kind, 'nor the outgoing kind').toBeUndefined();
+	});
+
+	it('a write carries the whole blob, touches one slot, and invents no kind', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		g.nodeTypes = [{ ...catalog()[0], output_slots: { out: 'ARRAY', sig: 'ARRAY' } }];
+		// `gone` is a slot the saved blob names and the node no longer has — a node file that lost an
+		// output since the patch was written. The manager refuses the whole write over one such name.
+		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { kind: 'image' }, sig: { collapsed: true }, gone: { collapsed: true } }));
+
+		g.setSlotView('n1', 'sig', { collapsed: false });
+		const call = fc.recordedCalls().find((c) => c.op === 'set_node_viewers');
+		expect(call!.payload, 'the sibling rides along untouched, `sig` gains no kind, `gone` is pruned').toEqual({
+			node: 'n1',
+			viewers: { out: { kind: 'image' }, sig: { collapsed: false } }
+		});
+		// Nothing changed until the manager answers — the document is the holder, not this store.
+		expect(isSlotExpanded(g.nodeById('n1'), 'sig')).toBe(false);
+		d.patch({ nodes: { n1: blob(call!.payload.viewers as Record<string, unknown>) } });
+		expect(isSlotExpanded(g.nodeById('n1'), 'sig')).toBe(true);
 	});
 });

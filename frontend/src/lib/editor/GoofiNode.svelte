@@ -2,6 +2,7 @@
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { dtypeColor } from './categoryColor';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
+	import { isSlotExpanded } from '$lib/viewers/inlineView';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { flash } from '$lib/stores/flash.svelte';
 	import { NODE, inputPorts, inputUnits } from './nodeMetrics';
@@ -86,7 +87,7 @@
 		let y = NODE.border + NODE.header;
 		return outputs.map((slot) => {
 			const top = y + NODE.unit / 2;
-			y += uiStore.isSlotExpanded(node.uid, slot) ? NODE.unit + NODE.viewer : NODE.unit;
+			y += isSlotExpanded(node, slot) ? NODE.unit + NODE.viewer : NODE.unit;
 			return { slot, dtype: node.output_slots[slot], top };
 		});
 	});

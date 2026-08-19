@@ -1,9 +1,9 @@
 <script lang="ts">
 	import ViewerFeed from './ViewerFeed.svelte';
 	import ViewerControls from './ViewerControls.svelte';
-	import { rawInlineView, setInlineKind, setInlineSetting } from './inlineView.svelte';
+	import { slotView, isSlotExpanded } from './inlineView';
 	import { recordViewChange } from './viewExecutors';
-	import { resolveKind } from './kind';
+	import { resolveKind, type ViewerKind } from './kind';
 	import { resolveSettings, type SettingsMap } from './settingsSchema';
 	import type { ViewBinding } from './viewBinding';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -17,34 +17,36 @@
 	const { node, slot, dtype, label }: Props = $props();
 
 	const g = graph();
-	const uiStore = ui();
 
-	// The inline viewer's binding: backed by the node-scoped inline-view store,
-	// persisting into node.viewers via pushNodeViewers. Built here (its single use
-	// site) so viewBinding.ts stays rune-free and unit-testable.
+	// The inline viewer's binding: backed by the node record's own `viewers` blob, which
+	// `graph.setSlotView` is the one writer of. Built here (its single use site) so viewBinding.ts
+	// stays rune-free and unit-testable.
+	const rec = $derived(g.nodeById(node));
 	// Raw (pre-resolution) snapshot of this slot's view state, for undo capture.
-	function snap(): { kind?: ReturnType<typeof resolveKind> | undefined; settings: SettingsMap } {
-		const v = rawInlineView(node, slot);
+	function snap(): { kind?: ViewerKind; settings: SettingsMap } {
+		const v = slotView(rec, slot);
 		return { kind: v.kind, settings: { ...v.settings } };
 	}
 	const binding: ViewBinding = {
 		get kind() {
-			return resolveKind(dtype, rawInlineView(node, slot).kind);
+			return resolveKind(dtype, slotView(rec, slot).kind);
 		},
 		get settings() {
-			return resolveSettings(this.kind, rawInlineView(node, slot).settings);
+			return resolveSettings(this.kind, slotView(rec, slot).settings);
 		},
 		setKind(k) {
+			// The write is a round-trip through the document, so the AFTER snapshot is the one being
+			// asked for, not a re-read — the record still holds the before until the delta lands.
 			const before = snap();
-			setInlineKind(node, slot, k);
-			g.pushNodeViewers(node);
-			recordViewChange({ kind: 'inline', node, slot }, before, snap(), `Viewer → ${k}`);
+			const after = { ...before, kind: k };
+			g.setSlotView(node, slot, after);
+			recordViewChange({ kind: 'inline', node, slot }, before, after, `Viewer → ${k}`);
 		},
 		setSetting(key, value) {
 			const before = snap();
-			setInlineSetting(node, slot, key, value);
-			g.pushNodeViewers(node);
-			recordViewChange({ kind: 'inline', node, slot }, before, snap(), `Viewer ${key}`);
+			const after = { kind: before.kind, settings: { ...before.settings, [key]: value } };
+			g.setSlotView(node, slot, after);
+			recordViewChange({ kind: 'inline', node, slot }, before, after, `Viewer ${key}`);
 		}
 	};
 
@@ -57,16 +59,13 @@
 		ui().requestSlotClick({ node, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	const expanded = $derived(uiStore.isSlotExpanded(node, slot));
+	const expanded = $derived(isSlotExpanded(rec, slot));
 
 	function toggleExpanded(e?: Event): void {
 		// Stop the toggle from bubbling to SvelteFlow's node handlers, so
 		// collapsing or expanding a viewer never selects (or grabs) the node.
 		e?.stopPropagation();
-		uiStore.toggleSlotExpanded(node, slot);
-		// Collapse is the only inline view-state not owned by the binding; persist
-		// it here at its mutation site (kind/settings persist via the binding).
-		g.pushNodeViewers(node);
+		g.setSlotView(node, slot, { collapsed: expanded });
 	}
 	function stopSelect(e: PointerEvent): void {
 		// Keeps a press on the header bar off the WINDOW-level bubble listeners the canvas sits

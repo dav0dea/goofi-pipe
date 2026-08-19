@@ -1,20 +1,51 @@
 import { describe, it, expect } from 'vitest';
-import { setInlineKind, rawInlineView } from './inlineView.svelte';
+import { slotView } from './inlineView';
 import { viewExecutors } from './viewExecutors';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { GraphStore } from '$lib/stores/graph.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
+import { seed } from '$lib/test/docSeed';
 import type { Action, NavContext } from '$lib/stores/history.svelte';
+import type { NodeTypeInfo } from '$lib/api/control';
 
 const CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
 
-function deps() {
-	return { control: {} as never, graph: new GraphStore(new FakeControl()), workspace: workspace() };
+function catalog(): NodeTypeInfo[] {
+	return [
+		{
+			type: 'Oscillator',
+			category: 'inputs',
+			doc: '',
+			source: 'builtin',
+			available: true,
+			missing_deps: [],
+			input_slots: {},
+			output_slots: { out: 'ARRAY', sig: 'ARRAY' },
+			params: {}
+		} as unknown as NodeTypeInfo
+	];
+}
+
+/** One node in the replica, plus the manager's half of the loop: `echo()` writes back whatever
+ * `set_node_viewers` was last asked for, which is the only way a viewer edit becomes visible. */
+function fixture() {
+	const fc = new FakeControl();
+	const g = new GraphStore(fc);
+	g.nodeTypes = catalog();
+	const d = seed(fc).node('osc0', 'Oscillator', 'osc0');
+	return {
+		view: (slot: string) => slotView(g.nodeById('osc0'), slot),
+		deps: { control: {} as never, graph: g, workspace: workspace() },
+		echo: () => {
+			const last = [...fc.recordedCalls()].reverse().find((c) => c.op === 'set_node_viewers');
+			d.patch({ nodes: { [last!.payload.node as string]: { viewers: JSON.stringify(last!.payload.viewers) } } });
+		}
+	};
 }
 
 describe('set_view executor — inline target', () => {
 	it('inverse restores the prior viewer kind', async () => {
-		setInlineKind('osc0', 'out', 'image');
+		const { view, deps, echo } = fixture();
 		const action: Action = {
 			kind: 'set_view',
 			domain: 'view',
@@ -26,13 +57,20 @@ describe('set_view executor — inline target', () => {
 				after: { kind: 'image', settings: {} }
 			}
 		};
-		await viewExecutors['set_view'].inverse(action, deps());
-		expect(rawInlineView('osc0', 'out').kind).toBe('line');
-		await viewExecutors['set_view'].forward(action, deps());
-		expect(rawInlineView('osc0', 'out').kind).toBe('image');
+		await viewExecutors['set_view'].forward(action, deps);
+		echo();
+		expect(view('out').kind).toBe('image');
+		await viewExecutors['set_view'].inverse(action, deps);
+		echo();
+		expect(view('out').kind).toBe('line');
 	});
 
-	it('inverse restores prior settings', async () => {
+	it('inverse restores prior settings, and leaves the collapse the user has now', async () => {
+		const { view, deps, echo } = fixture();
+		// The slot is collapsed before the settings change — a replayed snapshot carries kind and
+		// settings only, so nothing in an undo may re-open or shut a viewer.
+		deps.graph.setSlotView('osc0', 'sig', { collapsed: true });
+		echo();
 		const action: Action = {
 			kind: 'set_view',
 			domain: 'view',
@@ -44,9 +82,12 @@ describe('set_view executor — inline target', () => {
 				after: { kind: 'line', settings: { logY: true } }
 			}
 		};
-		await viewExecutors['set_view'].forward(action, deps());
-		expect(rawInlineView('osc0', 'sig').settings.logY).toBe(true);
-		await viewExecutors['set_view'].inverse(action, deps());
-		expect(rawInlineView('osc0', 'sig').settings.logY).toBe(false);
+		await viewExecutors['set_view'].forward(action, deps);
+		echo();
+		expect(view('sig').settings?.logY).toBe(true);
+		await viewExecutors['set_view'].inverse(action, deps);
+		echo();
+		expect(view('sig').settings?.logY).toBe(false);
+		expect(view('sig').collapsed, 'the collapse is untouched by either direction').toBe(true);
 	});
 });

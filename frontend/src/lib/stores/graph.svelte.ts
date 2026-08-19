@@ -18,14 +18,10 @@ import {
 	type NodeTypeInfo,
 	type ScanDiff
 } from '$lib/api/control';
-import { ui } from './ui.svelte';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
-import { seedInlineView, forgetInlineView, rawInlineView } from '$lib/viewers/inlineView.svelte';
-import { resolveKind } from '$lib/viewers/kind';
-import type { SettingsMap } from '$lib/viewers/settingsSchema';
-import type { ViewerKind } from '$lib/viewers/kind';
+import type { SlotView } from '$lib/viewers/inlineView';
 import { history, type Action } from './history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
@@ -217,17 +213,13 @@ export class GraphStore {
 	 * reused node name's count across sessions. */
 	/** Drop every projection assembled from the OUTGOING document. A fresh backend session is a
 	 * GENERATION boundary, not merely a document swap: `SyncClient.reset()` hands us an empty
-	 * replica, but `nodes`/`links`/`instances`/`globals` and the per-uid inline-view and expansion
-	 * stores are plain state that nothing else clears.
+	 * replica, but `nodes`/`links`/`instances`/`globals` are plain state that nothing else clears.
 	 *
 	 * Reconciliation runs only from the doc observer, and only when a transaction changed a Yjs
 	 * type — and a fresh manager whose graph is EMPTY answers our state vector with a transaction
 	 * that changes nothing. So without this the browser keeps rendering the graph that went away,
-	 * on uids the new engine is about to mint again from 1: stale viewer kind and collapse state
-	 * bleeding onto whatever node reuses each id. */
+	 * on uids the new engine is about to mint again from 1. */
 	private _resetProjection(): void {
-		for (const n of this.nodes) this._forgetUid(n.uid);
-		for (const iid of Object.keys(this.instances)) this._forgetUid(iid);
 		this.nodes = [];
 		this.links = [];
 		this.instances = {};
@@ -258,46 +250,38 @@ export class GraphStore {
 		selection().forgetAll();
 	}
 
-	/** Seed collapse + kind + settings for a node's slots from its (possibly
-	 * restored) `viewers` map. */
-	private _seedNodeViewerState(node: NodeInstanceInfo): void {
-		const slots = Object.keys(node.output_slots);
-		ui().seedNodeViewers(node.uid, slots, node.viewers);
-		for (const slot of slots) {
-			const v = node.viewers?.[slot];
-			seedInlineView(node.uid, slot, {
-				kind: v?.kind as ViewerKind | undefined,
-				settings: v?.settings as SettingsMap | undefined
-			});
+	/** Write ONE slot's inline view — kind, settings, collapse — merging into the node's blob and
+	 * leaving its other slots alone. The blob is the only holder of that state, so this is the only
+	 * writer; the kind stored is the user's RAW pick (`resolveKind` applies the dtype's on read), so
+	 * a slot whose dtype pins a viewer never has the pick overwritten by what it drew.
+	 *
+	 * Soft, human-rate view state: NOT a manager command (the client's own `set_view` action is what
+	 * undoes it), but it rides the `.gfi`, so it dirties the patch like any other authoring write.
+	 *
+	 * A sub-patch SCOPE has no viewer blob in the engine — `set_node_viewers` refuses a scope uid —
+	 * so its blob is the instance record's own and stays client-side for the session, exactly as far
+	 * as it has ever reached. Everything else goes to the document and comes back as a delta, so a
+	 * second tab converges and a load restores. */
+	setSlotView(uid: string, slot: string, view: SlotView): void {
+		const node = this.nodeById(uid);
+		if (!node?.output_slots[slot]) return;
+		// Re-assembled from the node's CURRENT output slots, never from the blob's own keys: the blob
+		// rides the `.gfi`, so one saved before a node file changed its slots carries a name the node
+		// no longer has — and the manager refuses the WHOLE write for it.
+		const viewers: NodeInstanceInfo['viewers'] = {};
+		for (const s of Object.keys(node.output_slots)) {
+			const stored = node.viewers?.[s];
+			if (s === slot) viewers[s] = { ...stored, ...view };
+			else if (stored) viewers[s] = { ...stored };
 		}
-	}
-
-	private _viewerPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	/** Debounced push of a node's full viewer state (collapse / kind / settings) via the
-	 * `set_node_viewers` op. The manager stores it (persisted into the .gfi on save) and re-mirrors.
-	 * Soft, human-rate view state — NOT a command (not undoable); the debounce keeps it sparse. */
-	pushNodeViewers(node: string): void {
-		clearTimeout(this._viewerPushTimers.get(node));
-		this._viewerPushTimers.set(
-			node,
-			setTimeout(() => {
-				this._viewerPushTimers.delete(node);
-				const n = this.nodeById(node);
-				if (!n) return;
-				const viewers: Record<string, { collapsed: boolean; kind: string; settings: SettingsMap }> = {};
-				for (const slot of Object.keys(n.output_slots)) {
-					const view = rawInlineView(node, slot);
-					viewers[slot] = {
-						collapsed: !ui().isSlotExpanded(node, slot),
-						kind: resolveKind(n.output_slots[slot], view.kind),
-						settings: view.settings
-					};
-				}
-				void this.ctl.call('set_node_viewers', { node, viewers }).catch(() => {
-					/* soft view state — a dropped push is harmless (re-pushed on the next edit) */
-				});
-			}, 250)
-		);
+		const inst = this.instances[uid];
+		if (inst) {
+			inst.viewers = viewers;
+			return;
+		}
+		void this.ctl.call('set_node_viewers', { node: uid, viewers }).catch(() => {
+			/* soft view state — a dropped write is harmless (the next edit re-sends the whole blob) */
+		});
 	}
 
 	private _handle(ev: ControlEvent): void {
@@ -830,37 +814,17 @@ export class GraphStore {
 		return this.instances[instId]?.members[uid]?.uid ?? null;
 	}
 
-	/** Reconcile the flat node list IN PLACE by uid (mirror of _reconcileInstances):
-	 * Object.assign a surviving node's fields so its object reference — and thus its
-	 * inline-viewer subscription — stays stable, insert + seed genuinely-new nodes, and
-	 * fully forget genuinely-vanished ones. The structural cure for the viewer flicker a
-	 * wholesale `this.nodes = snap.nodes` (plus a blanket forgetInlineView over every
-	 * node) caused on every group/expand/share/make-unique. */
-	/** Drop every uid-keyed store entry for something that has left the graph — a node OR a scope,
-	 * since a collapsed scope's synth node carries slots and an inline viewer just like a real one.
-	 * ONE teardown for both reconcilers: a uid is re-minted (the backend restarts at 1) while these
-	 * module-level stores survive the reconnect, so a half-teardown bleeds the old node's viewer
-	 * kind and collapse state onto whatever takes its uid next. */
-	private _forgetUid(uid: string): void {
-		ui().forget(uid);
-		forgetInlineView(uid);
-	}
-
+	/** Reconcile the flat node list IN PLACE by uid (mirror of _reconcileInstances): Object.assign a
+	 * surviving node's fields so its object reference — and thus its inline-viewer subscription —
+	 * stays stable, and insert genuinely-new ones. The structural cure for the viewer flicker a
+	 * wholesale `this.nodes = snap.nodes` caused on every group/expand/share/make-unique. */
 	private _reconcileNodes(next: NodeInstanceInfo[]): void {
 		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
-		const nextUids = new Set(next.map((n) => n.uid));
-		for (const old of this.nodes) {
-			if (nextUids.has(old.uid)) continue;
-			this._forgetUid(old.uid);
-		}
 		this.nodes = next.map((n) => {
 			const cur = byUid.get(n.uid);
-			if (cur) {
-				Object.assign(cur, n);
-				return cur;
-			}
-			this._seedNodeViewerState(n); // genuinely new node — seed its inline view state
-			return n;
+			if (!cur) return n;
+			Object.assign(cur, n);
+			return cur;
 		});
 	}
 
@@ -971,27 +935,13 @@ export class GraphStore {
 	 * the CRDT doc (Phase-2 instances read cutover). Every structural field is reconstructed from the
 	 * doc to match the backend's `describe_instance`/`root_instance`; `error` is DERIVED from the
 	 * members' runtime node errors (the bridge only emits `error` keyed by a real node uid, never an
-	 * instance uid — so an instance's deep error must be recomputed, not overlaid). Wraps
-	 * `_reconcileInstances` with the same vanished-teardown + seed-only-new lifecycle the
-	 * `subpatch_changed` handler applied, so a collapsed sub-patch's live viewer state survives. */
+	 * instance uid — so an instance's deep error must be recomputed, not overlaid). */
 	private _reconcileInstancesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep event-sourced instances
 		const doc = this._sync.doc;
 		const nodes = nodeViews(doc).map((n) => ({ uid: n.uid, name: n.name }));
 		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this._realNode(uid)?.error ?? null);
-		// Vanished instances fire no per-node event — tear them down exactly as `_reconcileNodes` tears
-		// down a vanished node (mirror of the retired `subpatch_changed` wrap; `_reconcileInstances`
-		// itself drops the map entry + synth cache).
-		const before = new Set(Object.keys(this.instances));
-		for (const iid of before) if (!(iid in next)) this._forgetUid(iid);
 		this._reconcileInstances(next);
-		// Seed viewer state for a genuinely-NEW instance's output-boundary slots (its synth node carries
-		// the blob) — never a survivor (would clobber its live, un-pushed collapse/kind).
-		for (const iid of Object.keys(this.instances)) {
-			if (before.has(iid)) continue;
-			const sn = this.nodeById(iid);
-			if (sn) this._seedNodeViewerState(sn);
-		}
 	}
 
 	/** Re-derive every instance's deep error from its members' current runtime node errors and apply
@@ -1017,7 +967,10 @@ export class GraphStore {
 	private _reconcileInstances(next: Record<string, InstanceInfo>): void {
 		for (const [uid, rec] of Object.entries(next)) {
 			const cur = this.instances[uid];
-			if (cur) Object.assign(cur, rec);
+			// A scope's `viewers` is not in the document (the engine has no field for it and
+			// `set_node_viewers` refuses a scope uid), so the record IS its holder — `assembleInstances`
+			// can only offer an empty one, which would blank a survivor's live view state.
+			if (cur) Object.assign(cur, rec, { viewers: cur.viewers });
 			else this.instances[uid] = rec;
 		}
 		for (const uid of Object.keys(this.instances)) {
@@ -1052,6 +1005,7 @@ export class GraphStore {
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
 			cached.node.pos = inst.pos; // keep position fresh without a new identity
+			cached.node.viewers = inst.viewers ?? {}; // …and its view state, which the sig cannot carry
 			return cached.node;
 		}
 

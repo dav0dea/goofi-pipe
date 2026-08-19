@@ -5,8 +5,7 @@ import { GraphStore } from './graph.svelte';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
-import { setInlineKind, rawInlineView } from '$lib/viewers/inlineView.svelte';
-import { ui } from './ui.svelte';
+import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
 function catalog(): NodeTypeInfo[] {
@@ -179,12 +178,12 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 	});
 });
 
-describe('a vanished scope is forgotten as thoroughly as a vanished node', () => {
-	it('drops the instance-keyed inline view and slot-expand state, not just the panel binding', () => {
+describe('a collapsed scope’s inline viewer, whose blob only the instance record holds', () => {
+	it('answers a write, and a re-minted uid inherits nothing of it', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		const d = seed(fc).patch({
+		const spec = {
 			nodes: { m9: node('Buffer', 'buffer9') },
 			instances: {
 				i9: scope({
@@ -193,18 +192,27 @@ describe('a vanished scope is forgotten as thoroughly as a vanished node', () =>
 					stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm9', inner_slot: 'out' }]
 				})
 			}
-		});
+		};
+		const d = seed(fc).patch(spec);
 
 		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
-		setInlineKind('i9', 'out0', 'image');
-		ui().setSlotExpanded('i9', 'out0', false);
-		expect(rawInlineView('i9', 'out0').kind).toBe('image');
+		g.setSlotView('i9', 'out0', { kind: 'image', collapsed: true });
+		expect(slotView(g.nodeById('i9'), 'out0').kind).toBe('image');
+		expect(isSlotExpanded(g.nodeById('i9'), 'out0')).toBe(false);
+		// A scope uid is not a node: the engine's `set_node_viewers` refuses one, so the record is the
+		// whole of the state and nothing is sent. (This is also why it does not survive a reload.)
+		expect(fc.recordedCalls().some((c) => c.op === 'set_node_viewers')).toBe(false);
 
-		// Ungroup: the scope leaves the doc. Its uid can be re-minted by a later backend, so every
-		// store keyed by it must be cleared — exactly what `_reconcileNodes` does for a node.
+		// An unrelated doc write re-assembles every scope from the doc, which carries no viewer blob.
+		d.patch({ nodes: { m9: { name: 'buffer9b' } } });
+		expect(slotView(g.nodeById('i9'), 'out0').kind, 'a survivor keeps its live view state').toBe('image');
+
+		// Ungroup: the scope leaves the doc, taking its record — and its blob — with it. Its uid can be
+		// re-minted by a later backend, and what comes back must start clean.
 		d.remove('instances', 'i9');
 		expect(g.instances.i9).toBeUndefined();
-		expect(rawInlineView('i9', 'out0').kind, 'inline view forgotten with the scope').toBeUndefined();
-		expect(ui().isSlotExpanded('i9', 'out0'), 'slot-expand state forgotten with the scope').toBe(true);
+		d.patch(spec);
+		expect(slotView(g.nodeById('i9'), 'out0').kind, 'the re-minted scope inherits no kind').toBeUndefined();
+		expect(isSlotExpanded(g.nodeById('i9'), 'out0'), 'nor a collapse').toBe(true);
 	});
 });

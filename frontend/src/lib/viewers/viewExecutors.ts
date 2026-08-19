@@ -1,19 +1,18 @@
 /**
  * View-domain executor: undo/redo of a data viewer's kind + cog-menu settings.
- * Viewer view-state is frontend-only, so this just re-applies a captured
- * snapshot to wherever the viewer's state lives — the node-scoped inline store
- * (node body viewer) or a docked Viewer panel's layout state.
+ * No manager command owns a node's INLINE view state, so this replays a captured
+ * snapshot through the one writer of it. (A docked Viewer panel's state is layout
+ * state, so its undo is an ordinary manager command and never comes here.)
  */
-import { setInlineFullView } from './inlineView.svelte';
 import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from '$lib/workspace/navContext';
 import type { SettingsMap } from './settingsSchema';
 import type { Executor, ExecutorDeps, ViewAction, ViewSnapshot } from '$lib/stores/history.svelte';
 
 function apply(target: ViewAction['payload']['target'], snap: ViewSnapshot, deps: ExecutorDeps): void {
-	setInlineFullView(target.node, target.slot, snap);
-	// Round-trip into node.viewers (debounced) like a click would. No-op if the node is gone.
-	deps.graph.pushNodeViewers(target.node);
+	// Kind + settings only: a snapshot carries no collapse, so undoing a kind change leaves the
+	// viewer open or shut as the user has it. No-op if the node is gone.
+	deps.graph.setSlotView(target.node, target.slot, snap);
 }
 
 const setView: Executor = {

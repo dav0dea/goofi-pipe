@@ -64,6 +64,7 @@
 		parseBoundaryNodeId
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
+	import { isSlotExpanded } from '$lib/viewers/inlineView';
 	import {
 		inputAnchors,
 		nearSlots,
@@ -704,7 +705,7 @@
 			const multi = new Set(node.input_multi ?? []);
 			return nodeSurfaceSize(
 				inputUnits(inputs, (s) => multi.has(s)),
-				outputs.map((s) => uiStore.isSlotExpanded(node.uid, s))
+				outputs.map((s) => isSlotExpanded(node, s))
 			);
 		}
 		return { width: DEFAULT_NODE_W, height: DEFAULT_NODE_H };

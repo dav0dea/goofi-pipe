@@ -10,11 +10,10 @@
  */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
-import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import { editorFor } from '$lib/panels/editorCommands';
 import { history } from '$lib/stores/history.svelte';
-import { setInlineKind, setInlineSetting, rawInlineView } from '$lib/viewers/inlineView.svelte';
+import { slotView } from '$lib/viewers/inlineView';
 import { recordViewChange } from '$lib/viewers/viewExecutors';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import type { ViewerKind } from '$lib/viewers/kind';
@@ -23,7 +22,7 @@ import type { GlobalType } from '$lib/crdt/graphDoc';
 
 /** Raw (pre-resolution) inline view snapshot, for undo capture. */
 function inlineSnap(node: string, slot: string): { kind?: ViewerKind; settings: SettingsMap } {
-	const v = rawInlineView(node, slot);
+	const v = slotView(graph().nodeById(node), slot);
 	return { kind: v.kind, settings: { ...v.settings } };
 }
 
@@ -129,24 +128,22 @@ export const commands = {
 	fitView: (panelId: string | null = activeEditor()): void => editorFor(panelId)?.fitView(),
 
 	// --- viewers -----------------------------------------------------------
-	// Each mutator persists the slot's view state (debounced) so an agent-driven
-	// change round-trips into the .gfi the same way a click does, regardless of
-	// whether a canvas SlotViewer happens to be mounted for the slot.
-	setSlotExpanded: (node: string, slot: string, expanded: boolean): void => {
-		ui().setSlotExpanded(node, slot, expanded);
-		graph().pushNodeViewers(node);
-	},
+	// Each mutator goes through the one writer of a slot's view state, so an agent-driven change
+	// round-trips into the .gfi the same way a click does, regardless of whether a canvas
+	// SlotViewer happens to be mounted for the slot.
+	setSlotExpanded: (node: string, slot: string, expanded: boolean): void =>
+		graph().setSlotView(node, slot, { collapsed: !expanded }),
 	setViewerKind: (node: string, slot: string, kind: ViewerKind): void => {
 		const before = inlineSnap(node, slot);
-		setInlineKind(node, slot, kind);
-		graph().pushNodeViewers(node);
-		recordViewChange({ kind: 'inline', node, slot }, before, inlineSnap(node, slot), `Viewer → ${kind}`);
+		const after = { ...before, kind };
+		graph().setSlotView(node, slot, after);
+		recordViewChange({ kind: 'inline', node, slot }, before, after, `Viewer → ${kind}`);
 	},
 	setViewerSetting: (node: string, slot: string, key: string, value: boolean | number | string): void => {
 		const before = inlineSnap(node, slot);
-		setInlineSetting(node, slot, key, value);
-		graph().pushNodeViewers(node);
-		recordViewChange({ kind: 'inline', node, slot }, before, inlineSnap(node, slot), `Viewer ${key}`);
+		const after = { kind: before.kind, settings: { ...before.settings, [key]: value } };
+		graph().setSlotView(node, slot, after);
+		recordViewChange({ kind: 'inline', node, slot }, before, after, `Viewer ${key}`);
 	},
 
 	// --- panels / layout ---------------------------------------------------

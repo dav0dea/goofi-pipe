@@ -7,10 +7,9 @@
  *
  * `panelBinding` (a docked Viewer panel, backed by its layout state) lives here
  * as a reusable, rune-free factory — it's unit-tested. The inline binding is
- * constructed at its single use site (SlotViewer), where the node-scoped
- * inline-view store and graph.pushNodeViewers are already in scope; keeping that
- * rune coupling out of this module is what lets the factory be tested in
- * isolation.
+ * constructed at its single use site (SlotViewer), where the node record and
+ * graph.setSlotView are already in scope; keeping that rune coupling out of this
+ * module is what lets the factory be tested in isolation.
  */
 import { resolveKind, type ViewerKind } from './kind';
 import { resolveSettings, type SettingValue, type SettingsMap } from './settingsSchema';
