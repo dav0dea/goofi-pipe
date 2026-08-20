@@ -1,6 +1,6 @@
-//! The Python-facing param + slot-type descriptors a node returns from its
-//! `config_params` / `config_input_slots` hooks. Plain data holders — `introspect`
-//! reads their attributes to build the Rust manifest.
+//! The Python-facing param + slot-type descriptors a node states in its `PARAMS` and
+//! `INPUTS` constants. Plain data holders — `introspect` reads their attributes to build
+//! the Rust manifest.
 
 use pyo3::prelude::*;
 
@@ -31,8 +31,7 @@ impl DataType {
 
 /// `goofi.InputSlot(dtype, required=False, trigger=True)` — an input-slot declaration that
 /// carries the per-slot options a bare `goofi.DataType` has nowhere to put. The defaults ARE
-/// the bare form's behaviour, so `config_input_slots()` may return either and no existing node
-/// has to change. `multi` is deliberately absent: the Python tier has no variadic plumbing, and
+/// the bare form's behaviour, so `INPUTS` may name either and no existing node has to change. `multi` is deliberately absent: the Python tier has no variadic plumbing, and
 /// a flag that does nothing is worse than none.
 #[pyclass]
 pub struct InputSlot {

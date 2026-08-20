@@ -693,11 +693,10 @@ test.describe('a patch that carries its own nodes', () => {
 class ${cls}(goofi.Node):
     """A node that came with the patch."""
 
-    def config_output_slots(self):
-        return {"out": goofi.DataType.ARRAY}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
 
     def process(self):
-        return {"out": ([1.0], {})}
+        return [1.0]
 `;
 
 	/** The palette row for `type`, as the add menu reads it. */

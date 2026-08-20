@@ -213,7 +213,7 @@ pub struct RemoteNode {
     source: String,
     /// This node's declared INPUT slot names (from its manifest) — the keys `process` gathers
     /// from `Inputs`. Outputs are set by the child-returned slot names (the child is authoritative
-    /// for output naming, via its `config_output_slots`), so the parent keeps no output list.
+    /// for output naming, via its `OUTPUTS`), so the parent keeps no output list.
     in_slots: Vec<&'static str>,
     timeout: Duration,
     proc: Option<Running>,
@@ -256,7 +256,7 @@ impl RemoteNode {
 impl Node for RemoteNode {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         // Only the PRESENT slots cross the wire — an absent one is the absence of an entry, and
-        // the child rebuilds the full declared kwarg set from its own `config_input_slots()`.
+        // the child rebuilds the full declared kwarg set from its own `INPUTS`.
         // A node with inputs but none arrived still ticks: what a missing non-required input
         // means is the node's own call (it receives `None`), and a required one never gets here.
         let present: Vec<(&str, &Data)> =

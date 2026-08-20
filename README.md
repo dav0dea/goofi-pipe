@@ -14,64 +14,38 @@ video). You build **patches** in a browser node-graph: each node ingests,
 transforms, or emits `Data`; edges carry data between output and input slots. It
 targets live, high-rate streams (kHz EEG, HD video) with many simultaneous viewers.
 
-> [!IMPORTANT]
-> **This branch (`rust-rewrite`) is a ground-up rewrite of the backend in Rust.**
-> The Python implementation — including its ~150-node library and the node reference
-> that used to fill this file — lives on the `main` branch. Nothing here is released
-> yet; there is no PyPI package for this branch.
->
-> **Status:** the framework is complete and hardened (graph engine, control plane,
-> data plane, sub-patches, undo/redo, both Python node tiers, e2e). The **node
-> library is a deliberate blank slate** — Oscillator and Buffer only — and is being
-> re-designed from scratch rather than ported.
-
-## Why the rewrite
-
-The Python version ran one OS process per node and moved data between them over
-shared memory, with a Python manager in the middle of every control *and* data path.
-The Rust version collapses that into a single process:
-
-- **One process, tiered execution.** Native nodes run inline on the tick thread;
-  Python nodes run either in-process on a free-threaded interpreter (no GIL) or, when
-  they need the GIL, on a detached off-tick worker over shared memory — so a slow or
-  hung node can't stall the graph.
-- **One stream per output slot.** Viewers publish a *ViewSpec* (a constraint algebra,
-  no payload); the server folds every viewer's needs into a single reduction that runs
-  off the tick path. Ten viewers on one slot cost one stream, not ten.
-- **A CRDT control plane.** The browser holds a read-only replica of the graph state.
-  Every mutation is a command with an exact inverse, applied by the manager, which
-  also owns undo/redo per client session.
-
 ## Running it
 
-Requires a Rust toolchain (1.89+) and Node.js. Python is optional — build with
-`--no-default-features` for a pure-native binary.
+Requires a Rust toolchain (1.89+), Node.js, and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-cargo run -p goofi-init   # once per clone: provisions the Python interpreters (needs `uv`)
+cargo run -p goofi-init   # once per clone: provisions the Python runtime
 cargo run                 # builds the SPA if needed, starts the server, prints the URL
 ```
 
-`goofi-init` is a workspace crate, not a shell script, so that first line is the same command in
-PowerShell, cmd, bash, zsh and fish. It is needed because pyo3 must be told which interpreter to
-link against *before cargo starts*, and cargo reads `.cargo/config.toml` only at startup — until
-it has run, the build stops with one line saying so.
+Python is part of goofi, not an add-on: nodes are written in it, and params are expressions
+it evaluates. `goofi-init` builds the two interpreters that run them and writes the cargo
+config pointing pyo3 at them — which must happen *before cargo starts*, because cargo reads
+`.cargo/config.toml` only at startup. Until it has, the build stops with one line saying so.
+It is a workspace crate rather than a shell script, so that first line is the same command
+in PowerShell, cmd, bash, zsh and fish.
 
-Flags: `--port N` (default 8000), `--bind HOST` (default 127.0.0.1),
-`--extra-nodes DIR`, `--list-nodes`. It scans `./nodes/` when that directory exists,
-routing each node to the tier it can run on — in-process when its imports are
-free-threading-safe, else a subprocess. Neither the tier nor the interpreter is a
-setting: one probe decides per node, and the subprocess tier always runs `.gfivenv`.
-`--extra-nodes` is **repeatable** and **adds** to the shipped tree: each directory is
-scanned in turn, and a later one wins a type name it shares with an earlier one.
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--port N` | `8000` | The port to serve on. |
+| `--bind HOST` | `127.0.0.1` | The address to serve on. Anything beyond this machine warns: there is no auth, and `/term` is a real shell. |
+| `--extra-nodes DIR` | — | Scan `DIR` for Python nodes *after* `./nodes/`. Repeatable; a later directory wins a type name it shares with an earlier one. |
+| `--list-nodes` | — | Print the registered node types and exit. |
+| `--headless` | — | Serve the API alone — `/control`, `/data`, `/term`, `/mcp`. The app's routes are never mounted. |
 
-**When the backend is not on your machine.** The Save and Open dialogs each carry a second
-door — *Download a copy* and *Open from this computer…* — which pass the `.gfi` through the
-browser rather than the backend, so they reach wherever your own file dialogs do even when the
-server cannot. This is a copy out and a copy in: it deliberately leaves the patch's remembered
-file alone, so Ctrl+S never silently retargets to a download.
+`./nodes/` is scanned whenever it exists; no flag turns it on or off.
 
-### Python nodes
+**When the backend is not on your machine,** the Save and Open dialogs each carry a
+second door — *Download a copy* and *Open from this computer…* — which pass the `.gfi`
+through the browser rather than the backend. This is a copy out and a copy in: it leaves
+the patch's remembered file alone, so Ctrl+S never silently retargets to a download.
+
+## Python nodes
 
 Drop a file in `nodes/`:
 
@@ -83,78 +57,53 @@ import numpy as np
 class Smooth(goofi.Node):
     """Rolling mean over the last axis."""
 
-    @staticmethod
-    def config_input_slots():
-        return {"data": goofi.DataType.ARRAY}
-
-    @staticmethod
-    def config_output_slots():
-        return {"out": goofi.DataType.ARRAY}
-
-    @staticmethod
-    def config_params():
-        return {"smoothing": {"window": goofi.IntParam(8, 1, 512)}}
+    INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    PARAMS = {"smoothing": {"window": goofi.IntParam(8, 1, 512, doc="Samples in the mean.")}}
 
     def process(self, data):
         w = self.params.smoothing.window
         kernel = np.ones(w, dtype=np.float32) / w
-        out = np.apply_along_axis(lambda v: np.convolve(v, kernel, mode="same"), -1, data.data)
-        return {"out": (out, data.meta)}
+        return np.apply_along_axis(lambda v: np.convolve(v, kernel, mode="same"), -1, data.data)
 ```
 
-`process` receives one keyword argument per **declared** input slot and returns
-`{slot: value}` — a bare array, an `(array, meta)` pair, or a `goofi.Data`. Returning
-`None` emits nothing that tick. Params arrive as `self.params.<group>.<name>`.
+A node declares itself in constants, read once by the import — not in hooks. Each may be
+omitted:
 
-A slot with no data arrives as `None`, and handling that is the node's own call
-(`if data is None: return None`). Declare it
-`goofi.InputSlot(goofi.DataType.ARRAY, required=True)` instead and the node never ticks
-without it — so it may be read unconditionally.
+| Constant | Shape |
+| --- | --- |
+| `INPUTS` | `{slot: DataType}`, or `{slot: InputSlot(dtype, required=…, trigger=…)}` for the per-slot options. |
+| `OUTPUTS` | `{slot: DataType}`. |
+| `PARAMS` | `{group: {name: IntParam / FloatParam / BoolParam / StringParam}}`, read as `self.params.<group>.<name>`. |
+| `PRODUCER` | `True` for a node that paces itself rather than waiting for a frame. |
 
-The same file runs on either Python tier — a discovery probe imports it in a real
-interpreter and reports whether it is free-threading-safe. If it isn't, it routes to a
-subprocess automatically and appears in the palette under the `subprocess` category. A node
-whose dependencies are missing everywhere fails its probe and is listed as `unavailable` —
-greyed out, naming the missing module — rather than silently vanishing. An exception inside
-`process()` surfaces on the node's error channel instead of taking anything down.
+`process` receives one keyword argument per **declared** input slot — a `goofi.Data`, or
+`None` when the slot holds no frame. A `required=True` slot never arrives empty, so it may
+be read unconditionally. It returns `{slot: value}`, or a bare value when the node has
+exactly one output slot; a value is a `goofi.Data`, an `(array, meta)` pair, or an
+array-like. Returning `None` emits nothing. `setup()` runs once, after the params are
+seeded.
 
-The interpreters are `.gfivenv-ft` (free-threaded 3.14t, in-process) and `.gfivenv` (a GIL
-Python, subprocess). `cargo run -p goofi-init` creates both and installs the `goofi` package
-into them, using `uv` — which is therefore a hard requirement. Those two are the only
-interpreters goofi uses; there is no flag for naming another. Re-run `goofi-init` after a
-version bump; it is idempotent.
+The same file runs on either tier, and the file does not choose: a discovery probe imports
+it in a real interpreter and routes it in-process when its imports keep the GIL disabled,
+else to a subprocess — where it appears in the palette under the `subprocess` category. The
+two interpreters are `.gfivenv-ft` (free-threaded 3.14t) and `.gfivenv` (a GIL Python), both
+made by `goofi-init`, and goofi uses no others. Re-run it after a version bump; it is
+idempotent.
 
-## Development
+Nothing fails silently. A node whose dependencies are missing everywhere is listed as
+`unavailable`, greyed out and naming the missing module; an exception inside `process()`
+surfaces on the node's error channel instead of taking anything down.
+
+## Testing
 
 ```bash
-cargo test --workspace                    # backend
-cargo test -p goofi-python --features embed   # both Python tiers
-cd frontend && npm run check && npm run test
-cd tests/e2e && npm run e2e               # Playwright against the real binary
+cargo test --workspace                        # backend
+cargo test -p goofi-tests --features embed    # …plus the in-process Python tier
+cargo clippy --workspace --all-targets        # prints nothing
+cd frontend && npm run check && npm run test  # svelte-check, then vitest
+cd tests/e2e && npm run e2e                   # Playwright against the real binary
 ```
-
-### Layout
-
-```
-backend/
-  goofi-core      Data (always f32) + Meta, params, reduction kernels, globals
-  goofi-codec     the binary wire format (shared with the frontend decoder)
-  goofi-node      the Node trait, manifests, Python introspection probe
-  goofi-nodes     the native node library
-  goofi-engine    Graph, scheduler, sub-patch scopes, commands + history, detached tier
-  goofi-view      the ViewSpec constraint algebra
-  goofi-bridge    axum server: control plane, data plane, SPA hosting, the yrs document
-  goofi-python    both Python node tiers: in-process (pyo3, free-threaded) + subprocess
-  goofi-pymod     the `goofi` Python package, written in Rust
-  goofi-cli       the goofi-pipe binary
-frontend/         SvelteKit SPA (the only UI)
-tests/e2e/        Playwright end-to-end suite
-nodes/            Python nodes, auto-discovered at startup
-```
-
-`AGENTS.md` is the working orientation for the repo and goes deeper on every
-subsystem. (`CLAUDE.md` is a one-line `@AGENTS.md` import, so Claude Code finds
-it too — the same pairing goofi seeds into a patch workspace.)
 
 ## License
 

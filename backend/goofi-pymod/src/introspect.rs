@@ -152,7 +152,7 @@ fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>)>
 mod tests {
     use super::*;
 
-    /// The one `Slot` that `config_input_slots()` returning `{"data": v}` yields.
+    /// The one `Slot` that `INPUTS = {"data": v}` yields.
     fn slot_of(py: Python<'_>, v: Bound<'_, PyAny>) -> Slot {
         let d = PyDict::new(py);
         d.set_item("data", v).unwrap();

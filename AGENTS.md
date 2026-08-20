@@ -122,7 +122,7 @@ In priority order. These override speed.
 6. **Zero warnings, and that includes clippy.** A task is not done at "finished". Build with
    `--all-targets` and clear what it prints — that flag is load-bearing, because a plain build
    never compiles the integration test targets and a warning there ships. `cargo clippy --workspace
-   --all-targets` is clean as of 2026-08-19 and stays that way. Remove the dead field; never
+   --all-targets` is clean as of 2026-08-20 and stays that way. Remove the dead field; never
    silence it with a `_` prefix or an `#[allow]`.
 
 7. **Honest reporting.** If tests fail, say so with the output. If a step was skipped, say that.
@@ -205,6 +205,15 @@ motion token lives in one `:root`; a component states its own layout, never anot
 primitive library is a LEAF layer and must not import a store — doing so reshuffles the CSS chunk
 graph and gave the app a first-paint flash.
 
+**The panel system is a dependency, not a subsystem.** Tabs, splits, maximize and the drag-and-drop
+are `panelty` — an npm package with a repo of its own (`dav0dea/panelty`), which goofi consumes like
+any other dependency. It holds NO tree: it raises an intent, and goofi's `LayoutHost` turns each one
+into a single manager op, so the document stays the only owner of the layout. Its styling is a
+CONTRACT rather than a shared `:root` — the package ships a `--panelty-*-default` for every token
+and reads `var(--panelty-x, var(--panelty-x-default))`, and goofi maps its own tokens onto that in
+one block, which a test pins in both directions. Work that belongs to the panel system is a release
+of the package, never a patch in this tree.
+
 ---
 
 ## Hard constraints
@@ -224,8 +233,9 @@ graph and gave the app a first-paint flash.
   independent of viewport width, so `@container` is the default tool and `@media` is reserved for
   real device-class questions. One theme, done well.
 - **The workspace/panel system and the cable-drag feel are frozen UX.** Restyle them, do not
-  redesign them. There is no phone-only layout mode: a phone renders the same panel tree, and
-  panel maximize is the small-screen mechanism.
+  redesign them — and the panel system is `panelty`, so restyling it means the token contract, not
+  its source. There is no phone-only layout mode: a phone renders the same panel tree, and panel
+  maximize is the small-screen mechanism.
 - **Navigation must not dirty the patch, on either platform.** Entering a sub-patch is navigation;
   changing a viewer's type is a real view setting. Persistence and dirtiness are separate axes,
   and an unclassified write counts as authoring — so forgetting to classify costs a spurious dot,
