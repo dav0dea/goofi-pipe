@@ -262,9 +262,15 @@ of the package, never a patch in this tree.
 ## Getting it running
 
 Setup is ONE command, and it is not a shell script: `cargo run -p goofi-init`, once per clone,
-with `uv` on PATH. It creates both interpreters, installs both wheels, and writes the gitignored
-cargo config that points pyo3 at the free-threaded one. Until it has run, the build fails with a
-single line telling you to run it.
+with `uv` and `npm` on PATH. It creates both interpreters, installs both wheels, installs the
+frontend's dependencies, and writes the gitignored cargo config that points pyo3 at the
+free-threaded one. Until it has run, the build fails with a single line telling you to run it.
+
+**Two commands is the ceiling** — that one and `cargo run`. Every precondition cargo has and cannot
+provide for itself belongs inside goofi-init, never in a third line of a README: a build script
+that stops to name a second setup step is a build that did not have to stop. The frontend's
+`node_modules` was that third line, and it cost a fresh clone a server that started and served
+nothing.
 
 The gates, once it is provisioned:
 
@@ -275,12 +281,14 @@ cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # anchor the g
 #   log line can contain "warning:" and read as a failing gate when it is not
 cargo clippy --workspace --all-targets                             # …and this prints nothing
 cd frontend && npm run check && npm run test   # svelte-check + tsc strict, then vitest
-cd tests/e2e && npm run e2e                    # Playwright against the real binary
+cd tests/e2e && npm install && npm run e2e     # Playwright: its own package, its own install
 ```
 **CI runs this list and nothing else** — `.github/workflows/ci.yml`, ONE job, because the gates
 share one machine's worth of setup and the SPA is compiled in: no cargo build here happens without
 the frontend's dependencies. It is the same list because a gate with two spellings drifts, and the
-one that drifts is always the one nobody runs by hand.
+one that drifts is the one nobody runs by hand. The clippy line is spelled `-- -D warnings` there:
+"and this prints nothing" is not enforceable by reading, and clippy carries the rustc lints too, so
+that one command is the build-warning gate as well.
 **TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
 side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
 A gate that silently covers a tenth of the app is worse than no gate. Re-try when svelte-check's

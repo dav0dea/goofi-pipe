@@ -90,10 +90,12 @@ fn sync_frontend(frontend: &Path) {
     }
 
     // Asked before npm runs, because npm cannot say this. A fresh clone fails as `svelte-kit: not
-    // found`, exit 127 — which names neither the cause nor the fix.
+    // found`, exit 127 — which names neither the cause nor the fix. `goofi-init` installs these,
+    // so the fix is the setup command that already exists rather than a second one to learn.
     assert!(
         frontend.join("node_modules").is_dir(),
-        "the frontend's dependencies are not installed — run `npm install` in frontend/"
+        "the frontend's dependencies are not installed — {}",
+        goofi_init::RUN_ME
     );
 
     // Report AFTER the build, in the PAST tense with the measured duration. Cargo caches a build

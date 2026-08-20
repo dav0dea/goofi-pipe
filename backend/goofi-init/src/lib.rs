@@ -14,8 +14,13 @@
 //! `-p goofi-init` builds this crate alone — it depends on no goofi crate and no pyo3, so it can
 //! never trigger the very build it exists to configure.
 //!
+//! It provisions the FRONTEND's dependencies too, for the same reason: `goofi-bridge`'s build
+//! script compiles the SPA into the binary, so `npm install` is a precondition of `cargo build` in
+//! exactly the way the interpreters are. A fresh clone that ran this and then had `cargo run` stop
+//! to name a second setup command would make "setup is one command" false.
+//!
 //! After it runs, `cargo build`, `cargo test` and `cargo run` all work first time, every time.
-//! `uv` is the one thing that must already be installed.
+//! `uv` and `npm` are the two things that must already be installed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,11 +120,20 @@ pub fn interpreter() -> Option<PathBuf> {
 
 /// The instruction printed wherever readiness is demanded, so the wording exists once.
 pub const RUN_ME: &str = "run `cargo run -p goofi-init` first — it provisions the Python \
-                          interpreters goofi links against (needs `uv` on PATH)";
+                          interpreters goofi links against and the frontend's dependencies \
+                          (needs `uv` and `npm` on PATH)";
 
 /// Provision everything, from nothing, idempotently.
 pub fn init(root: &Path) -> Result<(), String> {
     require_uv()?;
+
+    // Both tools asked for BEFORE either is used: a run that provisions Python for two minutes and
+    // then stops for want of npm has spent the time to report what it could have said first.
+    let frontend = root.join("frontend");
+    let needs_npm = frontend.join("package.json").is_file();
+    if needs_npm {
+        require_npm()?;
+    }
 
     let ft = ensure_venv(root, FT_VENV, FT_PYTHON)?;
     let gil = ensure_venv(root, GIL_VENV, GIL_PYTHON)?;
@@ -132,7 +146,37 @@ pub fn init(root: &Path) -> Result<(), String> {
     for (venv, py) in [(FT_VENV, &ft), (GIL_VENV, &gil)] {
         install_wheel(root, venv, py)?;
     }
+
+    // Run every time rather than skipped when `node_modules` is there, and that is the difference
+    // between this and the venvs above: this repo ships NO lockfile deliberately, so `npm install`
+    // IS the resolve step, and a `package.json` that gained a dependency is exactly the case a
+    // presence check would sail past. It is a no-op when nothing moved.
+    if needs_npm {
+        println!("  installing the frontend's dependencies");
+        run(npm(["install"]).current_dir(&frontend), "install the frontend's dependencies")?;
+    }
     Ok(())
+}
+
+/// `npm`, spelled the way this platform spells it — Windows resolves it through a `.cmd` shim that
+/// `CreateProcess` does not find under the bare name.
+fn npm<'a>(args: impl IntoIterator<Item = &'a str>) -> Command {
+    let mut cmd = Command::new(if cfg!(windows) { "npm.cmd" } else { "npm" });
+    cmd.args(args);
+    cmd
+}
+
+fn require_npm() -> Result<(), String> {
+    npm(["--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|_| {
+            "goofi needs `npm` on PATH — the app is compiled into the binary, so building it is \
+             part of building goofi. Install Node.js from https://nodejs.org and re-run."
+                .to_string()
+        })
+        .and_then(|s| s.success().then_some(()).ok_or_else(|| "`npm --version` failed".into()))
 }
 
 fn require_uv() -> Result<(), String> {

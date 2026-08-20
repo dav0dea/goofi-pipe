@@ -19,17 +19,20 @@ targets live, high-rate streams (kHz EEG, HD video) with many simultaneous viewe
 Requires a Rust toolchain (1.89+), Node.js, and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-cargo run -p goofi-init         # once per clone: provisions the Python runtime
-npm install --prefix frontend   # once per clone: the SPA's dependencies
-cargo run                       # builds the SPA if needed, starts the server, prints the URL
+cargo run -p goofi-init   # once per clone: provisions everything cargo cannot
+cargo run                 # builds the SPA if needed, starts the server, prints the URL
 ```
 
-Python is part of goofi, not an add-on: nodes are written in it, and params are expressions
-it evaluates. `goofi-init` builds the two interpreters that run them and writes the cargo
-config pointing pyo3 at them — which must happen *before cargo starts*, because cargo reads
-`.cargo/config.toml` only at startup. Until it has, the build stops with one line saying so.
-It is a workspace crate rather than a shell script, so that first line is the same command
-in PowerShell, cmd, bash, zsh and fish.
+Two commands, and there is never a third. `goofi-init` builds the two Python interpreters, installs
+the `goofi` package into each, installs the frontend's dependencies, and writes the cargo config
+that points pyo3 at the free-threaded interpreter — every precondition `cargo` has and cannot
+provide for itself. That last one must happen *before cargo starts*, because cargo reads
+`.cargo/config.toml` only at startup; until it has, the build stops with one line saying so. It is
+a workspace crate rather than a shell script, so that first line is the same command in PowerShell,
+cmd, bash, zsh and fish.
+
+Python is part of goofi, not an add-on: nodes are written in it, and params are expressions it
+evaluates.
 
 The SPA is compiled into the binary, so `cargo run` builds it whenever a frontend source is newer
 than the last bundle — and **fails** if it cannot. It will not fall back to the previous bundle:
@@ -113,7 +116,7 @@ cargo test --workspace                        # backend
 cargo test -p goofi-tests --features embed    # …plus the in-process Python tier
 cargo clippy --workspace --all-targets        # prints nothing
 cd frontend && npm run check && npm run test  # svelte-check, then vitest
-cd tests/e2e && npm run e2e                   # Playwright against the real binary
+cd tests/e2e && npm install && npm run e2e    # Playwright against the real binary
 ```
 
 ## License

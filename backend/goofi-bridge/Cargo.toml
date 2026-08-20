@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The build script's only dependency, and it is one string: the instruction to run goofi-init,
+# which that script has to print and goofi-init owns. It links no goofi crate itself, so this
+# cannot make provisioning depend on the build it provisions.
+[build-dependencies]
+goofi-init = { path = "../goofi-init" }
+
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-codec = { path = "../goofi-codec" }
@@ -11,8 +17,6 @@ goofi-node = { path = "../goofi-node" }
 goofi-engine = { path = "../goofi-engine" }
 goofi-view = { path = "../goofi-view" }
 axum = { version = "0.8", features = ["ws"] }
-# The CRDT document (`src/crdt.rs`). This crate is its only consumer — the doc is the control
-# plane's projection, and nothing else in the workspace speaks Yjs.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 futures-util = "0.3"
 # The mount nonce only has to be unguessable-enough to keep two concurrent goofis apart.

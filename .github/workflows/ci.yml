@@ -5,9 +5,11 @@ on:
     branches: [ '*' ]
 
 # One job, because the gates are one list and they share one machine's worth of setup: the SPA is
-# compiled into the binary, so `cargo build` needs the frontend's dependencies, and the e2e suite
-# drives the binary that comes out. Splitting them would install the same things twice and warm two
-# cargo caches to test one tree.
+# compiled into the binary, so no cargo build here happens without the frontend's dependencies, and
+# the e2e suite drives the binary that falls out of the same build.
+#
+# The steps are also the fresh-clone path, in order — `goofi-init`, then cargo — so a clone that
+# needs a third command fails HERE rather than on a contributor's machine.
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -23,18 +25,17 @@ jobs:
       with:
         components: clippy
 
-    # Caches ~/.cargo and target/, which also covers the release wheel builds below: maturin runs
-    # from outside the repo but compiles into this same target directory.
     - uses: Swatinem/rust-cache@v2
 
     - uses: astral-sh/setup-uv@v5
 
-    # No lockfile anywhere in this repo (frontend/.gitignore: "a recipe, not a frozen build"), so
-    # `npm install`, never `npm ci`. FIRST, because every cargo build below runs goofi-bridge's
-    # build script, which builds the SPA it embeds — without these it fails, by design.
-    - name: Install the frontend's dependencies
-      run: npm install
-      working-directory: frontend
+    # SETUP IS ONE COMMAND. It provisions both interpreters, installs the goofi wheel into each,
+    # writes the cargo config that points pyo3 at the free-threaded one, and installs the
+    # frontend's dependencies — every precondition the cargo steps below have. Deliberately
+    # uncached: it re-decides every run, so CI can never inherit the stale-wheel gap a cached venv
+    # would carry.
+    - name: Provision (cargo run -p goofi-init)
+      run: cargo run -p goofi-init
 
     - name: Type-check (svelte-check + tsc strict)
       run: npm run check
@@ -43,14 +44,6 @@ jobs:
     - name: Unit tests (vitest)
       run: npm run test
       working-directory: frontend
-
-    # A real step, not a build script: pyo3 must be told which interpreter to link against *before
-    # cargo starts*, and cargo reads `.cargo/config.toml` only at startup. It also installs the
-    # goofi wheel into both interpreters, which is what the cross-language tests import and what the
-    # e2e's Python nodes run on. Deliberately uncached: it re-decides every run, so CI can never
-    # inherit the stale-wheel gap a cached venv would carry.
-    - name: Provision the Python runtime
-      run: cargo run -p goofi-init
 
     # `--all-targets` is load-bearing: a plain build never compiles the integration test targets, so
     # a warning there would ship. Clippy carries the rustc lints too, so this one command is both
@@ -67,6 +60,8 @@ jobs:
     - name: Tests (in-process Python tier)
       run: cargo test -p goofi-tests --features embed
 
+    # The e2e suite is its own npm package, and not part of building or running goofi — so it is
+    # installed here rather than by goofi-init, which provisions what the two setup commands need.
     - name: Install the e2e suite's dependencies
       run: npm install
       working-directory: tests/e2e
