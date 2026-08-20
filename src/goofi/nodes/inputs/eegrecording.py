@@ -3,12 +3,12 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 from goofi.node import Node
-from goofi.params import BoolParam, FloatParam
+from goofi.params import BoolParam, FloatParam, StringParam
 
 
 class EEGRecording(Node):
     """
-    Streams EEG recordings as an LSL (Lab Streaming Layer) stream, either from an example dataset, a user-provided file, or a supported MNE-compatible format. This node manages reading, looping, and live replay of EEG data but does not process or modify incoming data.
+    Streams EEG recordings as an LSL (Lab Streaming Layer) stream, either from an example dataset, a user-provided file, or a supported MNE-compatible format. This node manages reading, looping, and live replay of EEG data but does not process or modify incoming data. Unwanted channels can be excluded from the stream via the channels parameters.
 
     Inputs:
 
@@ -26,7 +26,12 @@ class EEGRecording(Node):
                 "stream_name": "recording",
                 "loop": BoolParam(True, doc="Whether to loop the recording"),
                 "reset": BoolParam(trigger=True, doc="Restart the recording stream"),
-            }
+            },
+            "channels": {
+                "ignore": StringParam(
+                    "", doc="Comma-separated list of channel names to exclude from the stream (case-sensitive)"
+                ),
+            },
         }
 
     def setup(self):
@@ -80,6 +85,19 @@ class EEGRecording(Node):
             raw.apply_function(lambda x: x * 1e4)
         else:
             raise RuntimeError("No data source specified. Set either 'use_example_data' or 'file_path'.")
+
+        # remove channels that the user asked to ignore
+        ignore = [ch.strip() for ch in self.params.channels.ignore.value.split(",")]
+        ignore = [ch for ch in ignore if ch != ""]
+        if ignore:
+            missing = [ch for ch in ignore if ch not in raw.ch_names]
+            if missing:
+                # TODO: add proper logging
+                print(f"Cannot ignore channels that are not in the recording: {', '.join(missing)}")
+            drop = [ch for ch in ignore if ch in raw.ch_names]
+            assert len(drop) < len(raw.ch_names), "Cannot ignore all channels in the recording."
+            if drop:
+                raw.drop_channels(drop)
 
         # start the stream
         self.stream = PlayerLSL(
@@ -135,6 +153,10 @@ class EEGRecording(Node):
 
     def recording_reset_changed(self, value: bool):
         """Reset the stream if the reset parameter is triggered."""
+        self.setup()
+
+    def channels_ignore_changed(self, _):
+        """Reinitialize the stream."""
         self.setup()
 
     def terminate(self):
