@@ -204,6 +204,16 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
 async fn the_app_is_served_out_of_the_binary_and_the_client_router_owns_the_rest() {
     // goofi ships as ONE file: the SPA is embedded, not read from a `frontend/build/` that has to
     // travel beside the binary and can silently go stale against it.
+    //
+    // Asked FIRST, and by name: an unbuilt frontend embeds an empty table, and every assertion
+    // below then fails as a 404 that names the route rather than the cause. The build script
+    // already knows why — a fresh clone whose `npm run build` exited 127 for want of
+    // `node_modules` used to warn and carry on, and the server it produced answered nothing.
+    assert!(
+        goofi_bridge::SPA_DEFECT.is_none(),
+        "the frontend this suite serves was never built: {:?}",
+        goofi_bridge::SPA_DEFECT
+    );
     let g = Goofi::new();
     let addr = host(&g.serve_spa(goofi_bridge::SPA).await).to_string();
 

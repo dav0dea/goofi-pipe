@@ -19,9 +19,16 @@ targets live, high-rate streams (kHz EEG, HD video) with many simultaneous viewe
 Requires a Rust toolchain (1.89+), Node.js, and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-cargo run -p goofi-init   # once per clone: provisions the Python runtime
-cargo run                 # builds the SPA if needed, starts the server, prints the URL
+cargo run -p goofi-init         # once per clone: provisions the Python runtime
+npm install --prefix frontend   # once per clone: the SPA's dependencies
+cargo run                       # builds the SPA if needed, starts the server, prints the URL
 ```
+
+The SPA is compiled into the binary, so `cargo run` builds it whenever a frontend source is newer
+than the last bundle — and **fails** if it cannot. It will not fall back to the previous bundle:
+one that does not match the binary around it is the wrong app, and on a fresh clone there is no
+previous bundle at all. `GOOFI_SKIP_FRONTEND_BUILD=1` opts out of the npm build; a binary built
+that way over a stale bundle refuses to serve the app and says so, rather than serving it.
 
 Python is part of goofi, not an add-on: nodes are written in it, and params are expressions
 it evaluates. `goofi-init` builds the two interpreters that run them and writes the cargo

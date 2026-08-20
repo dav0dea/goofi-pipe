@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, SPA};
+use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, SPA, SPA_DEFECT};
 use goofi_engine::{Graph, Registration};
 
 /// The shipped node directory, scanned whenever it exists — no flag turns it on, and none turns
@@ -184,6 +184,24 @@ async fn run(
         names.extend(discovered);
         println!("{} node types: {}", names.len(), names.join(", "));
         0
+    // Serving the app is refused, not attempted, when the build script says the embedded bundle is
+    // not one to serve: a server that came up and answered every route with nothing is the failure
+    // being prevented, and it looked exactly like a working start. The build script owns the
+    // verdict — this only reports it, and never re-derives it from the sources it cannot see.
+    //
+    // An arm of this chain rather than an early `return`, because `AppState::new` has already taken
+    // a workspace mount and only the tail of this function gives it back. `--headless` and
+    // `--list-nodes` both pass through: neither serves an app to be wrong about.
+    } else if let Some(defect) = SPA_DEFECT.filter(|_| !headless) {
+        eprintln!("refusing to start: {defect}.");
+        eprintln!(
+            "  The app is compiled into this binary, so building it is not enough — build it, \
+             then rebuild goofi-pipe:"
+        );
+        eprintln!("    npm install && npm run build   (in frontend/)");
+        eprintln!("    cargo build");
+        eprintln!("  Or run with --headless, which serves the API alone and needs no app.");
+        1
     } else {
         spawn_workers(&state); // the status-drain worker: 1 ms drain, 2 Hz broadcast
         match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
@@ -208,9 +226,7 @@ async fn run(
                 // script driving `/control` and `/mcp` has no use for the SPA, and a route that is
                 // not mounted is one nothing can reach by accident.
                 let spa = if headless { &[][..] } else { SPA };
-                if SPA.is_empty() {
-                    println!("  API only — this build embeds no frontend");
-                } else if headless {
+                if headless {
                     println!("  --headless: the API only, no app served");
                 } else {
                     println!("  open {url} to use it");

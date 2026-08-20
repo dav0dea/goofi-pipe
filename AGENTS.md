@@ -190,6 +190,15 @@ selectable: one probe per node file routes it, by whether its imports keep the G
 because a wedged node must not wedge the exit. That wait is what releases shared memory; what a
 crash leaves behind is reclaimed by the next start's sweep.
 
+**A failed frontend build is a failed build.** The bundle is compiled into the binary, so there is
+no such thing as falling back to the previous one — it is an app that does not match the binary
+around it, and on a fresh clone it does not exist. The build script fails instead, and where a
+failure is not what the caller asked for (a crate vendored with no frontend tree, an explicit
+`GOOFI_SKIP_FRONTEND_BUILD=1` over a stale bundle) it stamps WHY into `SPA_DEFECT` and the binary
+refuses to serve the app at startup. One owner: the build script decides, because it is the only
+half that can see the sources; the binary reports the verdict and never re-derives it. `--headless`
+serves no app and is never blocked.
+
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,
 or neither. A load restores the uids the patch was saved with, because everything keyed by uid
