@@ -117,25 +117,28 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 			return landed(await cmd(label, 'set_panel', { panel, ...patch }));
 		},
 
-		async movePanel(subtree, target, direction, placeBefore, ratio) {
+		// The two landings are two ops, because a fresh tab has no split for a move to land in — which
+		// is why `add_tab` adopts a subtree at all. One method still, so the panel system has one
+		// gesture rather than a capability to probe for. `ratio` is left to the op's own half.
+		async movePanel(subtree, to) {
+			if ('newTab' in to) {
+				const name = claimName();
+				try {
+					return landed(
+						await cmd('Move panel to new tab', 'add_tab', { name, index: to.newTab, subtree })
+					);
+				} finally {
+					inFlight.delete(name);
+				}
+			}
 			return landed(
 				await cmd('Move panel', 'insert_at_panel', {
 					subtree,
-					target,
-					direction,
-					place_before: placeBefore,
-					ratio
+					target: to.panel,
+					direction: to.direction,
+					place_before: to.placeBefore
 				})
 			);
-		},
-
-		async tabFromPanel(subtree, index): Promise<TabRef | null> {
-			const name = claimName();
-			try {
-				return await cmd<TabRef>('Move panel to new tab', 'add_tab', { name, index, subtree });
-			} finally {
-				inFlight.delete(name);
-			}
 		}
 	};
 }

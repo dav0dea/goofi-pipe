@@ -64,7 +64,7 @@
 		if (!ws.dragging || !z) return;
 		e.preventDefault();
 		const direction = z === 'left' || z === 'right' ? 'row' : 'column';
-		ws.dropOnPanel(node.id, direction, z === 'left' || z === 'top');
+		ws.dropOn({ panel: node.id, direction, placeBefore: z === 'left' || z === 'top' });
 	}
 
 	const CORNERS = ['tl', 'tr', 'bl', 'br'] as const;

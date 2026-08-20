@@ -8,13 +8,15 @@
  *
  * **Two contracts, each naming only what its own component can trigger.** A consumer rendering the
  * tab strip alone is never handed a method about panels, and a consumer rendering one tab's panels
- * alone is never handed a method about tabs. `tabFromPanel` is optional for the same reason: it is
- * the one gesture that spans both, so it exists only when the two are composed, and a host that
- * cannot express it simply does not offer the drag.
+ * alone is never handed a method about tabs. Neither has an optional member: the one gesture that
+ * spans both halves is named in the vocabulary of a MOVE rather than by a method that may be
+ * missing — see [`Landing`].
  *
  * Every write answers whether it LANDED. A refusal is ordinary — closing a tab's last panel, a
  * peer having already taken what this gesture names — and the panel system uses the answer to
- * decide where to move the focus, never to retry.
+ * decide where to move the focus, never to retry. An op that MINTS answers ids instead, because the
+ * caller has no other handle on what it made; a move never does, because the caller named the
+ * subtree and the next tree it is handed says where the subtree went.
  */
 import type { Direction, Workspace } from './model';
 
@@ -33,6 +35,15 @@ export interface TabHost {
 	renameTab(tab: string, name: string): Promise<boolean>;
 	reorderTab(tab: string, toIndex: number): Promise<boolean>;
 }
+
+/** Where a moved subtree LANDS: beside an existing panel, splitting it along `direction` — or, with
+ * `newTab`, in a tab of its own at that place in the strip. The second names a place that does not
+ * exist YET, which is what lets one move cover the drop-onto-the-tab-bar gesture. It is unbuildable
+ * where the two components are not composed: a `<Panels>` with no strip beside it has no bar to
+ * drop on, so the gesture is absent rather than offered and refused. */
+export type Landing =
+	| { panel: string; direction: Direction; placeBefore: boolean }
+	| { newTab: number };
 
 export interface PanelHost {
 	/** Split a panel, and answer the new panel's id — the caller's next act is to give it content,
@@ -53,19 +64,10 @@ export interface PanelHost {
 		patch: { type?: string; state?: Record<string, unknown> },
 		label?: string
 	): Promise<boolean>;
-	/** Move a subtree beside `target`, splitting it along `direction`. A tab dragged onto a panel
-	 * is this too — the panel system resolves it to the tab's root before calling, so there is one
-	 * move and not two that must agree. */
-	movePanel(
-		subtree: string,
-		target: string,
-		direction: Direction,
-		placeBefore: boolean,
-		ratio: number
-	): Promise<boolean>;
-	/** Tear a subtree out into a tab of its own — the drop-onto-the-tab-bar gesture. Present only
-	 * when panels are composed inside a tab strip. */
-	tabFromPanel?(subtree: string, index: number): Promise<TabRef | null>;
+	/** Move a subtree to `to`. A tab dragged onto a panel is this too — the panel system resolves it
+	 * to the tab's root before calling, so there is one move and not two that must agree. The share
+	 * the newcomer takes of the space it lands in is the host's to pick. */
+	movePanel(subtree: string, to: Landing): Promise<boolean>;
 }
 
 /** Both, for the composed case — which is what goofi is. */

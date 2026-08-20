@@ -1,9 +1,8 @@
 /**
  * Reactive workspace store — the browser's REPLICA of the manager's panel arrangement.
  *
- * The arrangement is the fifth CRDT doc root, held flat and id-keyed by the manager. This store
- * reads it (`syncFromDoc`) and rebuilds the tree the panel system draws (`arrangement.ts`); it
- * never edits an entry. Every gesture — split, close, resize, move, tab — goes out as a layout
+ * The arrangement is a doc root the manager owns, and it is a tree. This store is handed that tree
+ * (`syncFromDoc`) and draws it; it never edits a node. Every gesture — split, close, resize, move, tab — goes out as a layout
  * COMMAND over `/control`, so the manager owns persistence, the broadcast to peers, and the undo
  * step, exactly as it does for the graph. There is no second write authority.
  *
@@ -27,7 +26,7 @@ import {
 	type WorkspaceState
 } from './model';
 import { asStateObject } from './panelState';
-import type { LayoutHost, TabRef } from './host';
+import type { Landing, LayoutHost } from './host';
 
 /** A drag in progress. A panel and a tab are both just a subtree being moved — the only difference
  * is which id names it, which `_subtreeOf` knows how to answer. */
@@ -113,10 +112,11 @@ class WorkspaceStore {
 	 * shared state bag — that separation is what keeps peer isolation and navigation-must-not-dirty
 	 * true by construction rather than by classification. */
 	private _paths = $state<Record<string, string>>({});
-	/** The page and root panel a just-accepted `add_tab` minted, brought forward once the
-	 * doc catches up. The manager answers with the ids before the CRDT delta carrying them arrives,
-	 * so they are known first but cannot be drawn yet. */
-	private _wantTab: TabRef | null = null;
+	/** A panel this client has asked to GO TO, and where it was when it asked — `from` is null for a
+	 * panel the gesture MINTS, which is drawn nowhere yet. The pair is what makes the wait exact in
+	 * both orderings: the answer and the delta carrying its work race, so neither "it is drawn" nor
+	 * "a delta arrived" is the condition on its own. */
+	private _follow: { panel: string; from: string | null } | null = null;
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
 	activePanelId = $state<string | null>(null);
 	/** Viewpoint: the maximized panel, PER PAGE. A page keeps its own — maximizing on one tab and
@@ -165,13 +165,6 @@ class WorkspaceStore {
 		activeWorkspaceId: this.active.id
 	});
 
-	/** Whether a panel can be torn off into a tab of its own. False when the host cannot express it
-	 * — a standalone `<Panels>` has no strip to tear onto — and the strip reads this to decide
-	 * whether to OFFER the drop at all, so the gesture is absent rather than refused. */
-	get canTearOff(): boolean {
-		return this._host.tabFromPanel !== undefined;
-	}
-
 	/** The maximized panel on the page in front, or null when that page is showing its layout. */
 	get maximizedPanelId(): string | null {
 		const page = this.active?.id;
@@ -202,12 +195,7 @@ class WorkspaceStore {
 				if (!this._dragLive) this._drag = null;
 			}
 		}
-		const want = this._wantTab;
-		if (want && tabs.some((t) => t.id === want.tab)) {
-			this._wantTab = null;
-			this._page = want.tab;
-			this._focus(want.panel);
-		}
+		this._resolveFollow();
 		// An EMPTY arrangement is a generation boundary, never a settled tree — the reset that hands
 		// one over is followed by the manager's real document, and a replica before its first pull
 		// holds one too. Pruning against it invalidates every id there is, the viewpoint the
@@ -253,7 +241,7 @@ class WorkspaceStore {
 
 	// --- gestures ------------------------------------------------------------
 
-	/** After a structural layout change, drop the maximized view and focus `panelId`. */
+	/** Focus `panelId` — a panel the replica already draws on the tab in front. */
 	private _focus(panelId: string): void {
 		this.activePanelId = panelId;
 		this._viewpointChanged();
@@ -264,15 +252,34 @@ class WorkspaceStore {
 		this._focus(firstPanelId(root));
 	}
 
+	/** Go to `panel` once the replica draws it anywhere other than `from` — the tab that held it when
+	 * the gesture was RAISED, or null for one the gesture mints. Its tab comes to the front and the
+	 * focus lands on it. Where every op that mints a panel, or moves one into a tab that does not
+	 * exist yet, puts its answer. */
+	private _followTo(panel: string, from: string | null = null): void {
+		this._follow = { panel, from };
+		// Tried at once as well as on every sync: the delta can beat the answer, and then there is no
+		// later sync to wait for — a fresh tab would stay behind the one it was added from.
+		this._resolveFollow();
+	}
+
+	private _resolveFollow(): void {
+		const f = this._follow;
+		if (!f) return;
+		const holder = this._tabs.find((t) => findNode(t.root, f.panel));
+		if (!holder || holder.id === f.from) return;
+		this._follow = null;
+		this._page = holder.id;
+		this._focus(f.panel);
+	}
+
 	// --- layout mutations ----------------------------------------------------
 
 	/** Split a panel. The new panel is `empty` — the user picks its content from the empty panel's
 	 * buttons rather than inheriting the source's type. `fraction` is the new panel's share. */
 	split(panelId: string, direction: Direction, placeBefore = false, fraction = 0.5): void {
 		void this._host.splitPanel(panelId, direction, placeBefore, fraction).then((fresh) => {
-			if (fresh === null) return;
-			this.activePanelId = fresh;
-			this._viewpointChanged();
+			if (fresh !== null) this._followTo(fresh);
 		});
 	}
 
@@ -414,7 +421,7 @@ class WorkspaceStore {
 	 * and only the host can see what the other tabs are called. */
 	addTab(panelType?: string): void {
 		void this._host.addTab({ panelType }).then((born) => {
-			if (born) this._wantTab = born;
+			if (born) this._followTo(born.panel);
 		});
 	}
 
@@ -468,37 +475,31 @@ class WorkspaceStore {
 		return this._tabs.find((t) => t.id === d.workspaceId)?.root.id ?? null;
 	}
 
-	/** Drop the dragged node (panel or tab) into the layout by splitting `targetPanelId` along
-	 * `direction`. Repositions a panel or merges a tab — ONE op, so it is one undo step, and taking
-	 * a page's last panel takes the page with it. */
-	dropOnPanel(targetPanelId: string, direction: Direction, placeBefore: boolean): void {
+	/** Drop what is being dragged at `to` — beside a panel, or on the tab bar as a tab of its own.
+	 * ONE op either way, so a drag is one undo step, and taking a page's last panel takes the page
+	 * with it. The drag is spent whatever happens: a gesture that goes nowhere must not leave the
+	 * pointer armed. */
+	dropOn(to: Landing): void {
 		const d = this.dragging;
 		this.dragging = null;
 		if (!d) return;
-		if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
+		// A TAB dropped on the bar is a REORDER, which the strip commits itself. Building a tab around
+		// one would rebuild the tab it already is, under a new id and a new name.
+		if ('newTab' in to && d.kind !== 'panel') return;
 		const subtree = this._subtreeOf(d);
-		if (!subtree || subtree === targetPanelId) return;
-		// A drop lands on a tab already in front, so only the FOCUS moves — onto the panel the user
-		// just carried there, which is the one they are now working in.
-		const node = this._tabs.map((t) => findNode(t.root, subtree)).find(Boolean);
-		const focus = node ? firstPanelIn(node) : null;
-		void this._host.movePanel(subtree, targetPanelId, direction, placeBefore, 0.5).then((ok) => {
-			if (ok && focus !== null) this._focus(focus);
-		});
-	}
-
-	/** Drop the dragged panel onto the tab bar at `index` — it becomes a new tab, built AROUND the
-	 * panel it carries. (Tabs dropped on the bar reorder instead — see reorderTab.) */
-	dropPanelOnTabBar(index: number): void {
-		const d = this.dragging;
-		this.dragging = null;
-		if (!d || d.kind !== 'panel') return;
-		const subtree = this._subtreeOf(d);
-		// The one gesture that spans both halves, so it exists only where they are composed. A host
-		// that cannot express it does not offer the drag rather than failing it.
-		if (!subtree || !this._host.tabFromPanel) return;
-		void this._host.tabFromPanel(subtree, index).then((born) => {
-			if (born) this._wantTab = born;
+		if (!subtree || ('panel' in to && subtree === to.panel)) return;
+		// Both read HERE, before the op goes out: the panel the user is carrying, and the tab it is
+		// leaving — which is what a follow has to see it get past.
+		const source = this._tabs.find((t) => findNode(t.root, subtree));
+		const node = source ? findNode(source.root, subtree) : null;
+		const moved = node ? firstPanelIn(node) : '';
+		void this._host.movePanel(subtree, to).then((ok) => {
+			if (!ok || !moved) return;
+			// A drop beside a panel lands on the tab already in front, so only the FOCUS moves — onto
+			// the panel the user just carried there. A tab of its own is not drawn yet, so it is
+			// followed to instead.
+			if ('newTab' in to) this._followTo(moved, source?.id ?? null);
+			else this._focus(moved);
 		});
 	}
 

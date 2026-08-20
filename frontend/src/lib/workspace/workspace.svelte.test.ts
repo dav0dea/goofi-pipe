@@ -65,8 +65,8 @@ function resized(a: number, b: number): Workspace[] {
 	return tabs;
 }
 
-/** A host that answers every gesture with "no". `tabFromPanel` is present so a spread can remove
- * it, which is what the composed-only contract looks like from a consumer's side. */
+/** A host that answers every gesture with "no" — every member of the port, so a consumer that
+ * wires nothing up still gets a workspace it can look at. */
 const REFUSING_HOST: LayoutHost = {
 	addTab: async () => null,
 	removeTab: async () => false,
@@ -76,8 +76,7 @@ const REFUSING_HOST: LayoutHost = {
 	removePanel: async () => false,
 	resizeSplit: async () => false,
 	setPanel: async () => false,
-	movePanel: async () => false,
-	tabFromPanel: async () => null
+	movePanel: async () => false
 };
 
 let fc: FakeControl;
@@ -182,7 +181,7 @@ describe('a frozen gesture is a layout command', () => {
 		const ws = boot(split());
 		ws.setActive('panel-2');
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
-		ws.dropOnPanel('panel-2', 'column', false);
+		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await settle();
 		expect(ws.activePanelId, 'the panel the user just moved is the one they are in').toBe('panel-3');
 	});
@@ -198,21 +197,31 @@ describe('a frozen gesture is a layout command', () => {
 		expect(ws.activePanelId).toBe('panel-4');
 	});
 
+	it('…and forward all the same when the delta BEATS the answer', async () => {
+		// The two race, and an `add_tab` that also types its panel is two round trips wide — long
+		// enough that the tab is usually drawn before the ids come back. Waiting for a later sync that
+		// nothing is going to send left the new tab sitting behind the one it was added from.
+		const ws = boot();
+		fc.setCallResult('add_tab', { tab: 'tab-3', panel: 'panel-4' });
+		ws.addTab('globals');
+		ws.syncFromDoc([...oneTab(), tab('tab-3', 'Tab 2', 'panel-4', 'globals')]);
+		expect(ws.state.activeWorkspaceId, 'not off a delta alone — the ids are still in flight').toBe(
+			'tab-1'
+		);
+		await settle();
+		expect(ws.state.activeWorkspaceId).toBe('tab-3');
+		expect(ws.activePanelId).toBe('panel-4');
+	});
+
 	it('moves a dragged panel with ONE op, so the drop is one undo step', async () => {
 		const ws = boot(split());
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
-		ws.dropOnPanel('panel-2', 'column', false);
+		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()).toEqual([
 			[
 				'insert_at_panel',
-				{
-					subtree: 'panel-3',
-					target: 'panel-2',
-					direction: 'column',
-					place_before: false,
-					ratio: 0.5
-				}
+				{ subtree: 'panel-3', target: 'panel-2', direction: 'column', place_before: false }
 			]
 		]);
 		expect(ws.dragging, 'the drag is spent either way').toBeNull();
@@ -221,7 +230,7 @@ describe('a frozen gesture is a layout command', () => {
 	it('carries a whole tab’s subtree when the tab itself is dragged', async () => {
 		const ws = boot(split());
 		ws.dragging = { kind: 'tab', workspaceId: 'tab-1' };
-		ws.dropOnPanel('panel-2', 'row', false);
+		ws.dropOn({ panel: 'panel-2', direction: 'row', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()[0][1], 'a tab drag names the page’s root, not a panel').toMatchObject({
 			subtree: 'split-4'
@@ -229,13 +238,32 @@ describe('a frozen gesture is a layout command', () => {
 	});
 
 	it('tears a panel onto the tab bar as one page built around it', async () => {
+		// The same MOVE as a drop onto a panel — the landing is a place that does not exist yet, which
+		// is the only thing that makes it a second op rather than a second method.
 		const ws = boot(split());
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
-		ws.dropPanelOnTabBar(0);
-		await Promise.resolve();
-		expect(sent()).toEqual([
-			['add_tab', { name: 'Tab 2', index: 0, subtree: 'panel-3' }]
-		]);
+		ws.dropOn({ newTab: 0 });
+		await settle();
+		expect(sent()).toEqual([['add_tab', { name: 'Tab 2', index: 0, subtree: 'panel-3' }]]);
+		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
+		// the panel is still drawn on the tab it is LEAVING, and settling for that tab would leave the
+		// torn-off one behind the old one for good.
+		ws.syncFromDoc(split());
+		expect(ws.activePanelId, 'nothing has moved yet, so nothing is followed').toBe('panel-2');
+		ws.syncFromDoc([tab('tab-9', 'Tab 2', 'panel-3', 'console'), ...oneTab()]);
+		expect(ws.state.activeWorkspaceId, 'and the tab it built comes forward').toBe('tab-9');
+		expect(ws.activePanelId).toBe('panel-3');
+	});
+
+	it('refuses to build a tab around a TAB dropped on the bar — that is a reorder', async () => {
+		// The strip commits a tab drop itself. Taking it as a tear-off would rebuild the tab it already
+		// is, under a fresh id and a fresh name, and every viewpoint keyed by the old id would drop.
+		const ws = boot(split());
+		ws.dragging = { kind: 'tab', workspaceId: 'tab-1' };
+		ws.dropOn({ newTab: 0 });
+		await settle();
+		expect(sent()).toEqual([]);
+		expect(ws.dragging, 'the drag is spent either way').toBeNull();
 	});
 
 	it('closing the tab in front moves to its NEIGHBOUR, not to the strip’s first', async () => {
@@ -283,26 +311,6 @@ describe('a frozen gesture is a layout command', () => {
 		await settle();
 		expect(sent(), 'nothing left the client').toEqual([]);
 		expect(ws.state.workspaces, 'and the tree it was handed is still drawn').toHaveLength(1);
-	});
-
-	it('offers the tear-off only where the host can express it', async () => {
-		// `tabFromPanel` is the one gesture that spans tabs AND panels, so it is optional on the
-		// port: a host without it does not fail the drag, it never offers one. The drag is spent
-		// either way — a gesture that goes nowhere must not leave the pointer armed.
-		fc = new FakeControl();
-		const ws = workspace();
-		ws.configureHost({ ...REFUSING_HOST, tabFromPanel: undefined });
-		ws.syncFromDoc(split());
-		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
-		ws.dropPanelOnTabBar(0);
-		await settle();
-		expect(sent()).toEqual([]);
-		expect(ws.dragging, 'the drag is spent either way').toBeNull();
-		// …and the strip is told, so it never draws a drop it would have to refuse.
-		expect(ws.canTearOff).toBe(false);
-
-		ws.configureHost(REFUSING_HOST);
-		expect(ws.canTearOff, 'a composed host offers it').toBe(true);
 	});
 
 	it('addresses a tab by its ID, never by the label it happens to wear', async () => {
