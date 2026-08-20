@@ -4,7 +4,7 @@ import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 
 /**

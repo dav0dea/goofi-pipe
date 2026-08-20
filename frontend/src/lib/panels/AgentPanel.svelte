@@ -23,7 +23,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
-	import type { PanelProps } from 'tatami';
+	import type { PanelProps } from 'panelty';
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { termSession, type TerminalLike } from '$lib/stores/termSession';
 	import { Bar, ChoiceGrid, EmptyState, Icon, IconButton, Select, type Choice } from '$lib/ui';

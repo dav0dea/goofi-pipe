@@ -7,10 +7,10 @@
  * sub-patch depth works through the same `panel.state.subpatchPath` seam the
  * NodeEditorPanel reads reactively, so writing it makes the editor follow.
  */
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 import { selection } from './selection.svelte';
-import { collectPanels, findPanel } from 'tatami';
-import { arrayToPath, asStateObject, pathToArray } from 'tatami';
+import { collectPanels, findPanel } from 'panelty';
+import { arrayToPath, asStateObject, pathToArray } from 'panelty';
 import type { NavContext } from './history.svelte';
 
 export function captureNavContext(): NavContext {

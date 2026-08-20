@@ -337,7 +337,7 @@
 		--bar-pad-y: var(--space-2);
 	}
 	.param-form :global(.pf-identity-bar .pf-close) {
-		--tatami-icon-btn-size: 22px;
+		--panelty-icon-btn-size: 22px;
 		color: var(--text-dim);
 	}
 	.param-form :global(.pf-identity-bar .pf-close:hover) {

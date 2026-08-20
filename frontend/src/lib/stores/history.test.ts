@@ -3,7 +3,7 @@ import { history, type Action } from './history.svelte';
 import { notify } from './notify.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from './graph.svelte';
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 
 const ctx = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
 // A graph history entry marks a step; its undo/redo delegate to the manager (B3).

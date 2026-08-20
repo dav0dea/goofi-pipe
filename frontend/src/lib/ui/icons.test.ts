@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ICONS } from './icons';
-import { CHROME_ICONS } from 'tatami';
+import { CHROME_ICONS } from 'panelty';
 
 /* The vendored-geometry guard.
  *
@@ -12,26 +12,25 @@ import { CHROME_ICONS } from 'tatami';
  * baked `stroke="#fff"`, one drawn from memory on a 16-box grid, one vendored and never used —
  * and none of that shows up in a typecheck. This is what reads the bytes.
  *
- * There are TWO tables, because there are two owners: the panel chrome vendors the glyphs it draws
- * and the app vendors its own, and one renderer merges them. Everything below judges the merge,
- * except the two rules that are about ownership — sorted within a table, and in one table only.
+ * There are TWO tables, because there are two owners: `panelty` vendors the glyphs its chrome
+ * draws, this app vendors its own, and one renderer merges them at runtime. What is judged here is
+ * THIS app's table — the package's own repo holds its half to the same rules — plus the two
+ * questions that are about the pair: that no glyph is vendored twice, and that every name this
+ * app's source renders resolves in the merge.
  *
  * `Icon.svelte` cannot mount in vitest, so the testable half deliberately lives here: the geometry
  * is a plain string table, and the component is the 12 lines that wrap it in one <svg>.
  */
 
-/** Both trees an icon can be rendered from: the app's, and the panel package's own chrome. */
-const ROOTS = [
-	fileURLToPath(new URL('../..', import.meta.url)),
-	fileURLToPath(new URL('../../../packages/tatami/src', import.meta.url))
-];
+const SRC = fileURLToPath(new URL('../..', import.meta.url));
 
 /** The SVG elements Lucide's geometry is drawn from. Anything else is not a vendored icon. */
 const DRAW = /^(path|circle|rect|line|polyline|polygon|ellipse)$/;
 
-/** The merged table, as the renderer resolves it. */
+/** The merged table, as the renderer resolves it — only the resolution question reads this. */
 const ALL: Record<string, string> = { ...CHROME_ICONS, ...ICONS };
-const names = Object.keys(ALL);
+/** This app's own geometry: what the shape rules below are about. */
+const names = Object.keys(ICONS);
 
 /** Every `.ts`/`.svelte` under `src/`, except this guard and the table it reads. */
 function sourceFiles(dir: string): string[] {
@@ -45,7 +44,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 const allSource = (): string =>
-	ROOTS.flatMap((r) => sourceFiles(r))
+	sourceFiles(SRC)
 		.map((p) => readFileSync(p, 'utf8'))
 		.join('\n');
 
@@ -74,7 +73,7 @@ function rendered(): Set<string> {
 describe('vendored Lucide geometry', () => {
 	it('gives every name real drawing geometry', () => {
 		expect(names.length, 'the table is not empty').toBeGreaterThan(0);
-		const empty = names.filter((n) => !/<(\w+)[^>]*\/>/.test(ALL[n]));
+		const empty = names.filter((n) => !/<(\w+)[^>]*\/>/.test(ICONS[n as keyof typeof ICONS]));
 		expect(empty, 'every icon resolves to at least one drawing element').toEqual([]);
 	});
 
@@ -83,7 +82,7 @@ describe('vendored Lucide geometry', () => {
 		for (const n of names) {
 			// The whole string must be self-closing drawing tags back to back — nothing else can be in
 			// there, which is also what makes the `{@html}` in `Icon.svelte` safe by construction.
-			const rest = ALL[n].replace(/<(\w+)((?:\s+[\w-]+="[^"]*")*)\s*\/>/g, (_, tag: string) =>
+			const rest = ICONS[n as keyof typeof ICONS].replace(/<(\w+)((?:\s+[\w-]+="[^"]*")*)\s*\/>/g, (_, tag: string) =>
 				DRAW.test(tag) ? '' : `<${tag}>`
 			);
 			if (rest !== '') offenders.push(`${n}: ${rest}`);
@@ -95,7 +94,7 @@ describe('vendored Lucide geometry', () => {
 	   `Icon.svelte`'s (stroke: currentColor), so an icon inherits the colour of the control it sits
 	   in and can never introduce one of its own — which is the defect this icon system replaced. */
 	it('bakes in no paint of its own — colour comes from the control', () => {
-		const offenders = names.filter((n) => /\b(fill|stroke|style|class|color)=/.test(ALL[n]));
+		const offenders = names.filter((n) => /\b(fill|stroke|style|class|color)=/.test(ICONS[n as keyof typeof ICONS]));
 		expect(offenders, 'no icon carries its own fill/stroke/style').toEqual([]);
 	});
 
@@ -104,27 +103,22 @@ describe('vendored Lucide geometry', () => {
 	it('stays on the 24-box Lucide grid', () => {
 		const offenders: string[] = [];
 		for (const n of names)
-			for (const [, num] of ALL[n].matchAll(/(-?\d*\.\d+|-?\d+)/g))
+			for (const [, num] of ICONS[n as keyof typeof ICONS].matchAll(/(-?\d*\.\d+|-?\d+)/g))
 				if (Math.abs(parseFloat(num)) > 24) offenders.push(`${n}: ${num}`);
 		expect(offenders).toEqual([]);
 	});
 
 	it('names icons the way Lucide does — kebab-case, unique, sorted', () => {
 		expect(names.filter((n) => !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(n))).toEqual([]);
-		for (const [who, table] of [
-			['the app', ICONS],
-			['the chrome', CHROME_ICONS]
-		] as const) {
-			const own = Object.keys(table);
-			expect([...own].sort(), `${who}'s table is sorted`).toEqual(own);
-		}
+		expect([...names].sort(), 'the table is sorted').toEqual(names);
 	});
 
-	/* One glyph, one owner. A name in both tables is the same geometry vendored twice, and the
-	   merge hides it: the app's copy wins, the chrome's copy is never drawn, and the day one of
-	   them is corrected the other is not. */
+	/* One glyph, one owner — across a package boundary, which is where this stops being obvious. A
+	   name in both tables is the same geometry vendored twice, and the merge hides it: this app's
+	   copy wins, the chrome's is never drawn, and the day one of them is corrected the other is
+	   not. It fails HERE when the package adds a glyph this app already had. */
 	it('vendors each glyph in exactly one table', () => {
-		const both = Object.keys(ICONS).filter((n) => n in CHROME_ICONS);
+		const both = names.filter((n) => n in CHROME_ICONS);
 		expect(both, 'the app and the chrome each own their own glyphs').toEqual([]);
 	});
 

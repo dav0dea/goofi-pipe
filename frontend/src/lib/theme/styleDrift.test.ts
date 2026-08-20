@@ -103,12 +103,12 @@ const ALLOW_DUPLICATE: { sel: string; why: string }[] = [
 const INVARIANT = new Set(['0', '0px', '1px', '100%', '999px', '50%']);
 
 /** Everything a `font-family` is allowed to say: the two faces by their token, or nothing at all.
- *  The panel system names the same face through its own contract — `--tatami-font-sans` maps onto
+ *  The panel system names the same face through its own contract — `--panelty-font-sans` maps onto
  *  `--font-sans` in `app.css` — so both spellings are the token, and neither is a raw family. */
 const FONT_TOKEN = new Set([
 	'var(--font-sans)',
 	'var(--font-mono)',
-	'var(--tatami-font-sans, var(--tatami-font-sans-default))',
+	'var(--panelty-font-sans, var(--panelty-font-sans-default))',
 	'inherit'
 ]);
 
@@ -301,7 +301,7 @@ function coarseTargets(css: string): Set<string> {
 /** The raw numeric literals in one declaration value, with token references removed.
  *
  *  Resolved innermost-first, because the panel system's contract is NESTED by design:
- *  `var(--tatami-space-2, var(--tatami-space-2-default))` is one token with a shipped default, and
+ *  `var(--panelty-space-2, var(--panelty-space-2-default))` is one token with a shipped default, and
  *  a flat strip would leave the `-2` of the name behind and read it as a literal. A reference
  *  resolving to a name disappears; a fallback that is a VALUE survives, so `var(--select-fs, 16px)`
  *  still answers 16 — that is the whole point of the scan. */
@@ -629,8 +629,8 @@ describe('style vocabulary', () => {
 		const offenders = found
 			.filter(
 				(o) =>
-					!/var\(--(tatami-)?focus-width[,)]/.test(o.value) ||
-					!/var\(--(tatami-)?focus-ink[,)]/.test(o.value)
+					!/var\(--(panelty-)?focus-width[,)]/.test(o.value) ||
+					!/var\(--(panelty-)?focus-ink[,)]/.test(o.value)
 			)
 			.map((o) => `${o.rel}  ${o.sel} { outline: ${o.value} }`);
 		expect(offenders).toEqual([]);

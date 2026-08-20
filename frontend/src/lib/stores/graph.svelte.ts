@@ -20,7 +20,7 @@ import {
 } from '$lib/api/control';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 import type { SlotView } from '$lib/viewers/inlineView';
 import { history, type Action } from './history.svelte';
 import { captureNavContext } from '$lib/stores/navContext';

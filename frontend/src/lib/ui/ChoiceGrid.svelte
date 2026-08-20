@@ -22,7 +22,7 @@
 
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
-	import { Icon } from 'tatami';
+	import { Icon } from 'panelty';
 
 	let {
 		choices,

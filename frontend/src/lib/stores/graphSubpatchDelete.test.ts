@@ -3,7 +3,7 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';

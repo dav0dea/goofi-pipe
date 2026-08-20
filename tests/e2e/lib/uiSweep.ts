@@ -12,7 +12,7 @@ const INDEX_TS = path.resolve(__dirname, '../../../frontend/src/lib/ui/index.ts'
  *
  * Two shapes, because the barrel now has two kinds of primitive. One the app owns and re-exports by
  * FILE (`export { default as X } from './X.svelte'`), and one the panel package owns and the barrel
- * takes back by NAME (`export { Button } from 'tatami'`) so the app still imports every primitive
+ * takes back by NAME (`export { Button } from 'panelty'`) so the app still imports every primitive
  * from one place. A component is PascalCase in both, which is what separates it from the named
  * logic re-exports (isTextEditingTarget, MODE_ATTRS, ICONS, …) and from a `type` re-export. Sorted
  * for a stable set comparison against the sample registry.

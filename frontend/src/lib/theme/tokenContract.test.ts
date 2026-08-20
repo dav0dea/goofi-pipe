@@ -1,8 +1,8 @@
 /**
  * The panel system's styling hand-over, held to completeness.
  *
- * The package draws every rule through `var(--tatami-x, var(--tatami-x-default))`. Two tiers, two
- * owners: the `-default` is the package's own shipped look, and `--tatami-x` is the slot this app
+ * The package draws every rule through `var(--panelty-x, var(--panelty-x-default))`. Two tiers, two
+ * owners: the `-default` is the package's own shipped look, and `--panelty-x` is the slot this app
  * fills in one block in `app.css`. Nothing enforces either side at runtime — an unmapped token
  * simply falls through to the package's default, which is the same colour today and drifts the day
  * either palette moves. The failure is silent, invisible in review, and looks exactly like a theme
@@ -17,9 +17,12 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PKG = fileURLToPath(new URL('../../../packages/tatami/src/lib', import.meta.url));
+/** The package's own source, read out of `node_modules`. Unusual for a test, and the point: the
+ *  contract has two sides in two REPOS now, and the only thing that can catch panelty adding a
+ *  token this app does not map is something that reads both sides at once. */
+const PKG = fileURLToPath(new URL('../../../node_modules/panelty/src/lib', import.meta.url));
 const TOKENS = fileURLToPath(
-	new URL('../../../packages/tatami/src/lib/ui/tokens.css', import.meta.url)
+	new URL('../../../node_modules/panelty/src/lib/ui/tokens.css', import.meta.url)
 );
 const APP_CSS = fileURLToPath(new URL('../../app.css', import.meta.url));
 
@@ -53,25 +56,25 @@ const packageCss = (): string =>
 		.map((p) => readFileSync(p, 'utf8'))
 		.join('\n');
 
-/** Every `--tatami-x` the package READS, `-default` tier excluded — the contract itself. */
+/** Every `--panelty-x` the package READS, `-default` tier excluded — the contract itself. */
 function read(): Set<string> {
 	const out = new Set<string>();
-	for (const [, name] of packageCss().matchAll(/var\(\s*--tatami-([a-z0-9-]+)/g))
+	for (const [, name] of packageCss().matchAll(/var\(\s*--panelty-([a-z0-9-]+)/g))
 		if (!name.endsWith('-default')) out.add(name);
 	return out;
 }
 
-/** Every `--tatami-x…: ` one stylesheet DECLARES. */
+/** Every `--panelty-x…: ` one stylesheet DECLARES. */
 function declared(file: string, suffix = ''): Set<string> {
 	const src = readFileSync(file, 'utf8');
 	const out = new Set<string>();
-	for (const [, name] of src.matchAll(/^\t--tatami-([a-z0-9-]+)\s*:/gm))
+	for (const [, name] of src.matchAll(/^\t--panelty-([a-z0-9-]+)\s*:/gm))
 		if (suffix ? name.endsWith(suffix) : !name.endsWith('-default'))
 			out.add(suffix ? name.slice(0, -suffix.length) : name);
 	return out;
 }
 
-describe('the tatami styling contract', () => {
+describe('the panelty styling contract', () => {
 	const themed = (): string[] => [...read()].filter((n) => !HOOKS.has(n)).sort();
 
 	it('reads a contract at all, and every read is one of the three groups', () => {

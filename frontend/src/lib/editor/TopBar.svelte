@@ -2,15 +2,15 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
-	import { workspace } from 'tatami';
+	import { workspace } from 'panelty';
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
 	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
 	import { tick, untrack, type Snippet } from 'svelte';
-	import type { MenuItem } from 'tatami';
-	import { ContextMenu } from 'tatami';
+	import type { MenuItem } from 'panelty';
+	import { ContextMenu } from 'panelty';
 	import PerfHud from './PerfHud.svelte';
-	import { createWidthCache, planOverflow, type OverflowItem } from 'tatami';
+	import { createWidthCache, planOverflow, type OverflowItem } from 'panelty';
 	import { IconButton, Badge, Button, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.
@@ -394,7 +394,7 @@
 			<Button
 				variant="ghost"
 				size="sm"
-				style="--tatami-btn-ink: var(--accent)"
+				style="--panelty-btn-ink: var(--accent)"
 				data-testid="topbar-agents"
 				aria-expanded={agentMenu !== null}
 				title="Running agents"

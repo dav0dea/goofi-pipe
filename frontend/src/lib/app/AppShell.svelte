@@ -16,11 +16,11 @@
 	import Toast from '$lib/app/Toast.svelte';
 	import AgentClose from '$lib/app/AgentClose.svelte';
 	import TitleTip from '$lib/app/TitleTip.svelte';
-	import { Tabs as WorkspaceTabs } from 'tatami';
-	import { Panels as WorkspaceView } from 'tatami';
+	import { Tabs as WorkspaceTabs } from 'panelty';
+	import { Panels as WorkspaceView } from 'panelty';
 	import { registerAppPanels } from '$lib/panels/register';
 	import { editorFor } from '$lib/panels/editorCommands';
-	import { workspace } from 'tatami';
+	import { workspace } from 'panelty';
 	import { layoutHost } from '$lib/stores/layoutHost';
 	import { DEFAULT_PANEL_TYPE } from '$lib/api/vocab';
 	import { graph } from '$lib/stores/graph.svelte';

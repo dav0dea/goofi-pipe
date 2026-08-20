@@ -13,7 +13,7 @@
  */
 import { resolveKind, type ViewerKind } from './kind';
 import { resolveSettings, type SettingValue, type SettingsMap } from './settingsSchema';
-import { asStateObject } from 'tatami';
+import { asStateObject } from 'panelty';
 
 export interface ViewBinding {
 	readonly kind: ViewerKind;

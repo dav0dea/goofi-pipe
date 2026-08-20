@@ -2,12 +2,12 @@
      The slot picker lives in the panel header bar (next to the node name).
      Linking + empty state are handled by NodeLinkedPanel. -->
 <script lang="ts">
-	import type { PanelProps } from 'tatami';
+	import type { PanelProps } from 'panelty';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { asStateObject } from 'tatami';
-	import { workspace } from 'tatami';
+	import { asStateObject } from 'panelty';
+	import { workspace } from 'panelty';
 	import { ScrollArea, Select } from '$lib/ui';
 
 	let props: PanelProps = $props();

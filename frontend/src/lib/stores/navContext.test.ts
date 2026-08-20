@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { workspace, type Workspace } from 'tatami';
+import { workspace, type Workspace } from 'panelty';
 import { FakeControl } from '$lib/test/fakeControl';
 import { goofiLayoutHost } from './layoutHost';
 import { selection } from './selection.svelte';

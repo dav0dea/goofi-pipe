@@ -10,12 +10,12 @@
  * It also owns what a tab is CALLED. A name is a label, not addressing, and only something that can
  * see the whole strip can pick a free one — which is why `addTab` takes no name.
  */
-import type { LayoutHost, TabRef } from 'tatami';
-import type { Direction, Workspace } from 'tatami';
+import type { LayoutHost, TabRef } from 'panelty';
+import type { Direction, Workspace } from 'panelty';
 import { captureNavContext } from '$lib/stores/navContext';
 import { history } from './history.svelte';
 import { getControl, type Control } from '$lib/api/control';
-import { workspace } from 'tatami';
+import { workspace } from 'panelty';
 import type { OpName } from '$lib/api/ops';
 
 /** How the host reaches the manager, and how it sees the strip it is naming a tab against. */

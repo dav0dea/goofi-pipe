@@ -12,12 +12,12 @@
      the scrollbar stays accurate at any line count. Auto-scrolls to the newest
      line unless the user has scrolled up. -->
 <script lang="ts">
-	import type { PanelProps } from 'tatami';
+	import type { PanelProps } from 'panelty';
 	import { consoleStore, type ConsoleEntry, type ConsoleView } from '$lib/stores/console.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { linkedNodeName } from 'tatami';
+	import { linkedNodeName } from 'panelty';
 	import { copyText } from '$lib/clipboard';
 	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
 	import NodeSelect from './NodeSelect.svelte';
@@ -453,7 +453,7 @@
 	   the --hit floor under a coarse pointer by itself, and the row grows with it — which is right
 	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed). */
 	.row :global(.console-copy-btn) {
-		--tatami-icon-btn-size: 16px;
+		--panelty-icon-btn-size: 16px;
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity var(--dur-fast) var(--ease);

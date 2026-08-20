@@ -10,7 +10,7 @@
  * `registerPanel`.
  */
 import type { Component } from 'svelte';
-import { registerPanel, type PanelProps } from 'tatami';
+import { registerPanel, type PanelProps } from 'panelty';
 import { PANEL_TYPES, type PanelTypeId } from '$lib/api/vocab';
 import { harnesses } from '$lib/stores/harness.svelte';
 import EmptyPanel from './EmptyPanel.svelte';

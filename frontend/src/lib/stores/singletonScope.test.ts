@@ -19,12 +19,12 @@ import { fileURLToPath } from 'node:url';
  * on a write like any other, so constructing there is merely unidiomatic, not broken.
  */
 
-/** Both source trees the app is built from: its own, and the panel package it composes — whose
- *  `workspace()` is one of the accessors this guards, and whose components call it. */
-const ROOTS = [
-	fileURLToPath(new URL('../..', import.meta.url)),
-	fileURLToPath(new URL('../../../packages/tatami/src', import.meta.url))
-];
+/** This app's source — every file the rule is enforced ON. */
+const SRC = fileURLToPath(new URL('../..', import.meta.url));
+/** …and the panel package's, read only to LEARN the accessor names: `workspace()` is a lazy
+ *  singleton this app constructs, and a guard that cannot name it stops covering the most-used one
+ *  of them. What the package does inside its own components is its own repo's business. */
+const DEP = fileURLToPath(new URL('../../../node_modules/panelty/src', import.meta.url));
 
 /** Every `x.svelte` / `x.svelte.ts` / `x.ts` under a tree, tests excluded. */
 function sources(dir: string, out: string[] = []): string[] {
@@ -61,17 +61,17 @@ function argsAt(src: string, open: number): string {
 }
 
 describe('lazy store singletons are never constructed inside a $derived', () => {
-	const files = ROOTS.flatMap((r) => sources(r));
+	const files = sources(SRC);
+	const names = accessors([...files, ...sources(DEP)]);
 
 	it('finds the accessors it is meant to be guarding', () => {
 		// A scan that quietly matches nothing buys the confidence without the cover.
-		expect(accessors(files)).toEqual(
+		expect(names).toEqual(
 			expect.arrayContaining(['notify', 'flash', 'graph', 'history', 'ui', 'workspace'])
 		);
 	});
 
 	it('no $derived calls one', () => {
-		const names = accessors(files);
 		const offenders: string[] = [];
 		for (const file of files) {
 			const src = readFileSync(file, 'utf8');
@@ -80,7 +80,7 @@ describe('lazy store singletons are never constructed inside a $derived', () => 
 				for (const name of names) {
 					if (!new RegExp(`\\b${name}\\(\\)`).test(args)) continue;
 					const line = src.slice(0, m.index).split('\n').length;
-					offenders.push(`${relative(ROOTS[0], file)}:${line} reads ${name}() inside a $derived`);
+					offenders.push(`${relative(SRC, file)}:${line} reads ${name}() inside a $derived`);
 				}
 			}
 		}

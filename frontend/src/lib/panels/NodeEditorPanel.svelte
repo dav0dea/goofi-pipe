@@ -43,9 +43,9 @@
 	import { notify } from '$lib/stores/notify.svelte';
 	import { ui, slotKey, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
-	import { workspace } from 'tatami';
-	import { getPanelType, type PanelProps } from 'tatami';
-	import { portal } from 'tatami';
+	import { workspace } from 'panelty';
+	import { getPanelType, type PanelProps } from 'panelty';
+	import { portal } from 'panelty';
 	import {
 		linkKey,
 		BOUNDARY_TYPES,
@@ -73,16 +73,16 @@
 		SLOT_PROXIMITY_PX,
 		type SlotAnchor
 	} from '$lib/editor/slotProximity';
-	import { createLongPress } from 'tatami';
+	import { createLongPress } from 'panelty';
 	import { createDoubleTapZoom, zoomStep, type FlowViewport } from '$lib/editor/doubleTapZoom';
 	import { eventPoint } from '$lib/editor/eventPoint';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
-	import { arrayToPath, asStateObject, pathToArray } from 'tatami';
+	import { arrayToPath, asStateObject, pathToArray } from 'panelty';
 	import { Button, IconButton, EmptyState, isTextEditingTarget } from '$lib/ui';
-	import { clampToViewport, overlayViewport } from 'tatami';
+	import { clampToViewport, overlayViewport } from 'panelty';
 	import { onMount, tick, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();

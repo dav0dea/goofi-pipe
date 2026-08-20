@@ -59,7 +59,7 @@
 		/* Inherited, not reached into: every `density="chrome"` control in this strip reads its own
 		   hook off here, so a bar's controls are dense by being IN a bar rather than by each call
 		   site remembering to say so. Each primitive still owns its coarse-pointer floor. */
-		--tatami-icon-btn-size: var(--chrome-control-h);
+		--panelty-icon-btn-size: var(--chrome-control-h);
 		--chip-size: var(--chrome-control-h);
 		gap: var(--bar-gap, var(--space-4));
 		background: var(--bar-bg, var(--surface-2));

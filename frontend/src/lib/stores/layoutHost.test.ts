@@ -7,7 +7,7 @@
  * is an op, so what a gesture SENDS is the behaviour worth pinning.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { workspace, type LayoutHost, type Workspace } from 'tatami';
+import { workspace, type LayoutHost, type Workspace } from 'panelty';
 import { FakeControl } from '$lib/test/fakeControl';
 import { goofiLayoutHost } from './layoutHost';
 import { history } from './history.svelte';

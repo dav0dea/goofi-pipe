@@ -10,7 +10,7 @@
 	import type { Snippet } from 'svelte';
 	import type { HTMLButtonAttributes } from 'svelte/elements';
 	import type { BadgeTone } from './Badge.svelte';
-	import type { ButtonDensity } from 'tatami';
+	import type { ButtonDensity } from 'panelty';
 
 	let {
 		tone = 'neutral',
