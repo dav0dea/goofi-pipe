@@ -1282,7 +1282,7 @@ impl AppState {
                     };
                     // The tab's id and its root panel's — a caller's next act is to give that panel
                     // content, which needs an id it cannot otherwise know (`split_panel`'s rule).
-                    let panel = g.arrangement().children(&tab).first().cloned().unwrap_or_default();
+                    let panel = g.arrangement().root_of(&tab).unwrap_or_default();
                     Ok(json!({ "tab": tab, "panel": panel }))
                 }
                 "remove_tab" => {
@@ -1347,11 +1347,11 @@ impl AppState {
                     // LEAVES the panel bound to — its own, or the one already stored, since state
                     // merges.
                     let bound = named
-                        .or_else(|| match g.arrangement().get(&panel) {
-                            Some(goofi_engine::layout::Entry::Panel { state, .. }) => {
-                                state.get("node").and_then(|v| v.as_str())
-                            }
-                            _ => None,
+                        .or_else(|| {
+                            g.arrangement()
+                                .panel_state(&panel)
+                                .and_then(|s| s.get("node"))
+                                .and_then(|v| v.as_str())
                         })
                         .and_then(Uid::from_hex);
                     vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;

@@ -152,7 +152,7 @@ pub enum Command {
     /// dead ids, referenced by nothing — and then RE-PLANS where its root belongs. Restoring the
     /// slots the close's promote rewrote is precisely what it exists not to do.
     LayoutRevive {
-        dead: Vec<(crate::layout::Id, crate::layout::Entry)>,
+        dead: crate::layout::Dead,
         born: crate::layout::Id,
         /// Where `born` sat before the close. `None` for a tab, which is put back by strip index.
         home: Option<crate::layout::Home>,
@@ -523,23 +523,22 @@ impl Command {
                 // A tab is closed whole (its panels are its own); anything else is closed with
                 // promote — the SAME planners the forward ops call, so there is one algebra, not a
                 // second subtly-different removal living in the inverse.
-                let plan = match g.arrangement().get(&born) {
-                    Some(crate::layout::Entry::Tab { .. }) => g.arrangement().remove_tab(&born),
-                    _ => g.arrangement().remove_subtree(&born),
+                let plan = match g.arrangement().tab_index(&born) {
+                    Some(_) => g.arrangement().remove_tab(&born),
+                    None => g.arrangement().remove_subtree(&born),
                 };
-                let Ok(writes) = plan else {
+                // The subtree itself and where its root sat — the two things its revive needs,
+                // captured before anything moves. The slots the promote rewrote are NOT among them.
+                let (Ok(writes), Some(dead)) = (plan, g.arrangement().dead_subtree(&born)) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
-                // The subtree's own entries and where its root sat — the two things its revive needs,
-                // captured before anything moves. The slots the promote rewrote are NOT among them.
-                let dead = g.arrangement().dead_subtree(&born);
                 let home = g.arrangement().home_of(&born);
                 g.arrangement_mut().apply(writes);
                 Ok((Outcome::Ok, Command::LayoutRevive { dead, born, home }))
             }
 
             Command::LayoutRevive { dead, born, home } => {
-                let Ok(writes) = g.arrangement().revive(&dead, &born, home.as_ref()) else {
+                let Ok(writes) = g.arrangement().revive(&dead, home.as_ref()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
                 g.arrangement_mut().apply(writes);
@@ -570,7 +569,7 @@ impl Command {
                 // the same way, so the pair is closed under inversion and a redo re-plans too.
                 let back = plan
                     .iter()
-                    .map(|(id, _)| (id.clone(), g.arrangement().get(id).cloned()))
+                    .map(|(id, _)| (id.clone(), g.arrangement().entry(id)))
                     .collect();
                 g.arrangement_mut().apply(plan);
                 Ok((Outcome::Ok, Command::LayoutContents { writes: back }))

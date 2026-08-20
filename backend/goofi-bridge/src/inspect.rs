@@ -346,35 +346,27 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
 // The arrangement — the flat layout read back as something a caller can navigate
 // ---------------------------------------------------------------------------
 
-use goofi_engine::layout::{Entry, Layout};
+use goofi_engine::layout::{Layout, Node};
 
-/// One entry's line in the tree, and its children under it. A split names its axis, a panel its
-/// type and binding; both carry the share of their parent they take, which is the number a caller
-/// adjusts with `resize_split`.
-fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
+/// One node's line in the tree, and its children under it. A split names its axis, a panel its type
+/// and binding; both carry the share of their parent they take, which is the number a caller adjusts
+/// with `resize_split`.
+fn layout_line(n: &Node, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
-    match l.get(id) {
-        Some(Entry::Tab { name, .. }) => out.push_str(&format!("{pad}tab `{name}`  [{id}]\n")),
-        Some(Entry::Split { size, axis, .. }) => {
-            out.push_str(&format!("{pad}{} split {size:.2}  [{id}]\n", axis.name()))
+    match n {
+        Node::Split { id, size, axis, children } => {
+            out.push_str(&format!("{pad}{} split {size:.2}  [{id}]\n", axis.name()));
+            for c in children {
+                layout_line(c, depth + 1, out);
+            }
         }
-        Some(Entry::Panel { size, panel_type, state, .. }) => {
-            let bound = state.get("node").and_then(|v| v.as_str()).map(|n| format!(" → {n}"));
-            out.push_str(&format!(
-                "{pad}{panel_type}{} {size:.2}  [{id}]\n",
-                bound.unwrap_or_default()
-            ))
+        Node::Panel { id, size, panel_type, state } => {
+            let bound = state.get("node").and_then(|v| v.as_str()).map(|b| format!(" → {b}"));
+            out.push_str(&format!("{pad}{panel_type}{} {size:.2}  [{id}]\n", bound.unwrap_or_default()))
         }
-        None => {}
-    }
-    for c in l.children(id) {
-        layout_line(l, &c, depth + 1, out);
     }
 }
 
-/// The arrangement as an indented tree — the ONE layout read. `tab` narrows it to a single tab,
-/// the way `inspect_patch {scope}` narrows the graph: a caller working on one tab pays for one
-/// tab, and a caller that needs the split id to name as a move target reads them all.
 pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
     let mut out = String::from(
         "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
@@ -385,7 +377,11 @@ pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
         None => l.tabs(),
     };
     for t in tabs {
-        layout_line(l, &t, 0, &mut out);
+        let Some(name) = l.name_of(&t) else { continue };
+        out.push_str(&format!("tab `{name}`  [{t}]\n"));
+        if let Some(root) = l.root_of(&t).and_then(|r| l.node(&r).cloned()) {
+            layout_line(&root, 1, &mut out);
+        }
     }
     out
 }
