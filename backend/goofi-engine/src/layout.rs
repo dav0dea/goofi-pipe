@@ -26,7 +26,9 @@ pub type Write = (Id, Option<Entry>);
 /// a split from assuming content). Both mirror `model.ts`.
 pub const DEFAULT_PANEL_TYPE: &str = "node-editor";
 pub const EMPTY_PANEL_TYPE: &str = "empty";
-const DEFAULT_PAGE_NAME: &str = "Layout";
+/// The first tab's name. Numbered from 1, like every one the client claims after it — an
+/// unnumbered first name reads as a different KIND of tab beside `Tab 2`.
+const DEFAULT_PAGE_NAME: &str = "Tab 1";
 
 /// Smallest share a split may hand a child, so a panel can always be grabbed again (`MIN_FRACTION`).
 const MIN_FRACTION: f64 = 0.05;

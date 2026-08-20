@@ -144,7 +144,7 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     let inst = g.call("group_nodes", j!({ "members": [hex(a), hex(b)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let panel = first_panel(&g);
-    g.call("page_set_panel", j!({ "page": "Layout", "panel": panel, "type": "viewer",
+    g.call("page_set_panel", j!({ "page": "Tab 1", "panel": panel, "type": "viewer",
                                  "state": { "node": hex(a) } }));
 
     g.call("remove_node", j!({ "node": inst }));
@@ -180,7 +180,7 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         let one = Goofi::new();
         let two = one.client("s2");
         let a = first_panel(&one);
-        let b = split(&one, "Layout", &a);
+        let b = split(&one, "Tab 1", &a);
         one.call("session_add_page", j!({ "name": "Two" }));
         let c = panels(&one).into_iter().find(|p| *p != a && *p != b).expect("the page's panel");
         let e = split(&one, "Two", &c);
@@ -192,12 +192,12 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
             "session_remove_page" => j!({ "name": "Two" }),
             "session_rename_page" => j!({ "from": "Two", "to": "Deux" }),
             "session_reorder_page" => j!({ "name": "Two", "to_index": 0 }),
-            "page_split_panel" => j!({ "page": "Layout", "panel": a }),
-            "page_set_panel" => j!({ "page": "Layout", "panel": b, "type": "console" }),
-            "page_move_panel" => j!({ "page": "Layout", "panel": b, "new_parent": far, "order_index": 0 }),
+            "page_split_panel" => j!({ "page": "Tab 1", "panel": a }),
+            "page_set_panel" => j!({ "page": "Tab 1", "panel": b, "type": "console" }),
+            "page_move_panel" => j!({ "page": "Tab 1", "panel": b, "new_parent": far, "order_index": 0 }),
             "page_insert_at_panel" => j!({ "page": "Two", "subtree": b, "target": c }),
-            "page_resize_split" => j!({ "page": "Layout", "split": near, "fractions": [0.3, 0.7] }),
-            "page_remove_panel" => j!({ "page": "Layout", "panel": b }),
+            "page_resize_split" => j!({ "page": "Tab 1", "split": near, "fractions": [0.3, 0.7] }),
+            "page_remove_panel" => j!({ "page": "Tab 1", "panel": b }),
             new => panic!("`{new}` is a layout write op with no case here — drive it through this \
                            guard, and say why if its inverse may restore a slot"),
         });
@@ -206,7 +206,7 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         if op.starts_with("session_") {
             two.call("session_add_page", j!({ "name": "Peer" }));
         } else {
-            two.call("page_split_panel", j!({ "page": "Layout", "panel": a }));
+            two.call("page_split_panel", j!({ "page": "Tab 1", "panel": a }));
         }
         assert_eq!(one.call("undo", j!({}))["changed"], true, "{op}: the undo flipped nothing");
 
@@ -231,17 +231,17 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
     let a = first_panel(&one);
 
     // A birth: the peer hangs its panel off the wrapper s1's split created.
-    let mine = split(&one, "Layout", &a);
-    let theirs = split(&two, "Layout", &mine);
+    let mine = split(&one, "Tab 1", &a);
+    let theirs = split(&two, "Tab 1", &mine);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
     let up = one.doc()["arrangement"][&theirs]["parent"].as_str().unwrap().to_string();
     assert!(entries(&one).contains_key(&up), "the peer's panel still hangs off something");
-    assert_eq!(page_roots(&one, "Layout").len(), 1);
+    assert_eq!(page_roots(&one, "Tab 1").len(), 1);
 
     // A redo: what it replays is the close's own inverse, over ground the peer has since taken.
-    let peer2 = split(&two, "Layout", &a);
+    let peer2 = split(&two, "Tab 1", &a);
     assert_eq!(one.call("redo", j!({}))["changed"], true);
-    assert_eq!(page_roots(&one, "Layout").len(), 1, "a dead split did not come back");
+    assert_eq!(page_roots(&one, "Tab 1").len(), 1, "a dead split did not come back");
     assert!(panels(&one).contains(&peer2), "the peer's panel survived a foreign redo");
 
     // A move across pages, whose undo must be another MOVE planned at undo time.
@@ -250,11 +250,11 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
         .find(|p| ![&a, &mine, &theirs, &peer2].contains(&p)).expect("the new page's panel");
     let far = split(&one, "Signals", &over);
     let dest = one.doc()["arrangement"][&far]["parent"].as_str().unwrap().to_string();
-    one.call("page_move_panel", j!({ "page": "Layout", "panel": mine,
+    one.call("page_move_panel", j!({ "page": "Tab 1", "panel": mine,
                                     "new_parent": dest, "order_index": 0 }));
-    let peer3 = split(&two, "Layout", &a);
+    let peer3 = split(&two, "Tab 1", &a);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
-    assert_eq!(page_roots(&one, "Layout").len(), 1, "a dead split did not come back");
+    assert_eq!(page_roots(&one, "Tab 1").len(), 1, "a dead split did not come back");
     assert!(panels(&one).contains(&peer3), "the peer's panel survived a foreign undo");
     assert_eq!(reload_warning(&one), Value::Null);
 }
@@ -266,7 +266,7 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     // were never on anybody's screen.
     let g = Goofi::new();
     let first = first_panel(&g);
-    let mine = split(&g, "Layout", &first);
+    let mine = split(&g, "Tab 1", &first);
     g.call("session_add_page", j!({ "name": "Signals", "index": 0 }));
     let target = panels(&g).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
     let before = entries(&g);

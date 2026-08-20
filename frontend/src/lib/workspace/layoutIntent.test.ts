@@ -33,7 +33,7 @@ const LAYOUT_OPS = [
 
 function defaultArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
 	};
 }

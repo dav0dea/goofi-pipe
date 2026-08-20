@@ -15,13 +15,13 @@ import type { Arrangement } from './arrangement';
 /** The manager's default arrangement, plus a row split on demand. */
 function oneP(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
 	};
 }
 function split(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 		'split-4': { kind: 'split', order: 0, parent: 'page-1', size: 1, axis: 'row' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'split-4', size: 0.6, panel_type: 'node-editor' },
 		'panel-3': { kind: 'panel', order: 1, parent: 'split-4', size: 0.4, panel_type: 'console' }
@@ -37,6 +37,10 @@ function boot(arr: Arrangement = oneP()): ReturnType<typeof workspace> {
 	// The store is a module singleton, so a drag a previous test armed would still be drawing:
 	// committing a split that is not the drag's discards it, which is what an abandoned one does.
 	ws.commitResize('#none');
+	// Through the generation boundary first, the way a real session starts (`_replaceSnapshot`:
+	// reset, then the manager's document). Without it the store carries the previous test's name
+	// claims into this one, and the next claimed tab name depends on which tests ran before.
+	ws.syncFromDoc({});
 	ws.syncFromDoc(arr);
 	return ws;
 }
@@ -68,7 +72,7 @@ describe('a frozen gesture is a layout command', () => {
 		expect(sent()).toEqual([
 			[
 				'page_split_panel',
-				{ page: 'Layout', panel: 'panel-2', direction: 'column', place_before: true, ratio: 0.25 }
+				{ page: 'Tab 1', panel: 'panel-2', direction: 'column', place_before: true, ratio: 0.25 }
 			]
 		]);
 	});
@@ -85,7 +89,7 @@ describe('a frozen gesture is a layout command', () => {
 			'page_set_panel'
 		]);
 		expect(sent()[2][1]).toEqual({
-			page: 'Layout',
+			page: 'Tab 1',
 			panel: 'panel-3',
 			state: { node: 'a1b2', slot: null }
 		});
@@ -144,7 +148,7 @@ describe('a frozen gesture is a layout command', () => {
 		await settle();
 		expect(ws.state.activeWorkspaceId, 'not before the page exists to draw').toBe('page-1');
 		const two = oneP();
-		two['page-3'] = { kind: 'page', order: 1, name: 'Layout 2' };
+		two['page-3'] = { kind: 'page', order: 1, name: 'Tab 2' };
 		two['panel-4'] = { kind: 'panel', order: 0, parent: 'page-3', size: 1, panel_type: 'node-editor' };
 		ws.syncFromDoc(two);
 		expect(ws.state.activeWorkspaceId).toBe('page-3');
@@ -160,7 +164,7 @@ describe('a frozen gesture is a layout command', () => {
 			[
 				'page_insert_at_panel',
 				{
-					page: 'Layout',
+					page: 'Tab 1',
 					subtree: 'panel-3',
 					target: 'panel-2',
 					direction: 'column',
@@ -188,13 +192,13 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropPanelOnTabBar(0);
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['session_add_page', { name: 'Layout 2', index: 0, subtree: 'panel-3' }]
+			['session_add_page', { name: 'Tab 2', index: 0, subtree: 'panel-3' }]
 		]);
 	});
 
 	it('closing the tab in front moves to its NEIGHBOUR, not to the strip’s first', async () => {
 		const three: Arrangement = {
-			'page-1': { kind: 'page', order: 0, name: 'Layout' },
+			'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 			'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' },
 			'page-3': { kind: 'page', order: 1, name: 'Two' },
 			'panel-4': { kind: 'panel', order: 0, parent: 'page-3', size: 1, panel_type: 'console' },
@@ -222,7 +226,7 @@ describe('a frozen gesture is a layout command', () => {
 			new Set(names).size,
 			'each asks for a name the last one did not — the replica cannot have caught up between taps'
 		).toBe(3);
-		expect(names, 'and none of them is the name the page already has').not.toContain('Layout');
+		expect(names, 'and none of them is the name the page already has').not.toContain('Tab 1');
 	});
 
 	it('addresses a tab by the name the manager holds', async () => {
@@ -232,9 +236,9 @@ describe('a frozen gesture is a layout command', () => {
 		ws.reorderTab(0, 0);
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['session_rename_page', { from: 'Layout', to: 'Signals' }],
-			['session_remove_page', { name: 'Layout' }],
-			['session_reorder_page', { name: 'Layout', to_index: 0 }]
+			['session_rename_page', { from: 'Tab 1', to: 'Signals' }],
+			['session_remove_page', { name: 'Tab 1' }],
+			['session_reorder_page', { name: 'Tab 1', to_index: 0 }]
 		]);
 	});
 });
@@ -256,7 +260,7 @@ describe('a resize drag draws locally and commits once', () => {
 		expect(sent()).toHaveLength(1);
 		const [op, payload] = sent()[0];
 		expect(op).toBe('page_resize_split');
-		expect(payload).toMatchObject({ page: 'Layout', split: 'split-4' });
+		expect(payload).toMatchObject({ page: 'Tab 1', split: 'split-4' });
 		const fractions = payload.fractions as number[];
 		expect(fractions[0]).toBeCloseTo(0.75, 6);
 		expect(fractions[1]).toBeCloseTo(0.25, 6);
@@ -340,7 +344,7 @@ describe('viewpoint stays here', () => {
 		ws.setPanelSlot('panel-2', 'out');
 		await Promise.resolve();
 		expect(sent()[0][1], 'a peer must not be dragged into our sub-patch').toEqual({
-			page: 'Layout',
+			page: 'Tab 1',
 			panel: 'panel-2',
 			state: { slot: 'out' }
 		});
@@ -394,6 +398,27 @@ describe('viewpoint stays here', () => {
 			panel: 'panel-8',
 			paths: { 'panel-8': '/inst0' }
 		});
+	});
+
+	it('a name claimed for a tab the load took away is free again', async () => {
+		// A claim reserves a tab name until the replica shows it, so six taps on ＋ do not ask for the
+		// same free name six times. It is the one thing the generation boundary genuinely ends: the
+		// name was reserved against the OUTGOING strip, and a patch loaded out from under it means
+		// the page it was claimed for is never coming. Left standing, `_claimName` skipped that name
+		// for the rest of the session.
+		const ws = boot();
+		ws.addTab();
+		await settle();
+		expect(sent()).toEqual([['session_add_page', { name: 'Tab 2' }]]);
+
+		ws.syncFromDoc({});
+		ws.syncFromDoc(oneP());
+		ws.addTab();
+		await settle();
+		expect(sent()[1], 'the new session offers the name again').toEqual([
+			'session_add_page',
+			{ name: 'Tab 2' }
+		]);
 	});
 
 	it('drops a maximize and a focus a peer’s close took away', () => {

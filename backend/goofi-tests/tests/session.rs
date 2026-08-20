@@ -50,7 +50,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
 
     // Bind a panel to a node, so the arrangement carries a reference into the graph.
-    g.call("page_set_panel", j!({ "page": "Layout", "panel": panel(&g), "type": "viewer",
+    g.call("page_set_panel", j!({ "page": "Tab 1", "panel": panel(&g), "type": "viewer",
                                  "state": { "node": hex(osc), "slot": "out" } }));
 
     let before = g.doc();

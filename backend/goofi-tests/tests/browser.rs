@@ -86,7 +86,7 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     // A PEER's layout edit. Layout is the fifth document root, so it rides the same delta broadcast
     // as a node add — it used to reach a tab only on `hello`.
     let panel = panels(c.doc()).first().cloned().expect("the default page's one panel");
-    let fresh = peer.call("page_split_panel", j!({ "page": "Layout", "panel": panel,
+    let fresh = peer.call("page_split_panel", j!({ "page": "Tab 1", "panel": panel,
                                                   "direction": "row", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
     c.until_doc(|d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;

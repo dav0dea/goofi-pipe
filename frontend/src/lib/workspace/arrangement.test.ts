@@ -17,7 +17,7 @@ import { arrangementEntries } from '$lib/crdt/graphDoc';
 /** The manager's default arrangement, as `Layout::to_json` writes it. */
 function defaultArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
 	};
 }
@@ -25,7 +25,7 @@ function defaultArr(): Arrangement {
 /** One page holding a row split of two panels, the second bound to a node. */
 function splitArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Layout' },
+		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
 		'split-4': { kind: 'split', order: 0, parent: 'page-1', size: 1, axis: 'row' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'split-4', size: 0.75, panel_type: 'node-editor' },
 		'panel-3': {
@@ -43,7 +43,7 @@ describe('buildWorkspaces', () => {
 	it('turns a page holding one panel into one workspace', () => {
 		const ws = buildWorkspaces(defaultArr());
 		expect(ws).toHaveLength(1);
-		expect(ws[0]).toMatchObject({ id: 'page-1', name: 'Layout' });
+		expect(ws[0]).toMatchObject({ id: 'page-1', name: 'Tab 1' });
 		expect(ws[0].root).toEqual({ kind: 'panel', id: 'panel-2', panelType: 'node-editor', state: undefined });
 	});
 
@@ -82,7 +82,7 @@ describe('buildWorkspaces', () => {
 			'panel-8': { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' }
 		};
 		arr['page-1'].order = 1;
-		expect(buildWorkspaces(arr).map((w) => w.name)).toEqual(['Second', 'Layout']);
+		expect(buildWorkspaces(arr).map((w) => w.name)).toEqual(['Second', 'Tab 1']);
 	});
 
 	it('hands back a default page while the replica is still empty', () => {

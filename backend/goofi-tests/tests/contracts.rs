@@ -396,7 +396,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let stubs = g.doc()["instances"][&inst]["stubs"].clone();
     assert!(stubs.as_object().is_some_and(|m| m.values().any(|s| s.get("inner_node").is_some())),
             "the group left no wired stub, so this test would not reach the optional leaves: {stubs}");
-    g.call("page_split_panel", j!({ "page": "Layout", "panel": panel_id(&g), "direction": "row",
+    g.call("page_split_panel", j!({ "page": "Tab 1", "panel": panel_id(&g), "direction": "row",
                                     "ratio": 0.5 }));
 
     let doc = g.doc();

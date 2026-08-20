@@ -93,7 +93,7 @@ function unsyncedDefault(): Workspace[] {
 	return [
 		{
 			id: 'page-1',
-			name: 'Layout',
+			name: 'Tab 1',
 			root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE, state: undefined }
 		}
 	];

@@ -191,7 +191,15 @@ class WorkspaceStore {
 		// one over is followed by the manager's real document, and a replica before its first pull
 		// holds one too. Pruning against it invalidates every id there is, the viewpoint the
 		// snapshot just restored included.
-		if (Object.keys(arr).length === 0) return;
+		//
+		// A CLAIM is the exception, and it is the one thing the boundary genuinely ends: it reserves
+		// a name against the outgoing generation's tab strip, and the incoming one has its own. A
+		// claim whose page never arrived — the patch was loaded out from under it — would otherwise
+		// reserve that name for the rest of the session and make `_claimName` skip it for ever.
+		if (Object.keys(arr).length === 0) {
+			this._claimed.clear();
+			return;
+		}
 		if (this._page !== null && !arr[this._page]) this._page = null;
 		const root = this.active?.root;
 		if (!root) return;
@@ -434,10 +442,13 @@ class WorkspaceStore {
 	 * the replica does not update until the round trip lands, so a gesture repeated faster than that
 	 * (six taps on ＋) would ask for the same free name six times and have five refused. The claim is
 	 * therefore remembered until the name is seen, or until the op it was claimed for is refused. */
-	private _claimName(base: string): string {
-		const names = new Set([...this._workspaces.map((w) => w.name), ...this._claimed]);
-		let name = base;
-		for (let i = 2; names.has(name); i += 1) name = `${base} ${i}`;
+	private _claimName(): string {
+		const taken = new Set([...this._workspaces.map((w) => w.name), ...this._claimed]);
+		// Numbered from 1, and the manager's own first tab is `Tab 1` too: a bare name followed by a
+		// numbered series reads as two different kinds of thing in one strip.
+		let n = 1;
+		while (taken.has(`Tab ${n}`)) n += 1;
+		const name = `Tab ${n}`;
 		this._claimed.add(name);
 		return name;
 	}
@@ -446,7 +457,7 @@ class WorkspaceStore {
 	 * bar's own + button births the default editor. Two ops when it is given, grouped as one client
 	 * entry whose two children pop the two manager commands in order. */
 	addTab(panelType?: string): void {
-		const name = this._claimName('Layout');
+		const name = this._claimName();
 		void history().transaction('Add tab', async () => {
 			const born = await this._cmd<Page>('Add tab', 'session_add_page', { name });
 			if (born === null) this._claimed.delete(name);
@@ -544,7 +555,7 @@ class WorkspaceStore {
 		if (!d || d.kind !== 'panel') return;
 		const subtree = this._subtreeOf(d);
 		if (!subtree) return;
-		const name = this._claimName('Layout');
+		const name = this._claimName();
 		void this._cmd<Page>('Move panel to new tab', 'session_add_page', {
 			name,
 			index,
