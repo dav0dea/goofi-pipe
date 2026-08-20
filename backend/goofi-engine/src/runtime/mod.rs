@@ -64,9 +64,16 @@ const SETUP_RETRY_MS: f64 = crate::SETUP_RETRY_INTERVAL * 1000.0;
 /// reporting each would flood the status service with what the bridge coalesces to 10 Hz anyway.
 const UFREQ_REPORT_MS: u128 = 250;
 
-/// How long a parked node waits before looking again when nothing is due. A wake is a hint (§3.3),
-/// so a missed doorbell costs at most this — and it is what makes a node notice its [`Halt`].
-const PARK_CEILING: Duration = Duration::from_millis(50);
+/// How close to its deadline a node stops listening for rings and sleeps to it instead.
+///
+/// A bounded listener wait is the only park that can be cut short by a ring, and its timeout is
+/// rounded up by the OS — to a jiffie on Linux, to the 15.6 ms scheduler tick on Windows. That
+/// rounding is harmless while the deadline is far and fatal once it is near, so the last stretch
+/// is a plain `sleep`, which no platform rounds. This is the crossover, floored by the coarsest
+/// rounding across targets plus margin. Not a tuning knob, and deliberately not adaptive: an
+/// estimate of the rounding is a bound that must never be under-shot, and a running median
+/// under-shoots half the time by construction.
+const LISTEN_FLOOR: Duration = Duration::from_millis(25);
 
 /// The smoothing factor of the `ufreq` EMA: how much the newest inter-emit interval moves the
 /// estimate. Low enough that a single slow frame does not swing the readout, high enough that a
@@ -844,17 +851,29 @@ impl NodeRuntime {
         while !halt.stopped() {
             self.run_once();
             match self.next_wake() {
-                // Nothing due: park until something rings, or until the ceiling makes the node
-                // look at its halt flag again.
+                // Nothing due: block until something rings. Indefinitely, because every reason to
+                // wake IS a ring — a frame, a control message, and the [`Halt`] flag, which
+                // `NodeHost::signal_stop` rings the door for precisely so this park does not have
+                // to poll for it.
                 None => {
-                    self.transport.wait(Some(PARK_CEILING));
+                    self.transport.wait(None);
                 }
                 // Due now — an uncapped free-runner. Looping straight back is what §8.9 means by
                 // "an uncapped producer saturates a core"; parking on a zero timeout would add a
                 // syscall per run and change nothing.
                 Some(d) if d.is_zero() => continue,
+                // Due, but not yet: listen while the deadline is far enough away that the wait's
+                // rounding has room, so a ring is still answered at once.
+                Some(d) if d > LISTEN_FLOOR => {
+                    self.transport.wait(Some(d - LISTEN_FLOOR));
+                }
+                // The last stretch. `sleep` is the one timed primitive no platform rounds, and a
+                // node this close to its deadline has nothing to multiplex: it already knows what
+                // it does next. The zero-timeout wait is what keeps the listener drained while
+                // this park is deaf to it.
                 Some(d) => {
-                    self.transport.wait(Some(d.min(PARK_CEILING)));
+                    self.transport.wait(Some(Duration::ZERO));
+                    std::thread::sleep(d);
                 }
             }
         }

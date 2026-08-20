@@ -16,7 +16,6 @@ use std::time::Duration;
 use iceoryx2::config::Config;
 use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
-use iceoryx2_bb_posix::file_descriptor::FileDescriptorBased;
 
 use goofi_core::Data;
 use goofi_node::NodeManifest;
@@ -255,38 +254,19 @@ impl IoxTransport {
 impl Transport for IoxTransport {
     fn wait(&self, timeout: Option<Duration>) -> Vec<EventId> {
         let mut ids = Vec::new();
+        let push = |id: iceoryx2::prelude::EventId| ids.push(id.as_value() as EventId);
         // `wait_all` rather than `wait_one`: several producers can ring between two parks, and
         // taking one id per wake would leave the rest to be re-delivered a wake later. A listener
         // that errors reports no reason to wake, and the caller drains regardless — which is
         // exactly what makes a lost notification cost nothing.
-        // A BOUNDED wait parks on the listener's own descriptor rather than calling its
-        // `timed_wait_all`. That one arms the timeout with `SO_RCVTIMEO`, which the kernel rounds
-        // to a jiffie — about 1.3 ms added to every park, which is most of a 500 Hz node's period
-        // and paced one at 300 Hz.
         //
-        // `ppoll` and not `select`: `select` was tried and is a defect. Its `fd_set` is a 1024-bit
-        // array, so a descriptor at or past `FD_SETSIZE` indexes off the end of it — a NON-
-        // unwinding panic inside libc's `FD_ISSET`, which aborts the whole process rather than
-        // failing one park. A goofi process holds several descriptors per node and reaches that
-        // ceiling on a large patch; the `editing` suite reached it in thirteen tests. `ppoll`
-        // takes the descriptor by value and has no such ceiling, and its `timespec` does not round.
+        // A ZERO timeout is its own call and not a zero-length timed wait: a timed wait arms
+        // `SO_RCVTIMEO`, and a zero there means NO timeout, so asking for "whatever is already
+        // here" would park forever.
         let _ = match timeout {
-            Some(t) => {
-                let mut pfd = libc::pollfd {
-                    fd: unsafe { self.listener.file_descriptor().native_handle() },
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ts = libc::timespec {
-                    tv_sec: t.as_secs() as libc::time_t,
-                    tv_nsec: t.subsec_nanos() as i64,
-                };
-                // An interrupted or failed park is a park that ended early: the caller drains its
-                // mailboxes regardless, which is what makes a lost notification cost nothing.
-                unsafe { libc::ppoll(&mut pfd, 1, &ts, std::ptr::null()) };
-                self.listener.try_wait_all(|id| ids.push(id.as_value() as EventId))
-            }
-            None => self.listener.blocking_wait_all(|id| ids.push(id.as_value() as EventId)),
+            None => self.listener.blocking_wait_all(push),
+            Some(t) if t.is_zero() => self.listener.try_wait_all(push),
+            Some(t) => self.listener.timed_wait_all(push, t),
         };
         ids
     }
