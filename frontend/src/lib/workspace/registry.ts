@@ -19,7 +19,7 @@ export interface PanelProps {
 	state: unknown;
 	/** Persist new per-panel state. `intent` routes it, and the routing IS the dirty taxonomy: pass
 	 * `'navigation'` when the user only changed what the panel is LOOKING at (entering a sub-patch)
-	 * and it stays this client's viewpoint; omit it for an edit, which becomes one `page_set_panel`
+	 * and it stays this client's viewpoint; omit it for an edit, which becomes one `set_panel`
 	 * command — undoable, converged to peers, and dirtying. `label` names that undo step. */
 	setState: (s: unknown, intent?: LayoutIntent, label?: string) => void;
 }

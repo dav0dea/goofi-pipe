@@ -39,7 +39,7 @@
 
 	// Resolve the chosen slot, its dtype, and this panel's binding in one place so
 	// the controls and content snippets (separate scopes) don't each re-derive it.
-	// A kind/settings change is a `page_set_panel` command like any other panel write, so the
+	// A kind/settings change is a `set_panel` command like any other panel write, so the
 	// binding's own labelled setter is the whole undo step — no client-side snapshot to capture.
 	function view(node: NodeInstanceInfo): { slot: string | null; dtype: string | null; binding: ViewBinding } {
 		const slot = curSlot(node);

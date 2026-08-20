@@ -139,13 +139,11 @@ pub enum Command {
     /// undo non-destructive by construction rather than by a guard.
     LayoutBirth {
         writes: Vec<crate::layout::Write>,
-        page: crate::layout::Id,
         born: crate::layout::Id,
     },
     /// The inverse of [`Command::LayoutBirth`]. Never a user op: a forward close must refuse
     /// teachably, where this must DEGRADE to a no-op when a peer has already closed it.
     LayoutClose {
-        page: crate::layout::Id,
         born: crate::layout::Id,
     },
     /// The inverse of [`Command::LayoutClose`]. It puts the closed subtree's own entries back —
@@ -154,13 +152,13 @@ pub enum Command {
     LayoutRevive {
         dead: Vec<(crate::layout::Id, crate::layout::Entry)>,
         born: crate::layout::Id,
-        /// Where `born` sat before the close. `None` for a page, which is put back by tab index.
+        /// Where `born` sat before the close. `None` for a tab, which is put back by strip index.
         home: Option<crate::layout::Home>,
     },
     /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's, not restored:
     /// another move, back to wherever `home` still lives. Restoring the slots a move displaced puts
     /// back the split the move promoted away — on top of whatever a peer has since built in its
-    /// place, which leaves that page two roots and the peer's panel in the one nothing renders.
+    /// place, which leaves that tab two roots and the peer's panel in the one nothing renders.
     LayoutMove {
         /// The forward plan, when this is the user's own op; `None` on an inverse, which is planned
         /// from `home` against the arrangement as it stands at flip time.
@@ -512,18 +510,18 @@ impl Command {
                 Ok((Outcome::Ok, Command::EditLayoutEntry { id, entry: old }))
             }
 
-            Command::LayoutBirth { writes, page, born } => {
+            Command::LayoutBirth { writes, born } => {
                 g.arrangement_mut().apply(writes);
-                Ok((Outcome::Ok, Command::LayoutClose { page, born }))
+                Ok((Outcome::Ok, Command::LayoutClose { born }))
             }
 
-            Command::LayoutClose { page, born } => {
-                // A page is closed whole (its panels are its own); anything else is closed with
+            Command::LayoutClose { born } => {
+                // A tab is closed whole (its panels are its own); anything else is closed with
                 // promote — the SAME planners the forward ops call, so there is one algebra, not a
                 // second subtly-different removal living in the inverse.
-                let plan = match g.arrangement().name_of(&born).map(str::to_string) {
-                    Some(name) => g.arrangement().remove_page(&name),
-                    None => g.arrangement().remove_subtree(&page, &born),
+                let plan = match g.arrangement().get(&born) {
+                    Some(crate::layout::Entry::Tab { .. }) => g.arrangement().remove_tab(&born),
+                    _ => g.arrangement().remove_subtree(&born),
                 };
                 let Ok(writes) = plan else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
@@ -541,10 +539,7 @@ impl Command {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
                 g.arrangement_mut().apply(writes);
-                // The page it LANDED on, which the ladder may well have changed — read back rather
-                // than carried, so the redo closes what is actually there.
-                let page = g.arrangement().page_of(&born).unwrap_or_default();
-                Ok((Outcome::Ok, Command::LayoutClose { page, born }))
+                Ok((Outcome::Ok, Command::LayoutClose { born }))
             }
 
             Command::LayoutMove { writes, root, home } => {

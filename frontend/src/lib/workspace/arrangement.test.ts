@@ -8,7 +8,7 @@ import {
 	buildWorkspaces,
 	childIds,
 	firstPanelIn,
-	pageOf,
+	tabOf,
 	splitFractions,
 	type Arrangement
 } from './arrangement';
@@ -17,7 +17,7 @@ import { arrangementEntries } from '$lib/crdt/graphDoc';
 /** The manager's default arrangement, as `Layout::to_json` writes it. */
 function defaultArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
+		'page-1': { kind: 'tab', order: 0, name: 'Tab 1' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
 	};
 }
@@ -25,7 +25,7 @@ function defaultArr(): Arrangement {
 /** One page holding a row split of two panels, the second bound to a node. */
 function splitArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
+		'page-1': { kind: 'tab', order: 0, name: 'Tab 1' },
 		'split-4': { kind: 'split', order: 0, parent: 'page-1', size: 1, axis: 'row' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'split-4', size: 0.75, panel_type: 'node-editor' },
 		'panel-3': {
@@ -78,7 +78,7 @@ describe('buildWorkspaces', () => {
 	it('orders pages by orderIndex into the tab strip', () => {
 		const arr: Arrangement = {
 			...defaultArr(),
-			'page-7': { kind: 'page', order: 0, name: 'Second' },
+			'page-7': { kind: 'tab', order: 0, name: 'Second' },
 			'panel-8': { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' }
 		};
 		arr['page-1'].order = 1;
@@ -94,17 +94,17 @@ describe('buildWorkspaces', () => {
 	it('drops a page whose root went missing rather than rendering a hole', () => {
 		const arr: Arrangement = {
 			...defaultArr(),
-			'page-7': { kind: 'page', order: 1, name: 'Second' }
+			'page-7': { kind: 'tab', order: 1, name: 'Second' }
 		};
 		expect(buildWorkspaces(arr).map((w) => w.id), 'no root ⇒ nothing to draw').toEqual(['page-1']);
 	});
 });
 
-describe('pageOf / childIds / splitFractions', () => {
+describe('tabOf / childIds / splitFractions', () => {
 	it('walks parents up to the page a panel lives on', () => {
-		expect(pageOf(splitArr(), 'panel-3')).toBe('page-1');
-		expect(pageOf(splitArr(), 'page-1')).toBe('page-1');
-		expect(pageOf(splitArr(), 'nope')).toBeNull();
+		expect(tabOf(splitArr(), 'panel-3')).toBe('page-1');
+		expect(tabOf(splitArr(), 'page-1')).toBe('page-1');
+		expect(tabOf(splitArr(), 'nope')).toBeNull();
 	});
 
 	it('lists a parent’s children in order', () => {

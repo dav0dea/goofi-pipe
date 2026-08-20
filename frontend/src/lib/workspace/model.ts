@@ -120,7 +120,7 @@ export function findParent(root: LayoutNode, nodeId: string): ParentRef | null {
 /**
  * Move the boundary between children `dividerIndex` and `dividerIndex+1` by `delta` (a fraction),
  * clamping both neighbours to the floor and pushing the overflow onto the other side. The whole
- * drag is drawn from this and lands as ONE `page_resize_split`.
+ * drag is drawn from this and lands as ONE `resize_split`.
  *
  * `containerPx` is the split's measured size along its axis, which is what turns MIN_FRACTION into
  * a real MIN_PANEL_PX floor (D-R10) — a rendering-time fact the manager has no way to know. 0 /

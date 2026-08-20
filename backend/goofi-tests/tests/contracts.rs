@@ -100,9 +100,9 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
     // the guess used to be answered `{ok: true}`. So each op that takes one enumerates the set in
     // its own description — by expansion, not by a hand-copied list, which would be the very
     // duplication `vocab.rs` exists to remove.
-    let doc = find("page_set_panel").expect("registered").doc();
+    let doc = find("set_panel").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
-        assert!(doc.contains(word), "`{word}` is not offered by page_set_panel's doc: {doc}");
+        assert!(doc.contains(word), "`{word}` is not offered by set_panel's doc: {doc}");
     }
     let doc = find("set_node_viewers").expect("registered").doc();
     for word in ["line", "topomap", "table"] {
@@ -128,7 +128,7 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
             assert!(!s.contains('\'') && !s.contains('\\') && !s.contains('\n'), "unquotable: {s}");
         }
     }
-    // The engine mints panel entries of its own — the default page's, and the empty one a split
+    // The engine mints panel entries of its own — the default tab's, and the empty one a split
     // births — each naming a type as a bare string, so both tables answer to one vocabulary.
     for ty in [goofi_engine::layout::DEFAULT_PANEL_TYPE, goofi_engine::layout::EMPTY_PANEL_TYPE] {
         assert!(vocab::panel_type(ty).is_some(), "`{ty}` is not a declared panel type");
@@ -396,7 +396,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let stubs = g.doc()["instances"][&inst]["stubs"].clone();
     assert!(stubs.as_object().is_some_and(|m| m.values().any(|s| s.get("inner_node").is_some())),
             "the group left no wired stub, so this test would not reach the optional leaves: {stubs}");
-    g.call("page_split_panel", j!({ "page": "Tab 1", "panel": panel_id(&g), "direction": "row",
+    g.call("split_panel", j!({ "panel": panel_id(&g), "direction": "row",
                                     "ratio": 0.5 }));
 
     let doc = g.doc();

@@ -8,7 +8,7 @@
  * **Which instance a panel shows is not.** It is client-local viewpoint, the same class of fact as
  * a node editor's `subpatchPath`: machine-local, dead on unload, never shared layout state — so it
  * cannot dirty the patch, converge to a peer or enter undo. Sub-project A made that separation
- * structural (a layout write is a `page_set_panel` COMMAND; viewpoint is not), and the way to use
+ * structural (a layout write is a `set_panel` COMMAND; viewpoint is not), and the way to use
  * that structure rather than re-derive it is to send nothing at all. There is no `setPanelState`
  * below, no `LayoutIntent`, and `harness.test.ts` asserts the whole store records zero calls for a
  * mount/choose/unmount round.

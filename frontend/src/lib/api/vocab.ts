@@ -16,7 +16,7 @@ export type PanelTypeId =
 	| 'globals'
 	| 'agent';
 
-/** The panel type a brand-new page starts with. */
+/** The panel type a brand-new tab starts with. */
 export const DEFAULT_PANEL_TYPE = 'node-editor';
 /** The placeholder a split births, whose in-panel grid chooses its content. */
 export const EMPTY_PANEL_TYPE = 'empty';

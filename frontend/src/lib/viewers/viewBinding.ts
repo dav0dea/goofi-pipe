@@ -23,7 +23,7 @@ export interface ViewBinding {
 }
 
 /** Docked Viewer panel: backed by the panel's own state, which the MANAGER holds. Each setter names
- * its own undo step — the write is one `page_set_panel` command, so the manager owns the inverse and
+ * its own undo step — the write is one `set_panel` command, so the manager owns the inverse and
  * the label is all the client has to supply. */
 export function panelBinding(
 	getState: () => unknown,

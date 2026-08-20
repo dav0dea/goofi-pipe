@@ -28,7 +28,7 @@ import {
 	buildWorkspaces,
 	childIds,
 	firstPanelIn,
-	pageOf,
+	tabOf,
 	splitFractions,
 	type Arrangement
 } from './arrangement';
@@ -50,7 +50,7 @@ export type DragRef =
  * write becomes, so the taxonomy holds by construction.
  *
  * - `'authored'` — the user edited the arrangement (a viewer kind, a bound slot). It becomes a
- *   `page_set_panel` command: undoable, converged to every peer, and it dirties.
+ *   `set_panel` command: undoable, converged to every peer, and it dirties.
  * - `'navigation'` — the user only changed what they are LOOKING at (entering a sub-patch). It
  *   becomes viewpoint: stored for this client, never converged, never dirtying.
  *
@@ -58,15 +58,15 @@ export type DragRef =
  */
 export type LayoutIntent = 'navigation' | 'authored';
 
-/** What `session_add_page` answers: the ids it minted, which no client can otherwise know. */
-interface Page {
-	page: string;
+/** What `add_tab` answers: the ids it minted, which no client can otherwise know. */
+interface Tab {
+	tab: string;
 	panel: string;
 }
 
 /** What `set_viewpoint` stores for this client, and what a reload gets back. */
 export interface Viewpoint {
-	page?: string;
+	tab?: string;
 	panel?: string;
 	paths?: Record<string, string>;
 }
@@ -76,7 +76,7 @@ class WorkspaceStore {
 	private _arr = $state<Arrangement>({});
 	/** The shares a splitter drag is currently drawing, before it commits. A resize is one
 	 * continuous gesture, so the override lives here for its duration and lands as ONE
-	 * `page_resize_split` on pointer-up — never a command per pointermove. */
+	 * `resize_split` on pointer-up — never a command per pointermove. */
 	private _drag = $state<{ split: string; sizes: number[] } | null>(null);
 	/** The shares a commit put on the wire, held until the delta answering it lands. It keeps the
 	 * drawn shares from snapping back in the frame between the reply and the doc arriving (the reply
@@ -94,10 +94,10 @@ class WorkspaceStore {
 	 * shared state bag — that separation is what keeps peer isolation and navigation-must-not-dirty
 	 * true by construction rather than by classification. */
 	private _paths = $state<Record<string, string>>({});
-	/** The page and root panel a just-accepted `session_add_page` minted, brought forward once the
+	/** The page and root panel a just-accepted `add_tab` minted, brought forward once the
 	 * doc catches up. The manager answers with the ids before the CRDT delta carrying them arrives,
 	 * so they are known first but cannot be drawn yet. */
-	private _wantPage: { page: string; panel: string } | null = null;
+	private _wantTab: { tab: string; panel: string } | null = null;
 	/** Page names claimed but not yet seen in the replica — see `_claimName`. */
 	private _claimed = new Set<string>();
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
@@ -179,10 +179,10 @@ class WorkspaceStore {
 				if (!this._dragLive) this._drag = null;
 			}
 		}
-		const want = this._wantPage;
-		if (want && arr[want.page]) {
-			this._wantPage = null;
-			this._page = want.page;
+		const want = this._wantTab;
+		if (want && arr[want.tab]) {
+			this._wantTab = null;
+			this._page = want.tab;
 			this._focus(want.panel);
 		}
 		// A claim's job is over the moment the name it reserved shows up in the replica.
@@ -219,7 +219,7 @@ class WorkspaceStore {
 	restoreViewpoint(vp: unknown): void {
 		const v = vp as Viewpoint | null;
 		if (!v || typeof v !== 'object') return;
-		if (typeof v.page === 'string') this._page = v.page;
+		if (typeof v.tab === 'string') this._page = v.tab;
 		if (typeof v.panel === 'string') this.activePanelId = v.panel;
 		if (v.paths && typeof v.paths === 'object') this._paths = { ...v.paths };
 	}
@@ -227,7 +227,7 @@ class WorkspaceStore {
 	/** What `set_viewpoint` stores. Plain JSON: the shell pushes it debounced. */
 	viewpoint(): Viewpoint {
 		return {
-			page: this.active?.id,
+			tab: this.active?.id,
 			panel: this.activePanelId ?? undefined,
 			paths: $state.snapshot(this._paths)
 		};
@@ -238,12 +238,6 @@ class WorkspaceStore {
 	}
 
 	// --- commands ------------------------------------------------------------
-
-	/** The page NAME an entry lives on — how every page op addresses it. */
-	private _pageName(id: string): string | null {
-		const page = pageOf(this._arr, id);
-		return page === null ? null : (this._arr[page].name ?? null);
-	}
 
 	/** Send one layout command and record ONE undo step for it. The manager captured the exact
 	 * inverse, so the client entry only marks the step and delegates — the same contract every
@@ -282,10 +276,7 @@ class WorkspaceStore {
 	/** Split a panel. The new panel is `empty` — the user picks its content from the empty panel's
 	 * buttons rather than inheriting the source's type. `fraction` is the new panel's share. */
 	split(panelId: string, direction: Direction, placeBefore = false, fraction = 0.5): void {
-		const page = this._pageName(panelId);
-		if (!page) return;
-		void this._cmd<string>('Split panel', 'page_split_panel', {
-			page,
+		void this._cmd<string>('Split panel', 'split_panel', {
 			panel: panelId,
 			direction,
 			place_before: placeBefore,
@@ -299,8 +290,7 @@ class WorkspaceStore {
 	}
 
 	close(panelId: string): void {
-		const page = this._pageName(panelId);
-		if (page) void this._cmd('Close panel', 'page_remove_panel', { page, panel: panelId });
+		void this._cmd('Close panel', 'remove_panel', { panel: panelId });
 	}
 
 	/** A splitter drag fires this per pointermove. It draws locally — `containerPx` is the split's
@@ -327,19 +317,18 @@ class WorkspaceStore {
 			drop();
 			return;
 		}
-		const page = this._pageName(splitId);
 		// What was last SENT for this split, falling back to the replica. Comparing against the
 		// replica alone would drop a second drag that returns the split to its pre-commit shares,
 		// because the replica is still showing exactly those.
 		const before =
 			this._sent?.split === splitId ? this._sent.sizes : splitFractions(this._arr, splitId);
 		const same = before.length === d.sizes.length && before.every((s, i) => s === d.sizes[i]);
-		if (!page || same) {
+		if (same) {
 			drop();
 			return;
 		}
 		this._sent = { split: splitId, sizes: d.sizes };
-		void this._cmd('Resize', 'page_resize_split', { page, split: splitId, fractions: d.sizes }).then(
+		void this._cmd('Resize', 'resize_split', { split: splitId, fractions: d.sizes }).then(
 			(ok) => {
 				// A refusal never landed, so it is not a baseline either.
 				if (ok === null) {
@@ -351,14 +340,13 @@ class WorkspaceStore {
 	}
 
 	setType(panelId: string, panelType: string): void {
-		const page = this._pageName(panelId);
-		if (page) void this._cmd('Change panel', 'page_set_panel', { page, panel: panelId, type: panelType });
+		void this._cmd('Change panel', 'set_panel', { panel: panelId, type: panelType });
 	}
 
 	/**
 	 * Write a panel's opaque state. `intent` routes it, and that routing IS the dirty taxonomy:
 	 * `'navigation'` (the sub-patch path) stays viewpoint and never leaves as a layout op, while an
-	 * authored write becomes `page_set_panel` — one command, one undo step, converged to peers.
+	 * authored write becomes `set_panel` — one command, one undo step, converged to peers.
 	 * `label` names that step so the undo button reads like the click.
 	 */
 	setPanelState(
@@ -375,11 +363,9 @@ class WorkspaceStore {
 			this._viewpointChanged();
 			return;
 		}
-		const page = this._pageName(panelId);
-		if (!page) return;
 		// The sub-patch path is viewpoint and must not ride a shared write.
 		const { subpatchPath: _drop, ...shared } = bag;
-		void this._cmd(label, 'page_set_panel', { page, panel: panelId, state: shared });
+		void this._cmd(label, 'set_panel', { panel: panelId, state: shared });
 	}
 
 	setActive(panelId: string): void {
@@ -388,7 +374,7 @@ class WorkspaceStore {
 		this._viewpointChanged();
 	}
 
-	/* The three panel-state edits below each name ONLY the key they change: `page_set_panel` merges,
+	/* The three panel-state edits below each name ONLY the key they change: `set_panel` merges,
 	 * so reading the bag back first would buy nothing and cost the class the merge exists to kill —
 	 * a second write inside the first's round trip replacing a bag it never saw the first land in.
 	 * Addressing is `setPanelState`'s, which resolves the page from the whole arrangement, so a panel
@@ -418,10 +404,10 @@ class WorkspaceStore {
 	}
 
 	toggleMaximize(panelId: string): void {
-		const page = pageOf(this._arr, panelId);
-		if (!page) return;
-		if (this._max[page] === panelId) delete this._max[page];
-		else this._max[page] = panelId;
+		const tab = tabOf(this._arr, panelId);
+		if (!tab) return;
+		if (this._max[tab] === panelId) delete this._max[tab];
+		else this._max[tab] = panelId;
 		this._viewpointChanged();
 	}
 
@@ -459,15 +445,11 @@ class WorkspaceStore {
 	addTab(panelType?: string): void {
 		const name = this._claimName();
 		void history().transaction('Add tab', async () => {
-			const born = await this._cmd<Page>('Add tab', 'session_add_page', { name });
+			const born = await this._cmd<Tab>('Add tab', 'add_tab', { name });
 			if (born === null) this._claimed.delete(name);
-			if (born) this._wantPage = born;
+			if (born) this._wantTab = born;
 			if (born && panelType && panelType !== DEFAULT_PANEL_TYPE) {
-				await this._cmd('Change panel', 'page_set_panel', {
-					page: name,
-					panel: born.panel,
-					type: panelType
-				});
+				await this._cmd('Change panel', 'set_panel', { panel: born.panel, type: panelType });
 			}
 		});
 	}
@@ -487,12 +469,11 @@ class WorkspaceStore {
 		const trimmed = name.trim();
 		const from = this._arr[workspaceId]?.name;
 		if (!trimmed || !from || trimmed === from) return;
-		void this._cmd('Rename tab', 'session_rename_page', { from, to: trimmed });
+		void this._cmd('Rename tab', 'rename_tab', { tab: workspaceId, name: trimmed });
 	}
 
 	closeTab(workspaceId: string): void {
-		const name = this._arr[workspaceId]?.name;
-		if (!name) return;
+		if (!this._arr[workspaceId]) return;
 		// Closing the tab in front moves us to its NEIGHBOUR, not to the strip's first — the frozen
 		// behaviour, and viewpoint, so it lands now rather than waiting for the delta. Without it the
 		// fallback (`?? all[0]`) silently rewrote the gesture.
@@ -505,13 +486,13 @@ class WorkspaceStore {
 				this._focusFirst(neighbor.root);
 			}
 		}
-		void this._cmd('Close tab', 'session_remove_page', { name });
+		void this._cmd('Close tab', 'remove_tab', { tab: workspaceId });
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
-		const name = this._workspaces[fromIndex]?.name;
-		if (name === undefined || toIndex < 0 || toIndex >= this._workspaces.length) return;
-		void this._cmd('Reorder tabs', 'session_reorder_page', { name, to_index: toIndex });
+		const tab = this._workspaces[fromIndex]?.id;
+		if (tab === undefined || toIndex < 0 || toIndex >= this._workspaces.length) return;
+		void this._cmd('Reorder tabs', 'reorder_tab', { tab, to_index: toIndex });
 	}
 
 	/** The id of the subtree a drag names: a panel is a subtree of one, a tab drag carries the
@@ -530,13 +511,11 @@ class WorkspaceStore {
 		if (!d) return;
 		if (d.kind === 'panel' && d.panelId === targetPanelId) return; // onto itself
 		const subtree = this._subtreeOf(d);
-		const page = this._pageName(targetPanelId);
-		if (!subtree || !page || subtree === targetPanelId) return;
-		// A drop lands on a page already in front, so only the FOCUS moves — onto the panel the user
+		if (!subtree || subtree === targetPanelId) return;
+		// A drop lands on a tab already in front, so only the FOCUS moves — onto the panel the user
 		// just carried there, which is the one they are now working in.
 		const focus = firstPanelIn(this._arr, subtree);
-		void this._cmd('Move panel', 'page_insert_at_panel', {
-			page,
+		void this._cmd('Move panel', 'insert_at_panel', {
 			subtree,
 			target: targetPanelId,
 			direction,
@@ -556,13 +535,13 @@ class WorkspaceStore {
 		const subtree = this._subtreeOf(d);
 		if (!subtree) return;
 		const name = this._claimName();
-		void this._cmd<Page>('Move panel to new tab', 'session_add_page', {
+		void this._cmd<Tab>('Move panel to new tab', 'add_tab', {
 			name,
 			index,
 			subtree
 		}).then((born) => {
 			if (born === null) this._claimed.delete(name);
-			else if (born) this._wantPage = born;
+			else if (born) this._wantTab = born;
 		});
 	}
 

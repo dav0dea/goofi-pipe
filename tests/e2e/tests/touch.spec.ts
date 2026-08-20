@@ -1503,7 +1503,7 @@ test.describe('binding a node to a panel by drag', () => {
 			await touch.moveTo(to);
 			await touch.up(to);
 
-			// The bind is a `page_set_panel` command, so it shows up when the manager's delta does.
+			// The bind is a `set_panel` command, so it shows up when the manager's delta does.
 			await expect
 				.poll(
 					() =>

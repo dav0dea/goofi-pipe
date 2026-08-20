@@ -1,4 +1,4 @@
-//! The editor's panel arrangement, held FLAT and id-keyed — every page, split and panel is one
+//! The editor's panel arrangement, held FLAT and id-keyed — every tab, split and panel is one
 //! entry naming its parent and its order among that parent's children. The tree is reconstructed
 //! from those pointers at render time; `parent` always names a stable id, never a name.
 //!
@@ -16,19 +16,19 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// A stable page/split/panel id. Minted here, never by a client.
+/// A stable tab/split/panel id. Minted here, never by a client.
 pub type Id = String;
 
 /// One entry's new value, or `None` to remove it — the unit a layout command applies and inverts.
 pub type Write = (Id, Option<Entry>);
 
-/// The panel type a fresh page starts with, and the placeholder a split births (which is what keeps
+/// The panel type a fresh tab starts with, and the placeholder a split births (which is what keeps
 /// a split from assuming content). Both mirror `model.ts`.
 pub const DEFAULT_PANEL_TYPE: &str = "node-editor";
 pub const EMPTY_PANEL_TYPE: &str = "empty";
 /// The first tab's name. Numbered from 1, like every one the client claims after it — an
 /// unnumbered first name reads as a different KIND of tab beside `Tab 2`.
-const DEFAULT_PAGE_NAME: &str = "Tab 1";
+const DEFAULT_TAB_NAME: &str = "Tab 1";
 
 /// Smallest share a split may hand a child, so a panel can always be grabbed again (`MIN_FRACTION`).
 const MIN_FRACTION: f64 = 0.05;
@@ -70,12 +70,12 @@ impl Axis {
     }
 }
 
-/// One node of the arrangement. A `Page` is a root (no parent, exactly one child); a `Split` divides
+/// One node of the arrangement. A `Tab` is a root (no parent, exactly one child); a `Split` divides
 /// its slot between its children along one axis; a `Panel` is a leaf hosting one registered type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
-    Page {
-        /// The unique human alias every session/page op addresses. Renaming it preserves the id, so
+    Tab {
+        /// The unique human alias every session/tab op addresses. Renaming it preserves the id, so
         /// no descendant's `parent` moves.
         name: String,
         order: usize,
@@ -99,41 +99,41 @@ pub enum Entry {
 impl Entry {
     pub fn parent(&self) -> Option<&str> {
         match self {
-            Entry::Page { .. } => None,
+            Entry::Tab { .. } => None,
             Entry::Split { parent, .. } | Entry::Panel { parent, .. } => Some(parent),
         }
     }
     fn order(&self) -> usize {
         match self {
-            Entry::Page { order, .. } | Entry::Split { order, .. } | Entry::Panel { order, .. } => *order,
+            Entry::Tab { order, .. } | Entry::Split { order, .. } | Entry::Panel { order, .. } => *order,
         }
     }
     fn size(&self) -> f64 {
         match self {
-            Entry::Page { .. } => 1.0,
+            Entry::Tab { .. } => 1.0,
             Entry::Split { size, .. } | Entry::Panel { size, .. } => *size,
         }
     }
     fn set_order(&mut self, v: usize) {
         match self {
-            Entry::Page { order, .. } | Entry::Split { order, .. } | Entry::Panel { order, .. } => *order = v,
+            Entry::Tab { order, .. } | Entry::Split { order, .. } | Entry::Panel { order, .. } => *order = v,
         }
     }
     fn set_size(&mut self, v: f64) {
         match self {
-            Entry::Page { .. } => {}
+            Entry::Tab { .. } => {}
             Entry::Split { size, .. } | Entry::Panel { size, .. } => *size = v,
         }
     }
     fn set_parent(&mut self, v: &str) {
         match self {
-            Entry::Page { .. } => {}
+            Entry::Tab { .. } => {}
             Entry::Split { parent, .. } | Entry::Panel { parent, .. } => *parent = v.to_string(),
         }
     }
     fn kind(&self) -> &'static str {
         match self {
-            Entry::Page { .. } => "page",
+            Entry::Tab { .. } => "tab",
             Entry::Split { .. } => "split",
             Entry::Panel { .. } => "panel",
         }
@@ -161,9 +161,9 @@ pub struct Home {
     /// It sat before its nearest sibling, and held this share of its parent.
     before: bool,
     size: f64,
-    /// Its page's name and tab index — the last resort, for the frozen drag where the tab went with
-    /// its last panel and there is neither a sibling nor a page left to land on.
-    page: (String, usize),
+    /// Its tab's name and tab index — the last resort, for the frozen drag where the tab went with
+    /// its last panel and there is neither a sibling nor a tab left to land on.
+    tab: (String, usize),
 }
 
 impl Home {
@@ -195,17 +195,17 @@ impl PartialEq for Layout {
 }
 
 impl Default for Layout {
-    /// The arrangement a fresh patch opens with, matching `defaultWorkspaceState()`: one page
+    /// The arrangement a fresh patch opens with, matching `defaultWorkspaceState()`: one tab
     /// holding one node-editor panel. Also the fallback a corrupt stored arrangement lands on.
     fn default() -> Layout {
         let mut l = Layout { entries: BTreeMap::new(), seq: 0 };
-        let page = l.mint("page");
-        l.insert(page.clone(), Entry::Page { name: DEFAULT_PAGE_NAME.into(), order: 0 });
+        let tab = l.mint("tab");
+        l.insert(tab.clone(), Entry::Tab { name: DEFAULT_TAB_NAME.into(), order: 0 });
         let panel = l.mint("panel");
         l.insert(
             panel,
             Entry::Panel {
-                parent: page,
+                parent: tab,
                 order: 0,
                 size: 1.0,
                 panel_type: DEFAULT_PANEL_TYPE.into(),
@@ -239,40 +239,40 @@ impl Layout {
         c.into_iter().map(|(_, id)| id.clone()).collect()
     }
 
-    /// Every page, in order.
-    pub fn pages(&self) -> Vec<Id> {
+    /// Every tab, in order.
+    pub fn tabs(&self) -> Vec<Id> {
         let mut p: Vec<(usize, &Id)> = self
             .entries
             .iter()
-            .filter(|(_, e)| matches!(e, Entry::Page { .. }))
+            .filter(|(_, e)| matches!(e, Entry::Tab { .. }))
             .map(|(id, e)| (e.order(), id))
             .collect();
         p.sort();
         p.into_iter().map(|(_, id)| id.clone()).collect()
     }
 
-    pub fn page_named(&self, name: &str) -> Option<Id> {
+    pub fn tab_named(&self, name: &str) -> Option<Id> {
         self.entries
             .iter()
-            .find(|(_, e)| matches!(e, Entry::Page { name: n, .. } if n == name))
+            .find(|(_, e)| matches!(e, Entry::Tab { name: n, .. } if n == name))
             .map(|(id, _)| id.clone())
     }
 
-    pub fn name_of(&self, page: &str) -> Option<&str> {
-        match self.entries.get(page) {
-            Some(Entry::Page { name, .. }) => Some(name),
+    pub fn name_of(&self, tab: &str) -> Option<&str> {
+        match self.entries.get(tab) {
+            Some(Entry::Tab { name, .. }) => Some(name),
             _ => None,
         }
     }
 
-    /// The page an entry belongs to (itself, if it is one). `None` on a dangling parent or a cycle —
+    /// The tab an entry belongs to (itself, if it is one). `None` on a dangling parent or a cycle —
     /// the walk is bounded by the entry count, which is what makes [`Self::validate`] catch both in
     /// one step.
-    pub fn page_of(&self, id: &str) -> Option<Id> {
+    pub fn tab_of(&self, id: &str) -> Option<Id> {
         let mut cur = id;
         for _ in 0..=self.entries.len() {
             match self.entries.get(cur)? {
-                Entry::Page { .. } => return Some(cur.to_string()),
+                Entry::Tab { .. } => return Some(cur.to_string()),
                 e => cur = e.parent()?,
             }
         }
@@ -340,20 +340,6 @@ impl Layout {
         w
     }
 
-    /// Refuse an op that addresses a panel through the wrong page — the `page` argument is what
-    /// makes a mistyped panel id a teachable error instead of a silent edit somewhere else.
-    fn in_page(&self, page: &str, id: &str) -> Result<(), String> {
-        match self.page_of(id) {
-            Some(p) if p == page => Ok(()),
-            Some(p) => Err(format!(
-                "`{id}` is on page `{}`, not `{}`",
-                self.name_of(&p).unwrap_or(&p),
-                self.name_of(page).unwrap_or(page)
-            )),
-            None => Err(format!("no such panel `{id}`")),
-        }
-    }
-
     fn order_children(&mut self, ids: &[Id]) {
         for (i, id) in ids.iter().enumerate() {
             if let Some(e) = self.entries.get_mut(id) {
@@ -381,10 +367,10 @@ impl Layout {
     /// wrapper. The subtree hanging off `id` is untouched (a move re-attaches it whole).
     fn detach(&mut self, id: &str) -> Result<Entry, String> {
         let e = self.entries.get(id).cloned().ok_or_else(|| format!("no such panel `{id}`"))?;
-        let parent = e.parent().ok_or("a page is not inside anything")?.to_string();
-        if matches!(self.entries.get(&parent), Some(Entry::Page { .. })) {
+        let parent = e.parent().ok_or("a tab is not inside anything")?.to_string();
+        if matches!(self.entries.get(&parent), Some(Entry::Tab { .. })) {
             return Err(format!(
-                "`{id}` is page `{}`'s only root — a page always keeps one",
+                "`{id}` is tab `{}`'s only root — a tab always keeps one",
                 self.name_of(&parent).unwrap_or(&parent)
             ));
         }
@@ -428,11 +414,11 @@ impl Layout {
         self.normalize(parent);
     }
 
-    /// Add a page and return its id. It holds one fresh node-editor panel — unless `subtree` names
-    /// an existing one, in which case the page is built AROUND it: the frozen drop-onto-the-tab-bar
-    /// gesture, which `session_add_page` + `page_move_panel` cannot express (a move needs a split to
-    /// land in, and a fresh page has none). `index` places it in the tab strip.
-    pub fn add_page(
+    /// Add a tab and return its id. It holds one fresh node-editor panel — unless `subtree` names
+    /// an existing one, in which case the tab is built AROUND it: the frozen drop-onto-the-tab-bar
+    /// gesture, which `add_tab` + `move_panel` cannot express (a move needs a split to
+    /// land in, and a fresh tab has none). `index` places it in the tab strip.
+    pub fn add_tab(
         &self,
         name: &str,
         index: Option<usize>,
@@ -440,21 +426,21 @@ impl Layout {
     ) -> Result<(Vec<Write>, Id), String> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("a page needs a name".into());
+            return Err("a tab needs a name".into());
         }
-        if self.page_named(name).is_some() {
-            return Err(format!("a page named `{name}` already exists"));
+        if self.tab_named(name).is_some() {
+            return Err(format!("a tab named `{name}` already exists"));
         }
         let mut next = self.clone();
-        // Lifted FIRST, because taking a page's last panel takes the page — which is what the new
-        // page's own position is counted against.
+        // Lifted FIRST, because taking a tab's last panel takes the tab — which is what the new
+        // tab's own position is counted against.
         let adopted = match subtree {
             Some(s) => Some((s.to_string(), next.take(s)?)),
             None => None,
         };
-        let order = next.pages().len();
-        let page = next.mint("page");
-        next.insert(page.clone(), Entry::Page { name: name.to_string(), order });
+        let order = next.tabs().len();
+        let tab = next.mint("tab");
+        next.insert(tab.clone(), Entry::Tab { name: name.to_string(), order });
         let (root, mut entry) = adopted.unwrap_or_else(|| {
             (
                 next.mint("panel"),
@@ -467,39 +453,39 @@ impl Layout {
                 },
             )
         });
-        entry.set_parent(&page);
+        entry.set_parent(&tab);
         entry.set_order(0);
         entry.set_size(1.0);
         next.insert(root, entry);
         if let Some(i) = index {
-            let mut order = next.pages();
-            order.retain(|p| *p != page);
-            order.insert(i.min(order.len()), page.clone());
+            let mut order = next.tabs();
+            order.retain(|p| *p != tab);
+            order.insert(i.min(order.len()), tab.clone());
             next.order_children(&order);
         }
-        Ok((self.diff(&next), page))
+        Ok((self.diff(&next), tab))
     }
 
-    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its page's ONLY
-    /// root the PAGE goes with it, which is the frozen "the panel was the tab's only node → the tab
-    /// goes with it" branch of `_takeNode`. The last page never goes.
+    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its tab's ONLY
+    /// root the TAB goes with it, which is the frozen "the panel was the tab's only node → the tab
+    /// goes with it" branch of `_takeNode`. The last tab never goes.
     fn take(&mut self, root: &str) -> Result<Entry, String> {
         let parent = match self.entries.get(root) {
             Some(e) => e.parent().map(str::to_string),
             None => return Err(format!("no such panel `{root}`")),
         };
         let Some(parent) = parent else {
-            return Err("a page is not a subtree — reorder it with session_reorder_page".into());
+            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
         };
-        if !matches!(self.entries.get(&parent), Some(Entry::Page { .. })) {
+        if !matches!(self.entries.get(&parent), Some(Entry::Tab { .. })) {
             return self.detach(root);
         }
-        if self.pages().len() <= 1 {
-            return Err(format!("`{root}` is the only panel on the only page — it has nowhere to go"));
+        if self.tabs().len() <= 1 {
+            return Err(format!("`{root}` is the only panel on the only tab — it has nowhere to go"));
         }
         let e = self.entries.remove(root).expect("looked up above");
         self.entries.remove(&parent);
-        let rest = self.pages();
+        let rest = self.tabs();
         self.order_children(&rest);
         Ok(e)
     }
@@ -565,14 +551,12 @@ impl Layout {
     /// arrangements that were never on screen.
     pub fn insert_at_panel(
         &self,
-        page: &str,
         subtree: &str,
         target: &str,
         axis: Axis,
         before: bool,
         ratio: f64,
     ) -> Result<Vec<Write>, String> {
-        self.in_page(page, target)?;
         // A PANEL target is what the gesture means AND what makes the plan safe: lifting the source
         // can promote a split away, but never a panel, so the target still stands afterwards.
         match self.entries.get(target) {
@@ -596,12 +580,12 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
-    /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back. `None` for a page,
+    /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back. `None` for a tab,
     /// which is reordered rather than moved.
     pub fn home_of(&self, root: &str) -> Option<Home> {
         let e = self.entries.get(root)?;
         let parent = e.parent()?.to_string();
-        let page = self.page_of(root)?;
+        let tab = self.tab_of(root)?;
         let kids = self.children(&parent);
         let i = kids.iter().position(|k| k == root)?;
         // Nearest first: the neighbour that shared an edge with `root` is the one whose survival
@@ -619,13 +603,13 @@ impl Layout {
             parent,
             before: i == 0,
             size: e.size(),
-            page: (self.name_of(&page)?.to_string(), self.pages().iter().position(|p| *p == page)?),
+            tab: (self.name_of(&tab)?.to_string(), self.tabs().iter().position(|p| *p == tab)?),
         })
     }
 
     /// Plan a move of `root` back to `home`, against the arrangement AS IT STANDS — the inverse of
     /// every layout op that moves something. It lands beside the first old sibling still standing,
-    /// else beside its old page's current root, else inside a page re-born around it. What it never
+    /// else beside its old tab's current root, else inside a tab re-born around it. What it never
     /// does is restore its old parent's slot: the move may have promoted that split away, and a peer
     /// may have built on whatever took its place, which a restore would strand.
     pub fn re_home(&self, root: &str, home: &Home) -> Result<Vec<Write>, String> {
@@ -639,13 +623,13 @@ impl Layout {
             .find(|s| next.entries.contains_key(*s) && !inside.contains(s))
             .cloned()
             .or_else(|| {
-                next.page_named(&home.page.0).and_then(|p| next.children(&p).into_iter().next())
+                next.tab_named(&home.tab.0).and_then(|p| next.children(&p).into_iter().next())
             });
         let Some(landing) = landing else {
-            // Even the page went with it (the tab followed its last panel) — re-born AROUND the
-            // subtree, which is `add_page`'s own adopt branch rather than a raw restore. Lifting it
+            // Even the tab went with it (the tab followed its last panel) — re-born AROUND the
+            // subtree, which is `add_tab`'s own adopt branch rather than a raw restore. Lifting it
             // out still widens the split it leaves, so the shares are given back the same way.
-            let (writes, _) = self.add_page(&home.page.0, Some(home.page.1), Some(root))?;
+            let (writes, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
             let mut born = self.clone();
             born.apply(writes);
             born.give_back_shares(self, home);
@@ -687,7 +671,7 @@ impl Layout {
     }
 
     /// Plan the inverse of a close: put `dead` back, then RE-PLAN where its root belongs —
-    /// [`Self::re_home`] for a subtree, the tab strip for a page. What it never does is pin the root
+    /// [`Self::re_home`] for a subtree, the tab strip for a tab. What it never does is pin the root
     /// into the slot it held: the close promoted that split away, a peer may have built where it
     /// stood, and a later undo may even have handed its id to a live wrapper.
     pub fn revive(&self, dead: &[(Id, Entry)], root: &str, home: Option<&Home>) -> Result<Vec<Write>, String> {
@@ -701,9 +685,9 @@ impl Layout {
             back.insert(id.clone(), e);
         }
         let writes = match (back.get(root).cloned(), home) {
-            // A page hangs off nothing, so only its place in the tab strip needs re-planning — a
-            // peer's new page has taken an index since, and restoring the old one collides with it.
-            (Some(Entry::Page { name, order }), _) => back.reorder_page(&name, order)?,
+            // A tab hangs off nothing, so only its place in the tab strip needs re-planning — a
+            // peer's new tab has taken an index since, and restoring the old one collides with it.
+            (Some(Entry::Tab { order, .. }), _) => back.reorder_tab(root, order)?,
             (Some(_), Some(h)) => back.re_home(root, h)?,
             _ => return Err(format!("`{root}` is not something a close can give back")),
         };
@@ -740,11 +724,9 @@ impl Layout {
     /// chase a moving target and never land on the fraction set the user drew.
     pub fn resize_split(
         &self,
-        page: &str,
         split: &str,
         fractions: &[f64],
     ) -> Result<Vec<Write>, String> {
-        self.in_page(page, split)?;
         if !matches!(self.entries.get(split), Some(Entry::Split { .. })) {
             let kind = self.entries.get(split).map_or("entry", Entry::kind);
             return Err(format!("`{split}` is a {kind} — only a split divides its slot"));
@@ -771,42 +753,52 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
-    pub fn remove_page(&self, name: &str) -> Result<Vec<Write>, String> {
-        let page = self.page_named(name).ok_or_else(|| format!("no page named `{name}`"))?;
-        if self.pages().len() <= 1 {
-            return Err("the last page cannot be removed".into());
+    /// Refuse an id that is not a tab. Every tab op addresses BY ID — a name is what the tab holds,
+    /// not how it is found, so renaming one cannot make a caller's next op miss.
+    fn is_tab(&self, tab: &str) -> Result<(), String> {
+        match self.entries.get(tab) {
+            Some(Entry::Tab { .. }) => Ok(()),
+            Some(e) => Err(format!("`{tab}` is a {} — not a tab", e.kind())),
+            None => Err(format!("no such tab `{tab}`")),
+        }
+    }
+
+    pub fn remove_tab(&self, tab: &str) -> Result<Vec<Write>, String> {
+        self.is_tab(tab)?;
+        if self.tabs().len() <= 1 {
+            return Err("the last tab cannot be removed".into());
         }
         let mut next = self.clone();
-        for id in self.subtree(&page) {
+        for id in self.subtree(tab) {
             next.entries.remove(&id);
         }
-        let rest = next.pages();
+        let rest = next.tabs();
         next.order_children(&rest);
         Ok(self.diff(&next))
     }
 
-    /// Rename a page. A field edit, so the id — and therefore every descendant's `parent` — stands.
-    pub fn rename_page(&self, from: &str, to: &str) -> Result<Vec<Write>, String> {
-        let page = self.page_named(from).ok_or_else(|| format!("no page named `{from}`"))?;
+    /// Rename a tab. A field edit, so the id — and therefore every descendant's `parent` — stands.
+    pub fn rename_tab(&self, tab: &str, to: &str) -> Result<Vec<Write>, String> {
+        self.is_tab(tab)?;
         let to = to.trim();
         if to.is_empty() {
-            return Err("a page needs a name".into());
+            return Err("a tab needs a name".into());
         }
-        if self.page_named(to).is_some_and(|other| other != page) {
-            return Err(format!("a page named `{to}` already exists"));
+        if self.tab_named(to).is_some_and(|other| other != tab) {
+            return Err(format!("a tab named `{to}` already exists"));
         }
         let mut next = self.clone();
-        if let Some(Entry::Page { name, .. }) = next.entries.get_mut(&page) {
+        if let Some(Entry::Tab { name, .. }) = next.entries.get_mut(tab) {
             *name = to.to_string();
         }
         Ok(self.diff(&next))
     }
 
-    pub fn reorder_page(&self, name: &str, to_index: usize) -> Result<Vec<Write>, String> {
-        let page = self.page_named(name).ok_or_else(|| format!("no page named `{name}`"))?;
-        let mut order = self.pages();
-        order.retain(|p| *p != page);
-        order.insert(to_index.min(order.len()), page);
+    pub fn reorder_tab(&self, tab: &str, to_index: usize) -> Result<Vec<Write>, String> {
+        self.is_tab(tab)?;
+        let mut order = self.tabs();
+        order.retain(|p| p != tab);
+        order.insert(to_index.min(order.len()), tab.to_string());
         let mut next = self.clone();
         next.order_children(&order);
         Ok(self.diff(&next))
@@ -816,13 +808,11 @@ impl Layout {
     /// [`Self::insert_at`] a drop uses, handed a brand-new panel instead of a lifted subtree.
     pub fn split_panel(
         &self,
-        page: &str,
         panel: &str,
         axis: Axis,
         place_before: bool,
         ratio: f64,
     ) -> Result<(Vec<Write>, Id), String> {
-        self.in_page(page, panel)?;
         match self.entries.get(panel) {
             Some(Entry::Panel { .. }) => {}
             Some(e) => return Err(format!("`{panel}` is a {} — only a panel splits", e.kind())),
@@ -846,7 +836,7 @@ impl Layout {
 
     /// Clear the node binding of every panel naming a uid in `gone`, as the writes a
     /// [`crate::Command::LayoutContents`] lands. A panel's `state` is opaque here save for this one
-    /// key, which the frontend and the bind validation already share (`page_set_panel`'s
+    /// key, which the frontend and the bind validation already share (`set_panel`'s
     /// `state.node`) — a panel pointing at a deleted node is the one arrangement the manager can
     /// know is wrong.
     pub fn unbind(&self, gone: &std::collections::HashSet<crate::Uid>) -> Vec<Write> {
@@ -877,12 +867,10 @@ impl Layout {
     /// Merging where the write lands kills that class rather than asking each caller to be careful.
     pub fn set_panel(
         &self,
-        page: &str,
         panel: &str,
         panel_type: Option<&str>,
         state: Option<Value>,
     ) -> Result<Vec<Write>, String> {
-        self.in_page(page, panel)?;
         let mut next = self.clone();
         let Some(Entry::Panel { panel_type: pt, state: st, .. }) = next.entries.get_mut(panel) else {
             let kind = self.entries.get(panel).map_or("entry", Entry::kind);
@@ -902,18 +890,16 @@ impl Layout {
 
     /// Move the subtree rooted at `root` under `new_parent` at `order_index`. A panel is a subtree
     /// of one, so this covers both the panel case and the tab-onto-panel merge that carries an
-    /// arbitrary subtree across pages — identity, state and every descendant preserved.
+    /// arbitrary subtree across tabs — identity, state and every descendant preserved.
     pub fn move_subtree(
         &self,
-        page: &str,
         root: &str,
         new_parent: &str,
         order_index: usize,
     ) -> Result<Vec<Write>, String> {
-        self.in_page(page, root)?;
         let e = &self.entries[root];
-        if matches!(e, Entry::Page { .. }) {
-            return Err("a page is not a subtree — reorder it with session_reorder_page".into());
+        if matches!(e, Entry::Tab { .. }) {
+            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
         }
         match self.entries.get(new_parent) {
             Some(Entry::Split { .. }) => {}
@@ -944,10 +930,9 @@ impl Layout {
     }
 
     /// Remove the subtree rooted at `root`, promoting and renormalizing what is left.
-    pub fn remove_subtree(&self, page: &str, root: &str) -> Result<Vec<Write>, String> {
-        self.in_page(page, root)?;
-        if matches!(self.entries.get(root), Some(Entry::Page { .. })) {
-            return Err("a page is removed with session_remove_page".into());
+    pub fn remove_subtree(&self, root: &str) -> Result<Vec<Write>, String> {
+        if matches!(self.entries.get(root), Some(Entry::Tab { .. })) {
+            return Err("a tab is removed with remove_tab".into());
         }
         let doomed = self.subtree(root);
         let mut next = self.clone();
@@ -967,7 +952,7 @@ impl Layout {
             o.insert("kind".into(), Value::from(e.kind()));
             o.insert("order".into(), Value::from(e.order()));
             match e {
-                Entry::Page { name, .. } => {
+                Entry::Tab { name, .. } => {
                     o.insert("name".into(), Value::from(name.as_str()));
                 }
                 Entry::Split { parent, size, axis, .. } => {
@@ -1025,8 +1010,8 @@ impl Layout {
                 rec.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
             };
             let e = match rec.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                "page" => Entry::Page {
-                    name: text("name").ok_or_else(|| format!("arrangement: page `{id}` has no name"))?,
+                "tab" => Entry::Tab {
+                    name: text("name").ok_or_else(|| format!("arrangement: tab `{id}` has no name"))?,
                     order,
                 },
                 "split" => Entry::Split {
@@ -1068,31 +1053,31 @@ impl Layout {
     /// Every invariant the flat model can violate but the nested tree could not. A duplicate ID is
     /// absent from the list because the id-keyed map makes it impossible to express.
     fn validate(&self) -> Result<(), String> {
-        let pages = self.pages();
-        if pages.is_empty() {
-            return Err("arrangement: no pages".into());
+        let tabs = self.tabs();
+        if tabs.is_empty() {
+            return Err("arrangement: no tabs".into());
         }
         let mut names = std::collections::HashSet::new();
-        let mut tabs = std::collections::HashSet::new();
-        for p in &pages {
+        let mut indices = std::collections::HashSet::new();
+        for p in &tabs {
             let n = self.name_of(p).unwrap_or_default();
             if !names.insert(n) {
-                return Err(format!("arrangement: two pages are both named `{n}`"));
+                return Err(format!("arrangement: two tabs are both named `{n}`"));
             }
             // The tab strip is the one child list no parent owns, so the per-entry order check
-            // below never reaches it — and a page restored into the slot it held collides here.
-            let tab = self.entries[p].order();
-            if !tabs.insert(tab) {
-                return Err(format!("arrangement: two pages share tab index {tab}"));
+            // below never reaches it — and a tab restored into the slot it held collides here.
+            let i = self.entries[p].order();
+            if !indices.insert(i) {
+                return Err(format!("arrangement: two tabs share strip index {i}"));
             }
         }
-        // The per-entry checks run FIRST, because an entry that reaches no page is the CAUSE of the
-        // page-root count being wrong, and a caller shown only the symptom cannot find the entry.
+        // The per-entry checks run FIRST, because an entry that reaches no tab is the CAUSE of the
+        // tab-root count being wrong, and a caller shown only the symptom cannot find the entry.
         for (id, e) in &self.entries {
-            // Walking up to a page refuses a dangling parent AND a cycle in the same step.
-            if self.page_of(id).is_none() {
+            // Walking up to a tab refuses a dangling parent AND a cycle in the same step.
+            if self.tab_of(id).is_none() {
                 return Err(format!(
-                    "arrangement: `{id}` reaches no page — a missing parent, or a cycle"
+                    "arrangement: `{id}` reaches no tab — a missing parent, or a cycle"
                 ));
             }
             if let Some(p) = e.parent() {
@@ -1110,13 +1095,13 @@ impl Layout {
                 }
             }
         }
-        for p in &pages {
-            // A page holds exactly one root — the nested tree's `Workspace.root`. Zero or many is a
+        for p in &tabs {
+            // A tab holds exactly one root — the nested tree's `Workspace.root`. Zero or many is a
             // shape flattening admits and rendering cannot.
             let roots = self.children(p).len();
             if roots != 1 {
                 let n = self.name_of(p).unwrap_or_default();
-                return Err(format!("arrangement: page `{n}` has {roots} roots, not 1"));
+                return Err(format!("arrangement: tab `{n}` has {roots} roots, not 1"));
             }
         }
         Ok(())

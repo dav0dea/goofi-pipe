@@ -3,7 +3,7 @@
 
   It is about an INSTANCE, not a view, so it does not belong to a panel. While it did, the TopBar's
   badge — the one door onto a harness from outside its panel — had to OPEN a panel to hold it, and
-  with none open that meant `addTab('agent')`: `session_add_page` + `page_set_panel`, two authoring
+  with none open that meant `addTab('agent')`: `add_tab` + `set_panel`, two authoring
   commands, so asking a question dirtied the patch and pushed two undo steps. Navigation must not
   dirty (CLAUDE.md), and asking is not even navigation. As shell chrome the question needs no layout
   write at all, and both doors — the panel header's ✕ and the badge — land on this one dialog.

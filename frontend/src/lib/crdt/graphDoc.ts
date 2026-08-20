@@ -294,7 +294,7 @@ export function globalViews(doc: Doc): GlobalView[] {
 }
 
 // ── The arrangement ────────────────────────────────────────────────────────────────────────────
-// The `arrangement` root — the editor's panel layout, held FLAT and id-keyed. Every page, split and
+// The `arrangement` root — the editor's panel layout, held FLAT and id-keyed. Every tab, split and
 // panel is one entry naming its `parent` and its `order`; the tree is rebuilt at render time by
 // `$lib/workspace/arrangement`.
 
@@ -305,7 +305,7 @@ export function arrangementEntries(doc: Doc): Arrangement {
 	for (const [id, raw] of Object.entries(arrangementMap(doc))) {
 		const e = obj(raw);
 		const kind = e.kind;
-		if (kind !== 'page' && kind !== 'split' && kind !== 'panel') continue;
+		if (kind !== 'tab' && kind !== 'split' && kind !== 'panel') continue;
 		if (typeof e.order !== 'number') continue;
 		out[id] = {
 			kind,

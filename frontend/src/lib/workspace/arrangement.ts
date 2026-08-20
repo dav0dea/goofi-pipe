@@ -1,7 +1,7 @@
 /**
  * The flat arrangement, and the tree the panel system draws from it.
  *
- * The manager holds the workspace as `goofi_engine::layout::Layout`: every page, split and panel is
+ * The manager holds the workspace as `goofi_engine::layout::Layout`: every tab, split and panel is
  * ONE id-keyed entry naming its `parent` and its `order` among that parent's children, mirrored
  * verbatim as the fifth CRDT doc root. Flat is what lets the arrangement ride the same reconciler
  * the graph does — and it is why the tree is rebuilt HERE, at render time, rather than shipped.
@@ -21,7 +21,7 @@ import {
 /** One arrangement entry, exactly as `Layout::to_json` writes it. `state` rides as a JSON STRING
  * leaf (the CRDT reconciler erases nested arrays and a viewer's settings can hold one). */
 export interface ArrangementEntry {
-	kind: 'page' | 'split' | 'panel';
+	kind: 'tab' | 'split' | 'panel';
 	order: number;
 	name?: string;
 	parent?: string;
@@ -35,15 +35,15 @@ export interface ArrangementEntry {
  * under `#seq` and is filtered out where the root is read (`arrangementEntries`). */
 export type Arrangement = Record<string, ArrangementEntry>;
 
-/** The page an entry sits on, or null when the id is unknown / unreachable. */
-export function pageOf(arr: Arrangement, id: string): string | null {
+/** The tab an entry sits on, or null when the id is unknown / unreachable. */
+export function tabOf(arr: Arrangement, id: string): string | null {
 	let cur: string | undefined = id;
 	// Bounded by the entry count: a cycle would be refused by the manager's own loader, so this
 	// walks a tree, not a graph.
 	for (let i = 0; cur !== undefined && i <= Object.keys(arr).length; i++) {
 		const e: ArrangementEntry | undefined = arr[cur];
 		if (!e) return null;
-		if (e.kind === 'page') return cur;
+		if (e.kind === 'tab') return cur;
 		cur = e.parent;
 	}
 	return null;
@@ -57,7 +57,7 @@ export function childIds(arr: Arrangement, parent: string): string[] {
 }
 
 /** The first panel inside `id`, in document order — `id` itself when it is one. A drag names a
- * SUBTREE (a dragged tab names its page's root split), and this is the panel the user is working in
+ * SUBTREE (a dragged tab names its tab's root split), and this is the panel the user is working in
  * once it lands. Null when the id is unknown. */
 export function firstPanelIn(arr: Arrangement, id: string): string | null {
 	const e = arr[id];
@@ -92,14 +92,14 @@ function panelState(raw: string | undefined): unknown {
 function unsyncedDefault(): Workspace[] {
 	return [
 		{
-			id: 'page-1',
+			id: 'tab-1',
 			name: 'Tab 1',
 			root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE, state: undefined }
 		}
 	];
 }
 
-/** Rebuild the render tree: one `Workspace` per page, in tab-strip order. A page whose root is
+/** Rebuild the render tree: one `Workspace` per tab, in tab-strip order. A tab whose root is
  * missing is dropped rather than drawn as a hole. */
 export function buildWorkspaces(arr: Arrangement): Workspace[] {
 	const build = (id: string): LayoutNode | null => {
@@ -127,11 +127,11 @@ export function buildWorkspaces(arr: Arrangement): Workspace[] {
 		return { kind: 'split', id, direction, children, sizes };
 	};
 
-	const pages = Object.keys(arr)
-		.filter((id) => arr[id].kind === 'page')
+	const tabs = Object.keys(arr)
+		.filter((id) => arr[id].kind === 'tab')
 		.sort((a, b) => arr[a].order - arr[b].order);
 	const out: Workspace[] = [];
-	for (const id of pages) {
+	for (const id of tabs) {
 		const root = build(childIds(arr, id)[0] ?? '');
 		if (root) out.push({ id, name: arr[id].name ?? '', root });
 	}

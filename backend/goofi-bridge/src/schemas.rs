@@ -8,7 +8,7 @@ use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
 pub const ROOT_ID: &str = "__root__";
-pub const PROTOCOL_VERSION: i64 = 1;
+pub const PROTOCOL_VERSION: i64 = 2;
 
 /// A single param descriptor (discriminated on `type`). `expr` is the instance's
 /// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is
@@ -267,7 +267,7 @@ pub fn snapshot(
         "save_path": save_path,
         "unsaved_changes": unsaved,
         // Where the saver was looking. Client-local, so it is not a doc root — but it still has to
-        // arrive, or reopening a patch would forget which page and sub-patch it was left on.
+        // arrive, or reopening a patch would forget which tab and sub-patch it was left on.
         "viewpoint": g.viewpoint().clone(),
     });
     if with_protocol {

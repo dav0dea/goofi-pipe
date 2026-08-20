@@ -115,8 +115,8 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await expect.poll(() => unsaved(page)).toBe(false);
 
 		// The badge is the door onto an agent from outside its panel — including now, with NO agent
-		// panel open. That is where it used to open a TAB to hold the question: `session_add_page` +
-		// `page_set_panel`, an unsaved dot and two undo steps for asking. Asking is not authoring.
+		// panel open. That is where it used to open a TAB to hold the question: `add_tab` +
+		// `set_panel`, an unsaved dot and two undo steps for asking. Asking is not authoring.
 		await page.getByTestId('topbar-agents').click();
 		await page.locator('.context-menu .item').first().click();
 		await expect(page.getByTestId('agent-close-dialog')).toBeVisible();

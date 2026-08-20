@@ -1,4 +1,4 @@
-//! What an agent READS: the patch as a diagram, a node as a page of text, the globals an
+//! What an agent READS: the patch as a diagram, a node as a tab of text, the globals an
 //! expression can name, and a node type's source.
 //!
 //! These are goldens on purpose. The text IS the interface — a model reads it and acts on it — so
@@ -213,7 +213,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
 
     // With an evaluator the error line changes hands: the graph can bind the source, so what the
-    // page carries is what the NODE found EVALUATING it. A node is handed the evaluator at BIRTH,
+    // tab carries is what the NODE found EVALUATING it. A node is handed the evaluator at BIRTH,
     // so this one is born after the injection.
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
@@ -227,7 +227,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
             "the bound param's own field carries it too: {live}");
 
     // That finding belongs to the INSTANCE, and a restart is a new one: it evaluates cleanly and
-    // has nothing to report, so nothing is what the page must say.
+    // has nothing to report, so nothing is what the tab must say.
     broken.store(false, Ordering::Relaxed);
     g.call("restart_node", j!({ "node": hex(bound) }));
     let reborn = text(&g, "inspect_node", j!({ "node": hex(bound) }));

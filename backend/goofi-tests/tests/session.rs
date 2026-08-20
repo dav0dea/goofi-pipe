@@ -50,7 +50,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
 
     // Bind a panel to a node, so the arrangement carries a reference into the graph.
-    g.call("page_set_panel", j!({ "page": "Tab 1", "panel": panel(&g), "type": "viewer",
+    g.call("set_panel", j!({ "panel": panel(&g), "type": "viewer",
                                  "state": { "node": hex(osc), "slot": "out" } }));
 
     let before = g.doc();
@@ -119,7 +119,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("patch.gfi");
     g.add("Oscillator");
-    g.call("session_add_page", j!({ "name": "Second" }));
+    g.call("add_tab", j!({ "name": "Second" }));
     g.call("save", j!({ "path": path.to_string_lossy() }));
     let old_mount = g.state.mount();
     std::fs::write(old_mount.join("notes.md"), b"the previous patch's").unwrap();
@@ -127,8 +127,8 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     g.call("new", j!({}));
 
     assert!(g.nodes().is_empty(), "no nodes");
-    assert_eq!(g.call("inspect_layout", j!({}))["text"].as_str().unwrap().matches("page `").count(), 1,
-               "no pages of the previous patch");
+    assert_eq!(g.call("inspect_layout", j!({}))["text"].as_str().unwrap().matches("tab `").count(), 1,
+               "no tabs of the previous patch");
     assert_eq!(g.call("get_patch", j!({}))["save_path"], Value::Null, "no file behind it");
     assert_eq!(g.call("get_patch", j!({}))["dirty"], false, "and nothing to save");
     assert_eq!(g.call("undo", j!({}))["changed"], false, "the history went with the patch");
@@ -150,12 +150,12 @@ fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     let g = Goofi::new();
     g.add("Oscillator");
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
-    let broken = yaml.replace("parent: page-1", "parent: gone"); // a panel parented to nothing
+    let broken = yaml.replace("parent: tab-1", "parent: gone"); // a panel parented to nothing
     assert_ne!(broken, yaml, "the fixture actually corrupted something");
 
     let r = g.call("load_text", j!({ "content": broken }));
     assert_eq!(r["ok"], true, "the patch still opens: {r}");
-    assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("reaches no page")),
+    assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("reaches no tab")),
             "…and says why the arrangement was dropped: {r}");
     assert_eq!(g.nodes().len(), 1, "with the graph intact");
 }

@@ -350,11 +350,11 @@ use goofi_engine::layout::{Entry, Layout};
 
 /// One entry's line in the tree, and its children under it. A split names its axis, a panel its
 /// type and binding; both carry the share of their parent they take, which is the number a caller
-/// adjusts with `page_resize_split`.
+/// adjusts with `resize_split`.
 fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match l.get(id) {
-        Some(Entry::Page { name, .. }) => out.push_str(&format!("{pad}page `{name}`  [{id}]\n")),
+        Some(Entry::Tab { name, .. }) => out.push_str(&format!("{pad}tab `{name}`  [{id}]\n")),
         Some(Entry::Split { size, axis, .. }) => {
             out.push_str(&format!("{pad}{} split {size:.2}  [{id}]\n", axis.name()))
         }
@@ -372,20 +372,20 @@ fn layout_line(l: &Layout, id: &str, depth: usize, out: &mut String) {
     }
 }
 
-/// The arrangement as an indented tree — the ONE layout read. `page` narrows it to a single page,
-/// the way `inspect_patch {scope}` narrows the graph: a caller working on one page pays for one
-/// page, and a caller that needs the split id to name as a move target reads them all.
-pub fn layout_tree(l: &Layout, page: Option<&str>) -> String {
+/// The arrangement as an indented tree — the ONE layout read. `tab` narrows it to a single tab,
+/// the way `inspect_patch {scope}` narrows the graph: a caller working on one tab pays for one
+/// tab, and a caller that needs the split id to name as a move target reads them all.
+pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
     let mut out = String::from(
-        "The editor arrangement. Pages are addressed by NAME; panels and splits by the id in []. \
-         The number on each entry is its share of its parent — what page_resize_split sets.\n\n",
+        "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
+         The number on each entry is its share of its parent — what resize_split sets.\n\n",
     );
-    let pages = match page {
-        Some(p) => vec![p.to_string()],
-        None => l.pages(),
+    let tabs = match tab {
+        Some(t) => vec![t.to_string()],
+        None => l.tabs(),
     };
-    for p in pages {
-        layout_line(l, &p, 0, &mut out);
+    for t in tabs {
+        layout_line(l, &t, 0, &mut out);
     }
     out
 }

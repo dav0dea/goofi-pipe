@@ -7,7 +7,7 @@ describe('panelBinding', () => {
 		const b = panelBinding(
 			() => state,
 			(s) => {
-				// `page_set_panel` MERGES the state it is handed, so the double does too — that is
+				// `set_panel` MERGES the state it is handed, so the double does too — that is
 				// the seam, and a binding writes only the key it changed.
 				state = { ...state, ...(s as Record<string, unknown>) };
 			},

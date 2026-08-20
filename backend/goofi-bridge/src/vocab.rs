@@ -3,7 +3,7 @@
 //! Sub-project A made the manager authoritative for layout, but the words that give a panel entry
 //! its MEANING stayed in the frontend: panel types were registered in `panels/register.ts`, viewer
 //! kinds were a TypeScript union in `viewers/kind.ts`. The manager wrote both into an entry as free
-//! strings it could not check, so `page_set_panel {type: "params"}` — a plausible guess for
+//! strings it could not check, so `set_panel {type: "params"}` — a plausible guess for
 //! `parameters` — answered `{ok: true}` and left the panel in an "Unknown panel type" state (found
 //! by the user driving a real agent, 2026-08-10). An incomplete migration, not a missing guard.
 //!
@@ -20,7 +20,7 @@
 use goofi_engine::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
 use serde_json::Value;
 
-/// One panel type — what a layout entry's `panel_type` may say, and what `page_set_panel {type}`
+/// One panel type — what a layout entry's `panel_type` may say, and what `set_panel {type}`
 /// may name.
 pub struct PanelType {
     /// The layout key. Stored in the `.gfi`, so renaming one is a migration, not an edit.
@@ -36,7 +36,7 @@ pub struct PanelType {
     /// would silently ignore, and lets the agent read which types take a node at all.
     pub accepts_node: bool,
     /// What the panel shows, for a caller choosing one. Short: every one of these rides in
-    /// `page_set_panel`'s tool description, which a model provider truncates at 2 KB.
+    /// `set_panel`'s tool description, which a model provider truncates at 2 KB.
     pub doc: &'static str,
 }
 
@@ -186,7 +186,7 @@ pub fn typescript() -> String {
          \n\
          export type PanelTypeId ={panel_ids};\n\
          \n\
-         /** The panel type a brand-new page starts with. */\n\
+         /** The panel type a brand-new tab starts with. */\n\
          export const DEFAULT_PANEL_TYPE = '{DEFAULT_PANEL_TYPE}';\n\
          /** The placeholder a split births, whose in-panel grid chooses its content. */\n\
          export const EMPTY_PANEL_TYPE = '{EMPTY_PANEL_TYPE}';\n\
@@ -285,7 +285,7 @@ pub fn check_viewers(
     Ok(())
 }
 
-/// Validate a `page_set_panel` write against the vocabularies and the node it binds, BEFORE the
+/// Validate a `set_panel` write against the vocabularies and the node it binds, BEFORE the
 /// layout is planned. Every one of these is a write that would otherwise succeed and mean something
 /// other than what was asked: an unknown type renders "Unknown panel type", an unknown kind falls
 /// back to the line plot, a slot the node does not have renders the panel's empty state, and a node
@@ -299,7 +299,7 @@ pub fn check_panel(
     state: Option<&Value>,
     bound: Option<goofi_engine::Uid>,
 ) -> Result<(), String> {
-    const OP: &str = "page_set_panel";
+    const OP: &str = "set_panel";
     if let Some(t) = ty {
         check(OP, "panel type", t, panel_type_ids())?;
     }

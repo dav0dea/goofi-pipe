@@ -1,5 +1,5 @@
-//! What a browser tab meets: the socket, the replica, the file door, the page — and the guard that
-//! decides which pages are allowed to ask at all.
+//! What a browser tab meets: the socket, the replica, the file door, the tab — and the guard that
+//! decides which tabs are allowed to ask at all.
 //!
 //! Everything else in this crate drives `Goofi::call` and needs no transport. What is here is about
 //! the wire itself: two interleaved channels on `/control` (JSON for RPC and events, binary for
@@ -33,7 +33,10 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     let base = g.serve().await;
     let (mut c, hello) = Client::connect(&base).await;
 
-    assert_eq!(hello["protocol_version"], 1);
+    // Bumped in lockstep with `frontend/src/lib/api/control.ts` — a literal here on purpose, so a
+    // wire change that forgets one of the two shows up as a failing test rather than as a browser
+    // reconciling against a vocabulary the manager no longer speaks.
+    assert_eq!(hello["protocol_version"], 2);
     assert!(hello["instance_id"].is_string());
     assert_eq!(hello["pillars"], j!(["signal"]), "the backend advertises what it hosts");
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
@@ -85,8 +88,8 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
 
     // A PEER's layout edit. Layout is the fifth document root, so it rides the same delta broadcast
     // as a node add — it used to reach a tab only on `hello`.
-    let panel = panels(c.doc()).first().cloned().expect("the default page's one panel");
-    let fresh = peer.call("page_split_panel", j!({ "page": "Tab 1", "panel": panel,
+    let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
+    let fresh = peer.call("split_panel", j!({ "panel": panel,
                                                   "direction": "row", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
     c.until_doc(|d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
@@ -209,7 +212,7 @@ async fn the_app_is_served_out_of_the_binary_and_the_client_router_owns_the_rest
     assert!(head.contains("text/html"), "…served with its content type: {head}");
 
     let (status, head, _) = http(&addr, "GET", "/_app/version.json", "", b"").await;
-    assert_eq!(status, 200, "a hashed asset the page links: {head}");
+    assert_eq!(status, 200, "a hashed asset the tab links: {head}");
     assert!(head.contains("application/json"), "{head}");
 
     let (status, _, body) = http(&addr, "GET", "/some/client/route", "", b"").await;
@@ -221,14 +224,14 @@ async fn the_app_is_served_out_of_the_binary_and_the_client_router_owns_the_rest
 // The Origin/Host guard — asked of every route, WebSocket UPGRADES included
 // ---------------------------------------------------------------------------
 
-/// `/control`'s socket is CORS-exempt, so before this guard any page the user merely visited could
+/// `/control`'s socket is CORS-exempt, so before this guard any tab the user merely visited could
 /// open one and read AND write the patch. `/mcp` was measured taking a no-preflight cross-origin
 /// POST that created a node. `/term` is worse than both: a PTY running the user's own shell, which
-/// makes a drive-by page an RCE. A guard scoped to the HTTP routes would have shut the smallest of
+/// makes a drive-by tab an RCE. A guard scoped to the HTTP routes would have shut the smallest of
 /// the three doors — so it is one layer over the whole router, and this asks every route.
 ///
 /// **A drive-by guard, not authentication.** goofi is deliberately single-user and unauthenticated;
-/// what is stopped is a page in the user's browser reaching a server it was never served by. A
+/// what is stopped is a tab in the user's browser reaching a server it was never served by. A
 /// client with no `Origin` — curl, an MCP client, a spawned harness, this suite — is not a browser
 /// and is served, which is why every case below states exactly what it sends.
 const ROUTES: &[(&str, &str)] = &[
@@ -237,7 +240,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("/term/no-such-instance", "WS"),
     ("/mcp", "POST"),
     ("/mcp/no-such-instance", "POST"),
-    // The SPA is in this list because the page must sit behind the same door as the sockets it
+    // The SPA is in this list because the tab must sit behind the same door as the sockets it
     // opens — and so a route added later inherits the guard by construction.
     ("/index.html", "GET"),
 ];
@@ -286,26 +289,26 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
         (String::new(), addr.clone(), true,
          "a client with no Origin is not a browser: curl, an MCP client, a harness goofi spawned"),
         (format!("Origin: http://{addr}\r\n"), addr.clone(), true,
-         "the page goofi served itself — every request a tab makes"),
+         "the tab goofi served itself — every request a tab makes"),
         ("Origin: https://evil.example\r\n".into(), addr.clone(), false,
-         "the load-bearing negative: a page the user merely visited gets nothing, /term least of all"),
+         "the load-bearing negative: a tab the user merely visited gets nothing, /term least of all"),
         (format!("Origin: http://{rebound}\r\n"), rebound.clone(), false,
          "DNS rebinding is why this is an allowlist: Origin and Host AGREE and it is still refused"),
         ("Origin: http://localhost:5173\r\n".into(), addr.clone(), true,
          "another loopback port is a developer — `npm run dev` on :5173 talking to :8000"),
         ("Origin: http://[::1]:5173\r\n".into(), addr.clone(), true, "…including over IPv6"),
         (format!("Origin: http://{lan}\r\n"), lan.clone(), true,
-         "the documented trusted-LAN case: goofi bound to a LAN address, serving its own page"),
+         "the documented trusted-LAN case: goofi bound to a LAN address, serving its own tab"),
         (format!("Origin: http://192.168.7.9:{port}\r\n"), lan.clone(), false,
          "…but not a neighbour on that LAN"),
-        // A cross-site form POST is a page driving goofi, and a browser that puts no Origin on one
+        // A cross-site form POST is a tab driving goofi, and a browser that puts no Origin on one
         // would sail through the rule above as "not a browser" — Safari did exactly that until
         // 15.4. `Sec-Fetch-Site` answers it: every modern browser sends it, script cannot set it
         // (it is forbidden), and no non-browser sends it at all.
         ("Sec-Fetch-Site: cross-site\r\n".into(), addr.clone(), false, "a cross-site form POST"),
         ("Sec-Fetch-Site: same-site\r\n".into(), addr.clone(), false, "a sibling subdomain"),
         ("Sec-Fetch-Site: none\r\n".into(), addr.clone(), true, "the user typing the address"),
-        ("Sec-Fetch-Site: same-origin\r\n".into(), addr.clone(), true, "everything that page asks for"),
+        ("Sec-Fetch-Site: same-origin\r\n".into(), addr.clone(), true, "everything that tab asks for"),
     ];
 
     for (headers, sent_host, ok, why) in cases {
@@ -325,9 +328,9 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
     const NAV: &str = "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\n";
     let doc = format!("{NAV}Sec-Fetch-Dest: document\r\n");
     assert_eq!(ask(&addr, "/index.html", "GET", &doc, &addr).await, 200,
-               "reloading the tab is the user arriving, not a page reaching in");
+               "reloading the tab is the user arriving, not a tab reaching in");
     assert_eq!(ask(&addr, "/index.html", "GET", &format!("{NAV}Sec-Fetch-Dest: iframe\r\n"), &addr).await,
-               403, "…but a page FRAMING goofi is the drive-by, and only `Dest` tells them apart");
+               403, "…but a tab FRAMING goofi is the drive-by, and only `Dest` tells them apart");
     assert_eq!(ask(&addr, "/mcp", "POST", &doc, &addr).await, 403,
                "…and a cross-site form POST is a navigation too, which is why the method is asked");
 }

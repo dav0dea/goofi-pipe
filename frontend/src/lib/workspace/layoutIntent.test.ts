@@ -19,21 +19,21 @@ import type { Arrangement } from './arrangement';
  */
 
 const LAYOUT_OPS = [
-	'page_split_panel',
-	'page_remove_panel',
-	'page_set_panel',
-	'page_move_panel',
-	'page_insert_at_panel',
-	'page_resize_split',
-	'session_add_page',
-	'session_remove_page',
-	'session_rename_page',
-	'session_reorder_page'
+	'split_panel',
+	'remove_panel',
+	'set_panel',
+	'move_panel',
+	'insert_at_panel',
+	'resize_split',
+	'add_tab',
+	'remove_tab',
+	'rename_tab',
+	'reorder_tab'
 ];
 
 function defaultArr(): Arrangement {
 	return {
-		'page-1': { kind: 'page', order: 0, name: 'Tab 1' },
+		'page-1': { kind: 'tab', order: 0, name: 'Tab 1' },
 		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
 	};
 }
@@ -71,7 +71,7 @@ describe('layout write intent', () => {
 
 	it('does not let a REFUSED structural change count as an edit', async () => {
 		const ws = boot();
-		fc.failNext('page_remove_panel');
+		fc.failNext('remove_panel');
 		ws.close('panel-2'); // the last panel cannot be closed
 		await Promise.resolve();
 		await Promise.resolve();
@@ -100,7 +100,7 @@ describe('layout write intent', () => {
 	// makes to re-orient an undo.
 	it('keeps switching layout tabs off the arrangement', async () => {
 		const two = defaultArr();
-		two['page-7'] = { kind: 'page', order: 1, name: 'Second' };
+		two['page-7'] = { kind: 'tab', order: 1, name: 'Second' };
 		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' };
 		const ws = boot(two);
 		ws.selectTab('page-7');

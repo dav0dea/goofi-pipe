@@ -15,7 +15,7 @@ import type { OpName } from '$lib/api/ops';
  * (`backend/goofi-bridge/src/schemas.rs` PROTOCOL_VERSION) and the client asserts a match —
  * turning silent skew into an explicit "reload required". Bump BOTH sides
  * together whenever the wire shape or reconciliation rules change. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Whether a backend-reported protocol version is compatible with this build.
  * Strict equality: an absent/non-numeric version means a backend older than this

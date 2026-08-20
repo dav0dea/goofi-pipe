@@ -895,17 +895,6 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
     Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex()))
 }
 
-/// Resolve the `page` argument — a unique human name — to its stable id. A name is the ONLY way a
-/// caller addresses a page, so an unknown one has to say which ones exist rather than just refusing.
-fn resolve_page(g: &Graph, payload: &Value) -> Result<String, String> {
-    let name = parse_str(payload, "page")?;
-    g.arrangement().page_named(name).ok_or_else(|| {
-        let have: Vec<&str> = g.arrangement().pages().iter().filter_map(|p| g.arrangement().name_of(p)).collect();
-        // A leaked borrow would outlive the closure, so the names are collected before formatting.
-        format!("no page named `{name}` — this patch has: {}", have.join(", "))
-    })
-}
-
 /// Is `node` something a viewer/parameters/metadata panel could actually bind to? A UID, and only a
 /// uid: a display name resolves until somebody renames the node, at which point the panel is bound
 /// to nothing and says nothing about why. The uid is the identity, and it is what the frontend
@@ -1265,23 +1254,20 @@ impl AppState {
                 // Reads are served straight off the layout the manager holds. Writes are planned
                 // against it and applied as ordinary commands, so every op below is undoable, persisted
                 // and broadcast without a line of its own for any of the three.
-                // The one layout read. `page` narrows it, exactly as `inspect_patch {scope}` narrows
+                // The one layout read. `tab` narrows it, exactly as `inspect_patch {scope}` narrows
                 // the graph — the reason `page_list_panels` existed, without a second shape to keep
                 // honest or a second name to choose between.
                 "inspect_layout" => {
-                    let page = match payload.get("page").filter(|v| !v.is_null()) {
-                        Some(_) => Some(resolve_page(&g, &payload)?),
-                        None => None,
-                    };
-                    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), page.as_deref()) }))
+                    let tab = payload.get("tab").and_then(|v| v.as_str()).map(str::to_string);
+                    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
                 }
-                "session_add_page" => {
+                "add_tab" => {
                     let name = parse_str(&payload, "name")?.to_string();
                     let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                     let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
-                    let (writes, page) = g.arrangement().add_page(&name, index, subtree.as_deref())?;
-                    // A page built AROUND an existing subtree is a MOVE: its undo has to put the subtree
-                    // back, where closing the page would delete it. A page born with its own fresh panel
+                    let (writes, tab) = g.arrangement().add_tab(&name, index, subtree.as_deref())?;
+                    // A tab built AROUND an existing subtree is a MOVE: its undo has to put the subtree
+                    // back, where closing the tab would delete it. A tab born with its own fresh panel
                     // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
                     match subtree.as_deref() {
                         Some(s) => {
@@ -1290,58 +1276,54 @@ impl AppState {
                             apply_layout(state, &mut g, &session, cmd)?
                         }
                         None => {
-                            let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: page.clone() };
+                            let cmd = goofi_engine::Command::LayoutBirth { writes, born: tab.clone() };
                             apply_layout(state, &mut g, &session, cmd)?
                         }
                     };
-                    // The page's id and its root panel's — a caller's next act is to give that panel
-                    // content, which needs an id it cannot otherwise know (`page_split_panel`'s rule).
-                    let panel = g.arrangement().children(&page).first().cloned().unwrap_or_default();
-                    Ok(json!({ "page": page, "panel": panel }))
+                    // The tab's id and its root panel's — a caller's next act is to give that panel
+                    // content, which needs an id it cannot otherwise know (`split_panel`'s rule).
+                    let panel = g.arrangement().children(&tab).first().cloned().unwrap_or_default();
+                    Ok(json!({ "tab": tab, "panel": panel }))
                 }
-                "session_remove_page" => {
-                    let name = parse_str(&payload, "name")?.to_string();
-                    // Planned here only so a bad name answers teachably: `LayoutClose` re-plans it under
+                "remove_tab" => {
+                    let tab = parse_str(&payload, "tab")?.to_string();
+                    // Planned here only so a bad id answers teachably: `LayoutClose` re-plans it under
                     // this same lock, and DEGRADES rather than errors, which a user's own op must not.
-                    g.arrangement().remove_page(&name)?;
-                    let page = g.arrangement().page_named(&name).unwrap_or_default();
-                    let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: page.clone() };
-                    apply_layout(state, &mut g, &session, cmd)
+                    g.arrangement().remove_tab(&tab)?;
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: tab })
                 }
-                "session_rename_page" => {
-                    let (from, to) = (parse_str(&payload, "from")?, parse_str(&payload, "to")?);
-                    let writes = g.arrangement().rename_page(from, to)?;
-                    // A name is contents; the tab index is the slot, and a peer's new page may hold the
-                    // one this page had when the rename was planned.
+                "rename_tab" => {
+                    let (tab, name) = (parse_str(&payload, "tab")?, parse_str(&payload, "name")?);
+                    let writes = g.arrangement().rename_tab(tab, name)?;
+                    // A name is contents; the strip index is the slot, and a peer's new tab may hold the
+                    // one this tab had when the rename was planned.
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
                 }
-                "session_reorder_page" => {
-                    let name = parse_str(&payload, "name")?;
+                "reorder_tab" => {
+                    let tab = parse_str(&payload, "tab")?;
                     let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
-                    let writes = g.arrangement().reorder_page(name, to as usize)?;
+                    let writes = g.arrangement().reorder_tab(tab, to as usize)?;
                     let edits = writes
                         .into_iter()
                         .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
                         .collect();
                     apply_layout(state, &mut g, &session, goofi_engine::Command::Compound(edits))
                 }
-                "page_split_panel" => {
-                    let page = resolve_page(&g, &payload)?;
+                "split_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
                     let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
                     let axis = goofi_engine::layout::Axis::parse(dir)
-                        .ok_or("page_split_panel: direction is `row` or `column`")?;
+                        .ok_or("split_panel: direction is `row` or `column`")?;
                     let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let (writes, fresh) = g.arrangement().split_panel(&page, &panel, axis, before, ratio)?;
-                    let cmd = goofi_engine::Command::LayoutBirth { writes, page: page.clone(), born: fresh.clone() };
+                    let (writes, fresh) = g.arrangement().split_panel(&panel, axis, before, ratio)?;
+                    let cmd = goofi_engine::Command::LayoutBirth { writes, born: fresh.clone() };
                     apply_layout(state, &mut g, &session, cmd)?;
                     // The uid, because a split births an EMPTY panel and the caller's next act is to
                     // give it content — which needs the id it cannot otherwise know.
                     Ok(json!(fresh))
                 }
-                "page_set_panel" => {
-                    let page = resolve_page(&g, &payload)?;
+                "set_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
                     let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
                     let panel_state = payload.get("state").cloned();
@@ -1354,7 +1336,7 @@ impl AppState {
                         .filter(|n| !n.is_empty());
                     if let Some(node) = named {
                         if !bindable_node(&g, node) {
-                            return Err(format!("page_set_panel: no node `{node}` in this patch"));
+                            return Err(format!("set_panel: no node `{node}` in this patch"));
                         }
                     }
                     // …and the same argument, one word further in: the panel type and the viewer kind
@@ -1371,57 +1353,52 @@ impl AppState {
                         })
                         .and_then(Uid::from_hex);
                     vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
-                    let writes = g.arrangement().set_panel(&page, &panel, ty.as_deref(), panel_state)?;
+                    let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
                 }
-                "page_move_panel" => {
-                    let page = resolve_page(&g, &payload)?;
+                "move_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
                     let dest = parse_str(&payload, "new_parent")?.to_string();
                     let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let writes = g.arrangement().move_subtree(&page, &panel, &dest, at as usize)?;
+                    let writes = g.arrangement().move_subtree(&panel, &dest, at as usize)?;
                     let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: panel.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
                 // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
                 // arrangement that was not on somebody's screen. Composed from the primitive ops they
                 // would cost three to five of both.
-                "page_insert_at_panel" => {
-                    let page = resolve_page(&g, &payload)?;
+                "insert_at_panel" => {
                     let subtree = parse_str(&payload, "subtree")?.to_string();
                     let target = parse_str(&payload, "target")?.to_string();
                     let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
                     let axis = goofi_engine::layout::Axis::parse(dir)
-                        .ok_or("page_insert_at_panel: direction is `row` or `column`")?;
+                        .ok_or("insert_at_panel: direction is `row` or `column`")?;
                     let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
                     let writes =
-                        g.arrangement().insert_at_panel(&page, &subtree, &target, axis, before, ratio)?;
+                        g.arrangement().insert_at_panel(&subtree, &target, axis, before, ratio)?;
                     let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: subtree.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
-                "page_resize_split" => {
-                    let page = resolve_page(&g, &payload)?;
+                "resize_split" => {
                     let split = parse_str(&payload, "split")?.to_string();
                     // A non-numeric entry becomes NaN and is refused by the planner alongside a zero or
                     // a negative one, so the whole "is this a fraction" answer is stated in one place.
                     let fractions: Vec<f64> = payload
                         .get("fractions")
                         .and_then(|v| v.as_array())
-                        .ok_or("page_resize_split: missing fractions")?
+                        .ok_or("resize_split: missing fractions")?
                         .iter()
                         .map(|v| v.as_f64().unwrap_or(f64::NAN))
                         .collect();
-                    let writes = g.arrangement().resize_split(&page, &split, &fractions)?;
+                    let writes = g.arrangement().resize_split(&split, &fractions)?;
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
                 }
-                "page_remove_panel" => {
-                    let page = resolve_page(&g, &payload)?;
+                "remove_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
-                    // Planned only for its teachable refusal — see `session_remove_page` above.
-                    g.arrangement().remove_subtree(&page, &panel)?;
-                    let cmd = goofi_engine::Command::LayoutClose { page: page.clone(), born: panel.clone() };
-                    apply_layout(state, &mut g, &session, cmd)
+                    // Planned only for its teachable refusal — see `remove_tab` above.
+                    g.arrangement().remove_subtree(&panel)?;
+                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: panel })
                 }
                 "set_node_viewers" => {
                     // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a

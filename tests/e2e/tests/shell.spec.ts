@@ -1106,7 +1106,7 @@ test.describe('the user-agent reset', () => {
 	// explanatory message in a panel body), so with no UA default leaking it renders the body sans.
 	//
 	// It is reached the way production reaches it — a STORED layout naming a type this build does not
-	// have — because that is now the only way there is. `page_set_panel` refuses a panel type outside
+	// have — because that is now the only way there is. `set_panel` refuses a panel type outside
 	// the manager's vocabulary, so the shortcut this spec used to take (setPanelType with a made-up
 	// name) is exactly the mistake the manager exists to catch. A load still admits one: the fallback's
 	// whole reason to exist is a patch saved by a build that had the type.
