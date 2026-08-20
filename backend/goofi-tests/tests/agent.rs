@@ -221,7 +221,7 @@ async fn recv_text(ws: &mut Ws) -> Value {
 
 /// Send an RPC on `/control` and return its reply, skipping interleaved broadcast events.
 async fn call(ws: &mut Ws, id: i64, op: &str, payload: Value) -> Value {
-    ws.send(Message::Text(json!({ "id": id, "op": op, "payload": payload }).to_string()))
+    ws.send(Message::Text(json!({ "id": id, "op": op, "payload": payload }).to_string().into()))
         .await.unwrap();
     loop {
         let v = recv_text(ws).await;
@@ -256,7 +256,7 @@ async fn read_until(ws: &mut Ws, want: &str) -> String {
         // here times out having seen exactly these four bytes.
         if !answered && seen.contains('\u{1b}') && seen.contains("[6n") {
             answered = true;
-            ws.send(Message::Binary(b"\x1b[1;1R".to_vec())).await.unwrap();
+            ws.send(Message::Binary(b"\x1b[1;1R".to_vec().into())).await.unwrap();
         }
         let msg = match tokio::time::timeout_at(deadline, ws.next()).await {
             Err(_) => panic!("{want:?} never arrived; the PTY said {seen:?}"),
@@ -279,7 +279,7 @@ async fn a_harness_spawns_carries_bytes_both_ways_and_is_reaped_with_the_code_it
 
     // `6*7` is in the input the terminal echoes back; `42` can only come from the child having run.
     // Without that distinction the assertion would pass on the line discipline alone.
-    term.send(Message::Binary(b"echo $((6*7))\n".to_vec())).await.unwrap();
+    term.send(Message::Binary(b"echo $((6*7))\n".to_vec().into())).await.unwrap();
     read_until(&mut term, "42").await;
 
     // A dying harness's LAST words are the whole reason to watch one — the stack trace, the auth
@@ -289,7 +289,7 @@ async fn a_harness_spawns_carries_bytes_both_ways_and_is_reaped_with_the_code_it
     // before `child.wait()` returns, which is exactly the race that dropped it. `TAIL''MARK` is
     // what the terminal echoes, so `TAILMARK` can only come from the child.
     term.send(Message::Binary(
-        b"i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo L$i; done; echo TAIL''MARK; exit 7\n".to_vec()))
+        b"i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo L$i; done; echo TAIL''MARK; exit 7\n".to_vec().into()))
         .await.unwrap();
     let seen = read_until(&mut term, "exit_code").await;
     assert!(seen.contains("L400"), "the burst was truncated");
@@ -350,11 +350,11 @@ async fn a_harness_runs_unwatched_and_its_roster_survives_a_reconnect() {
 /// question — so even the readiness marker is spelled `REA''DY`, which the echo shows verbatim and
 /// only the child prints joined.
 async fn report(term: &mut Ws) -> String {
-    term.send(Message::Binary(b"stty -echo; echo REA''DY\n".to_vec())).await.unwrap();
+    term.send(Message::Binary(b"stty -echo; echo REA''DY\n".to_vec().into())).await.unwrap();
     read_until(term, "READY").await;
     term.send(Message::Binary(
         b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]E''ND\\n' \"$(pwd -P)\" \
-          \"$TERM\" \"$COLORTERM\" \"$LC_ALL\" \"$HOME\" \"$STATED_BY_THE_TEST\"\n".to_vec()))
+          \"$TERM\" \"$COLORTERM\" \"$LC_ALL\" \"$HOME\" \"$STATED_BY_THE_TEST\"\n".to_vec().into()))
         .await.unwrap();
     read_until(term, "END").await
 }
@@ -477,7 +477,7 @@ async fn several_views_of_one_terminal_agree_on_one_size() {
     let (mut b, _) = connect_async(&url).await.unwrap();
 
     let resize = |cols: u16, rows: u16| {
-        Message::Text(json!({ "op": "resize", "cols": cols, "rows": rows }).to_string())
+        Message::Text(json!({ "op": "resize", "cols": cols, "rows": rows }).to_string().into())
     };
     a.send(resize(100, 30)).await.unwrap();
     assert_eq!(recv_size(&mut a).await, (100, 30), "the view that asked is told the answer");
@@ -501,7 +501,7 @@ async fn several_views_of_one_terminal_agree_on_one_size() {
 
     // …and the arbitration reaches the KERNEL, not just the other views: the child's own idea of
     // its window is what a TUI lays itself out against. `30 100` is nowhere in the input.
-    a.send(Message::Binary(b"stty size\n".to_vec())).await.unwrap();
+    a.send(Message::Binary(b"stty size\n".to_vec().into())).await.unwrap();
     read_until(&mut a, "30 100").await;
 
     call(&mut ctl, 2, "stop_harness", json!({ "instance": id })).await;

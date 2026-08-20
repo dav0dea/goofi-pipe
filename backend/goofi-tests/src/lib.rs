@@ -352,7 +352,7 @@ impl Client {
         let id = self.next_id;
         self.next_id += 1;
         let req = json!({ "id": id, "op": op, "payload": payload, "session": self.session });
-        self.ws.send(Message::Text(req.to_string())).await.unwrap();
+        self.ws.send(Message::Text(req.to_string().into())).await.unwrap();
         loop {
             let m = self.text().await;
             if m.get("id").and_then(Value::as_i64) == Some(id) {
@@ -426,7 +426,7 @@ impl Client {
 impl Client {
     /// Send a raw text frame — for a test driving the envelope itself rather than an op.
     pub async fn send(&mut self, text: String) {
-        self.ws.send(Message::Text(text)).await.unwrap();
+        self.ws.send(Message::Text(text.into())).await.unwrap();
     }
 }
 
@@ -481,7 +481,7 @@ impl Viewer {
     /// Publish this viewer's constraints inband. The bridge folds every viewer's specs against the
     /// real frame and reduces ONCE, on its own subscription to the producer.
     pub async fn view(&mut self, specs: Value) {
-        self.ws.send(Message::Text(json!({ "op": "view", "specs": specs }).to_string()))
+        self.ws.send(Message::Text(json!({ "op": "view", "specs": specs }).to_string().into()))
             .await
             .unwrap();
     }
