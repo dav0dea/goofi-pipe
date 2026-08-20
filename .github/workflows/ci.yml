@@ -1,0 +1,92 @@
+name: Gates
+
+on:
+  push:
+    branches: [ '*' ]
+
+# One job, because the gates are one list and they share one machine's worth of setup: the SPA is
+# compiled into the binary, so `cargo build` needs the frontend's dependencies, and the e2e suite
+# drives the binary that comes out. Splitting them would install the same things twice and warm two
+# cargo caches to test one tree.
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    # Caches ~/.cargo and target/, which also covers the release wheel builds below: maturin runs
+    # from outside the repo but compiles into this same target directory.
+    - uses: Swatinem/rust-cache@v2
+
+    - uses: astral-sh/setup-uv@v5
+
+    # No lockfile anywhere in this repo (frontend/.gitignore: "a recipe, not a frozen build"), so
+    # `npm install`, never `npm ci`. FIRST, because every cargo build below runs goofi-bridge's
+    # build script, which builds the SPA it embeds — without these it fails, by design.
+    - name: Install the frontend's dependencies
+      run: npm install
+      working-directory: frontend
+
+    - name: Type-check (svelte-check + tsc strict)
+      run: npm run check
+      working-directory: frontend
+
+    - name: Unit tests (vitest)
+      run: npm run test
+      working-directory: frontend
+
+    # A real step, not a build script: pyo3 must be told which interpreter to link against *before
+    # cargo starts*, and cargo reads `.cargo/config.toml` only at startup. It also installs the
+    # goofi wheel into both interpreters, which is what the cross-language tests import and what the
+    # e2e's Python nodes run on. Deliberately uncached: it re-decides every run, so CI can never
+    # inherit the stale-wheel gap a cached venv would carry.
+    - name: Provision the Python runtime
+      run: cargo run -p goofi-init
+
+    # `--all-targets` is load-bearing: a plain build never compiles the integration test targets, so
+    # a warning there would ship. Clippy carries the rustc lints too, so this one command is both
+    # the build-warning gate and the clippy gate — and `-D warnings` is how "…and it prints nothing"
+    # becomes something a machine can hold us to.
+    - name: Zero warnings (rustc + clippy)
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Tests
+      run: cargo test --workspace
+
+    # The other Python tier. Separate because it LINKS libpython — a different build of the same
+    # suite rather than more of it.
+    - name: Tests (in-process Python tier)
+      run: cargo test -p goofi-tests --features embed
+
+    - name: Install the e2e suite's dependencies
+      run: npm install
+      working-directory: tests/e2e
+
+    # Every project is chromium — the touch and tablet ones are device descriptors, not other
+    # engines.
+    - name: Install Playwright's browser
+      run: npx playwright install --with-deps chromium
+      working-directory: tests/e2e
+
+    - name: End-to-end (Playwright against the real binary)
+      run: npm run e2e
+      working-directory: tests/e2e
+
+    # The report and the backends' own logs — a failure here is read from both: the assertion says
+    # which spec, the log says what the server did.
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: e2e-report
+        path: |
+          tests/e2e/playwright-report/
+          tests/e2e/test-results/

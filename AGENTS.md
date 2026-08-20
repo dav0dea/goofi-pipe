@@ -273,6 +273,12 @@ cargo clippy --workspace --all-targets                             # …and this
 cd frontend && npm run check && npm run test   # svelte-check + tsc strict, then vitest
 cd tests/e2e && npm run e2e                    # Playwright against the real binary
 ```
+**CI runs this list and nothing else** — `.github/workflows/ci.yml`, ONE job, because the gates
+share one machine's worth of setup and the SPA is compiled in: no cargo build here happens without
+the frontend's dependencies. It is the same list because a gate with two spellings drifts, and the
+one that drifts is the one nobody runs by hand. The clippy line is spelled `-- -D warnings` there:
+"and this prints nothing" is not enforceable by reading, and clippy carries the rustc lints too, so
+that one command is the build-warning gate as well.
 **TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
 side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
 A gate that silently covers a tenth of the app is worse than no gate. Re-try when svelte-check's
