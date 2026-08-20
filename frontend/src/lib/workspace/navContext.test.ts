@@ -3,21 +3,20 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { captureNavContext, restoreNavContext } from './navContext';
-import type { Arrangement } from './arrangement';
+import type { Workspace } from './model';
 
 /** The manager's default arrangement, mirrored into the replica. */
-function defaultArr(): Arrangement {
-	return {
-		'page-1': { kind: 'tab', order: 0, name: 'Tab 1' },
-		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
-	};
+function defaultTabs(): Workspace[] {
+	return [
+		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: 'node-editor' } }
+	];
 }
 
 describe('NavContext capture/restore', () => {
 	beforeEach(() => {
 		const ws = workspace();
 		ws.configureControl(() => new FakeControl());
-		ws.syncFromDoc(defaultArr());
+		ws.syncFromDoc(defaultTabs());
 		selection().forgetAll();
 	});
 
@@ -50,10 +49,9 @@ describe('NavContext capture/restore', () => {
 		const ctx = captureNavContext();
 		// The change being undone closed the recorded panel: the manager's arrangement now holds a
 		// different one, and the replica follows.
-		const moved = defaultArr();
-		delete moved['panel-2'];
-		moved['panel-9'] = { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' };
-		ws.syncFromDoc(moved);
+		ws.syncFromDoc([
+			{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-9', panelType: 'node-editor' } }
+		]);
 		const newPanel = ws.activePanelId!;
 		expect(newPanel).not.toBe(oldPanel);
 		await restoreNavContext(ctx);

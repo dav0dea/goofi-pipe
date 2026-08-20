@@ -23,9 +23,20 @@ use std::collections::BTreeMap;
 /// A stable tab/split/panel id. Minted here, never by a client.
 pub type Id = String;
 
-/// One flat entry's new value, or `None` to remove it — the unit a layout command applies and
-/// inverts, and the shape [`Layout::to_json`] writes.
-pub type Write = (Id, Option<Entry>);
+/// What one entry HOLDS, addressed by id — the unit a CONTENTS command lands and inverts. It says
+/// nothing about where the entry sits, which is exactly what makes an inverse safe to land against
+/// an arrangement a peer has moved under it. A structural plan is not one of these: it is the whole
+/// next [`Layout`], because it executes once, under the lock, on the arrangement it was planned
+/// against (`LayoutBirth` and `LayoutMove` both hand their forward plan over exactly once and
+/// invert by re-planning).
+pub type Write = (Id, Contents);
+
+/// See [`Write`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Contents {
+    Tab { name: String },
+    Panel { panel_type: String, state: Value },
+}
 
 /// The panel type a fresh tab starts with, and the placeholder a split births (which is what keeps
 /// a split from assuming content). Both mirror `model.ts`.
@@ -138,38 +149,6 @@ impl Node {
 pub enum Dead {
     Tab(Tab),
     Node(Node),
-}
-
-/// One flat entry — the wire's shape and the delta's, derived from the tree on the way out.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Entry {
-    Tab {
-        name: String,
-        order: usize,
-    },
-    Split {
-        parent: Id,
-        order: usize,
-        size: f64,
-        axis: Axis,
-    },
-    Panel {
-        parent: Id,
-        order: usize,
-        size: f64,
-        panel_type: String,
-        state: Value,
-    },
-}
-
-impl Entry {
-    fn kind(&self) -> &'static str {
-        match self {
-            Entry::Tab { .. } => "tab",
-            Entry::Split { .. } => "split",
-            Entry::Panel { .. } => "panel",
-        }
-    }
 }
 
 /// Where a subtree sat before it moved — everything [`Layout::re_home`] needs to plan a move BACK
@@ -350,9 +329,17 @@ impl Layout {
         self.tabs.iter().find(|t| t.id == tab).map(|t| t.root.id().to_string())
     }
 
-    /// One id's FLAT entry, cloned — what a contents inverse captures before it lands.
-    pub fn entry(&self, id: &str) -> Option<Entry> {
-        self.flat().remove(id)
+    /// What `id` holds right now — what a contents inverse captures before it lands.
+    pub fn contents(&self, id: &str) -> Option<Contents> {
+        if let Some(t) = self.tabs.iter().find(|t| t.id == id) {
+            return Some(Contents::Tab { name: t.name.clone() });
+        }
+        match self.node(id) {
+            Some(Node::Panel { panel_type, state, .. }) => {
+                Some(Contents::Panel { panel_type: panel_type.clone(), state: state.clone() })
+            }
+            _ => None,
+        }
     }
 
     /// A panel's opaque state bag, for the bind validation one layer up.
@@ -383,194 +370,12 @@ impl Layout {
         }
     }
 
-    // --- the flat projection ------------------------------------------------
-
-    /// This tree as the flat map the wire and the delta speak. The ONE place the two shapes meet.
-    fn flat(&self) -> BTreeMap<Id, Entry> {
-        fn down(n: &Node, parent: &str, order: usize, out: &mut BTreeMap<Id, Entry>) {
-            match n {
-                Node::Split { id, size, axis, children } => {
-                    out.insert(
-                        id.clone(),
-                        Entry::Split { parent: parent.into(), order, size: *size, axis: *axis },
-                    );
-                    for (i, c) in children.iter().enumerate() {
-                        down(c, id, i, out);
-                    }
-                }
-                Node::Panel { id, size, panel_type, state } => {
-                    out.insert(
-                        id.clone(),
-                        Entry::Panel {
-                            parent: parent.into(),
-                            order,
-                            size: *size,
-                            panel_type: panel_type.clone(),
-                            state: state.clone(),
-                        },
-                    );
-                }
-            }
-        }
-        let mut out = BTreeMap::new();
-        for (i, t) in self.tabs.iter().enumerate() {
-            out.insert(t.id.clone(), Entry::Tab { name: t.name.clone(), order: i });
-            down(&t.root, &t.id, 0, &mut out);
-        }
-        out
-    }
-
-    /// Rebuild a tree from the flat map — the wire's direction, and the one place every shape a
-    /// flat arrangement can take and a tree cannot is refused.
-    fn from_flat(entries: &BTreeMap<Id, Entry>, seq: u64) -> Result<Layout, String> {
-        let kids = |parent: &str| -> Vec<Id> {
-            let mut v: Vec<(usize, &Id)> = entries
-                .iter()
-                .filter(|(_, e)| match e {
-                    Entry::Split { parent: p, .. } | Entry::Panel { parent: p, .. } => p == parent,
-                    Entry::Tab { .. } => false,
-                })
-                .map(|(id, e)| {
-                    let o = match e {
-                        Entry::Split { order, .. } | Entry::Panel { order, .. } => *order,
-                        Entry::Tab { order, .. } => *order,
-                    };
-                    (o, id)
-                })
-                .collect();
-            v.sort();
-            v.into_iter().map(|(_, id)| id.clone()).collect()
-        };
-        // Depth-bounded by the entry count, so a parent cycle cannot spin here — it simply fails to
-        // reach a tab, and every entry is counted at the end.
-        fn build(
-            id: &str,
-            entries: &BTreeMap<Id, Entry>,
-            kids: &dyn Fn(&str) -> Vec<Id>,
-            depth: usize,
-            seen: &mut Vec<Id>,
-        ) -> Result<Node, String> {
-            if depth > entries.len() {
-                return Err(format!("arrangement: `{id}` is inside a cycle"));
-            }
-            seen.push(id.to_string());
-            match entries.get(id) {
-                Some(Entry::Split { size, axis, .. }) => {
-                    let mut children = Vec::new();
-                    for k in kids(id) {
-                        children.push(build(&k, entries, kids, depth + 1, seen)?);
-                    }
-                    if children.is_empty() {
-                        return Err(format!("arrangement: split `{id}` divides nothing"));
-                    }
-                    Ok(Node::Split { id: id.into(), size: *size, axis: *axis, children })
-                }
-                Some(Entry::Panel { size, panel_type, state, .. }) => {
-                    if !kids(id).is_empty() {
-                        return Err(format!("arrangement: `{id}` is a panel, and panels are leaves"));
-                    }
-                    Ok(Node::Panel {
-                        id: id.into(),
-                        size: *size,
-                        panel_type: panel_type.clone(),
-                        state: state.clone(),
-                    })
-                }
-                Some(Entry::Tab { .. }) => Err(format!("arrangement: tab `{id}` is inside a tree")),
-                None => Err(format!("arrangement: `{id}` is not in the arrangement")),
-            }
-        }
-
-        // Reachability FIRST, because an entry that reaches no tab is the CAUSE of the tab-root
-        // count being wrong, and a caller shown only the symptom cannot find the entry.
-        for (id, e) in entries {
-            let mut cur = match e {
-                Entry::Tab { .. } => continue,
-                Entry::Split { parent, .. } | Entry::Panel { parent, .. } => parent,
-            };
-            let mut hops = 0;
-            loop {
-                match entries.get(cur) {
-                    Some(Entry::Tab { .. }) => break,
-                    Some(Entry::Split { parent, .. }) | Some(Entry::Panel { parent, .. })
-                        if hops <= entries.len() =>
-                    {
-                        cur = parent;
-                        hops += 1;
-                    }
-                    _ => {
-                        return Err(format!(
-                            "arrangement: `{id}` reaches no tab — a missing parent, or a cycle"
-                        ))
-                    }
-                }
-            }
-        }
-
-        let mut strip: Vec<(usize, &Id, &String)> = entries
-            .iter()
-            .filter_map(|(id, e)| match e {
-                Entry::Tab { name, order } => Some((*order, id, name)),
-                _ => None,
-            })
-            .collect();
-        strip.sort();
-        if strip.is_empty() {
-            return Err("arrangement: no tabs".into());
-        }
-        let mut names = std::collections::HashSet::new();
-        let mut seen: Vec<Id> = Vec::new();
-        let mut tabs = Vec::new();
-        for (_, id, name) in strip {
-            if !names.insert(name) {
-                return Err(format!("arrangement: two tabs are both named `{name}`"));
-            }
-            seen.push(id.clone());
-            let roots = kids(id);
-            // A tab holds exactly one root — the tree's own shape. Zero or many is what flattening
-            // admitted and rendering could not.
-            let [root] = roots.as_slice() else {
-                return Err(format!("arrangement: tab `{name}` has {} roots, not 1", roots.len()));
-            };
-            tabs.push(Tab {
-                id: id.clone(),
-                name: name.clone(),
-                root: build(root, entries, &kids, 0, &mut seen)?,
-            });
-        }
-        let mut l = Layout { tabs, seq };
-        for id in seen {
-            l.spend(&id);
-        }
-        Ok(l)
-    }
-
-    /// Apply a planner's writes wholesale. Every producer hands over a plan that lands as a whole —
-    /// there is no per-entry command any more — so a write list that does not describe a tree is a
-    /// planner bug, and the arrangement is left standing rather than half-written.
-    pub fn apply(&mut self, writes: Vec<Write>) {
-        let mut flat = self.flat();
-        for (id, entry) in writes {
-            match entry {
-                Some(e) => flat.insert(id, e),
-                None => flat.remove(&id),
-            };
-        }
-        if let Ok(next) = Layout::from_flat(&flat, self.seq) {
-            *self = next;
-        }
-    }
-
-    /// The per-entry writes that turn `self` into `next` — every planner's return value.
-    fn diff(&self, next: &Layout) -> Vec<Write> {
-        let (a, b) = (self.flat(), next.flat());
-        let mut w: Vec<Write> = b
-            .iter()
-            .filter(|(id, e)| a.get(*id) != Some(e))
-            .map(|(id, e)| (id.clone(), Some(e.clone())))
-            .collect();
-        w.extend(a.keys().filter(|id| !b.contains_key(*id)).map(|id| (id.clone(), None)));
-        w
+    /// Adopt a planned arrangement. A structural plan is the whole next tree, so there is nothing
+    /// to merge and nothing that can half-land; the id counter only ever goes up.
+    pub fn apply(&mut self, next: Layout) {
+        let seq = self.seq.max(next.seq);
+        *self = next;
+        self.seq = seq;
     }
 
     // --- tree surgery -------------------------------------------------------
@@ -712,7 +517,7 @@ impl Layout {
         name: &str,
         index: Option<usize>,
         subtree: Option<&str>,
-    ) -> Result<(Vec<Write>, Id), String> {
+    ) -> Result<(Layout, Id), String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("a tab needs a name".into());
@@ -740,7 +545,7 @@ impl Layout {
         root.set_size(1.0);
         let at = index.unwrap_or(next.tabs.len()).min(next.tabs.len());
         next.tabs.insert(at, Tab { id: id.clone(), name: name.to_string(), root });
-        Ok((self.diff(&next), id))
+        Ok((next, id))
     }
 
     /// Re-home the subtree rooted at `subtree` beside `target`, splitting along `axis` —
@@ -753,7 +558,7 @@ impl Layout {
         axis: Axis,
         before: bool,
         ratio: f64,
-    ) -> Result<Vec<Write>, String> {
+    ) -> Result<Layout, String> {
         // A PANEL target is what the gesture means AND what makes the plan safe: lifting the source
         // can promote a split away, but never a panel, so the target still stands afterwards.
         match self.node(target) {
@@ -774,7 +579,7 @@ impl Layout {
         let mut moved = next.take(subtree)?;
         moved.set_size(f);
         next.insert_at(moved, target, axis, before, None);
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back. `None` for a tab,
@@ -838,7 +643,7 @@ impl Layout {
     /// else beside its old tab's current root, else inside a tab re-born around it. What it never
     /// does is restore its old parent's slot: the move may have promoted that split away, and a peer
     /// may have built on whatever took its place, which a restore would strand.
-    pub fn re_home(&self, root: &str, home: &Home) -> Result<Vec<Write>, String> {
+    pub fn re_home(&self, root: &str, home: &Home) -> Result<Layout, String> {
         let mut next = self.clone();
         // Lifted FIRST, so the landing is chosen among what survives closing up behind it.
         let e = next.take(root)?;
@@ -853,17 +658,15 @@ impl Layout {
             // Even the tab went with it (the tab followed its last panel) — re-born AROUND the
             // subtree, which is `add_tab`'s own adopt branch rather than a raw restore. Lifting it
             // out still widens the split it leaves, so the shares are given back the same way.
-            let (writes, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
-            let mut born = self.clone();
-            born.apply(writes);
+            let (mut born, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
             born.give_back_shares(self, home);
-            return Ok(self.diff(&born));
+            return Ok(born);
         };
         let mut e = e;
         e.set_size(home.size);
         next.insert_at(e, &landing, home.axis, home.before, Some(&home.parent));
         next.give_back_shares(self, home);
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     /// Re-assert the shares `home` remembers wherever this plan disturbed them — what makes an
@@ -914,7 +717,7 @@ impl Layout {
     /// [`Self::re_home`] for a subtree, the strip for a tab. What it never does is pin the root into
     /// the slot it held: the close promoted that split away, a peer may have built where it stood,
     /// and a later undo may even have handed its id to a live wrapper.
-    pub fn revive(&self, dead: &Dead, home: Option<&Home>) -> Result<Vec<Write>, String> {
+    pub fn revive(&self, dead: &Dead, home: Option<&Home>) -> Result<Layout, String> {
         let mut back = self.clone();
         match dead {
             // A tab hangs off nothing, so only its place in the strip needs re-planning — a peer's
@@ -933,7 +736,7 @@ impl Layout {
                 back.spend(&t.id);
                 let at = home.map(|h| h.tab.1).unwrap_or(back.tabs.len()).min(back.tabs.len());
                 back.tabs.insert(at, t.clone());
-                Ok(self.diff(&back))
+                Ok(back)
             }
             Dead::Node(n) => {
                 let Some(h) = home else {
@@ -948,46 +751,49 @@ impl Layout {
                 }
                 let anchor = back.tabs[0].root.id().to_string();
                 back.insert_at(n.clone(), &anchor, h.axis, h.before, None);
-                let writes = back.re_home(n.id(), h)?;
-                back.apply(writes);
-                Ok(self.diff(&back))
+                back.re_home(n.id(), h)
             }
         }
     }
 
-    /// Land `writes` as CONTENTS edits: what each entry HOLDS arrives, but WHERE it sits is read off
-    /// the arrangement as it stands and never off the write. That is what makes the inverse of a
-    /// type change safe — the slot an entry held at plan time may be a peer's by undo time. An id
-    /// that has since gone is skipped, so a stale replay degrades instead of resurrecting it.
-    pub fn set_contents(&self, writes: &[Write]) -> Vec<Write> {
-        let mut next = self.clone();
-        for (id, entry) in writes {
-            match entry {
+    /// Land `writes` as CONTENTS edits. WHERE each entry sits is never touched — that is what makes
+    /// the inverse of a type change safe, since the slot an entry held at plan time may be a peer's
+    /// by undo time. An id that has since gone is skipped, so a stale replay degrades instead of
+    /// resurrecting it.
+    pub fn set_contents(&mut self, writes: &[Write]) {
+        for (id, c) in writes {
+            match c {
                 // A tab's contents is its LABEL; its position in the strip is where it sits, and a
                 // reorder is the op for that.
-                Some(Entry::Tab { name, .. }) => {
-                    if let Some(i) = next.tab_index(id) {
-                        next.tabs[i].name = name.clone();
+                Contents::Tab { name } => {
+                    if let Some(i) = self.tab_index(id) {
+                        self.tabs[i].name = name.clone();
                     }
                 }
-                Some(Entry::Panel { panel_type, state, .. }) => {
-                    let Some(p) = next.path_of(id) else { continue };
-                    if let Node::Panel { panel_type: pt, state: st, .. } = next.at_mut(&p) {
+                Contents::Panel { panel_type, state } => {
+                    let Some(p) = self.path_of(id) else { continue };
+                    if let Node::Panel { panel_type: pt, state: st, .. } = self.at_mut(&p) {
                         *pt = panel_type.clone();
                         *st = state.clone();
                     }
                 }
-                // A split holds only its axis, and no op edits one.
-                Some(Entry::Split { .. }) | None => {}
             }
         }
-        self.diff(&next)
+    }
+
+    /// A split's children's shares, in child order — what a resize's inverse aims at, read at flip
+    /// time so a peer's own resize is what it puts back.
+    pub fn fractions(&self, split: &str) -> Option<Vec<f64>> {
+        match self.node(split) {
+            Some(n @ Node::Split { .. }) => Some(n.children().iter().map(Node::size).collect()),
+            _ => None,
+        }
     }
 
     /// Set every child of `split` at once — what a resize drag commits on pointer-up, and the only
     /// op that sizes anything. Scaling ONE child and renormalizing its siblings would make N of them
     /// chase a moving target and never land on the fraction set the user drew.
-    pub fn resize_split(&self, split: &str, fractions: &[f64]) -> Result<Vec<Write>, String> {
+    pub fn resize_split(&self, split: &str, fractions: &[f64]) -> Result<Layout, String> {
         let n = match self.node(split) {
             Some(n @ Node::Split { .. }) => n,
             Some(n) => return Err(format!("`{split}` is a {} — only a split divides its slot", n.kind())),
@@ -1012,7 +818,7 @@ impl Layout {
             }
         }
         Layout::normalize(target);
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     /// Refuse an id that is not a tab. Every tab op addresses BY ID — a name is what the tab holds,
@@ -1025,19 +831,20 @@ impl Layout {
         }
     }
 
-    pub fn remove_tab(&self, tab: &str) -> Result<Vec<Write>, String> {
+    pub fn remove_tab(&self, tab: &str) -> Result<Layout, String> {
         let i = self.is_tab(tab)?;
         if self.tabs.len() <= 1 {
             return Err("the last tab cannot be removed".into());
         }
         let mut next = self.clone();
         next.tabs.remove(i);
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
-    /// Relabel a tab. A field edit, so the id — and therefore every panel on it — stands.
+    /// Relabel a tab. Contents, not structure: the id — and therefore every panel on it — stands,
+    /// and the strip index is untouched.
     pub fn rename_tab(&self, tab: &str, to: &str) -> Result<Vec<Write>, String> {
-        let i = self.is_tab(tab)?;
+        self.is_tab(tab)?;
         let to = to.trim();
         if to.is_empty() {
             return Err("a tab needs a name".into());
@@ -1045,18 +852,16 @@ impl Layout {
         if self.tab_named(to).is_some_and(|other| other != tab) {
             return Err(format!("a tab named `{to}` already exists"));
         }
-        let mut next = self.clone();
-        next.tabs[i].name = to.to_string();
-        Ok(self.diff(&next))
+        Ok(vec![(tab.to_string(), Contents::Tab { name: to.to_string() })])
     }
 
-    pub fn reorder_tab(&self, tab: &str, to_index: usize) -> Result<Vec<Write>, String> {
+    pub fn reorder_tab(&self, tab: &str, to_index: usize) -> Result<Layout, String> {
         let i = self.is_tab(tab)?;
         let mut next = self.clone();
         let t = next.tabs.remove(i);
         let at = to_index.min(next.tabs.len());
         next.tabs.insert(at, t);
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     /// Split `panel` along `axis`, birthing an EMPTY panel that takes `ratio` of its slot — the same
@@ -1067,7 +872,7 @@ impl Layout {
         axis: Axis,
         place_before: bool,
         ratio: f64,
-    ) -> Result<(Vec<Write>, Id), String> {
+    ) -> Result<(Layout, Id), String> {
         match self.node(panel) {
             Some(Node::Panel { .. }) => {}
             Some(n) => return Err(format!("`{panel}` is a {} — only a panel splits", n.kind())),
@@ -1083,7 +888,7 @@ impl Layout {
             state: Value::Null,
         };
         next.insert_at(born, panel, axis, place_before, None);
-        Ok((self.diff(&next), fresh))
+        Ok((next, fresh))
     }
 
     /// Clear the node binding of every panel naming a uid in `gone`, as the writes a
@@ -1092,19 +897,24 @@ impl Layout {
     /// a panel pointing at a deleted node is the one arrangement the manager can know is wrong.
     pub fn unbind(&self, gone: &std::collections::HashSet<crate::Uid>) -> Vec<Write> {
         let mut writes = Vec::new();
-        for (id, e) in self.flat() {
-            let Entry::Panel { state, .. } = &e else { continue };
-            let bound = state.get("node").and_then(|v| v.as_str());
-            if !bound.and_then(crate::Uid::from_hex).is_some_and(|u| gone.contains(&u)) {
-                continue;
-            }
-            let mut next = e.clone();
-            if let Entry::Panel { state, .. } = &mut next {
+        for t in &self.tabs {
+            let mut ns = Vec::new();
+            t.root.walk(&mut ns);
+            for n in ns {
+                let Node::Panel { id, panel_type, state, .. } = n else { continue };
+                let bound = state.get("node").and_then(|v| v.as_str());
+                if !bound.and_then(crate::Uid::from_hex).is_some_and(|u| gone.contains(&u)) {
+                    continue;
+                }
+                let mut state = state.clone();
                 if let Some(o) = state.as_object_mut() {
                     o.insert("node".into(), Value::Null);
                 }
+                writes.push((
+                    id.clone(),
+                    Contents::Panel { panel_type: panel_type.clone(), state },
+                ));
             }
-            writes.push((id, Some(next)));
         }
         writes
     }
@@ -1122,23 +932,23 @@ impl Layout {
         panel_type: Option<&str>,
         state: Option<Value>,
     ) -> Result<Vec<Write>, String> {
-        let mut next = self.clone();
-        let Some(p) = next.path_of(panel) else {
-            return Err(format!("`{panel}` is not in the arrangement"));
+        let (mut pt, mut st) = match self.node(panel) {
+            Some(Node::Panel { panel_type, state, .. }) => (panel_type.clone(), state.clone()),
+            Some(_) => {
+                return Err(format!("`{panel}` is a split — only a panel carries a type and state"))
+            }
+            None => return Err(format!("`{panel}` is not in the arrangement")),
         };
-        let Node::Panel { panel_type: pt, state: st, .. } = next.at_mut(&p) else {
-            return Err(format!("`{panel}` is a split — only a panel carries a type and state"));
-        };
-        if let Some(t) = panel_type.filter(|t| *t != pt) {
-            *pt = t.to_string();
-            *st = Value::Null;
+        if let Some(t) = panel_type.filter(|t| **t != pt) {
+            pt = t.to_string();
+            st = Value::Null;
         }
         match (state, st.as_object_mut()) {
             (Some(Value::Object(s)), Some(cur)) => cur.extend(s),
-            (Some(s), _) => *st = s,
+            (Some(s), _) => st = s,
             (None, _) => {}
         }
-        Ok(self.diff(&next))
+        Ok(vec![(panel.to_string(), Contents::Panel { panel_type: pt, state: st })])
     }
 
     /// Move the subtree rooted at `root` under `new_parent` at `order_index`. A panel is a subtree of
@@ -1149,7 +959,7 @@ impl Layout {
         root: &str,
         new_parent: &str,
         order_index: usize,
-    ) -> Result<Vec<Write>, String> {
+    ) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
             return Err("a tab is not a subtree — reorder it with reorder_tab".into());
         }
@@ -1187,125 +997,187 @@ impl Layout {
             let moved = next.detach(root)?;
             next.attach(moved, new_parent, order_index)?;
         }
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     /// Remove the subtree rooted at `root`, promoting and renormalizing what is left.
-    pub fn remove_subtree(&self, root: &str) -> Result<Vec<Write>, String> {
+    pub fn remove_subtree(&self, root: &str) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
             return Err("a tab is removed with remove_tab".into());
         }
         let mut next = self.clone();
         next.detach(root)?;
-        Ok(self.diff(&next))
+        Ok(next)
     }
 
     // --- the wire -----------------------------------------------------------
 
-    /// The arrangement as plain JSON, one object per entry keyed by id. The `.gfi` section and the
-    /// document root share this ONE shape, so the two projections cannot drift.
-    pub fn to_json(&self) -> Value {
-        let mut m = serde_json::Map::new();
-        for (id, e) in self.flat() {
-            let mut o = serde_json::Map::new();
-            o.insert("kind".into(), Value::from(e.kind()));
-            match &e {
-                Entry::Tab { name, order } => {
-                    o.insert("order".into(), Value::from(*order));
-                    o.insert("name".into(), Value::from(name.as_str()));
-                }
-                Entry::Split { parent, order, size, axis } => {
-                    o.insert("order".into(), Value::from(*order));
-                    o.insert("parent".into(), Value::from(parent.as_str()));
-                    o.insert("size".into(), Value::from(*size));
-                    o.insert("axis".into(), Value::from(axis.name()));
-                }
-                Entry::Panel { parent, order, size, panel_type, state } => {
-                    o.insert("order".into(), Value::from(*order));
-                    o.insert("parent".into(), Value::from(parent.as_str()));
-                    o.insert("size".into(), Value::from(*size));
-                    o.insert("panel_type".into(), Value::from(panel_type.as_str()));
-                    // The state rides as a JSON STRING leaf, and it must stay one: a panel clears a
-                    // key with an explicit `null` (`set_panel {state: {node: null}}`), and a null
-                    // LEAF in the document is exactly what would make the merge-patch delta
-                    // ambiguous — merge patch spends `null` on "delete this key".
-                    o.insert("state".into(), Value::from(state.to_string()));
-                }
-            }
-            m.insert(id, Value::Object(o));
+    /// One node as JSON. A root carries no `size`: it fills its tab, so a share there is a value
+    /// nobody reads and everybody has to remember to write — exactly the sort of second holder that
+    /// eventually disagrees with itself.
+    fn node_json(n: &Node, root: bool) -> Value {
+        let mut o = serde_json::Map::new();
+        o.insert("kind".into(), Value::from(n.kind()));
+        o.insert("id".into(), Value::from(n.id()));
+        if !root {
+            o.insert("size".into(), Value::from(n.size()));
         }
-        m.insert(SEQ_KEY.into(), Value::from(self.seq));
-        Value::Object(m)
+        match n {
+            Node::Split { axis, children, .. } => {
+                o.insert("axis".into(), Value::from(axis.name()));
+                o.insert(
+                    "children".into(),
+                    Value::Array(children.iter().map(|c| Layout::node_json(c, false)).collect()),
+                );
+            }
+            Node::Panel { panel_type, state, .. } => {
+                o.insert("panel_type".into(), Value::from(panel_type.as_str()));
+                // The state rides as a JSON STRING leaf, and it must stay one: a panel clears a key
+                // with an explicit `null` (`set_panel {state: {node: null}}`), and a null LEAF in
+                // the document is exactly what would make the merge-patch delta ambiguous — merge
+                // patch spends `null` on "delete this key".
+                o.insert("state".into(), Value::from(state.to_string()));
+            }
+        }
+        Value::Object(o)
     }
 
-    /// Parse a stored arrangement. The shape checks live in [`Self::from_flat`], which is also what
-    /// every applied write list goes through. The caller falls back to the default rather than
-    /// refusing the patch — the graph is the value, the arrangement is chrome.
+    /// The arrangement as plain JSON. The `.gfi` section and the document root share this ONE shape,
+    /// so the two projections cannot drift.
+    ///
+    /// `tabs` is an ARRAY, and the strip order is its order — there is no `order` field to keep in
+    /// step with it. A merge-patch delta carries an array whole, so any change re-sends every tab;
+    /// at layout scale that is a couple of kilobytes, and it is the price of the positions being
+    /// implicit rather than stored twice.
+    pub fn to_json(&self) -> Value {
+        let tabs: Vec<Value> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let mut o = serde_json::Map::new();
+                o.insert("id".into(), Value::from(t.id.as_str()));
+                o.insert("name".into(), Value::from(t.name.as_str()));
+                o.insert("root".into(), Layout::node_json(&t.root, true));
+                Value::Object(o)
+            })
+            .collect();
+        Value::Object(serde_json::Map::from_iter([
+            (SEQ_KEY.to_string(), Value::from(self.seq)),
+            ("tabs".to_string(), Value::Array(tabs)),
+        ]))
+    }
+
+    /// Parse one node. `seen` collects every id, so a duplicate — the one shape a tree admits and
+    /// the flat map could not — is caught rather than drawn twice.
+    fn node_from_json(v: &Value, root: bool, seen: &mut std::collections::HashSet<Id>) -> Result<Node, String> {
+        let o = v.as_object().ok_or("arrangement: a node is not an object")?;
+        let id = o
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or("arrangement: a node has no id")?
+            .to_string();
+        if !seen.insert(id.clone()) {
+            return Err(format!("arrangement: `{id}` appears twice"));
+        }
+        let size = if root {
+            1.0
+        } else {
+            let s = o
+                .get("size")
+                .and_then(|v| v.as_f64())
+                .ok_or_else(|| format!("arrangement: `{id}` has no size"))?;
+            if !s.is_finite() || s <= 0.0 || s > 1.0 {
+                return Err(format!("arrangement: `{id}` has size {s}, outside (0, 1]"));
+            }
+            s
+        };
+        match o.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
+            "split" => {
+                let axis = o
+                    .get("axis")
+                    .and_then(|v| v.as_str())
+                    .and_then(Axis::parse)
+                    .ok_or_else(|| format!("arrangement: split `{id}` has no row/column axis"))?;
+                let kids = o
+                    .get("children")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| format!("arrangement: split `{id}` has no children"))?;
+                if kids.is_empty() {
+                    return Err(format!("arrangement: split `{id}` divides nothing"));
+                }
+                let mut children = Vec::new();
+                for k in kids {
+                    children.push(Layout::node_from_json(k, false, seen)?);
+                }
+                Ok(Node::Split { id, size, axis, children })
+            }
+            "panel" => Ok(Node::Panel {
+                id: id.clone(),
+                size,
+                panel_type: o
+                    .get("panel_type")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| format!("arrangement: panel `{id}` has no type"))?
+                    .to_string(),
+                // The state rides as a JSON STRING leaf (see `to_json`). A `state` written any other
+                // way — the natural shape of a hand edit — is REFUSED rather than read as absent,
+                // which would load the panel with its binding silently wiped.
+                state: match o.get("state") {
+                    None | Some(Value::Null) => Value::Null,
+                    Some(Value::String(t)) => serde_json::from_str(t)
+                        .map_err(|e| format!("arrangement: panel `{id}` has malformed state: {e}"))?,
+                    Some(_) => {
+                        return Err(format!("arrangement: panel `{id}`'s state is not a JSON string"))
+                    }
+                },
+            }),
+            other => Err(format!("arrangement: `{id}` has unknown kind `{other}`")),
+        }
+    }
+
+    /// Parse a stored arrangement. The caller falls back to the default rather than refusing the
+    /// patch — the graph is the value, the arrangement is chrome.
     pub fn from_json(v: &Value) -> Result<Layout, String> {
         let obj = v.as_object().ok_or("arrangement: not an object")?;
-        let seq = obj.get(SEQ_KEY).and_then(|v| v.as_u64()).unwrap_or(0);
-        let mut entries = BTreeMap::new();
-        for (id, rec) in obj.iter().filter(|(k, _)| *k != SEQ_KEY) {
-            let order = rec
-                .get("order")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| format!("arrangement: `{id}` has no order"))? as usize;
-            let parent = || {
-                rec.get("parent")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .ok_or_else(|| format!("arrangement: `{id}` has no parent"))
-            };
-            let size = || {
-                let s = rec
-                    .get("size")
-                    .and_then(|v| v.as_f64())
-                    .ok_or_else(|| format!("arrangement: `{id}` has no size"))?;
-                if !s.is_finite() || s <= 0.0 || s > 1.0 {
-                    return Err(format!("arrangement: `{id}` has size {s}, outside (0, 1]"));
-                }
-                Ok(s)
-            };
-            let text = |k: &str| {
-                rec.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
-            };
-            let e = match rec.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
-                "tab" => Entry::Tab {
-                    name: text("name").ok_or_else(|| format!("arrangement: tab `{id}` has no name"))?,
-                    order,
-                },
-                "split" => Entry::Split {
-                    parent: parent()?,
-                    order,
-                    size: size()?,
-                    axis: rec
-                        .get("axis")
-                        .and_then(|v| v.as_str())
-                        .and_then(Axis::parse)
-                        .ok_or_else(|| format!("arrangement: split `{id}` has no row/column axis"))?,
-                },
-                "panel" => Entry::Panel {
-                    parent: parent()?,
-                    order,
-                    size: size()?,
-                    panel_type: text("panel_type")
-                        .ok_or_else(|| format!("arrangement: panel `{id}` has no type"))?,
-                    // The state rides as a JSON STRING leaf (see `to_json`). A `state` written any
-                    // other way — the natural shape of a hand edit — is REFUSED rather than read as
-                    // absent, which would load the panel with its binding silently wiped.
-                    state: match rec.get("state") {
-                        None | Some(Value::Null) => Value::Null,
-                        Some(Value::String(s)) => serde_json::from_str(s)
-                            .map_err(|e| format!("arrangement: panel `{id}` has malformed state: {e}"))?,
-                        Some(_) => {
-                            return Err(format!("arrangement: panel `{id}`'s state is not a JSON string"))
-                        }
-                    },
-                },
-                other => return Err(format!("arrangement: `{id}` has unknown kind `{other}`")),
-            };
-            entries.insert(id.clone(), e);
+        let strip = obj
+            .get("tabs")
+            .and_then(|v| v.as_array())
+            .ok_or("arrangement: no tabs")?;
+        if strip.is_empty() {
+            return Err("arrangement: no tabs".into());
         }
-        Layout::from_flat(&entries, seq)
+        let mut seen = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        let mut tabs = Vec::new();
+        for t in strip {
+            let o = t.as_object().ok_or("arrangement: a tab is not an object")?;
+            let id = o
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or("arrangement: a tab has no id")?
+                .to_string();
+            if !seen.insert(id.clone()) {
+                return Err(format!("arrangement: `{id}` appears twice"));
+            }
+            let name = o
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("arrangement: tab `{id}` has no name"))?
+                .to_string();
+            if !names.insert(name.clone()) {
+                return Err(format!("arrangement: two tabs are both named `{name}`"));
+            }
+            let root = o.get("root").ok_or_else(|| format!("arrangement: tab `{id}` has no root"))?;
+            tabs.push(Tab { id, name, root: Layout::node_from_json(root, true, &mut seen)? });
+        }
+        let mut l = Layout { tabs, seq: obj.get(SEQ_KEY).and_then(|v| v.as_u64()).unwrap_or(0) };
+        for id in seen {
+            l.spend(&id);
+        }
+        Ok(l)
     }
 }

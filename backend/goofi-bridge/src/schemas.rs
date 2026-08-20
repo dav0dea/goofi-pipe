@@ -8,7 +8,7 @@ use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
 pub const ROOT_ID: &str = "__root__";
-pub const PROTOCOL_VERSION: i64 = 2;
+pub const PROTOCOL_VERSION: i64 = 3;
 
 /// A single param descriptor (discriminated on `type`). `expr` is the instance's
 /// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is

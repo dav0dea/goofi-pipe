@@ -1265,18 +1265,18 @@ impl AppState {
                     let name = parse_str(&payload, "name")?.to_string();
                     let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                     let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
-                    let (writes, tab) = g.arrangement().add_tab(&name, index, subtree.as_deref())?;
+                    let (plan, tab) = g.arrangement().add_tab(&name, index, subtree.as_deref())?;
                     // A tab built AROUND an existing subtree is a MOVE: its undo has to put the subtree
                     // back, where closing the tab would delete it. A tab born with its own fresh panel
                     // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
                     match subtree.as_deref() {
                         Some(s) => {
                             let root = s.to_string();
-                            let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root, home: None };
+                            let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root, home: None };
                             apply_layout(state, &mut g, &session, cmd)?
                         }
                         None => {
-                            let cmd = goofi_engine::Command::LayoutBirth { writes, born: tab.clone() };
+                            let cmd = goofi_engine::Command::LayoutBirth { plan, born: tab.clone() };
                             apply_layout(state, &mut g, &session, cmd)?
                         }
                     };
@@ -1318,8 +1318,8 @@ impl AppState {
                         .ok_or("split_panel: direction is `row` or `column`")?;
                     let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let (writes, fresh) = g.arrangement().split_panel(&panel, axis, before, ratio)?;
-                    let cmd = goofi_engine::Command::LayoutBirth { writes, born: fresh.clone() };
+                    let (plan, fresh) = g.arrangement().split_panel(&panel, axis, before, ratio)?;
+                    let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
                     apply_layout(state, &mut g, &session, cmd)?;
                     // The uid, because a split births an EMPTY panel and the caller's next act is to
                     // give it content — which needs the id it cannot otherwise know.
@@ -1362,8 +1362,8 @@ impl AppState {
                     let panel = parse_str(&payload, "panel")?.to_string();
                     let dest = parse_str(&payload, "new_parent")?.to_string();
                     let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let writes = g.arrangement().move_subtree(&panel, &dest, at as usize)?;
-                    let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: panel.clone(), home: None };
+                    let plan = g.arrangement().move_subtree(&panel, &dest, at as usize)?;
+                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: panel.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
                 // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
@@ -1377,9 +1377,9 @@ impl AppState {
                         .ok_or("insert_at_panel: direction is `row` or `column`")?;
                     let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let writes =
+                    let plan =
                         g.arrangement().insert_at_panel(&subtree, &target, axis, before, ratio)?;
-                    let cmd = goofi_engine::Command::LayoutMove { writes: Some(writes), root: subtree.clone(), home: None };
+                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: subtree.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
                 "resize_split" => {
@@ -1393,8 +1393,11 @@ impl AppState {
                         .iter()
                         .map(|v| v.as_f64().unwrap_or(f64::NAN))
                         .collect();
-                    let writes = g.arrangement().resize_split(&split, &fractions)?;
-                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
+                    // Planned here only so a bad split or a wrong fraction count answers teachably;
+                    // the command re-plans it under this same lock.
+                    g.arrangement().resize_split(&split, &fractions)?;
+                    let cmd = goofi_engine::Command::LayoutResizeSplit { split, fractions };
+                    apply_layout(state, &mut g, &session, cmd)
                 }
                 "remove_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();

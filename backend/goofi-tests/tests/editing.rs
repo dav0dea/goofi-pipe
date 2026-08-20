@@ -18,10 +18,32 @@ use serde_json::{Map, Value};
 
 use goofi_tests::{hex, j, Goofi};
 
+/// The arrangement flattened to an id-keyed map with a `parent` on each node — the shape these
+/// scenarios read a neighbour or a wrapper back from. The WIRE is a tree, so this is a test
+/// convenience and not a shape the manager keeps.
 fn entries(g: &Goofi) -> Map<String, Value> {
-    let mut m = g.doc()["arrangement"].as_object().cloned().unwrap_or_default();
-    m.retain(|_, e| e.get("kind").is_some()); // the root also carries the manager's id counter
-    m
+    fn down(n: &Value, parent: &str, out: &mut Map<String, Value>) {
+        let mut e = n.as_object().cloned().unwrap_or_default();
+        let id = e["id"].as_str().unwrap().to_string();
+        e.insert("parent".into(), Value::from(parent));
+        if let Some(kids) = n["children"].as_array() {
+            for k in kids {
+                down(k, &id, out);
+            }
+        }
+        out.insert(id, Value::Object(e));
+    }
+    let mut out = Map::new();
+    let arrangement = g.doc()["arrangement"].clone();
+    for (i, t) in arrangement["tabs"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+        let id = t["id"].as_str().unwrap().to_string();
+        out.insert(
+            id.clone(),
+            j!({ "kind": "tab", "name": t["name"].clone(), "order": i }),
+        );
+        down(&t["root"], &id, &mut out);
+    }
+    out
 }
 
 fn panels(g: &Goofi) -> Vec<String> {
@@ -38,25 +60,15 @@ fn tab_id(g: &Goofi, name: &str) -> String {
         .unwrap_or_else(|| panic!("no tab labelled `{name}`"))
 }
 
-/// A tab holds exactly one root, so a SECOND root is the corruption a resurrected container makes.
-fn tab_roots(g: &Goofi, name: &str) -> Vec<String> {
-    let m = entries(g);
-    let Some(tab) = m.iter().find(|(_, e)| e["name"] == name).map(|(id, _)| id.clone()) else {
-        return Vec::new();
-    };
-    m.iter().filter(|(_, e)| e["parent"] == tab.as_str()).map(|(id, _)| id.clone()).collect()
-}
-
 /// The tab strip, in the order it draws — the observable a reorder changes and its undo restores.
 fn strip(g: &Goofi) -> Vec<String> {
-    let m = entries(g);
-    let mut tabs: Vec<(u64, String)> = m
+    g.doc()["arrangement"]["tabs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
         .iter()
-        .filter(|(_, e)| e["kind"] == "tab")
-        .map(|(_, e)| (e["order"].as_u64().unwrap(), e["name"].as_str().unwrap().to_string()))
-        .collect();
-    tabs.sort();
-    tabs.into_iter().map(|(_, n)| n).collect()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
 }
 
 /// The manager's own loader, asked to open what the manager just saved. `Null` when it can — the
@@ -191,12 +203,12 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
 
     g.call("remove_node", j!({ "node": inst }));
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "the subtree went with the scope");
-    assert_eq!(g.doc()["arrangement"][&panel]["state"], "{\"node\":null}", "and the binding with it");
+    assert_eq!(entries(&g)[&panel]["state"], "{\"node\":null}", "and the binding with it");
 
     g.call("undo", j!({}));
     assert_eq!(g.instances(), vec![inst], "the scope is back at the same uid");
     assert_eq!(g.nodes().len(), 2, "with both members");
-    assert_eq!(g.doc()["arrangement"][&panel]["state"], format!("{{\"node\":\"{}\"}}", hex(a)),
+    assert_eq!(entries(&g)[&panel]["state"], format!("{{\"node\":\"{}\"}}", hex(a)),
                "and the panel names its node again");
 }
 
@@ -229,8 +241,8 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         one.call("add_tab", j!({ "name": "Two" }));
         let c = panels(&one).into_iter().find(|p| *p != a && *p != b).expect("the tab's panel");
         let e = split(&one, &c);
-        let far = one.doc()["arrangement"][&e]["parent"].as_str().unwrap().to_string();
-        let near = one.doc()["arrangement"][&b]["parent"].as_str().unwrap().to_string();
+        let far = entries(&one)[&e]["parent"].as_str().unwrap().to_string();
+        let near = entries(&one)[&b]["parent"].as_str().unwrap().to_string();
 
         let two_id = tab_id(&one, "Two");
         one.call(op, match *op {
@@ -280,14 +292,15 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
     let mine = split(&one, &a);
     let theirs = split(&two, &mine);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
-    let up = one.doc()["arrangement"][&theirs]["parent"].as_str().unwrap().to_string();
+    let up = entries(&one)[&theirs]["parent"].as_str().unwrap().to_string();
     assert!(entries(&one).contains_key(&up), "the peer's panel still hangs off something");
-    assert_eq!(tab_roots(&one, "Tab 1").len(), 1);
 
     // A redo: what it replays is the close's own inverse, over ground the peer has since taken.
     let peer2 = split(&two, &a);
     assert_eq!(one.call("redo", j!({}))["changed"], true);
-    assert_eq!(tab_roots(&one, "Tab 1").len(), 1, "a dead split did not come back");
+    // (A resurrected split used to show up as a SECOND root on the tab. `Tab { root: Node }`
+    // holds one by type, so that shape is unconstructible and the check that watched for it is
+    // gone; what a dead split coming back would cost now is the peer's panel, asserted here.)
     assert!(panels(&one).contains(&peer2), "the peer's panel survived a foreign redo");
 
     // A move across tabs, whose undo must be another MOVE planned at undo time.
@@ -295,12 +308,11 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
     let over = panels(&one).into_iter()
         .find(|p| ![&a, &mine, &theirs, &peer2].contains(&p)).expect("the new tab's panel");
     let far = split(&one, &over);
-    let dest = one.doc()["arrangement"][&far]["parent"].as_str().unwrap().to_string();
+    let dest = entries(&one)[&far]["parent"].as_str().unwrap().to_string();
     one.call("move_panel", j!({ "panel": mine,
                                     "new_parent": dest, "order_index": 0 }));
     let peer3 = split(&two, &a);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
-    assert_eq!(tab_roots(&one, "Tab 1").len(), 1, "a dead split did not come back");
     assert!(panels(&one).contains(&peer3), "the peer's panel survived a foreign undo");
     assert_eq!(reload_warning(&one), Value::Null);
 }
@@ -326,7 +338,9 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
 
     // Torn off onto a tab of its own.
     g.call("add_tab", j!({ "name": "Torn off", "index": 0, "subtree": mine }));
-    assert_eq!(g.doc()["arrangement"][&mine]["size"].as_f64(), Some(1.0),
+    // Said directly now: a tab HOLDS one root, so the old proxy for it (a share of exactly 1.0)
+    // has nothing left to check — a root carries no share on the wire at all.
+    assert_eq!(g.doc()["arrangement"]["tabs"][0]["root"]["id"], mine.as_str(),
                "the dragged panel is the new tab's whole root");
     g.call("undo", j!({}));
     assert_eq!(entries(&g), before, "and one ctrl-Z put that back too");

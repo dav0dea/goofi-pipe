@@ -14,8 +14,7 @@ use goofi_tests::{hex, j, Goofi};
 use serde_json::Value;
 
 fn panel(g: &Goofi) -> String {
-    g.doc()["arrangement"].as_object().unwrap().iter()
-        .find(|(_, e)| e["kind"] == "panel").map(|(id, _)| id.clone()).expect("the default panel")
+    goofi_tests::panel_ids(&g.doc()["arrangement"]).first().cloned().expect("the default panel")
 }
 
 #[test]
@@ -150,12 +149,15 @@ fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     let g = Goofi::new();
     g.add("Oscillator");
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
-    let broken = yaml.replace("parent: tab-1", "parent: gone"); // a panel parented to nothing
+    // A DUPLICATE id — the one corruption the tree admits and the flat map could not, since a map
+    // key cannot repeat. The shapes the flat model used to admit (an orphan, a cycle, a tab with two
+    // roots) have no spelling here at all.
+    let broken = yaml.replace("id: panel-2", "id: tab-1");
     assert_ne!(broken, yaml, "the fixture actually corrupted something");
 
     let r = g.call("load_text", j!({ "content": broken }));
     assert_eq!(r["ok"], true, "the patch still opens: {r}");
-    assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("reaches no tab")),
+    assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("appears twice")),
             "…and says why the arrangement was dropped: {r}");
     assert_eq!(g.nodes().len(), 1, "with the graph intact");
 }

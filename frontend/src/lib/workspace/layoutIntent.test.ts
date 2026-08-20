@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
 import { history } from '$lib/stores/history.svelte';
-import type { Arrangement } from './arrangement';
+import type { Workspace } from './model';
 
 /**
  * The dirty taxonomy (R spec §4 / D-R3), after the arrangement became the manager's.
@@ -31,11 +31,10 @@ const LAYOUT_OPS = [
 	'reorder_tab'
 ];
 
-function defaultArr(): Arrangement {
-	return {
-		'page-1': { kind: 'tab', order: 0, name: 'Tab 1' },
-		'panel-2': { kind: 'panel', order: 0, parent: 'page-1', size: 1, panel_type: 'node-editor' }
-	};
+function defaultTabs(): Workspace[] {
+	return [
+		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: 'node-editor' } }
+	];
 }
 
 let fc: FakeControl;
@@ -45,12 +44,12 @@ function dirtied(): boolean {
 	return fc.recordedCalls().some((c) => LAYOUT_OPS.includes(c.op));
 }
 
-function boot(arr: Arrangement = defaultArr()): ReturnType<typeof workspace> {
+function boot(tabs: Workspace[] = defaultTabs()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
 	ws.configureControl(() => fc);
 	ws.commitResize('#none');
-	ws.syncFromDoc(arr);
+	ws.syncFromDoc(tabs);
 	return ws;
 }
 
@@ -99,14 +98,14 @@ describe('layout write intent', () => {
 	// holds — the same "looking elsewhere" as entering a sub-patch, and the move `navContext`
 	// makes to re-orient an undo.
 	it('keeps switching layout tabs off the arrangement', async () => {
-		const two = defaultArr();
-		two['page-7'] = { kind: 'tab', order: 1, name: 'Second' };
-		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' };
-		const ws = boot(two);
-		ws.selectTab('page-7');
+		const ws = boot([
+			...defaultTabs(),
+			{ id: 'tab-7', name: 'Second', root: { kind: 'panel', id: 'panel-8', panelType: 'console' } }
+		]);
+		ws.selectTab('tab-7');
 		await Promise.resolve();
 		expect(dirtied()).toBe(false);
-		expect(ws.state.activeWorkspaceId, 'the tab did switch').toBe('page-7');
+		expect(ws.state.activeWorkspaceId, 'the tab did switch').toBe('tab-7');
 	});
 
 	it('makes creating a tab authoring, and only the SELECTION a look', async () => {

@@ -33,7 +33,7 @@ import {
 	docParams,
 	viewersJson,
 	globalViews,
-	arrangementEntries,
+	arrangementTabs,
 	type Doc,
 	type GlobalView,
 	type GlobalType
@@ -151,7 +151,7 @@ export class GraphStore {
 		this.globals = globalViews(doc);
 		// arrangement: the panel layout, flat and id-keyed. The workspace store rebuilds its tree
 		// from it — the client holds no second copy and authors none.
-		workspace().syncFromDoc(arrangementEntries(doc));
+		workspace().syncFromDoc(arrangementTabs(doc));
 		// The catalog is always present in production (it rides on `hello`), so the doc is authoritative
 		// for node AND sub-patch identity: build `this.nodes` + `this.instances` from the doc (+ catalog
 		// + runtime). Existence/type/name/pos/param value+expr and the whole sub-patch forest come from
@@ -231,7 +231,7 @@ export class GraphStore {
 		// never carry the old session's state forward anyway.
 		// The arrangement is doc-derived too, and its store is a separate singleton — so it needs
 		// the same boundary, not merely the same document.
-		workspace().syncFromDoc({});
+		workspace().syncFromDoc([]);
 	}
 
 	private _onWholesaleLoad(): void {

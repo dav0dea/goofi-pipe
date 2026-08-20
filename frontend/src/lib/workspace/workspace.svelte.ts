@@ -16,22 +16,16 @@
 import {
 	collectPanels,
 	DEFAULT_PANEL_TYPE,
+	findNode,
 	findPanel,
 	firstPanelId,
+	firstPanelIn,
 	resizeFractions,
 	type Direction,
 	type LayoutNode,
 	type Workspace,
 	type WorkspaceState
 } from './model';
-import {
-	buildWorkspaces,
-	childIds,
-	firstPanelIn,
-	tabOf,
-	splitFractions,
-	type Arrangement
-} from './arrangement';
 import { asStateObject } from './panelState';
 import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from './navContext';
@@ -71,9 +65,29 @@ export interface Viewpoint {
 	paths?: Record<string, string>;
 }
 
+/** A split's children's shares, wherever it is in the strip — the baseline a resize drag adjusts. */
+function fractionsOf(tabs: Workspace[], split: string): number[] {
+	for (const t of tabs) {
+		const n = findNode(t.root, split);
+		if (n?.kind === 'split') return n.sizes;
+	}
+	return [];
+}
+
+/** What the panel system draws before the replica has pulled from the manager. The ids are the
+ * manager's own first-mint spelling, so the pre-sync frame and the synced one draw the same thing
+ * and nothing re-keys under the user. */
+const UNSYNCED: Workspace[] = [
+	{
+		id: 'tab-1',
+		name: 'Tab 1',
+		root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE, state: undefined }
+	}
+];
+
 class WorkspaceStore {
 	/** The manager's arrangement, mirrored from the doc root. Read-only: a write is a command. */
-	private _arr = $state<Arrangement>({});
+	private _tabs = $state<Workspace[]>([]);
 	/** The shares a splitter drag is currently drawing, before it commits. A resize is one
 	 * continuous gesture, so the override lives here for its duration and lands as ONE
 	 * `resize_split` on pointer-up — never a command per pointermove. */
@@ -122,25 +136,24 @@ class WorkspaceStore {
 		this._control = provider;
 	}
 
-	/** The arrangement as drawn: the manager's, with the in-flight resize applied. */
-	private _effective = $derived.by(() => {
-		const d = this._drag;
-		if (!d) return this._arr;
-		const kids = childIds(this._arr, d.split);
-		if (kids.length !== d.sizes.length) return this._arr;
-		const next: Arrangement = { ...this._arr };
-		kids.forEach((id, i) => (next[id] = { ...next[id], size: d.sizes[i] }));
-		return next;
-	});
-
+	/** The tree as DRAWN: the manager's, with this client's two overlays — the in-flight resize a
+	 * finger is still describing, and each editor's sub-patch depth. Both are viewpoint, so neither
+	 * is in the manager's copy and neither survives a rebuild from it. */
 	private _workspaces = $derived.by(() => {
 		const paths = this._paths;
+		const drag = this._drag;
 		const overlay = (n: LayoutNode): LayoutNode => {
-			if (n.kind === 'split') return { ...n, children: n.children.map(overlay) };
-			const path = paths[n.id];
-			return path === undefined ? n : { ...n, state: { ...asStateObject(n.state), subpatchPath: path } };
+			if (n.kind === 'panel') {
+				const path = paths[n.id];
+				return path === undefined
+					? n
+					: { ...n, state: { ...asStateObject(n.state), subpatchPath: path } };
+			}
+			const sizes = drag?.split === n.id && drag.sizes.length === n.children.length ? drag.sizes : n.sizes;
+			return { ...n, sizes, children: n.children.map(overlay) };
 		};
-		return buildWorkspaces(this._effective).map((w) => ({ ...w, root: overlay(w.root) }));
+		const tabs = this._tabs.map((w) => ({ ...w, root: overlay(w.root) }));
+		return tabs.length > 0 ? tabs : UNSYNCED;
 	});
 
 	/** The tree the panel system renders. Derived, not held — the manager's copy is the state. */
@@ -166,21 +179,21 @@ class WorkspaceStore {
 	 * WE focused that a peer just closed, a page that went with it. This is also where an in-flight
 	 * resize override retires: the split's own shares moved, so the drawn tree is the manager's
 	 * again. */
-	syncFromDoc(arr: Arrangement): void {
-		const prev = this._arr;
-		this._arr = arr;
+	syncFromDoc(tabs: Workspace[]): void {
+		const prev = this._tabs;
+		this._tabs = tabs;
 
 		const s = this._sent;
 		if (s) {
-			const before = splitFractions(prev, s.split);
-			const after = splitFractions(arr, s.split);
+			const before = fractionsOf(prev, s.split);
+			const after = fractionsOf(tabs, s.split);
 			if (before.length !== after.length || before.some((v, i) => v !== after[i])) {
 				this._sent = null;
 				if (!this._dragLive) this._drag = null;
 			}
 		}
 		const want = this._wantTab;
-		if (want && arr[want.tab]) {
+		if (want && tabs.some((t) => t.id === want.tab)) {
 			this._wantTab = null;
 			this._page = want.tab;
 			this._focus(want.panel);
@@ -196,21 +209,22 @@ class WorkspaceStore {
 		// a name against the outgoing generation's tab strip, and the incoming one has its own. A
 		// claim whose page never arrived — the patch was loaded out from under it — would otherwise
 		// reserve that name for the rest of the session and make `_claimName` skip it for ever.
-		if (Object.keys(arr).length === 0) {
+		if (tabs.length === 0) {
 			this._claimed.clear();
 			return;
 		}
-		if (this._page !== null && !arr[this._page]) this._page = null;
+		const live = (id: string): boolean => tabs.some((t) => t.id === id || !!findNode(t.root, id));
+		if (this._page !== null && !live(this._page)) this._page = null;
 		const root = this.active?.root;
 		if (!root) return;
 		if (!this.activePanelId || !findPanel(root, this.activePanelId)) {
 			this.activePanelId = firstPanelId(root);
 		}
-		for (const [page, panel] of Object.entries(this._max)) {
-			if (!arr[page] || !arr[panel]) delete this._max[page];
+		for (const [tab, panel] of Object.entries(this._max)) {
+			if (!live(tab) || !live(panel)) delete this._max[tab];
 		}
 		for (const id of Object.keys(this._paths)) {
-			if (!arr[id]) delete this._paths[id];
+			if (!live(id)) delete this._paths[id];
 		}
 	}
 
@@ -298,7 +312,7 @@ class WorkspaceStore {
 	 * the client until `commitResize`. */
 	resize(splitId: string, dividerIndex: number, delta: number, containerPx = 0): void {
 		const base =
-			this._drag?.split === splitId ? this._drag.sizes : splitFractions(this._arr, splitId);
+			this._drag?.split === splitId ? this._drag.sizes : fractionsOf(this._tabs, splitId);
 		if (base.length === 0) return;
 		this._dragLive = true;
 		this._drag = { split: splitId, sizes: resizeFractions(base, dividerIndex, delta, containerPx) };
@@ -321,7 +335,7 @@ class WorkspaceStore {
 		// replica alone would drop a second drag that returns the split to its pre-commit shares,
 		// because the replica is still showing exactly those.
 		const before =
-			this._sent?.split === splitId ? this._sent.sizes : splitFractions(this._arr, splitId);
+			this._sent?.split === splitId ? this._sent.sizes : fractionsOf(this._tabs, splitId);
 		const same = before.length === d.sizes.length && before.every((s, i) => s === d.sizes[i]);
 		if (same) {
 			drop();
@@ -404,7 +418,7 @@ class WorkspaceStore {
 	}
 
 	toggleMaximize(panelId: string): void {
-		const tab = tabOf(this._arr, panelId);
+		const tab = this._tabs.find((t) => findNode(t.root, panelId))?.id;
 		if (!tab) return;
 		if (this._max[tab] === panelId) delete this._max[tab];
 		else this._max[tab] = panelId;
@@ -467,13 +481,13 @@ class WorkspaceStore {
 
 	renameTab(workspaceId: string, name: string): void {
 		const trimmed = name.trim();
-		const from = this._arr[workspaceId]?.name;
+		const from = this._tabs.find((t) => t.id === workspaceId)?.name;
 		if (!trimmed || !from || trimmed === from) return;
 		void this._cmd('Rename tab', 'rename_tab', { tab: workspaceId, name: trimmed });
 	}
 
 	closeTab(workspaceId: string): void {
-		if (!this._arr[workspaceId]) return;
+		if (!this._tabs.some((t) => t.id === workspaceId)) return;
 		// Closing the tab in front moves us to its NEIGHBOUR, not to the strip's first — the frozen
 		// behaviour, and viewpoint, so it lands now rather than waiting for the delta. Without it the
 		// fallback (`?? all[0]`) silently rewrote the gesture.
@@ -498,8 +512,10 @@ class WorkspaceStore {
 	/** The id of the subtree a drag names: a panel is a subtree of one, a tab drag carries the
 	 * page's whole root. Null when the drag's source has gone. */
 	private _subtreeOf(d: DragRef): string | null {
-		if (d.kind === 'panel') return this._arr[d.panelId] ? d.panelId : null;
-		return childIds(this._arr, d.workspaceId)[0] ?? null;
+		if (d.kind === 'panel') {
+			return this._tabs.some((t) => findNode(t.root, d.panelId)) ? d.panelId : null;
+		}
+		return this._tabs.find((t) => t.id === d.workspaceId)?.root.id ?? null;
 	}
 
 	/** Drop the dragged node (panel or tab) into the layout by splitting `targetPanelId` along
@@ -514,7 +530,8 @@ class WorkspaceStore {
 		if (!subtree || subtree === targetPanelId) return;
 		// A drop lands on a tab already in front, so only the FOCUS moves — onto the panel the user
 		// just carried there, which is the one they are now working in.
-		const focus = firstPanelIn(this._arr, subtree);
+		const node = this._tabs.map((t) => findNode(t.root, subtree)).find(Boolean);
+		const focus = node ? firstPanelIn(node) : null;
 		void this._cmd('Move panel', 'insert_at_panel', {
 			subtree,
 			target: targetPanelId,

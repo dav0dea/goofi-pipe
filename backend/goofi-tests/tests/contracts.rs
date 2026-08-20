@@ -409,8 +409,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
 }
 
 fn panel_id(g: &Goofi) -> String {
-    g.doc()["arrangement"].as_object().unwrap().iter()
-        .find(|(_, e)| e["kind"] == "panel").map(|(id, _)| id.clone()).expect("the default panel")
+    goofi_tests::panel_ids(&g.doc()["arrangement"]).first().cloned().expect("the default panel")
 }
 
 fn find_nulls(v: &Value, path: &mut Vec<String>, out: &mut Vec<String>) {

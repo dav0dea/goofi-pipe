@@ -432,9 +432,36 @@ impl Client {
 
 /// The panel ids in an arrangement, as a replica reads them.
 pub fn panels(doc: &GraphDoc) -> Vec<String> {
-    doc.to_json()["arrangement"].as_object()
-        .map(|m| m.iter().filter(|(_, e)| e["kind"] == "panel").map(|(id, _)| id.clone()).collect())
-        .unwrap_or_default()
+    panel_ids(&doc.to_json()["arrangement"])
+}
+
+/// One node's JSON in an arrangement, by id — what a scenario reads a panel's type or binding off.
+pub fn arrangement_node<'a>(arrangement: &'a Value, id: &str) -> Option<&'a Value> {
+    fn down<'a>(n: &'a Value, id: &str) -> Option<&'a Value> {
+        if n["id"] == id {
+            return Some(n);
+        }
+        n["children"].as_array()?.iter().find_map(|k| down(k, id))
+    }
+    arrangement["tabs"].as_array()?.iter().find_map(|t| down(&t["root"], id))
+}
+
+/// Every panel id in an arrangement JSON, depth-first. The `.gfi` section and the document root
+/// share this ONE shape, so both are read here.
+pub fn panel_ids(arrangement: &Value) -> Vec<String> {
+    fn down(n: &Value, out: &mut Vec<String>) {
+        if n["kind"] == "panel" {
+            out.push(n["id"].as_str().unwrap_or_default().to_string());
+        }
+        for k in n["children"].as_array().into_iter().flatten() {
+            down(k, out);
+        }
+    }
+    let mut out = Vec::new();
+    for t in arrangement["tabs"].as_array().into_iter().flatten() {
+        down(&t["root"], &mut out);
+    }
+    out
 }
 
 /// A `/data` viewer — one subscriber on one (node, slot) stream. Binary frames are GOOF; a text

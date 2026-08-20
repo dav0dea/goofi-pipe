@@ -11,7 +11,7 @@
  * The manager is the sole author, so a surprise here means the two ends have drifted — and a
  * half-drawn graph is a better report of that than a blank page.
  */
-import type { Arrangement } from '$lib/workspace/arrangement';
+import { EMPTY_PANEL_TYPE, type LayoutNode, type Workspace } from '$lib/workspace/model';
 
 /** The document, as it arrives. */
 export type Doc = Record<string, unknown>;
@@ -88,11 +88,6 @@ export function instancesMap(doc: Doc): Record<string, Obj> {
 /** The `globals` root, by name. */
 export function globalsMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.globals) as Record<string, Obj>;
-}
-
-/** The `arrangement` root, by id. */
-export function arrangementMap(doc: Doc): Record<string, unknown> {
-	return obj(doc.arrangement);
 }
 
 /** `{x, y}` as the pair the editor draws with. */
@@ -294,29 +289,64 @@ export function globalViews(doc: Doc): GlobalView[] {
 }
 
 // ── The arrangement ────────────────────────────────────────────────────────────────────────────
-// The `arrangement` root — the editor's panel layout, held FLAT and id-keyed. Every tab, split and
-// panel is one entry naming its `parent` and its `order`; the tree is rebuilt at render time by
-// `$lib/workspace/arrangement`.
+// The `arrangement` root — the editor's panel layout, held as a TREE: `tabs` is an array whose
+// order IS the strip order, and each tab holds one root node. This reads it straight into the shape
+// the panel system draws; there is no intermediate.
 
-/** Every arrangement ENTRY, by id. The manager's id counter rides the same root under `#seq` as a
- * bare number, so an entry is recognised by carrying a `kind` — read the values, never the keys. */
-export function arrangementEntries(doc: Doc): Arrangement {
-	const out: Arrangement = {};
-	for (const [id, raw] of Object.entries(arrangementMap(doc))) {
-		const e = obj(raw);
-		const kind = e.kind;
-		if (kind !== 'tab' && kind !== 'split' && kind !== 'panel') continue;
-		if (typeof e.order !== 'number') continue;
-		out[id] = {
-			kind,
-			order: e.order,
-			name: optStr(e, 'name'),
-			parent: optStr(e, 'parent'),
-			size: typeof e.size === 'number' ? e.size : undefined,
-			axis: optStr(e, 'axis'),
-			panel_type: optStr(e, 'panel_type'),
-			state: optStr(e, 'state')
+/** Parse one node, answering the share it takes of its parent alongside it — a split carries its
+ * children's shares, so they are collected on the way up rather than stored on each child twice. */
+function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: number } | null {
+	const n = obj(raw);
+	const id = optStr(n, 'id');
+	if (!id) return null;
+	// A root fills its tab and carries no share on the wire.
+	const size = root ? 1 : typeof n.size === 'number' ? n.size : 0;
+	if (n.kind === 'panel') {
+		return {
+			node: { kind: 'panel', id, panelType: optStr(n, 'panel_type') ?? EMPTY_PANEL_TYPE, state: panelState(n.state) },
+			size
 		};
+	}
+	if (n.kind !== 'split' || !Array.isArray(n.children)) return null;
+	const children: LayoutNode[] = [];
+	const sizes: number[] = [];
+	for (const c of n.children) {
+		const parsed = layoutNode(c, false);
+		if (!parsed) continue;
+		children.push(parsed.node);
+		sizes.push(parsed.size);
+	}
+	if (children.length === 0) return null;
+	return {
+		node: { kind: 'split', id, direction: n.axis === 'column' ? 'column' : 'row', children, sizes },
+		size
+	};
+}
+
+/** A panel's opaque bag, out of its JSON string leaf. It rides as a STRING because a panel clears a
+ * key with an explicit `null`, and a null leaf in the document would make the merge patch ambiguous. */
+function panelState(raw: unknown): unknown {
+	if (typeof raw !== 'string') return undefined;
+	try {
+		const v: unknown = JSON.parse(raw);
+		return v === null ? undefined : v;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The tab strip as the panel system draws it. A tab whose root will not parse is dropped rather
+ * than drawn as a hole. */
+export function arrangementTabs(doc: Doc): Workspace[] {
+	const raw = obj(doc.arrangement).tabs;
+	if (!Array.isArray(raw)) return [];
+	const out: Workspace[] = [];
+	for (const t of raw) {
+		const tab = obj(t);
+		const id = optStr(tab, 'id');
+		const parsed = layoutNode(tab.root, true);
+		if (!id || !parsed) continue;
+		out.push({ id, name: optStr(tab, 'name') ?? '', root: parsed.node });
 	}
 	return out;
 }

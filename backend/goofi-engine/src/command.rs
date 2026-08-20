@@ -134,13 +134,20 @@ pub enum Command {
         tab: crate::layout::Id,
         to_index: usize,
     },
+    /// Set a split's children's shares. Like [`Command::LayoutReorderTab`] its content is a
+    /// GEOMETRY rather than a thing an entry holds, so it inverts as itself — against the shares
+    /// the split carries at flip time, which is a peer's own resize if one landed since.
+    LayoutResizeSplit {
+        split: crate::layout::Id,
+        fractions: Vec<f64>,
+    },
     /// A layout op that BIRTHS `born`. Its inverse is NOT the slots the writes displaced: it is
     /// [`Command::LayoutClose`], planned at undo time. Restoring the slots would delete a wrapper a
     /// PEER has since hung a panel off — a lost update no graph command can make. Close-with-promote
     /// already knows how to hand a split's survivors to its parent, so borrowing it makes a foreign
     /// undo non-destructive by construction rather than by a guard.
     LayoutBirth {
-        writes: Vec<crate::layout::Write>,
+        plan: crate::layout::Layout,
         born: crate::layout::Id,
     },
     /// The inverse of [`Command::LayoutBirth`]. Never a user op: a forward close must refuse
@@ -164,7 +171,7 @@ pub enum Command {
     LayoutMove {
         /// The forward plan, when this is the user's own op; `None` on an inverse, which is planned
         /// from `home` against the arrangement as it stands at flip time.
-        writes: Option<Vec<crate::layout::Write>>,
+        plan: Option<crate::layout::Layout>,
         root: crate::layout::Id,
         /// Where `root` sat before — captured by [`Command::execute`], so a forward carries `None`.
         home: Option<crate::layout::Home>,
@@ -514,8 +521,8 @@ impl Command {
                 Ok((Outcome::Ok, Command::LayoutReorderTab { tab, to_index: from }))
             }
 
-            Command::LayoutBirth { writes, born } => {
-                g.arrangement_mut().apply(writes);
+            Command::LayoutBirth { plan, born } => {
+                g.arrangement_mut().apply(plan);
                 Ok((Outcome::Ok, Command::LayoutClose { born }))
             }
 
@@ -529,28 +536,39 @@ impl Command {
                 };
                 // The subtree itself and where its root sat — the two things its revive needs,
                 // captured before anything moves. The slots the promote rewrote are NOT among them.
-                let (Ok(writes), Some(dead)) = (plan, g.arrangement().dead_subtree(&born)) else {
+                let (Ok(next), Some(dead)) = (plan, g.arrangement().dead_subtree(&born)) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
                 let home = g.arrangement().home_of(&born);
-                g.arrangement_mut().apply(writes);
+                g.arrangement_mut().apply(next);
                 Ok((Outcome::Ok, Command::LayoutRevive { dead, born, home }))
             }
 
             Command::LayoutRevive { dead, born, home } => {
-                let Ok(writes) = g.arrangement().revive(&dead, home.as_ref()) else {
+                let Ok(next) = g.arrangement().revive(&dead, home.as_ref()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
-                g.arrangement_mut().apply(writes);
+                g.arrangement_mut().apply(next);
                 Ok((Outcome::Ok, Command::LayoutClose { born }))
             }
 
-            Command::LayoutMove { writes, root, home } => {
+            Command::LayoutResizeSplit { split, fractions } => {
+                let Some(from) = g.arrangement().fractions(&split) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                let Ok(next) = g.arrangement().resize_split(&split, &fractions) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                g.arrangement_mut().apply(next);
+                Ok((Outcome::Ok, Command::LayoutResizeSplit { split, fractions: from }))
+            }
+
+            Command::LayoutMove { plan, root, home } => {
                 // Captured BEFORE anything moves, because the inverse is "put it back where it is
                 // standing right now" — planned then, against the arrangement of that moment.
                 let back = g.arrangement().home_of(&root);
-                let plan = match (writes, &home) {
-                    (Some(w), _) => Some(w),
+                let plan = match (plan, &home) {
+                    (Some(p), _) => Some(p),
                     (None, Some(h)) => g.arrangement().re_home(&root, h).ok(),
                     (None, None) => None,
                 };
@@ -560,18 +578,18 @@ impl Command {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
                 g.arrangement_mut().apply(plan);
-                Ok((Outcome::Ok, Command::LayoutMove { writes: None, root, home: Some(back) }))
+                Ok((Outcome::Ok, Command::LayoutMove { plan: None, root, home: Some(back) }))
             }
 
             Command::LayoutContents { writes } => {
-                let plan = g.arrangement().set_contents(&writes);
-                // What those slots hold RIGHT NOW, which is what the inverse lands — and it lands it
-                // the same way, so the pair is closed under inversion and a redo re-plans too.
-                let back = plan
+                // What those entries hold RIGHT NOW, which is what the inverse lands — and it lands
+                // it the same way, so the pair is closed under inversion and a redo re-plans too. An
+                // id that has gone contributes nothing, in both directions.
+                let back = writes
                     .iter()
-                    .map(|(id, _)| (id.clone(), g.arrangement().entry(id)))
+                    .filter_map(|(id, _)| Some((id.clone(), g.arrangement().contents(id)?)))
                     .collect();
-                g.arrangement_mut().apply(plan);
+                g.arrangement_mut().set_contents(&writes);
                 Ok((Outcome::Ok, Command::LayoutContents { writes: back }))
             }
 

@@ -36,7 +36,7 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     // Bumped in lockstep with `frontend/src/lib/api/control.ts` — a literal here on purpose, so a
     // wire change that forgets one of the two shows up as a failing test rather than as a browser
     // reconciling against a vocabulary the manager no longer speaks.
-    assert_eq!(hello["protocol_version"], 2);
+    assert_eq!(hello["protocol_version"], 3);
     assert!(hello["instance_id"].is_string());
     assert_eq!(hello["pillars"], j!(["signal"]), "the backend advertises what it hosts");
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
@@ -92,8 +92,9 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     let fresh = peer.call("split_panel", j!({ "panel": panel,
                                                   "direction": "row", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
-    c.until_doc(|d| d.read_at(&["arrangement", fresh.as_str()]).is_some()).await;
-    assert_eq!(c.doc().read_at(&["arrangement", fresh.as_str(), "panel_type"]), Some(j!("empty")),
+    c.until_doc(|d| panels(d).contains(&fresh)).await;
+    let born = goofi_tests::arrangement_node(&c.doc().to_json()["arrangement"], &fresh).cloned();
+    assert_eq!(born.map(|n| n["panel_type"].clone()), Some(j!("empty")),
                "the peer's split converged, and a split births an EMPTY panel");
 
     // And the GLOBALS root, with the system flag a client gates rename and delete on — the document

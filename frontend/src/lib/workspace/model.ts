@@ -1,17 +1,15 @@
 /**
- * Workspace layout model — the pure, framework-agnostic shapes the panel system
- * renders, and the queries over them.
+ * Workspace layout model — the pure, framework-agnostic shapes the panel system renders, and the
+ * queries over them.
  *
- * A workspace tab is a recursive tree. Leaves (`PanelNode`) host one registered
- * panel type; internal nodes (`SplitNode`) divide their space between N children
- * along one axis, with fractional `sizes` that sum to 1.
+ * A tab is a recursive tree. Leaves (`PanelNode`) host one registered panel type; internal nodes
+ * (`SplitNode`) divide their space between N children along one axis, with fractional `sizes` that
+ * sum to 1.
  *
- * The tree itself is no longer authored here: the manager holds the arrangement
- * FLAT and id-keyed (the fifth CRDT doc root) and `arrangement.ts` rebuilds this
- * shape from it at render time. What remains is the vocabulary, the read-only
- * queries every component uses, and the one piece of geometry a client must own
- * — the pixel floor a splitter drag is clamped to, which only the renderer can
- * measure.
+ * The tree is not authored here: the manager holds it, `graphDoc` reads it off the document root
+ * into exactly this shape, and every mutation is a layout command. What remains is the vocabulary,
+ * the read-only queries every component uses, and the one piece of geometry a client must own — the
+ * pixel floor a splitter drag is clamped to, which only the renderer can measure.
  */
 
 /** Smallest fraction a single child may shrink to, so a panel can always be
@@ -96,6 +94,24 @@ export function countPanels(root: LayoutNode): number {
  * panel after a close. */
 export function firstPanelId(root: LayoutNode): string {
 	return collectPanels(root)[0]?.id ?? '';
+}
+
+/** The node with this id — a panel OR a split. `findPanel` answers only for leaves. */
+export function findNode(root: LayoutNode, id: string): LayoutNode | null {
+	if (root.id === id) return root;
+	if (root.kind === 'panel') return null;
+	for (const c of root.children) {
+		const f = findNode(c, id);
+		if (f) return f;
+	}
+	return null;
+}
+
+/** The first panel inside `node`, in document order — `node` itself when it is one. A drag names a
+ * SUBTREE (a dragged tab names its tab's root), and this is the panel the user is working in once
+ * it lands. */
+export function firstPanelIn(node: LayoutNode): string {
+	return collectPanels(node)[0]?.id ?? '';
 }
 
 interface ParentRef {
