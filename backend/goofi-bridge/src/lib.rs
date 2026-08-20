@@ -43,8 +43,8 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 /// The built SPA as it ships: a URL path and its bytes, compiled into the binary. Empty when the
-/// crate was built without a frontend tree beside it — [`SPA_DEFECT`], stamped by the build script
-/// beside this table, is what says so and why.
+/// crate was built without a frontend — [`HEADLESS_BUILD`], stamped beside this table, is what says
+/// whether that was asked for.
 pub type Spa = &'static [(&'static str, &'static [u8])];
 include!(concat!(env!("OUT_DIR"), "/spa.rs"));
 

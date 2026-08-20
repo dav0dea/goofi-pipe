@@ -192,12 +192,16 @@ crash leaves behind is reclaimed by the next start's sweep.
 
 **A failed frontend build is a failed build.** The bundle is compiled into the binary, so there is
 no such thing as falling back to the previous one — it is an app that does not match the binary
-around it, and on a fresh clone it does not exist. The build script fails instead, and where a
-failure is not what the caller asked for (a crate vendored with no frontend tree, an explicit
-`GOOFI_SKIP_FRONTEND_BUILD=1` over a stale bundle) it stamps WHY into `SPA_DEFECT` and the binary
-refuses to serve the app at startup. One owner: the build script decides, because it is the only
-half that can see the sources; the binary reports the verdict and never re-derives it. `--headless`
-serves no app and is never blocked.
+around it, and on a fresh clone it does not exist. The build script fails instead, and a binary
+that ended up with no app refuses to start rather than answering every route with nothing.
+
+**Headless is ONE mode with three doors.** `--headless`, `GOOFI_HEADLESS` in the environment, and
+`GOOFI_HEADLESS` set for the BUILD — which leaves the app out of the binary and stamps
+`HEADLESS_BUILD`, so that binary is headless for life rather than needing the flag repeated at
+every run. All three fold into one boolean before anything reads it, because a mode reachable three
+ways must not be three conditions to keep in step. That stamp is also what separates an empty
+bundle someone ASKED for from one that is a broken build: the first is the mode, the second is
+refused.
 
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,
@@ -276,9 +280,7 @@ cd tests/e2e && npm run e2e                    # Playwright against the real bin
 **CI runs this list and nothing else** — `.github/workflows/ci.yml`, ONE job, because the gates
 share one machine's worth of setup and the SPA is compiled in: no cargo build here happens without
 the frontend's dependencies. It is the same list because a gate with two spellings drifts, and the
-one that drifts is the one nobody runs by hand. The clippy line is spelled `-- -D warnings` there:
-"and this prints nothing" is not enforceable by reading, and clippy carries the rustc lints too, so
-that one command is the build-warning gate as well.
+one that drifts is always the one nobody runs by hand.
 **TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
 side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
 A gate that silently covers a tenth of the app is worse than no gate. Re-try when svelte-check's

@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, SPA, SPA_DEFECT};
+use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, HEADLESS_BUILD, SPA};
 use goofi_engine::{Graph, Registration};
 
 /// The shipped node directory, scanned whenever it exists — no flag turns it on, and none turns
@@ -38,6 +38,10 @@ struct Cli {
     /// Serve the API without the app: `/control`, `/data`, `/term` and `/mcp` stay, the SPA's
     /// routes are never mounted. For a goofi driven by an agent or a script, which has no page to
     /// show — and for which an unmounted route is one nothing can reach by accident.
+    ///
+    /// Three doors, one mode: this flag, `GOOFI_HEADLESS` in the environment, and a binary BUILT
+    /// with `GOOFI_HEADLESS` — which has no app to serve and so is headless for life. The env and
+    /// the build stamp are folded in by [`main`], not read here, so the parse stays pure.
     headless: bool,
     help: bool,
 }
@@ -57,6 +61,15 @@ impl Default for Cli {
 
 const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
      [--extra-nodes DIR] [--list-nodes] [--headless]";
+
+/// The environment's spelling of `--headless`, for a caller that sets a variable rather than an
+/// argument — a container, a service unit, a shell that exports it once. Only a truthy value opts
+/// in, matching the build script, which reads the same name to decide whether to compile an app at
+/// all. Nothing else in goofi is configured by environment, so this is a door onto an EXISTING
+/// mode, never a setting of its own.
+fn headless_env() -> bool {
+    matches!(std::env::var("GOOFI_HEADLESS").as_deref(), Ok("1") | Ok("true"))
+}
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
 /// exiting 2 — every malformed invocation reports, none is silently ignored: a value-taking flag
@@ -86,20 +99,27 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
 
 #[tokio::main]
 async fn main() {
-    let cli = match parse_args(std::env::args().skip(1)) {
+    let mut cli = match parse_args(std::env::args().skip(1)) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
         }
     };
+    // The three doors meet HERE, once, and everything downstream sees one flag. A binary built
+    // headless has no app in it, so it is not merely allowed to run that way — it is the only way
+    // it can run, and saying so here is what keeps `--headless` from being something the user has
+    // to remember to repeat.
+    cli.headless |= headless_env() || HEADLESS_BUILD;
     if cli.help {
         println!(
             "{USAGE}\n\
              \n  \
              Scans `{DEFAULT_NODES_DIR}/` when it exists, plus every --extra-nodes directory. \
              Each node is routed in-process if free-threading-safe, else to a subprocess on \
-             `{}`, which `cargo run -p goofi-init` provisions.",
+             `{}`, which `cargo run -p goofi-init` provisions.\n  \
+             GOOFI_HEADLESS=1 in the environment is --headless; setting it for the BUILD leaves \
+             the app out of the binary entirely.",
             goofi_init::GIL_VENV
         );
         return;
@@ -184,23 +204,23 @@ async fn run(
         names.extend(discovered);
         println!("{} node types: {}", names.len(), names.join(", "));
         0
-    // Serving the app is refused, not attempted, when the build script says the embedded bundle is
-    // not one to serve: a server that came up and answered every route with nothing is the failure
-    // being prevented, and it looked exactly like a working start. The build script owns the
-    // verdict — this only reports it, and never re-derives it from the sources it cannot see.
+    // No app compiled in, and nobody asked for that: refused rather than attempted. A server that
+    // came up and answered every route with nothing is the failure being prevented, and it looked
+    // exactly like a working start. A build that MEANT to have no app set `HEADLESS_BUILD`, which
+    // is already folded into `headless` — so reaching here means the bundle is missing, not waived.
     //
     // An arm of this chain rather than an early `return`, because `AppState::new` has already taken
-    // a workspace mount and only the tail of this function gives it back. `--headless` and
-    // `--list-nodes` both pass through: neither serves an app to be wrong about.
-    } else if let Some(defect) = SPA_DEFECT.filter(|_| !headless) {
-        eprintln!("refusing to start: {defect}.");
+    // a workspace mount and only the tail of this function gives it back. `--list-nodes` reports
+    // the palette and serves nothing, so it passes above this.
+    } else if !headless && SPA.is_empty() {
+        eprintln!("refusing to start: no app is compiled into this binary.");
         eprintln!(
-            "  The app is compiled into this binary, so building it is not enough — build it, \
-             then rebuild goofi-pipe:"
+            "  The app is compiled in, so building it is not enough — build it, then rebuild \
+             goofi-pipe:"
         );
         eprintln!("    npm install && npm run build   (in frontend/)");
         eprintln!("    cargo build");
-        eprintln!("  Or run with --headless, which serves the API alone and needs no app.");
+        eprintln!("  Or serve the API alone: --headless, or GOOFI_HEADLESS=1.");
         1
     } else {
         spawn_workers(&state); // the status-drain worker: 1 ms drain, 2 Hz broadcast
@@ -227,7 +247,7 @@ async fn run(
                 // not mounted is one nothing can reach by accident.
                 let spa = if headless { &[][..] } else { SPA };
                 if headless {
-                    println!("  --headless: the API only, no app served");
+                    println!("  headless: the API only, no app served");
                 } else {
                     println!("  open {url} to use it");
                 }

@@ -3,7 +3,7 @@
 	"private": true,
 	"description": "Playwright end-to-end suite driving the real goofi-pipe backend + SPA.",
 	"scripts": {
-		"build:backend": "npm --prefix ../../frontend run build && GOOFI_SKIP_FRONTEND_BUILD=1 cargo build --manifest-path ../../Cargo.toml -p goofi-cli",
+		"build:backend": "npm --prefix ../../frontend run build && cargo build --manifest-path ../../Cargo.toml -p goofi-cli",
 		"e2e": "npm run build:backend && playwright test",
 		"test": "playwright test",
 		"gallery": "playwright test --project=gallery --project=gallery-touch"

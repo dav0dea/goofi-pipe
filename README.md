@@ -24,18 +24,22 @@ npm install --prefix frontend   # once per clone: the SPA's dependencies
 cargo run                       # builds the SPA if needed, starts the server, prints the URL
 ```
 
-The SPA is compiled into the binary, so `cargo run` builds it whenever a frontend source is newer
-than the last bundle — and **fails** if it cannot. It will not fall back to the previous bundle:
-one that does not match the binary around it is the wrong app, and on a fresh clone there is no
-previous bundle at all. `GOOFI_SKIP_FRONTEND_BUILD=1` opts out of the npm build; a binary built
-that way over a stale bundle refuses to serve the app and says so, rather than serving it.
-
 Python is part of goofi, not an add-on: nodes are written in it, and params are expressions
 it evaluates. `goofi-init` builds the two interpreters that run them and writes the cargo
 config pointing pyo3 at them — which must happen *before cargo starts*, because cargo reads
 `.cargo/config.toml` only at startup. Until it has, the build stops with one line saying so.
 It is a workspace crate rather than a shell script, so that first line is the same command
 in PowerShell, cmd, bash, zsh and fish.
+
+The SPA is compiled into the binary, so `cargo run` builds it whenever a frontend source is newer
+than the last bundle — and **fails** if it cannot. It will not fall back to the previous bundle:
+one that does not match the binary around it is the wrong app, and on a fresh clone there is no
+previous bundle at all. A binary that ended up with no app refuses to start rather than serving
+nothing at every route.
+
+`GOOFI_HEADLESS=1` is `--headless` spelled as an environment variable, and it applies to the build
+as well: set for `cargo build`, it leaves the app out of the binary entirely — no Node.js needed,
+and the result is headless for life, with no flag to remember at every run.
 
 | Flag | Default | Effect |
 | --- | --- | --- |

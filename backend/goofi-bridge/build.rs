@@ -13,20 +13,36 @@
 //! because `node_modules` is absent, there is no previous build at all. That combination started a
 //! server that answered every route with nothing.
 //!
-//! What is NOT a failure here: no frontend tree beside the crate (vendored alone), and
-//! `GOOFI_SKIP_FRONTEND_BUILD=1` over a stale bundle. Both are answered at startup instead — the
-//! script stamps WHY the embedded bundle must not be served into `SPA_DEFECT`, and the binary
-//! refuses to serve the app rather than serving the wrong one. `--headless` needs no SPA and is
-//! never blocked by it.
+//! **`GOOFI_HEADLESS` builds without the frontend at all** — no npm run, and nothing embedded,
+//! because the bundle is most of this binary's size and not wanting it is the whole of the ask. The
+//! binary it produces is headless for life: it stamps `HEADLESS_BUILD`, and the CLI reads that as
+//! one more door onto the mode `--headless` opens. Two spellings, one outcome.
+//!
+//! An empty table WITHOUT that request is the other thing entirely — nobody asked for a binary
+//! with no app — so it is left to be refused at startup rather than quietly served.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
+    // Emitted before anything reads it and outside every early return below: toggling
+    // GOOFI_HEADLESS has to re-run this script, or the verdict outlives the change that revoked it.
+    println!("cargo:rerun-if-env-changed=GOOFI_HEADLESS");
     let frontend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../frontend");
-    let defect = sync_frontend(&frontend);
-    embed_spa(&frontend.join("build"), defect);
+    if headless() {
+        println!("cargo:warning=GOOFI_HEADLESS: built without the frontend — this binary serves the API alone");
+        return embed_spa(&frontend.join("build"), true);
+    }
+    sync_frontend(&frontend);
+    embed_spa(&frontend.join("build"), false);
+}
+
+/// Whether this is a headless build. Only a truthy value opts in — `=0`/empty must NOT, because a
+/// user spelling `=0` is asking for the app. The CLI spells its runtime half of this the same way;
+/// a build script shares no code with the crate it builds, so the two agree by being one line each.
+fn headless() -> bool {
+    matches!(std::env::var("GOOFI_HEADLESS").as_deref(), Ok("1") | Ok("true"))
 }
 
 /// Frontend inputs (relative to `frontend/`) whose change should trigger a rebuild. Deliberately
@@ -42,17 +58,14 @@ const INPUTS: &[&str] = &[
     "tsconfig.json",
 ];
 
-/// Rebuild the served SPA when its sources are newer than the last build (see the module doc).
-///
-/// Returns why the bundle that ends up embedded must not be served, or `None`. A build that CANNOT
-/// be made current panics instead — the difference is whether the caller asked for this outcome.
-fn sync_frontend(frontend: &Path) -> Option<String> {
+/// Rebuild the served SPA when its sources are newer than the last build (see the module doc). A
+/// build that cannot be made current panics: by here, the caller has asked for an app.
+fn sync_frontend(frontend: &Path) {
     // No frontend source tree (e.g. the crate vendored alone) → nothing to manage. Whether that
     // leaves anything to serve is `embed_spa`'s question.
     if !frontend.join("src").is_dir() {
-        return None;
+        return;
     }
-    println!("cargo:rerun-if-env-changed=GOOFI_SKIP_FRONTEND_BUILD");
 
     // Watch every source path + track the newest source mtime in one walk.
     let mut newest_src: Option<SystemTime> = None;
@@ -73,24 +86,11 @@ fn sync_frontend(frontend: &Path) -> Option<String> {
         (None, Some(_)) => false,          // nothing to build from
     };
     if !stale {
-        return None;
-    }
-
-    // Only a truthy value opts out — `=0`/empty must NOT skip (a user setting `=0` wants a build).
-    // The opt-out is honoured, and then carried: the caller asked for a build that skips npm, not
-    // for a server that hands out a bundle it knows is behind its own sources.
-    if matches!(std::env::var("GOOFI_SKIP_FRONTEND_BUILD").as_deref(), Ok("1") | Ok("true")) {
-        println!("cargo:warning=frontend/build is stale but GOOFI_SKIP_FRONTEND_BUILD is set — not rebuilding");
-        return Some(
-            "frontend/build was stale when this binary was built, and GOOFI_SKIP_FRONTEND_BUILD \
-             suppressed the rebuild"
-                .to_string(),
-        );
+        return;
     }
 
     // Asked before npm runs, because npm cannot say this. A fresh clone fails as `svelte-kit: not
-    // found`, exit 127 — which names neither the cause nor the fix, and was the report the user
-    // actually got.
+    // found`, exit 127 — which names neither the cause nor the fix.
     assert!(
         frontend.join("node_modules").is_dir(),
         "the frontend's dependencies are not installed — run `npm install` in frontend/"
@@ -112,13 +112,11 @@ fn sync_frontend(frontend: &Path) -> Option<String> {
                 "cargo:warning=rebuilt the served SPA (frontend/build) from changed sources in \
                  {secs:.1}s — cargo REPLAYS this line on later no-op builds, where npm did not re-run"
             );
-            None
         }
         Ok(s) => panic!("`npm run build` failed in frontend/ ({s})"),
         Err(e) => panic!(
             "could not run `{npm}` ({e}) — it builds the SPA compiled into this binary. Install \
-             Node.js, or set GOOFI_SKIP_FRONTEND_BUILD=1 to build against the bundle already in \
-             frontend/build"
+             Node.js, or set GOOFI_HEADLESS=1 to build the API-only binary, which needs none"
         ),
     }
 }
@@ -152,8 +150,9 @@ fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
 /// Emit `$OUT_DIR/spa.rs`: every file under `build/`, keyed by the URL path it is served at.
 ///
 /// An absent or empty tree emits an empty table rather than failing — a crate vendored without the
-/// frontend still builds. It emits the REASON with it, so the binary can refuse to serve an app it
-/// does not have instead of answering every route with nothing.
+/// frontend still builds. `HEADLESS_BUILD` goes out beside it, which is what tells an empty table
+/// that was ASKED for from one that is a broken build: the first is a mode, the second is refused
+/// at startup rather than answering every route with nothing.
 ///
 /// Every embedded file is WATCHED, and the tree's directories with it. `include_bytes!` names an
 /// absolute path, so a `build/` rewritten behind cargo's back — which is what `npm run build` does,
@@ -161,36 +160,30 @@ fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
 /// are gone, and the crate stops compiling. Watching does not self-retrigger: `sync_frontend`'s npm
 /// run dirties the tree once, the next build re-runs this script, finds no source newer than the
 /// build, and settles.
-fn embed_spa(build: &Path, defect: Option<String>) {
+fn embed_spa(build: &Path, headless: bool) {
     let mut files = Vec::new();
-    walk(build, build, &mut files);
-    files.sort();
-    // An empty table is stated as a defect rather than left to be discovered one 404 at a time.
-    // This is the only place that can tell an absent bundle from a present one, so it is where the
-    // question is answered — the binary reads the verdict, and never re-derives it.
-    let defect = defect.or_else(|| {
-        files.is_empty().then(|| "no SPA was built — frontend/build is empty or absent".to_string())
-    });
-    println!("cargo:rerun-if-changed={}", build.display());
-    for (_, abs) in &files {
-        println!("cargo:rerun-if-changed={abs}");
+    // A headless build embeds nothing and watches nothing: `build/` is not an input to a binary
+    // that has no app, so a rebuild of it must not rebuild this crate either.
+    if !headless {
+        walk(build, build, &mut files);
+        files.sort();
+        println!("cargo:rerun-if-changed={}", build.display());
+        for (_, abs) in &files {
+            println!("cargo:rerun-if-changed={abs}");
+        }
     }
     let rows: String = files
         .iter()
         .map(|(url, abs)| format!("    ({url:?}, include_bytes!({abs:?})),\n"))
         .collect();
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("spa.rs");
-    let verdict = match &defect {
-        Some(d) => format!("Some({d:?})"),
-        None => "None".to_string(),
-    };
     std::fs::write(
         &out,
         format!(
             "pub static SPA: Spa = &[\n{rows}];\n\
-             /// Why the embedded bundle must not be served, or `None`. Decided at build time, \
-             where the sources are.\n\
-             pub static SPA_DEFECT: Option<&str> = {verdict};\n"
+             /// Built with `GOOFI_HEADLESS`: no app is compiled in, BY REQUEST. An empty [`SPA`] \
+             without this is a broken build, not a mode.\n\
+             pub static HEADLESS_BUILD: bool = {headless};\n"
         ),
     )
     .expect("write spa.rs");
