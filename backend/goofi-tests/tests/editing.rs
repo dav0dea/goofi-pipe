@@ -47,6 +47,18 @@ fn tab_roots(g: &Goofi, name: &str) -> Vec<String> {
     m.iter().filter(|(_, e)| e["parent"] == tab.as_str()).map(|(id, _)| id.clone()).collect()
 }
 
+/// The tab strip, in the order it draws — the observable a reorder changes and its undo restores.
+fn strip(g: &Goofi) -> Vec<String> {
+    let m = entries(g);
+    let mut tabs: Vec<(u64, String)> = m
+        .iter()
+        .filter(|(_, e)| e["kind"] == "tab")
+        .map(|(_, e)| (e["order"].as_u64().unwrap(), e["name"].as_str().unwrap().to_string()))
+        .collect();
+    tabs.sort();
+    tabs.into_iter().map(|(_, n)| n).collect()
+}
+
 /// The manager's own loader, asked to open what the manager just saved. `Null` when it can — the
 /// judge every no-raw-restore assertion appeals to.
 fn reload_warning(g: &Goofi) -> Value {
@@ -95,6 +107,29 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
     let _ = scope;
+
+    // …and the ARRANGEMENT, the kind of change the walk above never makes. A layout op's undo has
+    // to land the previous arrangement exactly, and a REORDER is the one that can silently invert
+    // to a no-op: its content IS a position, so an inverse aimed at where the tab was going rather
+    // than where it came from moves nothing and looks like it worked.
+    let g = Goofi::new();
+    g.call("add_tab", j!({ "name": "Two" }));
+    g.call("add_tab", j!({ "name": "Three" }));
+    let settled = strip(&g);
+    assert_eq!(settled, ["Tab 1", "Two", "Three"]);
+
+    let three = tab_id(&g, "Three");
+    g.call("reorder_tab", j!({ "tab": three, "to_index": 0 }));
+    assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "the tab moved to the head of the strip");
+    assert_eq!(g.call("undo", j!({}))["changed"], true);
+    assert_eq!(strip(&g), settled, "a reorder's undo puts the tab back where it came from");
+    assert_eq!(g.call("redo", j!({}))["changed"], true);
+    assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "and the redo moves it again");
+
+    // All the way back from here too, so the layout steps compose with each other the way the graph
+    // steps above do: the strip returns to the one tab a fresh patch opens with.
+    while g.call("undo", j!({}))["changed"] == true {}
+    assert_eq!(strip(&g), ["Tab 1"], "back to the arrangement a fresh patch opens with");
 }
 
 #[test]
@@ -225,9 +260,9 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
             stranded.push(*op);
         }
     }
-    // EMPTY, and it stays empty. The one op whose inverse still restores an `order` is
-    // `reorder_tab` — where the order IS the content, so carrying the live one over would
-    // make its undo a no-op. It is driven above regardless, so the day it does strand, this says so.
+    // EMPTY, and it stays empty. There is no longer an op with an exception here: `reorder_tab`
+    // used to invert by restoring the entries it wrote, because its content IS a position — it now
+    // inverts as another reorder, aimed at the index the tab holds at flip time.
     let empty: [&str; 0] = [];
     assert_eq!(stranded, empty, "an undo left an arrangement the manager cannot itself open");
 }

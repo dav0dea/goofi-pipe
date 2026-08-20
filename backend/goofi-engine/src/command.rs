@@ -125,12 +125,14 @@ pub enum Command {
         value: Option<GlobalValue>,
         at: Option<usize>,
     },
-    /// Write one flat-arrangement entry: `Some` upserts it, `None` removes it. A layout op plans its
-    /// change as a set of these and composes them with [`Command::Compound`], which is why the whole
-    /// tree algebra needs no command of its own and undo/redo of a split is undo/redo of a map write.
-    EditLayoutEntry {
-        id: crate::layout::Id,
-        entry: Option<crate::layout::Entry>,
+    /// Move a tab to a position in the strip. The one layout op whose CONTENT is a position, so it
+    /// is also the one that cannot ride [`Command::LayoutContents`] — that command reads each slot
+    /// back at flip time, which for a reorder would make the undo a no-op. Its inverse is another
+    /// reorder, aimed at the index the tab holds right now: a forward re-plan like every other
+    /// layout inverse, rather than the raw entry restore this replaced.
+    LayoutReorderTab {
+        tab: crate::layout::Id,
+        to_index: usize,
     },
     /// A layout op that BIRTHS `born`. Its inverse is NOT the slots the writes displaced: it is
     /// [`Command::LayoutClose`], planned at undo time. Restoring the slots would delete a wrapper a
@@ -499,15 +501,17 @@ impl Command {
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
             }
 
-            Command::EditLayoutEntry { id, entry } => {
-                // A map slot swap, so the inverse is simply what was there — including `None`, which
-                // is how the inverse of an add is a remove. Nothing here can fail, which is what lets
-                // a planner validate the whole op up front and hand over a Compound that lands whole.
-                let old = match entry {
-                    Some(e) => g.arrangement_mut().insert(id.clone(), e),
-                    None => g.arrangement_mut().remove(&id),
+            Command::LayoutReorderTab { tab, to_index } => {
+                // Read BEFORE the move, so the inverse names where the tab is standing right now —
+                // and degrade when a peer has closed it, as every other layout inverse does.
+                let Some(from) = g.arrangement().tab_index(&tab) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
-                Ok((Outcome::Ok, Command::EditLayoutEntry { id, entry: old }))
+                let Ok(writes) = g.arrangement().reorder_tab(&tab, to_index) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                g.arrangement_mut().apply(writes);
+                Ok((Outcome::Ok, Command::LayoutReorderTab { tab, to_index: from }))
             }
 
             Command::LayoutBirth { writes, born } => {

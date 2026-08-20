@@ -794,6 +794,12 @@ impl Layout {
         Ok(self.diff(&next))
     }
 
+    /// Where `tab` sits in the strip — what a reorder's inverse aims at, read at flip time so a
+    /// peer's added tab has already been counted.
+    pub fn tab_index(&self, tab: &str) -> Option<usize> {
+        self.tabs().iter().position(|t| t == tab)
+    }
+
     pub fn reorder_tab(&self, tab: &str, to_index: usize) -> Result<Vec<Write>, String> {
         self.is_tab(tab)?;
         let mut order = self.tabs();

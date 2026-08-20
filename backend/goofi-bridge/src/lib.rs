@@ -1302,12 +1302,14 @@ impl AppState {
                 "reorder_tab" => {
                     let tab = parse_str(&payload, "tab")?;
                     let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
-                    let writes = g.arrangement().reorder_tab(tab, to as usize)?;
-                    let edits = writes
-                        .into_iter()
-                        .map(|(id, entry)| goofi_engine::Command::EditLayoutEntry { id, entry })
-                        .collect();
-                    apply_layout(state, &mut g, &session, goofi_engine::Command::Compound(edits))
+                    // Planned here only so a bad id answers teachably; the command re-plans it under
+                    // this same lock.
+                    g.arrangement().reorder_tab(tab, to as usize)?;
+                    let cmd = goofi_engine::Command::LayoutReorderTab {
+                        tab: tab.to_string(),
+                        to_index: to as usize,
+                    };
+                    apply_layout(state, &mut g, &session, cmd)
                 }
                 "split_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
