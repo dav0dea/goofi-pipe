@@ -17,7 +17,7 @@
 <script lang="ts">
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { detachTermSession } from '$lib/stores/termSession';
-	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { workspace } from 'tatami';
 	import { Button, Dialog } from '$lib/ui';
 
 	const hs = harnesses();

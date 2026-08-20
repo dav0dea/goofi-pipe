@@ -22,8 +22,8 @@
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
-	import Icon from '$lib/workspace/ui/Icon.svelte';
-	import IconButton from '$lib/workspace/ui/IconButton.svelte';
+	import { Icon } from 'tatami';
+	import { IconButton } from 'tatami';
 		import { claimFieldControlId } from './field';
 
 	let {

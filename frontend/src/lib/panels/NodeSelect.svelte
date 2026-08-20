@@ -10,8 +10,8 @@
 -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
-	import { workspace } from '$lib/workspace/workspace.svelte';
-	import { linkedNodeName } from '$lib/workspace/panelState';
+	import { workspace } from 'tatami';
+	import { linkedNodeName } from 'tatami';
 	import { Select } from '$lib/ui';
 	import { NO_NODE, nodePickList } from './nodeChoices';
 

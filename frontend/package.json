@@ -2,12 +2,15 @@
   "name": "goofi-pipe-frontend",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite dev",
     "build": "svelte-kit sync && vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run --workspace tatami check && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -37,6 +40,7 @@
     "@xterm/xterm": "^5.5.0",
     "@xyflow/svelte": "^1.0.0",
     "marked": "^18.0.5",
+    "tatami": "*",
     "uplot": "^1.6.31"
   }
 }

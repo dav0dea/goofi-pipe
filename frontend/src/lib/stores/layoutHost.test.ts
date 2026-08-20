@@ -7,12 +7,10 @@
  * is an op, so what a gesture SENDS is the behaviour worth pinning.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
+import { workspace, type LayoutHost, type Workspace } from 'tatami';
 import { FakeControl } from '$lib/test/fakeControl';
-import { workspace } from './workspace.svelte';
-import { goofiLayoutHost } from '$lib/stores/layoutHost';
-import { history } from '$lib/stores/history.svelte';
-import type { Workspace } from './model';
-import type { LayoutHost } from './host';
+import { goofiLayoutHost } from './layoutHost';
+import { history } from './history.svelte';
 
 /** The manager's default arrangement, plus a row split on demand — as the replica reads it off the
  * document, which is the shape the panel system draws. */

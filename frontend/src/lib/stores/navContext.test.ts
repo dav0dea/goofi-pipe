@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { workspace, type Workspace } from 'tatami';
 import { FakeControl } from '$lib/test/fakeControl';
-import { workspace } from '$lib/workspace/workspace.svelte';
 import { goofiLayoutHost } from './layoutHost';
 import { selection } from './selection.svelte';
 import { captureNavContext, restoreNavContext } from './navContext';
-import type { Workspace } from '$lib/workspace/model';
 
 /** The manager's default arrangement, mirrored into the replica. */
 function defaultTabs(): Workspace[] {

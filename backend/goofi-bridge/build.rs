@@ -25,6 +25,9 @@ fn main() {
 /// enormous.
 const INPUTS: &[&str] = &[
     "src",
+    // The frontend is an npm WORKSPACE: the panel system is a package under here, and a change to it
+    // is a change to the SPA exactly as much as a change to `src/`.
+    "packages",
     "static",
     "package.json",
     "package-lock.json",

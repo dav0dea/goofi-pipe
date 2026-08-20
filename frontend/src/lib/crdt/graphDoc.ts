@@ -12,7 +12,7 @@
  * half-drawn graph is a better report of that than a blank page.
  */
 import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
-import type { LayoutNode, Workspace } from '$lib/workspace/model';
+import type { LayoutNode, Workspace } from 'tatami';
 
 /** The document, as it arrives. */
 export type Doc = Record<string, unknown>;

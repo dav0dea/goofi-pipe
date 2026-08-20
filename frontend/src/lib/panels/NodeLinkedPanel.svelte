@@ -11,12 +11,12 @@
   renders the panel's body once a node is resolved.
 -->
 <script lang="ts">
-	import type { PanelProps } from '$lib/workspace/registry';
+	import type { PanelProps } from 'tatami';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
-	import { linkedNodeName } from '$lib/workspace/panelState';
-	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { linkedNodeName } from 'tatami';
+	import { workspace } from 'tatami';
 	import { Bar, Icon, IconButton, StatusDot, EmptyState } from '$lib/ui';
 	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import NodeSelect from './NodeSelect.svelte';

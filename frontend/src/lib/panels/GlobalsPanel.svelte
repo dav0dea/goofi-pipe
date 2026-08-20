@@ -9,7 +9,7 @@
      remove_global); the manager applies each and mirrors the result back into the doc,
      which this panel reads. -->
 <script lang="ts">
-	import type { PanelProps } from '$lib/workspace/registry';
+	import type { PanelProps } from 'tatami';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 	import {

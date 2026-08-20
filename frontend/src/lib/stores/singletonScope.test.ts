@@ -19,9 +19,14 @@ import { fileURLToPath } from 'node:url';
  * on a write like any other, so constructing there is merely unidiomatic, not broken.
  */
 
-const SRC = fileURLToPath(new URL('../..', import.meta.url));
+/** Both source trees the app is built from: its own, and the panel package it composes — whose
+ *  `workspace()` is one of the accessors this guards, and whose components call it. */
+const ROOTS = [
+	fileURLToPath(new URL('../..', import.meta.url)),
+	fileURLToPath(new URL('../../../packages/tatami/src', import.meta.url))
+];
 
-/** Every `x.svelte` / `x.svelte.ts` / `x.ts` under `src/`, tests excluded. */
+/** Every `x.svelte` / `x.svelte.ts` / `x.ts` under a tree, tests excluded. */
 function sources(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir)) {
 		const path = join(dir, entry);
@@ -56,7 +61,7 @@ function argsAt(src: string, open: number): string {
 }
 
 describe('lazy store singletons are never constructed inside a $derived', () => {
-	const files = sources(SRC);
+	const files = ROOTS.flatMap((r) => sources(r));
 
 	it('finds the accessors it is meant to be guarding', () => {
 		// A scan that quietly matches nothing buys the confidence without the cover.
@@ -75,7 +80,7 @@ describe('lazy store singletons are never constructed inside a $derived', () => 
 				for (const name of names) {
 					if (!new RegExp(`\\b${name}\\(\\)`).test(args)) continue;
 					const line = src.slice(0, m.index).split('\n').length;
-					offenders.push(`${relative(SRC, file)}:${line} reads ${name}() inside a $derived`);
+					offenders.push(`${relative(ROOTS[0], file)}:${line} reads ${name}() inside a $derived`);
 				}
 			}
 		}

@@ -8,8 +8,8 @@
      automatically, with no list to keep in sync. The grid itself is the shared
      `ChoiceGrid` primitive, which the agent panel's launcher wears too. -->
 <script lang="ts">
-	import { listPanelTypes, type PanelProps } from '$lib/workspace/registry';
-	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { listPanelTypes, type PanelProps } from 'tatami';
+	import { workspace } from 'tatami';
 	import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
 	import { ChoiceGrid, EmptyState, type Choice } from '$lib/ui';
 

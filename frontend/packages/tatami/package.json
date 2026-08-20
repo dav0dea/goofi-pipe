@@ -1,0 +1,35 @@
+{
+	"name": "tatami",
+	"version": "0.1.0",
+	"description": "A tab + panel workspace for Svelte: split, drag, tear off, and hand every gesture to a host you own.",
+	"license": "MIT",
+	"type": "module",
+	"files": [
+		"src",
+		"README.md"
+	],
+	"exports": {
+		".": {
+			"types": "./src/lib/index.ts",
+			"svelte": "./src/lib/index.ts",
+			"default": "./src/lib/index.ts"
+		},
+		"./tokens.css": "./src/lib/ui/tokens.css"
+	},
+	"svelte": "./src/lib/index.ts",
+	"sideEffects": [
+		"**/*.css"
+	],
+	"scripts": {
+		"check": "svelte-check --tsconfig ./tsconfig.json"
+	},
+	"peerDependencies": {
+		"svelte": "^5.0.0"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "^4.0.0",
+		"svelte": "^5.1.0",
+		"svelte-check": "^4.0.5",
+		"typescript": "^5.6.3"
+	}
+}

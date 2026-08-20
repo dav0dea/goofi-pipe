@@ -15,7 +15,7 @@
 	import { findParent, type Direction, type PanelNode } from './model';
 	import { workspace } from './workspace.svelte';
 	import { resolvePanelType } from './registry';
-	import { portal, beginDrag } from '$lib/gesture';
+	import { portal, beginDrag } from './gesture';
 	import PanelHeader from './PanelHeader.svelte';
 	import { onDestroy } from 'svelte';
 

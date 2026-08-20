@@ -10,7 +10,7 @@
  */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
+import { workspace } from 'tatami';
 import { editorFor } from '$lib/panels/editorCommands';
 import { history } from '$lib/stores/history.svelte';
 import { slotView } from '$lib/viewers/inlineView';

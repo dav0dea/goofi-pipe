@@ -2,7 +2,7 @@
      The group tabs, header-less, are owned by ParamForm (D-N6); this panel just
      supplies the NodeLinkedPanel chrome (linkbar + drag-in + empty state). -->
 <script lang="ts">
-	import type { PanelProps } from '$lib/workspace/registry';
+	import type { PanelProps } from 'tatami';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import { ScrollArea } from '$lib/ui';

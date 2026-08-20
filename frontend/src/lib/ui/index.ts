@@ -8,10 +8,10 @@
 // the app imports every primitive from one place. A panel's content sits inside that chrome, so a
 // second button beside it would be a foreign control two pixels from a native one. `ICONS` is the
 // app's own geometry, which it registers into that one renderer at startup.
-export { default as Button } from '$lib/workspace/ui/Button.svelte';
-export { default as IconButton } from '$lib/workspace/ui/IconButton.svelte';
-export { default as Icon } from '$lib/workspace/ui/Icon.svelte';
-export { type ButtonVariant, type ButtonSize } from '$lib/workspace/ui/variantClass';
+export { Button } from 'tatami';
+export { IconButton } from 'tatami';
+export { Icon } from 'tatami';
+export { type ButtonVariant, type ButtonSize } from 'tatami';
 export { ICONS, type IconName } from './icons';
 
 // Layout primitives (Task 2). `Stack`/`Row` were retired here (D-M6): a scoped `display: flex`
@@ -36,8 +36,8 @@ export { default as Toggle } from './Toggle.svelte';
 // Surfaces / overlays (Task 4): the connected tab bar + the collapse control. The tab bar is the
 // panel system's — the workspace strip and the inspector's param groups are one component, and it
 // is the strip that the panel drag system is one half of.
-export { default as Tabs } from '$lib/workspace/ui/Tabs.svelte';
-export { type TabItem } from '$lib/workspace/ui/tabsState';
+export { TabStrip as Tabs } from 'tatami';
+export { type TabItem } from 'tatami';
 export { default as Disclosure } from './Disclosure.svelte';
 
 // Surfaces / overlays (Task 5): the anchored popover and the centered modal dialog. (`PanelShell`
@@ -58,6 +58,7 @@ export { isTextEditingTarget } from './textEditing';
 
 // Display primitives (Task 6): the uppercase tone pill (static Badge / pressable Chip), the
 // glow-free status dot, and the centred empty-state placeholder.
+
 export { default as Badge, type BadgeTone } from './Badge.svelte';
 export { default as Chip } from './Chip.svelte';
 export { default as StatusDot, type StatusTone, type StatusDotSize } from './StatusDot.svelte';

@@ -17,8 +17,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PKG = fileURLToPath(new URL('../workspace', import.meta.url));
-const TOKENS = fileURLToPath(new URL('../workspace/ui/tokens.css', import.meta.url));
+const PKG = fileURLToPath(new URL('../../../packages/tatami/src/lib', import.meta.url));
+const TOKENS = fileURLToPath(
+	new URL('../../../packages/tatami/src/lib/ui/tokens.css', import.meta.url)
+);
 const APP_CSS = fileURLToPath(new URL('../../app.css', import.meta.url));
 
 /**

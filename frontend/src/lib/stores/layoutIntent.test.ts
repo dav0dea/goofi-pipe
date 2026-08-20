@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { workspace, type Workspace } from 'tatami';
 import { FakeControl } from '$lib/test/fakeControl';
-import { workspace } from './workspace.svelte';
-import { goofiLayoutHost } from '$lib/stores/layoutHost';
-import { history } from '$lib/stores/history.svelte';
-import type { Workspace } from './model';
+import { goofiLayoutHost } from './layoutHost';
+import { history } from './history.svelte';
 
 /**
  * The dirty taxonomy (R spec §4 / D-R3), after the arrangement became the manager's.

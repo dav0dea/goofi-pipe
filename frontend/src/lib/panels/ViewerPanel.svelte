@@ -7,14 +7,14 @@
      data stream is still shared (one WS per node+slot). Linking + empty state
      via NodeLinkedPanel. -->
 <script lang="ts">
-	import type { PanelProps } from '$lib/workspace/registry';
+	import type { PanelProps } from 'tatami';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';
 	import ViewerFeed from '$lib/viewers/ViewerFeed.svelte';
 	import ViewerControls from '$lib/viewers/ViewerControls.svelte';
 	import { panelBinding, type ViewBinding } from '$lib/viewers/viewBinding';
-	import { asStateObject } from '$lib/workspace/panelState';
-	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { asStateObject } from 'tatami';
+	import { workspace } from 'tatami';
 	import { Select } from '$lib/ui';
 
 	interface ViewerState {

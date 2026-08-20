@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ICONS } from './icons';
-import { CHROME_ICONS } from '$lib/workspace/ui/icons';
+import { CHROME_ICONS } from 'tatami';
 
 /* The vendored-geometry guard.
  *
@@ -20,7 +20,11 @@ import { CHROME_ICONS } from '$lib/workspace/ui/icons';
  * is a plain string table, and the component is the 12 lines that wrap it in one <svg>.
  */
 
-const SRC = fileURLToPath(new URL('../..', import.meta.url));
+/** Both trees an icon can be rendered from: the app's, and the panel package's own chrome. */
+const ROOTS = [
+	fileURLToPath(new URL('../..', import.meta.url)),
+	fileURLToPath(new URL('../../../packages/tatami/src', import.meta.url))
+];
 
 /** The SVG elements Lucide's geometry is drawn from. Anything else is not a vendored icon. */
 const DRAW = /^(path|circle|rect|line|polyline|polygon|ellipse)$/;
@@ -41,7 +45,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 const allSource = (): string =>
-	sourceFiles(SRC)
+	ROOTS.flatMap((r) => sourceFiles(r))
 		.map((p) => readFileSync(p, 'utf8'))
 		.join('\n');
 

@@ -22,8 +22,8 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { createLongPress } from '$lib/gesture';
-	import { clampToViewport, overlayViewport } from '$lib/gesture';
+	import { createLongPress } from 'tatami';
+	import { clampToViewport, overlayViewport } from 'tatami';
 	import { nearestTitle } from './titleTip';
 
 	/** How long a bubble nobody dismisses stays up. Long enough to read a dependency list. */

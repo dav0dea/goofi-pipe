@@ -2,15 +2,15 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
-	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { workspace } from 'tatami';
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { perfStats } from '$lib/api/perfStats.svelte';
 	import { activeOrOnlyEditor } from '$lib/panels/editorCommands';
 	import { tick, untrack, type Snippet } from 'svelte';
-	import type { MenuItem } from '$lib/workspace/menu';
-	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
+	import type { MenuItem } from 'tatami';
+	import { ContextMenu } from 'tatami';
 	import PerfHud from './PerfHud.svelte';
-	import { createWidthCache, planOverflow, type OverflowItem } from '$lib/gesture';
+	import { createWidthCache, planOverflow, type OverflowItem } from 'tatami';
 	import { IconButton, Badge, Button, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.

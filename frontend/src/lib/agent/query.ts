@@ -9,11 +9,11 @@
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { ui } from '$lib/stores/ui.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
+import { workspace } from 'tatami';
 import { history } from '$lib/stores/history.svelte';
 import { latestFrame } from '$lib/api/frames';
-import { collectPanels } from '$lib/workspace/model';
-import { asStateObject, linkedNodeName } from '$lib/workspace/panelState';
+import { collectPanels } from 'tatami';
+import { asStateObject, linkedNodeName } from 'tatami';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
 import { summaryOf } from '$lib/viewers/viewMeta';

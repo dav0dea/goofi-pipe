@@ -12,12 +12,12 @@
      the scrollbar stays accurate at any line count. Auto-scrolls to the newest
      line unless the user has scrolled up. -->
 <script lang="ts">
-	import type { PanelProps } from '$lib/workspace/registry';
+	import type { PanelProps } from 'tatami';
 	import { consoleStore, type ConsoleEntry, type ConsoleView } from '$lib/stores/console.svelte';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { linkedNodeName } from '$lib/workspace/panelState';
+	import { linkedNodeName } from 'tatami';
 	import { copyText } from '$lib/clipboard';
 	import { COLLAPSE_LINES, estimateRowHeight } from './consoleRowHeight';
 	import NodeSelect from './NodeSelect.svelte';

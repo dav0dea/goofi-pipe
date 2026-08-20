@@ -21,7 +21,7 @@
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
 	import { Button, ScrollArea } from '$lib/ui';
-	import { beginDrag } from '$lib/gesture';
+	import { beginDrag } from 'tatami';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';

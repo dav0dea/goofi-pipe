@@ -35,7 +35,7 @@
 	import { listPanelTypes, resolvePanelType } from './registry';
 	import type { MenuItem } from './menu';
 	import ContextMenu from './ContextMenu.svelte';
-	import { createLongPress, createWidthCache, planOverflow, type OverflowItem } from '$lib/gesture';
+	import { createLongPress, createWidthCache, planOverflow, type OverflowItem } from './gesture';
 	import { Button, IconButton, Icon } from './ui';
 	import { onDestroy, untrack } from 'svelte';
 

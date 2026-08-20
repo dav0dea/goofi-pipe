@@ -8,23 +8,35 @@ import type { Page, Locator } from '@playwright/test';
 const INDEX_TS = path.resolve(__dirname, '../../../frontend/src/lib/ui/index.ts');
 
 /**
- * The primitive component names re-exported from `$lib/ui`, parsed straight from index.ts. A
- * primitive is a `export { default as X } from './X.svelte'` line; the named logic re-exports
- * (clampToViewport, dragGesture, inputMode, …) carry no `default as`, so
- * they are excluded. Sorted for a stable set comparison against the sample registry.
+ * The primitive component names re-exported from `$lib/ui`, parsed straight from index.ts.
+ *
+ * Two shapes, because the barrel now has two kinds of primitive. One the app owns and re-exports by
+ * FILE (`export { default as X } from './X.svelte'`), and one the panel package owns and the barrel
+ * takes back by NAME (`export { Button } from 'tatami'`) so the app still imports every primitive
+ * from one place. A component is PascalCase in both, which is what separates it from the named
+ * logic re-exports (isTextEditingTarget, MODE_ATTRS, ICONS, …) and from a `type` re-export. Sorted
+ * for a stable set comparison against the sample registry.
  */
 export function exportedPrimitives(): string[] {
 	const src = fs.readFileSync(INDEX_TS, 'utf8');
-	const names: string[] = [];
-	// The path pattern is deliberately wide: a primitive can live in a subdirectory, have a digit in
-	// its name, or — since the panel chrome became its own layer — sit behind a `$lib/…` alias. What
-	// makes it a primitive is that the barrel re-exports its DEFAULT under a name, wherever from.
-	const re = /export\s*\{([^}]*)\}\s*from\s*'[\w$./]+\.svelte'/g;
-	for (let m = re.exec(src); m !== null; m = re.exec(src)) {
-		const d = /default as (\w+)/.exec(m[1]);
-		if (d) names.push(d[1]);
+	const names = new Set<string>();
+	for (const [, clause, from] of src.matchAll(/export\s*\{([^}]*)\}\s*from\s*'([^']+)'/g)) {
+		const byFile = /default as (\w+)/.exec(clause);
+		if (byFile) {
+			names.add(byFile[1]);
+			continue;
+		}
+		// A re-export by name: every specifier that reads as a component, under its LOCAL name —
+		// `TabStrip as Tabs` is `Tabs` to this app, and `Tabs` is what the gallery renders.
+		if (from.endsWith('.svelte')) continue;
+		for (const spec of clause.split(',')) {
+			const t = spec.trim();
+			if (!t || t.startsWith('type ')) continue;
+			const local = (/(?:\bas\s+)?(\w+)$/.exec(t) ?? [])[1] ?? '';
+			if (/^[A-Z][a-z]/.test(local)) names.add(local);
+		}
 	}
-	return names.sort();
+	return [...names].sort();
 }
 
 /** A representative gallery sample for one primitive — its always-present testid plus, for the

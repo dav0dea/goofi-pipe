@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
 	import type { Direction } from './model';
-	import { beginDrag } from '$lib/gesture';
+	import { beginDrag } from './gesture';
 	import { onDestroy } from 'svelte';
 
 	let {
