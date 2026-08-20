@@ -99,7 +99,7 @@ export function settingsSchemaFor(kind: ViewerKind): SettingGroup[] {
 export type SettingsMap = Record<string, SettingValue>;
 
 /** The default value bag for a kind — every declared key, its default. */
-export function defaultSettings(kind: ViewerKind): SettingsMap {
+function defaultSettings(kind: ViewerKind): SettingsMap {
 	const out: SettingsMap = {};
 	for (const g of settingsSchemaFor(kind)) for (const s of g.settings) out[s.key] = s.default;
 	return out;

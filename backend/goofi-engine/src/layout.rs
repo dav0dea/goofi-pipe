@@ -259,7 +259,7 @@ impl Layout {
         self.tabs.iter().position(|t| t.id == tab)
     }
 
-    pub fn tab_named(&self, name: &str) -> Option<Id> {
+    fn tab_named(&self, name: &str) -> Option<Id> {
         self.tabs.iter().find(|t| t.name == name).map(|t| t.id.clone())
     }
 
@@ -314,14 +314,6 @@ impl Layout {
     /// The node carrying `id`, or `None` — a tab is not one.
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.path_of(id).map(|p| self.at(&p))
-    }
-
-    /// The tab `id` sits on. `id` may name the tab itself.
-    pub fn tab_of(&self, id: &str) -> Option<Id> {
-        if self.tab_index(id).is_some() {
-            return Some(id.to_string());
-        }
-        self.path_of(id).map(|p| self.tabs[p.0].id.clone())
     }
 
     /// The id of a tab's root — what a caller gives content to after adding one.

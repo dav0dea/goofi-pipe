@@ -193,7 +193,7 @@ export function entriesFor(ctx: ExprContext, cat: ExprCatalogue): Completion[] {
 }
 
 /** The `CompletionSource` the two pure halves add up to. */
-export function goofiCompletionSource(catalogue: () => ExprCatalogue): CompletionSource {
+function goofiCompletionSource(catalogue: () => ExprCatalogue): CompletionSource {
 	return (ctx: CompletionContext) => {
 		const where = exprContext(ctx.state, ctx.pos);
 		if (!where) return null;
