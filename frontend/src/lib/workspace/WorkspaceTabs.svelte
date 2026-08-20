@@ -20,7 +20,10 @@
 
 	// While a panel/tab is dragged over the bar, open a real placeholder slot at the drop index so
 	// it's clear where it'll land (and the ＋ shifts to make room) — not a thin insertion sliver.
-	const showPreview = $derived(!!ws.dragging && dropIndex !== null);
+	// A PANEL only lands here when the host can tear one off; where it cannot, the bar offers
+	// nothing rather than taking a drop it will refuse.
+	const takes = $derived(ws.dragging?.kind !== 'panel' || ws.canTearOff);
+	const showPreview = $derived(!!ws.dragging && takes && dropIndex !== null);
 
 	function computeDropIndex(container: HTMLElement, clientX: number): number {
 		const els = Array.from(container.querySelectorAll('.ui-tab')) as HTMLElement[];
@@ -32,7 +35,7 @@
 	}
 
 	function onBarDragOver(e: DragEvent): void {
-		if (!ws.dragging) return;
+		if (!ws.dragging || !takes) return;
 		e.preventDefault();
 		dropIndex = computeDropIndex(e.currentTarget as HTMLElement, e.clientX);
 	}

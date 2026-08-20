@@ -9,8 +9,10 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
+import { goofiLayoutHost } from '$lib/stores/layoutHost';
 import { history } from '$lib/stores/history.svelte';
 import type { Workspace } from './model';
+import type { LayoutHost } from './host';
 
 /** The manager's default arrangement, plus a row split on demand — as the replica reads it off the
  * document, which is the shape the panel system draws. */
@@ -63,12 +65,29 @@ function resized(a: number, b: number): Workspace[] {
 	return tabs;
 }
 
+/** A host that answers every gesture with "no". `tabFromPanel` is present so a spread can remove
+ * it, which is what the composed-only contract looks like from a consumer's side. */
+const REFUSING_HOST: LayoutHost = {
+	addTab: async () => null,
+	removeTab: async () => false,
+	renameTab: async () => false,
+	reorderTab: async () => false,
+	splitPanel: async () => null,
+	removePanel: async () => false,
+	resizeSplit: async () => false,
+	setPanel: async () => false,
+	movePanel: async () => false,
+	tabFromPanel: async () => null
+};
+
 let fc: FakeControl;
 
 function boot(tabs: Workspace[] = oneTab()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
-	ws.configureControl(() => fc);
+	// The store's own seam is the HOST, and goofi's host is what turns a gesture into an op — so
+	// these scenarios drive the real one and still assert what reaches the wire.
+	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
 	// The store is a module singleton, so a drag a previous test armed would still be drawing:
 	// committing a split that is not the drag's discards it, which is what an abandoned one does.
 	ws.commitResize('#none');
@@ -246,6 +265,44 @@ describe('a frozen gesture is a layout command', () => {
 			'each asks for a name the last one did not — the replica cannot have caught up between taps'
 		).toBe(3);
 		expect(names, 'and none of them is the name the tab already has').not.toContain('Tab 1');
+	});
+
+	it('draws and refuses when nothing has installed a host', async () => {
+		// The panel system holds no tree and writes nothing itself, so a consumer that has not wired
+		// one up should get a workspace it can look at rather than an exception per click. Every
+		// gesture below is a no-op; none of them throws, and none reaches the wire.
+		fc = new FakeControl();
+		const ws = workspace();
+		ws.configureHost(REFUSING_HOST);
+		ws.syncFromDoc(split());
+		ws.split('panel-2', 'row');
+		ws.close('panel-3');
+		ws.setType('panel-2', 'console');
+		ws.addTab();
+		ws.renameTab('tab-1', 'Signals');
+		await settle();
+		expect(sent(), 'nothing left the client').toEqual([]);
+		expect(ws.state.workspaces, 'and the tree it was handed is still drawn').toHaveLength(1);
+	});
+
+	it('offers the tear-off only where the host can express it', async () => {
+		// `tabFromPanel` is the one gesture that spans tabs AND panels, so it is optional on the
+		// port: a host without it does not fail the drag, it never offers one. The drag is spent
+		// either way — a gesture that goes nowhere must not leave the pointer armed.
+		fc = new FakeControl();
+		const ws = workspace();
+		ws.configureHost({ ...REFUSING_HOST, tabFromPanel: undefined });
+		ws.syncFromDoc(split());
+		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
+		ws.dropPanelOnTabBar(0);
+		await settle();
+		expect(sent()).toEqual([]);
+		expect(ws.dragging, 'the drag is spent either way').toBeNull();
+		// …and the strip is told, so it never draws a drop it would have to refuse.
+		expect(ws.canTearOff).toBe(false);
+
+		ws.configureHost(REFUSING_HOST);
+		expect(ws.canTearOff, 'a composed host offers it').toBe(true);
 	});
 
 	it('addresses a tab by its ID, never by the label it happens to wear', async () => {

@@ -22,6 +22,7 @@
 	import { registerAppPanels } from '$lib/panels/register';
 	import { editorFor } from '$lib/panels/editorCommands';
 	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { layoutHost } from '$lib/stores/layoutHost';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { history } from '$lib/stores/history.svelte';
@@ -38,9 +39,11 @@
 	// hard reload rather than letting the event-reconciled UI diverge silently.
 	let protocolMismatch = $state(false);
 
-	// Populate the panel registry before any panel renders.
+	// Populate the panel registry before any panel renders, and give the panel system the host its
+	// gestures go through — until one is installed it draws and refuses.
 	registerBuiltinPanels();
 	registerAppPanels();
+	workspace().configureHost(layoutHost());
 	// Publish window.goofi so the agent panel / Playwright can drive the app.
 	exposeAgentApi();
 

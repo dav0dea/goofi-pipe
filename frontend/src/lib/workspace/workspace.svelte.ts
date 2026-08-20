@@ -27,10 +27,7 @@ import {
 	type WorkspaceState
 } from './model';
 import { asStateObject } from './panelState';
-import { history } from '$lib/stores/history.svelte';
-import { captureNavContext } from './navContext';
-import { getControl, type Control } from '$lib/api/control';
-import type { OpName } from '$lib/api/ops';
+import type { LayoutHost, TabRef } from './host';
 
 /** A drag in progress. A panel and a tab are both just a subtree being moved — the only difference
  * is which id names it, which `_subtreeOf` knows how to answer. */
@@ -51,12 +48,6 @@ export type DragRef =
  * The routing follows the WRITE, never the device — phone and desktop share this one rule.
  */
 export type LayoutIntent = 'navigation' | 'authored';
-
-/** What `add_tab` answers: the ids it minted, which no client can otherwise know. */
-interface Tab {
-	tab: string;
-	panel: string;
-}
 
 /** What `set_viewpoint` stores for this client, and what a reload gets back. */
 export interface Viewpoint {
@@ -85,6 +76,20 @@ const UNSYNCED: Workspace[] = [
 	}
 ];
 
+/** What the panel system talks to before a consumer has installed a host: everything draws, every
+ * gesture is refused. A `null` host would make each call site a guard instead. */
+const REFUSING: LayoutHost = {
+	addTab: async () => null,
+	removeTab: async () => false,
+	renameTab: async () => false,
+	reorderTab: async () => false,
+	splitPanel: async () => null,
+	removePanel: async () => false,
+	resizeSplit: async () => false,
+	setPanel: async () => false,
+	movePanel: async () => false
+};
+
 class WorkspaceStore {
 	/** The manager's arrangement, mirrored from the doc root. Read-only: a write is a command. */
 	private _tabs = $state<Workspace[]>([]);
@@ -111,9 +116,7 @@ class WorkspaceStore {
 	/** The page and root panel a just-accepted `add_tab` minted, brought forward once the
 	 * doc catches up. The manager answers with the ids before the CRDT delta carrying them arrives,
 	 * so they are known first but cannot be drawn yet. */
-	private _wantTab: { tab: string; panel: string } | null = null;
-	/** Page names claimed but not yet seen in the replica — see `_claimName`. */
-	private _claimed = new Set<string>();
+	private _wantTab: TabRef | null = null;
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
 	activePanelId = $state<string | null>(null);
 	/** Viewpoint: the maximized panel, PER PAGE. A page keeps its own — maximizing on one tab and
@@ -127,13 +130,13 @@ class WorkspaceStore {
 	dragging = $state<DragRef | null>(null);
 	/** Bumped whenever the viewpoint changes, so the shell can persist it debounced. */
 	viewpointEpoch = $state(0);
-	/** How a layout command reaches the manager. Defaults to the live socket; a test injects a
-	 * double, the way `history.configureDeps` already does. */
-	private _control: () => Control = getControl;
+	/** Whoever owns the arrangement. Every gesture below is raised through it and nothing here
+	 * writes a tree — see `./host`. Until one is installed the panel system draws and refuses,
+	 * which is what a consumer that has not wired itself up should see. */
+	private _host: LayoutHost = REFUSING;
 
-	/** Test seam: send layout commands through an injected control. */
-	configureControl(provider: () => Control): void {
-		this._control = provider;
+	configureHost(host: LayoutHost): void {
+		this._host = host;
 	}
 
 	/** The tree as DRAWN: the manager's, with this client's two overlays — the in-flight resize a
@@ -161,6 +164,13 @@ class WorkspaceStore {
 		workspaces: this._workspaces,
 		activeWorkspaceId: this.active.id
 	});
+
+	/** Whether a panel can be torn off into a tab of its own. False when the host cannot express it
+	 * — a standalone `<Panels>` has no strip to tear onto — and the strip reads this to decide
+	 * whether to OFFER the drop at all, so the gesture is absent rather than refused. */
+	get canTearOff(): boolean {
+		return this._host.tabFromPanel !== undefined;
+	}
 
 	/** The maximized panel on the page in front, or null when that page is showing its layout. */
 	get maximizedPanelId(): string | null {
@@ -198,21 +208,11 @@ class WorkspaceStore {
 			this._page = want.tab;
 			this._focus(want.panel);
 		}
-		// A claim's job is over the moment the name it reserved shows up in the replica.
-		if (this._claimed.size > 0) for (const w of this._workspaces) this._claimed.delete(w.name);
 		// An EMPTY arrangement is a generation boundary, never a settled tree — the reset that hands
 		// one over is followed by the manager's real document, and a replica before its first pull
 		// holds one too. Pruning against it invalidates every id there is, the viewpoint the
 		// snapshot just restored included.
-		//
-		// A CLAIM is the exception, and it is the one thing the boundary genuinely ends: it reserves
-		// a name against the outgoing generation's tab strip, and the incoming one has its own. A
-		// claim whose page never arrived — the patch was loaded out from under it — would otherwise
-		// reserve that name for the rest of the session and make `_claimName` skip it for ever.
-		if (tabs.length === 0) {
-			this._claimed.clear();
-			return;
-		}
+		if (tabs.length === 0) return;
 		const live = (id: string): boolean => tabs.some((t) => t.id === id || !!findNode(t.root, id));
 		if (this._page !== null && !live(this._page)) this._page = null;
 		const root = this.active?.root;
@@ -251,28 +251,7 @@ class WorkspaceStore {
 		this.viewpointEpoch += 1;
 	}
 
-	// --- commands ------------------------------------------------------------
-
-	/** Send one layout command and record ONE undo step for it. The manager captured the exact
-	 * inverse, so the client entry only marks the step and delegates — the same contract every
-	 * graph mutation has used since the unified command API. A refusal (closing a page's last
-	 * panel) records nothing, so the two stacks stay 1:1. */
-	private async _cmd<T>(
-		label: string,
-		op: OpName,
-		payload: Record<string, unknown>
-	): Promise<T | null> {
-		try {
-			const res = await this._control().call<T>(op, payload);
-			if (!history().isSuspended) {
-				history().record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext() });
-			}
-			return res;
-		} catch (e) {
-			console.warn(`${op} refused`, e);
-			return null;
-		}
-	}
+	// --- gestures ------------------------------------------------------------
 
 	/** After a structural layout change, drop the maximized view and focus `panelId`. */
 	private _focus(panelId: string): void {
@@ -290,21 +269,15 @@ class WorkspaceStore {
 	/** Split a panel. The new panel is `empty` — the user picks its content from the empty panel's
 	 * buttons rather than inheriting the source's type. `fraction` is the new panel's share. */
 	split(panelId: string, direction: Direction, placeBefore = false, fraction = 0.5): void {
-		void this._cmd<string>('Split panel', 'split_panel', {
-			panel: panelId,
-			direction,
-			place_before: placeBefore,
-			ratio: fraction
-		}).then((fresh) => {
-			if (typeof fresh === 'string') {
-				this.activePanelId = fresh;
-				this._viewpointChanged();
-			}
+		void this._host.splitPanel(panelId, direction, placeBefore, fraction).then((fresh) => {
+			if (fresh === null) return;
+			this.activePanelId = fresh;
+			this._viewpointChanged();
 		});
 	}
 
 	close(panelId: string): void {
-		void this._cmd('Close panel', 'remove_panel', { panel: panelId });
+		void this._host.removePanel(panelId);
 	}
 
 	/** A splitter drag fires this per pointermove. It draws locally — `containerPx` is the split's
@@ -342,19 +315,17 @@ class WorkspaceStore {
 			return;
 		}
 		this._sent = { split: splitId, sizes: d.sizes };
-		void this._cmd('Resize', 'resize_split', { split: splitId, fractions: d.sizes }).then(
-			(ok) => {
-				// A refusal never landed, so it is not a baseline either.
-				if (ok === null) {
-					this._sent = null;
-					drop();
-				}
+		void this._host.resizeSplit(splitId, d.sizes).then((ok) => {
+			// A refusal never landed, so it is not a baseline either.
+			if (!ok) {
+				this._sent = null;
+				drop();
 			}
-		);
+		});
 	}
 
 	setType(panelId: string, panelType: string): void {
-		void this._cmd('Change panel', 'set_panel', { panel: panelId, type: panelType });
+		void this._host.setPanel(panelId, { type: panelType });
 	}
 
 	/**
@@ -379,7 +350,7 @@ class WorkspaceStore {
 		}
 		// The sub-patch path is viewpoint and must not ride a shared write.
 		const { subpatchPath: _drop, ...shared } = bag;
-		void this._cmd(label, 'set_panel', { panel: panelId, state: shared });
+		void this._host.setPanel(panelId, { state: shared }, label);
 	}
 
 	setActive(panelId: string): void {
@@ -438,33 +409,12 @@ class WorkspaceStore {
 
 	// --- tabs --------------------------------------------------------------
 
-	/** Claim a free page name. A page is addressed BY NAME, so the manager refuses a duplicate — and
-	 * the replica does not update until the round trip lands, so a gesture repeated faster than that
-	 * (six taps on ＋) would ask for the same free name six times and have five refused. The claim is
-	 * therefore remembered until the name is seen, or until the op it was claimed for is refused. */
-	private _claimName(): string {
-		const taken = new Set([...this._workspaces.map((w) => w.name), ...this._claimed]);
-		// Numbered from 1, and the manager's own first tab is `Tab 1` too: a bare name followed by a
-		// numbered series reads as two different kinds of thing in one strip.
-		let n = 1;
-		while (taken.has(`Tab ${n}`)) n += 1;
-		const name = `Tab ${n}`;
-		this._claimed.add(name);
-		return name;
-	}
-
-	/** Add a layout page. `panelType` is the agent façade's door onto "a tab showing X" — the tab
-	 * bar's own + button births the default editor. Two ops when it is given, grouped as one client
-	 * entry whose two children pop the two manager commands in order. */
+	/** Add a tab. `panelType` is the agent façade's door onto "a tab showing X"; the strip's own ＋
+	 * births whatever the host's default is. The NAME is not asked for — a label is not addressing,
+	 * and only the host can see what the other tabs are called. */
 	addTab(panelType?: string): void {
-		const name = this._claimName();
-		void history().transaction('Add tab', async () => {
-			const born = await this._cmd<Tab>('Add tab', 'add_tab', { name });
-			if (born === null) this._claimed.delete(name);
+		void this._host.addTab({ panelType }).then((born) => {
 			if (born) this._wantTab = born;
-			if (born && panelType && panelType !== DEFAULT_PANEL_TYPE) {
-				await this._cmd('Change panel', 'set_panel', { panel: born.panel, type: panelType });
-			}
 		});
 	}
 
@@ -483,7 +433,7 @@ class WorkspaceStore {
 		const trimmed = name.trim();
 		const from = this._tabs.find((t) => t.id === workspaceId)?.name;
 		if (!trimmed || !from || trimmed === from) return;
-		void this._cmd('Rename tab', 'rename_tab', { tab: workspaceId, name: trimmed });
+		void this._host.renameTab(workspaceId, trimmed);
 	}
 
 	closeTab(workspaceId: string): void {
@@ -500,13 +450,13 @@ class WorkspaceStore {
 				this._focusFirst(neighbor.root);
 			}
 		}
-		void this._cmd('Close tab', 'remove_tab', { tab: workspaceId });
+		void this._host.removeTab(workspaceId);
 	}
 
 	reorderTab(fromIndex: number, toIndex: number): void {
 		const tab = this._workspaces[fromIndex]?.id;
 		if (tab === undefined || toIndex < 0 || toIndex >= this._workspaces.length) return;
-		void this._cmd('Reorder tabs', 'reorder_tab', { tab, to_index: toIndex });
+		void this._host.reorderTab(tab, toIndex);
 	}
 
 	/** The id of the subtree a drag names: a panel is a subtree of one, a tab drag carries the
@@ -532,14 +482,8 @@ class WorkspaceStore {
 		// just carried there, which is the one they are now working in.
 		const node = this._tabs.map((t) => findNode(t.root, subtree)).find(Boolean);
 		const focus = node ? firstPanelIn(node) : null;
-		void this._cmd('Move panel', 'insert_at_panel', {
-			subtree,
-			target: targetPanelId,
-			direction,
-			place_before: placeBefore,
-			ratio: 0.5
-		}).then((ok) => {
-			if (ok !== null && focus !== null) this._focus(focus);
+		void this._host.movePanel(subtree, targetPanelId, direction, placeBefore, 0.5).then((ok) => {
+			if (ok && focus !== null) this._focus(focus);
 		});
 	}
 
@@ -550,15 +494,11 @@ class WorkspaceStore {
 		this.dragging = null;
 		if (!d || d.kind !== 'panel') return;
 		const subtree = this._subtreeOf(d);
-		if (!subtree) return;
-		const name = this._claimName();
-		void this._cmd<Tab>('Move panel to new tab', 'add_tab', {
-			name,
-			index,
-			subtree
-		}).then((born) => {
-			if (born === null) this._claimed.delete(name);
-			else if (born) this._wantTab = born;
+		// The one gesture that spans both halves, so it exists only where they are composed. A host
+		// that cannot express it does not offer the drag rather than failing it.
+		if (!subtree || !this._host.tabFromPanel) return;
+		void this._host.tabFromPanel(subtree, index).then((born) => {
+			if (born) this._wantTab = born;
 		});
 	}
 

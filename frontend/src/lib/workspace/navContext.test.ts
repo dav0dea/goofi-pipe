@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
+import { goofiLayoutHost } from '$lib/stores/layoutHost';
 import { selection } from '$lib/stores/selection.svelte';
 import { captureNavContext, restoreNavContext } from './navContext';
 import type { Workspace } from './model';
@@ -15,7 +16,8 @@ function defaultTabs(): Workspace[] {
 describe('NavContext capture/restore', () => {
 	beforeEach(() => {
 		const ws = workspace();
-		ws.configureControl(() => new FakeControl());
+		const fc = new FakeControl();
+		ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
 		ws.syncFromDoc(defaultTabs());
 		selection().forgetAll();
 	});

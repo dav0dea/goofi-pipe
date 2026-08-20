@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { workspace } from './workspace.svelte';
+import { goofiLayoutHost } from '$lib/stores/layoutHost';
 import { history } from '$lib/stores/history.svelte';
 import type { Workspace } from './model';
 
@@ -47,7 +48,7 @@ function dirtied(): boolean {
 function boot(tabs: Workspace[] = defaultTabs()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
-	ws.configureControl(() => fc);
+	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
 	ws.commitResize('#none');
 	ws.syncFromDoc(tabs);
 	return ws;
