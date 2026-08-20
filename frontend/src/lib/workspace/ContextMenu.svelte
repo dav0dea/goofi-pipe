@@ -18,8 +18,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
-	import { portal } from './portal';
-	import { clampToViewport, overlayViewport, Icon } from '$lib/ui';
+	import { portal, clampToViewport, overlayViewport } from '$lib/gesture';
+	import { Icon } from '$lib/ui';
 	import Self from './ContextMenu.svelte';
 
 	let {

@@ -18,7 +18,7 @@ import { python } from '@codemirror/lang-python';
 import { acceptCompletion, autocompletion, closeCompletion } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { setDiagnostics } from '@codemirror/lint';
-import { MARGIN, overlayViewport } from '$lib/ui';
+import { MARGIN, overlayViewport } from '$lib/gesture';
 import { goofiLanguageData } from './complete';
 import { expressionDiagnostics } from './diagnostics';
 import { singleLineExpression } from './singleLine';

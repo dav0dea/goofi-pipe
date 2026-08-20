@@ -20,7 +20,8 @@
 <script lang="ts">
 	import ParamForm from '$lib/inspector/ParamForm.svelte';
 	import MetadataPanel from '$lib/editor/MetadataPanel.svelte';
-	import { beginDrag, Button, ScrollArea } from '$lib/ui';
+	import { Button, ScrollArea } from '$lib/ui';
+	import { beginDrag } from '$lib/gesture';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { onDestroy } from 'svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';

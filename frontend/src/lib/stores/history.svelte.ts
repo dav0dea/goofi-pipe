@@ -15,7 +15,6 @@ import { getControl } from '$lib/api/control';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import { graph } from './graph.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
 import { restoreNavContext } from '$lib/workspace/navContext';
 import { pulseRestored } from './undoFlash';
@@ -83,13 +82,11 @@ export type Action = GraphAction | CompoundAction | ViewAction;
 
 // --- executors ---------------------------------------------------------------
 export type GraphStoreT = ReturnType<typeof graph>;
-export type WorkspaceStoreT = ReturnType<typeof workspace>;
 
 /** Injected dependencies so executors are unit-testable against fakes. */
 export interface ExecutorDeps {
 	control: Control;
 	graph: GraphStoreT;
-	workspace: WorkspaceStoreT;
 }
 
 export interface Executor<A extends Action = Action> {
@@ -143,7 +140,7 @@ export const executors: Record<string, Executor> = {
  * this is safe despite the history ↔ graph import cycle (never called at
  * module-eval time). */
 function liveDeps(): ExecutorDeps {
-	return { control: getControl(), graph: graph(), workspace: workspace() };
+	return { control: getControl(), graph: graph() };
 }
 
 // --- the store ---------------------------------------------------------------

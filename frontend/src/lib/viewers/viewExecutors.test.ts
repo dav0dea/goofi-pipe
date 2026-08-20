@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { slotView } from './inlineView';
 import { viewExecutors } from './viewExecutors';
-import { workspace } from '$lib/workspace/workspace.svelte';
 import { GraphStore } from '$lib/stores/graph.svelte';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
@@ -35,7 +34,7 @@ function fixture() {
 	const d = seed(fc).node('osc0', 'Oscillator', 'osc0');
 	return {
 		view: (slot: string) => slotView(g.nodeById('osc0'), slot),
-		deps: { control: {} as never, graph: g, workspace: workspace() },
+		deps: { control: {} as never, graph: g },
 		echo: () => {
 			const last = [...fc.recordedCalls()].reverse().find((c) => c.op === 'set_node_viewers');
 			d.patch({ nodes: { [last!.payload.node as string]: { viewers: JSON.stringify(last!.payload.viewers) } } });

@@ -21,8 +21,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
-	import { portal } from '$lib/workspace/portal';
-	import { clampToViewport, overlayViewport } from './clampToViewport';
+	import { portal, clampToViewport, overlayViewport } from '$lib/gesture';
 
 	let {
 		anchor,

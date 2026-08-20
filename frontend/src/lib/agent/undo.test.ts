@@ -3,7 +3,6 @@ import { commands } from './commands';
 import { query } from './query';
 import { FakeControl } from '$lib/test/fakeControl';
 import { GraphStore } from '$lib/stores/graph.svelte';
-import { workspace } from '$lib/workspace/workspace.svelte';
 import { history, type Action, type NavContext } from '$lib/stores/history.svelte';
 
 const ctx: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
@@ -13,7 +12,7 @@ describe('agent surface — undo/redo', () => {
 	beforeEach(() => {
 		history().reset();
 		const fc = new FakeControl();
-		history().configureDeps(() => ({ control: fc, graph: new GraphStore(fc), workspace: workspace() }));
+		history().configureDeps(() => ({ control: fc, graph: new GraphStore(fc) }));
 	});
 
 	it('query.canUndo / canRedo / historyLength reflect the history store', () => {

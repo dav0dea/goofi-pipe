@@ -45,7 +45,7 @@
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { getPanelType, type PanelProps } from '$lib/workspace/registry';
-	import { portal } from '$lib/workspace/portal';
+	import { portal } from '$lib/gesture';
 	import {
 		linkKey,
 		BOUNDARY_TYPES,
@@ -81,14 +81,8 @@
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
 	import { arrayToPath, asStateObject, pathToArray } from '$lib/workspace/panelState';
-	import {
-		Button,
-		IconButton,
-		EmptyState,
-		clampToViewport,
-		overlayViewport,
-		isTextEditingTarget
-	} from '$lib/ui';
+	import { Button, IconButton, EmptyState, isTextEditingTarget } from '$lib/ui';
+	import { clampToViewport, overlayViewport } from '$lib/gesture';
 	import { onMount, tick, untrack } from 'svelte';
 
 	let { panelId, state: panelState, setState }: PanelProps = $props();

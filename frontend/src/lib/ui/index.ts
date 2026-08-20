@@ -37,18 +37,17 @@ export { default as Tabs } from './Tabs.svelte';
 export { default as Disclosure } from './Disclosure.svelte';
 export { type TabItem } from './tabsState';
 
-// Surfaces / overlays (Task 5): the anchored popover and the centered modal dialog — plus the pure
-// clamp the Popover positions against. (`PanelShell` was retired here too, D-M6: its one-header-row
-// contract is `Bar`'s, which every real panel already composes directly.)
+// Surfaces / overlays (Task 5): the anchored popover and the centered modal dialog. (`PanelShell`
+// was retired here too, D-M6: its one-header-row contract is `Bar`'s, which every real panel
+// already composes directly.)
 export { default as Popover } from './Popover.svelte';
 export { default as Dialog } from './Dialog.svelte';
-export { clampToViewport, overlayViewport, MARGIN } from './clampToViewport';
 
-// The shared pointer-drag lifecycle (R §3.1g). Not a primitive but a pure helper the shell's three
-// drag handles share, so a cancelled gesture can never again leak its listeners into the next tap.
-export { beginDrag } from './dragGesture';
+// `beginDrag`, `clampToViewport` and `portal` used to be re-exported here. They are pure DOM
+// helpers with no design in them, so they live one layer DOWN, in `$lib/gesture` — which is what
+// lets this library stay a leaf while the panel system uses all three.
 
-// Here for the same reason as `dragGesture`: not a primitive, but the one answer to "does this
+// Not a primitive, but the one answer to "does this
 // keystroke belong to a text editor or to the app", shared by the two keyboard scopes that would
 // otherwise each keep their own list of editable tags — and one of them would miss the next
 // contenteditable, as both did before X.
