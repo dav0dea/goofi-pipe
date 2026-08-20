@@ -780,13 +780,28 @@ test.describe('a panel header that does not fit', () => {
 		}
 
 		// …and a second layout page, which swaps the whole tree rather than reshaping it.
+		//
+		// Maximized BEFORE we leave, because a maximize belongs to the page it happened on. It was
+		// one scalar for the whole client, and switching tabs focused the arriving page's first
+		// panel — which is what cleared it. Coming back found the layout already put away.
 		const tabs = page.getByTestId('workspace-tabs').locator('.ui-tab');
+		await hdr(page).getByRole('button', { name: 'Maximize panel' }).click();
+		await expect(hdr(page).getByRole('button', { name: 'Restore panel' })).toBeVisible();
 		await page.evaluate(() => (window as any).goofi.commands.addTab());
 		await expect(tabs).toHaveCount(2);
 		try {
+			await expect(
+				hdr(page).getByRole('button', { name: 'Maximize panel' }),
+				'a fresh page shows its layout — it did not inherit the other page’s maximize'
+			).toBeVisible();
 			await tabs.first().click();
 			await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+			await expect(
+				hdr(page).getByRole('button', { name: 'Restore panel' }),
+				'and page 1 is still maximized'
+			).toBeVisible();
 			expect(await framing(page), 'coming back to a page finds it as it was left').toBe(framed);
+			await hdr(page).getByRole('button', { name: 'Restore panel' }).click();
 		} finally {
 			// The ✕ only answers on the tab in front, so the added one is brought back to be closed.
 			await tabs.nth(1).click();

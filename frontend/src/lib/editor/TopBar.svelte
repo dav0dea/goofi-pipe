@@ -78,7 +78,7 @@
 		const panel = hs.panelShowing(id) ?? hs.firstPanel;
 		if (!panel) return;
 		hs.show(panel, id);
-		ws.maximizedPanelId = null;
+		ws.exitMaximize();
 		ws.setActive(panel);
 	}
 

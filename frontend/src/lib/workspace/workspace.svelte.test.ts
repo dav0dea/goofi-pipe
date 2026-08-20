@@ -346,7 +346,7 @@ describe('viewpoint stays here', () => {
 		});
 	});
 
-	it('selects a tab and maximizes without sending anything', async () => {
+	it('selects a tab and maximizes without sending anything, and each page keeps its own', async () => {
 		const two = split();
 		two['page-7'] = { kind: 'page', order: 1, name: 'Second' };
 		two['panel-8'] = { kind: 'panel', order: 0, parent: 'page-7', size: 1, panel_type: 'console' };
@@ -357,6 +357,23 @@ describe('viewpoint stays here', () => {
 		expect(sent()).toEqual([]);
 		expect(ws.state.activeWorkspaceId).toBe('page-7');
 		expect(ws.viewpoint().page).toBe('page-7');
+
+		// A maximize belongs to the PAGE it happened on. Looking at another tab used to end it —
+		// switching focused that page's first panel, and focusing cleared the one maximize the whole
+		// client had — so a user came back to a layout they had already put away.
+		ws.selectTab('page-1');
+		expect(ws.maximizedPanelId, 'the other page is showing its layout').toBeNull();
+		ws.toggleMaximize('panel-3');
+		expect(ws.maximizedPanelId).toBe('panel-3');
+		ws.selectTab('page-7');
+		expect(ws.maximizedPanelId, 'and page 7 is as it was left').toBe('panel-8');
+		ws.selectTab('page-1');
+		expect(ws.maximizedPanelId, 'so is page 1').toBe('panel-3');
+
+		// Still this client's alone: two pages maximized, and not one byte of it on the wire or in
+		// the viewpoint the manager stores and rides into the `.gfi`.
+		expect(sent()).toEqual([]);
+		expect(Object.keys(ws.viewpoint()).sort()).toEqual(['page', 'panel', 'paths']);
 	});
 
 	it('keeps a restored viewpoint through the boundary a fresh session resets across', () => {

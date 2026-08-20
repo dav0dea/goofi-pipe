@@ -102,8 +102,12 @@ class WorkspaceStore {
 	private _claimed = new Set<string>();
 	/** Last-focused panel id — keyboard shortcuts scope to this. */
 	activePanelId = $state<string | null>(null);
-	/** When set, only this panel renders, filling the workspace. */
-	maximizedPanelId = $state<string | null>(null);
+	/** Viewpoint: the maximized panel, PER PAGE. A page keeps its own — maximizing on one tab and
+	 * looking at another must not undo it, and coming back must find it as it was left. It was one
+	 * scalar for the whole client, which made the two pages one state and made every tab switch a
+	 * reset. Session-scoped on purpose: it is deliberately not in `viewpoint()`, so it reaches
+	 * neither a peer nor the `.gfi`. */
+	private _max = $state<Record<string, string>>({});
 	/** The panel or tab currently being dragged. While set, panels show edge drop zones and the tab
 	 * bar accepts the drop. */
 	dragging = $state<DragRef | null>(null);
@@ -144,6 +148,12 @@ class WorkspaceStore {
 		workspaces: this._workspaces,
 		activeWorkspaceId: this.active.id
 	});
+
+	/** The maximized panel on the page in front, or null when that page is showing its layout. */
+	get maximizedPanelId(): string | null {
+		const page = this.active?.id;
+		return (page ? this._max[page] : undefined) ?? null;
+	}
 
 	get active(): Workspace {
 		const all = this._workspaces;
@@ -188,7 +198,9 @@ class WorkspaceStore {
 		if (!this.activePanelId || !findPanel(root, this.activePanelId)) {
 			this.activePanelId = firstPanelId(root);
 		}
-		if (this.maximizedPanelId && !arr[this.maximizedPanelId]) this.maximizedPanelId = null;
+		for (const [page, panel] of Object.entries(this._max)) {
+			if (!arr[page] || !arr[panel]) delete this._max[page];
+		}
 		for (const id of Object.keys(this._paths)) {
 			if (!arr[id]) delete this._paths[id];
 		}
@@ -248,7 +260,6 @@ class WorkspaceStore {
 
 	/** After a structural layout change, drop the maximized view and focus `panelId`. */
 	private _focus(panelId: string): void {
-		this.maximizedPanelId = null;
 		this.activePanelId = panelId;
 		this._viewpointChanged();
 	}
@@ -399,8 +410,22 @@ class WorkspaceStore {
 	}
 
 	toggleMaximize(panelId: string): void {
-		this.maximizedPanelId = this.maximizedPanelId === panelId ? null : panelId;
+		const page = pageOf(this._arr, panelId);
+		if (!page) return;
+		if (this._max[page] === panelId) delete this._max[page];
+		else this._max[page] = panelId;
 		this._viewpointChanged();
+	}
+
+	/** End the maximize on the page in front, so a panel this client is about to show is visible.
+	 * The one caller is the shell answering an agent's close (`editor/TopBar`), which has to bring a
+	 * specific panel to the front and cannot do that under a maximized neighbour. */
+	exitMaximize(): void {
+		const page = this.active?.id;
+		if (page && this._max[page] !== undefined) {
+			delete this._max[page];
+			this._viewpointChanged();
+		}
 	}
 
 	// --- tabs --------------------------------------------------------------
