@@ -37,7 +37,7 @@
     "@xterm/xterm": "^5.5.0",
     "@xyflow/svelte": "^1.0.0",
     "marked": "^18.0.5",
-    "panelty": "github:dav0dea/panelty#v0.1.0",
+    "panelty": "^0.1.0",
     "uplot": "^1.6.31"
   }
 }
