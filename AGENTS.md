@@ -254,6 +254,10 @@ cargo clippy --workspace --all-targets                             # …and this
 cd frontend && npm run check && npm run test   # svelte-check + tsc strict, then vitest
 cd tests/e2e && npm run e2e                    # Playwright against the real binary
 ```
+**TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
+side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
+A gate that silently covers a tenth of the app is worse than no gate. Re-try when svelte-check's
+TS 7 support stops being experimental; it is one version string.
 
 Two interpreters, both machine-local and gitignored, and the names are deliberate — a generic
 `.venv` is claimed by editors and by `uv` itself, and a stale one is not inert:
