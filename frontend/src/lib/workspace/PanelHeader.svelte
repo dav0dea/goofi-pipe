@@ -82,6 +82,8 @@
 		label: string;
 		/** The button's accessible name: an icon says nothing on its own. */
 		name: string;
+		/** Set on an action that TOGGLES, so the control can say which way it is. */
+		pressed?: boolean;
 		run: () => void;
 	}
 
@@ -111,9 +113,13 @@
 			},
 			{
 				id: 'panel-maximize',
-				icon: 'maximize-2',
+				// The one control in the header that is a TOGGLE, so it is the one that has to draw
+				// its state. It used to sit on `maximize-2` in both positions and say which way it
+				// was through `title` alone — a tooltip, which is to say: nothing a user sees.
+				icon: isMax ? 'minimize-2' : 'maximize-2',
 				label: isMax ? 'Restore' : 'Maximize',
 				name: isMax ? 'Restore panel' : 'Maximize panel',
+				pressed: isMax,
 				run: () => ws.toggleMaximize(node.id)
 			}
 		];
@@ -285,6 +291,7 @@
 
 <div
 	class="panel-header"
+	class:maximized={isMax}
 	bind:this={headerEl}
 	draggable="true"
 	oncontextmenu={onHeaderContext}
@@ -321,6 +328,7 @@
 				data-testid={a.id}
 				title={a.label}
 				label={a.name}
+				aria-pressed={a.pressed}
 				onclick={a.run}><Icon name={a.icon} /></IconButton
 			>
 		{/each}
@@ -372,6 +380,17 @@
 	}
 	.panel-header:active {
 		cursor: grabbing;
+	}
+	/* Maximized is a MODE, not a selection: this panel is the only one on screen, and with the rest
+	   of the layout gone there is nothing left to compare it against — the state is invisible unless
+	   the chrome carries it. A faint accent wash over the header's own rung, because accent IS state
+	   here (app.css, meaning #2), and it mixes INTO `--surface-3` rather than layering on it so the
+	   strip keeps its step on the elevation ladder. Flat, like every other surface in the app: the
+	   texture this first reached for is a gradient, and C4 bans those on purpose. It is a fill and
+	   the active-panel marker is a ring, so the two read as different things on a panel that is
+	   necessarily both. */
+	.panel-header.maximized {
+		background: color-mix(in srgb, var(--accent) 9%, var(--surface-3));
 	}
 	/* The primitives keep the frozen 20px control geometry of the 26px bar. Under a coarse
 	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there.

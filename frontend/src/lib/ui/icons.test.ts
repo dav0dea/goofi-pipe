@@ -83,18 +83,20 @@ describe('vendored Lucide geometry', () => {
 
 	/* A vendored icon nothing renders is dead weight in the bundle, and the reason a hand-vendored
 	   pack rots: the pack grows, the UI does not. There are three shapes an icon can be named in —
-	   the component's plain attribute (`name="x"`), the same attribute chosen at render time
-	   (`name={copied ? 'check' : 'copy'}`) and a menu/panel record (`icon: 'undo-2'`) — and each
-	   spells it as a literal, so this is answerable from the source. Read through those three rather
-	   than a bare substring: `'x'` and `'copy'` occur all over a codebase for reasons that have
-	   nothing to do with an icon, and a scan they satisfy proves nothing. */
+	   the component's plain attribute (`name="x"`), an EXPRESSION in that attribute
+	   (`name={copied ? 'check' : 'copy'}`) and a menu/panel record (`icon: 'undo-2'`, whose value is
+	   an expression just as often) — and each spells the icon as a literal, so this is answerable
+	   from the source. Read through those shapes rather than a bare substring: `'x'` and `'copy'`
+	   occur all over a codebase for reasons that have nothing to do with an icon, and a scan they
+	   satisfy proves nothing. */
 	it('vendors nothing the app does not render', () => {
 		const src = allSource();
 		const used = new Set<string>();
-		for (const [, attr, record] of src.matchAll(/\bname="([\w-]+)"|\bicon:\s*'([\w-]+)'/g))
-			used.add(attr ?? record);
-		for (const [, expr] of src.matchAll(/\bname=\{([^}]*)\}/g))
-			for (const [, lit] of expr.matchAll(/'([\w-]+)'/g)) used.add(lit);
+		for (const [, attr] of src.matchAll(/\bname="([\w-]+)"/g)) used.add(attr);
+		// The two expression-bearing shapes, read the same way: every quoted literal inside the
+		// expression, never the expression itself. A record field is bounded by its comma.
+		for (const [, inAttr, inRecord] of src.matchAll(/\bname=\{([^}]*)\}|\bicon:\s*([^,\n]+)/g))
+			for (const [, lit] of (inAttr ?? inRecord).matchAll(/'([\w-]+)'/g)) used.add(lit);
 		expect(names.filter((n) => !used.has(n))).toEqual([]);
 	});
 });

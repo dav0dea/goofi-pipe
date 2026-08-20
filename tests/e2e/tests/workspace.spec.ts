@@ -722,11 +722,34 @@ test.describe('a panel header that does not fit', () => {
 
 		// Maximize — `maximizedPanelId` lives outside `WorkspaceState`, so this provably cannot reach
 		// the arrangement or the `.gfi`, and it is read back through the button's own label flip.
+		//
+		// It is also the one header control that TOGGLES, so the three things a user can actually
+		// perceive about that state are asserted here: the icon it draws, the pressed semantics
+		// screen readers get, and the header's own fill. A maximized panel is the only panel on
+		// screen — there is nothing left beside it to infer the mode from, and for a while the only
+		// thing that said so at all was a `title` tooltip.
+		const maxBtn = hdr(page).getByTestId('panel-maximize');
+		const headerFill = (): Promise<string> =>
+			hdr(page).evaluate((el) => getComputedStyle(el).backgroundColor);
+		const plainFill = await headerFill();
+		await expect(maxBtn.locator('svg')).toHaveAttribute('data-icon', 'maximize-2');
+		await expect(maxBtn).toHaveAttribute('aria-pressed', 'false');
+
 		await hdr(page).getByRole('button', { name: 'Maximize panel' }).click();
 		await expect(hdr(page).getByRole('button', { name: 'Restore panel' })).toBeVisible();
+		await expect(maxBtn.locator('svg'), 'the control draws the way OUT').toHaveAttribute(
+			'data-icon',
+			'minimize-2'
+		);
+		await expect(maxBtn).toHaveAttribute('aria-pressed', 'true');
+		expect(await headerFill(), 'the header says the panel is maximized').not.toBe(plainFill);
 		expect(await framing(page), 'maximizing keeps the framing').toBe(framed);
+
 		await hdr(page).getByRole('button', { name: 'Restore panel' }).click();
 		await expect(hdr(page).getByRole('button', { name: 'Maximize panel' })).toBeVisible();
+		await expect(maxBtn.locator('svg')).toHaveAttribute('data-icon', 'maximize-2');
+		await expect(maxBtn).toHaveAttribute('aria-pressed', 'false');
+		expect(await headerFill(), 'and stops saying it').toBe(plainFill);
 		expect(await framing(page), 'and so does restoring').toBe(framed);
 
 		// Split Right — a row split, so the new panel lands beside this one.
