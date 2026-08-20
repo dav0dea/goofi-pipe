@@ -22,7 +22,7 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { createLongPress } from '$lib/editor/longPress';
+	import { createLongPress } from '$lib/gesture';
 	import { clampToViewport, overlayViewport } from '$lib/gesture';
 	import { nearestTitle } from './titleTip';
 

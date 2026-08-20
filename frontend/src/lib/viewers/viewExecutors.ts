@@ -5,7 +5,7 @@
  * state, so its undo is an ordinary manager command and never comes here.)
  */
 import { history } from '$lib/stores/history.svelte';
-import { captureNavContext } from '$lib/workspace/navContext';
+import { captureNavContext } from '$lib/stores/navContext';
 import type { SettingsMap } from './settingsSchema';
 import type { Executor, ExecutorDeps, ViewAction, ViewSnapshot } from '$lib/stores/history.svelte';
 

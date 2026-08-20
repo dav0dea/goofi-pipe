@@ -19,7 +19,7 @@
 	import { untrack } from 'svelte';
 	import type { MenuItem } from './menu';
 	import { portal, clampToViewport, overlayViewport } from '$lib/gesture';
-	import { Icon } from '$lib/ui';
+	import { Icon } from './ui';
 	import Self from './ContextMenu.svelte';
 
 	let {

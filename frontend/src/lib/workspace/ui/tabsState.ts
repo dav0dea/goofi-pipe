@@ -43,3 +43,20 @@ export function nextIndex(current: number, count: number, key: ArrowKey): number
 			return current < 0 ? count - 1 : (current - 1 + count) % count;
 	}
 }
+
+/**
+ * The attribute bag the inline rename field wears. A tab NAME is machine-read — it addresses
+ * nothing (an id does), but it is read back by whoever is looking for that tab, and a phone that
+ * capitalises it, autocorrects it and underlines it in red is treating it as prose. `search` is
+ * the identifier keyboard: no autocapitalisation, no autocorrection, no spellcheck.
+ *
+ * Stated here rather than taken from a consumer's input vocabulary, because the field belongs to
+ * the chrome: a consumer that has no text primitive still gets a rename that behaves.
+ */
+export const IDENTIFIER_ATTRS: Record<string, string> = {
+	inputmode: 'search',
+	enterkeyhint: 'search',
+	autocapitalize: 'off',
+	autocorrect: 'off',
+	spellcheck: 'false'
+};

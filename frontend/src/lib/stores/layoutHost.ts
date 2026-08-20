@@ -12,7 +12,7 @@
  */
 import type { LayoutHost, TabRef } from '$lib/workspace/host';
 import type { Direction, Workspace } from '$lib/workspace/model';
-import { captureNavContext } from '$lib/workspace/navContext';
+import { captureNavContext } from '$lib/stores/navContext';
 import { history } from './history.svelte';
 import { getControl, type Control } from '$lib/api/control';
 import { workspace } from '$lib/workspace/workspace.svelte';

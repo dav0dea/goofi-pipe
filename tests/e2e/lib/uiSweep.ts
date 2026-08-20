@@ -16,9 +16,10 @@ const INDEX_TS = path.resolve(__dirname, '../../../frontend/src/lib/ui/index.ts'
 export function exportedPrimitives(): string[] {
 	const src = fs.readFileSync(INDEX_TS, 'utf8');
 	const names: string[] = [];
-	// `[\w/]+` so the guard still catches a primitive exported from a subdirectory or with a
-	// digit in its name — not just today's flat, letters-only files.
-	const re = /export\s*\{([^}]*)\}\s*from\s*'\.\/[\w/]+\.svelte'/g;
+	// The path pattern is deliberately wide: a primitive can live in a subdirectory, have a digit in
+	// its name, or — since the panel chrome became its own layer — sit behind a `$lib/…` alias. What
+	// makes it a primitive is that the barrel re-exports its DEFAULT under a name, wherever from.
+	const re = /export\s*\{([^}]*)\}\s*from\s*'[\w$./]+\.svelte'/g;
 	for (let m = re.exec(src); m !== null; m = re.exec(src)) {
 		const d = /default as (\w+)/.exec(m[1]);
 		if (d) names.push(d[1]);

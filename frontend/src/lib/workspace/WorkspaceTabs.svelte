@@ -1,16 +1,16 @@
 <!--
-  Workspace tab strip — the ui `Tabs` primitive with its opt-in affordances switched on (Phil,
-  2026-08-08: one component for the layout pages AND the inspector's param groups, so the two can
+  Workspace tab strip — the chrome `Tabs` primitive with its opt-in affordances switched on (Phil,
+  2026-08-08: one component for the layout tabs AND the inspector's param groups, so the two can
   never drift apart visually). Click to switch, double-click to rename inline, a hover-revealed ✕
   to close, ＋ to add — all the primitive's; what stays HERE is the drag system, because it is one
   half of the workspace-wide drag (a tab dragged onto another tab reorders; a tab or panel dragged
   onto a panel splits it; a panel dragged onto this bar becomes a new tab), and that lives with the
-  workspace store the `$lib/ui` leaf layer must not import. The primitive's half of the seam is
+  workspace store a chrome primitive must not import. The primitive's half of the seam is
   `tabProps` (per-tab drag attributes) and `previewIndex` (the drop-slot placeholder).
 -->
 <script lang="ts">
 	import { workspace } from './workspace.svelte';
-	import { Tabs } from '$lib/ui';
+	import { Tabs } from './ui';
 
 	const ws = workspace();
 	const tabs = $derived(ws.state.workspaces);

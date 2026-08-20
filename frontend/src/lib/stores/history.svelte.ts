@@ -16,7 +16,7 @@ import type { ViewerKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
 import { graph } from './graph.svelte';
 import { viewExecutors } from '$lib/viewers/viewExecutors';
-import { restoreNavContext } from '$lib/workspace/navContext';
+import { restoreNavContext } from '$lib/stores/navContext';
 import { pulseRestored } from './undoFlash';
 import { notify } from './notify.svelte';
 

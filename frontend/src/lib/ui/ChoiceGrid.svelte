@@ -8,13 +8,11 @@
   the hover accent alone. `class` merged, `data-testid` (+ any attribute) forwarded onto the grid.
 -->
 <script module lang="ts">
-	import type { IconName } from './icons';
-
 	/** One tile. `id` keys the list; `testid` stamps the tile a consumer's e2e names. */
 	export interface Choice {
 		id: string;
 		label: string;
-		icon?: IconName;
+		icon?: string;
 		/** Native tooltip — the version string, the path, whatever the label had no room for. */
 		title?: string;
 		testid?: string;
@@ -24,7 +22,7 @@
 
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
-	import Icon from './Icon.svelte';
+	import Icon from '$lib/workspace/ui/Icon.svelte';
 
 	let {
 		choices,

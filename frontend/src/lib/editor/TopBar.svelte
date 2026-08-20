@@ -10,7 +10,7 @@
 	import type { MenuItem } from '$lib/workspace/menu';
 	import ContextMenu from '$lib/workspace/ContextMenu.svelte';
 	import PerfHud from './PerfHud.svelte';
-	import { createWidthCache, planOverflow, type OverflowItem } from './overflowFit';
+	import { createWidthCache, planOverflow, type OverflowItem } from '$lib/gesture';
 	import { IconButton, Badge, Button, Icon } from '$lib/ui';
 
 	// The header holds APP-GLOBAL actions only: session undo/redo and the patch's save/load.

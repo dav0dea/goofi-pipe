@@ -20,7 +20,7 @@
    · `onClose`    — a hover-revealed ✕ per tab (rested open under a coarse pointer — C17's door).
    · `onReorder`  is deliberately NOT here: the layout bar's drag is one half of the workspace-wide
                     drag system (a PANEL dropped on the bar becomes a tab), which lives with the
-                    workspace store — and `$lib/ui` is a leaf layer that must not import stores. The
+                    workspace store — and a chrome primitive is a leaf that must not import one. The
                     seam is `tabProps` (per-tab attributes: draggable, ondragstart, …) plus
                     `previewIndex` (the drop-slot placeholder), so the consumer owns the drag and
                     this component only draws it.
@@ -28,8 +28,14 @@
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import Icon from './Icon.svelte';
-	import { resolveActive, nextIndex, type TabItem, type ArrowKey } from './tabsState';
-	import { MODE_ATTRS } from './inputMode';
+	import {
+		resolveActive,
+		nextIndex,
+		IDENTIFIER_ATTRS,
+		type TabItem,
+		type ArrowKey
+	} from './tabsState';
+
 
 	let {
 		items,
@@ -115,7 +121,7 @@
 			<div class="ui-tab active editing">
 				<!-- svelte-ignore a11y_autofocus -->
 				<input
-					{...MODE_ATTRS.search}
+					{...IDENTIFIER_ATTRS}
 					class="ui-tab-rename"
 					aria-label="Tab name"
 					value={editValue}

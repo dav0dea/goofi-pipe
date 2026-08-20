@@ -7,11 +7,11 @@
  * sub-patch depth works through the same `panel.state.subpatchPath` seam the
  * NodeEditorPanel reads reactively, so writing it makes the editor follow.
  */
-import { workspace } from './workspace.svelte';
-import { selection } from '$lib/stores/selection.svelte';
-import { collectPanels, findPanel } from './model';
-import { arrayToPath, asStateObject, pathToArray } from './panelState';
-import type { NavContext } from '$lib/stores/history.svelte';
+import { workspace } from '$lib/workspace/workspace.svelte';
+import { selection } from './selection.svelte';
+import { collectPanels, findPanel } from '$lib/workspace/model';
+import { arrayToPath, asStateObject, pathToArray } from '$lib/workspace/panelState';
+import type { NavContext } from './history.svelte';
 
 export function captureNavContext(): NavContext {
 	const ws = workspace();

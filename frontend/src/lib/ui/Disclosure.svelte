@@ -12,7 +12,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
-	import Icon from './Icon.svelte';
+	import Icon from '$lib/workspace/ui/Icon.svelte';
 
 	let {
 		open = $bindable(false),

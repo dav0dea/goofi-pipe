@@ -23,7 +23,7 @@ import { selection } from './selection.svelte';
 import { workspace } from '$lib/workspace/workspace.svelte';
 import type { SlotView } from '$lib/viewers/inlineView';
 import { history, type Action } from './history.svelte';
-import { captureNavContext } from '$lib/workspace/navContext';
+import { captureNavContext } from '$lib/stores/navContext';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
 import {

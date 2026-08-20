@@ -73,7 +73,7 @@
 		SLOT_PROXIMITY_PX,
 		type SlotAnchor
 	} from '$lib/editor/slotProximity';
-	import { createLongPress } from '$lib/editor/longPress';
+	import { createLongPress } from '$lib/gesture';
 	import { createDoubleTapZoom, zoomStep, type FlowViewport } from '$lib/editor/doubleTapZoom';
 	import { eventPoint } from '$lib/editor/eventPoint';
 	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';

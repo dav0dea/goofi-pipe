@@ -8,7 +8,6 @@
  * dropdown, context menu, and layout persistence all pick it up automatically.
  */
 import type { Component } from 'svelte';
-import type { IconName } from '$lib/ui';
 import type { LayoutIntent } from './workspace.svelte';
 
 /** The single prop contract every panel content component receives. */
@@ -29,10 +28,11 @@ export interface PanelType {
 	id: string;
 	/** Human label shown in the header dropdown and context menu. */
 	title: string;
-	/** Optional icon shown beside the title, named from the app's one icon set. A mod picks from
-	 * that set rather than shipping its own artwork — which is what keeps the panel menu one
-	 * visual system however many panel types are registered into it. */
-	icon?: IconName;
+	/** Optional icon shown beside the title, named for the one renderer (`./ui`) — a chrome glyph,
+	 * or one the app registered its geometry for. A registrant picks from that one set rather than
+	 * shipping its own artwork, which is what keeps the panel menu one visual system however many
+	 * panel types are registered into it. */
+	icon?: string;
 	component: Component<PanelProps>;
 	/** True if a node dragged from an editor can be dropped onto this panel to
 	 * bind it (Parameters / Viewer / Metadata). */

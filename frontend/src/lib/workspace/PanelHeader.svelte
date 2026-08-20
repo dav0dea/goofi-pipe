@@ -35,9 +35,8 @@
 	import { listPanelTypes, resolvePanelType } from './registry';
 	import type { MenuItem } from './menu';
 	import ContextMenu from './ContextMenu.svelte';
-	import { createLongPress } from '$lib/editor/longPress';
-	import { createWidthCache, planOverflow, type OverflowItem } from '$lib/editor/overflowFit';
-	import { Button, IconButton, Icon, type IconName } from '$lib/ui';
+	import { createLongPress, createWidthCache, planOverflow, type OverflowItem } from '$lib/gesture';
+	import { Button, IconButton, Icon } from './ui';
 	import { onDestroy, untrack } from 'svelte';
 
 	let { node }: { node: PanelNode } = $props();
@@ -77,7 +76,7 @@
 	interface HdrAction {
 		/** Stable id — the button's `data-testid`, and its key in the spill order. */
 		id: string;
-		icon: IconName;
+		icon: string;
 		/** The menu row's text. */
 		label: string;
 		/** The button's accessible name: an icon says nothing on its own. */

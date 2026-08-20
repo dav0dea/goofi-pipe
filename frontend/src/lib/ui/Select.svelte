@@ -22,9 +22,9 @@
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
-	import Icon from './Icon.svelte';
-	import IconButton from './IconButton.svelte';
-	import { claimFieldControlId } from './field';
+	import Icon from '$lib/workspace/ui/Icon.svelte';
+	import IconButton from '$lib/workspace/ui/IconButton.svelte';
+		import { claimFieldControlId } from './field';
 
 	let {
 		value,
