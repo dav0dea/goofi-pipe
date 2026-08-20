@@ -11,7 +11,8 @@
  * The manager is the sole author, so a surprise here means the two ends have drifted — and a
  * half-drawn graph is a better report of that than a blank page.
  */
-import { EMPTY_PANEL_TYPE, type LayoutNode, type Workspace } from '$lib/workspace/model';
+import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
+import type { LayoutNode, Workspace } from '$lib/workspace/model';
 
 /** The document, as it arrives. */
 export type Doc = Record<string, unknown>;

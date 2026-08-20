@@ -11,8 +11,9 @@
  */
 import type { Component } from 'svelte';
 import { registerPanel, type PanelProps } from '$lib/workspace/registry';
-import { PANEL_TYPES, EMPTY_PANEL_TYPE, type PanelTypeId } from '$lib/api/vocab';
+import { PANEL_TYPES, type PanelTypeId } from '$lib/api/vocab';
 import { harnesses } from '$lib/stores/harness.svelte';
+import EmptyPanel from './EmptyPanel.svelte';
 import NodeEditorPanel from './NodeEditorPanel.svelte';
 import ParametersPanel from './ParametersPanel.svelte';
 import ViewerPanel from './ViewerPanel.svelte';
@@ -22,9 +23,11 @@ import GlobalsPanel from './GlobalsPanel.svelte';
 import AgentPanel from './AgentPanel.svelte';
 
 /** Every app panel type, exhaustively: a type added to the manager's table is a `npm run check`
- * error here until it has something to draw it. `empty` is the panel framework's own placeholder
- * and registers in `$lib/workspace/panels`, one layer down. */
-const components: Record<Exclude<PanelTypeId, typeof EMPTY_PANEL_TYPE>, Component<PanelProps>> = {
+ * error here until it has something to draw it. `empty` included — the panel framework MINTS that
+ * type on a split and draws whatever is registered for it, and what a blank panel offers is a
+ * question about this app's vocabulary. */
+const components: Record<PanelTypeId, Component<PanelProps>> = {
+	empty: EmptyPanel,
 	'node-editor': NodeEditorPanel,
 	parameters: ParametersPanel,
 	viewer: ViewerPanel,
@@ -58,15 +61,15 @@ export function registerAppPanels(): void {
 	// colour regardless of CSS) — a constraint the icon set removes rather than works around.
 	//
 	// Registration order is the table's order, which is the order the panel menu and the empty
-	// panel's choice grid list them. Globals is not in the default layout — it is opened on demand
-	// from that menu, like a secondary inspector.
+	// panel's choice grid list them — `empty` leads it, so a fresh split's placeholder is drawable
+	// before anything else is. Globals is not in the default layout — it is opened on demand from
+	// that menu, like a secondary inspector.
 	//
 	// The old dockable "Errors" panel was removed — the Console (filterable, accumulating,
 	// stderr-aware) supersedes it, and a legacy `errors` panel type migrates to `console` on load
 	// (see workspace.svelte.ts). Per-node current errors still surface on the floating chip and the
 	// inspector's error section.
 	for (const t of PANEL_TYPES) {
-		if (t.id === EMPTY_PANEL_TYPE) continue;
 		registerPanel({
 			id: t.id,
 			title: t.title,

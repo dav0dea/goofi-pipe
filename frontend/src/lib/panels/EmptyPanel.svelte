@@ -1,14 +1,16 @@
 <!-- The content a freshly-split panel starts as: a grid of buttons, one per
      registered panel type, that turns this empty panel into the chosen content.
+     An APP panel like any other — the panel framework mints the `empty` type and
+     draws whatever is registered for it, and what a blank panel offers is a
+     question about this app's vocabulary, not about panelling.
      The choices are discovered from the panel registry — the single source of
      truth — so any registered panel (including future mods) shows up here
      automatically, with no list to keep in sync. The grid itself is the shared
      `ChoiceGrid` primitive, which the agent panel's launcher wears too. -->
 <script lang="ts">
-	import type { PanelProps } from './registry';
-	import { listPanelTypes } from './registry';
-	import { EMPTY_PANEL_TYPE } from './model';
-	import { workspace } from './workspace.svelte';
+	import { listPanelTypes, type PanelProps } from '$lib/workspace/registry';
+	import { workspace } from '$lib/workspace/workspace.svelte';
+	import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
 	import { ChoiceGrid, EmptyState, type Choice } from '$lib/ui';
 
 	let { panelId }: PanelProps = $props();

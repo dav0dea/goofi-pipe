@@ -18,11 +18,11 @@
 	import TitleTip from '$lib/app/TitleTip.svelte';
 	import WorkspaceTabs from '$lib/workspace/WorkspaceTabs.svelte';
 	import WorkspaceView from '$lib/workspace/WorkspaceView.svelte';
-	import { registerBuiltinPanels } from '$lib/workspace/panels';
 	import { registerAppPanels } from '$lib/panels/register';
 	import { editorFor } from '$lib/panels/editorCommands';
 	import { workspace } from '$lib/workspace/workspace.svelte';
 	import { layoutHost } from '$lib/stores/layoutHost';
+	import { DEFAULT_PANEL_TYPE } from '$lib/api/vocab';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { history } from '$lib/stores/history.svelte';
@@ -40,10 +40,13 @@
 	let protocolMismatch = $state(false);
 
 	// Populate the panel registry before any panel renders, and give the panel system the host its
-	// gestures go through — until one is installed it draws and refuses.
-	registerBuiltinPanels();
+	// gestures go through — until one is installed it draws and refuses. The pre-sync frame is the
+	// MANAGER's own first-mint spelling, so what is on screen before the snapshot lands and what is
+	// on screen after it are the same panel, and the editor mounts once.
 	registerAppPanels();
-	workspace().configureHost(layoutHost());
+	workspace().configureHost(layoutHost(), [
+		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE } }
+	]);
 	// Publish window.goofi so the agent panel / Playwright can drive the app.
 	exposeAgentApi();
 

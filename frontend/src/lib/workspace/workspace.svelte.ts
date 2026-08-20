@@ -14,7 +14,6 @@
  */
 import {
 	collectPanels,
-	DEFAULT_PANEL_TYPE,
 	findNode,
 	findPanel,
 	firstPanelId,
@@ -64,15 +63,12 @@ function fractionsOf(tabs: Workspace[], split: string): number[] {
 	return [];
 }
 
-/** What the panel system draws before the replica has pulled from the manager. The ids are the
- * manager's own first-mint spelling, so the pre-sync frame and the synced one draw the same thing
- * and nothing re-keys under the user. */
+/** What the panel system draws before anything has been pushed in. A panel TYPE is the consumer's
+ * vocabulary, so the useful version of this is the consumer's too — see `configureHost`. What is
+ * here is a shell to draw rather than a tree to invent: an empty tab list has no active tab, and
+ * every viewpoint reads through one. */
 const UNSYNCED: Workspace[] = [
-	{
-		id: 'tab-1',
-		name: 'Tab 1',
-		root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE, state: undefined }
-	}
+	{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-1', panelType: '' } }
 ];
 
 /** What the panel system talks to before a consumer has installed a host: everything draws, every
@@ -125,6 +121,8 @@ class WorkspaceStore {
 	 * reset. Session-scoped on purpose: it is deliberately not in `viewpoint()`, so it reaches
 	 * neither a peer nor the `.gfi`. */
 	private _max = $state<Record<string, string>>({});
+	/** Drawn until the first push, and again across a generation boundary — see [`UNSYNCED`]. */
+	private _unsynced = $state<Workspace[]>(UNSYNCED);
 	/** The panel or tab currently being dragged. While set, panels show edge drop zones and the tab
 	 * bar accepts the drop. */
 	dragging = $state<DragRef | null>(null);
@@ -135,8 +133,13 @@ class WorkspaceStore {
 	 * which is what a consumer that has not wired itself up should see. */
 	private _host: LayoutHost = REFUSING;
 
-	configureHost(host: LayoutHost): void {
+	/** Wire the panel system up: the host every gesture is raised through, and — optionally — what
+	 * to draw until the first push. The consumer's placeholder is the useful one because a panel
+	 * TYPE is its vocabulary: hand over the ids and type it mints FIRST, and the pre-sync frame and
+	 * the synced one draw the same thing rather than re-keying under the user. */
+	configureHost(host: LayoutHost, unsynced?: Workspace[]): void {
 		this._host = host;
+		if (unsynced?.length) this._unsynced = unsynced;
 	}
 
 	/** The tree as DRAWN: the manager's, with this client's two overlays — the in-flight resize a
@@ -156,7 +159,7 @@ class WorkspaceStore {
 			return { ...n, sizes, children: n.children.map(overlay) };
 		};
 		const tabs = this._tabs.map((w) => ({ ...w, root: overlay(w.root) }));
-		return tabs.length > 0 ? tabs : UNSYNCED;
+		return tabs.length > 0 ? tabs : this._unsynced;
 	});
 
 	/** The tree the panel system renders. Derived, not held — the manager's copy is the state. */
