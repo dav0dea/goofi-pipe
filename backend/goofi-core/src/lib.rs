@@ -158,7 +158,7 @@ fn f16_to_f32(bits: u16) -> f32 {
 /// `bytes.len()` is not a multiple of the source itemsize (never a silent misread).
 pub fn cast_to_f32(src: SrcDtype, bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
     let sz = src.itemsize();
-    if bytes.len() % sz != 0 {
+    if !bytes.len().is_multiple_of(sz) {
         return Err(GoofiError::Invalid(format!(
             "buffer length {} is not a multiple of {sz}-byte {src:?}",
             bytes.len()

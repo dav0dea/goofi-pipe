@@ -1,0 +1,12 @@
+# The compiler this repo is judged by, pinned so that "clippy is clean" is a claim about ONE
+# clippy. It was not: this machine ran 1.89 while CI's `stable` had moved eight releases ahead, so
+# every lint added in between arrived as a CI failure on code nobody had touched — a gate failing
+# for a reason unrelated to the change under test. rustup reads this file, so `cargo clippy` here
+# and the CI job are now the same compiler, and moving it is a deliberate commit that fixes
+# whatever the new release names.
+#
+# Not the same statement as `rust-version` in Cargo.toml: that is the OLDEST compiler this code
+# supports, this is the one it is built and gated with.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy"]

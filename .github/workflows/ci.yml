@@ -21,13 +21,12 @@ jobs:
       with:
         node-version: '22'
 
-    - uses: dtolnay/rust-toolchain@stable
-      with:
-        components: clippy
-
-    - uses: Swatinem/rust-cache@v2
-
     - uses: astral-sh/setup-uv@v5
+
+    # No toolchain action on purpose: `rust-toolchain.toml` names the version, rustup honours it,
+    # and one owner is the whole point — an action pinning `stable` here is how CI came to run a
+    # compiler eight releases ahead of the one the code was checked against.
+    - uses: Swatinem/rust-cache@v2
 
     # SETUP IS ONE COMMAND. It provisions both interpreters, installs the goofi wheel into each,
     # writes the cargo config that points pyo3 at the free-threaded one, and installs the

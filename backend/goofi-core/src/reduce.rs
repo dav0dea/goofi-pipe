@@ -51,7 +51,7 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
 
     // Descending dim so a reduction never invalidates a not-yet-processed lower dim.
     let mut planned = plan.axes.clone();
-    planned.sort_by(|a, b| b.dim.cmp(&a.dim));
+    planned.sort_by_key(|ax| std::cmp::Reverse(ax.dim));
     for ax in &planned {
         let Some(r) = reduce_axis(&bytes, &shape, ax.dim, ax.max, ax.method) else {
             continue; // this axis did not shrink

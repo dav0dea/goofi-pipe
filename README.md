@@ -16,7 +16,9 @@ targets live, high-rate streams (kHz EEG, HD video) with many simultaneous viewe
 
 ## Running it
 
-Requires a Rust toolchain (1.89+), Node.js, and [`uv`](https://docs.astral.sh/uv/).
+Requires [rustup](https://rustup.rs), [Node.js](https://nodejs.org) and
+[`uv`](https://docs.astral.sh/uv/). The Rust toolchain itself is pinned in `rust-toolchain.toml`,
+so rustup fetches the right one on the first build; nothing to choose.
 
 ```bash
 cargo run -p goofi-init   # once per clone: provisions everything cargo cannot

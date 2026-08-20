@@ -25,10 +25,14 @@ pub use serde_json::json as j;
 /// is the normal case rather than the exception, and cargo runs the test BINARIES in parallel too —
 /// so a scenario here waits behind whatever `nodes_shipped` is doing, which is starting eight
 /// interpreters that each import numba. Ten seconds was calibrated before this repo shipped a node
-/// with a heavy dependency, and it made three different tests fail on three different runs.
+/// with a heavy dependency, and it made three different tests fail on three different runs. Thirty
+/// then did the same, twice, on a 32-core machine that was merely also running a build — and CI's
+/// runner has four cores, so the number has to clear the SLOWEST machine that runs this suite, not
+/// the fastest.
 ///
-/// Only a FAILING assertion pays this; a passing one returns as soon as its condition holds.
-const WAIT: Duration = Duration::from_secs(30);
+/// Only a FAILING assertion pays this; a passing one returns as soon as its condition holds. That
+/// asymmetry is why the answer to "is this generous enough?" is always yes.
+const WAIT: Duration = Duration::from_secs(90);
 /// How long [`Goofi::stays`] watches a negative. A bare "check once" holds trivially against a
 /// runtime that has not got round to the thing yet.
 const SETTLE: Duration = Duration::from_millis(250);

@@ -272,6 +272,12 @@ that stops to name a second setup step is a build that did not have to stop. The
 `node_modules` was that third line, and it cost a fresh clone a server that started and served
 nothing.
 
+**The toolchain is pinned**, in `rust-toolchain.toml` — a different statement from `rust-version` in
+Cargo.toml, which is the OLDEST compiler this code supports where the pin is the one it is built and
+gated with. It exists because CI's `stable` had drifted eight releases past the machine the code was
+checked on, so every lint added in between arrived as a CI failure on code nobody had touched.
+Moving the pin is a deliberate commit that fixes whatever the new release names.
+
 The gates, once it is provisioned:
 
 ```bash
