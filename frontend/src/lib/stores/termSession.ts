@@ -84,7 +84,7 @@ export class TermSession {
 
 	/** Whether it went out. A socket that is not yet OPEN silently drops what is written to it, so
 	 * nothing above may record having said something the manager never heard. */
-	private send(bytes: Uint8Array | string): boolean {
+	private send(bytes: Uint8Array<ArrayBuffer> | string): boolean {
 		if (this.ws?.readyState !== WebSocket.OPEN) return false;
 		this.ws.send(bytes);
 		return true;
