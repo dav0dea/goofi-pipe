@@ -100,19 +100,23 @@
 		   CSS-var escape hatch): the strip blends with the bar rather than painting its own
 		   header surface, and the ACTIVE page drops to the workspace ground below the bar —
 		   the same connected look the inspector's param tabs make with their panel body. */
-		--tabs-surface: transparent;
-		--tabs-body: var(--bg);
+		--tatami-tab-surface: transparent;
+		--tatami-tab-body: var(--tatami-bg, var(--tatami-bg-default));
 		/* Pills span the strip so their labels centre on the bar's midline — one row with the
 		   ＋ and the header's other content (Phil, 2026-08-08) — while still touching the
 		   bottom edge they merge over. The inspector keeps the default bottom-hugged look. */
-		--tabs-align: stretch;
-		--tabs-pad: 0;
+		--tatami-tab-align: stretch;
+		--tatami-tab-pad: 0;
 		/* …and the labels take the bar's integer chrome size, one baseline row for the header. */
-		--tabs-fs: var(--fs-chrome);
+		--tatami-tab-fs: var(--tatami-fs-chrome, var(--tatami-fs-chrome-default));
 	}
 	.strip.dragover {
-		background: color-mix(in srgb, var(--accent) 7%, transparent);
-		border-radius: var(--radius-sm);
+		background: color-mix(
+			in srgb,
+			var(--tatami-accent, var(--tatami-accent-default)) 7%,
+			transparent
+		);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
 	}
 	/* Sizing the child's box is the parent's layout prerogative — through the class THIS component
 	   passes in (never the primitive's own .ui-* class): the strip is exactly the bar's height,

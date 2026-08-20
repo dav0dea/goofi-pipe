@@ -73,9 +73,9 @@
 
 <style>
 	.splitter {
-		flex: 0 0 var(--splitter-size);
+		flex: 0 0 var(--tatami-panel-splitter-size, var(--tatami-panel-splitter-size-default));
 		position: relative;
-		z-index: var(--z-chrome);
+		z-index: var(--tatami-z-chrome, var(--tatami-z-chrome-default));
 		touch-action: none;
 	}
 	.splitter.row {
@@ -89,8 +89,8 @@
 	.splitter::after {
 		content: '';
 		position: absolute;
-		background: var(--border);
-		transition: background var(--dur-fast) var(--ease);
+		background: var(--tatami-border, var(--tatami-border-default));
+		transition: background var(--tatami-motion, var(--tatami-motion-default));
 	}
 	.splitter.row::after {
 		top: 0;
@@ -108,26 +108,26 @@
 	}
 	.splitter:hover::after,
 	.splitter.dragging::after {
-		background: var(--accent);
+		background: var(--tatami-accent, var(--tatami-accent-default));
 	}
-	/* Touch: --splitter-size grows to 14px under the coarse floor, which is still 30px short of
-	   --hit, and the `::after` above is the painted hairline, not a grip. So widen the HIT area
+	/* Touch: --tatami-panel-splitter-size grows to 14px under the coarse floor, which is still 30px short of
+	   --tatami-hit, and the `::after` above is the painted hairline, not a grip. So widen the HIT area
 	   alone — an overlay centred on the seam, leaving both the line and the seam's LAYOUT thickness
 	   (which the panels either side are measured against) exactly where they are. Axis-specific,
 	   because a percentage `inset` resolves against the containing block on each axis: a symmetric
-	   one would shrink the long axis to --hit instead of growing the short one.
+	   one would shrink the long axis to --tatami-hit instead of growing the short one.
 	   The band does reach ~15px into each neighbouring panel; that is the trade a draggable seam
-	   makes on touch, and the splitter already sits above panel content at --z-chrome. */
+	   makes on touch, and the splitter already sits above panel content at --tatami-z-chrome. */
 	@media (hover: none) and (pointer: coarse) {
 		.splitter::before {
 			content: '';
 			position: absolute;
 		}
 		.splitter.row::before {
-			inset: 0 calc((var(--hit) - 100%) / -2);
+			inset: 0 calc((var(--tatami-hit, var(--tatami-hit-default)) - 100%) / -2);
 		}
 		.splitter.column::before {
-			inset: calc((var(--hit) - 100%) / -2) 0;
+			inset: calc((var(--tatami-hit, var(--tatami-hit-default)) - 100%) / -2) 0;
 		}
 	}
 </style>

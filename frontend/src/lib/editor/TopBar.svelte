@@ -394,7 +394,7 @@
 			<Button
 				variant="ghost"
 				size="sm"
-				style="--btn-ink: var(--accent)"
+				style="--tatami-btn-ink: var(--accent)"
 				data-testid="topbar-agents"
 				aria-expanded={agentMenu !== null}
 				title="Running agents"

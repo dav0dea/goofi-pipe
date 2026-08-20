@@ -240,6 +240,63 @@
 		Menlo,
 		Consolas,
 		monospace;
+
+	/* ---------------------------------------------------------------------------------------------
+	   The panel system's contract, mapped onto this app's tokens.
+
+	   `$lib/workspace/ui/tokens.css` ships the package's own look in a `-default` tier; every
+	   declaration here overrides one, so the panel chrome wears THIS palette rather than the one the
+	   package was built with. That is the whole hand-over — one block, no theme file, no build step.
+	   `theme/tokenContract.test.ts` holds it to completeness: a token the package reads and this
+	   block does not name would silently take a value the app did not choose, and would drift the
+	   day either side moved.
+	   --------------------------------------------------------------------------------------------- */
+	--tatami-accent: var(--accent);
+	--tatami-accent-strong: var(--accent-strong);
+	--tatami-accent-fill: var(--accent-fill);
+	--tatami-ring-accent: var(--ring-accent);
+	--tatami-on-accent: var(--on-accent);
+	--tatami-danger: var(--danger);
+	--tatami-danger-fill: var(--danger-fill);
+	--tatami-on-danger: var(--on-danger);
+	--tatami-bg: var(--bg);
+	--tatami-surface-1: var(--surface-1);
+	--tatami-surface-2: var(--surface-2);
+	--tatami-surface-3: var(--surface-3);
+	--tatami-border: var(--border);
+	--tatami-border-strong: var(--border-strong);
+	--tatami-hover-fill: var(--hover-fill);
+	--tatami-text: var(--text);
+	--tatami-text-dim: var(--text-dim);
+	--tatami-text-muted: var(--text-muted);
+	--tatami-disabled-opacity: var(--disabled-opacity);
+	--tatami-radius-sm: var(--radius-sm);
+	--tatami-radius-md: var(--radius-md);
+	--tatami-space-1: var(--space-1);
+	--tatami-space-2: var(--space-2);
+	--tatami-space-3: var(--space-3);
+	--tatami-space-4: var(--space-4);
+	--tatami-space-6: var(--space-6);
+	--tatami-font-sans: var(--font-sans);
+	--tatami-fs-micro: var(--fs-micro);
+	--tatami-fs-small: var(--fs-small);
+	--tatami-fs-body: var(--fs-body);
+	--tatami-fs-chrome: var(--fs-chrome);
+	--tatami-lh-text: var(--lh-text);
+	/* The one place the two vocabularies are not 1:1: the package spends ONE token on a duration and
+	   its easing, because it never uses them apart. */
+	--tatami-motion: var(--dur-fast) var(--ease);
+	--tatami-motion-slow: var(--dur-slow) var(--ease);
+	--tatami-focus-ink: var(--focus-ink);
+	--tatami-focus-width: var(--focus-width);
+	--tatami-hit: var(--hit);
+	--tatami-chrome-control-h: var(--chrome-control-h);
+	--tatami-shadow-2: var(--shadow-2);
+	--tatami-z-chrome: var(--z-chrome);
+	--tatami-z-menu: var(--z-menu);
+	--tatami-z-drag-ghost: var(--z-drag-ghost);
+	--tatami-panel-header-h: var(--panel-header-h);
+	--tatami-panel-splitter-size: var(--splitter-size);
 }
 
 * {

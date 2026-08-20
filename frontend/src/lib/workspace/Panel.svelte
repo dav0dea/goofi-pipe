@@ -262,22 +262,22 @@
 		min-width: 0;
 		min-height: 0;
 		/* D5, applied where it repeats most: the panel is a SURFACE floating on the workspace ground,
-		   not a rectangle drawn on it. The `--bg` gutter between panels is what separates them, so
+		   not a rectangle drawn on it. The `--tatami-bg` gutter between panels is what separates them, so
 		   the frame this used to wear is deleted — with it, every split seam stacked three hairlines
 		   (this border, the splitter's rule, the neighbour's border) across an 8px span. Panels whose
-		   content is a canvas (the node editor, EmptyPanel) still paint `--bg` over this. */
-		background: var(--surface-1);
+		   content is a canvas (the node editor, EmptyPanel) still paint `--tatami-bg` over this. */
+		background: var(--tatami-surface-1, var(--tatami-surface-1-default));
 		/* Transparent, not deleted (the EmptyPanel/D5 trade): it paints nothing, but it keeps the
 		   1px inset that the active ring below lives in. Chromium paints a non-positioned element's
 		   outline before its positioned descendants, so with the body flush to the panel edge an
 		   opaque content layer (`.svelte-flow`, a canvas) covers the ring — which is the very
 		   failure app.css's ring convention was written about. */
 		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
 		overflow: hidden;
 		outline: 1px solid transparent;
 		outline-offset: -1px;
-		transition: outline-color var(--dur-fast) var(--ease);
+		transition: outline-color var(--tatami-motion, var(--tatami-motion-default));
 	}
 	/* Active-panel accent, drawn as an OUTLINE, not an inset box-shadow: an inset shadow paints
 	   below child content, so the header bar and the editor's opaque `.svelte-flow` background
@@ -292,7 +292,7 @@
 	   their headers outside the focus indication — the panel is what has focus, so the panel is what
 	   the ring frames. */
 	.panel.active {
-		outline-color: var(--ring-accent);
+		outline-color: var(--tatami-ring-accent, var(--tatami-ring-accent-default));
 	}
 	.panel-body {
 		position: relative;
@@ -316,11 +316,11 @@
 		display: grid;
 		place-items: center;
 		height: 100%;
-		color: var(--text-dim);
+		color: var(--tatami-text-dim, var(--tatami-text-dim-default));
 	}
-	/* R's floors sweep left the grip at 16px, deliberately. A --hit grip would put a 44px triangle
+	/* R's floors sweep left the grip at 16px, deliberately. A --tatami-hit grip would put a 44px triangle
 	   of split-drag over every panel corner — including the lower-left one the node editor's zoom
-	   cluster was just moved INTO (`NodeEditorPanel`'s coarse rule tucks it to --space-6, which
+	   cluster was just moved INTO (`NodeEditorPanel`'s coarse rule tucks it to --tatami-space-6, which
 	   clears a 16px triangle and would not clear a 44px one). The split/join corner gesture is a
 	   fine-pointer power-user affordance; on touch the door is the panel header's own menu, which
 	   carries the same operations (D-R5). Growing this would cost a real target to serve a
@@ -334,16 +334,16 @@
 		position: absolute;
 		width: 16px;
 		height: 16px;
-		z-index: var(--z-chrome);
+		z-index: var(--tatami-z-chrome, var(--tatami-z-chrome-default));
 		opacity: 0;
-		transition: opacity var(--dur-slow) var(--ease);
+		transition: opacity var(--tatami-motion-slow, var(--tatami-motion-slow-default));
 	}
 	/* A faint triangular tab in each corner, brightening on hover. */
 	.corner::after {
 		content: '';
 		position: absolute;
 		inset: 0;
-		background: var(--text-muted);
+		background: var(--tatami-text-muted, var(--tatami-text-muted-default));
 		opacity: 0.5;
 	}
 	.panel-body:hover .corner {
@@ -354,7 +354,7 @@
 	}
 	/* …and on a finger the grip is not merely left un-grown but taken off the board entirely.
 	   `display: none`, not `opacity: 0`: at rest it is ALREADY invisible, and what made it a
-	   liability on touch is the other half — a 16px box at `--z-chrome` still HIT-TESTS, so each
+	   liability on touch is the other half — a 16px box at `--tatami-z-chrome` still HIT-TESTS, so each
 	   panel corner carried a dead triangle that swallowed a tap over the panel's own content, one
 	   of them where the node editor's zoom cluster sits. It swallowed the tap to arm a gesture that
 	   cannot complete there anyway (the `touch-action` note above), which is the worst of both: an
@@ -393,27 +393,31 @@
 	}
 	.drag-ghost {
 		position: fixed;
-		z-index: var(--z-drag-ghost);
+		z-index: var(--tatami-z-drag-ghost, var(--tatami-z-drag-ghost-default));
 		pointer-events: none;
-		border-radius: var(--radius-sm);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
 		box-sizing: border-box;
 	}
 	.drag-ghost.split {
-		background: var(--accent-fill);
-		border: 1px solid var(--accent);
+		background: var(--tatami-accent-fill, var(--tatami-accent-fill-default));
+		border: 1px solid var(--tatami-accent, var(--tatami-accent-default));
 	}
 	.drag-ghost.join {
-		background: var(--danger-fill);
-		border: 1px solid var(--danger);
+		background: var(--tatami-danger-fill, var(--tatami-danger-fill-default));
+		border: 1px solid var(--tatami-danger, var(--tatami-danger-default));
 	}
 	/* Live preview of where a dragged tab will land when dropped. */
 	.drop-zone {
 		position: absolute;
-		z-index: var(--z-drag-ghost);
+		z-index: var(--tatami-z-drag-ghost, var(--tatami-z-drag-ghost-default));
 		pointer-events: none;
-		background: color-mix(in srgb, var(--accent) 20%, transparent);
-		border: 2px solid var(--accent);
-		border-radius: var(--radius-sm);
+		background: color-mix(
+			in srgb,
+			var(--tatami-accent, var(--tatami-accent-default)) 20%,
+			transparent
+		);
+		border: 2px solid var(--tatami-accent, var(--tatami-accent-default));
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
 	}
 	.drop-zone.left {
 		left: 0;

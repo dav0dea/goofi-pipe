@@ -8,8 +8,9 @@
   + size come from the pure `variantClass` map; `class` is merged (not replaced) and every
   other attribute — `disabled`, `onclick`, `data-testid`, `title`, aria-* — forwards through.
 
-  Touch: as a real <button>, it inherits the app-wide coarse-pointer `min-height: var(--hit)`
-  floor from app.css. Keyboard focus rings via the app-wide `:focus-visible` (never suppressed).
+  Touch: under a coarse pointer the box is floored to `--tatami-hit` on BOTH axes, stated below
+  rather than inherited from a host app's blanket `button {}` reset — a package that only looks
+  right inside one app is not one. Keyboard focus rings via `:focus-visible` (never suppressed).
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -36,88 +37,101 @@
 
 <style>
 	.ui-btn {
-		font-family: var(--font-sans);
+		font-family: var(--tatami-font-sans, var(--tatami-font-sans-default));
 		/* The app body ratio (app.css `body`), stated rather than inherited (C19). The box height IS
 		   this plus the padding and border, and app.css's base `button` rule keeps only a `font:
 		   inherit` reset — so leaving it implicit makes every Button's height a property of whatever
 		   it happens to be nested in, and `normal` (the UA value under any stricter reset) shortens
 		   the lot by 1-2px. `s-md`/`s-sm` scale it by setting only `font-size`. */
-		line-height: var(--lh-text);
+		line-height: var(--tatami-lh-text, var(--tatami-lh-text-default));
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: var(--space-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		background: var(--surface-2);
-		color: var(--text);
+		gap: var(--tatami-space-3, var(--tatami-space-3-default));
+		border: 1px solid var(--tatami-border, var(--tatami-border-default));
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
+		background: var(--tatami-surface-2, var(--tatami-surface-2-default));
+		color: var(--tatami-text, var(--tatami-text-default));
 		cursor: pointer;
 		white-space: nowrap;
 		transition:
-			background var(--dur-fast) var(--ease),
-			border-color var(--dur-fast) var(--ease),
-			color var(--dur-fast) var(--ease);
+			background var(--tatami-motion, var(--tatami-motion-default)),
+			border-color var(--tatami-motion, var(--tatami-motion-default)),
+			color var(--tatami-motion, var(--tatami-motion-default));
 	}
-	/* The other axis. app.css floors the HEIGHT of every button under a coarse pointer, but a short
-	   label ("Kill") is 40px wide there — and the blanket rule cannot carry the width, because three
-	   frozen node-canvas controls defeat the floor on purpose. A Button is never one of them. */
+	/* BOTH axes: a short label ("Kill") is 40px wide under a coarse pointer, so a height floor alone
+	   leaves it under the target. An app's own blanket `button {}` rule may floor the height too —
+	   goofi's does — and lands on the same token, so this restates rather than fights it. */
 	@media (hover: none) and (pointer: coarse) {
 		.ui-btn {
-			min-width: var(--hit);
+			min-width: var(--tatami-hit, var(--tatami-hit-default));
+			min-height: var(--tatami-hit, var(--tatami-hit-default));
 		}
 	}
 	.ui-btn:disabled {
-		opacity: var(--disabled-opacity);
+		opacity: var(--tatami-disabled-opacity, var(--tatami-disabled-opacity-default));
 		cursor: not-allowed;
 	}
 
 	/* Size — padding + type scale from the F step ladder. */
 	.ui-btn.s-md {
-		padding: var(--space-3) var(--space-6);
-		font-size: var(--fs-small);
+		padding:
+			var(--tatami-space-3, var(--tatami-space-3-default))
+			var(--tatami-space-6, var(--tatami-space-6-default));
+		font-size: var(--tatami-fs-small, var(--tatami-fs-small-default));
 	}
 	.ui-btn.s-sm {
-		padding: var(--space-2) var(--space-4);
-		font-size: var(--fs-micro);
+		padding:
+			var(--tatami-space-2, var(--tatami-space-2-default))
+			var(--tatami-space-4, var(--tatami-space-4-default));
+		font-size: var(--tatami-fs-micro, var(--tatami-fs-micro-default));
 	}
 
 	/* Variants — colour only; the default is the resting surface. Hover is an
 	   enhancement, never the sole affordance (the control is always visible + clickable). */
 	.ui-btn.v-default:hover:not(:disabled) {
-		background: var(--surface-3);
-		border-color: var(--border-strong);
+		background: var(--tatami-surface-3, var(--tatami-surface-3-default));
+		border-color: var(--tatami-border-strong, var(--tatami-border-strong-default));
 	}
 	.ui-btn.v-primary {
-		background: var(--accent);
-		border-color: var(--accent);
-		color: var(--on-accent);
+		background: var(--tatami-accent, var(--tatami-accent-default));
+		border-color: var(--tatami-accent, var(--tatami-accent-default));
+		color: var(--tatami-on-accent, var(--tatami-on-accent-default));
 		font-weight: 600;
 	}
 	.ui-btn.v-primary:hover:not(:disabled) {
-		background: var(--accent-strong);
-		border-color: var(--accent-strong);
+		background: var(--tatami-accent-strong, var(--tatami-accent-strong-default));
+		border-color: var(--tatami-accent-strong, var(--tatami-accent-strong-default));
 	}
 	.ui-btn.v-ghost {
 		background: transparent;
 		border-color: transparent;
 		/* A ghost is ink on someone else's surface, so its ink is the one thing a host may need to
 		   restate — a status glyph in a chrome strip carries its meaning in its colour, not in a
-		   fill. Per-instance hook, unset it resolves to the same `--text` every other variant uses. */
-		color: var(--btn-ink, var(--text));
+		   fill. Per-instance hook, unset it resolves to the same `--tatami-text` every other variant uses. */
+		color: var(--tatami-btn-ink, var(--tatami-text, var(--tatami-text-default)));
 	}
 	/* A ghost has no surface of its own, so its hover LIFTS its host rather than naming a rung —
-	   `--surface-2` was invisible on every chrome strip these actually sit on (see app.css). */
+	   `--tatami-surface-2` was invisible on every chrome strip these actually sit on (see app.css). */
 	.ui-btn.v-ghost:hover:not(:disabled) {
-		background: var(--hover-fill);
+		background: var(--tatami-hover-fill, var(--tatami-hover-fill-default));
 	}
 	.ui-btn.v-danger {
-		background: var(--danger);
-		border-color: var(--danger);
-		color: var(--on-danger);
+		background: var(--tatami-danger, var(--tatami-danger-default));
+		border-color: var(--tatami-danger, var(--tatami-danger-default));
+		color: var(--tatami-on-danger, var(--tatami-on-danger-default));
 		font-weight: 600;
 	}
 	.ui-btn.v-danger:hover:not(:disabled) {
-		background: color-mix(in srgb, var(--danger) 85%, var(--bg));
-		border-color: color-mix(in srgb, var(--danger) 85%, var(--bg));
+		background: color-mix(
+			in srgb,
+			var(--tatami-danger, var(--tatami-danger-default)) 85%,
+			var(--tatami-bg, var(--tatami-bg-default))
+		);
+		border-color: color-mix(
+			in srgb,
+			var(--tatami-danger, var(--tatami-danger-default)) 85%,
+			var(--tatami-bg, var(--tatami-bg-default))
+		);
 	}
 </style>

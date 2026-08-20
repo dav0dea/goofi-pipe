@@ -453,7 +453,7 @@
 	   the --hit floor under a coarse pointer by itself, and the row grows with it — which is right
 	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed). */
 	.row :global(.console-copy-btn) {
-		--icon-btn-size: 16px;
+		--tatami-icon-btn-size: 16px;
 		opacity: 0;
 		pointer-events: none;
 		transition: opacity var(--dur-fast) var(--ease);

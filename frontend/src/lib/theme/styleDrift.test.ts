@@ -102,8 +102,15 @@ const ALLOW_DUPLICATE: { sel: string; why: string }[] = [
  *  fallback inside `calc()` must carry a unit), a hairline, full, a pill, a half. */
 const INVARIANT = new Set(['0', '0px', '1px', '100%', '999px', '50%']);
 
-/** Everything a `font-family` is allowed to say: the two faces by their token, or nothing at all. */
-const FONT_TOKEN = new Set(['var(--font-sans)', 'var(--font-mono)', 'inherit']);
+/** Everything a `font-family` is allowed to say: the two faces by their token, or nothing at all.
+ *  The panel system names the same face through its own contract — `--tatami-font-sans` maps onto
+ *  `--font-sans` in `app.css` — so both spellings are the token, and neither is a raw family. */
+const FONT_TOKEN = new Set([
+	'var(--font-sans)',
+	'var(--font-mono)',
+	'var(--tatami-font-sans, var(--tatami-font-sans-default))',
+	'inherit'
+]);
 
 const PROPS = [
 	'font-size',
@@ -291,12 +298,20 @@ function coarseTargets(css: string): Set<string> {
 	return out;
 }
 
-/** The raw numeric literals in one declaration value, with `var(--token)` references removed. */
+/** The raw numeric literals in one declaration value, with token references removed.
+ *
+ *  Resolved innermost-first, because the panel system's contract is NESTED by design:
+ *  `var(--tatami-space-2, var(--tatami-space-2-default))` is one token with a shipped default, and
+ *  a flat strip would leave the `-2` of the name behind and read it as a literal. A reference
+ *  resolving to a name disappears; a fallback that is a VALUE survives, so `var(--select-fs, 16px)`
+ *  still answers 16 — that is the whole point of the scan. */
 function literals(value: string): string[] {
 	let v = value;
+	// An innermost `var()`: one with no further `var(` inside it.
+	const inner = /var\(\s*(--[a-z0-9-]+)\s*(?:,((?:[^()]|\([^()]*\))*))?\)/;
 	for (let prev = ''; v !== prev; ) {
 		prev = v;
-		v = v.replace(/var\(--[a-z0-9-]+\)/g, ' ');
+		v = v.replace(inner, (_, __, fallback: string | undefined) => fallback ?? ' ');
 	}
 	return v.match(/-?\d*\.?\d+(?:px|rem|em|%|ch|vw|vh|pt)?/g) ?? [];
 }
@@ -609,8 +624,14 @@ describe('style vocabulary', () => {
 			focusOutlines(s.css).map((o) => ({ rel: s.rel, ...o }))
 		);
 		expect(found.length, 'the ring is still declared somewhere').toBeGreaterThan(0);
+		// Either spelling of the pair: the app's own tokens, or the panel system's contract, which
+		// `app.css` maps onto exactly those two.
 		const offenders = found
-			.filter((o) => !/var\(--focus-width\)/.test(o.value) || !/var\(--focus-ink\)/.test(o.value))
+			.filter(
+				(o) =>
+					!/var\(--(tatami-)?focus-width[,)]/.test(o.value) ||
+					!/var\(--(tatami-)?focus-ink[,)]/.test(o.value)
+			)
 			.map((o) => `${o.rel}  ${o.sel} { outline: ${o.value} }`);
 		expect(offenders).toEqual([]);
 	});

@@ -33,7 +33,7 @@
 		min-width: 0;
 		min-height: 0;
 		display: flex;
-		padding: var(--space-2);
+		padding: var(--tatami-space-2, var(--tatami-space-2-default));
 		gap: 0;
 	}
 	.workspace :global(> *) {

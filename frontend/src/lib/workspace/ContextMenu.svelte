@@ -159,7 +159,7 @@
 <style>
 	.context-menu {
 		position: fixed;
-		z-index: var(--z-menu);
+		z-index: var(--tatami-z-menu, var(--tatami-z-menu-default));
 		/* px, not rem: TopBar's save-menu spawn point clamps against this same 180. */
 		min-width: 180px;
 		/* The clamp can only SHIFT a surface that fits — `Math.max(MARGIN, …)` floors an oversized
@@ -170,15 +170,15 @@
 		max-height: calc(100dvh - 12px);
 		overflow-y: auto;
 		overscroll-behavior: contain;
-		padding: var(--space-2);
-		background: var(--surface-2);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-2);
+		padding: var(--tatami-space-2, var(--tatami-space-2-default));
+		background: var(--tatami-surface-2, var(--tatami-surface-2-default));
+		border: 1px solid var(--tatami-border-strong, var(--tatami-border-strong-default));
+		border-radius: var(--tatami-radius-md, var(--tatami-radius-md-default));
+		box-shadow: var(--tatami-shadow-2, var(--tatami-shadow-2-default));
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		font-size: var(--fs-small);
+		font-size: var(--tatami-fs-small, var(--tatami-fs-small-default));
 		user-select: none;
 	}
 	/* A menu row, not a Button: it keeps its own complete style (full-bleed, left-aligned,
@@ -190,25 +190,34 @@
 		font: inherit;
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--tatami-space-3, var(--tatami-space-3-default));
 		width: 100%;
-		padding: var(--space-3) var(--space-4);
+		padding:
+			var(--tatami-space-3, var(--tatami-space-3-default))
+			var(--tatami-space-4, var(--tatami-space-4-default));
 		background: transparent;
 		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
+		color: var(--tatami-text, var(--tatami-text-default));
 		text-align: left;
 		cursor: pointer;
 		transition:
-			background var(--dur-fast) var(--ease),
-			color var(--dur-fast) var(--ease);
+			background var(--tatami-motion, var(--tatami-motion-default)),
+			color var(--tatami-motion, var(--tatami-motion-default));
+	}
+	/* The tap floor, stated here rather than taken from a host app's blanket `button {}` reset — a
+	   package cannot assume one exists. A menu row is full width already, so only the height. */
+	@media (hover: none) and (pointer: coarse) {
+		.item {
+			min-height: var(--tatami-hit, var(--tatami-hit-default));
+		}
 	}
 	.item:hover:not(:disabled) {
-		background: var(--accent);
-		color: var(--on-accent);
+		background: var(--tatami-accent, var(--tatami-accent-default));
+		color: var(--tatami-on-accent, var(--tatami-on-accent-default));
 	}
 	.item:disabled {
-		opacity: var(--disabled-opacity);
+		opacity: var(--tatami-disabled-opacity, var(--tatami-disabled-opacity-default));
 		cursor: not-allowed;
 	}
 	/* Both gutters centre their icon in a fixed column, so every label in a menu starts in the same
@@ -221,7 +230,7 @@
 	.check {
 		width: 12px;
 		flex: 0 0 12px;
-		font-size: var(--fs-micro);
+		font-size: var(--tatami-fs-micro, var(--tatami-fs-micro-default));
 	}
 	.ic {
 		width: 14px;
@@ -232,13 +241,15 @@
 	}
 	.arrow {
 		/* opacity: intentional — the submarker is quieter than the label it follows; the row it
-		   sits in is fully enabled (a disabled row dims wholesale via --disabled-opacity). */
+		   sits in is fully enabled (a disabled row dims wholesale via --tatami-disabled-opacity). */
 		opacity: 0.6;
-		font-size: var(--fs-micro);
+		font-size: var(--tatami-fs-micro, var(--tatami-fs-micro-default));
 	}
 	.sep {
 		height: 1px;
-		margin: var(--space-1) var(--space-2);
-		background: var(--border);
+		margin:
+			var(--tatami-space-1, var(--tatami-space-1-default))
+			var(--tatami-space-2, var(--tatami-space-2-default));
+		background: var(--tatami-border, var(--tatami-border-default));
 	}
 </style>

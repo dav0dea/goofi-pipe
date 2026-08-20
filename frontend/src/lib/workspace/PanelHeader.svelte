@@ -189,7 +189,7 @@
 	 * The hide class is stripped and restored inside one synchronous block, so nothing is painted
 	 * mid-measurement and Svelte's own class bookkeeping stays correct (it re-applies from
 	 * `spilled` on the next update either way). Only runs when the root font size moved — which is
-	 * what the coarse `--hit` floor does to every one of these boxes at once. */
+	 * what the coarse `--tatami-hit` floor does to every one of these boxes at once. */
 	function measureWidths(): number[] {
 		const host = zoneEl;
 		if (!host) return [];
@@ -364,16 +364,16 @@
 	.panel-header {
 		display: flex;
 		align-items: center;
-		height: var(--panel-header-h);
+		height: var(--tatami-panel-header-h, var(--tatami-panel-header-h-default));
 		flex: 0 0 auto;
-		padding: 0 var(--space-2);
-		/* The TOP rung of the panel's own ladder — body `--surface-1`, content toolbar `--surface-2`,
-		   this `--surface-3` — so each adjacency is a real step and none needs a hairline (D5), not
-		   even the one 26px inside the panel edge. `--surface-2` put this byte-identical to the `Bar`
+		padding: 0 var(--tatami-space-2, var(--tatami-space-2-default));
+		/* The TOP rung of the panel's own ladder — body `--tatami-surface-1`, content toolbar `--tatami-surface-2`,
+		   this `--tatami-surface-3` — so each adjacency is a real step and none needs a hairline (D5), not
+		   even the one 26px inside the panel edge. `--tatami-surface-2` put this byte-identical to the `Bar`
 		   that four of the six panel types render flush beneath it, which is the same "border deleted,
 		   nothing behind it" defect one level down; a step is what D5 trades the border FOR. */
-		background: var(--surface-3);
-		gap: var(--space-1);
+		background: var(--tatami-surface-3, var(--tatami-surface-3-default));
+		gap: var(--tatami-space-1, var(--tatami-space-1-default));
 		user-select: none;
 		cursor: grab;
 	}
@@ -383,16 +383,20 @@
 	/* Maximized is a MODE, not a selection: this panel is the only one on screen, and with the rest
 	   of the layout gone there is nothing left to compare it against — the state is invisible unless
 	   the chrome carries it. A faint accent wash over the header's own rung, because accent IS state
-	   here (app.css, meaning #2), and it mixes INTO `--surface-3` rather than layering on it so the
+	   here (app.css, meaning #2), and it mixes INTO `--tatami-surface-3` rather than layering on it so the
 	   strip keeps its step on the elevation ladder. Flat, like every other surface in the app: the
 	   texture this first reached for is a gradient, and C4 bans those on purpose. It is a fill and
 	   the active-panel marker is a ring, so the two read as different things on a panel that is
 	   necessarily both. */
 	.panel-header.maximized {
-		background: color-mix(in srgb, var(--accent) 9%, var(--surface-3));
+		background: color-mix(
+			in srgb,
+			var(--tatami-accent, var(--tatami-accent-default)) 9%,
+			var(--tatami-surface-3, var(--tatami-surface-3-default))
+		);
 	}
 	/* The primitives keep the frozen 20px control geometry of the 26px bar. Under a coarse
-	   pointer the bar itself grows to --hit (app.css), so the floors apply unchanged there.
+	   pointer the bar itself grows to --tatami-hit (app.css), so the floors apply unchanged there.
 	   The `button` tag qualifier is load-bearing: without it this ties with the primitive's own
 	   `.ui-btn.s-md` padding, and the two rules live in separate built CSS chunks — a tie there
 	   is settled by the emitted <link> order, not by the source.
@@ -402,21 +406,21 @@
 	   the same trade the app header's status cluster makes, and the reason the ✕ can be promised at
 	   every width rather than at every width anyone happened to test. */
 	.panel-header :global(button.content-btn) {
-		height: var(--chrome-control-h);
-		padding: 0 var(--space-3);
-		gap: var(--space-2);
+		height: var(--tatami-chrome-control-h, var(--tatami-chrome-control-h-default));
+		padding: 0 var(--tatami-space-3, var(--tatami-space-3-default));
+		gap: var(--tatami-space-2, var(--tatami-space-2-default));
 		min-width: 0;
 	}
 	/* The icon buttons state only their box — `density="chrome"` owns the coarse-pointer floor. */
 	.panel-header :global(.hdr-btn) {
-		--icon-btn-size: var(--chrome-control-h);
-		color: var(--text-dim);
+		--tatami-icon-btn-size: var(--tatami-chrome-control-h, var(--tatami-chrome-control-h-default));
+		color: var(--tatami-text-dim, var(--tatami-text-dim-default));
 	}
 	.panel-header :global(.hdr-btn:hover:not(:disabled)) {
-		color: var(--text);
+		color: var(--tatami-text, var(--tatami-text-default));
 	}
 	/* opacity: intentional — the type icon and the caret are quieted BELOW the title they sit beside
-	   (a hierarchy, not a disabled state); --disabled-opacity would read as "this header is inert".
+	   (a hierarchy, not a disabled state); --tatami-disabled-opacity would read as "this header is inert".
 	   `display: flex` collapses each span onto its icon's own box, so neither adds the line box a
 	   text glyph used to need inside a 20px header button. */
 	.ic,
@@ -435,7 +439,7 @@
 	}
 	.caret {
 		opacity: 0.5;
-		font-size: var(--fs-micro);
+		font-size: var(--tatami-fs-micro, var(--tatami-fs-micro-default));
 		flex: 0 0 auto;
 	}
 	.spacer {
@@ -446,7 +450,7 @@
 	.hdr-actions {
 		display: flex;
 		align-items: center;
-		gap: var(--space-1);
+		gap: var(--tatami-space-1, var(--tatami-space-1-default));
 		flex: 0 0 auto;
 	}
 	/* A spilled action is a row in the ⋯ menu instead; it stays in the DOM so its intrinsic width

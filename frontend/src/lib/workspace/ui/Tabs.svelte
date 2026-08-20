@@ -1,9 +1,9 @@
 <!--
   Tabs — the integrated connected tab bar (spec §2.4). NOT floating pills and NOT underlined tabs:
-  the ACTIVE tab drops to the BODY surface (`--tabs-body`) while the inactive tabs and the strip sit
-  at the HEADER surface (`--tabs-surface`), so the active tab visually merges downward into the panel
+  the ACTIVE tab drops to the BODY surface (`--tatami-tab-body`) while the inactive tabs and the strip sit
+  at the HEADER surface (`--tatami-tab-surface`), so the active tab visually merges downward into the panel
   body rendered flush beneath it — one connected piece, no divider lines. A consumer paints its body
-  region with the same `--tabs-body` token to complete the seam.
+  region with the same `--tatami-tab-body` token to complete the seam.
 
   A horizontal WAI-ARIA tablist: `role=tablist` of `role=tab` buttons, roving tabindex (the active
   tab is the one tab-stop), Left/Right + Home/End move the selection AND focus (automatic activation),
@@ -176,19 +176,23 @@
 
 <style>
 	/* The strip sits at the header surface; the active tab drops out of it onto the body surface.
-	   Two more per-instance hooks beside the surface pair: `--tabs-align` and `--tabs-pad`. The
+	   Two more per-instance hooks beside the surface pair: `--tatami-tab-align` and `--tatami-tab-pad`. The
 	   default (bottom-hugged pills under a breathing-room inset) is the inspector's strip look;
 	   the header's layout bar sets `stretch`/`0` so each pill spans the full strip and its LABEL
 	   centres on the bar's midline — level with the ＋ and the rest of the header row — while the
 	   pill still reaches the bottom edge it merges over (stretch touches both edges). */
 	.ui-tabs {
 		display: flex;
-		align-items: var(--tabs-align, flex-end);
-		gap: var(--space-1);
+		align-items: var(--tatami-tab-align, flex-end);
+		gap: var(--tatami-space-1, var(--tatami-space-1-default));
 		min-width: 0;
-		padding: var(--tabs-pad, var(--space-2) var(--space-2) 0);
-		background: var(--tabs-surface, var(--surface-2));
-		font-family: var(--font-sans);
+		padding: var(
+			--tatami-tab-pad,
+			var(--tatami-space-2, var(--tatami-space-2-default))
+				var(--tatami-space-2, var(--tatami-space-2-default)) 0
+		);
+		background: var(--tatami-tab-surface, var(--tatami-surface-2, var(--tatami-surface-2-default)));
+		font-family: var(--tatami-font-sans, var(--tatami-font-sans-default));
 	}
 	.ui-tab {
 		flex: 0 1 auto;
@@ -196,20 +200,26 @@
 		display: inline-flex;
 		align-items: center;
 		white-space: nowrap;
-		min-height: var(--hit);
-		padding: var(--space-3) var(--space-6);
-		/* `--tabs-fs`: the header's strip takes the bar's integer chrome size so its labels share
-		   the one baseline row (app.css --fs-chrome); the inspector keeps the fluid default. */
-		font-size: var(--tabs-fs, var(--fs-small));
+		min-height: var(--tatami-hit, var(--tatami-hit-default));
+		padding:
+			var(--tatami-space-3, var(--tatami-space-3-default))
+			var(--tatami-space-6, var(--tatami-space-6-default));
+		/* `--tatami-tab-fs`: the header's strip takes the bar's integer chrome size so its labels share
+		   the one baseline row (app.css --tatami-fs-chrome); the inspector keeps the fluid default. */
+		font-size: var(--tatami-tab-fs, var(--tatami-fs-small, var(--tatami-fs-small-default)));
 		/* Inactive tabs read as part of the header strip. */
-		background: var(--tabs-surface, var(--surface-2));
-		color: var(--text-dim);
+		background: var(--tatami-tab-surface, var(--tatami-surface-2, var(--tatami-surface-2-default)));
+		color: var(--tatami-text-dim, var(--tatami-text-dim-default));
 		border: none;
-		border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+		border-radius:
+			var(--tatami-radius-sm, var(--tatami-radius-sm-default))
+			var(--tatami-radius-sm, var(--tatami-radius-sm-default))
+			0
+			0;
 		cursor: pointer;
 		transition:
-			background var(--dur-fast) var(--ease),
-			color var(--dur-fast) var(--ease);
+			background var(--tatami-motion, var(--tatami-motion-default)),
+			color var(--tatami-motion, var(--tatami-motion-default));
 	}
 	.ui-tab-label {
 		min-width: 0;
@@ -217,20 +227,23 @@
 		text-overflow: ellipsis;
 	}
 	.ui-tab:hover:not(.active) {
-		background: var(--surface-3);
-		color: var(--text);
+		background: var(--tatami-surface-3, var(--tatami-surface-3-default));
+		color: var(--tatami-text, var(--tatami-text-default));
 	}
 	/* The connected look: the active tab drops to the body surface so it merges with the panel body
-	   painted flush beneath it (same `--tabs-body` token) — one piece, no line. */
+	   painted flush beneath it (same `--tatami-tab-body` token) — one piece, no line. */
 	.ui-tab.active {
-		background: var(--tabs-body, var(--surface-1));
-		color: var(--text);
+		background: var(--tatami-tab-body, var(--tatami-surface-1, var(--tatami-surface-1-default)));
+		color: var(--tatami-text, var(--tatami-text-default));
 		font-weight: 600;
 		cursor: default;
 	}
 	/* Keyboard focus ring — the app :focus-visible convention (never suppressed). */
 	.ui-tab:focus-visible {
-		outline: var(--focus-width) solid var(--focus-ink);
+		outline:
+			var(--tatami-focus-width, var(--tatami-focus-width-default))
+			solid
+			var(--tatami-focus-ink, var(--tatami-focus-ink-default));
 		outline-offset: -2px;
 	}
 
@@ -249,17 +262,17 @@
 		justify-content: center;
 		width: 16px;
 		height: 16px;
-		margin-left: var(--space-2);
+		margin-left: var(--tatami-space-2, var(--tatami-space-2-default));
 		padding: 0;
 		background: transparent;
 		border: none;
-		color: var(--text-muted);
+		color: var(--tatami-text-muted, var(--tatami-text-muted-default));
 		opacity: 0;
 		pointer-events: none;
 		cursor: pointer;
 		transition:
-			opacity var(--dur-fast) var(--ease),
-			color var(--dur-fast) var(--ease);
+			opacity var(--tatami-motion, var(--tatami-motion-default)),
+			color var(--tatami-motion, var(--tatami-motion-default));
 	}
 	.ui-tab:hover .ui-tab-close,
 	.ui-tab.active .ui-tab-close {
@@ -272,11 +285,11 @@
 		flex: 0 0 auto;
 	}
 	.ui-tab-close:hover {
-		color: var(--danger);
+		color: var(--tatami-danger, var(--tatami-danger-default));
 	}
 
 	/* The trailing ＋. Self-styled like the tabs beside it (this is a leaf primitive — it does not
-	   compose IconButton, whose --hit floor would leave the ＋ towering over the strip). */
+	   compose IconButton, whose --tatami-hit floor would leave the ＋ towering over the strip). */
 	.ui-tab-add {
 		flex: 0 0 auto;
 		display: inline-flex;
@@ -288,23 +301,26 @@
 		padding: 0;
 		background: transparent;
 		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-dim);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
+		color: var(--tatami-text-dim, var(--tatami-text-dim-default));
 		cursor: pointer;
 		transition:
-			background var(--dur-fast) var(--ease),
-			color var(--dur-fast) var(--ease);
+			background var(--tatami-motion, var(--tatami-motion-default)),
+			color var(--tatami-motion, var(--tatami-motion-default));
 	}
 	.ui-tab-add :global(svg) {
 		width: 14px;
 		height: 14px;
 	}
 	.ui-tab-add:hover {
-		background: var(--surface-3);
-		color: var(--text);
+		background: var(--tatami-surface-3, var(--tatami-surface-3-default));
+		color: var(--tatami-text, var(--tatami-text-default));
 	}
 	.ui-tab-add:focus-visible {
-		outline: var(--focus-width) solid var(--focus-ink);
+		outline:
+			var(--tatami-focus-width, var(--tatami-focus-width-default))
+			solid
+			var(--tatami-focus-ink, var(--tatami-focus-ink-default));
 		outline-offset: -2px;
 	}
 
@@ -315,9 +331,13 @@
 		align-self: center;
 		width: 96px;
 		height: 26px;
-		border-radius: var(--radius-sm);
-		border: 1px dashed var(--accent);
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		border-radius: var(--tatami-radius-sm, var(--tatami-radius-sm-default));
+		border: 1px dashed var(--tatami-accent, var(--tatami-accent-default));
+		background: color-mix(
+			in srgb,
+			var(--tatami-accent, var(--tatami-accent-default)) 14%,
+			transparent
+		);
 	}
 
 	/* The inline rename editor — the tab's face becomes the field. */
@@ -326,9 +346,9 @@
 	}
 	.ui-tab-rename {
 		width: 9ch;
-		padding: 1px var(--space-2);
+		padding: 1px var(--tatami-space-2, var(--tatami-space-2-default));
 		font: inherit;
-		font-size: var(--tabs-fs, var(--fs-small));
+		font-size: var(--tatami-tab-fs, var(--tatami-fs-small, var(--tatami-fs-small-default)));
 	}
 
 	/* Touch (C17). The ✕ is hover-revealed, so on a device with no hover it is not merely
@@ -341,21 +361,28 @@
 			pointer-events: auto;
 		}
 		/* The ✕ cannot grow — it sits inside the pill — so IconButton's hit-rect idiom carries its
-		   tap target out to --hit while the paint stays 16px. */
+		   tap target out to --tatami-hit while the paint stays 16px. */
 		.ui-tab-close::after {
 			content: '';
 			position: absolute;
-			inset: calc((var(--hit) - 100%) / -2);
+			inset: calc((var(--tatami-hit, var(--tatami-hit-default)) - 100%) / -2);
 		}
-		/* The ＋ CAN grow: the pills beside it already stand at --hit under coarse, so the dense
+		/* The ＋ CAN grow: the pills beside it already stand at --tatami-hit under coarse, so the dense
 		   22px box is a fine-pointer affordance only and the floor comes back here — the same
 		   restore `density="chrome"` gave its IconButton predecessor (touch-floor.spec.ts pins the
 		   BOX, not the hit rect). */
 		.ui-tab-add {
-			width: var(--hit);
-			height: var(--hit);
+			width: var(--tatami-hit, var(--tatami-hit-default));
+			height: var(--tatami-hit, var(--tatami-hit-default));
 		}
+		/* The pill itself, on both axes — stated here rather than taken from a host app's blanket
+		   `button {}` reset, which a package cannot assume exists. */
+		.ui-tab {
+			min-height: var(--tatami-hit, var(--tatami-hit-default));
+		}
+		/* 16px is the iOS force-zoom threshold: a smaller field zooms the whole page on focus. */
 		.ui-tab-rename {
+			min-height: var(--tatami-hit, var(--tatami-hit-default));
 			font-size: 16px;
 		}
 	}
