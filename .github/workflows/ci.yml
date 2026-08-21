@@ -26,7 +26,10 @@ jobs:
     # GitHub warns about and is right to. What uv downloads here is two interpreters and the wheels
     # the goofi package pulls, a few seconds of a ten-minute run; the provisioning step re-decides
     # every run on purpose, and a cache nothing can invalidate is the one way that stops being true.
-    - uses: astral-sh/setup-uv@v10
+    #
+    # v7 is the NEWEST moving major this action publishes — it stopped aliasing them after that, so
+    # `@v10` is not a ref and the job fails to resolve before a step runs. It is already node24.
+    - uses: astral-sh/setup-uv@v7
       with:
         enable-cache: false
 
