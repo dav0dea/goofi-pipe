@@ -27,6 +27,8 @@ struct Cli {
     /// Serve the API alone: the SPA's routes are never mounted. Also set by `GOOFI_HEADLESS` in
     /// the environment and by a binary built with it, both folded in by [`main`].
     headless: bool,
+    /// Open `/dev/*`, the development surfaces. Also set by `GOOFI_DEBUG` in the environment.
+    debug: bool,
     help: bool,
 }
 
@@ -38,16 +40,21 @@ impl Default for Cli {
             extra_nodes: Vec::new(),
             list_nodes: false,
             headless: false,
+            debug: false,
             help: false,
         }
     }
 }
 
 const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
-     [--extra-nodes DIR] [--list-nodes] [--headless]";
+     [--extra-nodes DIR] [--list-nodes] [--headless] [--debug]";
 
 fn headless_env() -> bool {
     matches!(std::env::var("GOOFI_HEADLESS").as_deref(), Ok("1") | Ok("true"))
+}
+
+fn debug_env() -> bool {
+    matches!(std::env::var("GOOFI_DEBUG").as_deref(), Ok("1") | Ok("true"))
 }
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
@@ -65,6 +72,7 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
             "--extra-nodes" => cli.extra_nodes.push(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
             "--headless" => cli.headless = true,
+            "--debug" => cli.debug = true,
             "-h" | "--help" => cli.help = true,
             other => return Err(format!("unknown argument `{other}` (try --help)")),
         }
@@ -83,6 +91,7 @@ async fn main() {
     };
     // The three doors meet here, once: a binary built headless has no app to serve at all.
     cli.headless |= headless_env() || HEADLESS_BUILD;
+    cli.debug |= debug_env();
     if cli.help {
         println!(
             "{USAGE}\n\
@@ -91,7 +100,8 @@ async fn main() {
              Each node is routed in-process if free-threading-safe, else to a subprocess on \
              `{}`, which `cargo run -p goofi-init` provisions.\n  \
              GOOFI_HEADLESS=1 in the environment is --headless; setting it for the BUILD leaves \
-             the app out of the binary entirely.",
+             the app out of the binary entirely. GOOFI_DEBUG=1 is --debug, which opens `/dev/*` \
+             — the UI primitive gallery and the other development surfaces.",
             goofi_init::GIL_VENV
         );
         return;
@@ -139,7 +149,7 @@ async fn run(
     // Before ANY use of the embedded interpreter.
     point_embedded_python_at_its_venv();
 
-    let Cli { port, bind, extra_nodes, list_nodes, headless, help: _ } = cli;
+    let Cli { port, bind, extra_nodes, list_nodes, headless, debug, help: _ } = cli;
 
     if !list_nodes {
         register_evaluator(&state);
@@ -188,13 +198,16 @@ async fn run(
                 } else {
                     println!("  open {url} to use it");
                 }
+                if debug && !headless {
+                    println!("  debug: {url}/dev/ui is open — the UI primitive gallery");
+                }
                 // Last, and on stderr, so it is the line still on screen and survives a `> log`.
                 if let Some(warning) = exposure_warning(&bind) {
                     eprintln!("{warning}");
                 }
                 // The stop is here, not in `serve_app`, whose other callers serve forever.
                 tokio::select! {
-                    served = serve_app(listener, state.clone(), spa) => match served {
+                    served = serve_app(listener, state.clone(), spa, debug) => match served {
                         Ok(()) => 0,
                         Err(e) => {
                             eprintln!("server error: {e}");

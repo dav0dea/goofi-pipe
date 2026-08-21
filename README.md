@@ -44,7 +44,8 @@ nothing at every route.
 
 `GOOFI_HEADLESS=1` is `--headless` spelled as an environment variable, and it applies to the build
 as well: set for `cargo build`, it leaves the app out of the binary entirely — no Node.js needed,
-and the result is headless for life, with no flag to remember at every run.
+and the result is headless for life, with no flag to remember at every run. `GOOFI_DEBUG=1` is
+`--debug` the same way.
 
 | Flag | Default | Effect |
 | --- | --- | --- |
@@ -53,6 +54,7 @@ and the result is headless for life, with no flag to remember at every run.
 | `--extra-nodes DIR` | — | Scan `DIR` for Python nodes *after* `./nodes/`. Repeatable; a later directory wins a type name it shares with an earlier one. |
 | `--list-nodes` | — | Print the registered node types and exit. |
 | `--headless` | — | Serve the API alone — `/control`, `/data`, `/term`, `/mcp`. The app's routes are never mounted. |
+| `--debug` | — | Open `/dev/*`: the UI primitive gallery at `/dev/ui`, and the other development surfaces. Shut otherwise. |
 
 `./nodes/` is scanned whenever it exists; no flag turns it on or off.
 

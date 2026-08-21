@@ -49,7 +49,9 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		const fd = fs.openSync(log, 'w');
 		// From the repo root, so it serves `frontend/build/`. NOT detached: the fleet stays in the
 		// runner's process group, so a Ctrl-C reaches it even before `reap` gets its turn.
-		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port)], {
+		// `--debug` opens `/dev/*`, which the integrity sweep drives: the gallery is a real route of
+		// the shipped app, reachable only when it is asked for.
+		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port), '--debug'], {
 			cwd: REPO_ROOT,
 			stdio: ['ignore', fd, fd]
 		});

@@ -104,17 +104,24 @@ impl Goofi {
         // As the CLI does: a `/mcp/<instance>` URL must name the process that answers it.
         self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
-        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, &[]).await.unwrap() });
+        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, &[], false).await.unwrap() });
         format!("ws://{addr}")
     }
 
     /// As [`Goofi::serve`], but also serving a bundle on the fallback route.
     pub async fn serve_spa(&self, spa: goofi_bridge::Spa) -> String {
+        self.serve_spa_with(spa, false).await
+    }
+
+    /// Serve the SPA with `/dev/*` open or shut — what `--debug` decides.
+    pub async fn serve_spa_with(&self, spa: goofi_bridge::Spa, dev_routes: bool) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
-        tokio::spawn(async move { goofi_bridge::serve_app(listener, served, spa).await.unwrap() });
+        tokio::spawn(async move {
+            goofi_bridge::serve_app(listener, served, spa, dev_routes).await.unwrap()
+        });
         format!("ws://{addr}")
     }
 

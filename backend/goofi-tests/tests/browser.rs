@@ -186,6 +186,16 @@ async fn the_app_is_served_out_of_the_binary_and_the_client_router_owns_the_rest
     let (status, _, body) = http(&addr, "GET", "/some/client/route", "", b"").await;
     assert_eq!(status, 200, "an unknown path is the SPA's own route, not a 404");
     assert!(String::from_utf8_lossy(&body).contains("<!doctype html"));
+
+    // `/dev/*` is the one family the client router does NOT get handed by default. Refusing it has
+    // to happen here: answering with the page would let the router mount the route anyway.
+    let (status, _, _) = http(&addr, "GET", "/dev/ui", "", b"").await;
+    assert_eq!(status, 404, "a development route is shut without --debug");
+
+    let addr = host(&g.serve_spa_with(goofi_bridge::SPA, true).await).to_string();
+    let (status, _, body) = http(&addr, "GET", "/dev/ui", "", b"").await;
+    assert_eq!(status, 200, "…and --debug opens it");
+    assert!(String::from_utf8_lossy(&body).contains("<!doctype html"), "served as the app's own route");
 }
 
 /// The Origin/Host guard, asked of every route including the WebSocket upgrades. A drive-by guard,

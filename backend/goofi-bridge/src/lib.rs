@@ -38,6 +38,9 @@ use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
+/// Where the development surfaces live. One literal, so the gate and the app agree on the prefix.
+pub const DEV_ROUTE_PREFIX: &str = "/dev/";
+
 /// The built SPA as it ships: a URL path and its bytes, compiled into the binary. Empty when the
 /// crate was built without a frontend, which [`HEADLESS_BUILD`] says whether anyone asked for.
 pub type Spa = &'static [(&'static str, &'static [u8])];
@@ -400,20 +403,33 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
 
 /// The API router, with no SPA.
 pub fn router(state: AppState) -> Router {
-    app(state, &[])
+    app(state, &[], false)
 }
 
-/// The full router, optionally serving the SPA on the fallback. The [`origin`] guard goes on LAST,
-/// so it wraps every route — the WebSocket upgrades included, which CORS would not cover.
-pub fn app(state: AppState, spa: Spa) -> Router {
+/// The full router, optionally serving the SPA on the fallback. `dev_routes` opens `/dev/*`, the
+/// development surfaces. The [`origin`] guard goes on LAST, so it wraps every route — the WebSocket
+/// upgrades included, which CORS would not cover.
+pub fn app(state: AppState, spa: Spa, dev_routes: bool) -> Router {
     let base = routes(state);
-    let served = if spa.is_empty() { base } else { base.fallback(serve_spa_file) };
+    let served = if spa.is_empty() {
+        base
+    } else {
+        base.fallback(move |uri| serve_spa_file(uri, dev_routes))
+    };
     served.layer(axum::middleware::from_fn(origin::guard))
 }
 
 /// One embedded file, or the page itself for anything else: the client router owns every route
 /// under `/`, so an unknown path is one of ITS routes and not a 404.
-async fn serve_spa_file(uri: axum::http::Uri) -> Response {
+async fn serve_spa_file(uri: axum::http::Uri, dev_routes: bool) -> Response {
+    // The client router owns unknown paths, so withholding a dev route means refusing it HERE —
+    // handing back the page would let the router mount it anyway.
+    if !dev_routes && uri.path().starts_with(DEV_ROUTE_PREFIX) {
+        return axum::response::IntoResponse::into_response((
+            axum::http::StatusCode::NOT_FOUND,
+            "development routes are off — start with --debug (or GOOFI_DEBUG=1) to open them",
+        ));
+    }
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     let (name, body) = match SPA.iter().find(|(p, _)| *p == path) {
@@ -461,8 +477,9 @@ pub async fn serve_app(
     listener: tokio::net::TcpListener,
     state: AppState,
     spa: Spa,
+    dev_routes: bool,
 ) -> std::io::Result<()> {
-    axum::serve(listener, app(state, spa)).await
+    axum::serve(listener, app(state, spa, dev_routes)).await
 }
 
 /// Native node type names visible in the catalog, `_`-prefixed test nodes hidden.
