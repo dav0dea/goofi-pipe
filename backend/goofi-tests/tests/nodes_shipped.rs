@@ -8,7 +8,12 @@
 //! genuinely heavy is not a node whose neighbours should be re-timed around it.
 //!
 //! Subprocess tier throughout, and not by choice: antropy re-enables the GIL, so the routing probe
-//! quarantines every one of these — which is exactly the tier a user gets for them.
+//! quarantines every one of these — which is exactly the tier a user gets for them. That is also
+//! why the file is compiled out of the `embed` build rather than run by both: it reaches Python
+//! only through `subproc`, so the second run is the same code path at the same tier — 79 s of the
+//! gate list to re-decide what the first run decided. What `embed` adds is the OTHER tier, and the
+//! suites that drive it are the ones that assert on it.
+#![cfg(not(feature = "embed"))]
 
 use std::process::{Command, Stdio};
 
