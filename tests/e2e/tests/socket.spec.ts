@@ -272,6 +272,16 @@ test.describe('the control socket', () => {
 					.toEqual([survivor]);
 			});
 
+			await test.step('…and the tab SAYS it is dark, rather than looking healthy', async () => {
+				// The half of a disconnection the user experiences. `net-frame` is the only surface that
+				// reports it; the agent façade exposes no connection state at all, so nothing else in
+				// this file could have noticed the socket had gone.
+				await expect(
+					page.getByTestId('net-frame'),
+					'a tab with no manager must not look like a working one'
+				).toBeVisible();
+			});
+
 			await test.step('…while the dark tab still shows what it last knew', async () => {
 				// The step that makes the next one mean something: the replica is genuinely STALE here,
 				// holding a node the manager no longer has and missing one it does. Without this, a tab
@@ -293,6 +303,10 @@ test.describe('the control socket', () => {
 						timeout: 30_000
 					})
 					.toEqual([survivor]);
+				await expect(
+					page.getByTestId('net-frame'),
+					'and the alarm clears with the reconnection that ended it'
+				).toHaveCount(0);
 			});
 		} finally {
 			await restoreSocket(page).catch(() => {});
