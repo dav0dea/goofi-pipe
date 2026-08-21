@@ -33,11 +33,24 @@ methodology, and not an installed skill. Where an outside practice disagrees, th
    surfaces with four sets of behaviour. A capability only the UI can reach is a defect, and a
    test that needs a door of its own is telling you the API is incomplete.
 
-2. **The code is the source of truth.** A comment that restates the code duplicates it, and the
-   duplicate goes stale. Write a comment only for a deliberate choice that reads as WRONG without
-   it — an order that looks arbitrary and is load-bearing, a tolerance that exists because of a
-   defect, a platform quirk. The history of how a decision was reached is not a comment. If the
-   code needs prose to be understood, make the code simpler.
+2. **The code is the source of truth, and comments are scarce.** Code that needs prose to be
+   understood is code to simplify, not to annotate. The default is NO comment.
+
+   The philosophy in this file is strong and we follow it, so code that follows it explains
+   itself. What earns a comment is a **deviation** — the place we had a good reason to stray —
+   and the comment states that reason in brief. This is rare by construction: a file thick with
+   comments is either badly written or quietly off-philosophy, and both are the real finding.
+
+   The limits are hard, not aspirational:
+   - **An inline comment is one line. Two is the ceiling, ever.** Needing more means the code is
+     wrong, or the reason belongs in this file as a decision.
+   - **A docstring briefly states a purpose**, plus a few words on a parameter only where the name
+     cannot carry it. A parameter that needs explaining is usually a parameter to rename.
+   - **No comment should need extensive reading.** A reader skims it and moves on.
+
+   Not comments: restating the code, the history of how a decision was reached, an argument for
+   the design, a changelog, or a defect's biography. If it matters beyond the line it sits on, it
+   is an architectural decision and belongs in this file.
 
 3. **Make the error impossible, don't handle it.** Prefer a type, a bounded domain, a shared
    schema or an unconstructible invalid state over a runtime guard. Keep genuine boundary errors:
@@ -114,7 +127,9 @@ In priority order. These override speed.
    about the change's blast radius. Trust documented internal contracts; verify the ones you are
    about to depend on.
 
-5. **Minimum diff, maximum clarity.** Match the surrounding idiom, naming and comment density.
+5. **Minimum diff, maximum clarity.** Match the surrounding idiom and naming — but NOT its comment
+   density, which is the one thing never to copy from a neighbour: comments are scarce by principle
+   2, and a thick file is a file to thin, not a bar to meet.
    Do not reformat code you are not changing. Rust is 4 spaces; the frontend is tabs and single
    quotes. There is no rustfmt.toml and no Prettier config — **never run Prettier**, hand-match
    the style instead.
