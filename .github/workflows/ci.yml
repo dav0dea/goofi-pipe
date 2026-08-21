@@ -36,7 +36,18 @@ jobs:
     # No toolchain action on purpose: `rust-toolchain.toml` names the version, rustup honours it,
     # and one owner is the whole point — an action pinning `stable` here is how CI came to run a
     # compiler eight releases ahead of the one the code was checked against.
+    #
+    # The cache is keyed on `Cargo.lock` + the rustc version and is NOT re-saved on an exact key
+    # hit, so one bad save is permanent: a run reported `full match: true` and then compiled 168
+    # crates — `libc`, `serde`, the whole graph — because the entry it restored had been cleaned
+    # down to less than the four cargo invocations below need. `cache-all-crates` keeps the
+    # registry whole rather than pruning it to the workspace's direct dependencies, and the
+    # `prefix-key` bump is what forces the one fresh save that replaces the bad entry. Moving the
+    # key is the only way to re-save; it is a deliberate commit, like moving the toolchain pin.
     - uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: v1-rust
+        cache-all-crates: true
 
     # SETUP IS ONE COMMAND. It provisions both interpreters, installs the goofi wheel into each,
     # writes the cargo config that points pyo3 at the free-threaded one, and installs the
