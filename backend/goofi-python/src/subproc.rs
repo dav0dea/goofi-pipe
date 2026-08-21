@@ -26,13 +26,27 @@ static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);
 /// iceoryx2 byte-slice pool ceiling per publisher (matches the child's `serve` config).
 const MAX_PAYLOAD: usize = 64 * 1024;
 
-/// Default cap on how long a tick waits for a subprocess response before treating
-/// the child as hung. Generous enough to cover cold start (spawn + goofi/numpy import +
-/// module compile + setup); a hung child is killed and surfaces as a node error rather
-/// than stranding the scheduler (and, in the bridge, the graph mutex) indefinitely.
 /// How long a request waits on a child that has stopped answering. Public because it is the
-/// tier's documented deadline, not an internal tuning knob.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+/// tier's documented deadline, not an internal tuning knob. A hung child is killed and surfaces
+/// as a node error rather than stranding the scheduler (and, in the bridge, the graph mutex).
+pub const TICK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The deadline for the FIRST request after a spawn, which is a different animal.
+///
+/// [`Running::spawn`] does not wait for the child to be ready — it cannot, because a child that
+/// never gets there must be reported as the exit it was. So the whole cold start is charged to
+/// this one request: interpreter boot, `import goofi`, the node module's own imports, and
+/// `setup()`. A tick deadline sized for a steady-state call is the wrong bound for that, and
+/// sizing ONE deadline for both means the slower case picks it.
+///
+/// It cost a livelock. Four of the entropy nodes goofi ships import antropy, which imports numba:
+/// 4.5 s cold on its own and 7.5 s with four booting at once, which is past ten on any modest
+/// machine. Each timeout reaped the child, and the respawn paid the same import again — so the
+/// node never started, and said only that a subprocess did not respond in time.
+///
+/// Long is cheap here: a child that DIES is reported by `try_wait` at once, whatever this says, so
+/// what this actually bounds is a child that is alive and still working. Waiting is right for that.
+pub const COLD_START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The iceoryx2 node + request publisher + response subscriber. Held directly on [`Running`]
 /// because `ipc_threadsafe::Service` makes the ports `Send` — the previous design pushed them onto a
@@ -215,7 +229,6 @@ pub struct RemoteNode {
     /// from `Inputs`. Outputs are set by the child-returned slot names (the child is authoritative
     /// for output naming, via its `OUTPUTS`), so the parent keeps no output list.
     in_slots: Vec<&'static str>,
-    timeout: Duration,
     proc: Option<Running>,
 }
 
@@ -227,15 +240,8 @@ impl RemoteNode {
             python: python.into(),
             source: source.into(),
             in_slots,
-            timeout: DEFAULT_TIMEOUT,
             proc: None,
         }
-    }
-
-    /// Override the per-tick response timeout (builder; mainly for tests/config).
-    pub fn with_timeout(mut self, timeout: Duration) -> RemoteNode {
-        self.timeout = timeout;
-        self
     }
 
     fn ensure(&mut self) -> std::result::Result<&mut Running, String> {
@@ -263,7 +269,8 @@ impl Node for RemoteNode {
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
 
         let frame = goofi_codec::encode_request(p.groups(), &present);
-        let timeout = self.timeout;
+        // Which deadline this request gets is decided by whether it is the one that also spawns.
+        let timeout = if self.proc.is_none() { COLD_START_TIMEOUT } else { TICK_TIMEOUT };
         // A dead/hung child (io error or timeout) is reaped so the NEXT tick spawns
         // a fresh subprocess, instead of leaving a zombie and erroring forever.
         let resp = match self.ensure().and_then(|r| r.roundtrip(&frame, timeout)) {
