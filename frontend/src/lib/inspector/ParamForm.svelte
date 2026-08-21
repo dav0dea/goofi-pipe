@@ -250,6 +250,13 @@
 		padding: 0;
 		cursor: text;
 		border-radius: var(--radius-sm);
+		/* The truncation is the BUTTON's own: `text-overflow` on `.pf-title` reaches the text in it,
+		   never an overflowing child element, so a long name was cut mid-word with no ellipsis. */
+		display: block;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.pf-name:hover {
 		text-decoration: underline;

@@ -111,36 +111,61 @@ In priority order. These override speed.
      rather than adding a test beside it.
    - Svelte component glue cannot mount in a unit runner. Verify it by typecheck and a Playwright
      scenario, and keep the testable logic in a module a scenario can drive.
+   - **A situation is a SESSION, not an assertion.** One boot, then an ordered walk that stacks
+     actions and probes after each, named by `test.step` so a failure still says which stage. The
+     states worth testing have a history — a rename after an edit, a reconnect after a drop — and a
+     test that boots, does one thing and exits cannot reach any of them. Measured here: the setup
+     was 76% of a Playwright test and the assertion it existed for was 24%.
+   - Inside a session, an assertion the next step DEPENDS on is hard; an independent observation is
+     `expect.soft`, so one wrong reading cannot hide the ten behaviours after it.
 
-2. **A fixture that cannot express the failure makes a passing test theatre.** The question is
+2. **What e2e is for: the seam, and the app holding together.** Everything goofi can do is
+   reachable through the op vocabulary and is proved against the manager in `goofi-tests` — far
+   cheaper and far sharper than driving a mouse to reach the same op. So a browser test earns its
+   place only where a browser is the instrument:
+   - **The socket seam.** The frontend's client and the manager's document must fit with no slack
+     and no overlap: every op lands exactly once, two tabs converge, a tab that loses the socket
+     rejoins on the manager's document instead of merging its stale one. Each half's own suite
+     passes with the other half broken, which is why this cannot live in either.
+   - **Structural integrity.** One complex scene, swept for what a restyle must never be able to
+     break: a page that scrolls, text clipped away, a control cut off by a box that cannot scroll,
+     a tap target under the app's own `--hit`. **Never a design value** — no pinned padding, no
+     token colour, no measured box. Design freedom is the point; the net catches things falling
+     apart, not things changing.
+   - **Gestures.** A door that only a finger opens is proved only by a finger.
+
+   Everything else is comfort. Hundreds of tests re-driving the op surface through a mouse, or
+   pinning a value a design pass will move, find nothing and cost the freedom to restyle.
+
+3. **A fixture that cannot express the failure makes a passing test theatre.** The question is
    never "does this stand in for the real thing?" but **"can this reproduce the failure I am
    trying to prevent?"** — and the way to answer it is to run the broken variant against your
    fixture and watch it pass. This has cost real defects: a fake socket hard-coded to OPEN hid a
    message dropped on a connecting one; a single-node fixture hid a counter summing across
    streams; a load test into a *fresh* instance passed against code that renumbered every node.
 
-3. **Structural edits over shallow hacks.** Prefer the change that makes the codebase correct by
+4. **Structural edits over shallow hacks.** Prefer the change that makes the codebase correct by
    construction over the one that silences the symptom. A larger, well-reasoned refactor is
    welcome when it removes a class of bugs — refactor scope is not gated.
 
-4. **Deep code analysis.** Before changing a subsystem, hold enough of it in context to reason
+5. **Deep code analysis.** Before changing a subsystem, hold enough of it in context to reason
    about the change's blast radius. Trust documented internal contracts; verify the ones you are
    about to depend on.
 
-5. **Minimum diff, maximum clarity.** Match the surrounding idiom and naming — but NOT its comment
+6. **Minimum diff, maximum clarity.** Match the surrounding idiom and naming — but NOT its comment
    density, which is the one thing never to copy from a neighbour: comments are scarce by principle
    2, and a thick file is a file to thin, not a bar to meet.
    Do not reformat code you are not changing. Rust is 4 spaces; the frontend is tabs and single
    quotes. There is no rustfmt.toml and no Prettier config — **never run Prettier**, hand-match
    the style instead.
 
-6. **Zero warnings, and that includes clippy.** A task is not done at "finished". Build with
+7. **Zero warnings, and that includes clippy.** A task is not done at "finished". Build with
    `--all-targets` and clear what it prints — that flag is load-bearing, because a plain build
    never compiles the integration test targets and a warning there ships. `cargo clippy --workspace
    --all-targets` is clean as of 2026-08-20 and stays that way. Remove the dead field; never
    silence it with a `_` prefix or an `#[allow]`.
 
-7. **Honest reporting.** If tests fail, say so with the output. If a step was skipped, say that.
+8. **Honest reporting.** If tests fail, say so with the output. If a step was skipped, say that.
    State what is verified plainly; never claim done what you have not run.
 
 **Hardening a subsystem is an audit run to convergence, not a read-through.** Fan finders across
@@ -260,6 +285,9 @@ of the package, never a patch in this tree.
   chord. Touch needs its own door in, gated on the one spelling a test enforces. Panel width is
   independent of viewport width, so `@container` is the default tool and `@media` is reserved for
   real device-class questions. One theme, done well.
+- `/dev/*` is development surface: `--debug` (or `GOOFI_DEBUG=1`) opens it, nothing else does.
+  `/dev/ui` renders one sample of every `$lib/ui` export and is a real tool for UI work; the guard
+  against a primitive nobody uses is a vitest check that the barrel has no orphan export.
 - **The workspace/panel system and the cable-drag feel are frozen UX.** Restyle them, do not
   redesign them — and the panel system is `panelty`, so restyling it means the token contract, not
   its source. There is no phone-only layout mode: a phone renders the same panel tree, and panel
@@ -303,6 +331,8 @@ cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # anchor the g
 cargo clippy --workspace --all-targets                             # …and this prints nothing
 cd frontend && npm run check && npm run test   # svelte-check + tsc strict, then vitest
 cd tests/e2e && npm install && npm run e2e     # Playwright: its own package, its own install
+#   Four situations across four viewport projects: the socket seam, structural integrity, gestures,
+#   and the agent harness. Everything else, the op vocabulary already proves in goofi-tests.
 ```
 **CI runs this list and nothing else** — `.github/workflows/ci.yml`, ONE job, because the gates
 share one machine's worth of setup and the SPA is compiled in: no cargo build here happens without

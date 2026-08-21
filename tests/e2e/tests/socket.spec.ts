@@ -36,7 +36,13 @@ async function expectAgreement(page: Page, what: string): Promise<string[]> {
 	return last.backend;
 }
 
-/** Remove every node the manager holds, so the next spec meets the pristine workspace it asserts. */
+/**
+ * Remove every node the manager holds.
+ *
+ * Run at the START of a session as well as in its `finally`: a session that depends on the previous
+ * spec's teardown having landed is a session that fails for another file's reasons. Twice in
+ * thirteen full runs, one of these opened against a backend that was not yet empty.
+ */
 async function clearGraph(page: Page): Promise<void> {
 	await page.evaluate(async () => {
 		const g = (window as any).goofi;
@@ -52,6 +58,7 @@ test.describe('the control socket', () => {
 	}) => {
 		await page.goto('/');
 		await waitForApp(page);
+		await clearGraph(page);
 		try {
 			await test.step('a fresh tab is synced, and both halves hold nothing', async () => {
 				expect(await page.evaluate(() => (window as any).goofi.query.docSynced())).toBe(true);
@@ -170,6 +177,7 @@ test.describe('the control socket', () => {
 	}) => {
 		await page.goto('/');
 		await waitForApp(page);
+		await clearGraph(page);
 		const second = await browser.newContext({ baseURL: page.url() });
 		const other = await second.newPage();
 		try {
@@ -228,6 +236,7 @@ test.describe('the control socket', () => {
 		await armSocketControl(page);
 		await page.goto('/');
 		await waitForApp(page);
+		await clearGraph(page);
 		const peerCtx = await browser.newContext({ baseURL: page.url() });
 		const peer = await peerCtx.newPage();
 		try {
