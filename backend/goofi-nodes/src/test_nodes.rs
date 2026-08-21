@@ -1,21 +1,5 @@
-//! The shared test-node library — deterministic `_`-prefixed nodes that EVERY suite can reach.
-//!
-//! `test_source`'s doc has always stated the intent: scaffolding lives here "so the engine, bridge,
-//! and goofi-python test suites share one simple deterministic source instead of each defining its
-//! own". Only `_TestConst` ever followed it. The engine grew twenty-eight more inside its own
-//! `#[cfg(test)]` module, where `inventory` registers them for the engine's test binary alone — so
-//! an integration test in `goofi-bridge` or `goofi-python` could not name one, and every such test
-//! hand-rolled its own `NodeManifest` instead. That is the reason a headless integration test could
-//! not replace a unit test, and it is what this module removes.
-//!
-//! **Not gated behind `cfg(test)`, and that is the point.** An integration test is a separate crate
-//! linking the ordinary build; a node only registered under `cfg(test)` is invisible to it. These
-//! ship in the binary and stay out of the palette on the `_` prefix, exactly as `_TestConst` does
-//! (`goofi_bridge::schemas` and `catalog_type_names` both filter it).
-//!
-//! Keep this set SMALL. It exists to let one integration test stand in for many unit tests, not to
-//! mirror every fixture a deleted unit test once had. A node earns a place here only when a
-//! behaviour of the RUNTIME cannot be observed without it.
+//! Deterministic `_`-prefixed test nodes that every suite can reach, kept out of the palette by
+//! the prefix. Keep this set SMALL: a node earns a place only for a runtime behaviour.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,7 +9,6 @@ use goofi_node::{
     Outputs, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl,
 };
 
-/// One array input that wakes `process`.
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
     name: "in",
     kind: SlotType::Array,
@@ -33,7 +16,6 @@ static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
     multi: false,
     required: false,
 }];
-/// The same slot, but the node refuses to run without it — the input contract's gate.
 static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
     name: "in",
     kind: SlotType::Array,
@@ -44,9 +26,7 @@ static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
 static OUT_ARRAY: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 static NO_PARAMS: &[ParamDecl] = &[];
 
-/// Every manifest here differs in four fields at most, so they are stated once rather than
-/// twenty-eight times. This is the `const fn` the engine's test module already used internally; it
-/// is public now so a test in any crate can build one too.
+/// Builds a test-category manifest; a test in any crate can build one too.
 pub const fn manifest(
     type_name: &'static str,
     doc: &'static str,
@@ -68,10 +48,6 @@ pub const fn manifest(
         factory,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Passthrough and sink — the two shapes a wire needs at each end
-// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct Echo;
@@ -106,10 +82,6 @@ inventory::submit! {
     manifest("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false, default_factory::<Sink>)
 }
 
-// ---------------------------------------------------------------------------
-// Faults — the three ways a node can fail, each surfacing on a different channel
-// ---------------------------------------------------------------------------
-
 #[derive(Default)]
 struct Failing;
 impl Node for Failing {
@@ -139,7 +111,6 @@ impl Node for SetupFail {
         Err("the device did not open".into())
     }
     fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        // Never reached while setup fails — a node that failed to initialize does not run at all.
         o.set("out", Data::array_f32(vec![1], 0f32.to_le_bytes().to_vec(), Meta::new()).unwrap());
         Ok(())
     }
@@ -148,12 +119,7 @@ inventory::submit! {
     manifest("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<SetupFail>)
 }
 
-// ---------------------------------------------------------------------------
-// Timing — a node that takes real time, and one that counts its own runs
-// ---------------------------------------------------------------------------
-
-/// Sleeps far past the shutdown ceiling, so a teardown that JOINED rather than waiting to a bound
-/// would hang instead of returning.
+/// Sleeps far past the shutdown ceiling, so a teardown that JOINED would hang instead of returning.
 #[derive(Default)]
 struct Slow;
 impl Node for Slow {
@@ -166,8 +132,7 @@ inventory::submit! {
     manifest("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Slow>)
 }
 
-/// Emits how many times it has run, as a length-1 array. The only node here whose OUTPUT carries a
-/// run count, so a test can assert a rate or a trigger without reading engine internals.
+/// Emits how many times it has run, as a length-1 array.
 #[derive(Default)]
 struct Counter {
     runs: u64,
@@ -184,15 +149,13 @@ inventory::submit! {
     manifest("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true, default_factory::<Counter>)
 }
 
-/// The same, but its input is REQUIRED: it must refuse to run until a frame is present, and report
-/// why rather than running with a hole.
+/// The same, but its input is REQUIRED.
 #[derive(Default)]
 struct RequiredCounter {
     runs: u64,
 }
 impl Node for RequiredCounter {
     fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        // Read unconditionally: a required slot is exactly the promise that this cannot be None.
         let _ = i.get("in").expect("a required slot is never empty when process runs");
         self.runs += 1;
         let bytes = (self.runs as f32).to_le_bytes().to_vec();
@@ -204,16 +167,11 @@ inventory::submit! {
     manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false, default_factory::<RequiredCounter>)
 }
 
-/// A `[3, 4]` frame — the only source here that is not a vector, and the reason it exists. A
-/// fixture that only ever carries one dimension cannot tell a node that PRESERVES rank from one
-/// that flattens, which is the failure the whole signal set is built against.
-///
-/// Each row is the same rising signal offset by a round 100, so a channel that leaked into its
-/// neighbour shows up as arithmetic that stops working. Rising strictly, so a window that came out
-/// backwards does too; and carrying a small ripple, so a measure taken over it is not degenerate.
+/// A `[3, 4]` frame — the only source here that is not a vector. Each row rises, offset by a round
+/// 100, so a leak between channels, a reversed window or a degenerate measure all show up.
 #[derive(Default)]
 struct Grid {
-    /// Samples emitted so far — the frame's values continue the sequence rather than restarting it.
+    /// Samples emitted so far; each frame continues the sequence rather than restarting it.
     n: u64,
 }
 impl Node for Grid {
@@ -240,12 +198,7 @@ inventory::submit! {
     manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Grid>)
 }
 
-// ---------------------------------------------------------------------------
-// A refreshable param — the ⟳ round trip, which has no other observable surface
-// ---------------------------------------------------------------------------
-
-/// How many times any `_TestPicker` has been asked to re-enumerate. A process-wide counter because
-/// the answer has to CHANGE between scans for a test to tell a fresh scan from a cached one.
+/// Process-wide, because the answer must CHANGE between scans for a test to tell them apart.
 static PICKER_SCANS: AtomicU64 = AtomicU64::new(0);
 
 static PICKER_PARAMS: &[ParamDecl] = &[ParamDecl {
@@ -274,8 +227,7 @@ inventory::submit! {
     manifest("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false, default_factory::<Picker>)
 }
 
-/// The same declaration with NO hook behind it — a node that offers nothing to re-enumerate. The
-/// ⟳ spinner is cleared by the echo, so without one this button spins for its full safety timeout.
+/// The same declaration with NO hook behind it, so the ⟳ spinner runs to its safety timeout.
 #[derive(Default)]
 struct MutePicker;
 impl Node for MutePicker {

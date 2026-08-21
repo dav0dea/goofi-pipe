@@ -1,19 +1,10 @@
-//! Patch-scoped **globals** — named typed scalars shared across a patch. See
-//! `docs/superpowers/specs/2026-07-17-globals-panel-design.md`.
-//!
-//! - [`GlobalValue`] — a typed scalar (`float | int | bool | string`).
-//! - [`GlobalsSnapshot`] — a cheap read-only view handed to node setup/process (`NodeCtx.globals`)
-//!   and expression eval (`EvalCtx.globals`).
-//! - [`GlobalStore`] — the engine's authoritative map with the system-set invariant (system globals
-//!   are editable but never deletable/renamable; the store re-asserts them so a delete reappears).
-//! - [`SYSTEM_GLOBALS`] — the code-owned system global definitions (v1: `default_ufreq = 30`).
+//! Patch-scoped globals — named typed scalars shared across a patch.
 
 use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-/// A patch global's value — a typed scalar mirroring the scalar kinds of `Param` without its widget
-/// metadata. The panel edits it; expressions and node setup/process read it.
+/// A patch global's value — a typed scalar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GlobalValue {
     Float(f64),
@@ -53,7 +44,6 @@ impl GlobalValue {
             _ => None,
         }
     }
-    /// The wire/panel type tag — `"float" | "int" | "bool" | "string"`.
     pub fn type_tag(&self) -> &'static str {
         match self {
             GlobalValue::Float(_) => "float",
@@ -62,7 +52,6 @@ impl GlobalValue {
             GlobalValue::Str(_) => "string",
         }
     }
-    /// A plain-text rendering, used when coercing an incoming value into a `Str`-typed slot.
     fn display_string(&self) -> String {
         match self {
             GlobalValue::Float(v) => v.to_string(),
@@ -71,8 +60,7 @@ impl GlobalValue {
             GlobalValue::Str(s) => s.clone(),
         }
     }
-    /// Coerce `self` to `template`'s variant — used when SETTING an existing global so its declared
-    /// type stays stable (a `default_ufreq` Float stays Float even if the doc sends `30`/`"30"`).
+    /// Coerce to `template`'s variant, so an existing global's declared type stays stable on set.
     fn coerced_like(self, template: &GlobalValue) -> GlobalValue {
         match template {
             GlobalValue::Float(_) => GlobalValue::Float(self.as_f64().unwrap_or(0.0)),
@@ -83,23 +71,20 @@ impl GlobalValue {
     }
 }
 
-/// A code-owned system global: identity + default + panel doc. System globals are editable but never
-/// deletable or renamable; the engine re-asserts them so a delete reappears.
+/// A code-owned system global: editable, but never deletable or renamable.
 pub struct GlobalDef {
     pub name: &'static str,
     pub default: GlobalValue,
     pub doc: &'static str,
 }
 
-/// The v1 system global set — exactly `default_ufreq = 30` (the producer reference rate).
 pub static SYSTEM_GLOBALS: &[GlobalDef] = &[GlobalDef {
     name: "default_ufreq",
     default: GlobalValue::Float(30.0),
     doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
 }];
 
-/// Whether `name` is a legal global identifier: `[A-Za-z_][A-Za-z0-9_]*`, non-empty, and not the
-/// reserved namespace token `globals` (so `globals.<name>` never shadows the namespace itself).
+/// A legal identifier `[A-Za-z_][A-Za-z0-9_]*`, and never the reserved namespace token `globals`.
 pub fn is_valid_global_name(name: &str) -> bool {
     if name == "globals" {
         return false;
@@ -112,9 +97,7 @@ pub fn is_valid_global_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// An immutable, cheaply-cloned view of the patch globals, handed to node setup/process
-/// (`NodeCtx.globals`) and expression eval (`EvalCtx.globals`). Backed by an `Arc` so passing it into
-/// every tick's `NodeCtx` is a refcount bump, not a map clone.
+/// An immutable, cheaply-cloned view of the patch globals, for node setup/process and eval.
 #[derive(Clone, Debug, Default)]
 pub struct GlobalsSnapshot {
     map: Arc<IndexMap<String, GlobalValue>>,
@@ -124,8 +107,6 @@ impl GlobalsSnapshot {
     pub fn new(map: IndexMap<String, GlobalValue>) -> GlobalsSnapshot {
         GlobalsSnapshot { map: Arc::new(map) }
     }
-    // Typed scalar reads — the node-authoring surface (`ctx.globals.f64("default_ufreq")`), mirroring
-    // the four `Params<'a>` readers. `iter()` is the eval-namespace escape hatch (expr injection).
     pub fn f64(&self, name: &str) -> Option<f64> {
         self.map.get(name)?.as_f64()
     }
@@ -143,11 +124,8 @@ impl GlobalsSnapshot {
     }
 }
 
-/// The engine's authoritative globals map + the system-set invariant. System globals are seeded on
-/// construction (and re-asserted after a load); they may be edited but never removed. User globals
-/// may be added, edited, and removed. (Rename is not a store op — it arrives as a remove + add
-/// through the CRDT diff, since a CRDT map can't rename a key in place.) Insertion order (system
-/// first, then user in creation order) is preserved for a stable panel.
+/// The authoritative globals map. System globals may be edited but never removed, and the
+/// insertion order is observable (the panel, the `.gfi` and the mirror all read it).
 #[derive(Clone)]
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
@@ -161,16 +139,13 @@ impl Default for GlobalStore {
 }
 
 impl GlobalStore {
-    /// A fresh store with the system globals seeded to their defaults.
     pub fn new() -> GlobalStore {
         let mut s = GlobalStore { values: IndexMap::new(), system: std::collections::HashSet::new() };
         s.reassert_system();
         s
     }
 
-    /// Back-fill any missing system global with its default and mark it system — called on
-    /// construction and after a `.gfi` load, so system globals are always present (an older patch
-    /// missing one, or a system global added since, is filled) and can never be orphaned.
+    /// Back-fill any missing system global with its default — on construction and after a load.
     pub fn reassert_system(&mut self) {
         for def in SYSTEM_GLOBALS {
             self.values.entry(def.name.to_string()).or_insert_with(|| def.default.clone());
@@ -187,18 +162,16 @@ impl GlobalStore {
     pub fn contains(&self, name: &str) -> bool {
         self.values.contains_key(name)
     }
-    /// A read-only snapshot for eval / node context.
     pub fn snapshot(&self) -> GlobalsSnapshot {
         GlobalsSnapshot::new(self.values.clone())
     }
 
-    /// Every global in order, tagged with whether it is a system global — for mirroring + `.gfi`.
+    /// Every global in order, tagged with whether it is a system global.
     pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool)> {
         self.values.iter().map(|(k, v)| (k.as_str(), v, self.system.contains(k)))
     }
 
-    /// Set an EXISTING global's value, coercing to its declared type so system/user types stay
-    /// stable. Errors if the global does not exist (use [`Self::add`] for a new one).
+    /// Set an EXISTING global, coercing to its declared type; errors when it does not exist.
     pub fn set(&mut self, name: &str, value: GlobalValue) -> Result<(), String> {
         match self.values.get(name) {
             Some(existing) => {
@@ -210,7 +183,7 @@ impl GlobalStore {
         }
     }
 
-    /// Add a NEW user global. Errors on an invalid name or a collision (system or user).
+    /// Add a NEW user global; errors on an invalid name or a collision.
     pub fn add(&mut self, name: &str, value: GlobalValue) -> Result<(), String> {
         if !is_valid_global_name(name) {
             return Err(format!("invalid global name `{name}`"));
@@ -222,15 +195,12 @@ impl GlobalStore {
         Ok(())
     }
 
-    /// Current ordered position of `name`, if present. The order is observable (it feeds the `.gfi`,
-    /// the CRDT mirror, and the Globals panel), so a delete's inverse captures this to re-add the
-    /// global at its original slot rather than the tail.
+    /// Ordered position of `name` — a delete's inverse captures it to re-add at the original slot.
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.values.get_index_of(name)
     }
 
-    /// Add a NEW user global at ordered position `at` (clamped to the current length) — the
-    /// position-preserving re-add used by a delete/rename undo. Same validation as [`Self::add`].
+    /// Add a NEW user global at position `at` (clamped) — the re-add a delete/rename undo needs.
     pub fn add_at(&mut self, name: &str, value: GlobalValue, at: usize) -> Result<(), String> {
         if !is_valid_global_name(name) {
             return Err(format!("invalid global name `{name}`"));
@@ -242,7 +212,7 @@ impl GlobalStore {
         Ok(())
     }
 
-    /// Remove a USER global. Errors if the global is system (protected) or absent.
+    /// Remove a USER global; errors when it is a system global or absent.
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
         if self.system.contains(name) {
             return Err(format!("cannot delete system global `{name}`"));
@@ -253,9 +223,7 @@ impl GlobalStore {
         Ok(())
     }
 
-    /// Apply one mirrored client change: `Some(v)` sets an existing global or adds a new user one;
-    /// `None` removes (rejected for system globals). The single entry point the manager calls per
-    /// changed doc leaf, so add/edit/delete/rename (delete+add) all route through here uniformly.
+    /// Apply one mirrored client change: `Some(v)` sets or adds, `None` removes.
     pub fn apply_change(&mut self, name: &str, value: Option<GlobalValue>) -> Result<(), String> {
         match value {
             Some(v) if self.values.contains_key(name) => self.set(name, v),

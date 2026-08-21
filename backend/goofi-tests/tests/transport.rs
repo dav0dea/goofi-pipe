@@ -1,12 +1,7 @@
 //! The iceoryx2 transport, against real shared memory (spec §3).
 //!
-//! These live in an integration target rather than in-module because they need the real thing: a
-//! process that creates services, parks on a listener and gets woken by another port in the same
-//! binary. Every test picks its own [`Uid`], because a service name is global to the MACHINE and
-//! two tests sharing a uid would open each other's ports — and [`instance`] scopes the whole target
-//! by pid for the same reason one process wider: two concurrent runs of this binary (a second
-//! reviewer, rust-analyzer racing a terminal) otherwise collide on `max_publishers(1)`, and
-//! `open_or_create` means the loser silently reads the winner's config instead of failing.
+//! Every test picks its own [`Uid`] and [`instance`] scopes the target by pid: a service name is
+//! global to the MACHINE, and `open_or_create` means a colliding loser reads the winner's config.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +21,7 @@ use goofi_node::{
 /// Long enough that a park is a real park, short enough that a broken retention fails fast.
 const MS200: Duration = Duration::from_millis(200);
 
-/// A node with one input and one output — enough to give a transport a slot to publish on and a
-/// slot to receive on. Nothing here runs it; the manifest is what the transport reads.
+/// A node with one input and one output. Nothing runs it; the manifest is what the transport reads.
 #[derive(Default)]
 struct Passthrough;
 impl Node for Passthrough {
@@ -73,16 +67,12 @@ fn values(frame: &Data) -> Vec<f32> {
     }
 }
 
-/// This run's service-name scope. `Graph` mints one per graph for the same reason; an integration
-/// target has to do it for itself.
+/// This run's service-name scope.
 fn instance() -> String {
     format!("t{:x}", std::process::id())
 }
 
-/// Status is asynchronous by design (§4: "a node inside a long `process()` acks late"), so a test
-/// waits for it with a deadline rather than reading once. Under load — two of these targets at once,
-/// which is a thing that happens — a single immediate read is a race, and a deadline can only make a
-/// real failure slower, never a passing run flakier.
+/// Status is asynchronous by design, so a test waits for it with a deadline rather than reading once.
 fn status_within(channel: &NodeChannel, timeout: Duration) -> Vec<Status> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -101,10 +91,8 @@ fn base_of(uid: Uid) -> String {
 
 #[test]
 fn the_services_are_created_with_limits_the_defaults_do_not_give_us() {
-    // iceoryx2 fixes these at CREATION, before any wire exists, so they are hard patch limits.
-    // The defaults are all wrong for this design: max_notifiers 16 (a 20-wire multi-input busts
-    // it), max_subscribers 8 (a 9-consumer slot busts it), and AllocationStrategy::Static
-    // refuses any frame larger than initial_max_slice_len.
+    // iceoryx2 fixes these at CREATION, so they are hard patch limits, and every default is wrong
+    // for this design.
     let t = IoxTransport::create(&instance(), Uid(1), 0, manifest()).expect("services");
     let cfg = t.event_config();
     assert_eq!(cfg.event_id_max_value(), 255);
@@ -120,13 +108,8 @@ fn the_services_are_created_with_limits_the_defaults_do_not_give_us() {
 
 #[test]
 fn an_undrained_control_mailbox_keeps_the_whole_burst() {
-    // Control and status are message STREAMS, not the latest-wins CELL a data wire is — and they
-    // were built by the data wire's own builder, so a one-deep buffer silently dropped all but the
-    // newest. An ack the graph never reads parks a wire sequence forever; a fault it never reads is
-    // a node that draws healthy while it is broken.
-    //
-    // The count is past any plausible drain interval on purpose: a node deep inside `process` while
-    // a load wires a hundred slots is exactly the burst this has to survive.
+    // Control and status are message STREAMS, not the latest-wins CELL a data wire is. The count is
+    // past any plausible drain interval: a node deep inside `process` is the burst this has to survive.
     const BURST: u64 = 200;
     let transport = IoxTransport::create(&instance(), Uid(30), 0, manifest()).unwrap();
     let channel = NodeChannel::open(&base_of(Uid(30))).unwrap();
@@ -145,16 +128,14 @@ fn an_undrained_control_mailbox_keeps_the_whole_burst() {
     );
 }
 
-/// The doorbell of a node born at `uid`, opened the way a producer opens one: on the ringer's own
-/// iceoryx2 node, which every port owner has exactly one of.
+/// The doorbell of a node born at `uid`, opened on the ringer's own iceoryx2 node.
 fn bell_for(uid: Uid, ringer: &IoxNode) -> Doorbell {
     Doorbell::open(ringer, &door_service(&base_of(uid))).expect("doorbell")
 }
 
 #[test]
 fn a_notify_landing_mid_drain_is_not_lost() {
-    // The notification is only a HINT; the truth is in the subscriber queues and the control
-    // mailbox. This is what lets a node drain everything and never park with work pending.
+    // The notification is only a HINT; the truth is in the subscriber queues and the control mailbox.
     let t = IoxTransport::create(&instance(), Uid(2), 0, manifest()).unwrap();
     let ringer = iox_node().unwrap();
     let bell = bell_for(Uid(2), &ringer);
@@ -178,9 +159,7 @@ fn a_control_and_a_data_notification_both_survive() {
 
 #[test]
 fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
-    // The whole control plane in one pass: the graph publishes msgpack and rings id 0, the node
-    // wakes on that, applies the message, and answers with the seq it was sent. The ack is the only
-    // thing that orders a wire change, so a message that arrives without one is a stalled sequence.
+    // The ack is the only thing that orders a wire change, so a message without one stalls the sequence.
     let transport = Arc::new(IoxTransport::create(&instance(), Uid(4), 0, manifest()).unwrap());
     let mut node = NodeRuntime::new(
         manifest(),
@@ -205,8 +184,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     assert!(node.next_wake().is_some(), "the node applied what it was sent and re-paced");
     assert_eq!(status_within(&channel, MS200), vec![Status::Ack { seq: 41, ok: Ok(()) }]);
 
-    // And the ack carries the VERDICT, not a receipt: a slot this manifest does not declare is the
-    // one refusal a node can state, and the graph abandons that sequence rather than waiting on it.
+    // The ack carries the VERDICT, not a receipt: the graph abandons a refused sequence.
     channel.send(Envelope {
         seq: 42,
         control: Control::OutSlot { slot: "nope".to_string(), targets: Vec::new() },
@@ -217,8 +195,6 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
         vec![Status::Ack { seq: 42, ok: Err("no output slot `nope`".to_string()) }]
     );
 
-    // The status channel carries the node's own state as well as its acks, and every variant takes
-    // the same crossing — a `Fault` is what the console and the node badge are drawn from.
     let fault = NodeFault::Process { msg: "boom".to_string(), since: 12.5 };
     transport.report(Status::Fault { fault: Some(fault.clone()) });
     assert_eq!(status_within(&channel, MS200), vec![Status::Fault { fault: Some(fault) }]);
@@ -226,8 +202,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
 
 #[test]
 fn a_frame_reaches_a_wired_consumer_and_rings_its_slot() {
-    // A wire is two declarations and nothing else: the producer is told a doorbell, the consumer is
-    // told a service name. Neither knows the other's uid.
+    // A wire is two declarations and nothing else: neither end knows the other's uid.
     let producer = IoxTransport::create(&instance(), Uid(5), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(6), 0, manifest()).unwrap();
     consumer.wire_in("in", &[output_service(&base_of(Uid(5)), "out")]).unwrap();
@@ -244,8 +219,7 @@ fn a_frame_reaches_a_wired_consumer_and_rings_its_slot() {
 
 #[test]
 fn a_frame_larger_than_the_initial_slice_still_lands() {
-    // `AllocationStrategy::Static` — the iceoryx2 default — refuses this outright, and a GOOF frame
-    // is variable-size by construction: one HD video frame or one long buffer busts any fixed pool.
+    // `AllocationStrategy::Static`, the iceoryx2 default, refuses this: a GOOF frame is variable-size.
     let producer = IoxTransport::create(&instance(), Uid(7), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(8), 0, manifest()).unwrap();
     consumer.wire_in("in", &[output_service(&base_of(Uid(7)), "out")]).unwrap();
@@ -259,8 +233,7 @@ fn a_frame_larger_than_the_initial_slice_still_lands() {
 
 #[test]
 fn a_wire_the_new_set_omits_stops_delivering() {
-    // The slot set is DECLARATIVE: what a message does not name is dropped. This is the same
-    // mechanism that displaces a single input's previous wire, so it has no special case anywhere.
+    // The slot set is DECLARATIVE: what a message does not name is dropped, wire displacement included.
     let producer = IoxTransport::create(&instance(), Uid(9), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(10), 0, manifest()).unwrap();
     let service = output_service(&base_of(Uid(9)), "out");
@@ -275,10 +248,8 @@ fn a_wire_the_new_set_omits_stops_delivering() {
 
 #[test]
 fn a_wire_the_new_set_still_names_keeps_what_it_is_holding() {
-    // The other half of declarative wiring, and the one with a cost: the FULL set is re-sent on every
-    // change to a slot, so a surviving wire rebuilt rather than kept would discard whatever its
-    // producer has already sent — adding one wire to a multi-input slot would silently drop every
-    // sibling's in-flight frame.
+    // The FULL set is re-sent on every change to a slot, so a surviving wire must be kept rather than
+    // rebuilt — a rebuild would discard whatever its producer has already sent.
     let producer = IoxTransport::create(&instance(), Uid(11), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(12), 0, manifest()).unwrap();
     let held = output_service(&base_of(Uid(11)), "out");
@@ -294,11 +265,8 @@ fn a_wire_the_new_set_still_names_keeps_what_it_is_holding() {
 
 #[test]
 fn a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow() {
-    // §3.5 sets `max_subscribers` to 256 because "a 9-consumer slot busts the default" — but that
-    // setting is inert on its own: this design opens a service from one iceoryx2 node per graph
-    // node, and `max_nodes` counts exactly those. Measured before it was set: the 20th consumer was
-    // refused with `ExceedsMaxNumberOfNodes`, so the real ceiling was 19 and both the configured 256
-    // and this test's own limits assertion were saying nothing.
+    // `max_subscribers` is inert on its own: a service is opened from one iceoryx2 node per graph
+    // node, and `max_nodes` counts exactly those.
     const CONSUMERS: u64 = 24;
     let producer = IoxTransport::create(&instance(), Uid(20), 0, manifest()).unwrap();
     let service = output_service(&base_of(Uid(20)), "out");
@@ -318,15 +286,8 @@ fn a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow() {
 
 #[test]
 fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
-    // §3.5: a multi slot's cells are "keyed by service name and ordered by that service's position
-    // in the received `services` Vec" — the order is the SET's, never the producers' own.
-    //
-    // The wire count is past what the defaults allow on purpose, and it is the EVENT service's turn
-    // to say so: §3.2 sets `max_notifiers` to 256 for exactly this shape, "a 20-wire multi-input",
-    // but a door is also opened by one iceoryx2 node per producing node, and `max_nodes` (default 36
-    // for an event service) counts those. Measured without it set: bell 35 was refused with
-    // `ExceedsMaxNumberOfNodes`, so `wire_out` errs, the node acks Err, the sequence is abandoned —
-    // and the cable is drawn in the editor and never wired, with nothing reported.
+    // A multi slot's cells are keyed by service name and ordered by the SET, never by the producers.
+    // The wire count is past the event service's `max_nodes`, which counts one node per producer.
     const WIRES: u64 = 40;
     let producers: Vec<IoxTransport> = (0..WIRES)
         .map(|i| IoxTransport::create(&instance(), Uid(200 + i), 0, manifest()).unwrap())
@@ -362,11 +323,8 @@ fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
 /// The env var that turns this binary into the child below. Its value is irrelevant.
 const CRASH_HELPER: &str = "GOOFI_TRANSPORT_CRASH_HELPER";
 
-/// The child: open two iceoryx2 nodes, NAME them, then wait to be killed. Never returns.
-///
-/// It names its own ids rather than letting the parent diff the directory, because that directory
-/// is machine-global: the suite's other binaries create and remove entries there at the same time,
-/// and a diff picked up theirs.
+/// The child: open two iceoryx2 nodes, NAME them, then wait to be killed. It names its own ids
+/// because that directory is machine-global and a diff picks up other binaries' entries.
 #[test]
 fn crash_helper() {
     if std::env::var(CRASH_HELPER).is_err() {
@@ -379,10 +337,7 @@ fn crash_helper() {
 
 #[test]
 fn what_a_crash_left_behind_is_gone_by_the_next_start() {
-    // §3's promise: a killed process drops NOTHING, so its node directories and the shared memory
-    // its ports hold stay allocated until the next start takes them. Nothing else does it — the
-    // three automatic cleanup passes are off by design, including the one in `Node::drop` that used
-    // to make this pass with the sweep gutted, as long as any other test ran beside it.
+    // A killed process drops NOTHING, so its node directories and shared memory stay allocated.
     let dirs = || -> std::collections::HashSet<String> {
         std::fs::read_dir(goofi_engine::runtime::nodes_dir().expect("the nodes directory"))
             .into_iter()
@@ -395,8 +350,7 @@ fn what_a_crash_left_behind_is_gone_by_the_next_start() {
         .args(["crash_helper", "--exact", "--nocapture"])
         .env(CRASH_HELPER, "1")
         .stdout(std::process::Stdio::piped())
-        // It is SIGKILLed mid-test, so its own harness never finishes: its parting "broken pipe"
-        // would otherwise read as this test's failure.
+        // SIGKILLed mid-test, so its parting "broken pipe" would otherwise read as this test's failure.
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn the child");
@@ -416,8 +370,7 @@ fn what_a_crash_left_behind_is_gone_by_the_next_start() {
         assert!(present.contains(id), "the child's node `{id}` has a directory to leave behind");
     }
 
-    // SIGKILL, because the point is a process that drops nothing. A graceful exit would clean up
-    // after itself and this would pass against a sweep that does nothing at all.
+    // SIGKILL, because the point is a process that drops nothing: a graceful exit would clean up.
     let _ = std::process::Command::new("kill").args(["-9", &child.id().to_string()]).status();
     let _ = child.wait();
 

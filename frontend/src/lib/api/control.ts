@@ -1,125 +1,79 @@
-/**
- * Control-plane WebSocket client.
- *
- * Connects to `/control`, exposes a typed RPC method (`call`), and an
- * event subscription mechanism (`on`). Auto-reconnects with exponential
- * backoff; pending RPCs that were in-flight when the socket dropped are
- * rejected so callers can re-issue if appropriate.
- */
+/** Control-plane WebSocket client: typed RPC and event subscription over `/control`. */
 import type { ParamDescriptor } from '$lib/api/types';
 import type { OpName } from '$lib/api/ops';
 
-/** Control-plane protocol version. The browser reconciles purely from echoed
- * events, so a stale `frontend/build/` against a newer backend would diverge
- * SILENTLY rather than erroring. The backend stamps its version into `hello`
- * (`backend/goofi-bridge/src/schemas.rs` PROTOCOL_VERSION) and the client asserts a match —
- * turning silent skew into an explicit "reload required". Bump BOTH sides
- * together whenever the wire shape or reconciliation rules change. */
+/** Control-plane protocol version. Bump it together with PROTOCOL_VERSION in
+ * `backend/goofi-bridge/src/schemas.rs`. */
 export const PROTOCOL_VERSION = 3;
 
-/** Whether a backend-reported protocol version is compatible with this build.
- * Strict equality: an absent/non-numeric version means a backend older than this
- * field, which is itself a skew worth flagging. */
+/** Whether a backend-reported protocol version is compatible with this build. */
 export function isProtocolCompatible(remote: unknown): boolean {
 	return remote === PROTOCOL_VERSION;
 }
 
-/** A node's lifecycle stage: 'creating' (process spawned; importing its
- * implementation + opening endpoints) → 'setup' (first state arrived, setup()
- * still running) → 'ready'. 'error' is terminal (bootstrap failure — the
- * backend does not auto-restart it). */
+/** A node's lifecycle stage. 'error' is terminal: the backend does not auto-restart it. */
 export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
 
 export interface NodeTypeInfo {
 	type: string;
 	category: string;
-	/** Which tree the type came from: the patch you have open, or the goofi you are running.
-	 * Recorded by the scan (the only thing that knows the directory) and shown on every palette
-	 * row. An `--extra-nodes` directory reads as `builtin` — a badge of its own is a design
-	 * question, not a fact the scan reports. */
+	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. */
 	source: 'builtin' | 'patch';
 	doc: string;
-	/** Unconditional top-level deps resolvable on this machine (registry probe).
-	 * Unavailable types render greyed/disabled in the add menu. */
+	/** Whether this machine resolves the type's unconditional top-level deps. */
 	available: boolean;
 	missing_deps: string[];
 	input_slots: Record<string, string>;
-	/** Names of the variadic (multi) input slots — static type shape the UI reads to
-	 * render those slots tall and accept many cables. Read-only; never toggled here. */
+	/** Names of the variadic (multi) input slots. */
 	input_multi?: string[];
 	output_slots: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
 }
 
-/** What one `rescan_nodes` changed, by type name: node files that appeared, whose code changed
- * (their live instances were restarted onto it), and that are gone. */
+/** What one `rescan_nodes` changed, by type name. */
 export interface ScanDiff {
 	added: string[];
 	changed: string[];
 	removed: string[];
 }
 
-/** A node's self-reported execution telemetry (mirrors the backend NODE_STATS
- * payload): the measured tick cadence, which is the only thing the engine measures. */
+/** A node's self-reported execution telemetry. */
 export interface NodeStats {
 	updates_per_second: number;
 }
 
 export interface NodeInstanceInfo {
-	/** The UNIVERSAL node identity — the key everything references the node by
-	 * (flow id, selection, links, data subscriptions, panel bindings). Stable
-	 * across rename/restart/reload. For a sub-patch group node (a synthesized
-	 * virtual node) this is the instance id; for a real node it's the backend uid. */
+	/** The universal node identity, stable across rename/restart/reload. */
 	uid: string;
-	/** Mutable DISPLAY name (e.g. "oscillator0") — flat and globally unique at every
-	 * nesting depth (no `inst::local` qualification). For the label only — never an
-	 * identity key, so it can be renamed freely. */
+	/** Mutable display name — the label only, never an identity key. */
 	name: string;
 	type: string;
 	category: string;
 	doc: string;
 	input_slots: Record<string, string>;
-	/** Names of the variadic (multi) input slots — static type shape the UI reads to
-	 * render those slots tall and accept many cables. Read-only; never toggled here. */
+	/** Names of the variadic (multi) input slots. */
 	input_multi?: string[];
 	output_slots: Record<string, string>;
-	/** Optional per-slot DISPLAY label, keyed by slot id (the handle/routing key). When
-	 * absent for a slot, the slot id is shown. Used by a sub-patch synth node to show a
-	 * portal's renameable name while keeping the stable boundary id as the handle. */
+	/** Optional per-slot display label, keyed by slot id; the slot id is shown when absent. */
 	slot_labels?: Record<string, string>;
 	params: Record<string, Record<string, ParamDescriptor>>;
 	pos: [number, number];
-	/** Per-output-slot view state restored from the .gfi patch — empty when
-	 * the node was just spawned, populated when a save was previously made.
-	 * `kind` is the chosen viewer type; `settings` are that viewer's cog-menu
-	 * overrides. */
+	/** Per-output-slot view state restored from the .gfi patch. */
 	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
-	/** Sub-patch membership marker; null for a top-level node. Members of a
-	 * collapsed instance are hidden from the canvas (the group node stands in). */
+	/** Sub-patch membership marker; null for a top-level node. */
 	membership?: { instance: string; local_name: string } | null;
 	error: string | null;
-	/** Lifecycle stage — seeded by node_added/snapshot, updated by state_update
-	 * and node_stage events. Drives the boot spinner ('creating'/'setup') and
-	 * the terminal boot-error badge. Backend always sends it for real nodes;
-	 * optional so synthesized virtual nodes (sub-patch instances) can omit it. */
+	/** Lifecycle stage. Optional so a synthesized virtual node can omit it. */
 	stage?: NodeStage;
-	/** Rolling execution telemetry the node pushes on the status plane (2 Hz): the
-	 * measured update rate. Absent until the node's first NODE_STATS push, and
-	 * populated only by the `node_stats` event — the snapshot's runtime overlay
-	 * carries stage/error, never stats. Runtime UI state. */
+	/** Rolling execution telemetry, absent until the node's first `node_stats` event. */
 	stats?: NodeStats | null;
-	/** Set only on a *virtual* node synthesized for a sub-patch scope (see
-	 * `graph.nodeById`). Lets the node layers — selection, inspector, drag —
-	 * treat a sub-patch like a node while the inspector renders its controls
-	 * instead of param groups. Absent/null for real nodes. */
+	/** Set only on a virtual node synthesized for a sub-patch scope. */
 	subpatch?: SubpatchMeta | null;
 }
 
-/** Marks a virtual node as standing in for a sub-patch scope. Only the id rides
- * along — member count is recomputed from the `instances` map so it never goes stale. */
+/** Marks a virtual node as standing in for a sub-patch scope. */
 export interface SubpatchMeta {
 	instId: string;
-	/** Number of member nodes (shown as a badge on the collapsed group node). */
 	memberCount: number;
 }
 
@@ -131,25 +85,18 @@ export interface LinkInfo {
 	slot_in: string;
 }
 
-/** One boundary (In/Out node) of a sub-patch. `inner_node`/`inner_slot` are null
- * when the boundary is UNWIRED (added but not yet connected to a member); a wired
- * boundary becomes a port on the collapsed group node. `pos` is the In/Out pill's
- * position inside the entered view. */
+/** One boundary (In/Out node) of a sub-patch; `inner_node`/`inner_slot` are null when unwired. */
 export interface SubPatchPort {
 	dir: 'in' | 'out';
 	dtype?: string;
 	inner_node: string | null;
 	inner_slot: string | null;
 	pos: [number, number];
-	/** The portal's renameable DISPLAY/slot label (defaults to in0/out0). Decoupled from
-	 * the interface KEY, which stays the stable routing id — so a rename never re-keys an
-	 * external wire. */
+	/** The portal's renameable display label, decoupled from the stable routing key. */
 	name?: string;
 }
 
-/** The six virtual In/Out node types — one per data type per direction. They are
- * placeable ONLY inside a sub-patch (the add-menu surfaces them when entered) and
- * carry no params; the type name encodes the boundary's direction + data type. */
+/** The six virtual In/Out node types — one per data type per direction. */
 export interface BoundarySpec {
 	dir: 'in' | 'out';
 	dtype: string;
@@ -162,15 +109,11 @@ export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((
 			type: `${side}${dt}`,
 			category: 'boundary',
 			doc: `Sub-patch ${side === 'In' ? 'input' : 'output'} (${dt.toLowerCase()})`,
-			// An In node feeds a member input (it has an OUTPUT of the dtype); an Out
-			// node drains a member output (it has an INPUT). Declaring these lets the
-			// seeded add-menu's dtype filter keep In/Out as valid auto-connect targets
-			// when you click a member slot inside a sub-patch.
+			// An In node FEEDS a member (so it carries an output); an Out node drains one.
 			input_slots: side === 'Out' ? slot : {},
 			output_slots: side === 'In' ? slot : {},
 			params: {},
-			// Virtual types have no implementation module — always addable, and they ship with the
-			// editor rather than with either tree.
+			// Virtual types have no implementation module — always addable.
 			available: true,
 			source: 'builtin',
 			missing_deps: []
@@ -185,35 +128,28 @@ export function boundarySpec(type: string): BoundarySpec | null {
 	return { dir: m[1] === 'In' ? 'in' : 'out', dtype: m[2].toUpperCase() };
 }
 
-/** A flatten-at-runtime sub-patch instance the editor renders as a group node.
- * This is a server-COMPUTED record (see bridge `describe_instance`) that the frontend
- * MIRRORS — every field below is computed once on the backend, never re-derived here. */
+/** A sub-patch instance the editor renders as a group node — mirrored from the bridge's
+ * `describe_instance`, never re-derived here. */
 export interface InstanceInfo {
-	/** The scope's stable uid (also its key in the instances map, and its facade node's uid). */
+	/** The scope's stable uid — also its facade node's uid. */
 	uid: string;
-	/** Display label, e.g. "subpatch0" — separate from the uid key. */
 	name: string;
-	/** Parent scope uid (the nesting tree edge); null at the top level. */
+	/** Parent scope uid; null at the top level. */
 	parent: string | null;
-	/** stub id -> port (the scope's boundary stubs; `inner_node` is the DIRECT inner member uid). */
+	/** stub id -> port; `inner_node` is the direct inner member uid. */
 	interface: Record<string, SubPatchPort>;
 	pos: [number, number];
-	/** member uid -> { uid, whether the member is itself a nested scope } (flat model: keyed by
-	 * uid, no template-local names) — lets the editor split direct children into plain nodes vs
-	 * nested collapsed sub-patches. */
+	/** member uid -> whether that member is itself a nested scope. */
 	members: Record<string, { uid: string; is_instance: boolean }>;
-	/** External ports computed from WIRED stubs: stub id -> dtype. Mirror the collapsed facade
-	 * node's input/output slots (a pure passthrough). */
+	/** External ports computed from WIRED stubs: stub id -> dtype. */
 	slots: { input: Record<string, string>; output: Record<string, string> };
-	/** First errored DESCENDANT across the whole subtree (recursion-correct), or null. */
+	/** First errored descendant across the whole subtree, or null. */
 	error: string | null;
-	/** Per-output-boundary view state persisted in the .gfi patch (round-trips), keyed
-	 * by boundary id — same shape as a node's `viewers`. */
+	/** Per-output-boundary view state persisted in the .gfi patch, keyed by boundary id. */
 	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
 }
 
-/** Canonical string key for a link — its four slot endpoints. Stable and
- * unique per link, usable as a map key or the SvelteFlow edge id. */
+/** Canonical string key for a link — its four slot endpoints. */
 export function linkKey(l: LinkInfo): string {
 	return `${l.node_out}.${l.slot_out}→${l.node_in}.${l.slot_in}`;
 }
@@ -239,8 +175,7 @@ export interface DirListing {
 	roots: FsRoot[];
 }
 
-/** Flatten a node's grouped param descriptors to a plain `{group: {name: value}}`
- * bag — the shape clone/clipboard/replay all need. */
+/** Flatten a node's grouped param descriptors to a plain `{group: {name: value}}` bag. */
 export function paramValues(node: NodeInstanceInfo): Record<string, Record<string, unknown>> {
 	const out: Record<string, Record<string, unknown>> = {};
 	for (const [group, params] of Object.entries(node.params)) {
@@ -251,38 +186,23 @@ export function paramValues(node: NodeInstanceInfo): Record<string, Record<strin
 }
 
 export interface GraphSnapshot {
-	/** Control-plane protocol version, present on the `hello` handshake. The
-	 * client asserts it against {@link PROTOCOL_VERSION}; a mismatch surfaces a
-	 * "reload required" state instead of silently diverging. */
+	/** Control-plane protocol version, present on the `hello` handshake. */
 	protocol_version?: number;
-	/** Identifies the manager *process*. Changes when the backend is restarted,
-	 * letting the graph store distinguish a fresh session (reset the layout)
-	 * from a transient reconnect to the same one (keep the current layout). */
+	/** Identifies the manager process; it changes when the backend is restarted. */
 	instance_id: string;
-	/** Per-node RUNTIME state (`{uid: {stage, error}}`) — the event-sourced overlay the CRDT doc
-	 * never holds. Seeded here because its live stream pushes only transitions, so a client that
-	 * connects to a *running* graph would otherwise render an errored node as healthy. The graph
-	 * STRUCTURE is deliberately absent: nodes, links and the sub-patch forest live in the doc. */
+	/** Per-node runtime state, seeded here because its live stream pushes only transitions. */
 	runtime: Record<string, { stage?: NodeStage; error?: string | null }>;
-	/** The node palette (same list `list_nodes` returns), carried on `hello` /
-	 * `graph_replaced` so the client has descriptors in hand immediately — no async
-	 * round-trip before it can build nodes from the CRDT doc. Absent on an older
-	 * backend (the client then falls back to fetching `list_nodes`). */
+	/** The node palette, carried on `hello`/`graph_replaced`. Absent on an older backend. */
 	node_types?: NodeTypeInfo[];
 	save_path: string | null;
 	unsaved_changes: boolean;
-	/** Where THIS client was last looking — the page in front, the focused panel, each editor's
-	 * sub-patch depth. Persisted with the patch but never converged to a peer and never dirtying;
-	 * the ARRANGEMENT itself is the fifth CRDT doc root, not a snapshot field. */
+	/** Where THIS client was last looking — persisted with the patch, never converged to a peer. */
 	viewpoint?: unknown;
-	/** The spawned agent harnesses and the installed ones, seeded here for the reason the `runtime`
-	 * overlay is: `harness_changed` carries only transitions, so a tab joining a running patch
-	 * would otherwise draw an empty switcher over a live harness. Absent on an older backend. */
+	/** The spawned agent harnesses and the installed ones. Absent on an older backend. */
 	harnesses?: HarnessRoster;
 }
 
-/** One spawned harness. `stopping` is its own state: the address closes the moment a stop is
- * asked for, which is a whole grace period before the child is gone. */
+/** One spawned harness. `stopping` spans the grace period between the stop and the exit. */
 export interface HarnessInstanceInfo {
 	id: string;
 	harness: string;
@@ -297,8 +217,7 @@ export interface DetectedHarness {
 	version: string | null;
 }
 
-/** The shape the snapshot seeds and `harness_changed` broadcasts — one shape, so a reconnecting
- * tab and a live one read the same thing. */
+/** The shape the snapshot seeds and `harness_changed` broadcasts. */
 export interface HarnessRoster {
 	instances: HarnessInstanceInfo[];
 	detected: DetectedHarness[];
@@ -306,8 +225,7 @@ export interface HarnessRoster {
 
 export type ControlEvent =
 	| { event: 'hello'; payload: GraphSnapshot }
-	// A bare "a node was created" announcement (the node itself arrives via the doc). Kept as the
-	// one hook a client can act on at creation time; carries no projection of the node.
+	// The node itself arrives via the doc; this carries no projection of it.
 	| { event: 'node_added'; payload: { uid: string } }
 	| {
 			event: 'state_update';
@@ -315,41 +233,30 @@ export type ControlEvent =
 				node: string;
 				params: Record<string, Record<string, ParamDescriptor>>;
 				stage?: NodeStage;
-				// The node's current error, carried on the (always-on, re-pushed) state
-				// plane so a lost first PROCESSING_ERROR still surfaces and a healthy
-				// respawn's clear (null) lifts a stale chip.
+				// Re-pushed on the state plane, so a lost first error still surfaces and a clear lifts it.
 				error?: string | null;
-				// Params (`[group, name]`) whose ⟳ refresh just completed on this push —
-				// the node re-scanned its options and reports done (success or failure),
-				// so the UI can clear the per-param spinner exactly when fresh options land.
+				// Params whose ⟳ refresh completed on this push, so the UI can clear the spinner.
 				refreshed_params?: [string, string][];
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
 	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string } }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
-	// Live evaluated values of a node's expression-driven params (`{group: {name: value}}`),
-	// pushed at the stats cadence so the inspector preview tracks each re-evaluation. Applied
-	// surgically (only these params' `value`), never a wholesale params replace.
+	// Applied surgically (only these params' `value`), never a wholesale params replace.
 	| {
 			event: 'param_values';
 			payload: { node: string; values: Record<string, Record<string, number | string | boolean>> };
 	  }
 	| { event: 'unsaved_changes'; payload: { unsaved_changes: boolean } }
 	| { event: 'save_path_changed'; payload: { save_path: string | null } }
-	// The palette changed under a client that is already connected — a rescan re-derived it, or a
-	// load brought a patch's own node types. `hello` carries the same list to one that is arriving.
+	// The palette changed under an already-connected client; `hello` carries it to an arriving one.
 	| { event: 'node_types'; payload: { types: NodeTypeInfo[] } }
-	// A harness was spawned, stopped or reaped — or the detection sweep landed. Carries the WHOLE
-	// roster, the same shape the snapshot seeds, so a client never has to diff transitions.
+	// Carries the WHOLE roster, so a client never has to diff transitions.
 	| { event: 'harness_changed'; payload: HarnessRoster }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
-	// The control-plane document, whole — sent unprompted on connect, and again to recover a client
-	// that lagged past the broadcast ring. The panel arrangement has no event of its own: it is one
-	// of the document's five roots, so a peer's layout edit arrives as a `doc_patch` like any other.
+	// The whole document — on connect, and again to recover a client that lagged past the ring.
 	| { event: 'doc_state'; payload: { v: number; doc: Record<string, unknown> } }
-	// One delta. `from` is the version it applies TO and `v` the version it produces, so a replica
-	// that missed one can say so instead of merging onto the wrong base.
+	// `from` is the version the delta applies TO, `v` the version it produces.
 	| { event: 'doc_patch'; payload: { from: number; v: number; patch: Record<string, unknown> } };
 
 type EventHandler = (ev: ControlEvent) => void;
@@ -359,22 +266,16 @@ type Pending = {
 	reject: (e: Error) => void;
 };
 
-/** Minimal structural surface of the control client — the dependency-injection
- * seam that executors and the history store depend on, so unit tests can
- * substitute a fake (see `$lib/test/fakeControl`). `ControlClient` implements
- * it; nothing else needs to. */
+/** Minimal structural surface of the control client — the seam a test fake substitutes for. */
 export interface Control {
-	/** This client's stable session tag, sent on every request. It scopes the manager's per-session
-	 * undo history. */
+	/** This client's stable session tag; it scopes the manager's per-session undo history. */
 	readonly session: string;
 	call<T = unknown>(op: OpName, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;
 	onConnect(fn: (c: boolean) => void): () => void;
 }
 
-/** This tab's stable command-session id (scopes the manager's per-client undo/redo). Minted once
- * per tab in `sessionStorage` so it survives WS reconnects but is unique across tabs; a fallback
- * id covers a non-browser context (SSR/tests) where `sessionStorage` is absent. */
+/** This tab's stable command-session id, minted once per tab in `sessionStorage`. */
 function readOrMintSession(): string {
 	try {
 		const KEY = 'goofi:session';
@@ -392,7 +293,6 @@ function readOrMintSession(): string {
 export class ControlClient implements Control {
 	private ws: WebSocket | null = null;
 	private url: string;
-	/** This tab's undo/redo session tag, sent on every request (see {@link readOrMintSession}). */
 	readonly session = readOrMintSession();
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
@@ -455,8 +355,7 @@ export class ControlClient implements Control {
 		}
 	}
 
-	/** Latch a protocol mismatch from the `hello` handshake (one-way: a reload is
-	 * the only fix, so we never clear it). Notifies subscribers once. */
+	/** Latch a protocol mismatch from `hello`. One-way: only a reload clears it. */
 	private _checkProtocol(payload: unknown): void {
 		const remote =
 			payload && typeof payload === 'object'
@@ -495,9 +394,7 @@ export class ControlClient implements Control {
 		return () => this.connectListeners.delete(handler);
 	}
 
-	/** Subscribe to a protocol-version mismatch (fires once, immediately if already
-	 * mismatched). A mismatch means this build can't safely talk to the running
-	 * backend — the UI should prompt a reload. */
+	/** Subscribe to a protocol-version mismatch (fires once, immediately if already mismatched). */
 	onProtocolMismatch(handler: (mismatch: boolean) => void): () => void {
 		this.protocolListeners.add(handler);
 		if (this._protocolMismatch) handler(true);
@@ -512,8 +409,7 @@ export class ControlClient implements Control {
 		const id = this.nextId++;
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-			// `session` rides every request at the top level (a sibling of op/payload) — the manager
-			// scopes its command history's undo/redo by it. Harmless on read-only ops.
+			// `session` rides at the top level: the manager scopes its undo/redo history by it.
 			this.ws!.send(JSON.stringify({ id, op, payload, session: this.session }));
 		});
 	}

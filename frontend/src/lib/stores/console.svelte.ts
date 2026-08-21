@@ -1,33 +1,5 @@
-/**
- * Console log store — bounded, virtualizable transcripts of node stdout/stderr.
- *
- * Fed by processing
- * errors mirrored as stderr (see the graph store's `error` handler). Designed to
- * stay smooth at ~100k entries.
- *
- * Each *view* (the unfiltered "everything" view, and one per active filter) owns
- * an independent **coalesced** stream:
- *
- * - storage is a fixed **circular buffer** (`Ring`): O(1) append and O(1) evict
- *   of the oldest, no `Array.shift`.
- * - consecutive identical lines (same node + stream + text) coalesce into one
- *   entry whose `count` ticks up — Chrome-devtools style. Coalescing is computed
- *   *per view*, so a node-filtered view groups that node's consecutive errors
- *   even when another node's output interleaved them in the global stream.
- * - within a view, `uid` increments only on append (not on coalesce), giving each
- *   entry a stable identity (the `{#each}` key) that a coalesced repeat preserves.
- * - a `version` rune bumps at most once per animation frame, so a burst of
- *   appends triggers one re-render, not one per line. Entries are plain objects
- *   (the panel renders shallow copies of the visible window so an in-place
- *   `count` bump re-renders the keyed row).
- * - entries coalesce when a node repeats the same line, so a
- *   panel re-subscribe can't duplicate lines it already holds.
- *
- * The unfiltered view is permanent so logs/errors accumulate even with no
- * console open; a filtered view is built on demand from the unfiltered view's
- * history (re-coalesced for the filter) and then maintained incrementally. The
- * only place lines are dropped is the per-view cap (oldest first).
- */
+/** Bounded, virtualizable transcripts of node stdout/stderr — one coalesced view per filter, each
+ * over a fixed ring, with re-renders batched to one per animation frame. */
 
 export type LogStream = 'stdout' | 'stderr';
 
@@ -41,8 +13,7 @@ export interface ConsoleEntry {
 	/** Consecutive-duplicate count (Chrome-style ×N). */
 	count: number;
 	ts: number;
-	/** Logical line count (newlines + 1) — the panel's row-height estimate before
-	 * a row is measured. */
+	/** Logical line count (newlines + 1) — the panel's row-height estimate. */
 	lines: number;
 }
 
@@ -129,17 +100,14 @@ export interface LogRecord {
 export class ConsoleStore {
 	private views = new Map<string, View>();
 
-	/** Bumped (rAF-coalesced) whenever any view's visible data changes — drives
-	 * the panel's row re-render (incl. ×count badges). */
+	/** Bumped (rAF-coalesced) whenever any view's visible data changes. */
 	version = $state(0);
-	/** Bumped only when the entry *set* changes (a new entry pushed / cleared),
-	 * NOT on a coalesce count-bump. The panel keys its (more expensive) row-height
-	 * layout off this so a stream of coalescing duplicates doesn't rebuild it. */
+	/** Bumped only when the entry *set* changes, so a stream of coalescing duplicates does not
+	 * rebuild the panel's row-height layout. */
 	layoutVersion = $state(0);
 	private bumpScheduled = false;
 
 	constructor() {
-		// The unfiltered "everything" view is permanent.
 		this.views.set(ALL_SIG, this.makeView(ALL_SIG, null, true, true, true));
 	}
 
@@ -158,8 +126,7 @@ export class ConsoleStore {
 		return stream === 'stdout' ? v.stdout : v.stderr;
 	}
 
-	/** Append one line into a view, coalescing a consecutive identical line.
-	 * Returns true if a new entry was pushed (vs. coalesced into the last). */
+	/** Append one line into a view, coalescing a consecutive identical line; true if pushed. */
 	private appendTo(v: View, node: string, stream: LogStream, text: string, ts: number, count: number): boolean {
 		const last = v.ring.last();
 		if (last && last.node === node && last.stream === stream && last.text === text) {
@@ -205,8 +172,7 @@ export class ConsoleStore {
 		let v = this.views.get(sig);
 		if (!v) {
 			v = this.makeView(sig, node, stdout, stderr, false);
-			// Seed history from the unfiltered view, re-coalescing for this filter
-			// (so the filtered node's groups are correct from the first frame).
+			// Seed history from the unfiltered view, re-coalescing for this filter.
 			const all = this.views.get(ALL_SIG);
 			if (all) {
 				for (let i = 0; i < all.ring.count; i++) {

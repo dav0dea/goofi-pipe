@@ -1,10 +1,4 @@
-<!--
-  The viewer body: a lazily-subscribed Data frame fed into the shared
-  ViewerSurface. Owns the IntersectionObserver + data subscription and reads the
-  kind + settings from its ViewBinding, so neither the in-canvas SlotViewer nor
-  the docked ViewerPanel re-implements any of it. Padding is the caller's concern
-  (the node body and the panel body space it differently).
--->
+<!-- The viewer body: a lazily-subscribed Data frame fed into ViewerSurface. Padding is the caller's. -->
 <script lang="ts">
 	import { bindViewer } from '$lib/api/frames';
 	import { viewSpecForKind } from './capacity';
@@ -23,8 +17,7 @@
 	let frame = $state<DataFrame | null>(null);
 	let visible = $state(false);
 	let container: HTMLDivElement | null = $state(null);
-	// Device-pixel size of the viewer, quantized to 32-px steps so a 1-px resize
-	// doesn't renegotiate the reduction (hysteresis); drives the capacity ViewSpec.
+	// Quantized to 32-px steps so a 1-px resize does not renegotiate the reduction.
 	let capW = $state(0);
 	let capH = $state(0);
 	// Stable per-instance token so multiple viewers of one slot collect (not evict).
@@ -36,9 +29,7 @@
 		return Math.max(32, Math.round((px * dpr) / 32) * 32);
 	}
 
-	// IntersectionObserver: only subscribe while the viewer is in the viewport —
-	// the data WS opens lazily and tears down when scrolled away. ResizeObserver
-	// tracks the viewer's pixel budget so the node reduces to what we can show.
+	// Subscribe only while in the viewport; the ResizeObserver tracks the pixel budget.
 	onMount(() => {
 		if (!container) return;
 		const io = new IntersectionObserver(
@@ -61,19 +52,11 @@
 		};
 	});
 
-	/**
-	 * ONE hook for everything about this viewer: which stream it is on, whether it is on screen,
-	 * and what it needs the frame reduced to. Binding, unbinding, a resize, a kind switch and a
-	 * scroll out of view are the same event — a viewer changed — and they all land in the registry
-	 * the same way. What reaches the backend is decided there, from the settled registry, so a
-	 * re-run that changes nothing sends nothing, and a re-run while a sibling viewer watches the
-	 * same slot cannot disturb it.
-	 */
+	/** ONE hook for this viewer's stream, visibility and reduction; the registry settles what is sent. */
 	$effect(() => {
 		frame = null;
 		if (!visible || !slot) return;
-		// Kind is not part of the stream's identity — a kind switch re-negotiates the reduction on
-		// the same stream — but it IS part of what this viewer needs, so it belongs in the spec.
+		// Kind is not part of the stream's identity, but it IS part of what this viewer needs.
 		const spec = capW > 0 && capH > 0 ? viewSpecForKind(kind, capW, capH) : null;
 		return bindViewer(node, slot, token, spec, (f: DataFrame) => (frame = f));
 	});

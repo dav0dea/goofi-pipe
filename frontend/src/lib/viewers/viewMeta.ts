@@ -1,12 +1,3 @@
-/**
- * Summary stats for a non-renderable frame's text fallback.
- *
- * Option C nodes reduce each frame to display size BEFORE sending, so the frame
- * already carries true float-accurate values — the old bridge `__view__`
- * float-recovery layer (which let the inspector/viewer recover the source float
- * range from a uint8/float16 adapter body) is gone. Stats are computed directly
- * from the received array.
- */
 import type { ArrayData } from '$lib/codec/decode';
 
 export interface ViewSummary {

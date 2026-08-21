@@ -1,15 +1,4 @@
-/**
- * goofi's implementation of the panel system's [`LayoutHost`] — the one place a layout gesture
- * becomes a manager command.
- *
- * The panel system raises intents and holds no tree; this turns each into one op over `/control`
- * and records the one undo step that goes with it. The manager captured the exact inverse, so the
- * client entry carries no payload — it marks that a step happened, with a label and the
- * `NavContext` to re-orient to. A refusal records nothing, so the two stacks stay 1:1.
- *
- * It also owns what a tab is CALLED. A name is a label, not addressing, and only something that can
- * see the whole strip can pick a free one — which is why `addTab` takes no name.
- */
+/** goofi's `LayoutHost` — the one place a layout gesture becomes a manager op plus its undo step. */
 import type { LayoutHost, TabRef } from 'panelty';
 import type { Direction, Workspace } from 'panelty';
 import { captureNavContext } from '$lib/stores/navContext';
@@ -25,17 +14,12 @@ export interface HostDeps {
 }
 
 export function goofiLayoutHost(deps: HostDeps): LayoutHost {
-	/** Names an op is CARRYING right now. A tab is addressed by id, but its label must still be
-	 * free — and the replica does not update until the round trip lands, so a gesture repeated
-	 * faster than that (six taps on ＋) would ask for the same free name six times and have five
-	 * refused. Scoped to the flight rather than "until the name is seen": that is what the name is
-	 * actually racing, and it leaves nothing behind for a patch load to strand. */
+	/** Names an op is carrying right now: the replica lands only after the round trip, so gestures
+	 * repeated faster than that would all claim the same free name. */
 	const inFlight = new Set<string>();
 
 	function claimName(): string {
 		const taken = new Set([...deps.tabs().map((t) => t.name), ...inFlight]);
-		// Numbered from 1, and the manager's own first tab is `Tab 1` too: a bare name followed by a
-		// numbered series reads as two different kinds of thing in one strip.
 		let n = 1;
 		while (taken.has(`Tab ${n}`)) n += 1;
 		const name = `Tab ${n}`;
@@ -64,11 +48,9 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 	const landed = (v: unknown): boolean => v !== null;
 
 	return {
-		// --- tabs ------------------------------------------------------------
 		async addTab(opts): Promise<TabRef | null> {
 			const name = claimName();
-			// Two ops when a type is given, grouped as ONE client entry whose two children pop the
-			// two manager commands in order — so a tab that arrives showing X is one ctrl-Z.
+			// Grouped so a tab that arrives already showing its panel type is one ctrl-Z.
 			try {
 				return await history().transaction('Add tab', async () => {
 					const born = await cmd<TabRef>('Add tab', 'add_tab', { name, index: opts?.index });
@@ -94,7 +76,6 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 			return landed(await cmd('Reorder tabs', 'reorder_tab', { tab, to_index: toIndex }));
 		},
 
-		// --- panels ----------------------------------------------------------
 		async splitPanel(panel, direction: Direction, placeBefore, ratio) {
 			const fresh = await cmd<string>('Split panel', 'split_panel', {
 				panel,
@@ -117,9 +98,7 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 			return landed(await cmd(label, 'set_panel', { panel, ...patch }));
 		},
 
-		// The two landings are two ops, because a fresh tab has no split for a move to land in — which
-		// is why `add_tab` adopts a subtree at all. One method still, so the panel system has one
-		// gesture rather than a capability to probe for. `ratio` is left to the op's own half.
+		// Two ops, because a fresh tab has no split for a move to land in.
 		async movePanel(subtree, to) {
 			if ('newTab' in to) {
 				const name = claimName();
@@ -143,8 +122,7 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 	};
 }
 
-/** The live host, wired to the socket and to the strip the replica currently draws. Reading the
- * names back off the replica rather than holding a second copy is what keeps them one fact. */
+/** The live host, wired to the socket and to the strip the replica currently draws. */
 let _live: LayoutHost | null = null;
 export function layoutHost(): LayoutHost {
 	if (!_live) {

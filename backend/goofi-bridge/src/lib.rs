@@ -3,8 +3,7 @@
 //! is not in the path, since viewers publish their ViewSpec inband), `/term`, `/mcp`, and the SPA
 //! compiled into the binary.
 
-/// The control-plane document and its deltas — shape-agnostic. `pub` because the transport tests
-/// drive a real replica through the real wire.
+/// The control-plane document and its deltas — shape-agnostic.
 pub mod doc;
 mod projection;
 mod fsbrowse;
@@ -14,8 +13,6 @@ pub mod ops;
 mod origin;
 mod patchfile;
 mod proc;
-// Public because `AppState::reducers` is: the field's type has to be nameable by anything that
-// reads it.
 pub mod reducer;
 mod schemas;
 pub mod term;
@@ -26,9 +23,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a `/term` socket waits for the PTY's end-of-stream after the child is reaped. ConPTY
-/// keeps its pseudoconsole open past the child's death, so on Windows that end never comes; this
-/// bounds the wait without branching on the platform.
+/// How long a `/term` socket waits for the PTY's end-of-stream after the child is reaped: ConPTY
+/// keeps its pseudoconsole open past the child's death, so on Windows that end never comes.
 const EXIT_SETTLE: Duration = Duration::from_millis(250);
 
 
@@ -43,8 +39,7 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 /// The built SPA as it ships: a URL path and its bytes, compiled into the binary. Empty when the
-/// crate was built without a frontend — [`HEADLESS_BUILD`], stamped beside this table, is what says
-/// whether that was asked for.
+/// crate was built without a frontend, which [`HEADLESS_BUILD`] says whether anyone asked for.
 pub type Spa = &'static [(&'static str, &'static [u8])];
 include!(concat!(env!("OUT_DIR"), "/spa.rs"));
 
@@ -54,75 +49,55 @@ pub struct AppState {
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
     /// The control-plane document every client replicates, re-projected from the graph after each
-    /// successful op. Its deltas ride the `events` channel, so a replica sees them in the same
-    /// order as everything else the manager says.
+    /// successful op; its deltas ride the `events` channel.
     pub doc: Arc<Mutex<crate::doc::GraphDoc>>,
-    /// Whether the patch has been mutated since it was last saved or loaded — the title-bar dot
-    /// and the unload guard. DERIVED, not stored: nothing persists it, so a fresh session starts
-    /// clean and every successful mutating op sets it.
+    /// Whether the patch has been mutated since it was last saved or loaded. Nothing persists it,
+    /// so a fresh session starts clean.
     dirty: Arc<std::sync::atomic::AtomicBool>,
-    /// Shared per-slot data reducers (thalamus G1/G2): one reduction per active (node, slot),
-    /// fanned out to every viewer, so N tabs on one slot cost one reduce+encode, not N.
+    /// One reduction per active (node, slot), fanned out to every viewer.
     pub reducers: reducer::SlotReducers,
-    /// The single central per-session command history (unified-command API). A command-backed op
-    /// applies through here (recording its inverse tagged with the caller's session); `undo`/`redo`
-    /// replay the inverse/forward for that session. Locked AFTER `graph`, BEFORE `doc`.
+    /// The central per-session command history. Locked AFTER `graph`, BEFORE `doc`.
     pub history: Arc<Mutex<goofi_engine::CommandHistory>>,
-    /// Liveness policy for `/data` sockets. Injectable so a test need not sit through a
+    /// Liveness policy for `/data` sockets, injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
-    /// How a directory of node files becomes registered node types. Injected by the CLI at boot
-    /// (see [`NodeScan`]); the default discovers nothing.
+    /// How a directory of node files becomes registered node types; the default discovers nothing.
     pub scan_nodes: NodeScan,
-    /// The shipped node directories — `nodes/`, then every `--extra-nodes`. Empty when the binary
-    /// found neither. Boot-time config, set alongside the seam.
+    /// The shipped node directories — `nodes/`, then every `--extra-nodes`.
     pub system_nodes: Vec<PathBuf>,
-    /// What the last scan found, by type name → the file's stamp. The baseline the next [`rescan`]
-    /// diffs against, and the list it removes from — so a type registered some other way (a
-    /// test's direct registration) is never swept up by a rescan of these two trees.
+    /// What the last scan found, by type name → the file's stamp: the baseline the next [`rescan`]
+    /// diffs against, and the only list it removes from.
     node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
-    /// The tree a `.gfi` packs and unpacks. Dropped on a graceful exit; after a crash it stays,
-    /// because a reboot clears the system temp directory. Shared and private because a LOAD
-    /// replaces it while every handler holds its own clone of the state.
+    /// The tree a `.gfi` packs and unpacks. Behind a lock because a LOAD replaces it while every
+    /// handler holds its own clone of the state.
     mount: Arc<Mutex<PathBuf>>,
-    /// What the workspace looked like when it was last packed into a `.gfi` or unpacked from one —
-    /// the fingerprint [`AppState::is_dirty`] compares the live mount against. Re-taken at BOTH
-    /// ends; the load end is the one that is easy to miss, and the `load` arm says why.
+    /// The workspace as it was last packed or unpacked — what [`AppState::is_dirty`] compares the
+    /// live mount against. Re-taken at BOTH ends.
     workspace_baseline: Arc<Mutex<std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)>>>,
-    /// Where the open patch lives on disk — `None` until it is saved somewhere or loaded from
-    /// somewhere. MANAGER-owned (C38) rather than remembered per tab: it rides the snapshot every
-    /// client connects with, so a tab that opens later and a tab that never pressed Save name the
-    /// same file as the one that did.
+    /// Where the open patch lives on disk. Manager-owned rather than per tab, so it rides the
+    /// snapshot every client connects with.
     save_path: Arc<Mutex<Option<String>>>,
-    /// The port a spawned harness reaches this server's MCP surface on. Only the PORT: a harness
-    /// is a CHILD of this process, so `127.0.0.1` is right whatever `--bind` says — and
-    /// `--bind 0.0.0.0` would mint a URL no client can connect to.
+    /// Only the PORT: a harness is a CHILD of this process, so `127.0.0.1` is right whatever
+    /// `--bind` says.
     mcp_port: Arc<std::sync::atomic::AtomicU16>,
-    /// The spawned agent harnesses, their PTYs, and the detection cache. See [`term`].
+    /// The spawned agent harnesses, their PTYs, and the detection cache.
     pub harnesses: Arc<term::Harnesses>,
 }
 
-/// Timings that govern how a `/data` socket detects a **dead-but-not-closed** peer — a laptop that
-/// slept, a NAT that dropped the flow, a killed tab that never sent Close. Such a peer holds its
-/// connection (and therefore its share of the slot's reducer) open forever unless the bridge
-/// actively probes it, because a socket with no traffic produces no error.
+/// How a `/data` socket detects a dead-but-not-closed peer, which a socket with no traffic cannot
+/// report on its own.
 #[derive(Clone, Copy, Debug)]
 pub struct DataLiveness {
     /// How often an otherwise-idle peer is probed with a WS Ping.
     pub ping_interval: Duration,
-    /// How long an un-answered ping may stand before the peer is declared dead. Deliberately
-    /// several ping intervals, so a couple of lost round-trips on a bad mobile link do not
-    /// disconnect a healthy viewer.
+    /// How long an un-answered ping may stand before the peer is declared dead; several ping
+    /// intervals, so a few lost round-trips do not disconnect a healthy viewer.
     pub pong_deadline: Duration,
-    /// The longest a single outgoing write may block before the loop gives up on it. This is a
-    /// *non-parking* bound, not a liveness verdict — see `handle_data`.
+    /// The longest one outgoing write may block: a NON-PARKING bound, not a liveness verdict.
     pub send_timeout: Duration,
 }
 
 impl DataLiveness {
-    /// Production timings: probe every 10 s, declare dead after 30 s (three missed round-trips),
-    /// never let one write park the loop for more than 5 s. A peer that walks out of WiFi is
-    /// reclaimed within [30 s, 40 s] — small next to a session, large next to a hiccup.
     pub const DEFAULT: DataLiveness = DataLiveness {
         ping_interval: Duration::from_secs(10),
         pong_deadline: Duration::from_secs(30),
@@ -149,17 +124,15 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        // Project the INITIAL graph (no nodes, but the seeded system globals) so a client that
-        // connects to a fresh backend has the current state at once — `default_ufreq` among it —
-        // rather than a blank document that stays blank until the first mutation.
+        // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
+        // connects to a fresh backend has the current state at once.
         let graph_val = Graph::new();
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
         let graph = Arc::new(Mutex::new(graph_val));
         let reducers = reducer::SlotReducers::new(graph.clone());
-        // The baseline is the fingerprint of whatever mount the patch owns — stated that way even
-        // at boot, so the invariant has one spelling everywhere. Seeded BEFORE it is taken, or the
-        // patch would be dirty from the moment it booted, having written the seed itself.
+        // Seeded BEFORE the baseline is taken, or the patch is dirty from boot, having written
+        // the seed itself.
         let mount = new_mount();
         term::seed_orientation(&mount);
         let workspace_baseline = goofi_engine::archive::fingerprint(&mount);
@@ -183,8 +156,7 @@ impl AppState {
         }
     }
 
-    /// Point a spawned harness's MCP config at the port this server actually bound. Called by the
-    /// CLI after the bind, since the port is only known there (and may be 0-assigned).
+    /// Point a spawned harness's MCP config at the port this server actually bound.
     pub fn set_mcp_port(&self, port: u16) {
         self.mcp_port.store(port, std::sync::atomic::Ordering::Relaxed);
     }
@@ -196,30 +168,24 @@ impl AppState {
         format!("http://127.0.0.1:{}", self.mcp_port.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// Where the open patch lives on disk, if anywhere. Copied out for the same reason as
-    /// [`AppState::mount`]: the lock guards the swap, not the reader.
+    /// Where the open patch lives on disk, if anywhere.
     fn save_path(&self) -> Option<String> {
         self.save_path.lock().unwrap().clone()
     }
 
-    /// Where the open patch's workspace files live *right now*. Copied out rather than borrowed:
-    /// the lock guards only the swap, and no filesystem walk may run while holding it.
+    /// Where the open patch's workspace files live right now. Copied out rather than borrowed: no
+    /// filesystem walk may run while holding the lock.
     pub fn mount(&self) -> PathBuf {
         self.mount.lock().unwrap().clone()
     }
 
-    /// Drop the workspace mount, nonce directory and all. Safe to delete a PARENT because the
-    /// field is private and both its writers store a `new_mount()` result. Best-effort: a failure
-    /// leaves one directory in the system temp dir, which a reboot clears.
+    /// Drop the workspace mount, nonce directory and all.
     pub fn release_mount(&self) {
         self.retire_mount(&self.mount());
     }
 
     /// Reclaim one mount and everything living IN it: the harnesses spawned into it are asked to
-    /// leave first, because each was launched into that workspace and edits that graph through an
-    /// address goofi minted for it — one surviving this goes on editing a patch it was never
-    /// launched for, out of a directory the next line deletes. The exit and a load are the two
-    /// callers, and they reclaim through here so neither can hold one half of the order.
+    /// leave FIRST, or one survives editing a patch out of a directory the next line deletes.
     fn retire_mount(&self, mount: &std::path::Path) {
         self.harnesses.stop_all();
         remove_mount(mount);
@@ -227,46 +193,35 @@ impl AppState {
 }
 
 /// A fresh, empty workspace mount: `<temp>/goofi-<128-bit hex>/workspace`. The nonce directory
-/// wraps it so that loading a patch can rename an extracted tree onto `workspace` wholesale, and
-/// so one `remove_dir_all` reclaims the pair. A failed mkdir is not worth reporting at boot: the
-/// first save into an unwritable temp dir surfaces the real IO error, naming the path.
+/// wraps it so a load can rename an extracted tree onto `workspace` wholesale.
 fn new_mount() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("goofi-{}", nonce_hex())).join("workspace");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
-/// Reclaim a mount: the nonce directory, not just `workspace` — otherwise every released mount
-/// leaves an empty husk behind.
+/// Reclaim a mount: the nonce directory, not just `workspace`, which would leave an empty husk.
 fn remove_mount(mount: &std::path::Path) {
     let _ = std::fs::remove_dir_all(mount.parent().unwrap_or(mount));
 }
 
-/// A 128-bit random name, hex. Only has to be unguessable-enough to keep two concurrent goofis —
-/// or two concurrent saves onto one target — from colliding.
+/// A 128-bit random name, hex — enough to keep two concurrent goofis from colliding.
 pub(crate) fn nonce_hex() -> String {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).expect("the OS random source");
     format!("{:032x}", u128::from_be_bytes(nonce))
 }
 
-/// Pack the patch to `target`: `manifest` beside the live workspace `mount`.
-///
-/// To a temp sibling and RENAMED onto the target, so a write that dies part-way leaves the previous
-/// `.gfi` standing — a multi-entry zip truncates the old file first and has many chances to fail.
-///
-/// Under the graph lock the caller already holds, so every edit stalls for the duration. Accepted:
-/// taking it off-lock means guarding a race that only exists once it is off-lock.
+/// Pack the patch to `target`: `manifest` beside the live workspace `mount`. Written to a temp
+/// sibling and RENAMED, so a write that dies part-way leaves the previous `.gfi` standing.
 pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path::Path) -> Result<(), String> {
-    // The mount's nonce directory is deleted when the patch closes, so a save into it is a save
-    // into nothing. Both sides go through `resolve` for the same reason the arm's path does: they
-    // must agree on what a path means, and only one of the two arrived normalized.
+    // The mount's nonce directory is deleted when the patch closes, so a save into it saves into
+    // nothing. Both sides go through `resolve`, or they disagree on what a path means.
     let owned = fsbrowse::resolve(&mount.parent().unwrap_or(mount).to_string_lossy());
     if std::path::Path::new(&fsbrowse::resolve(&target.to_string_lossy())).starts_with(&owned) {
         return Err("save failed: that folder is the patch's own temporary workspace".into());
     }
-    // Suffix appended, not substituted, so the temp is a sibling of the target and the rename
-    // below stays within one filesystem.
+    // Suffix appended, not substituted, so the rename below stays within one filesystem.
     let tmp = PathBuf::from({
         let mut s = target.as_os_str().to_owned();
         s.push(format!(".tmp-{}", nonce_hex()));
@@ -280,18 +235,15 @@ pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path:
     packed.map_err(|e| format!("save failed: {e}"))
 }
 
-/// The front half of a load, against a mount that is not yet live. It stops AT the manifest rather
-/// than applying it, because the patch's own node types live in the tree it just unpacked and have
-/// to be registered before `load_doc` resolves the graph.
+/// The front half of a load, against a mount that is not yet live. It stops AT the manifest,
+/// because the patch's own node types must be registered before `load_doc` resolves the graph.
 fn stage_load(
     mount: &std::path::Path,
     op: &str,
     payload: &Value,
 ) -> Result<(String, Option<String>), String> {
     let (content, from_path) = if op == "new" {
-        // A New patch IS a load, of an empty patch from nowhere — which is what stops the two
-        // drifting: `clear` keeps the editor layout, and that is how New used to inherit the
-        // previous patch's panels. The live `g` is reused, so the catalog survives.
+        // A New patch IS a load, of an empty patch from nowhere, so the two cannot drift.
         (Graph::new().serialize(), None)
     } else if op == "load" {
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
@@ -300,9 +252,6 @@ fn stage_load(
         let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
             .map_err(|e| format!("load failed: {e}"))?;
         // Whether this file becomes the patch's home — the target a later silent Save overwrites.
-        // `/patch.gfi` declines: a browser upload was staged to a temp file that is deleted the
-        // moment this returns, so adopting it would aim Ctrl-S at a path that no longer exists.
-        // The patch's real home is on the USER's machine, which this process cannot name.
         let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
         (manifest, adopt.then_some(path))
     } else {
@@ -310,30 +259,22 @@ fn stage_load(
             payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
         (content.to_string(), None)
     };
-    // A workspace goofi minted empty is a NEW one, and it is the only kind it initialises: `new`
-    // and a browser upload leave `mount` exactly the empty directory the caller made, while `load`
-    // has just unpacked the patch's OWN workspace into it — orientation included, edits and all,
-    // or none at all if the patch predates seeding. goofi does not write into someone's patch.
+    // Only a workspace goofi minted empty is seeded: a `load` has just unpacked the patch's OWN
+    // workspace into `mount`, and goofi does not write into someone's patch.
     if op != "load" {
         term::seed_orientation(mount);
     }
     Ok((content, from_path))
 }
 
-/// The API routes, unguarded. Private, and the ONLY caller is [`app`] — the [`origin`] layer is
-/// what a route must not be able to be added outside of, and `Router::layer` wraps only what is
-/// already on the router when it is applied.
+/// The API routes, unguarded. The ONLY caller is [`app`], because `Router::layer` wraps only what
+/// is already on the router — a route added elsewhere would miss the [`origin`] guard.
 fn routes(state: AppState) -> Router {
     Router::new()
         .route("/control", any(control_ws))
-        // One stream per (node, slot) — the kind segment is gone; a single reduced stream
-        // serves every viewer kind. Each connection sends its viewers' ViewSpecs inband.
+        // One stream per (node, slot): each connection sends its viewers' ViewSpecs inband.
         .route("/data/{node}/{slot}", any(data_ws))
-        // ONE MCP server per goofi instance, so it lives here rather than in a client-spawned
-        // sidecar; `post` alone, so axum answers the retired GET and DELETE with their 405.
-        // `/patch.gfi` is the patch as a FILE, the one door onto locations no mount reaches.
-        // Its body limit is lifted: axum caps at 2 MB and a patch with a workspace is routinely
-        // larger, and a `.gfi` is the user's own file on a single-user local app.
+        // The body limit is lifted: axum caps at 2 MB and a patch with a workspace is larger.
         .route(
             "/patch.gfi",
             get(patchfile::download)
@@ -341,19 +282,15 @@ fn routes(state: AppState) -> Router {
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/mcp", post(mcp::endpoint))
-        // …and one address per spawned harness, minted by `spawn_harness` and written into that
-        // harness's own config. Identity is the ROUTE, so there is no id to spoof and none to
-        // validate: `stop_harness` drops the instance and the address stops serving with it.
+        // One address per spawned harness: identity is the ROUTE, so there is nothing to validate.
         .route("/mcp/{instance}", post(mcp::instance_endpoint))
         // A spawned harness's terminal: binary frames are PTY bytes, text frames JSON control.
         .route("/term/{instance}", any(term_ws))
         .with_state(state)
 }
 
-/// Given each node's current error and the last-broadcast errors, return the uids whose
-/// error state changed (appeared, cleared, or message changed) and update `last`. A node
-/// first seen HEALTHY is not a change (so startup doesn't push a `state_update` for every
-/// node); removed nodes are forgotten so a re-created uid re-broadcasts fresh.
+/// The uids whose error state changed since `last`, which is updated in place. A node first seen
+/// HEALTHY is not a change, and a removed node is forgotten so a re-created uid reports fresh.
 fn error_transitions(
     current: &[(String, Option<String>)],
     last: &mut HashMap<String, Option<String>>,
@@ -374,29 +311,20 @@ fn error_transitions(
     changed
 }
 
-/// How often the worker takes what the nodes reported — deliberately NOT the event rate. Draining
-/// is the RUNTIME's clock: it makes a node addressable and advances every wire's three-phase
-/// sequence, one phase per ack. At `hz`, a link would be three broadcast periods from its first
-/// frame.
+/// How often the worker takes what the nodes reported — deliberately NOT the event rate, because
+/// draining is the RUNTIME's clock: it advances every wire's three-phase sequence, one per ack.
 const DRAIN_PERIOD: Duration = Duration::from_millis(1);
 
-/// **The status-drain worker**: take every node's reports, apply them to the graph, and broadcast
-/// the events that carry them — `node_stats`, `param_values`, `error`, `node_stage` — at `hz`.
+/// The status-drain worker: take every node's reports, apply them to the graph, and broadcast the
+/// events that carry them at `hz`.
 ///
-/// Two obligations bind it. Never `set_dirty(true)`: a node reporting its own state is not a user
-/// edit. And always FORGET a uid on removal, so a stale error cannot outlive its node or suppress
-/// a re-created uid's first report.
-///
-/// The transition push is the identity-only `error` event, never a full-params snapshot: a late one
-/// would overwrite a fresher `expression_error`, and every param of every node twice a second is
-/// bandwidth nothing reads. `param_values` is safe where that is not — it carries only EVALUATED
-/// values, which are never user-editable literals, so there is no concurrent edit to clobber.
+/// It must never `set_dirty(true)` — a node reporting its own state is not a user edit — and must
+/// FORGET a uid on removal, so a stale error cannot outlive its node.
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
-        // A node's stage now changes on its own thread, with no RPC to ride on — the same reason
-        // the error transition is pushed from here.
+        // A node's stage changes on its own thread, with no RPC to ride on.
         let mut last_stages: HashMap<String, &'static str> = HashMap::new();
         let mut next_broadcast = Instant::now() + period;
         loop {
@@ -404,16 +332,12 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
             let due = Instant::now() >= next_broadcast;
             let collected = {
                 let mut g = graph.lock().unwrap();
-                // THE SOURCE (§6.2). Every field read below is filed by `apply_status` from a
-                // report the node published; nothing here polls the node itself. A drain that
-                // applied nothing still costs one non-blocking receive per node.
                 g.drain_status();
                 if !due {
                     None
                 } else {
-                    // Options are the one thing a node reports that the CRDT doc has no field for,
-                    // so they cannot be recovered from a re-mirror — the node has to name the
-                    // params it re-enumerated, and this is the only echo that reaches the client.
+                    // Options are the one thing a node reports that the doc has no field for, so
+                    // this echo is the only way they reach a client.
                     let refreshed = g.take_refreshed();
                     let g = &*g;
                     let mut rates: Vec<(String, f64)> = Vec::new();
@@ -443,17 +367,14 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 }
             };
             let Some((rates, errs, expr_vals, stages, refreshed)) = collected else { continue };
-            // From NOW, not from the deadline just passed: a worker held off the lock owes no
-            // burst of catch-up broadcasts over state it has only just read.
+            // From NOW, not the deadline just passed: a worker held off the lock owes no burst of
+            // catch-up broadcasts.
             next_broadcast = Instant::now() + period;
             for ev in refreshed {
                 let _ = events.send(ev);
             }
-            // Diff + build payloads after releasing the lock (both inputs are owned).
             let changed = error_transitions(&errs, &mut last_errors);
             for (node, ufreq) in rates {
-                // Only send what we actually measure — no fabricated process-time or
-                // run-count placeholders (the frontend treats those as optional).
                 let ev = json!({
                     "event": "node_stats",
                     "payload": { "node": node, "stats": { "updates_per_second": ufreq } }
@@ -477,23 +398,20 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
     });
 }
 
-/// The API router, with no SPA — `app(state, None)`, kept as a name because that is what it reads
-/// as at a call site.
+/// The API router, with no SPA.
 pub fn router(state: AppState) -> Router {
     app(state, &[])
 }
 
-/// The full router, optionally serving the SPA on the fallback.
-///
-/// The [`origin`] guard goes on LAST, so it wraps the API routes, the SPA and the fallback alike —
-/// including the three WebSocket upgrades, which a CORS-based defence would miss entirely.
+/// The full router, optionally serving the SPA on the fallback. The [`origin`] guard goes on LAST,
+/// so it wraps every route — the WebSocket upgrades included, which CORS would not cover.
 pub fn app(state: AppState, spa: Spa) -> Router {
     let base = routes(state);
     let served = if spa.is_empty() { base } else { base.fallback(serve_spa_file) };
     served.layer(axum::middleware::from_fn(origin::guard))
 }
 
-/// One embedded file, or the page itself for anything else — the client router owns every route
+/// One embedded file, or the page itself for anything else: the client router owns every route
 /// under `/`, so an unknown path is one of ITS routes and not a 404.
 async fn serve_spa_file(uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -512,8 +430,8 @@ async fn serve_spa_file(uri: axum::http::Uri) -> Response {
     ))
 }
 
-/// The types the built bundle actually contains, plus the image and font formats a `static/` asset
-/// may add. Anything else is served as bytes, which every browser downloads rather than mis-renders.
+/// The types the built bundle contains, plus what a `static/` asset may add; anything else is
+/// served as bytes.
 fn content_type(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "html" => "text/html; charset=utf-8",
@@ -547,8 +465,7 @@ pub async fn serve_app(
     axum::serve(listener, app(state, spa)).await
 }
 
-/// Native node type names visible in the catalog (`--list-nodes`).
-/// Hides `_`-prefixed test nodes, exactly as the palette projection does.
+/// Native node type names visible in the catalog, `_`-prefixed test nodes hidden.
 pub fn catalog_type_names() -> Vec<String> {
     goofi_node::catalog()
         .filter(|m| !m.type_name.starts_with('_'))
@@ -556,25 +473,17 @@ pub fn catalog_type_names() -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Node discovery — one seam, called at boot and on every rescan
-// ---------------------------------------------------------------------------
-
 /// Which tier took a node file — and, when neither could, why. Reported rather than printed,
-/// because the seam below is shared: only the caller can tell a boot scan (whose registry starts
-/// empty, so any collision is two files claiming one name) from a rescan (which re-registers every
-/// type it finds on purpose, and must not spew to stderr for doing its job).
+/// because only the caller can tell a boot scan from a rescan.
 pub enum Tier {
     InProcess,
     Subprocess,
-    /// Neither tier could load it. It is recorded as unloadable, so the palette lists it greyed
-    /// with this reason instead of letting the file silently not exist.
+    /// Neither tier could load it, so the palette lists it greyed with this reason.
     Unavailable(String),
 }
 
-/// A file's size and mtime — the "did this node's code change since the last scan?" test, the same
-/// one the workspace dirty check uses. `None` when the file could not be stat'd, which compares
-/// equal to itself and so reads as "unchanged".
+/// A file's size and mtime. `None` when it could not be stat'd, which compares equal to itself and
+/// so reads as "unchanged".
 pub type Stamp = (u64, std::time::SystemTime);
 
 /// One node file's outcome from a scan of one directory.
@@ -582,18 +491,14 @@ pub struct ScannedType {
     pub type_name: String,
     pub tier: Tier,
     pub stamp: Option<Stamp>,
-    /// What the registry did with it. An unloadable file reports `Added`/`Refused` (it entered the
-    /// unavailable registry, or a built-in owns the name); `Replaced` is the boot-only warning.
     pub registration: goofi_engine::Registration,
 }
 
 /// The node-discovery seam: scan ONE directory and report what it registered. Injected by the CLI,
-/// which owns the interpreters and the probe, so boot and [`rescan`] re-derive the registry through
-/// the same function. The default is a no-op.
+/// so boot and [`rescan`] re-derive the registry through the same function.
 pub type NodeScan = Arc<dyn Fn(&mut Graph, &std::path::Path) -> Vec<ScannedType> + Send + Sync>;
 
-/// What a [`rescan`] changed, for the caller that asked — an agent that just wrote a node file, or
-/// the palette's refresh button.
+/// What a [`rescan`] changed, for the caller that asked.
 #[derive(Default)]
 pub struct ScanDiff {
     pub added: Vec<String>,
@@ -602,12 +507,8 @@ pub struct ScanDiff {
 }
 
 /// Re-derive the registry from the directories that exist RIGHT NOW — the shipped tree, then
-/// `<patch>/nodes`, in that order, so a patch-local node of the same name wins.
-///
-/// The previous scan's stamps are the baseline, so this answers a DIFF rather than a listing — and
-/// removal is driven by that baseline too, which keeps a type registered some other way out of the
-/// blast radius. The CLI's boot scan runs this rather than the seam, so the first refresh diffs
-/// against the boot scan rather than re-announcing the whole tree.
+/// `<patch>/nodes`, so a patch-local node of the same name wins. The previous scan's stamps are the
+/// baseline, so this answers a DIFF and removes only what it registered.
 pub fn rescan(
     state: &AppState,
     g: &mut Graph,
@@ -616,8 +517,7 @@ pub fn rescan(
     let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
-    // Shipped trees in the order they were named, patch LAST — the scan order IS the precedence,
-    // so a later `--extra-nodes` shadows an earlier one exactly as the patch shadows them all.
+    // The scan order IS the precedence: patch LAST, so it shadows every shipped tree.
     let dirs = (state.system_nodes.iter().map(|d| (d.clone(), false)))
         .chain(std::iter::once((patch.join("nodes"), true)));
     for (dir, is_patch) in dirs {
@@ -625,8 +525,7 @@ pub fn rescan(
             continue;
         }
         for t in (state.scan_nodes)(g, &dir) {
-            // A refused name never reaches the palette (a built-in owns it), so it must not enter
-            // the index either — it would report as `added` and, later, as `removed`.
+            // A refused name never reaches the palette, so it must not enter the index either.
             if t.registration != goofi_engine::Registration::Refused {
                 if is_patch {
                     patch_types.insert(t.type_name.clone());
@@ -656,21 +555,14 @@ pub fn rescan(
 }
 
 /// Restart every live instance of a type whose file changed, so an edit reaches the nodes already
-/// on the canvas. `setup()` re-runs — a buffer empties, a device reopens — which is the price.
-/// NOT part of [`rescan`]: a load re-derives the registry for a graph about to be replaced.
+/// on the canvas. NOT part of [`rescan`], whose graph may be about to be replaced by a load.
 fn restart_changed(g: &mut Graph, diff: &ScanDiff) {
     for uid in g.node_uids() {
         if g.type_name(uid).is_some_and(|t| diff.changed.iter().any(|c| c == t)) {
-            // Can only fail for a type that does not resolve, and every name in `changed` was just
-            // registered by the scan that produced it.
             let _ = g.restart_node(uid);
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Control plane
-// ---------------------------------------------------------------------------
 
 async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_control(socket, state))
@@ -679,14 +571,12 @@ async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
 async fn handle_control(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
 
-    // Subscribe BEFORE snapshotting the document: a peer's edit landing in the other order is in
-    // neither, and the replica desyncs silently with nothing to notice it. This way the worst case
-    // is a RE-delivery — a patch whose result the snapshot already carries — which a replica reads
-    // as stale by its version and skips.
+    // Subscribe BEFORE snapshotting the document: in the other order a peer's edit lands in
+    // neither, and the replica desyncs silently. A re-delivery is read as stale and skipped.
     let mut events = state.events.subscribe();
 
-    // Answered BEFORE the graph lock is taken: it walks the workspace mount (see `is_dirty`), and
-    // no filesystem walk may run while the status-drain worker is waiting on that lock.
+    // Answered BEFORE the graph lock is taken: it walks the mount, and no filesystem walk may run
+    // while the status-drain worker waits on that lock.
     let unsaved = state.is_dirty();
     let saved_at = state.save_path();
     let hello = {
@@ -701,8 +591,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
         return;
     }
 
-    // …then the document, whole. It rides the SAME socket as `hello` and as every later delta, so
-    // a replica never has to reconcile two orderings.
     if tx.send(Message::Text(doc_state(&state).into())).await.is_err() {
         return;
     }
@@ -727,10 +615,8 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                         break;
                     }
                 }
-                // Lagged past the shared ring, so a structural event AND any number of document
-                // deltas are gone. Both halves are re-seeded exactly as a fresh connection seeds
-                // them — `hello` for what is client-local, the whole document for the rest — which
-                // is why the two travel together here as they do above.
+                // Lagged past the shared ring, so both halves are re-seeded exactly as a fresh
+                // connection seeds them.
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let unsaved = state.is_dirty(); // off the graph lock, as above
                     let saved_at = state.save_path();
@@ -756,19 +642,14 @@ async fn handle_control(socket: WebSocket, state: AppState) {
 }
 
 impl AppState {
-    /// Whether the patch differs from its last saved state — the title-bar dot and the unload
-    /// guard. TWO sources, because a patch is a graph AND a workspace: the flag every mutating op
-    /// sets, and a directory the agent or the user's editor writes into with no RPC to ride on.
-    ///
-    /// No watcher: the workspace half is answered by WALKING the mount when a client asks, OFF the
-    /// graph lock — that walk is a stat per file, and the drain worker takes the lock every ms.
+    /// Whether the patch differs from its last saved state. TWO sources, because a patch is a graph
+    /// AND a workspace, and the workspace half is walked on ask rather than watched.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
             || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
     }
 
-    /// Set the dirty flag, returning an `unsaved_changes` event ONLY when it actually changed —
-    /// every mutation would otherwise re-broadcast the same value.
+    /// Set the dirty flag, returning an `unsaved_changes` event only when it actually changed.
     fn set_dirty(&self, dirty: bool) -> Option<String> {
         let was = self.dirty.swap(dirty, std::sync::atomic::Ordering::Relaxed);
         (was != dirty).then(|| event("unsaved_changes", json!({ "unsaved_changes": dirty })))
@@ -779,24 +660,19 @@ pub(crate) fn event(name: &str, payload: Value) -> String {
     json!({ "event": name, "payload": payload }).to_string()
 }
 
-/// The palette catalog changed — a rescan re-derived it, or a load brought a patch's own node types
-/// with it. `hello` carries the catalog to a client that is CONNECTING; this is how one that is
-/// already connected learns the same thing, and it is what keeps a second tab from offering a node
-/// that no longer exists.
+/// The palette catalog changed — how a client that is already connected learns what `hello` would
+/// have told it.
 fn node_types_event(g: &Graph) -> String {
     event("node_types", json!({ "types": schemas::catalog_types(g) }))
 }
 
-/// A per-node `state_update` event carrying a node's current params + error. Emitted for every
-/// peer a §4.5 shared-member edit touches (param value, position, expression), so any observer
-/// reconciles each mirrored sibling.
+/// A per-node `state_update` event carrying a node's current params and error.
 fn param_state_update(g: &Graph, peer: Uid) -> String {
     param_state_update_refreshed(g, peer, &[])
 }
 
-/// As [`param_state_update`], naming the params whose ⟳ refresh just completed. The frontend
-/// clears each one's spinner off this list, so it must be sent on EVERY outcome — including a
-/// refresh that turned up nothing — or the button spins until its 15s safety timeout.
+/// As [`param_state_update`], naming the params whose ⟳ refresh just completed. It must be sent on
+/// EVERY outcome, a refresh that found nothing included, or the button spins on.
 fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> String {
     event(
         "state_update",
@@ -818,17 +694,13 @@ fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
         .ok_or_else(|| format!("missing/invalid uid `{key}`"))
 }
 
-/// A required string field from an RPC payload, erroring `missing {key}` if absent or non-string —
-/// the sibling of [`parse_uid`] for plain string args. (The op is recoverable from the request, so
-/// the error needs no per-op prefix.)
+/// A required string field from an RPC payload.
 fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
     payload.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))
 }
 
-/// A boundary wire's inner target. Both halves named = wire; both absent or `null` = UNWIRE — the
-/// `None` [`goofi_engine::Command::WireStub`] already models ("an unwire always applies"), and the
-/// only shape the edge-delete path sends. Parsing the pair as ONE value is what keeps the
-/// half-specified third state unconstructible: name either half and both are required.
+/// A boundary wire's inner target: both halves named is a wire, both absent is an UNWIRE. Parsed
+/// as ONE value, so the half-specified third state is unconstructible.
 fn parse_inner(payload: &Value) -> Result<goofi_engine::subpatch::StubInner, String> {
     let named = |k: &str| payload.get(k).is_some_and(|v| !v.is_null());
     if !named("inner_node") && !named("inner_slot") {
@@ -861,10 +733,8 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
-/// Translate a link endpoint that names a sub-patch instance's boundary port into the flat
-/// inner leaf it resolves to. A top-level node wired to `inst::bnd` becomes a real leaf→leaf
-/// link — the boundary is a naming indirection resolved here, so the runtime/persisted link is
-/// always flat. A plain `(node, slot)` passes through unchanged.
+/// Translate a link endpoint that names a sub-patch boundary port into the flat inner leaf it
+/// resolves to, so every runtime and persisted link is leaf→leaf.
 fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
     if g.scope(uid).is_some() {
         if let Some(leaf) = g.resolve_stub(uid, slot) {
@@ -875,12 +745,7 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
 }
 
 /// Resolve a link endpoint AND refuse one that names nothing wirable — the check a caller-initiated
-/// `add_link` gets and a REPLAY does not.
-///
-/// The command itself tolerates an endpoint naming no node, because it is the inverse of every
-/// `remove_link` and a toggle replayed against a peer's delete must converge rather than wedge the
-/// stack. A request is not a replay, so it is checked HERE, where an `Err` short-circuits before
-/// the history records anything and the two stacks stay 1:1.
+/// `add_link` gets and a REPLAY does not, since a replay must converge rather than wedge the stack.
 fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
     let (node, slot) = resolve_link_endpoint(g, uid, slot);
     if g.contains(node) {
@@ -896,26 +761,14 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
     Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex()))
 }
 
-/// Is `node` something a viewer/parameters/metadata panel could actually bind to? A UID, and only a
-/// uid: a display name resolves until somebody renames the node, at which point the panel is bound
-/// to nothing and says nothing about why. The uid is the identity, and it is what the frontend
-/// stores — which is also what lets `RemoveNode` clear the bindings it invalidates.
+/// Is `node` something a panel could bind to? A UID, and only a uid: a display name stops resolving
+/// the moment somebody renames the node.
 fn bindable_node(g: &Graph, node: &str) -> bool {
     Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some())
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step, and
-/// answer with the arrangement they produced — drawn as `inspect_layout` draws it, so a caller with
-/// no screen does not have to follow every write with a read.
-///
-/// `born` names the entry an op BRINGS INTO BEING, which changes what undo means: the slots the
-/// writes displaced are no longer the inverse — closing `born` with promote is. An op that only
-/// rearranges what already exists passes `None` and inverts slot by slot.
-///
-/// **The rule, stated once rather than four times:** no layout inverse restores raw state. Every
-/// one re-plans through the forward planners. Pinning an entry back into the slot it held
-/// resurrects the split the forward op promoted away, on top of whatever a peer has since built
-/// there — stranding their panels and corrupting the next save.
+/// answer with the arrangement they produced, drawn as `inspect_layout` draws it.
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
@@ -926,33 +779,23 @@ fn apply_layout(
     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
 }
 
-/// Dispatch one control RPC. Mutates the graph, queues broadcast events, and
-/// returns the `{id,result}`/`{id,error}` reply (only when `id` is numeric).
 impl AppState {
-    /// Run one control op. **The single entry point every surface shares** — `/control` and `/mcp`
-    /// are JSON transports over this, and an in-process caller (a script, an integration test) needs
-    /// no transport at all. `session` scopes the undo history the way a browser tab's id does.
+    /// Run one control op — the single entry point every surface shares. `session` scopes the undo
+    /// history the way a browser tab's id does.
     pub fn call(&self, op: &str, payload: Value, session: &str) -> Result<Value, String> {
         let state = self;
         let (op, session) = (op.to_string(), session.to_string());
-        // Every op is declared once, in `ops::REGISTRY`. Refusing an unregistered one HERE makes a
-        // dispatch arm without a row unreachable rather than a second, invisible declaration of the
-        // op set — and it is where `read_only` below comes from, so classifying a new op is part of
-        // declaring it.
         let spec = ops::find(&op);
         let mut events: Vec<String> = Vec::new();
         let result: Result<Value, String> = (|| {
             if spec.is_none() {
                 return Err(format!("unknown op `{op}`"));
             }
-            // Ops that read no graph state are served WITHOUT the graph mutex. `list_dir` walks a
-            // directory and stats every child, which can block for a long time on a huge or network
-            // path — under the lock that would stall the status-drain worker for the whole walk. `get_patch`
-            // is here for the same reason: `is_dirty` walks the workspace mount.
+            // Ops that read no graph state are served WITHOUT the graph mutex: these two walk the
+            // filesystem, which under the lock would stall the status-drain worker.
             if op == "list_dir" {
                 return Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())));
             }
-            // Off the graph lock: the doc is its own mutex, and this reads only the doc.
         if op == "get_state" {
             return Ok(state.doc.lock().unwrap().to_json());
         }
@@ -963,10 +806,8 @@ impl AppState {
                     "dirty": state.is_dirty(),
                 }));
             }
-            // The harness ops are here for the same reason and one more: they fork children and signal
-            // them, and none of it reads or writes the graph. `dispatch` stays synchronous throughout —
-            // detection and the stop grace both run on their own threads, and the roster converges
-            // through `harness_changed` rather than by making a caller wait.
+            // The harness ops touch no graph state either: they fork and signal children, and the
+            // roster converges through `harness_changed` rather than by making a caller wait.
             if op == "list_harnesses" {
                 state.harnesses.refresh_in_background(state.events.clone());
                 return Ok(state.harnesses.roster());
@@ -974,9 +815,6 @@ impl AppState {
             if op == "spawn_harness" {
                 let h = payload.get("harness").and_then(|v| v.as_str())
                     .ok_or("spawn_harness: missing harness")?;
-                // A closed set the caller cannot see from here, so a refusal that does not name it
-                // leaves nothing to try next. `list_harnesses` says which are actually INSTALLED; this
-                // says which words exist at all.
                 let id = state.harnesses.spawn(h, &state.mount(), &state.mcp_url(),
                                                &term::parent_env(), state.events.clone())?;
                 events.push(event("harness_changed", state.harnesses.roster()));
@@ -988,16 +826,12 @@ impl AppState {
                 events.push(event("harness_changed", state.harnesses.roster()));
                 return Ok(json!({ "ok": true }));
             }
-            // …and `inspect_patch`'s header says the same thing, so its walk is taken here too, before
-            // the lock — and only for that op, which is what the short circuit is for.
+            // `inspect_patch`'s header carries the same walk, so it is taken before the lock too.
             let dirty = op == "inspect_patch" && state.is_dirty();
             let mut g = state.graph.lock().unwrap();
             match op.as_str() {
                 "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
-                // Re-derive the node registry from the directories that exist RIGHT NOW. Explicit, not
-                // watched (decision, 2026-08-09): an agent calls it straight after writing a node file,
-                // a human presses the palette's refresh button. The diff comes back so either can say
-                // what happened, and the instances of a type whose file changed restart onto it.
+                // Explicit, never watched: an agent calls it after writing a node file.
                 "rescan_nodes" => {
                     let (diff, _) = rescan(state, &mut g, &state.mount());
                     restart_changed(&mut g, &diff);
@@ -1010,27 +844,21 @@ impl AppState {
                         .and_then(|v| v.as_str())
                         .ok_or("add_node: missing type")?
                         .to_string();
-                    // A CHOSEN uid and name rather than fresh ones — an automation door, not the
-                    // undo path, which is manager-owned and never comes through this RPC. It is
-                    // what lets a caller reconstructing a known graph keep its uid-keyed bindings.
+                    // A CHOSEN uid and name, so a caller reconstructing a known graph keeps its
+                    // uid-keyed bindings. Not the undo path, which is manager-owned.
                     let restore = payload.get("member_uid").and_then(|v| v.as_str()).and_then(Uid::from_hex);
                     let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                    // `inst_id` is the sub-patch the editor has ENTERED: the node is born INSIDE it.
-                    // Absent/null = ROOT. A malformed id is refused here and an id naming no live scope
-                    // is refused by the command's pre-mutation check — never silently rooted, because
-                    // the canvas draws only the entered scope's children, so a rooted node is invisible
-                    // exactly where the user placed it (while the panel still selects it).
+                    // Never silently rooted on a bad `inst_id`: the canvas draws only the entered
+                    // scope, so a rooted node would be invisible exactly where the user placed it.
                     let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
                         Some(v) => {
                             Some(v.as_str().and_then(Uid::from_hex).ok_or("add_node: malformed inst_id")?)
                         }
                         None => None,
                     };
-                    // Route through the command history so the add is undoable (its inverse is a
-                    // RemoveNode). Inline params are applied AFTER (below): RemoveNode's inverse
-                    // capture_restores the LIVE node — INCLUDING those params — so an undo→redo restores
-                    // the configured values without threading them through the command here.
+                    // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node,
+                    // so an undo→redo restores them without threading them through the command.
                     let cmd = goofi_engine::Command::AddNode {
                         type_name: ty,
                         pos,
@@ -1045,9 +873,8 @@ impl AppState {
                         goofi_engine::Outcome::Uid(u) => u,
                         _ => return Err("add_node: no uid returned".into()),
                     };
-                    // Optional inline params (paste/duplicate replay + undo-of-delete): apply at creation
-                    // UNDER THE GRAPH LOCK so the node is born configured (same coercion as update_param),
-                    // before the resync mirrors them into the doc.
+                    // Applied UNDER THE GRAPH LOCK, so the node is born configured before the
+                    // resync mirrors it into the doc.
                     if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
                         for (group, names) in groups {
                             let Some(names) = names.as_object() else { continue };
@@ -1061,13 +888,10 @@ impl AppState {
                             }
                         }
                     }
-                    // A bare uid announcement: the node itself arrives via the doc mirror, so anything
-                    // more would be a second, drift-prone projection of it.
+                    // A bare uid: the node itself arrives via the doc mirror.
                     events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                    // The REPLY, though, answers a caller with no doc replica. Three of these it
-                    // cannot derive from the type it just named: the display NAME the manager minted
-                    // (which is how `nd()` addresses the node), the slots to wire, and the params as
-                    // BORN — the inline ones above, and any seeded from a `default_expr`.
+                    // The REPLY answers a caller with no doc replica: the minted name, the slots to
+                    // wire, and the params as BORN.
                     let m = g.manifest(uid);
                     Ok(json!({
                         "uid": uid.to_hex(),
@@ -1079,15 +903,8 @@ impl AppState {
                 }
                 "remove_node" => {
                     let uid = parse_uid(&payload, "node")?;
-                    // A top-level leaf, a sub-patch member (leaf or nested instance), or a collapsed
-                    // instance — RemoveNode dispatches internally and CAPTURES the whole subtree
-                    // (members + params + links + stubs + membership) so its inverse restores it
-                    // uid-stably (undoable; B3b closed the delete-undo gap). The result reaches clients
-                    // via the post-dispatch re-mirror.
-                    // Idempotent by design (a redo racing a peer's delete must converge, not wedge),
-                    // which made `{ok: true}` on a uid naming nothing indistinguishable from a real
-                    // delete — so the doc had to tell callers not to read `ok` as proof. Say it here
-                    // instead, where it is a fact rather than a warning.
+                    // The command is idempotent, so a uid naming nothing succeeds; the reply says
+                    // which of the two happened.
                     let existed = bindable_node(&g, &uid.to_hex());
                     state
                         .history
@@ -1096,24 +913,17 @@ impl AppState {
                         .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
                     Ok(json!({ "removed": existed }))
                 }
-                // Recovery, not an edit: respawn the node's instance in place, keeping its uid, name,
-                // params, expressions, viewers, scope and links. NOT routed through the command history
-                // — the client records no `graph_cmd` for a restart, and the two stacks must stay 1:1.
+                // Recovery, not an edit, so it is NOT routed through the command history: the client
+                // records no `graph_cmd` for a restart and the two stacks must stay 1:1.
                 "restart_node" => {
                     let uid = parse_uid(&payload, "node")?;
                     g.restart_node(uid)?;
-                    // Push the cleared error straight away so the node's red border lifts on the click
-                    // rather than on the next 2 Hz error-transition sweep.
+                    // Pushed at once, so the red border lifts on the click rather than on the sweep.
                     events.push(param_state_update(&g, uid));
                     Ok(json!({ "ok": true }))
                 }
-                // Links are read from the CRDT doc (Phase 2) — the resolved flat link rides the re-mirror
-                // after dispatch. The old `link_added`/`link_removed` events had no client consumer.
                 "add_link" => {
                     let (a, so, b, si) = parse_link(&payload)?;
-                    // Resolve either endpoint through a sub-patch boundary → flat leaf→leaf, REFUSING one
-                    // that names nothing wirable, THEN route the resolved flat link through the history
-                    // (undoable; inverse is a RemoveLink).
                     let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
                     let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
                     state.history.lock().unwrap().apply(
@@ -1126,10 +936,8 @@ impl AppState {
                             slot_in: si.clone(),
                         },
                     )?;
-                    // The wire AS MADE. A boundary endpoint resolves to the flat inner leaf it exposes,
-                    // so what got wired is not literally what was named; and the dtype the two slots
-                    // agreed on is what decides whether the next link to the same output can be made
-                    // at all. Neither is derivable from the request.
+                    // The wire AS MADE, not as named: a boundary endpoint resolves to its inner leaf,
+                    // and the agreed dtype gates the next link to this output.
                     let dtype = vocab::output_slots(&g, a)
                         .into_iter()
                         .find(|(name, _)| *name == so)
@@ -1153,19 +961,8 @@ impl AppState {
                     )?;
                     Ok(json!({ "removed": existed }))
                 }
-                // The leaf edits (param value / expression / node+instance pos / rename / globals) route
-                // through the command history so each is undoable (B3a). The mutation reaches clients via
-                // the post-dispatch re-mirror; only the runtime-derived, doc-invisible bits (a param's
-                // `expression_error`, a rename's nd()-rewrite echo) are pushed as `state_update` events.
-                // Re-enumerate a refreshable string param (a device/stream picker). NOT a command —
-                // options are runtime-only, never persisted, so there is nothing to undo. They are
-                // also invisible to the CRDT doc, so the status worker's echo is the ONLY way they
-                // reach the client.
-                //
-                // The options do NOT ride this reply, and nothing here waits for them: the hook runs
-                // on the node's own thread (§8.5), which is what stops a multi-second device scan
-                // stalling anything. `Err` is still a real refusal — an unknown node or param, or one
-                // the type never declared refreshable.
+                // NOT a command: options are runtime-only, so there is nothing to undo. They do not
+                // ride this reply either — the hook runs on the node's own thread.
                 "refresh_param" => {
                     let uid = parse_uid(&payload, "node")?;
                     let group = parse_str(&payload, "group")?.to_string();
@@ -1194,10 +991,8 @@ impl AppState {
                             expr: None,
                         },
                     )?;
-                    // The value AS STORED, which is not always the value asked for: a literal is
-                    // coerced to the param's declared type and clamped to its range. A bare `ok` for a
-                    // 500 that became 100 does not merely say nothing — it asserts a state the patch
-                    // is not in, and every later decision the caller makes is taken against it.
+                    // The value AS STORED, which is not always the one asked for: a literal is
+                    // coerced to the param's declared type.
                     Ok(json!({
                         "value": g
                             .params(uid)
@@ -1225,12 +1020,9 @@ impl AppState {
                             expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
                         },
                     )?;
-                    // The binding source rides the doc re-mirror; the runtime `expression_error` is
-                    // doc-invisible, so echo the enriched descriptor (what the retired leaf path did).
+                    // The runtime `expression_error` is doc-invisible, so echo the descriptor.
                     events.push(param_state_update(&g, uid));
-                    // A binding that does not compile is stored, not rejected — the source is kept so
-                    // it can be fixed. So the REPLY has to carry the compile error, or a caller with no
-                    // inspector open would read a plain `ok` and believe the binding took.
+                    // A binding that does not compile is STORED, so the reply carries the error.
                     Ok(json!({ "error": g.param_expression(uid, &group, &name).and_then(|e| e.error) }))
                 }
                 "set_node_pos" => {
@@ -1243,21 +1035,13 @@ impl AppState {
                     )?;
                     Ok(json!({ "ok": true }))
                 }
-                // Where THIS client is looking. Stored opaquely and NOT a doc root, so it can neither
-                // drag a peer nor raise the unsaved dot; it rides the `.gfi` and `hello` all the same,
-                // because persistence and dirtiness are separate axes.
+                // Where THIS client is looking: not a doc root, so it neither drags a peer nor raises
+                // the unsaved dot, but it still rides the `.gfi` and `hello`.
                 "set_viewpoint" => {
                     g.set_viewpoint(payload.get("viewpoint").cloned().unwrap_or(Value::Null));
                     Ok(json!({ "ok": true }))
                 }
 
-                // ── The flat arrangement (the fifth doc root) ────────────────────────────────────
-                // Reads are served straight off the layout the manager holds. Writes are planned
-                // against it and applied as ordinary commands, so every op below is undoable, persisted
-                // and broadcast without a line of its own for any of the three.
-                // The one layout read. `tab` narrows it, exactly as `inspect_patch {scope}` narrows
-                // the graph — the reason `page_list_panels` existed, without a second shape to keep
-                // honest or a second name to choose between.
                 "inspect_layout" => {
                     let tab = payload.get("tab").and_then(|v| v.as_str()).map(str::to_string);
                     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
@@ -1267,9 +1051,8 @@ impl AppState {
                     let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                     let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
                     let (plan, tab) = g.arrangement().add_tab(&name, index, subtree.as_deref())?;
-                    // A tab built AROUND an existing subtree is a MOVE: its undo has to put the subtree
-                    // back, where closing the tab would delete it. A tab born with its own fresh panel
-                    // has nothing to give back, so it inverts by closing (see `Command::LayoutBirth`).
+                    // A tab built AROUND an existing subtree is a MOVE, so its undo puts the subtree
+                    // back; one born with a fresh panel has nothing to give back and inverts by closing.
                     match subtree.as_deref() {
                         Some(s) => {
                             let root = s.to_string();
@@ -1281,23 +1064,21 @@ impl AppState {
                             apply_layout(state, &mut g, &session, cmd)?
                         }
                     };
-                    // The tab's id and its root panel's — a caller's next act is to give that panel
-                    // content, which needs an id it cannot otherwise know (`split_panel`'s rule).
+                    // The root panel's id, which a caller cannot otherwise know.
                     let panel = g.arrangement().root_of(&tab).unwrap_or_default();
                     Ok(json!({ "tab": tab, "panel": panel }))
                 }
                 "remove_tab" => {
                     let tab = parse_str(&payload, "tab")?.to_string();
                     // Planned here only so a bad id answers teachably: `LayoutClose` re-plans it under
-                    // this same lock, and DEGRADES rather than errors, which a user's own op must not.
+                    // this same lock, and DEGRADES rather than errors.
                     g.arrangement().remove_tab(&tab)?;
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: tab })
                 }
                 "rename_tab" => {
                     let (tab, name) = (parse_str(&payload, "tab")?, parse_str(&payload, "name")?);
                     let writes = g.arrangement().rename_tab(tab, name)?;
-                    // A name is contents; the strip index is the slot, and a peer's new tab may hold the
-                    // one this tab had when the rename was planned.
+                    // A name is CONTENTS: the strip index is the slot, and a peer may now hold it.
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
                 }
                 "reorder_tab" => {
@@ -1322,16 +1103,14 @@ impl AppState {
                     let (plan, fresh) = g.arrangement().split_panel(&panel, axis, before, ratio)?;
                     let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
                     apply_layout(state, &mut g, &session, cmd)?;
-                    // The uid, because a split births an EMPTY panel and the caller's next act is to
-                    // give it content — which needs the id it cannot otherwise know.
+                    // The uid, because a split births an EMPTY panel the caller must then fill.
                     Ok(json!(fresh))
                 }
                 "set_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
                     let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
                     let panel_state = payload.get("state").cloned();
-                    // A panel bound to a node that is not there renders empty and explains nothing, so
-                    // the bind is checked HERE, where the answer can teach. Cheap: no graph mutation.
+                    // A panel bound to a node that is not there renders empty and explains nothing.
                     let named = panel_state
                         .as_ref()
                         .and_then(|s| s.get("node"))
@@ -1342,11 +1121,8 @@ impl AppState {
                             return Err(format!("set_panel: no node `{node}` in this patch"));
                         }
                     }
-                    // …and the same argument, one word further in: the panel type and the viewer kind
-                    // are vocabularies the manager stores as free strings, so a plausible GUESS at one
-                    // used to be answered `{ok: true}`. The slot is checked against the node this write
-                    // LEAVES the panel bound to — its own, or the one already stored, since state
-                    // merges.
+                    // The slot is checked against the node this write LEAVES the panel bound to: its
+                    // own, or the one already stored, since a state write merges.
                     let bound = named
                         .or_else(|| {
                             g.arrangement()
@@ -1367,9 +1143,8 @@ impl AppState {
                     let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: panel.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
-                // The frozen drag gestures, each ONE op — a drop is one undo step and peers never see an
-                // arrangement that was not on somebody's screen. Composed from the primitive ops they
-                // would cost three to five of both.
+                // ONE op per drag gesture: a drop is one undo step, and peers never see an
+                // arrangement that was not on somebody's screen.
                 "insert_at_panel" => {
                     let subtree = parse_str(&payload, "subtree")?.to_string();
                     let target = parse_str(&payload, "target")?.to_string();
@@ -1385,8 +1160,8 @@ impl AppState {
                 }
                 "resize_split" => {
                     let split = parse_str(&payload, "split")?.to_string();
-                    // A non-numeric entry becomes NaN and is refused by the planner alongside a zero or
-                    // a negative one, so the whole "is this a fraction" answer is stated in one place.
+                    // A non-numeric entry becomes NaN, which the planner refuses beside a zero or a
+                    // negative one — so "is this a fraction" is answered in one place.
                     let fractions: Vec<f64> = payload
                         .get("fractions")
                         .and_then(|v| v.as_array())
@@ -1407,13 +1182,10 @@ impl AppState {
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: panel })
                 }
                 "set_node_viewers" => {
-                    // Soft per-slot view-state (kind/settings/collapse) persisted to `.gfi` — NOT a
-                    // command (not undoable). Written to the graph; the re-mirror persists + broadcasts.
+                    // Soft per-slot view-state, persisted but NOT a command, so it is not undoable.
                     let uid = parse_uid(&payload, "node")?;
                     let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
-                    // Opaque to the ENGINE, which is why the words in it are checked here — the bag is
-                    // keyed by output slot and each entry names a viewer kind, the same two
-                    // vocabularies `page_set_panel` refuses a guess at.
+                    // Opaque to the ENGINE, so the words inside it are checked here.
                     vocab::check_viewers(&g, uid, &viewers)?;
                     g.set_node_viewers(uid, viewers)?;
                     Ok(json!({ "ok": true }))
@@ -1421,18 +1193,13 @@ impl AppState {
                 "rename_node" => {
                     let uid = parse_uid(&payload, "node")?;
                     let name = parse_str(&payload, "name")?.to_string();
-                    // Reject a duplicate display name up front (mirrors `rename_global`). The engine's
-                    // `Command::EditNode` tolerates a rename collision as a no-op so a stale undo-replay
-                    // converges instead of wedging the stack — so the user-facing error must be raised
-                    // here, at the forward RPC boundary.
+                    // The command tolerates a collision as a no-op, so a stale replay converges; the
+                    // user-facing error therefore belongs here, at the forward RPC boundary.
                     if g.name_taken(&name, uid) {
                         return Err(format!("rename_node: display name `{name}` already in use"));
                     }
-                    // A display name is spliced into expression SOURCE by `rewrite_nd_refs`, which
-                    // replaces the literal's content span in place — so a quote or backslash yields
-                    // `nd('a'b')`, invalid Python that the REFERRING node then carries as a binding
-                    // error while this rename reports success. Constraining the name is one line;
-                    // making the rewriter quote-aware is a Python tokenizer.
+                    // A display name is spliced into expression SOURCE, so a quote or backslash would
+                    // yield invalid Python in every referring node.
                     if name.contains(['\'', '"', '\\']) {
                         return Err(format!(
                             "rename_node: `{name}` cannot contain a quote or backslash — a display \
@@ -1444,9 +1211,8 @@ impl AppState {
                         &session,
                         goofi_engine::Command::EditNode { uid, name: Some(name), pos: None },
                     )?;
-                    // The new name rides the re-mirror; each referrer whose nd() expression was rewritten
-                    // needs its runtime-enriched descriptor re-pushed (the source is in the doc, the
-                    // runtime error is not).
+                    // Each rewritten referrer needs its descriptor re-pushed: the source is in the
+                    // doc, the runtime error is not.
                     if let goofi_engine::Outcome::Nodes(referrers) = out {
                         for r in referrers {
                             events.push(param_state_update(&g, r));
@@ -1454,11 +1220,6 @@ impl AppState {
                     }
                     Ok(json!({ "ok": true }))
                 }
-                // Globals validation is server-side now (the retired client `docAddGlobal`/`docRename`
-                // guards moved here): `add_global` REJECTS a collision, `set_global` edits an EXISTING
-                // one, `rename_global` refuses a system/colliding/invalid target up front (its Compound
-                // is not atomic, so a mid-sequence failure would leave a phantom). Wire shape carries the
-                // typed value as `{ name, value, type }`.
                 "add_global" => {
                     let name = parse_str(&payload, "name")?.to_string();
                     let val = payload.get("value").ok_or("add_global: missing value")?;
@@ -1466,8 +1227,6 @@ impl AppState {
                     if g.globals().contains(&name) {
                         return Err(format!("add_global: global `{name}` already exists"));
                     }
-                    // On an ABSENT name, EditGlobal routes through GlobalStore::add, which validates the
-                    // name (an invalid name still rejects).
                     let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
                         .ok_or("add_global: malformed value")?;
                     state.history.lock().unwrap().apply(
@@ -1478,17 +1237,14 @@ impl AppState {
                     Ok(json!({ "ok": true }))
                 }
                 "set_global" => {
-                    // EDIT an existing global's value (system or user); rejects a non-existent name so it
-                    // cannot silently create one (that is `add_global`'s job).
                     let name = parse_str(&payload, "name")?.to_string();
                     let val = payload.get("value").ok_or("set_global: missing value")?;
                     let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
                     let Some(held) = g.globals().get(&name).map(goofi_engine::global_to_json) else {
                         return Err(format!("set_global: no such global `{name}`"));
                     };
-                    // A global's TYPE is what every expression reading it depends on, so re-typing one
-                    // through a value edit breaks the reference rather than the call. Choosing a type
-                    // is `add_global`'s; this op edits what a global HOLDS.
+                    // Every expression reading a global depends on its TYPE, so re-typing one through
+                    // a value edit would break the reference rather than the call.
                     let held_ty = held["type"].as_str().unwrap_or_default();
                     if held_ty != ty {
                         return Err(format!("set_global: `{name}` is a {held_ty} — set_global edits a \
@@ -1501,8 +1257,7 @@ impl AppState {
                         &session,
                         goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
                     )?;
-                    // As STORED: `global_from_json` is type-directed, so a fraction into an int global
-                    // rounds — the same reason `update_param` answers its value.
+                    // As STORED: the conversion is type-directed, so a fraction into an int rounds.
                     Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
                 }
                 "remove_global" => {
@@ -1517,9 +1272,8 @@ impl AppState {
                 "rename_global" => {
                     let old = parse_str(&payload, "old")?.to_string();
                     let new = parse_str(&payload, "new")?.to_string();
-                    // Validate the WHOLE rename up front (the Compound is NOT atomic — a mid-sequence
-                    // failure would leave the add-new applied as a phantom). Refuse a missing/system
-                    // source and a colliding/invalid target, so both children are guaranteed to succeed.
+                    // Validated WHOLE up front, because the Compound is not atomic: a mid-sequence
+                    // failure would leave the add-new applied as a phantom.
                     let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
                     if g.globals().is_system(&old) {
                         return Err(format!("rename_global: cannot rename system global `{old}`"));
@@ -1530,7 +1284,6 @@ impl AppState {
                     if !goofi_core::globals::is_valid_global_name(&new) {
                         return Err(format!("rename_global: invalid name `{new}`"));
                     }
-                    // A rename = add-new(with the old value) + remove-old, folded into one undo step.
                     state.history.lock().unwrap().apply(
                         &mut g,
                         &session,
@@ -1541,12 +1294,6 @@ impl AppState {
                     )?;
                     Ok(json!({ "ok": true }))
                 }
-                // The sub-patch structural ops (group/expand/boundary authoring/share) mutate the forest
-                // and return; the mutated forest reaches every client via the post-dispatch re-mirror,
-                // which the frontend reconciles from the doc. The old `subpatch_changed` snapshot echo is
-                // retired (Phase 4) — the doc read-path covers it.
-                // The structural sub-patch ops route through the command history (undoable, uid-stable on
-                // the flat model). Each parses a Command, applies it, and maps the Outcome to the reply.
                 "group_nodes" => {
                     let members = payload
                         .get("members")
@@ -1643,10 +1390,6 @@ impl AppState {
                     )?;
                     Ok(json!({ "ok": true }))
                 }
-                // duplicate_shared / make_unique / re_share_instance are gone — sub-patch sharing was
-                // dropped in the flat-scope re-architecture (sub-patches are organizational facades now).
-                // The inspect reads. Every one is `writes: false` in the registry, so none re-mirrors
-                // and none dirties the patch — they answer questions, they do not edit.
                 "inspect_patch" => {
                     let scope = match payload.get("scope").filter(|v| !v.is_null()) {
                         Some(v) => {
@@ -1661,8 +1404,6 @@ impl AppState {
                 }
                 "inspect_node" => {
                     let uid = parse_uid(&payload, "node")?;
-                    // The three sections default ON — the op is the cheap peek, and a caller that
-                    // wants less says so.
                     let want = |k: &str| payload.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
                     let slot = payload.get("slot").and_then(|v| v.as_str());
                     let text = inspect::node(&g, uid, slot, want("params"), want("error"))?;
@@ -1670,12 +1411,8 @@ impl AppState {
                 }
                 "list_globals" => Ok(inspect::globals(&g)),
                 "read_node_source" => {
-                    // The two trees a scan registers from, patch first — the same precedence the
-                    // palette's `source` badge reports, so provenance cannot disagree with it.
-                    // `.rev()` is load-bearing, not tidiness: `rescan` scans the shipped list forwards
-                    // and lets each directory overwrite the last, so the LAST one holds the name. This
-                    // search runs first-match-wins, so it has to walk the same list backwards to land
-                    // on the same file. Forwards here would hand back a shadowed copy nothing runs.
+                    // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets each
+                    // directory overwrite the last, so a first-match search must walk it backwards.
                     let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
                         .into_iter()
                         .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
@@ -1683,122 +1420,79 @@ impl AppState {
                     inspect::node_source(&g, parse_str(&payload, "type")?, &dirs)
                 }
                 "serialize" => Ok(json!({ "yaml": g.serialize() })),
-                // Where this patch's workspace files live right now. The mount is a per-run temp
-                // directory under a random name, so a client — and the agent harness after it — cannot
-                // derive it; asking the manager is the only way to open a browser or a shell on it.
+                // The mount is a per-run temp directory under a random name, so asking is the only
+                // way a client or a harness can find it.
                 "open_workspace" => Ok(json!({ "path": goofi_core::path::to_slash(&state.mount()) })),
                 "save" => {
-                    // Expand `~` exactly as the browser does, or a path the user could navigate to
-                    // would not be writable — the two must agree on what a path means. The path is
-                    // REQUIRED: the old no-path form quietly returned the YAML for a browser
-                    // download ("Save in browser"), a second save semantics that left the dirty
-                    // flag standing and that the save-path design (C38) would have had to carry.
-                    // The user removed the feature; a save writes a file or it is malformed.
+                    // Expand `~` exactly as the browser does — the two must agree on what a path
+                    // means. A save writes a file or it is malformed.
                     let path = payload
                         .get("path")
                         .and_then(|v| v.as_str())
                         .map(fsbrowse::resolve)
                         .ok_or("save: missing path")?;
                     let mount = state.mount();
-                    // Sampled BEFORE the pack and committed only once it succeeded. A file written
-                    // while the zip is being built may or may not have made it in; baselining
-                    // afterwards would call it packed either way, and that is the one direction that
-                    // loses an edit rather than merely reporting a spurious one.
+                    // Sampled BEFORE the pack: baselining after would call a file written during the
+                    // zip packed either way, which is the direction that LOSES an edit.
                     let packed = goofi_engine::archive::fingerprint(&mount);
                     save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
-                    // Written to disk ⇒ clean, on both planes — and said so UNCONDITIONALLY, not on the
-                    // flag's transition: a patch dirtied solely by a file written into the mount leaves
-                    // the flag already false, so no transition comes and every tab would keep its dot
-                    // on a patch that is entirely on disk. The duplicate event the common case now gets
-                    // is free — a save is one user action, and every client apply branch is idempotent.
+                    // Announced UNCONDITIONALLY, not on the flag's transition: a patch dirtied solely
+                    // by a file in the mount leaves the flag already false, so no transition comes.
                     *state.workspace_baseline.lock().unwrap() = packed;
                     state.set_dirty(false);
                     events.push(event("unsaved_changes", json!({ "unsaved_changes": false })));
-                    // …and the patch now has a home the MANAGER knows (C38), so a later plain Save
-                    // overwrites this file from any tab, and a reload still names it. Announced as
-                    // well as stored: an already-connected peer gets no new snapshot to read it from.
-                    // Only on success — a failed save wrote nothing, so whatever home the patch had
-                    // (including none) is still the true one, and claiming this one would point the
-                    // next silent overwrite at a file this patch has never been written to.
+                    // The patch's home, stored ONLY on success and announced as well as stored: an
+                    // already-connected peer gets no new snapshot to read it from.
                     *state.save_path.lock().unwrap() = Some(path.clone());
                     events.push(event("save_path_changed", json!({ "save_path": &path })));
                     Ok(json!({ "path": path }))
                 }
-                // One load path for every source: `load_text` carries the YAML inline (a browser
-                // upload), `load` names a `.gfi` the BACKEND reads, and `new` brings an empty patch
-                // from nowhere. Everything after the read — replace, reset history, announce — must
-                // not drift between them, so they share an arm.
+                // One arm for every source, so nothing after the read can drift between them.
                 "load_text" | "load" | "new" => {
-                    // Every source mounts FRESH, and the live mount is swapped for it only once the
-                    // manifest has parsed. So a refused load leaves the open patch untouched on both
-                    // planes — its graph AND its workspace files — and a loaded patch never inherits
-                    // the files of the patch it replaced.
+                    // Every source mounts FRESH, and the live mount is swapped only once the manifest
+                    // has parsed, so a refused load leaves the open patch untouched on both planes.
                     let fresh = new_mount();
                     let (content, from_path) =
                         stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
-                    // ORDERING, load-bearing: the types the patch SHIPS are registered before the
-                    // manifest is resolved, or `load_doc`'s unknown-type gate fires on exactly the
-                    // nodes the archive brought. They live in the tree just unpacked, so the scan runs
-                    // against `fresh` — which is not the live mount yet.
+                    // ORDER is load-bearing: the types the patch SHIPS are registered before the
+                    // manifest resolves, or the unknown-type gate fires on the nodes the archive brought.
                     rescan(state, &mut g, &fresh);
-                    // Parse BEFORE anything is announced or committed: a rejected patch must not leave
-                    // the title bar naming a file the graph was never loaded from.
+                    // Parse BEFORE anything is announced or committed.
                     if let Err(e) = g.load_doc(&content) {
-                        // Refused, so the open patch keeps its graph AND its workspace — and therefore
-                        // its registry, which the scan above swapped for the refused patch's. Re-derive
-                        // it from the mount that is still live.
+                        // Refused, so the registry the scan above swapped is re-derived from the mount
+                        // that is still live.
                         rescan(state, &mut g, &state.mount());
                         remove_mount(&fresh);
                         return Err(e);
                     }
                     // Commit, now that nothing left can fail: the loaded patch's workspace becomes the
-                    // live one and the mount it replaced is reclaimed — after the lock drops, since
-                    // deleting a tree is a walk and the lock guards only the swap. The harnesses the
-                    // replaced patch spawned go with it, in the order `retire_mount` owns. Announced
-                    // too — `graph_replaced` below carries the emptied roster, but a client tracking
-                    // only the transitions must not have to infer it.
+                    // live one, and the replaced mount goes with the harnesses spawned into it.
                     let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
                     state.retire_mount(&replaced);
                     events.push(event("harness_changed", state.harnesses.roster()));
-                    // The unpacked tree IS what the archive holds — but every file in it was written
-                    // seconds ago (`read_gfi` restores no mtimes), so this baseline has to be taken
-                    // HERE. Without it a patch would be dirty from the moment it finished loading.
+                    // `read_gfi` restores no mtimes, so without a baseline taken HERE a patch would be
+                    // dirty from the moment it finished loading.
                     *state.workspace_baseline.lock().unwrap() = goofi_engine::archive::fingerprint(&state.mount());
-                    // A load fully resets the session — there is nothing to undo across it (spec §3:
-                    // no load command / no checkpoint), so drop every session's command history.
+                    // A load fully resets the session: there is nothing to undo across it.
                     state.history.lock().unwrap().clear();
                     events.extend(state.set_dirty(false));
-                    // The loaded patch's home is the archive it came from — or NONE for `load_text` (an
-                    // upload) and `new`, neither of which has a file behind it. Inheriting a path there
-                    // would aim the next silent Save at an unrelated `.gfi` and overwrite it with a
-                    // patch that never came from it. Stored BEFORE the snapshot is built, so the
-                    // snapshot carries it.
+                    // NONE for `load_text` and `new`, neither of which has a file behind it: an
+                    // inherited path would aim the next silent Save at an unrelated `.gfi`.
                     *state.save_path.lock().unwrap() = from_path.clone();
                     events.push(event(
                         "graph_replaced",
                         schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
                                           state.harnesses.roster()),
                     ));
-                    // The patch brought its own node types (and dropped the last patch's), which
-                    // `graph_replaced` does not carry — the snapshot's catalog rides `hello` alone.
+                    // The patch brought its own node types, which `graph_replaced` does not carry.
                     events.push(node_types_event(&g));
                     if let Some(path) = from_path {
-                        // The announcement the title bar reads. The ORDER no longer carries meaning:
-                        // the snapshot the client applies wholesale now names the same file, so
-                        // announcing first would be re-affirmed rather than clobbered. It is kept
-                        // after `graph_replaced` because that is the order the two facts happen in,
-                        // and kept at all because `save` — which ships no snapshot — needs the event
-                        // to exist, and one event shape is easier to be right about than two.
                         events.push(event("save_path_changed", json!({ "save_path": path })));
                     }
-                    // A stored arrangement the flat model admits but cannot render falls back to the
-                    // default — the graph is the value, the arrangement is chrome. Say so here, or the
-                    // patch would open on a layout the user did not save and nothing would explain it.
+                    // A stored arrangement this model admits but cannot render falls back to the
+                    // default, so the reply says so rather than leaving the change unexplained.
                     Ok(json!({ "ok": true, "layout_warning": g.arrangement_warning() }))
                 }
-                // Session-scoped undo/redo over the central command history. The graph mutation reaches
-                // clients via the post-dispatch re-mirror (doc-authoritative); the reply carries the
-                // session's fresh can-undo/can-redo so the UI can enable its buttons.
                 "undo" => {
                     let mut hist = state.history.lock().unwrap();
                     let changed = hist.undo(&mut g, &session)?;
@@ -1813,53 +1507,13 @@ impl AppState {
             }
         })();
 
-        // Keep the server-side CRDT doc in agreement with the graph after any successful MUTATING
-        // control op, then broadcast the resulting delta so every connected client's replica converges.
-        // The re-mirror is gated on whether the op *could* have mutated the graph — NOT on `events`,
-        // because link/boundary writes mutate the doc-read graph while emitting no client event (their
-        // `link_added`/`boundary_moved` events are retired). Read-only ops touch nothing and skip the
-        // expensive full-graph walk; any other op re-mirrors (an unchanged re-mirror is a no-op empty
-        // diff that broadcasts nothing, so defaulting a new op to re-mirror is safe).
-        // `open_workspace` joins them: it answers where the mount is and writes nothing on either
-        // plane. Being here is also what keeps it out of the dirty tail below — the whole block is
-        // skipped — which is the right door for it, since it is a question, not an op that "did not
-        // happen to be an edit".
-        // `new` is deliberately NOT here: it empties the graph, and the re-mirror is the only thing
-        // that empties an already-open tab's canvas with it (`graph_replaced` carries no node list).
-        // The classification lives on the op's registry row, so declaring an op is what classifies it
-        // — there is no second list to forget. An unregistered op never reaches here (its result is
-        // the `unknown op` Err above).
+        // Gated on whether the op COULD have mutated the graph, not on `events`: a link or boundary
+        // write mutates the doc-read graph while emitting no client event.
         let read_only = spec.is_some_and(|o| !o.writes);
         if result.is_ok() && !read_only {
             resync_and_broadcast(state);
-            // "Could this have changed the graph?" is a good enough answer to "does the patch now
-            // differ from disk?" for most ops that the two share a gate — but it is an INFERENCE, and
-            // these four are where it is wrong:
-            //   `load`/`load_text`/`new` clear the flag inside their arm, which runs first and is then
-            //     re-set here; re-clear it. `new` is the one where the tail's default is most clearly
-            //     wrong rather than merely conservative: an empty patch with nothing in it and no file
-            //     behind it would be born unsaved, offering to be written over the last real patch.
-            //   `restart_node` respawns an instance in place, replaying the node's own ParamGroups
-            //     verbatim and touching neither name, position, bindings, viewers, links nor scopes, so
-            //     `serialize()` is byte-identical. It is RECOVERY, not an edit, and it is reached by one
-            //     click on the inspector's Restart button after a node raised — exactly where a spurious
-            //     unsaved dot is least distinguishable from a real one.
-            //   `rescan_nodes` re-derives the CATALOG, which is not patch content. It still re-mirrors,
-            //     because restarting a node whose type gained a param changes that node's params — and
-            //     it still must not dirty: pressing refresh with nothing edited would otherwise put the
-            //     dot on an untouched patch, while a rescan that DID follow an edit is already dirty
-            //     through the workspace fingerprint (`is_dirty`), which is where a file edit belongs.
-            //   `refresh_param` re-enumerates a device/stream picker's options, which are runtime-only
-            //     and never persisted. Latent today (no shipped node declares `refresh: true`, and the
-            //     engine rejects the op for any param that does not, so the `Err` skips this gate
-            //     entirely) — listed here because it is the same op-is-not-an-edit case, not a
-            //     prediction that it currently misfires.
-            //   `set_viewpoint` is persistence-without-dirtiness, and by CONSTRUCTION rather than by a
-            //     classification the client has to get right: a viewpoint is where a client is LOOKING,
-            //     so writing one is never authoring. It still rides the `.gfi`, which is exactly why it
-            //     needs an arm here and not `writes: false`. Every op that edits the ARRANGEMENT is
-            //     authoring by the same construction, and so needs no arm at all.
-            // These stay OUT of `read_only`: none is an edit, but all still need the re-mirror.
+            // These need the re-mirror but are not EDITS, so they must not raise the unsaved dot:
+            // a load clears the flag in its own arm, and the other three are recovery or runtime.
             match op.as_str() {
                 "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
                 "set_viewpoint" => {}
@@ -1883,8 +1537,7 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let op = req.get("op")?.as_str()?.to_string();
     let payload = req.get("payload").cloned().unwrap_or_else(|| json!({}));
-    // The caller's session tag (a browser tab's stable id) scopes the command history's undo/redo.
-    // Absent ⇒ a single shared "default" session, so a client that never presents one still works.
+    // Absent ⇒ one shared "default" session, so a client that presents none still works.
     let session = req.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
 
     let result = state.call(&op, payload, &session);
@@ -1897,15 +1550,10 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     }
 }
 
-/// Re-project the (already-locked) graph into the (already-locked) document and broadcast the
-/// delta. The caller holds `graph` then `doc` — the canonical order — and passing the guards in is
-/// what keeps the apply→re-project critical section atomic, so no concurrent writer can observe a
-/// document leaf the graph has not yet caught up to.
+/// Re-project the already-locked graph into the already-locked document and broadcast the delta.
+/// The caller holds `graph` then `doc` — the canonical order — which keeps apply→re-project atomic.
 fn remirror_and_broadcast_locked(state: &AppState, g: &Graph, doc: &mut crate::doc::GraphDoc) {
     let from = doc.version();
-    // `None` means the projection is what the document already holds — a read-only op, or a write
-    // that landed on the value already there. Nothing goes on the wire and the version does not
-    // move, so an idle patch is silent.
     let Some(patch) = doc.reconcile_root(&projection::of(g)) else { return };
     let _ = state
         .events
@@ -1918,18 +1566,13 @@ fn doc_state(state: &AppState) -> String {
     event("doc_state", json!({ "v": doc.version(), "doc": doc.to_json() }))
 }
 
-/// Re-project the authoritative graph into the document and broadcast the delta. Called after an
-/// RPC dispatch mutates the graph. Because the projection is built WHOLE, this also converges any
-/// stale document leaf back to the graph rather than trusting an op to describe its own change.
+/// Re-project the authoritative graph into the document and broadcast the delta, after an RPC
+/// mutates the graph. The projection is built WHOLE, so a stale leaf converges too.
 fn resync_and_broadcast(state: &AppState) {
     let g = state.graph.lock().unwrap();
     let mut doc = state.doc.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }
-
-// ---------------------------------------------------------------------------
-// Harness plane
-// ---------------------------------------------------------------------------
 
 async fn term_ws(
     Path(instance): Path<String>,
@@ -1939,8 +1582,7 @@ async fn term_ws(
     ws.on_upgrade(move |socket| handle_term(socket, state, instance))
 }
 
-/// The inband control a `/term` client sends. Resize is the only one there is: everything else a
-/// terminal needs already rides the byte stream.
+/// The inband control a `/term` client sends; resize is the only one there is.
 #[derive(serde::Deserialize)]
 struct TermControl {
     op: String,
@@ -1948,57 +1590,35 @@ struct TermControl {
     rows: u16,
 }
 
-/// One `/term` socket. **Binary frames are PTY bytes** in both directions; **text frames are JSON
-/// control**: `{op:"resize", cols, rows}` inbound, `{op:"size", cols, rows}` and `{exit_code}`
-/// outbound. An already-exited instance answers its code at once and closes, so a tab that opens
-/// the panel after the harness died sees why instead of an empty terminal.
+/// One `/term` socket: binary frames are PTY bytes in both directions, text frames are JSON control
+/// — `{op:"resize", cols, rows}` inbound, `{op:"size", cols, rows}` and `{exit_code}` outbound.
 ///
-/// A resize is a PROPOSAL, not an order: several views can watch one instance and a PTY has one
-/// window, so [`term::Sizes`] arbitrates and the answer is broadcast to every view — including the
-/// one that asked, which is what lets a client resize its terminal from the authoritative frame
-/// alone and never from its own measurement. A view that says `0` retracts (its panel unmounted);
-/// closing the socket leaves the seat, and both hand the terminal back to the survivors.
-///
-/// Nothing is buffered here — see [`term`]'s module note: the client keeps its own terminal alive,
-/// so this socket is a pipe rather than a replayable log.
+/// A resize is a PROPOSAL: [`term::Sizes`] arbitrates and the answer is broadcast to every view,
+/// the one that asked included. A view that says `0` retracts; closing the socket leaves the seat.
 async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
     let (mut tx, mut rx) = socket.split();
     let Some(inst) = state.harnesses.get(&instance) else {
         let _ = tx.send(close(4004, "unknown harness instance")).await;
         return;
     };
-    // Both halves are taken before the first await: a subscription made later would miss whatever
-    // the child wrote in between, and the exit is the only thing that ends this loop.
+    // Taken before the first await: a subscription made later would miss what the child wrote.
     let (mut output, mut exit, mut eof) = inst.attach();
     let (seat, mut size) = inst.join();
-    // The current answer, sent up front: a view that arrives while the size is already settled has
-    // no change event coming to tell it, and would otherwise draw at its own default forever.
+    // Sent up front: a view arriving on a settled size has no change event coming to tell it.
     let settled = *size.borrow_and_update();
     if let Some((cols, rows)) = settled {
         let _ = tx.send(size_frame(cols, rows)).await;
     }
-    // When the child was reaped, so the announcement below can bound its wait for the PTY.
     let mut reaped_at: Option<tokio::time::Instant> = None;
     loop {
-        // The exit frame is the LAST thing this socket sends, not the first thing it reaches for.
-        // A dying harness writes its stack trace, its auth failure, its rate-limit message in the
-        // instant before it goes, and `child.wait()` returns while those bytes are still in flight
-        // — so the announcement waits for the PTY's own end-of-stream (set after the drain's final
-        // publish, which a `try_recv` sweep here would race) AND for this socket to have been
-        // handed everything published. The senders live in the instance this task holds an `Arc`
-        // of, so neither `changed()` can fail. Both are copied out of their guards rather than
-        // matched through them: a `watch` borrow is not `Send`, and the send below is an await.
+        // The exit frame is the LAST thing this socket sends: `child.wait()` returns while a dying
+        // harness's final words are still in flight. Copied out of the guards, which are not `Send`.
         let (ended, drained) = (*exit.borrow_and_update(), *eof.borrow_and_update());
         if ended.is_some() && reaped_at.is_none() {
             reaped_at = Some(tokio::time::Instant::now());
         }
-        // …but the PTY's end-of-stream is not guaranteed to come. ConPTY keeps the pseudoconsole
-        // open after the child exits, so on Windows `drained` never turns true and a viewer waiting
-        // only for it would never be told the harness finished — on the very platform where a
-        // headless agent has nobody watching the screen to notice. So the wait is BOUNDED: the
-        // drain's own end when it arrives, or a short settle after the reap, which is ample for
-        // bytes already sitting in the buffer to be published. No platform branch: where EOF is
-        // real it wins the race every time and the settle never elapses.
+        // The wait is BOUNDED because ConPTY keeps the pseudoconsole open after the child exits, so
+        // `drained` never turns true on Windows. Where EOF is real it wins and the settle never runs.
         let may_announce = drained || reaped_at.is_some_and(|t| t.elapsed() >= EXIT_SETTLE);
         if let (Some(code), true) = (ended, may_announce && output.is_empty()) {
             let _ = tx.send(Message::Text(json!({ "exit_code": code }).to_string().into())).await;
@@ -2024,9 +1644,7 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
                         break;
                     }
                 }
-                // A viewer that fell behind loses those bytes rather than the CHILD stalling behind
-                // it. The screen is garbled only until the next repaint, which is the trade the
-                // no-emulator decision already made.
+                // A viewer that fell behind loses bytes rather than the CHILD stalling behind it.
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             },
@@ -2041,8 +1659,7 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
             }
             _ = exit.changed() => {}
             _ = eof.changed() => {}
-            // Wake to re-check the settle above. Armed only once the child has been reaped and the
-            // PTY has not ended on its own — where EOF is real this never runs.
+            // Wake to re-check the settle above, armed only once the child has been reaped.
             _ = tokio::time::sleep_until(reaped_at.unwrap_or_else(tokio::time::Instant::now) + EXIT_SETTLE),
                 if reaped_at.is_some() && !drained => {}
         }
@@ -2054,10 +1671,6 @@ fn size_frame(cols: u16, rows: u16) -> Message {
     Message::Text(json!({ "op": "size", "cols": cols, "rows": rows }).to_string().into())
 }
 
-// ---------------------------------------------------------------------------
-// Data plane
-// ---------------------------------------------------------------------------
-
 async fn data_ws(
     Path((node, slot)): Path<(String, String)>,
     ws: WebSocketUpgrade,
@@ -2066,9 +1679,7 @@ async fn data_ws(
     ws.on_upgrade(move |socket| handle_data(socket, state, node, slot))
 }
 
-/// The inband `{op:"view", specs:[…]}` message a viewer sends on the `/data` socket to
-/// declare (or update) what it can draw + wants reduced. Latest-wins: the newest list
-/// replaces the connection's prior specs.
+/// The inband `{op:"view", specs:[…]}` a viewer sends to declare what it can draw. Latest-wins.
 #[derive(serde::Deserialize)]
 struct ViewMsg {
     op: String,
@@ -2092,22 +1703,13 @@ enum SendOutcome {
     Gone,
 }
 
-/// Write one message to a `/data` socket, giving up after `bound`.
-///
-/// The bound is not a policy about slow viewers — it is what keeps the caller's `tokio::select!`
-/// from parking. An `.await` inside a select BRANCH BODY runs to completion with no other branch
-/// polled, so an unbounded write to a peer whose TCP window stopped draining would freeze the
-/// keepalive beat: the liveness probe would be dead code on exactly the socket it exists to catch.
-/// Giving up on a message costs one frame (latest-wins, as `Lagged` does) — the caller re-offers
-/// a `Dropped` frame through the reducer, since the skip-unchanged sweep will not send it again
-/// on its own; parking costs the connection forever.
+/// Write one message to a `/data` socket, giving up after `bound`. The bound is not a policy about
+/// slow viewers: an `.await` in a select branch body runs to completion, parking the keepalive beat.
 async fn send_bounded<S>(tx: &mut S, msg: Message, bound: Duration) -> SendOutcome
 where
     S: futures_util::Sink<Message> + Unpin,
 {
-    // A timeout leaves at most this one message buffered: the sink's `poll_ready` gates the NEXT
-    // write on the same unfinished flush, so nothing accumulates behind a peer that stopped
-    // reading.
+    // At most one message stays buffered: `poll_ready` gates the next write on the same flush.
     match tokio::time::timeout(bound, tx.send(msg)).await {
         Ok(Ok(())) => SendOutcome::Sent,
         Ok(Err(_)) => SendOutcome::Gone,
@@ -2120,16 +1722,14 @@ where
 enum Beat {
     /// Probe the peer, and start (or keep) the pong deadline running.
     Ping,
-    /// A ping is outstanding but still inside the deadline — say nothing, keep waiting.
+    /// A ping is outstanding but still inside the deadline.
     Wait,
-    /// The deadline lapsed unanswered: the peer is gone. Leave the loop so the socket's
-    /// existing `unsubscribe` teardown runs.
+    /// The deadline lapsed unanswered: the peer is gone.
     Dead,
 }
 
 /// Whether the peer on one `/data` socket has shown, within the deadline, that its receive path is
-/// moving. A stalled *write* is not itself evidence of death — a slow phone stalls writes too —
-/// so the verdict rests on the peer failing to make **any** progress for a whole deadline.
+/// moving. A stalled WRITE is not evidence of death — a slow phone stalls writes too.
 struct PeerLiveness {
     cfg: DataLiveness,
     /// When the oldest un-answered probe was sent; `None` while the peer is known to be moving.
@@ -2141,14 +1741,12 @@ impl PeerLiveness {
         PeerLiveness { cfg, awaiting_pong_since: None }
     }
 
-    /// The verdict for this beat. A probe is marked outstanding on the ATTEMPT, not on a
-    /// successful write: a peer whose receive path is jammed cannot be pinged at all, and that is
-    /// precisely the condition the deadline exists to catch — crediting it for the write we could
-    /// not make would leave the stalled peer undetectable.
+    /// The verdict for this beat. A probe is marked outstanding on the ATTEMPT, not on a successful
+    /// write: a jammed peer cannot be pinged at all, which is what the deadline exists to catch.
     fn beat(&mut self, now: std::time::Instant) -> Beat {
         match self.awaiting_pong_since {
-            // Measured from the OLDEST unanswered probe, so beating faster than the deadline
-            // (the normal case) cannot keep postponing the verdict.
+            // From the OLDEST unanswered probe, so beating faster than the deadline — the normal
+            // case — cannot keep postponing the verdict.
             Some(sent) if now.duration_since(sent) >= self.cfg.pong_deadline => Beat::Dead,
             Some(_) => Beat::Wait,
             None => {
@@ -2158,10 +1756,8 @@ impl PeerLiveness {
         }
     }
 
-    /// The peer answered — it read our probe, so its receive path is moving. This is the ONLY
-    /// thing that keeps a connection alive: a *sent* probe cannot be its own proof of life, and a
-    /// flushed frame is not proof either (the socket buffer of a peer that stopped reading keeps
-    /// swallowing frames until it is full).
+    /// The peer answered. The ONLY thing that keeps a connection alive: neither a sent probe nor a
+    /// flushed frame is proof of life, because a socket buffer swallows frames until it is full.
     fn pong(&mut self) {
         self.awaiting_pong_since = None;
     }
@@ -2177,10 +1773,8 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             return;
         }
     };
-    // Resolve the physical stream target. Either `(node, slot)` is a real output slot, or
-    // `node` is a sub-patch scope and `slot` is a wired OUTPUT stub — chain-resolved to its single
-    // inner leaf `(uid, slot)`. Either way exactly one physical leaf slot is streamed, so a stub
-    // viewer and an inner-scope viewer coalesce onto the same reducer (spec §5).
+    // Exactly one physical leaf slot is streamed, so a stub viewer and an inner-scope viewer
+    // coalesce onto the same reducer.
     let target = {
         let g = state.graph.lock().unwrap();
         if g.manifest(uid).map(|m| m.outputs.iter().any(|o| o.name == slot)).unwrap_or(false) {
@@ -2194,17 +1788,14 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         return;
     };
 
-    // Subscribe to the SHARED per-slot reducer: the frame is reduced ONCE for this slot (to
-    // the union of every subscriber's ViewSpecs) and fanned out, so N tabs on one slot cost
-    // one reduce+encode, not N. This connection just forwards the reduced frames to its socket
-    // and pushes its own ViewSpecs into the union (latest-wins) on each inband `{op:"view"}`.
+    // The SHARED per-slot reducer: this connection forwards its frames and pushes its own
+    // ViewSpecs into the union.
     let key: reducer::SlotKey = (stream_uid, stream_slot);
     let conn = state.reducers.new_conn();
     let mut frames = state.reducers.subscribe(key.clone(), conn);
 
-    // Peer liveness. A dead-but-not-closed peer (slept laptop, dropped NAT flow, killed tab that
-    // never sent Close) produces NO socket error, so without an active probe this connection —
-    // and its share of the shared slot reducer — would live forever.
+    // A dead-but-not-closed peer produces NO socket error, so without an active probe this
+    // connection would live forever.
     let cfg = state.data_liveness;
     let mut live = PeerLiveness::new(cfg);
     let mut keepalive = tokio::time::interval(cfg.ping_interval);
@@ -2213,36 +1804,24 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         tokio::select! {
             frame = frames.recv() => match frame {
                 Ok(bytes) => {
-                    // BOUNDED (see `send_bounded`), because this `.await` sits in a select BRANCH
-                    // BODY: an unbounded write to a peer that stopped draining would park here
-                    // and starve the keepalive beat below.
-                    //
-                    // Giving up on a frame is deliberately NOT a liveness signal in either
-                    // direction. A timeout is not death — a slow phone stalls writes too, and
-                    // dropping the frame is the same latest-wins contract as `Lagged` just below.
-                    // A flush is not life either: the socket buffer of a peer that stopped reading
-                    // keeps swallowing frames until it is full, which on a low-rate slot takes
-                    // minutes. Only the pong decides.
+                    // Giving up on a frame is NOT a liveness signal in either direction: only the
+                    // pong decides.
                     match send_bounded(&mut tx, Message::Binary(bytes), cfg.send_timeout).await {
                         SendOutcome::Sent => {}
                         // The sweep will not resend an unchanged frame, so a dropped one must be
-                        // asked for again — otherwise the drop costs every frame until the next
-                        // emit (a one-shot join/spec serve would simply be lost).
+                        // asked for again.
                         SendOutcome::Dropped => state.reducers.reoffer(&key),
                         SendOutcome::Gone => break, // the socket really is gone
                     }
                 }
-                // A slow viewer that lagged the reducer's fan-out simply drops frames (latest-
-                // wins, like the node↔node plane) — never stalls the shared reducer. Re-offer for
-                // the same reason as a Dropped write: the missed frame may have been the last.
+                // A lagged viewer drops frames rather than stalling the shared reducer, and
+                // re-offers because the missed frame may have been the last.
                 Err(broadcast::error::RecvError::Lagged(_)) => state.reducers.reoffer(&key),
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             incoming = rx.next() => match incoming {
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
-                // Inband ViewSpec negotiation: latest-wins replace this connection's contribution
-                // to the slot's spec union.
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(m) = serde_json::from_str::<ViewMsg>(t.as_str()) {
                         if m.op == "view" {
@@ -2250,19 +1829,13 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                         }
                     }
                 }
-                // The peer answered our probe: the one and only thing that clears the deadline.
                 Some(Ok(Message::Pong(_))) => live.pong(),
                 _ => {}
             },
-            // The keepalive beat. Complementary to the bounded send above, not redundant with it:
-            // the bounded send stops the loop parking on a BACKED-UP peer, this catches an IDLE
-            // dead one — no frames means no send, so a write timeout alone would never fire.
+            // The bounded send above stops the loop parking on a BACKED-UP peer; this catches an
+            // IDLE dead one, where no frames means no send and a write timeout never fires.
             _ = keepalive.tick() => match live.beat(std::time::Instant::now()) {
-                // Bounded for the same reason as the frame send: a jammed sink must not park us.
-                // The probe's own write succeeding proves nothing — only the answer does.
                 Beat::Ping => {
-                    // A Dropped probe needs no re-offer — only the missing pong means anything,
-                    // and the deadline below is already counting.
                     if send_bounded(&mut tx, Message::Ping(Default::default()), cfg.send_timeout).await
                         == SendOutcome::Gone
                     {
@@ -2270,21 +1843,15 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                     }
                 }
                 Beat::Wait => {}
-                // Fall out so the EXISTING unsubscribe below runs and the shared reducer is
-                // reclaimed once its last real viewer is gone.
                 Beat::Dead => break,
             },
         }
     }
-    // Deregister so the reducer tears down when the last viewer of this slot leaves.
     state.reducers.unsubscribe(&key, conn);
 }
 
-// The two blocks below are the deliberate exception to "the suite lives in goofi-tests". Each
-// drives a PRIVATE state machine — the `/data` probe/pong deadline, and the bounded write that
-// gives up rather than parking the loop — whose outcome the transport suite already asserts. What
-// it cannot reach is the machine itself, and publishing one purely so a test could name it would
-// be the tail wagging the dog.
+// The two blocks below are the deliberate exception to "the suite lives in goofi-tests": each
+// drives a PRIVATE state machine no external test can name.
 #[cfg(test)]
 mod peer_liveness_tests {
     use super::*;
@@ -2300,8 +1867,6 @@ mod peer_liveness_tests {
 
     #[test]
     fn an_idle_peer_is_probed_then_left_alone_until_the_deadline() {
-        // The first beat probes; subsequent beats inside the deadline stay quiet rather than
-        // stacking pings on a peer that may simply be between round-trips.
         let t0 = Instant::now();
         let mut live = PeerLiveness::new(cfg());
         assert_eq!(live.beat(t0), Beat::Ping, "an unprobed peer is pinged");
@@ -2311,8 +1876,7 @@ mod peer_liveness_tests {
 
     #[test]
     fn a_probe_unanswered_past_the_deadline_declares_the_peer_dead() {
-        // The dead-but-not-closed case: nothing errored, nothing closed, the peer just stopped
-        // answering. Only the elapsed deadline can distinguish it from an idle healthy viewer.
+        // The dead-but-not-closed case: nothing errored and nothing closed.
         let t0 = Instant::now();
         let mut live = PeerLiveness::new(cfg());
         assert_eq!(live.beat(t0), Beat::Ping);
@@ -2321,8 +1885,6 @@ mod peer_liveness_tests {
 
     #[test]
     fn a_pong_clears_the_deadline_so_an_alive_peer_is_never_declared_dead() {
-        // The regression guard in pure form: however long a viewer is watched, as long as it
-        // answers it is only ever re-probed — never declared dead.
         let t0 = Instant::now();
         let mut live = PeerLiveness::new(cfg());
         for cycle in 0..20 {
@@ -2334,8 +1896,7 @@ mod peer_liveness_tests {
 
     #[test]
     fn a_pong_arriving_late_in_the_deadline_still_saves_the_peer() {
-        // A backlogged viewer answers only just before the deadline — it must be credited in
-        // full, not merely granted a stay: the clock restarts from the next probe.
+        // A late answer is credited in full: the clock restarts from the next probe.
         let t0 = Instant::now();
         let mut live = PeerLiveness::new(cfg());
         assert_eq!(live.beat(t0), Beat::Ping);
@@ -2347,8 +1908,7 @@ mod peer_liveness_tests {
 
     #[test]
     fn the_deadline_runs_from_the_oldest_unanswered_probe_not_the_latest_beat() {
-        // A `Wait` beat must not refresh the clock, or the deadline could never expire on a peer
-        // that is beaten more often than the deadline is long — which is the normal case.
+        // A `Wait` beat must not refresh the clock, or a fast-beaten peer never expires.
         let t0 = Instant::now();
         let mut live = PeerLiveness::new(cfg());
         assert_eq!(live.beat(t0), Beat::Ping);
@@ -2365,9 +1925,7 @@ mod send_bounded_tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    /// A sink that never becomes ready — a peer whose TCP window stopped draining, modelled
-    /// directly so the test does not depend on the OS socket-buffer sizes it would take to
-    /// reproduce that against a real socket.
+    /// A sink that never becomes ready — a peer whose TCP window stopped draining.
     struct StalledSink;
 
     impl futures_util::Sink<Message> for StalledSink {
@@ -2388,12 +1946,6 @@ mod send_bounded_tests {
 
     #[tokio::test]
     async fn a_write_to_a_stalled_peer_gives_up_instead_of_parking_the_loop() {
-        // The property the whole fix rests on. `handle_data`'s send sits in a select BRANCH BODY,
-        // so if it never returns no other branch is ever polled again — the keepalive beat would
-        // be starved on precisely the dead-but-not-closed socket it exists to catch. Bounding the
-        // write is what lets the loop go round.
-        // Small, so the test is fast; the outer bound is 40x it, so this asserts the PROPERTY
-        // (it returned) with room to spare rather than a tight window.
         let bound = Duration::from_millis(50);
         let mut sink = StalledSink;
         // The outer bound makes an unbounded send FAIL cleanly rather than hang the suite.
@@ -2412,8 +1964,6 @@ mod send_bounded_tests {
 
     #[tokio::test]
     async fn a_probe_to_a_stalled_peer_gives_up_too() {
-        // The beat's own write is bounded for the same reason: a jammed sink must not park the
-        // loop on the very branch that is supposed to declare the peer dead.
         let bound = Duration::from_millis(50);
         let mut sink = StalledSink;
         let outcome = tokio::time::timeout(

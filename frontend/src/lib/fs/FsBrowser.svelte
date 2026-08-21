@@ -1,12 +1,3 @@
-<!--
-  Backend filesystem browser modal. Two modes: 'save' (pick a directory + type a
-  filename) and 'load' (pick an existing .gfi). Full-FS, no jail (trusted LAN).
-
-  The modal shell is the `Dialog` primitive: it owns the backdrop, Escape, the focus
-  trap and the native top layer, so this component keeps no overlay, no window key
-  handler and no z-index of its own. The nav rows (`.root` / `.entry`) stay bespoke —
-  they are list rows, not actions — while every real control is a ui primitive.
--->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -21,7 +12,7 @@
 		suggestedName?: string;
 		onPick: (path: string) => void;
 		onClose: () => void;
-		/** The through-the-browser copy, for locations this list cannot show — see the footer. */
+		/** The through-the-browser copy, for locations the backend cannot reach. */
 		onFilePick: (file: File) => void;
 	};
 	const {
@@ -45,19 +36,14 @@
 	let pathBarEl = $state<HTMLDivElement | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 
-	// This browser is a MODAL: while it is up the app's global chords stand down, so a Ctrl+Z on a
-	// focused file row can't undo a graph command behind it (and Ctrl+S can't re-enter Save). Held in
-	// the ui store's ref-counted editor set — the same standdown the inspector's fx editor uses — and
-	// released by the effect's cleanup when AppShell unmounts the browser.
+	// A modal: the app's global chords stand down while it is up.
 	const standdownId = $props.id();
 	$effect(() => {
 		ui().openEditor(standdownId);
 		return () => ui().closeEditor(standdownId);
 	});
 
-	// Monotonic navigation token: a slower earlier listing must not clobber the directory the user
-	// has since navigated to (open the browser, immediately type a path → the in-flight initial
-	// listDir used to land last and bounce them home).
+	// A slower earlier listing must not clobber the directory the user has since navigated to.
 	let navSeq = 0;
 
 	async function go(path?: string | null): Promise<void> {
@@ -66,7 +52,7 @@
 		selected = null;
 		try {
 			const res = await g.listDir(path ?? undefined);
-			if (seq !== navSeq) return; // superseded by a newer navigation
+			if (seq !== navSeq) return;
 			cwd = res.path;
 			pathDraft = res.path;
 			parent = res.parent;
@@ -78,8 +64,7 @@
 		}
 	}
 
-	// Adopt the typed path BEFORE navigating: it is what `confirmSave` treats as authoritative, and
-	// the listing is a round trip away. A failed `go()` leaves it standing, so the user can correct it.
+	// Adopt the typed path BEFORE navigating: `confirmSave` treats it as authoritative.
 	function commitPath(path: string): void {
 		pathDraft = path;
 		void go(path);
@@ -95,7 +80,7 @@
 	}
 
 	function clickEntry(entry: FsEntry): void {
-		if (entry.kind === 'dir') return; // single click on a dir just highlights
+		if (entry.kind === 'dir') return;
 		if (entry.is_gfi) {
 			selected = entry.path;
 			if (mode === 'save') filename = entry.name.replace(/\.gfi$/, '');
@@ -105,9 +90,7 @@
 	function confirmSave(): void {
 		const name = filename.trim();
 		if (!name) return;
-		// The path bar is authoritative for the target directory — it holds the
-		// user's typed/navigated path even if a listDir() is still in flight, so
-		// a fast Save click can't fall back to a stale (or empty) cwd.
+		// The path bar is authoritative: a fast Save must not fall back to a stale cwd.
 		const dir = (pathDraft || cwd).replace(/\/+$/, '');
 		const full = `${dir}/${name.endsWith('.gfi') ? name : name + '.gfi'}`;
 		onPick(full);
@@ -118,9 +101,7 @@
 	}
 
 	onMount(() => {
-		// Focus the path bar once the first listing has landed: focusing earlier latches the input's
-		// live-value into editing mode, which would suppress that very echo. `showModal()` has already
-		// moved focus into the dialog — this only puts it where typing is useful.
+		// Focus after the first listing lands: earlier latches the input into editing mode.
 		void go(initialPath).then(() => pathBarEl?.querySelector('input')?.focus());
 	});
 
@@ -128,14 +109,7 @@
 	const title = $derived(mode === 'save' ? 'Save patch' : 'Load patch');
 </script>
 
-<!-- `nokey`: the node editor delegates deletion OUT of its own guarded keydown to SvelteFlow
-     (`deleteKey` + `ondelete`), whose `KeyHandler` is a bare window listener filtered only by
-     "is the target a text field" — so neither of the editor's two standdowns (my panel is active,
-     the press did not come from inside a `dialog[open]`) can reach it. Backspace is what a file
-     browser trains you to press for "up a folder", and behind this modal it deleted the canvas
-     selection, unreversibly in place (Ctrl+Z is stood down while a dialog is up). xyflow honours
-     `closest('.nokey')`, so the standdown goes on the modal that took the keyboard rather than as
-     a third condition on the editor. This is the app's only real modal. -->
+<!-- `nokey`: SvelteFlow's delete key is a bare window listener, so Backspace here would delete the canvas selection. -->
 <Dialog
 	open
 	class="nokey"
@@ -145,9 +119,6 @@
 	data-testid="fs-browser"
 >
 	<div class="frame">
-		<!-- A dialog's own header is not a panel toolbar: it states a title beside a ✕ at the
-		     comfortable density the rest of this modal uses, so it asks for the vertical padding the
-		     Bar default (a panel-header-height strip) has none of. Same for the footer below. -->
 		<Bar style="--bar-pad-y: var(--space-2)">
 			{#snippet start()}
 				<span class="title">{title}</span>
@@ -215,15 +186,6 @@
 			</section>
 		</div>
 
-		<!-- The one bar in the app whose two groups both have a real minimum — a filename field and
-		     Cancel/Save. It wraps at the width they stop fitting; every other bar keeps `nowrap`.
-		     The WRAP is what makes the footer fit a 320px phone; the field's 14rem is DESKTOP
-		     geometry and is stated as a width, not as a flex basis. `flex: 1 1 8rem` cost the
-		     desktop ~40px for nothing: the grow can never fire (`.ui-bar-group` is `0 1 auto` and
-		     `.ui-bar-spacer` owns the bar's slack), and a shrinkable item's max-content
-		     CONTRIBUTION collapses toward its own intrinsic size — an `<input>`'s default `size=20`
-		     — so the basis was not what the group asked for either. A definite width is.
-		     `flex: 0 1` + `min-width: 0` keep it shrinkable on the narrow line it wraps onto. -->
 		<Bar class="fs-footer" style="--bar-wrap: wrap; --bar-pad-y: var(--space-2)">
 			{#snippet start()}
 				{#if mode === 'save'}
@@ -235,10 +197,7 @@
 						data-testid="fs-filename"
 					/>
 					<span class="ext">.gfi</span>
-					<!-- The way out of this list. The list shows what the BACKEND can reach, which in a
-					     container is only what was bind-mounted; the browser runs on the host and its
-					     own dialogs reach anywhere. Deliberately a copy, not a save: it leaves the
-					     patch's remembered file alone, so Ctrl-S never silently retargets. -->
+					<!-- A copy, not a save: it leaves the patch's remembered file alone. -->
 					<Button variant="ghost" onclick={downloadPatch} data-testid="fs-download">
 						Download a copy
 					</Button>
@@ -254,8 +213,7 @@
 						onchange={(e) => {
 							const input = e.currentTarget;
 							const file = input.files?.[0];
-							// Cleared BEFORE handing the file on: without it, picking the same file
-							// twice in a row fires no `change` the second time and the click looks dead.
+							// Cleared first: else picking the same file twice fires no second `change`.
 							input.value = '';
 							if (file) onFilePick(file);
 						}}
@@ -282,8 +240,6 @@
 		flex-direction: column;
 		min-width: 0;
 		font-size: var(--fs-small);
-		/* The modal is 92vw, so its own width — not the viewport's, and not a device class — is what
-		   decides whether a sidebar still fits beside the list (D-R6). */
 		container: fs / inline-size;
 	}
 	.title {
@@ -292,13 +248,9 @@
 	.body {
 		display: flex;
 		min-height: 0;
-		/* The list is the only scroller, and a fixed body height keeps the modal from resizing as
-		   the user walks directories of different lengths. `dvh`, not `vh`: on a phone `vh` is the
-		   LARGEST viewport (browser chrome retracted), so a `vh`-sized modal overflows the screen
-		   for as long as the address bar is showing. */
+		/* `dvh`, not `vh`: on a phone `vh` is the largest viewport, so the modal would overflow. */
 		height: min(24rem, 55dvh);
 	}
-	/* Root shortcuts read as a sidebar off the same surface step as the bars — no divider needed. */
 	.roots {
 		flex: 0 0 8.75rem;
 		display: flex;
@@ -308,10 +260,6 @@
 		background: var(--surface-2);
 		overflow-y: auto;
 	}
-	/* `.root` / `.entry` are list rows, not actions, so they stay bespoke — which means stating the
-	   whole of their appearance. Both wash accent on hover/selection, so the radius that rounds that
-	   wash and the fade that eases it in are theirs to declare: they came from app.css's base
-	   `button` skin until M-Task 7 stripped it (only the `font: inherit` reset survives there). */
 	.root {
 		font: inherit;
 		background: transparent;
@@ -333,10 +281,7 @@
 		flex-direction: column;
 		min-width: 0;
 	}
-	/* A path is DATA (D-T3) — the same string the rows below it hold, one directory further down —
-	   so the bar that carries it reads in mono. Stated HERE, on the strip, because `TextInput` is
-	   `font: inherit` by design: the seam that encloses the control is the only place a consumer can
-	   hand it a face. The ↑ beside it inherits the same mono, which is what the file rows do too. */
+	/* The mono face is stated on the strip because `TextInput` is `font: inherit`. */
 	.pathbar {
 		display: flex;
 		align-items: center;
@@ -384,27 +329,19 @@
 	.entry.gfi .ico {
 		color: var(--accent);
 	}
-	/* The scroller clips horizontally, so a long name ellipsis's instead of being cut mid-glyph. */
 	.entry .nm {
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The footer's own seam, and the same call as `.pathbar`: the name a patch is saved under is the
-	   file the list above will show, so it is data. The face has to be stated on the strip because
-	   the field inside it is `font: inherit` — and nothing else in the bar moves, since `Button`
-	   declares its sans itself. `:global`, because the class travels to `Bar` as a prop (the idiom
-	   `ParamForm` uses for `.pf-identity-bar`); `.frame` keeps it scoped to this component's tree. */
+	/* `:global` because the class travels to `Bar` as a prop; `.frame` keeps it scoped. */
 	.frame :global(.fs-footer) {
 		font-family: var(--font-mono);
 	}
 	.ext {
 		color: var(--text-muted);
 	}
-	/* Below the width where a fixed sidebar leaves a usable file list, the roots lie DOWN: a
-	   horizontal strip above the list instead of a column beside it. Same rows, same order, one less
-	   axis — a different representation of one state, not a second layout (D-R2). */
 	@container fs (max-width: 30rem) {
 		.body {
 			flex-direction: column;

@@ -1,10 +1,4 @@
-/** Shared snap-to-edges/center/gap logic used by both the node-drag flow
- * (NodeEditorPanel.svelte) and the new-node placement preview (PlacementPreview.svelte).
- *
- * The algorithm follows goofi3's `snapMultiDrag` shape: enumerate edge/center
- * pairings between the moving set and the static targets, plus a couple of
- * common gap offsets, pick the closest pair under SNAP_THRESHOLD, then collect
- * guides for any pairing within SNAP_RANGE so the visual hint fades in. */
+/** Shared snap-to-edges/center/gap logic for the node drag and the placement preview. */
 
 export type Bounds = {
 	left: number;

@@ -1,10 +1,7 @@
 <script lang="ts">
 	import type { Guide } from './snap';
 
-	// The alignment snap-guide overlay, shared by the drag-snap (NodeEditorPanel) and the
-	// placement-snap (PlacementPreview) so both render identically. The caller owns the
-	// ViewportPortal + the `guides.length > 0` guard (PlacementPreview's portal wraps its
-	// whole ghost, not just the guides).
+	// The alignment snap-guide overlay; the caller owns the ViewportPortal and the empty guard.
 	let { guides, testid }: { guides: Guide[]; testid: string } = $props();
 </script>
 

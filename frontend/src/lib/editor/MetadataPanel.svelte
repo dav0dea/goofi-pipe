@@ -8,12 +8,9 @@
 
 	type Props = {
 		node: NodeInstanceInfo;
-		/** Show the "Metadata" header + slot dropdown. True in the editor's
-		 * slide-in inspector; false in the dedicated Metadata panel, which drives
-		 * the slot from its own header bar via `slotName`. */
+		/** Show the "Metadata" header and slot dropdown, i.e. own the slot rather than take it. */
 		showHeader?: boolean;
-		/** Externally-controlled slot (used with `showHeader = false`). NOT named `slot`:
-		 * that is Svelte's legacy slot attribute, which must be a static value. */
+		/** Externally-controlled slot. NOT named `slot`: that is Svelte's legacy slot attribute. */
 		slotName?: string | null;
 	};
 	const { node, showHeader = true, slotName = null }: Props = $props();
@@ -21,8 +18,8 @@
 	const slots = $derived(Object.keys(node.output_slots ?? {}));
 	let internalSlot = $state<string | null>(null);
 	let lastFrame = $state<DataFrame | null>(null);
-	/** This panel's own identity in the slot's viewer registry — it reads frames and constrains
-	 *  nothing, so it binds with a null spec and never narrows what a real viewer asked for. */
+	/** This panel's identity in the slot's viewer registry; it binds with a null spec, so it
+	 *  constrains nothing a real viewer asked for. */
 	const token =
 		typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `md-${Math.random()}`;
 
@@ -39,18 +36,12 @@
 		lastFrame = null;
 		const slot = activeSlot;
 		if (!slot) return;
-		// The inspector only reads frame.meta. It shares the slot's single reduced
-		// stream — no viewer contributes a ViewSpec on its behalf, so if the inspector
-		// is the ONLY subscriber the frame arrives full-resolution; that's fine, the
-		// meta it reads is identical either way.
 		return bindViewer(node.uid, slot, token, null, (f: DataFrame) => {
 			lastFrame = f;
 		});
 	});
 
-	// Derive the rendered fields ONCE per frame (the panel re-renders at the data
-	// rate). Each field's body/preview is precomputed so the template doesn't
-	// re-format — and the capped formatter bounds the cost.
+	// Format once per frame, not per render: this panel re-renders at the data rate.
 	const fields = $derived(
 		metaEntries(lastFrame?.meta).map(([key, value]) => ({
 			key,
@@ -59,9 +50,7 @@
 		}))
 	);
 
-	// The selected slot's coalescing rate, polled rather than derived: a RATE has to keep falling
-	// when frames stop arriving, and this panel only re-renders when one does. Same 250ms cadence
-	// the TopBar's paint counter uses, against the same 500ms meter window.
+	// Polled, not derived: a rate must keep falling when frames stop, and only a frame re-renders.
 	let drops = $state<number | null>(null);
 	$effect(() => {
 		const slot = activeSlot;
@@ -71,11 +60,6 @@
 		return () => clearInterval(id);
 	});
 
-	// Node-level execution telemetry (the measured update rate), pushed on the status
-	// plane independent of the data frame — so it shows even while we're still waiting
-	// for the first frame. Empty until the node's first NODE_STATS. The drop rate joins it
-	// here — per (node, slot), which is the granularity a drop actually has, and beside the
-	// other reading it wants comparing against.
 	const statsRows = $derived(nodeStatsRows(node.stats, drops));
 </script>
 
@@ -112,12 +96,8 @@
 			</EmptyState>
 		{:else}
 			<div class="meta-tree">
-				<!-- No `open` binding, deliberately. Every field starts collapsed, which is
-				     `<details>`'s own default, so the keyed element OWNS the user's choice from there
-				     on. A reactive `open` cannot: this panel re-renders at the data rate and Svelte
-				     re-assigns the attribute on every one of those renders, while the `toggle` event
-				     reporting a click fires ASYNCHRONOUSLY — a frame landing in that gap put the stale
-				     value back and silently undid the click. -->
+				<!-- No `open` binding: `<details>` owns the user's choice. A reactive one is undone by
+				     the next frame, because `toggle` fires asynchronously. -->
 				{#each fields as f (f.key)}
 					<details class="meta-field">
 						<summary>
@@ -142,7 +122,6 @@
 		padding: var(--space-6);
 		border-top: 1px solid var(--border);
 	}
-	/* Dedicated Metadata panel: no stacked-inspector divider or header. */
 	.panel.bare {
 		border-top: none;
 	}
@@ -153,12 +132,9 @@
 		font-weight: 600;
 		margin-bottom: var(--space-5);
 	}
-	/* Bare header picker — sits at natural width on the right, not stretched across the bar. */
 	header :global(.slot-select) {
 		flex: 0 0 auto;
 	}
-	/* Node execution telemetry — a compact key/value strip directly under the
-	   "Metadata" heading, updated 2 Hz from the node's NODE_STATS push. */
 	.stats {
 		margin: 0 0 var(--space-5);
 		padding: 0 0 var(--space-5);
@@ -188,9 +164,7 @@
 		flex-direction: column;
 		gap: 1px;
 	}
-	/* One collapsible section per top-level meta field. The native marker is off app-wide (app.css)
-	   — it was the last thing in the UI the BROWSER drew, in its own shape and its own ink — so the
-	   affordance is the app's chevron below, turned by the `[open]` state `<details>` already owns. */
+	/* The native marker is off app-wide, so the chevron below is the affordance. */
 	.meta-field > summary {
 		display: flex;
 		align-items: baseline;
@@ -204,9 +178,7 @@
 	.meta-field > summary:hover {
 		background: var(--surface-2);
 	}
-	/* `align-self`, so the row's own baseline alignment between the key and its preview — two
-	   different type sizes — survives an icon that has no baseline of its own. Reduced-motion is
-	   neutralised globally (F, app.css), so no per-component guard. */
+	/* `align-self`, so the row's baseline alignment survives an icon that has no baseline. */
 	.caret {
 		display: flex;
 		align-self: center;
@@ -233,8 +205,7 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-micro);
 		color: var(--text-dim);
-		/* Preserve the dict indentation/newlines, but wrap long inline lists so
-		   they fill the panel width instead of one entry per line. */
+		/* Keep the dict indentation, but still wrap a long inline list. */
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		padding: var(--space-1) 0 var(--space-3) var(--space-7);

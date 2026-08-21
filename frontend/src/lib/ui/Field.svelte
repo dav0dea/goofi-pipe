@@ -1,16 +1,5 @@
-<!--
-  Field — the labelled-control layout primitive (spec §2.2), the north-star core's frame. ONE DOM
-  shape replacing the app's 3 incompatible labelled-control layouts: a real `<label>` (`for=`-linked
-  to the control it wraps, so clicking the label focuses the control — today only 2 real <label>s
-  exist app-wide), an optional `adornment` snippet (where N hangs the `fx` expression binding — it is
-  a SIBLING of the label, never inside it, so its button can't steal the label's focus target), and
-  the control(s) as `children`. `doc` becomes the hover tooltip.
-
-  The `for=` id is the first LIVE control's, tracked through the field context (see field.ts), so N
-  writes `<Field label='cutoff'><Slider/><NumberInput/></Field>` with zero id plumbing. Gap and
-  chrome are F tokens exposed as `var(--field-*, <token>)` per-instance hooks. `class` merged,
-  `data-testid` (and any other attribute) forwarded via `...rest`.
--->
+<!-- Field — the labelled-control frame: a real `<label>` for=-linked to the first live control
+     (see field.ts), plus an `adornment` that is a SIBLING of the label, never inside it. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -25,15 +14,13 @@
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
 		label: string;
-		/** Long-form description — surfaced as the hover tooltip. */
+		/** Long-form description, surfaced as the hover tooltip. */
 		doc?: string;
-		/** Trailing control affordance (N hangs the `fx` binding here). */
+		/** Trailing control affordance. */
 		adornment?: Snippet;
 		children?: Snippet;
 	} = $props();
 
-	// The label points at whichever control is currently alive and first in the field (see field.ts),
-	// so an {#if}-swapped control region hands the linkage over instead of orphaning the label.
 	let controlId = $state<string | undefined>(undefined);
 	provideFieldControlId((id) => (controlId = id));
 </script>
@@ -62,8 +49,6 @@
 		gap: var(--space-4);
 		min-width: 0;
 	}
-	/* The param name is the primary scan target — bright, weighted, ellipsis'd if long. The label
-	   IS clickable (focuses its control), so it carries the pointer cursor to signal that. */
 	.ui-field-label {
 		flex: 1;
 		min-width: 0;
@@ -81,19 +66,14 @@
 		align-items: center;
 		gap: var(--space-2);
 	}
-	/* A horizontal control row by default (a lone control fills it; a Slider+NumberInput pair sits
-	   side by side). Paired controls must be DIRECT Field children — the @container column-flip below
-	   restacks `.ui-field-control`'s direct children, so a wrapper (e.g. a Row) around them defeats it. */
+	/* Paired controls must be DIRECT children: the @container flip below restacks direct children. */
 	.ui-field-control {
 		display: flex;
 		align-items: center;
 		gap: var(--space-4);
 		min-width: 0;
 	}
-	/* When the enclosing query container (the panel body, or any `container-type` ancestor) is too
-	   narrow to seat a paired control side by side, stack the controls into one column. 240px is the
-	   width below which a Slider + NumberInput pair stops fitting comfortably — a structural threshold
-	   (allowed as literal px, like the F `clamp()` breakpoints), not a themeable token. */
+	/* 240px is where a Slider + NumberInput pair stops fitting: a structural threshold, not a token. */
 	@container (max-width: 240px) {
 		.ui-field-control {
 			flex-direction: column;

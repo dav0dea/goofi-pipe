@@ -1,15 +1,6 @@
 /**
- * One viewer, many instances: a ViewBinding is the per-instance view state
- * (kind + settings) behind a viewer. The shared viewer components consume a
- * binding and never read a store directly, so the inline node viewer and every
- * docked panel are the SAME component differing only in where their binding
- * persists. The data source (node, slot, dtype) is separate and shared.
- *
- * `panelBinding` (a docked Viewer panel, backed by its layout state) lives here
- * as a reusable, rune-free factory — it's unit-tested. The inline binding is
- * constructed at its single use site (SlotViewer), where the node record and
- * graph.setSlotView are already in scope; keeping that rune coupling out of this
- * module is what lets the factory be tested in isolation.
+ * A ViewBinding is one viewer instance's kind + settings; the components read nothing else.
+ * The inline binding is built at its single use site (SlotViewer), which needs runes.
  */
 import { resolveKind, type ViewerKind } from './kind';
 import { resolveSettings, type SettingValue, type SettingsMap } from './settingsSchema';
@@ -22,9 +13,7 @@ export interface ViewBinding {
 	setSetting(key: string, value: SettingValue): void;
 }
 
-/** Docked Viewer panel: backed by the panel's own state, which the MANAGER holds. Each setter names
- * its own undo step — the write is one `set_panel` command, so the manager owns the inverse and
- * the label is all the client has to supply. */
+/** Docked Viewer panel binding, backed by the panel state the manager holds. */
 export function panelBinding(
 	getState: () => unknown,
 	setState: (s: unknown, label: string) => void,

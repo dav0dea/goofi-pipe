@@ -1,21 +1,15 @@
-//! Runtime node-discovery scaffolding shared by every discovery backend (in-process Python,
-//! subprocess Python, …): the runtime factory type, the `snake_case`→`CamelCase` type-name rule, the
-//! fixed `process(x)` I/O shape, and the `'static` manifest leak. A backend supplies only its own
-//! seam — the validate predicate + the factory closure + its category/isolation — so the same file
-//! yields the same palette type name whichever backend hosts it.
+//! Runtime node discovery shared by every backend: the factory type, the type-name rule, and the
+//! `'static` manifest leak.
 
 use goofi_core::probe;
 use goofi_core::SlotType;
 
 use crate::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
 
-/// Builds a fresh boxed instance of a runtime-discovered node type from its params. A bare `fn`
-/// pointer can't close over per-type state (a source string, a device handle), so this is a boxed
-/// closure — shared by the engine's `register_dyn_type` and every discovery backend.
+/// Builds a fresh boxed instance of a runtime-discovered node type from its params.
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
-/// `snake_case` file stem → `CamelCase` palette type name. One source of this rule, so the same file
-/// yields the same type name whichever backend hosts it (in-process `PyNode` vs subprocess `RemoteNode`).
+/// `snake_case` file stem → `CamelCase` palette type name.
 pub fn camel(stem: &str) -> String {
     stem.split('_')
         .filter(|s| !s.is_empty())
@@ -29,26 +23,17 @@ pub fn camel(stem: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Rich manifests from a `goofi.introspect` probe (the pymod discovery path) —
-// the ONE manifest path both backends use: multi-slot + params read from a
-// node's `config_*` hooks. See the unification spec.
-// ---------------------------------------------------------------------------
-
-/// Parse the introspection JSON (the shared [`Introspection`] schema). Any malformed field is
-/// an error (→ grey-out).
+/// Parse the introspection JSON.
 pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
-/// Leak a `'static &str` (catalog-lifetime; the discovered type set is bounded).
+/// Leak a `'static &str` for the catalog's lifetime.
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-/// Build a rich, multi-slot + param `'static NodeManifest` from an introspection. The `factory`
-/// field is an unreachable stub — a discovered node is built by its registered [`NodeFactory`],
-/// never `manifest.factory`. The leak is bounded (one manifest per discovered type, catalog-lifetime).
+/// Build a `'static NodeManifest` from an introspection.
 pub fn leak_manifest(
     type_name: String,
     intro: &probe::Introspection,
@@ -93,8 +78,6 @@ pub fn leak_manifest(
 }
 
 fn param_decl(p: &probe::Param) -> ParamDecl {
-    // Exhaustive over the tagged variants — each carries exactly its own fields, so there is
-    // no defaulting/unknown-kind path (the old `serde_json::Value` juggling is gone).
     let spec = match &p.spec {
         probe::ParamSpec::Int { default, min, max } => {
             ParamSpec::Int { default: *default, min: *min, max: *max }
@@ -121,18 +104,10 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The unified probe-based discoverer: run `goofi.introspect` per node file, parse
-// the JSON, and leak a manifest. Shared by the in-process + subprocess backends
-// (which attach their own per-instance factory + route on `gil_safe` in M2/M3).
-// ---------------------------------------------------------------------------
-
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A discovered Python node type: its rich manifest + the routing flag (`gil_safe`
-/// → in-process, else subprocess). The per-instance factory is attached by the
-/// backend in M2/M3; M1 produces the manifest.
+/// A discovered Python node type: its manifest plus the routing flag (`gil_safe` → in-process).
 #[derive(Clone)]
 pub struct Discovered {
     pub manifest: &'static NodeManifest,
@@ -140,9 +115,7 @@ pub struct Discovered {
     pub source: PathBuf,
 }
 
-/// Why a node file could not be introspected, phrased for the palette tooltip. A
-/// `ModuleNotFoundError` becomes just the module name; anything else keeps its LAST non-empty
-/// line, which is where Python prints the exception line of a traceback.
+/// Why a node file could not be introspected, phrased for the palette tooltip.
 fn probe_reason(stderr: &str) -> String {
     if let Some(rest) = stderr.split("No module named ").nth(1) {
         let name: String = rest.trim_start().trim_matches(['\'', '"']).chars()
@@ -155,15 +128,10 @@ fn probe_reason(stderr: &str) -> String {
     stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("probe failed").trim().to_string()
 }
 
-/// Run `goofi.introspect(path)` in `python` and parse the result. `Err` carries WHY it failed —
-/// a bad interpreter, a failed import (missing dep), no `Node` subclass, or malformed JSON — so
-/// the palette can say what is wrong instead of the node silently not existing.
+/// Run `goofi.introspect(path)` in `python` and parse the result; `Err` carries why it failed.
 pub fn probe_introspect(path: &Path, python: &str) -> Result<probe::Introspection, String> {
-    // The payload channel is a DUP of fd 1 taken before fd 1 is rerouted to stderr, so a node
-    // whose dependency greets stdout on import (the pygame banner) cannot prepend itself to the
-    // JSON — that would exit 0 with an unparseable payload and grey out a working node. The
-    // reroute is at the fd level, not `redirect_stdout`, so a C extension writing straight to
-    // fd 1 is caught too. Same answer the child loop already gives itself (`goofi.serve`).
+    // The payload is a dup of fd 1 taken before fd 1 is rerouted to stderr, so anything an
+    // import prints to stdout — even from a C extension — cannot corrupt the JSON.
     const PROBE: &str = "\
 import goofi, os, sys
 payload = os.fdopen(os.dup(1), 'wb')
@@ -176,10 +144,7 @@ payload.close()
         .arg("-c")
         .arg(PROBE)
         .env("GOOFI_INTROSPECT_PATH", path)
-        // The probe interpreter must import ITS OWN installed goofi + deps. A host `PYTHONPATH`
-        // (e.g. `.cargo/config.toml` points the embedded FT interpreter at .gfivenv-ft) must not leak
-        // in and shadow the probe python's packages with an incompatible cross-version build —
-        // that would silently fail every import and grey out discovery. Mirrors the child spawn.
+        // A host `PYTHONPATH` must not shadow the probe interpreter's own goofi and deps.
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
         .stdin(Stdio::null())
@@ -192,13 +157,11 @@ payload.close()
     parse_introspection(&json).map_err(|e| format!("malformed introspection: {e}"))
 }
 
-/// What a node file turned out to be. Three outcomes, not two: a file that is not a node at all
-/// is different from a node that exists but cannot load, and the palette shows the latter.
+/// What a node file turned out to be.
 pub enum Discovery {
     /// Not a node file: not `.py`, or `_`-prefixed (hidden).
     Skip,
-    /// A node file whose probe failed — it is real, it just cannot run here. `reason` is a
-    /// module name for a missing dependency, else the exception line.
+    /// A node file whose probe failed: `reason` is a missing module name, else the exception line.
     Unavailable { type_name: String, reason: String },
     Found(Discovered),
 }

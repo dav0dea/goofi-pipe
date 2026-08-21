@@ -1,11 +1,6 @@
 import { Marked, type Tokens } from 'marked';
 
-// Report B14: a node can emit arbitrary strings, so the markdown→HTML path
-// must never let node-sourced text inject live markup. We harden `marked`
-// itself rather than post-sanitizing with a DOM library (DOMPurify needs a
-// DOM, which the unit env lacks). For markdown specifically this is the right
-// trade: disallow raw HTML passthrough and block dangerous URL schemes — a
-// node's string output loses nothing meaningful and cannot script the page.
+// Node strings are untrusted: `marked` itself is hardened, since DOMPurify needs a DOM.
 
 const DANGEROUS_SCHEME = /^\s*(?:javascript|data|vbscript):/i;
 
@@ -25,15 +20,12 @@ function isSafeHref(href: string): boolean {
 const md = new Marked();
 md.use({
 	renderer: {
-		// Raw HTML tokens (both block `html` and inline `Tag`) are escaped to
-		// inert text instead of being passed through verbatim.
 		html({ text }: Tokens.HTML | Tokens.Tag): string {
 			return escapeHtml(text);
 		},
 		link(token: Tokens.Link): string {
 			const inner = this.parser.parseInline(token.tokens);
 			if (!isSafeHref(token.href)) {
-				// Drop the unsafe URL but keep the visible link text.
 				return inner;
 			}
 			const title = token.title ? ` title="${escapeHtml(token.title)}"` : '';

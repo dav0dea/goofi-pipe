@@ -1,30 +1,13 @@
-//! goofi-codec — the GOOF v2 binary frame **encoder** (browser data plane) and a
-//! decoder used only at the subprocess boundary.
+//! The GOOF v2 binary frame codec: the browser data plane, and the subprocess boundary.
 //!
-//! Frame (little-endian throughout):
-//! ```text
-//!   0   4  magic "GOOF"
-//!   4   1  version = 2
-//!   5   1  dtype tag (0=ARRAY, 1=STRING, 2=TABLE)
-//!   6   4  meta_len (u32)   — msgpack meta dict
-//!   10  4  body_len (u32)
-//!   14  *  meta bytes (msgpack)
-//!   *   *  body bytes
-//! ```
-//! ARRAY body: `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`.
-//! STRING body: utf-8. TABLE body: `[u32 n]` then `[u16 key_len][key][u32 value_len][frame]`*.
-//!
-//! `decode.ts` in the frontend is the decode-only mirror, so this crate is
-//! authoritative for what the browser receives. The meta dict is *projected* here
-//! from the typed `Meta` + derived shape/dtype (which are not stored in `Meta`).
+//! Frame: `magic "GOOF" | u8 version | u8 dtype tag | u32 meta_len | u32 body_len | meta | body`,
+//! little-endian, with the meta dict projected from the typed `Meta` plus derived shape/dtype.
 
 pub mod liveness;
 
 use goofi_core::{ArrayStore, Coord, Data, MetaValue, Value};
 use rmpv::Value as Mp;
 
-/// The frame's identity, mirrored in `frontend/src/lib/codec/` — public because that mirror
-/// and its golden are what stop the two drifting.
 pub const MAGIC: &[u8; 4] = b"GOOF";
 pub const VERSION: u8 = 2;
 pub const HEADER_SIZE: usize = 14;
@@ -46,10 +29,6 @@ pub fn encode(d: &Data) -> Vec<u8> {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Body
-// ---------------------------------------------------------------------------
-
 fn write_body(d: &Data, out: &mut Vec<u8>) {
     match d.value() {
         Value::Array(store) => encode_array_body(store, out),
@@ -68,11 +47,9 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
     }
 }
 
-/// The array-body layout `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`
-/// inside a GOOF frame body. Inverse: [`decode_array_body`]. (Module-internal: the subprocess
-/// tier now sends whole GOOF frames, so it no longer reuses this layout directly.)
+/// `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`.
 fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
-    let dtype_str: &[u8] = b"<f4"; // arrays are always f32
+    let dtype_str: &[u8] = b"<f4";
     let shape = store.shape();
     out.push(shape.len() as u8);
     out.push(dtype_str.len() as u8);
@@ -83,24 +60,16 @@ fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
     out.extend_from_slice(store.as_bytes());
 }
 
-// ---------------------------------------------------------------------------
-// Meta projection (typed Meta + derived shape/dtype -> msgpack map)
-// ---------------------------------------------------------------------------
-
-/// Meta names the wire *derives* from the `Data` itself, so they are never taken from `Meta`.
+/// Meta names the wire derives from the `Data` itself, so they are never taken from `Meta`.
 const DERIVED_KEYS: [&str; 2] = ["shape", "dtype"];
 
-/// Serialize a `Data`'s `Meta` (channels/sfreq/index/extra) to the msgpack map used in a GOOF
-/// frame body. Inverse: [`parse_meta`]. (Module-internal.)
+/// Serialize a `Data`'s `Meta` to the msgpack map used in a GOOF frame.
 fn pack_meta(d: &Data) -> Vec<u8> {
     let meta = d.meta();
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
 
-    // Every meta entry (builtins + extras), skipping unset (`Null`) builtins — so an unset
-    // ufreq/index stays off the wire. `channels` is projected per value-kind below (arrays
-    // only, matching the wire contract), never here — and so are the derived names, which a
-    // node's own meta dict is free to carry (`dict_to_meta` accepts any string key); dropping
-    // them here is what keeps the map from carrying the same key twice.
+    // `channels` and the derived names are projected below; dropping them here is what keeps
+    // the map from carrying one key twice.
     for (k, v) in meta.iter() {
         if k == goofi_core::META_CHANNELS || DERIVED_KEYS.contains(&k.as_str()) || matches!(v, MetaValue::Null) {
             continue;
@@ -108,12 +77,11 @@ fn pack_meta(d: &Data) -> Vec<u8> {
         entries.push((Mp::from(k.as_str()), mv_to_mp(v)));
     }
 
-    // Derived shape/dtype (never stored in Meta), plus channels for arrays (always, even empty).
     match d.value() {
         Value::Array(store) => {
             let shape: Vec<Mp> = store.shape().iter().map(|&d| Mp::from(d as u64)).collect();
             entries.push((Mp::from("shape"), Mp::Array(shape)));
-            entries.push((Mp::from("dtype"), Mp::from("float32"))); // arrays are always f32
+            entries.push((Mp::from("dtype"), Mp::from("float32")));
             entries.push((Mp::from("channels"), channels_to_mp(meta.channels())));
         }
         Value::Str(_) => {
@@ -130,9 +98,7 @@ fn pack_meta(d: &Data) -> Vec<u8> {
 }
 
 fn channels_to_mp(ch: &goofi_core::Axes) -> Mp {
-    // Positional axes -> the dim-keyed wire dict (Python-compat). A dimension without
-    // coords emits nothing (byte-identical to the old map for coord-only frames).
-    // Axis names have no wire slot yet — they are internal-first.
+    // Python-compat: positional axes cross as a dim-keyed dict, and axis names have no wire slot.
     let mut entries: Vec<(Mp, Mp)> = Vec::new();
     for (dim, axis) in ch.0.iter().enumerate() {
         if let Some(coords) = &axis.coords {
@@ -163,13 +129,12 @@ fn mv_to_mp(v: &MetaValue) -> Mp {
         MetaValue::Map(m) => {
             Mp::Map(m.iter().map(|(k, v)| (Mp::from(k.as_str()), mv_to_mp(v))).collect())
         }
-        // `channels` (the only Axes) is projected via channels_to_mp, never through here.
+        // `channels` is projected via channels_to_mp, never through here.
         MetaValue::Axes(_) => Mp::Nil,
     }
 }
 
-/// Split a frame into `(dtype_tag, meta_bytes, body_bytes)`, validating the
-/// header. Shared by tests and (later) the subprocess decoder.
+/// Split a frame into `(dtype_tag, meta_bytes, body_bytes)`, validating the header.
 pub fn split_frame(frame: &[u8]) -> std::result::Result<(u8, &[u8], &[u8]), String> {
     if frame.len() < HEADER_SIZE {
         return Err(format!("frame too small: {} bytes", frame.len()));
@@ -194,12 +159,6 @@ pub fn split_frame(frame: &[u8]) -> std::result::Result<(u8, &[u8], &[u8]), Stri
     Ok((tag, &frame[HEADER_SIZE..meta_end], &frame[meta_end..body_end]))
 }
 
-// ---------------------------------------------------------------------------
-// Decode (inverse of `encode`) — used at the subprocess boundary to receive a
-// frame from a Python worker. Reconstructs `Data` (value + Meta), deriving
-// shape/dtype from the body (never from the redundant meta keys).
-// ---------------------------------------------------------------------------
-
 /// Decode a GOOF v2 frame into a `Data`. The inverse of [`encode`].
 pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     let (tag, meta_bytes, body) = split_frame(frame)?;
@@ -215,9 +174,8 @@ pub fn decode(frame: &[u8]) -> std::result::Result<Data, String> {
     }
 }
 
-/// A forward-only reader over a body slice. Every read bounds-checks with `checked_add` + `.get()`,
-/// so a truncated or hostile frame yields `Err` — never a panic or a wrapping over-read. This is the
-/// codec's must-never-panic contract in ONE place, instead of a hand-written check per field.
+/// A forward-only reader over a body slice: every read is bounds-checked, so a truncated or
+/// hostile frame yields `Err` rather than a panic.
 struct Cursor<'a> {
     body: &'a [u8],
     off: usize,
@@ -227,7 +185,7 @@ impl<'a> Cursor<'a> {
     fn new(body: &'a [u8]) -> Cursor<'a> {
         Cursor { body, off: 0 }
     }
-    /// The next `n` bytes, advancing past them; `Err(what truncated)` if the body is too short.
+    /// The next `n` bytes, advancing past them; `what` names them in the error.
     fn take(&mut self, n: usize, what: &str) -> std::result::Result<&'a [u8], String> {
         let end = self.off.checked_add(n).ok_or_else(|| format!("{what} length overflow"))?;
         let s = self.body.get(self.off..end).ok_or_else(|| format!("{what} truncated"))?;
@@ -243,18 +201,13 @@ impl<'a> Cursor<'a> {
     fn u32(&mut self, what: &str) -> std::result::Result<usize, String> {
         Ok(u32::from_le_bytes(self.take(4, what)?.try_into().unwrap()) as usize)
     }
-    /// Everything from the cursor to the end (consumes the cursor).
     fn rest(self) -> &'a [u8] {
         &self.body[self.off..]
     }
 }
 
-/// Decode the array-body layout written by [`encode_array_body`] into a `Data` carrying `meta`.
-/// This is the ingest boundary: a foreign source dtype is cast to f32 here (the only place a dtype
-/// is parsed). The subprocess tier's cast-warning now lives at the pyo3 boundary (`goofi-pymod`),
-/// so the source dtype is no longer surfaced to a caller. (Module-internal.)
+/// Decode an array body: the ingest boundary, where a foreign source dtype is cast to f32.
 fn decode_array_body(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data, String> {
-    // [u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]
     let mut cur = Cursor::new(body);
     let ndim = cur.u8("array ndim")?;
     let dslen = cur.u8("array dtype len")?;
@@ -265,8 +218,7 @@ fn decode_array_body(body: &[u8], meta: goofi_core::Meta) -> std::result::Result
     for _ in 0..ndim {
         shape.push(cur.u32("array shape")?);
     }
-    // Cast the foreign body to f32, then construct. The shape×4 overflow guard lives in
-    // array_f32 — kept there deliberately.
+    // The shape×4 overflow guard lives in `array_f32`, deliberately.
     let (f32_bytes, _did_cast) = goofi_core::cast_to_f32(src, cur.rest()).map_err(|e| e.to_string())?;
     Data::array_f32(shape, f32_bytes, meta).map_err(|e| e.to_string())
 }
@@ -287,8 +239,7 @@ fn decode_table(body: &[u8], meta: goofi_core::Meta) -> std::result::Result<Data
     Ok(Data::table(map, meta))
 }
 
-/// Parse the msgpack meta map written by [`pack_meta`] back into a typed `Meta` (shape/dtype are
-/// re-derived from the body, never these keys). (Module-internal.)
+/// Parse the msgpack meta map written by [`pack_meta`] back into a typed `Meta`.
 fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
     let mut meta = goofi_core::Meta::empty();
     if bytes.is_empty() {
@@ -305,8 +256,6 @@ fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
             // shape/dtype are derived from the body — ignore the redundant keys.
             "shape" | "dtype" => {}
             "channels" => meta.set_channels(parse_channels(&val)),
-            // sfreq/ufreq/index/reduced and all extras are stored generically; the typed
-            // accessors coerce them on read.
             other => meta.set(other, mp_to_mv(&val)),
         }
     }
@@ -314,8 +263,7 @@ fn parse_meta(bytes: &[u8]) -> std::result::Result<goofi_core::Meta, String> {
 }
 
 fn parse_channels(v: &Mp) -> goofi_core::Axes {
-    // The dim-keyed wire dict -> positional axes, padding empty entries up to the max
-    // labeled dim (entries may arrive out of order).
+    // Entries may arrive out of order, so `with` pads up to the max labeled dim.
     let mut axes = goofi_core::Axes::new();
     if let Mp::Map(entries) = v {
         for (k, list) in entries {
@@ -369,22 +317,7 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Subprocess multi-slot request/response frames — the shared wire between the
-// parent (`goofi-python`'s `subproc::RemoteNode`) and the child (`goofi.serve` in pymod).
-// A request carries the live params + the present input slots; a response the
-// output slots. Each slot's `Data` is a self-describing GOOF frame ([`encode`]/
-// [`decode`]), so channels/sfreq/index/dtype cross with full fidelity — no
-// opaque-echo or typed-sfreq-prefix hacks (those existed only because the old
-// Python child couldn't parse meta; the Rust child now shares this codec). Params
-// serialize via serde (`Param` derives it), so there is no per-variant juggling.
-// The transport-level `seq` (re-publish dedup) is an OUTER prefix owned by the
-// caller (`one_roundtrip` / `serve`), never part of these frames.
-// ---------------------------------------------------------------------------
-
-/// `group -> name -> Param` — structurally identical to `goofi_node::ParamGroups`
-/// (the codec has no goofi-node dep, so it is spelled out here). The parent passes
-/// its live `p.groups()` directly.
+/// `group -> name -> Param`, spelled out because the codec has no goofi-node dep.
 pub type ParamMap = indexmap::IndexMap<String, indexmap::IndexMap<String, goofi_core::Param>>;
 
 /// Append a named-slot list: `[u16 n]` then n × `[u16 name_len][name][u32 frame_len][GOOF frame]`.
@@ -400,7 +333,7 @@ pub fn encode_slots(slots: &[(&str, &Data)], out: &mut Vec<u8>) {
     }
 }
 
-/// Decode the named-slot list written by [`encode_slots`]. Bounds-safe via [`Cursor`].
+/// Decode the named-slot list written by [`encode_slots`].
 pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, String> {
     let mut cur = Cursor::new(body);
     let n = cur.u16("slot count")?;
@@ -436,10 +369,6 @@ pub fn decode_request(buf: &[u8]) -> std::result::Result<(ParamMap, Vec<(String,
 }
 
 /// A decoded subprocess response: the node's output slots, or a per-tick node error message.
-/// A `process()`/`setup()` raise is reported as [`Response::NodeError`] so the parent surfaces
-/// it like the in-process tier's `Ok(Err)` — WITHOUT killing + respawning the child (which
-/// would lose node state + the real exception text). A malformed frame is the outer `Err` of
-/// [`decode_response`] instead.
 pub enum Response {
     Slots(Vec<(String, Data)>),
     NodeError(String),
@@ -452,16 +381,14 @@ pub fn encode_response(slots: &[(&str, &Data)]) -> Vec<u8> {
     out
 }
 
-/// Encode a node-error response: `[1][utf8 message]` — a per-tick `process()`/`setup()` raise
-/// the child reports instead of dying, carrying the real Python exception text.
+/// Encode a node-error response: `[1][utf8 message]`.
 pub fn encode_error_response(msg: &str) -> Vec<u8> {
     let mut out = vec![1u8];
     out.extend_from_slice(msg.as_bytes());
     out
 }
 
-/// Decode a response frame ([`encode_response`] / [`encode_error_response`]). The outer `Err`
-/// is a malformed/hostile frame; `Response::NodeError` is a node-reported per-tick error.
+/// Decode a response frame; the outer `Err` is a malformed frame, never a node-reported one.
 pub fn decode_response(buf: &[u8]) -> std::result::Result<Response, String> {
     let (&tag, rest) = buf.split_first().ok_or("empty response frame")?;
     match tag {

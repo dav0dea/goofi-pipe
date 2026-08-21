@@ -1,47 +1,12 @@
-/**
- * The inspector pane's resize arithmetic — the part of the gesture that is not a DOM event.
- *
- * `InspectorOverlay.svelte` cannot be mounted in this repo's vitest, so whatever a unit test must
- * reach has to live in a `.ts` module. This is it.
- *
- * THE RULE THIS PANE IS BUILT ON. ORIENTATION decides the anchored AXIS — portrait a bottom sheet,
- * landscape/desktop the right-hand edge. INPUT MODALITY decides only the resting AFFORDANCE (the
- * grabber pill and the coarse hit band, both of them CSS). THE GESTURE IS UNIFORM: edge-drag,
- * identical on a mouse and a finger. Closing is the explicit ✕ alone.
- *
- * So ONE shape serves both anchors: the pane sits against the right edge of its host or against the
- * bottom one, with its grip on the leading edge either way, so pushing the grip INTO the pane
- * shrinks it on whichever axis it is on. Nothing here is gated on a device or a pointer type — this
- * module took a pointer type once, for a swipe past the floor that closed the pane, and that was
- * the only place modality ever reached a gesture. And the axis is not decided here either:
- * `@container (orientation: portrait)` decides it and publishes the answer as `--pane-axis`, which
- * the component reads back rather than re-deriving.
- *
- * NEITHER BOUND lives here, and that is deliberate. Both are one host-relative `clamp()` per axis in
- * `InspectorOverlay.svelte`, which is the only place either can be evaluated and the only
- * arrangement in which they cannot contradict each other. So this arithmetic does not clamp at all:
- * it says what size the pointer asked for, CSS says what the pane may be, and what the gesture
- * PERSISTS is the rendered box — which is between the two by construction, on this host and on any
- * other. A second floor here would be a second answer, and the last one crossed its own ceiling.
- */
+/** The inspector pane's resize arithmetic. It never clamps: both bounds are one `clamp()` per axis
+ *  in `InspectorOverlay.svelte`, and a second answer here would contradict them. */
 
 export type PaneAxis = 'x' | 'y';
 
-/**
- * Everything the AXIS selects, and the whole of it.
- *
- * A record rather than a condition, because the answer is looked up ONCE — at pointerdown — instead
- * of the same question ("is this the vertical one?") being asked again at every line of the gesture
- * that happens to need a dimension. Scattered that way it read as orientation threaded through the
- * drag; it is one fact, and this is where it is stated.
- *
- * ORIENTATION picks the record, and nothing else in this module has an opinion about it.
- */
+/** Everything the axis selects, looked up once at pointerdown. */
 export interface PaneAxisDims {
-	/** Where a size dragged on this axis is remembered: one persistence idiom, one key per axis
-	 *  (D-I3), so the two anchors cannot overwrite each other's. */
+	/** localStorage key, one per axis, so the two anchors cannot overwrite each other's. */
 	key: string;
-	/** The dimension of a box this axis sizes the pane by. */
 	sizeOf(box: { width: number; height: number }): number;
 }
 
@@ -50,26 +15,18 @@ export const PANE_AXES: Record<PaneAxis, PaneAxisDims> = {
 	y: { key: 'goofi.panelHeight', sizeOf: (b) => b.height }
 };
 
-/**
- * A gesture in flight — and NOT which axis it is on: the axis has already been spent by the time one
- * of these exists (`PANE_AXES` picked the dimension, `coordOf` picked the coordinate), leaving two
- * numbers that mean the same thing on either anchor. It used to carry the axis as well, which
- * nothing read, and a floor, which CSS states better.
- */
+/** A gesture in flight; the axis is already spent by the time one of these exists. */
 export interface PaneDrag {
-	/** The pane's RENDERED size on the dragged axis when the gesture began, in px — not its stored
-	 *  size, which may sit outside bounds only CSS can evaluate. */
+	/** The pane's RENDERED size when the gesture began — a stored size may sit outside CSS's bounds. */
 	startSize: number;
-	/** The pointer's coordinate on that axis when the gesture began. */
 	startPos: number;
 }
 
-/** The coordinate this axis reads out of a pointer event, and only that one. */
 export function coordOf(axis: PaneAxis, e: { clientX: number; clientY: number }): number {
 	return axis === 'x' ? e.clientX : e.clientY;
 }
 
-/** The size a pointer at `at` is asking the pane for. What it is ALLOWED is the stylesheet's. */
+/** The size a pointer at `at` is asking for. What it is ALLOWED is the stylesheet's. */
 export function paneSizeAt(drag: PaneDrag, at: number): number {
 	return drag.startSize - (at - drag.startPos);
 }

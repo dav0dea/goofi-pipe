@@ -1,10 +1,7 @@
 //! Node files in a workspace: written, rescanned, edited, shadowed, saved and reopened.
 //!
-//! The scan seam is injected rather than real, so none of this needs a Python interpreter — which
-//! is the whole point of `AppState::scan_nodes` being a seam. The stub is faithful in the ways
-//! these tests turn on: it reads each file's CONTENT at scan time (as discovery captures a node's
-//! source), names the type after the file stem by the shared rule, and reports one scanned type per
-//! file. That capture is what makes "the running node is the NEW code" observable at all.
+//! The scan seam is injected, and the stub captures each file's CONTENT at scan time — which is
+//! what makes "the running node is the NEW code" observable at all.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -81,13 +78,8 @@ fn first_f32(d: &Data) -> f32 {
     }
 }
 
-/// Watch one node's `out` slot until it carries `want`.
-///
-/// The probe is opened per call because a restart is a REBIRTH: the new instance publishes on the
-/// next generation's service, so a probe held across a rescan would wait on the corpse's address
-/// for ever. `Emit` is a producer, so a probe opened at any moment still sees a frame — which is
-/// also why this consumes until the value matches rather than taking the next frame: the one
-/// already in flight may be the old code's.
+/// Watch one node's `out` slot until it carries `want`. The probe is opened per call because a
+/// restart is a REBIRTH onto the next generation's service, and the frame in flight may be old.
 fn emits(g: &Goofi, uid: goofi_tests::Uid, want: f32) {
     let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
     g.until(&format!("{uid} to emit {want}"), |g| {
@@ -102,14 +94,12 @@ fn rescan(g: &Goofi) -> serde_json::Value {
 
 #[test]
 fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
-    // The whole of a patch node's life, in the order a user lives it.
     let g = scanning();
     let nodes = g.state.mount().join("nodes");
     write_node(&nodes, "my_thing.py", "1.0");
 
     assert_eq!(rescan(&g)["added"], j!(["MyThing"]), "the file becomes a type");
-    // Twice over an unchanged tree is a no-op: the baseline is what the LAST scan found, so pressing
-    // refresh with nothing edited says nothing changed.
+    // The baseline is what the LAST scan found, so refresh with nothing edited says nothing changed.
     let again = rescan(&g);
     assert_eq!((&again["added"], &again["changed"], &again["removed"]), (&j!([]), &j!([]), &j!([])),
                "a rescan of an unchanged tree changes nothing");
@@ -117,15 +107,13 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
     let live = g.add("MyThing");
     emits(&g, live, 1.0);
 
-    // Edited: the type is re-registered and the LIVE instance is restarted onto it.
     write_node(&nodes, "my_thing.py", "2.0");
     let diff = rescan(&g);
     assert_eq!(diff["changed"], j!(["MyThing"]), "an edited file reports as changed");
     assert_eq!((&diff["added"], &diff["removed"]), (&j!([]), &j!([])));
     emits(&g, live, 2.0); // the running node is the new code
 
-    // Deleted: unaddable, but the instance is left alone — removal closes the door, it does not
-    // reach into the graph.
+    // Removal closes the door; it does not reach into the graph.
     std::fs::remove_file(nodes.join("my_thing.py")).unwrap();
     assert_eq!(rescan(&g)["removed"], j!(["MyThing"]));
     g.refuse("add_node", j!({ "type": "MyThing" }));
@@ -134,8 +122,7 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
 
 #[test]
 fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
-    // The two directories are one registry, and the patch is scanned SECOND so its own file wins a
-    // name the shipped tree also uses — that is what "patch node" means.
+    // The patch is scanned SECOND so its own file wins a name the shipped tree also uses.
     let mut g = scanning();
     let shipped = tempfile::tempdir().unwrap();
     write_node(shipped.path(), "my_thing.py", "1.0");
@@ -154,9 +141,7 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
 
 #[test]
 fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
-    // The same "more specific wins" rule runs along the shipped list, which is what lets a user's
-    // own directory shadow a single node without losing the rest of the tree. Adding a directory
-    // must not COST one — the failure a REPLACING flag causes, and why the flag is named for adding.
+    // Adding a directory must not COST one — the failure a REPLACING flag causes.
     let mut g = scanning();
     let builtin = tempfile::tempdir().unwrap();
     let mine = tempfile::tempdir().unwrap();
@@ -174,10 +159,8 @@ fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
 
 #[test]
 fn read_node_source_hands_back_the_file_that_is_actually_running() {
-    // An agent that reads a type's source is about to EDIT it, so handing back a shadowed copy
-    // sends the edit to a file nothing executes. `rescan` overwrites forwards, so the LAST shipped
-    // directory holds the name; this search is first-match-wins and has to walk the list backwards
-    // to agree. Dropping that `.rev()` passes every other test here.
+    // `rescan` overwrites forwards, so this first-match-wins search has to walk the list backwards
+    // to agree; dropping that `.rev()` passes every other test here.
     let mut g = scanning();
     let builtin = tempfile::tempdir().unwrap();
     let mine = tempfile::tempdir().unwrap();
@@ -192,7 +175,6 @@ fn read_node_source_hands_back_the_file_that_is_actually_running() {
     assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("my_thing.py")),
                "…and it names the winning directory, not the shadowed one: {r}");
 
-    // …and the patch's own copy outranks both, for the same reason.
     write_node(&g.state.mount().join("nodes"), "my_thing.py", "9.0");
     rescan(&g);
     let r = g.call("read_node_source", j!({ "type": "MyThing" }));
@@ -202,8 +184,7 @@ fn read_node_source_hands_back_the_file_that_is_actually_running() {
 
 #[test]
 fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
-    // A load swaps the workspace, so the registry must follow it — and the ORDER is load-bearing:
-    // `load_doc` rejects a type it does not know, which is precisely the set the patch ships.
+    // The ORDER is load-bearing: `load_doc` rejects a type it does not know.
     let g = scanning();
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("patch.gfi");
@@ -219,8 +200,7 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
     let uid = opened.state.graph.lock().unwrap().node_uids()[0];
     emits(&opened, uid, 5.0); // the instance runs the patch's code
 
-    // …and the NEXT patch drops it again: `new` swaps in an empty workspace, so a type the previous
-    // patch brought must stop being addable rather than linger from a patch no longer open.
+    // `new` swaps in an empty workspace, so a type the previous patch brought stops being addable.
     opened.call("new", j!({}));
     opened.refuse("add_node", j!({ "type": "MyThing" }));
 }

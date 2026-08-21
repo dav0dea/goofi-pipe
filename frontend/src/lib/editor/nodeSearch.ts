@@ -1,21 +1,7 @@
-/**
- * Ranking for the add-node menu's type search.
- *
- * The old behaviour was a boolean filter (`name || category || doc` contains
- * the query) that preserved the registry's category order — so a node matching
- * only in its docstring (e.g. "Kuramoto", whose doc mentions *oscillator*) could
- * outrank a direct name hit like "Oscillator"/"OSCOut" for the query "osc".
- *
- * Instead we score every candidate and sort best-first. The intent is a search
- * that feels obvious: a name match always beats a category match, which always
- * beats a docstring-only match. Within a tier, an earlier / shorter / tighter
- * match wins. Matching itself stays case-insensitive substring (plus CamelCase
- * word starts) — no fuzzy subsequence, so results never feel arbitrary.
- */
+/** Ranking for the add-node menu's type search. */
 import type { NodeTypeInfo } from '$lib/api/control';
 
-/** Match quality, best first. The gaps between name/category/doc are what keep
- * a docstring hit from ever floating above a name hit. */
+/** Match quality, best first. */
 const TIER = {
 	none: 0,
 	doc: 1,
@@ -31,9 +17,7 @@ const isLower = (c: string): boolean => c >= 'a' && c <= 'z';
 const isLetter = (c: string): boolean => isUpper(c) || isLower(c);
 const isDigit = (c: string): boolean => c >= '0' && c <= '9';
 
-/** Is index `i` the first character of a word in `name`? Treats CamelCase humps
- * ("oUt"), acronym tails ("OSC|Out"), and separator/digit boundaries as starts,
- * so "out" finds "OSCOut" and "array" finds "ConstantArray". */
+/** Is index `i` the first character of a word in `name`? */
 function isWordStart(name: string, i: number): boolean {
 	if (i === 0) return true;
 	const c = name[i];
@@ -64,11 +48,7 @@ function tierFor(t: NodeTypeInfo, q: string): number {
 	return TIER.none;
 }
 
-/**
- * Rank `types` for `rawQuery`, best match first. An empty query returns the
- * input order untouched (the menu groups it by category itself); otherwise only
- * matching types are returned, dropped from the list when nothing matches.
- */
+/** Rank `types` for `rawQuery`, best match first. An empty query returns the input order. */
 export function rankNodeTypes(types: NodeTypeInfo[], rawQuery: string): NodeTypeInfo[] {
 	const q = rawQuery.trim().toLowerCase();
 	if (!q) return types;

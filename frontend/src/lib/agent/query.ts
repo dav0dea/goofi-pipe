@@ -1,11 +1,4 @@
-/**
- * Agent read/introspection surface — paired with `commands`.
- *
- * Answers the questions an agent (or a Playwright assertion) needs — what is the
- * graph, what's selected, what is each panel showing, what is a viewer's latest
- * data — without touching the DOM or walking the layout-tree internals. Reads go
- * straight through the same stores the UI binds to.
- */
+/** Agent read/introspection surface — paired with `commands`. */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { ui } from '$lib/stores/ui.svelte';
@@ -24,29 +17,18 @@ import type { GlobalView } from '$lib/crdt/graphDoc';
 export interface FrameSummary {
 	dtype: string;
 	shape?: number[];
-	/** Present when the frame was node-reduced (Option C): the element count of the
-	 * reduced wire array that `numeric` was computed over. `shape` is the node's TRUE
-	 * original, so the two intentionally differ — and for an envelope reduction the
-	 * mean is over interleaved per-bin min/max, not the original signal. */
+	/** Element count of the reduced wire array `numeric` covers; `shape` stays the node's TRUE original. */
 	reducedLength?: number;
 	numeric?: { min: number; max: number; mean: number };
 	text?: string;
 }
 
-/** A compact, DOM-free description of the latest frame on a slot — enough for an
- * agent to reason about live data without a vision pass. */
+/** A compact, DOM-free description of the latest frame on a slot. */
 function summarize(frame: DataFrame | null): FrameSummary | null {
 	if (!frame) return null;
 	if (isArrayFrame(frame)) {
 		const a = frame.data;
-		// Reuse the viewers' pure min/max/mean reduction (same skip-non-finite algorithm)
-		// rather than re-implementing it here.
 		const s = summaryOf(a);
-		// Report the node's TRUE shape, not the reduced wire shape (Option C): a
-		// node-reduced frame carries meta.reduced with each axis's orig_len. Mirror
-		// the inspector (reconstructMeta) so an agent reasons about real dimensions.
-		// `numeric` stays over the reduced wire array; surface its length (reducedLength)
-		// when reduced so the shape/stats gap is explicit, not silent.
 		const recon = reconstructMeta(frame.meta);
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
 		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
@@ -64,11 +46,8 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 export interface PanelView {
 	panelId: string;
 	type: string;
-	/** Bound node for a linkable panel, else null. */
 	node: string | null;
-	/** Chosen slot for a Viewer/Metadata panel, else null. */
 	slot: string | null;
-	/** Chosen viewer kind for a Viewer panel, else null. */
 	kind: string | null;
 }
 
@@ -88,17 +67,11 @@ export const query = {
 		};
 	},
 	nodeTypes: (): NodeTypeInfo[] | null => graph().nodeTypes,
-	/** Whether the doc replica has pulled from the manager yet. Until true, `graph()` reads
-	 * describe an EMPTY replica, not the patch — a driver that must distinguish "empty" from
-	 * "not yet delivered" (e.g. asserting absence) waits on this first. */
+	/** Whether the replica has pulled from the manager yet; until true, `graph()` reads describe an EMPTY replica. */
 	docSynced: (): boolean => graph().docSynced,
-	/** Every patch global (system + user), doc-authoritative, in system-first/creation order.
-	 * Each is `{name, value, type, system}` — expressions read them as `globals.<name>`. */
+	/** Every patch global (system + user), in system-first/creation order. */
 	globals: (): GlobalView[] => graph().globals,
-	/** Every sub-patch instance, keyed by uid (the universal node key). Each is the
-	 * server-computed record (parent, members{local:{uid,is_instance}}, slots, siblings,
-	 * error, …) the editor mirrors. ROOT (the materialized root scope) is excluded — it's
-	 * the canvas, not a sub-patch the agent operates on. */
+	/** Every sub-patch instance by uid. ROOT is excluded — it is the canvas, not a sub-patch. */
 	instances: (): Record<string, InstanceInfo> => {
 		const { [ROOT_ID]: _root, ...rest } = graph().instances;
 		return rest;
@@ -131,11 +104,9 @@ export const query = {
 			};
 		}),
 
-	/** True while an in-panel editor (the fx multi-line) holds the keyboard, so global undo/redo
-	 * stands down. Exposed so the e2e can assert the standdown lifted after a node switch. */
+	/** True while an in-panel editor holds the keyboard, so global undo/redo stands down. */
 	modalOpen: (): boolean => ui().modalOpen,
 
-	// --- history -----------------------------------------------------------
 	canUndo: (): boolean => history().canUndo,
 	canRedo: (): boolean => history().canRedo,
 	undoLabel: (): string | null => history().undoLabel,

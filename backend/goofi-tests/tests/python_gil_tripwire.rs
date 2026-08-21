@@ -1,9 +1,5 @@
-//! The runtime GIL tripwire, in its own test BINARY. A node that re-enables the GIL poisons
-//! `sys._is_gil_enabled` for the whole interpreter, so this cannot share a process with the
-//! other in-process host tests — every one of them would trip on its own first tick.
-//!
-//! Runs only with `embed` + a free-threaded interpreter:
-//!   cargo test -p goofi-tests --features embed --test python_gil_tripwire
+//! The runtime GIL tripwire, in its own test BINARY: once a node re-enables the GIL it stays on
+//! for the whole interpreter. Runs with `embed` and a free-threaded interpreter.
 #![cfg(feature = "embed")]
 
 use goofi_core::Data;
@@ -11,9 +7,7 @@ use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
 use goofi_python::inproc::PyNode;
 use indexmap::IndexMap;
 
-/// A source node whose first `process` re-enables the GIL — the shape an FT-unsafe import at
-/// call time produces. Stands in for the real thing: the tripwire reads `sys._is_gil_enabled`,
-/// and once the GIL is on it STAYS on, so every later tick observes it too.
+/// A source node whose first `process` re-enables the GIL — and once on, it STAYS on.
 const SRC: &str = r#"
 import goofi, sys
 import numpy as np
@@ -43,10 +37,7 @@ fn a_serialized_interpreter_keeps_being_reported_every_tick() {
     let first = tick(&mut node, &p);
     assert!(first.is_err(), "the tripwire must report the GIL being re-enabled");
 
-    // The condition is PERMANENT — the interpreter is serialized for every in-process node
-    // from here on. The only channel to the client is the 2 Hz stats sweep, which diffs
-    // SAMPLED `last_error` state, so a single one-tick error at a 30 Hz tick is almost never
-    // observed: the next successful tick clears it and the client never learns. The error has
+    // The condition is PERMANENT, and the 2 Hz stats sweep diffs SAMPLED state, so the error has
     // to persist while the condition does.
     let second = tick(&mut node, &p);
     assert!(second.is_err(), "a still-serialized interpreter must still be an error on the next tick");

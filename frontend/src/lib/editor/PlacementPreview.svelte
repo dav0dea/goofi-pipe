@@ -15,12 +15,9 @@
 
 	interface Props {
 		typeInfo: NodeTypeInfo;
-		/** Initial mouse position in client coords — used before the first
-		 * mousemove so the ghost spawns at the user's cursor rather than (0,0). */
+		/** Mouse position in client coords, used until the first mousemove. */
 		initialClient: { x: number; y: number };
-		/** Snap-target bounds (flow coords) of every node currently on screen — the
-		 * SAME set the drag snap uses, so a new node snaps to real nodes, sub-patch
-		 * instances, and boundary pills alike (not just the real nodes in g.nodes). */
+		/** Snap-target bounds in flow coords: the same set the node drag snaps against. */
 		targets: Bounds[];
 		onCommit: (pos: [number, number]) => void;
 		onCancel: () => void;
@@ -34,13 +31,11 @@
 	let altKey = $state(false);
 	let ghostW = $state(DEFAULT_NODE_W);
 	let ghostH = $state(DEFAULT_NODE_H);
-	/** Which point of the ghost the input driving it is holding — asked of the EVENT, below, so a
-	 *  hybrid device answers separately for its trackpad and its screen. */
+	/** Which point of the ghost the input holds; asked of the EVENT, so a hybrid device stays right. */
 	let anchor = $state<GhostAnchor>('top-left');
 
 	const flowPos = $derived(screenToFlowPosition({ x: mouseClient.x, y: mouseClient.y }));
-	// The anchor is spent HERE, once, on the flow position — everything downstream (the snap bounds,
-	// the transform, the commit) reads `origin` and so cannot disagree about where the ghost is.
+	// Spend the anchor once, here, so the snap bounds, the transform and the commit cannot disagree.
 	const origin = $derived(ghostOrigin(flowPos, { w: ghostW, h: ghostH }, anchor));
 
 	const snap = $derived.by(() => {
@@ -57,8 +52,6 @@
 	function onMouseMove(e: MouseEvent): void {
 		mouseClient = { x: e.clientX, y: e.clientY };
 		altKey = e.altKey;
-		// A cursor is back on the ghost, so it hangs off its corner again — the same question the
-		// touch path asks, answered by the other input.
 		anchor = 'top-left';
 	}
 
@@ -94,18 +87,12 @@
 		e.preventDefault();
 	}
 
-	// --- the same placement, with a finger ---------------------------------------------------
-	// The mouse path above is the reference and is untouched: everything below is reached only by a
-	// pointer whose `pointerType` is `touch`, asked per EVENT so a hybrid device stays right on both
-	// of its inputs. The gesture itself lives in `touchPlacement.ts`, where a unit test can reach it.
 	const touch = createTouchPlacement();
 
 	function onPointerDown(e: PointerEvent): void {
 		const at = touch.down(e, inCanvas(e.target));
 		if (!at) return;
-		// `down` answers non-null for a touch and nothing else, so this IS the modality gate — and it
-		// is the gesture, not the device, that decides: the flag then rides through `up`, whose commit
-		// must read the same anchor the ghost was last drawn with.
+		// `down` answers non-null for a touch and nothing else, so this IS the modality gate.
 		anchor = 'centre';
 		mouseClient = at;
 	}
@@ -119,29 +106,12 @@
 		const at = touch.up(e);
 		if (!at) return;
 		mouseClient = at;
-		// `snappedX/Y` are `$derived`, i.e. pull-based — reading them here re-evaluates them against
-		// the point just assigned, so the commit lands on exactly the snapped position the ghost was
-		// drawn at, through the same `computeSnapDelta` the mouse path and the node drag share.
 		onCommit([Math.round(snappedX), Math.round(snappedY)]);
 	}
 
 	/**
-	 * The pan block AND the synthetic-click suppression — one handler, because they are one problem.
-	 *
-	 * SvelteFlow pans by d3-zoom, which binds `touchstart` on the pane rather than `pointerdown`, so
-	 * the pointer handlers above cannot keep a drag off the panner however they are written. This is
-	 * the touch analogue of the `mousedown` blocker: `stopPropagation` is what stops the pan.
-	 *
-	 * `preventDefault` is the other half, and it is HOW THE SYNTHETIC CLICK IS SUPPRESSED. A touch
-	 * the page does not cancel replays afterwards as a compat mouse cascade — mousemove, mousedown,
-	 * mouseup, click — and by the time it arrives `pointerup` has already committed and torn this
-	 * component down, so the trailing click would land on SvelteFlow's pane and clear the selection
-	 * the commit just made. Cancelling `touchstart` suppresses that whole cascade at its source,
-	 * which is why there is no click guard here racing the unmount to swallow one event.
-	 *
-	 * Gated on the flag the pointer path already set, so it holds back exactly the gesture this
-	 * component is driving: a touch OUTSIDE the canvas is left alone, and its compat click still
-	 * reaches `onWindowClick` and cancels the placement precisely as a mouse click does.
+	 * The pan block and the synthetic-click suppression, in one handler: SvelteFlow pans off
+	 * `touchstart`, and cancelling it also suppresses the compat mouse cascade after the commit.
 	 */
 	function onTouchStart(e: TouchEvent): void {
 		if (!touch.active) return;
@@ -232,8 +202,6 @@
 		opacity: 0.9;
 		pointer-events: none;
 		font-family: var(--font-mono);
-		/* The ghost is purely visual — all input is handled by the window-level
-		 * listeners in PlacementPreview itself. */
 		user-select: none;
 	}
 	.surface {
@@ -311,12 +279,7 @@
 		transform: translate(50%, -50%);
 	}
 
-	/* A fine pointer has a CURSOR, and the ghost riding it is most of what says "not placed yet" —
-	   so 0.9 and a hairline dash are enough there. A finger has no cursor at all: the drawing is the
-	   only thing left to say it, and at 0.9 on a phone this was a node card with a green edge. So a
-	   coarse pointer gets the placeholder stated three ways at once — visibly see-through, the same
-	   heavy dash `.node-drop-hint` uses for "something goes here", and NO elevation, because a node
-	   that is not down yet has not landed on the surface. Desktop is byte-identical. */
+	/* A finger has no cursor to say "not placed yet", so a coarse pointer states it in the drawing. */
 	@media (hover: none) and (pointer: coarse) {
 		.ghost {
 			opacity: 0.6;

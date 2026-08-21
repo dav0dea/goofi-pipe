@@ -1,17 +1,5 @@
-//! Signal reduction kernels — the pixel-capacity reduction of an array frame along one
-//! axis, operating on the frame's f32 little-endian bytes. These are the numerical heart of
-//! the ViewSpec data plane (the signal side of Seam B `ViewEncodable`); the shape-level merge
-//! that decides WHICH axes to reduce lives in the payload-free `goofi-view` crate.
-//!
-//! Three kernels, each reducing ONE axis of a row-major array:
-//! - **subsample** — pick `m` evenly-spaced indices (an f32-block byte gather); keeps
-//!   exact samples (channels, trajectories).
-//! - **envelope** — split into `W` bins and emit interleaved `min,max` per bin (axis → `2W`);
-//!   preserves a waveform's peaks. Skipped unless it shrinks the axis ≥2×.
-//! - **area** — block-mean into `M` bins; smooth downscale for images/spectra.
-//!
-//! Each returns `None` when it would not actually reduce the axis, so the caller leaves that
-//! axis untouched.
+//! Axis reduction kernels — subsample, envelope (interleaved `min,max` per bin) and area — over
+//! a frame's f32 LE bytes. Each returns `None` when it would not shrink the axis.
 
 use crate::{Coord, Data, MetaValue, Value};
 use goofi_view::{MergedViewSpec, ReduceMethod};
@@ -26,14 +14,8 @@ fn method_name(m: ReduceMethod) -> &'static str {
     }
 }
 
-/// Evaluate a merged view plan against a concrete frame: apply each planned axis reduction
-/// (descending dim order — every kernel preserves ndim, so indices stay valid), co-reduce
-/// the coordinate axes to match, record `meta.reduced["<dim>"] = {orig_len, method}`, and
-/// carry the SOURCE timeline meta (`index`/`ufreq`/`sfreq`) verbatim — spatial reduction
-/// doesn't change which emit this is or how fast the node emits. Non-array payloads and
-/// empty plans pass through untouched. **Fail-open**: if the reduced frame can't be
-/// reconstructed (a co-reduction invariant breach), the original frame is returned unreduced
-/// rather than a corrupt one.
+/// Evaluate a merged view plan against a frame: reduce each planned axis, co-reduce the coords,
+/// and record `meta.reduced`. Fail-open — an unreconstructible result returns the source frame.
 pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     let Value::Array(store) = frame.value() else {
         return frame.clone();
@@ -41,9 +23,7 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     if plan.axes.is_empty() {
         return frame.clone();
     }
-    // Borrowed until an axis actually shrinks: the no-shrink early return below is the COMMON
-    // path (`plan` emits a PlannedAxis per requested dim without checking whether it would
-    // shrink), so the copy this used to take was usually thrown away unread.
+    // Borrowed until an axis actually shrinks: a plan whose axes all fit is the common path.
     let mut bytes = Cow::Borrowed(store.as_bytes());
     let mut shape = store.shape().to_vec();
     let mut axes = frame.meta().channels().clone();
@@ -54,11 +34,10 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     planned.sort_by_key(|ax| std::cmp::Reverse(ax.dim));
     for ax in &planned {
         let Some(r) = reduce_axis(&bytes, &shape, ax.dim, ax.max, ax.method) else {
-            continue; // this axis did not shrink
+            continue;
         };
         let orig_len = shape[ax.dim];
-        // The G5 verbatim-coord capture keys on the method: capture the ORIGINAL coords before
-        // slicing so a small subsampled axis keeps exact labels.
+        // Capture the ORIGINAL coords before slicing, so a small subsampled axis keeps exact labels.
         let verbatim = (ax.method == ReduceMethod::Subsample && orig_len <= 4096)
             .then(|| axes.get(ax.dim).and_then(|a| a.coords.clone()))
             .flatten();
@@ -81,10 +60,8 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
         reduced.insert(ax.dim.to_string(), MetaValue::Map(entry));
     }
     if reduced.is_empty() {
-        return frame.clone(); // nothing actually reduced (all axes already small enough)
+        return frame.clone();
     }
-    // Carry the source timeline (sfreq/ufreq/index) and any extras verbatim; override only
-    // channels (co-reduced) and reduced.
     let mut meta = frame.meta().clone();
     meta.set_channels(axes);
     meta.set_reduced(Some(MetaValue::Map(reduced)));
@@ -107,30 +84,25 @@ pub fn subsample_idx(n: usize, m: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Read the `i`-th f32 element of a raw byte buffer. Panics only on a malformed buffer
-/// (length re-validated at frame construction upstream).
+/// Panics only on a malformed buffer — the length is validated at frame construction.
 fn read_f32(b: &[u8], i: usize) -> f32 {
     f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap())
 }
 
-/// Append the f32 value `v` as little-endian bytes.
 fn write_f32(v: f32, out: &mut Vec<u8>) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// The result of reducing one axis: new bytes (row-major), the new length along the reduced
-/// axis, and the original-axis indices each output entry maps to (for coordinate
-/// co-reduction). For envelope, `centers` holds each bin's midpoint index repeated twice
-/// (the min,max pair), so its length equals the new axis length.
+/// One axis's reduction: new bytes, the new axis length, and the original index each entry maps
+/// to. For envelope, a bin's midpoint appears twice, so `centers` still matches the new length.
 pub struct AxisReduction {
     pub bytes: Vec<u8>,
     pub new_len: usize,
     pub centers: Vec<usize>,
 }
 
-/// Row-major strides for reducing dimension `dim` of `shape`: (outer count, axis length,
-/// inner element count). An element `(o, a, i)` sits at flat element index
-/// `(o*axis + a)*inner + i`.
+/// Row-major strides for dimension `dim`: (outer count, axis length, inner element count), so
+/// element `(o, a, i)` sits at flat index `(o*axis + a)*inner + i`.
 fn strides(shape: &[usize], dim: usize) -> (usize, usize, usize) {
     let outer: usize = shape[..dim].iter().product();
     let axis = shape[dim];
@@ -138,8 +110,7 @@ fn strides(shape: &[usize], dim: usize) -> (usize, usize, usize) {
     (outer, axis, inner)
 }
 
-/// Reduce one axis of a row-major f32 byte array to at most `max` entries via `method`.
-/// Returns `None` when it would not shrink the axis (the caller leaves it untouched).
+/// Reduce one axis to at most `max` entries; `None` when it would not shrink the axis.
 pub fn reduce_axis(
     bytes: &[u8],
     shape: &[usize],
@@ -161,9 +132,9 @@ fn subsample_axis(bytes: &[u8], shape: &[usize], dim: usize, max: usize) -> Opti
     let (outer, axis, inner) = strides(shape, dim);
     let idx = subsample_idx(axis, max);
     if idx.len() >= axis {
-        return None; // no shrink
+        return None;
     }
-    let block = inner * 4; // bytes of one (o, a) inner slab (f32)
+    let block = inner * 4;
     let mut out = Vec::with_capacity(outer * idx.len() * block);
     for o in 0..outer {
         for &a in &idx {
@@ -205,9 +176,8 @@ fn envelope_axis(bytes: &[u8], shape: &[usize], dim: usize, max: usize) -> Optio
                     }
                 }
             }
-            // An all-NaN bin wins no comparison, so both seeds survive untouched — emit NaN
-            // rather than the (+INF, -INF) pair, which is not in the input and would wreck
-            // a viewer's autoscale. A bin of real infinities always sets at least one seed.
+            // An all-NaN bin wins no comparison, so both seeds survive — emit NaN rather than
+            // the (+INF, -INF) pair, which would wreck a viewer's autoscale.
             let all_nan = |i: usize| mn[i] == f32::INFINITY && mx[i] == f32::NEG_INFINITY;
             for (i, &v) in mn.iter().enumerate() {
                 write_f32(if all_nan(i) { f32::NAN } else { v }, &mut out);

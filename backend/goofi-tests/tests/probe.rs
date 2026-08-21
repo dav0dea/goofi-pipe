@@ -1,16 +1,12 @@
-//! Probe-based discovery over the real `goofi` extension. REQUIRES a python with
-//! `goofi` importable; it finds one itself (the repo venvs), so these run on a plain
-//! `cargo test`. Override with GOOFI_PYMOD_TEST_PYTHON. When no usable interpreter
-//! exists they FAIL with an actionable message rather than skipping — a green run has
-//! to mean the cross-language path actually ran (the `goofi-python` convention).
+//! Probe-based discovery over the real `goofi` extension. It finds an interpreter itself, and
+//! FAILS with an actionable message rather than skipping. Override with GOOFI_PYMOD_TEST_PYTHON.
 
 use std::path::Path;
 
 use goofi_node::discover::{discover_one, probe_introspect, Discovery};
 use goofi_node::Isolation;
 
-/// The first interpreter that can `import goofi`: an explicit override, then the repo's two
-/// provisioned venvs (either works — the probe only imports `goofi`), then the system python.
+/// The first interpreter that can `import goofi`: an override, the repo's venvs, then the system one.
 fn test_python() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut cands: Vec<String> = Vec::new();
@@ -20,9 +16,7 @@ fn test_python() -> String {
         }
     }
     for venv in [".gfivenv-ft", ".gfivenv"] {
-        // Both layouts: a venv keeps its interpreter under `bin/` on unix and `Scripts/` on
-        // Windows. Naming only one is not a near miss — it drops through to the `python3` below,
-        // which on Windows is an App Execution Alias that answers with a Microsoft Store advert.
+        // Both layouts: `python3` on Windows is an App Execution Alias that answers with an advert.
         for tail in ["bin/python", "Scripts/python.exe"] {
             cands.push(repo.join(venv).join(tail).to_string_lossy().into_owned());
         }
@@ -31,8 +25,7 @@ fn test_python() -> String {
     for cand in &cands {
         let ok = std::process::Command::new(cand)
             .args(["-c", "import goofi"])
-            // A host PYTHONPATH would shadow the candidate's own goofi and make this
-            // probe disagree with the one under test, which strips it.
+            // A host PYTHONPATH would shadow the candidate's own goofi, which the probe strips.
             .env_remove("PYTHONPATH")
             .env_remove("PYTHONHOME")
             .stdout(std::process::Stdio::null())
@@ -51,9 +44,7 @@ fn test_python() -> String {
     )
 }
 
-/// The FREE-THREADED interpreter (the in-process tier's host), for the routing gate's SAFE half:
-/// an explicit override, else the repo's `.gfivenv-ft`. Panics rather than skipping — this gate decides
-/// which tier every Python node lands on, so leaving a branch uncovered is not acceptable.
+/// The FREE-THREADED interpreter (the in-process tier's host), for the routing gate's SAFE half.
 fn ft_python() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut cands: Vec<String> = Vec::new();
@@ -90,8 +81,7 @@ fn ft_python() -> String {
 fn gil_python() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let venv = repo.join(".gfivenv");
-    // `bin/` on unix, `Scripts/` on Windows — whichever this venv actually has; the conventional
-    // name stands in when neither does, so the assertion below still names a path.
+    // `bin/` on unix, `Scripts/` on Windows; the conventional name stands in so the assertion names one.
     let p = [venv.join("bin/python"), venv.join("Scripts/python.exe")]
         .into_iter()
         .find(|c| c.is_file())
@@ -128,9 +118,8 @@ fn discovers_a_valid_node_with_declarations() {
 
 #[test]
 fn a_python_node_can_declare_itself_a_producer() {
-    // A Rust manifest is a static literal; a Python one is BUILT from the probe, so `producer`
-    // has to travel. `#[serde(default)]` on the schema is load-bearing — an older installed
-    // wheel emits no key, and a hard parse failure greys out every node it discovers.
+    // `#[serde(default)]` on the schema is load-bearing: an older installed wheel emits no key, and
+    // a hard parse failure greys out every node it discovers.
     let py = test_python();
     let Discovery::Found(d) =
         discover_one(&fixtures().join("producer.py"), &py, "python", Isolation::InProcess)
@@ -149,12 +138,7 @@ fn a_python_node_can_declare_itself_a_producer() {
 
 #[test]
 fn a_producer_that_is_not_a_bool_is_refused_rather_than_read_as_false() {
-    // Absent means "not a producer"; present-but-not-a-bool is an authoring mistake. Swallowing it
-    // costs the author a node that simply never runs, with no diagnostic anywhere. `Manifest`
-    // refuses it where it is WRITTEN, so the import that evaluates the class body is what fails —
-    // and the node greys out with that reason, the way a bad slot or param declaration already
-    // does. The kind moved from a probe check to a construction one; what the palette shows did
-    // not.
+    // `Manifest` refuses a non-bool where it is WRITTEN, so the import fails and the node greys out.
     let py = test_python();
     match discover_one(&fixtures().join("bad_producer.py"), &py, "python", Isolation::InProcess) {
         Discovery::Unavailable { type_name, reason } => {
@@ -168,8 +152,7 @@ fn a_producer_that_is_not_a_bool_is_refused_rather_than_read_as_false() {
 #[test]
 fn missing_dep_greys_out_instead_of_crashing() {
     let py = test_python();
-    // The probe import fails -> the REASON, never a panic/crash — and the node is reported as
-    // unavailable rather than silently skipped, so the palette can explain itself.
+    // The probe import fails -> the REASON, never a panic, so the palette can explain itself.
     let err = probe_introspect(&fixtures().join("missing_dep.py"), &py).unwrap_err();
     assert_eq!(err, "definitely_not_installed_pkg", "a missing import names the module");
     match discover_one(&fixtures().join("missing_dep.py"), &py, "python", Isolation::Subprocess) {
@@ -188,12 +171,8 @@ fn missing_dep_greys_out_instead_of_crashing() {
 
 #[test]
 fn a_node_whose_import_prints_still_discovers() {
-    // The probe child runs the node module AND emits the JSON payload, so a dependency that
-    // greets stdout on import (the pygame banner is the canonical one) would prepend itself to
-    // the payload: the child exits 0, the parse fails, and a perfectly good node is greyed out
-    // with "malformed introspection". The child loop already solved this for itself
-    // (goofi-pymod/src/serve.rs dup2's fd 1 to stderr before compiling the user module); the
-    // probe must too, or every node with a chatty dep silently becomes unavailable.
+    // A dependency that greets stdout on import would prepend itself to the payload, so the probe
+    // child routes fd 1 to stderr the way the serve loop already does.
     let py = test_python();
     let Discovery::Found(d) =
         discover_one(&fixtures().join("chatty.py"), &py, "python", Isolation::Subprocess)
@@ -206,11 +185,8 @@ fn a_node_whose_import_prints_still_discovers() {
 
 #[test]
 fn probe_ignores_a_host_pythonpath() {
-    // The probe interpreter must import ITS OWN installed goofi, not one leaked in via a host
-    // `PYTHONPATH` (as `.cargo/config.toml` sets for the embedded FT interpreter). A poison
-    // `goofi/` on PYTHONPATH — the shape of a cross-version site-packages — must NOT shadow the
-    // probe's goofi. Without the env-strip the probe imports the poison and discovery silently
-    // finds nothing; with it, discovery works regardless of the host PYTHONPATH.
+    // The probe interpreter must import ITS OWN installed goofi, never one leaked in through a host
+    // `PYTHONPATH`, which `.cargo/config.toml` sets for the embedded FT interpreter.
     let py = test_python();
     let poison = std::env::temp_dir().join(format!("goofi_poison_{}", std::process::id()));
     std::fs::create_dir_all(poison.join("goofi")).unwrap();
@@ -220,8 +196,7 @@ fn probe_ignores_a_host_pythonpath() {
     )
     .unwrap();
 
-    // This test is the only one in its process that touches PYTHONPATH; post-fix every probe
-    // Command strips it, so setting it here cannot leak into sibling tests.
+    // Every probe Command strips PYTHONPATH, so setting it here cannot leak into sibling tests.
     std::env::set_var("PYTHONPATH", &poison);
     let d = discover_one(&fixtures().join("negate.py"), &py, "python", Isolation::Subprocess);
     std::env::remove_var("PYTHONPATH");
@@ -235,9 +210,7 @@ fn probe_ignores_a_host_pythonpath() {
 
 #[test]
 fn every_param_kind_carries_its_doc_across_the_probe() {
-    // `doc=` is declared in Python, serialized by the wheel's introspect, and parsed back into
-    // ParamDecl — one arm per param kind on each side. Only the Int arm was covered by any test
-    // that a documented command actually runs, so all four are pinned here.
+    // `doc=` crosses Python, the wheel's introspect and ParamDecl — one arm per param kind on each side.
     let py = test_python();
     let Discovery::Found(d) =
         discover_one(&fixtures().join("documented.py"), &py, "python", Isolation::Subprocess)
@@ -260,10 +233,8 @@ fn every_param_kind_carries_its_doc_across_the_probe() {
 
 #[test]
 fn the_probe_itself_is_the_gil_routing_gate() {
-    // `Discovered.gil_safe` is the ONE oracle deciding which tier a Python node runs on: the probe
-    // interpreter imports the module, constructs the class, and reports whether the GIL is still
-    // disabled afterwards. Both directions are pinned, since a wrong answer either quarantines a
-    // fast node forever or re-enables the GIL process-wide for every other in-process node.
+    // `Discovered.gil_safe` is the ONE oracle deciding which tier a Python node runs on; a wrong
+    // answer either quarantines a fast node or re-enables the GIL for every in-process node.
     let node = fixtures().join("negate.py");
 
     let Discovery::Found(ft) = discover_one(&node, &ft_python(), "python", Isolation::InProcess) else {
@@ -279,11 +250,8 @@ fn the_probe_itself_is_the_gil_routing_gate() {
 
 #[test]
 fn the_gil_sample_covers_the_whole_import() {
-    // The gate must read the GIL state after the module has been IMPORTED — module body and class
-    // body alike, which is where a node's declaration-time imports live (goofi-pymod's own
-    // `device_options.py` fixture documents that as intended usage). Importing a C extension built
-    // without free-threading support re-enables the GIL process-wide; sampled any earlier, such a
-    // node routes to the in-process tier and only fails on its first tick.
+    // The GIL state is read after the module has been IMPORTED: a C extension built without
+    // free-threading support re-enables it, and sampled earlier such a node routes to the wrong tier.
     let Discovery::Found(d) =
         discover_one(&fixtures().join("gil_flip.py"), &ft_python(), "python", Isolation::InProcess)
     else {

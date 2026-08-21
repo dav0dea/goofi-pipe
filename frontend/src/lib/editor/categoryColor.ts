@@ -1,9 +1,4 @@
-/** Map a goofi DataType (ARRAY/STRING/TABLE/…) to a CSS color variable.
- *
- * Communicates dtype at a glance on every slot pin/label. Palette borrowed
- * from goofi3 (array=green, string=yellow, table=orange) so the visual
- * grammar is consistent across the two projects.
- */
+/** Map a goofi DataType (ARRAY/STRING/TABLE/…) to a CSS color variable. */
 export function dtypeColor(dtype: string | undefined | null): string {
 	switch ((dtype ?? '').toUpperCase()) {
 		case 'ARRAY':

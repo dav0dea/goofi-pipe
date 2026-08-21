@@ -1,15 +1,6 @@
-<!--
-  Node-editor panel — the SvelteFlow graph plus all its interaction logic,
-  extracted from the former Editor.svelte monolith into a self-contained panel.
-
-  Each instance owns its own SvelteFlowProvider (independent viewport) but reads
-  the shared graph + selection stores, so multiple editor panels stay in sync
-  on content and selection while panning/zooming independently.
-
-  Editor-scoped keyboard shortcuts (Delete, Ctrl+C/V/D, Ctrl+A, Tab, F, Escape)
-  are gated on this being the active panel; app-global shortcuts (Ctrl+S/O) and
-  the unsaved-changes guard live in AppShell.
--->
+<!-- Node-editor panel — the SvelteFlow graph and its interaction logic. Each instance owns its own
+     viewport but reads the shared graph and selection stores. Editor-scoped keyboard shortcuts are
+     gated on this being the active panel; app-global ones live in AppShell. -->
 <script lang="ts">
 	import {
 		SvelteFlow,
@@ -96,22 +87,16 @@
 	const sel = selection();
 	const ws = workspace();
 
-	/** Only the active panel reacts to editor keyboard shortcuts and pending
-	 * slot clicks, so multiple editor panels don't all fire at once. */
+	/** Only the active panel reacts to keyboard shortcuts and pending slot clicks. */
 	const isActive = (): boolean => ws.activePanelId === panelId;
 
-	// This editor's own selection (independent per panel). The inspector
-	// overlay reads it; standalone panels follow whichever editor is active.
 	const selectedNode = $derived(sel.selectedNode(panelId));
 
-	// Whether this editor's inspector pane actually shows (per-panel; default on). The visible
-	// state is the standing ◧ preference MINUS a live ✕ dismissal — the ✕ closes the pane only
-	// until the selection next changes, while the ◧ is the real off-switch.
+	// The standing ◧ preference MINUS a live ✕ dismissal, which holds only until the selection
+	// next changes.
 	const inspectorOn = $derived(sel.inspectorVisibleFor(panelId));
 
 	$effect(() => {
-		// When this editor becomes the active panel, mark it the active editor
-		// so the standalone Parameters/Metadata/Errors panels follow it.
 		if (ws.activePanelId === panelId) sel.setActiveEditor(panelId);
 	});
 
@@ -121,24 +106,14 @@
 	type MenuAlign = 'start' | 'center' | 'end';
 
 	let menuOpen = $state(false);
-	// The REQUESTED spawn point (what a call site asked for) and the RENDERED one (what the measured
-	// clamp settled on) are separate, so the placement effect never writes its own dependency.
+	// The REQUESTED spawn point and the RENDERED one are separate, so the placement effect never
+	// writes its own dependency.
 	let menuAt = $state<{ x: number; y: number; align: MenuAlign }>({ x: 120, y: 120, align: 'start' });
 	let menuPos = $state<{ x: number; y: number }>({ x: 120, y: 120 });
 	let menuSeed = $state<SlotClickSeed | null>(null);
 	let menuEl = $state<HTMLDivElement | null>(null);
-	// A long press opens the menu with the finger still down, so the touchend ENDING that same
-	// gesture arrives as a compat click — at the RELEASE point, which is wherever the clamp settled
-	// the menu. Exactly one such click is swallowed. Every `openAddMenu` sets this, so it can never
-	// leak into a later menu.
-	//
-	// At the WINDOW, in the capture phase, because WHICH layer that click lands on is not knowable:
-	// a press low on the screen makes the clamp slide the menu up over the press point, so the
-	// release hits a palette row (a node type the user never chose) rather than the catcher
-	// underneath. Consuming it before it reaches any target makes the swallow geometry-independent.
-	// TitleTip solves the same long-press/compat-click problem the same way. One click and the
-	// listener is gone, so a release that produces none can cost at most the next click — it can
-	// never leave the menu inert.
+	// A long press opens the menu with the finger still down, so the touchend arrives as a compat
+	// click. At the WINDOW in capture, because which layer that click lands on is not knowable.
 	let swallowMenuClick = $state(false);
 	$effect(() => {
 		if (!swallowMenuClick) return;
@@ -151,13 +126,8 @@
 		return () => window.removeEventListener('click', eat, opts);
 	});
 
-	/**
-	 * Open the add-node menu at a viewport point — the ONE placement path for all four entry points
-	 * (a port click, a canvas double-click, Tab, a canvas long press). The point names the menu's
-	 * left, centre or right edge; the effect below measures the rendered menu and clamps it on-screen
-	 * through the shared `clampToViewport` (D-M2: the point-anchored menus keep their own shell and
-	 * share only the clamp SSOT). No call site knows the menu's size.
-	 */
+	/** Open the add-node menu at a viewport point — the one placement path for all four entry
+	 * points. The point names the menu's left, centre or right edge; the effect below clamps it. */
 	function openAddMenu(
 		x: number,
 		y: number,
@@ -166,31 +136,19 @@
 		swallowNextDismiss = false
 	): void {
 		menuAt = { x, y, align };
-		menuPos = { x, y }; // a known spawn point to start from, corrected below before paint
+		menuPos = { x, y }; // corrected below before paint
 		menuSeed = seed;
 		swallowMenuClick = swallowNextDismiss;
 		menuOpen = true;
 	}
 
-	/**
-	 * The coarse-pointer door onto the add-node menu (R spec §3.2b). The other three routes are all
-	 * fine-pointer or keyboard — double-click, Tab, a port click — so on touch this is the only way
-	 * to put the first node on an empty canvas.
-	 *
-	 * Armed for `touch` alone: a held mouse button is the start of a desktop pan, and desktop
-	 * behaviour is the reference. The recognizer never stops propagation, so the same pointerdown
-	 * still reaches SvelteFlow's pan and `Panel`'s capture-phase `setActive`.
-	 */
+	/** The coarse-pointer door onto the add-node menu. Armed for `touch` alone: a held mouse button
+	 * is the start of a desktop pan. */
 	const canvasPress = createLongPress((at) =>
 		openAddMenu(at.clientX - 8, at.clientY + 8, 'start', null, true)
 	);
 
-	/** Empty canvas only — the pane is the direct target just where nothing else is drawn, so a
-	 * press on a node (which drags) or on the flow controls can never arm the door.
-	 *
-	 * And not while a ghost is pending: the canvas belongs to the placement until it is put down, so
-	 * a finger resting on it mid-drag is positioning a node, not asking for a second menu on top of
-	 * the one that produced the ghost. */
+	/** Empty canvas only, and not while a ghost is pending: the canvas belongs to that placement. */
 	function onCanvasPointerDown(e: PointerEvent): void {
 		if (e.pointerType !== 'touch' || pendingPlacement) return;
 		if (!onBareCanvas(e.target)) return;
@@ -200,33 +158,14 @@
 	const onBareCanvas = (target: EventTarget | null): boolean =>
 		Boolean((target as HTMLElement | null)?.classList.contains('svelte-flow__pane'));
 
-	// --- double-tap-and-drag to zoom ------------------------------------------------------------
-	// The one-handed zoom, ADDED beside pinch: `zoomOnPinch` is still SvelteFlow's own and is not
-	// touched, and the seam this uses is `zoomOnDoubleClick={false}` below — a double tap that was
-	// already inert. The recognizer and the anchored viewport arithmetic are in
-	// `editor/doubleTapZoom.ts`, where a unit test can reach them; what is left here is the seam.
+	// Double-tap-and-drag zoom, beside pinch; the seam is `zoomOnDoubleClick={false}` below.
 	const tapZoom = createDoubleTapZoom();
-	// The viewport the gesture started from, and the FLOW point under the tap it is taken about.
-	// Sampled ONCE at the start, so every move is measured against the same origin and the drag
-	// cannot accumulate rounding.
+	// Sampled ONCE at the start, so the drag cannot accumulate rounding.
 	let zoomFrom: FlowViewport | null = null;
 	let zoomAnchor: { x: number; y: number } | null = null;
 
-	/**
-	 * THE PAN BLOCK, and why it is on `touchstart` rather than on `pointerdown`.
-	 *
-	 * SvelteFlow pans by d3-zoom, which binds `touchstart` on its own pane wrapper — a pointerdown
-	 * blocker cannot reach it, however it is written. This is the same lesson (and the same shape)
-	 * as `PlacementPreview.svelte`'s blocker: a CAPTURE listener above the pane, and
-	 * `stopPropagation` — that is the half that stops the pan. `preventDefault` says the touch is
-	 * consumed, suppressing the compat mouse cascade and the browser's own double-tap default; what
-	 * keeps the add-node menu shut is not it but `canvasPress.cancel()` below, which is why that is
-	 * the line `touch-zoom.spec.ts` holds still for 600 ms to pin.
-	 *
-	 * Held back for EXACTLY the touch that starts the gesture — the second tap — and no other. The
-	 * first tap, and every touch that is not part of a double tap, reaches d3-zoom untouched, which
-	 * is what keeps one-finger panning and tap-to-select alive.
-	 */
+	/** The pan block. On `touchstart`, not `pointerdown`: SvelteFlow pans by d3-zoom, which binds
+	 * `touchstart` on its own pane wrapper, so only a capture listener above it can stop the pan. */
 	function onCanvasTouchStart(e: TouchEvent): void {
 		// A second finger is a PINCH: hand the whole gesture back rather than compete with it.
 		if (pendingPlacement || e.touches.length > 1 || !onBareCanvas(e.target)) {
@@ -236,9 +175,7 @@
 		const p = eventPoint(e);
 		if (!p || !tapZoom.down(p, e.timeStamp)) return;
 
-		// A double tap held still would otherwise also fire the long-press door and open the add-node
-		// menu on top of the zoom. The press armed on this touch's `pointerdown`, which precedes
-		// `touchstart`, so disarming it here is in time.
+		// A double tap held still would otherwise also fire the long-press door on top of the zoom.
 		canvasPress.cancel();
 		zoomFrom = getViewport?.() ?? null;
 		zoomAnchor = screenToFlow?.({ x: p.clientX, y: p.clientY }) ?? null;
@@ -263,8 +200,7 @@
 		zoomAnchor = null;
 	}
 
-	// ContextMenu's idiom: measure the mounted menu, then re-clamp. A spawn point is the degenerate
-	// anchor rect the shared clamp already understands (`left`/`bottom` ARE the point).
+	// Measure the mounted menu, then re-clamp: a spawn point is a degenerate anchor rect.
 	$effect(() => {
 		const el = menuEl;
 		if (!el) return;
@@ -273,10 +209,8 @@
 			const r = el.getBoundingClientRect();
 			const left =
 				at.align === 'center' ? at.x - r.width / 2 : at.align === 'end' ? at.x - r.width : at.x;
-			// `overlayViewport()`, not `window.innerHeight` — the same measurement Popover and
-			// ContextMenu clamp against. It matters more here than anywhere: this menu FOCUSES its
-			// search on open, so the soft keyboard is on its way up as the menu lands, and the layout
-			// viewport does not shrink to make room for it.
+			// `overlayViewport()`, not `window.innerHeight`: this menu focuses its search on open, so
+			// the soft keyboard is on its way up as it lands and the layout viewport does not shrink.
 			const p = clampToViewport(
 				{ left, top: at.y, right: left, bottom: at.y, width: 0, height: 0 },
 				{ width: r.width, height: r.height },
@@ -290,16 +224,12 @@
 		return () => vv?.removeEventListener('resize', place);
 	});
 
-	// Watch ui.pendingSlotClick — when a node's port is clicked, open the
-	// menu near the port and seed it with the dtype filter + auto-link. Only
-	// the active panel consumes it (the click sets this panel active first).
+	// A clicked port opens the menu beside it, seeded with the dtype filter + auto-link.
 	$effect(() => {
 		const seed = uiStore.pendingSlotClick;
 		if (!seed) return;
 		if (!isActive()) return;
 		uiStore.consumeSlotClick();
-		// A source port hangs the menu to its right, a target port to its left — 12px of clearance
-		// either way, with the alignment (not a hardcoded width) doing the mirroring.
 		const source = seed.side === 'source';
 		openAddMenu(
 			seed.clientX + (source ? 12 : -12),
@@ -318,26 +248,16 @@
 
 	let flowNodes = $state.raw<Node[]>([]);
 	let flowEdges = $state.raw<Edge[]>([]);
-	// Bumped to force a flowEdges re-derive from authoritative state. SvelteFlow
-	// optimistically inserts a dropped connection into the bound edges BEFORE onConnect
-	// runs; a SUCCESSFUL wire's echo rebuilds the edges and discards it, but a REJECTED
-	// wire (dtype/duplicate) produces no echo — so we bump this in the failure path to
-	// strip the ghost edge instead of leaving a second cable hanging on the pill.
+	// Bumped to force a flowEdges re-derive: SvelteFlow inserts a dropped connection optimistically
+	// before `onConnect` runs, and a REJECTED wire produces no doc echo to rebuild from.
 	let reconcileTick = $state(0);
 
-	// --- sub-patch navigation (enter-to-edit) -------------------------------
-	// The stack of instance ids the editor has descended into; empty = top level.
-	// (A stack so nesting is a natural extension; today one level deep is reached.)
-	// Seeded from the persisted layout state so a saved/reloaded patch restores
-	// which sub-patch this editor was inside.
+	// The stack of instance ids this editor has descended into; empty = top level.
 	let enteredPath = $state<string[]>(untrack(() => pathToArray(asStateObject(panelState).subpatchPath)));
 	const entered = $derived(enteredPath.length ? enteredPath[enteredPath.length - 1] : null);
 
-	/** Write the current path back into the panel's state (viewpoint — it round-trips through
-	 * `set_viewpoint` and the saved .gfi). Untracked so callers in effects don't
-	 * pick up `state` as a dependency. Classified as NAVIGATION (D-R3): descending
-	 * into a sub-patch is looking, not editing — it is persisted so a reload lands
-	 * back where you were, but it must not mark the patch unsaved. */
+	/** Write the current path back into the panel's state. Classified as NAVIGATION: descending into
+	 * a sub-patch is looking, not editing, so it must not mark the patch unsaved. */
 	function persistEnteredPath(): void {
 		untrack(() => {
 			const path = arrayToPath(enteredPath);
@@ -346,22 +266,17 @@
 		});
 	}
 
-	// Follow an EXTERNAL path change (a patch load that reuses this panel id, so
-	// the component isn't remounted). Our own writes leave the two equal, so this
-	// is a no-op for them; an invalid restored id is trimmed by the climb-out
-	// effect below.
+	// Follow an EXTERNAL path change — a patch load that reuses this panel id, so the component is
+	// not remounted. Our own writes leave the two equal.
 	$effect(() => {
 		const persisted = pathToArray(asStateObject(panelState).subpatchPath);
 		if (!samePath(persisted, untrack(() => enteredPath))) enteredPath = persisted;
 	});
 
-	// Boundary-pill id format lives in the pure, tested scene module (single source of
-	// truth). `boundaryId`/`isBoundaryId` keep their short names at the call sites.
 	const boundaryId = boundaryNodeId;
 	const isBoundaryId = isBoundaryNodeId;
 
-	/** Index every entity (node OR nested instance) by uid -> {instId, local, ...}.
-	 * The single source for parent-scope + local lookups across the recursive tree. */
+	/** Index every entity (node OR nested instance) by uid, for parent-scope and local lookups. */
 	const memberIndex = $derived(buildMemberIndex(g.instances));
 
 	function enterInstance(instId: string): void {
@@ -392,23 +307,20 @@
 		}
 	});
 
-	/** Resolve a link endpoint to what's actually drawn in the entered scope: walk up
-	 * the nesting tree to the nearest visible boundary port (tree-aware). Null when the
-	 * slot is not exposed up the chain, or the endpoint is outside the entered subtree. */
+	/** Resolve a link endpoint to what is actually drawn in the entered scope: the nearest visible
+	 * boundary port up the nesting tree, or null when the slot is not exposed. */
 	function drawEndpoint(
 		node: string,
 		slot: string,
 		dir: 'in' | 'out'
 	): { node: string; handle: string } | null {
-		// Root ≡ a scope: the scene algebra always takes a real scope id — ROOT_ID at the
-		// root patch (childrenOfScope(ROOT_ID) renders its members). `entered` stays null at
-		// root for the "are we inside a sub-patch?" decisions (boundary wiring, member adds).
+		// The scene algebra always takes a real scope id; `entered` stays null at root, which is
+		// what the "are we inside a sub-patch?" decisions read.
 		return sceneDrawEndpoint(node, slot, dir, entered ?? ROOT_ID, g.instances, memberIndex);
 	}
 
-	// Render the DIRECT CHILDREN of the entered scope (ROOT_ID = the root patch): real
-	// nodes AND nested instances (collapsed, double-click-enterable group nodes via the
-	// SAME GoofiNode component); plus, inside an entered instance, its In/Out boundary pills.
+	// Render the direct children of the entered scope: real nodes, nested instances, and inside an
+	// entered instance its In/Out boundary pills.
 	$effect(() => {
 		const scope = entered ?? ROOT_ID;
 		const next: Node[] = [];
@@ -425,14 +337,11 @@
 				selected: sel.nodes(panelId).has(uid)
 			});
 		}
-		// Inside an entered instance, also render its In/Out boundary pills (incl.
-		// unwired), at their server-stored positions.
 		const inst = entered ? g.instances[entered] : null;
 		if (inst && entered) {
 			for (const [bid, port] of Object.entries(inst.interface)) {
 				next.push({
-					// The flow id keys on the stable boundary id (routing); the pill shows
-					// the renameable NAME, and double-clicking it drives rename_boundary.
+					// The flow id keys on the stable boundary id; the pill shows the renameable NAME.
 					id: boundaryId(entered, bid),
 					type: 'boundary',
 					position: { x: port.pos[0], y: port.pos[1] },
@@ -450,11 +359,8 @@
 		flowNodes = next;
 	});
 
-	// Every link, rerouted to the nearest VISIBLE boundary in the entered scope (null =
-	// root). Skip when an endpoint is not exposed up the chain, or both ends resolve to
-	// the same drawn node (internal to one collapsed sub-patch -> hidden). Inside an
-	// entered instance, also draw its boundary pill edges (In pill -> member input,
-	// member output -> Out pill); WIRED boundaries only, deletable to unwire.
+	// Every link, rerouted to the nearest VISIBLE boundary in the entered scope, plus that
+	// instance's own wired boundary-pill edges.
 	$effect(() => {
 		reconcileTick; // re-derive on demand to drop an optimistic ghost edge after a rejected wire
 		const next: Edge[] = [];
@@ -509,15 +415,8 @@
 		flowEdges = next;
 	});
 
-	/** Real-node ids selected in THIS editor — the operands for group / copy /
-	 * duplicate. Unions the app selection store (click / shift-click / Ctrl+A)
-	 * with Svelte Flow's live `selected` flags (marquee / box select) — the store
-	 * alone misses marquee selections. Sub-patch group nodes are excluded on
-	 * purpose: a sub-patch can't round-trip through the generic node clone/
-	 * clipboard path (it carries definition + membership state), so duplicating a
-	 * sub-patch goes through the inspector's explicit "Duplicate as shared".
-	 * (Delete is the exception — it reads the raw selection so it can remove a
-	 * sub-patch too, via remove_instance.) */
+	/** Real-node ids selected in THIS editor — the store's selection plus a live marquee. Sub-patch
+	 * group nodes are excluded: they cannot round-trip through the generic clone/clipboard path. */
 	function selectedNodeNames(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
@@ -543,16 +442,14 @@
 		}
 	}
 
-	/** The boundary (interface) key of a pill id that belongs to the ENTERED scope, or
-	 * null. Scope-checked in the codec so a cross-instance id can't mis-slice. */
+	/** The interface key of a pill id belonging to the ENTERED scope, or null. */
 	function parseBoundary(id: string): string | null {
 		return parseBoundaryNodeId(id, entered);
 	}
 
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
-		// Inside the entered view, an edge touching an In/Out pill wires that
-		// boundary to the member slot on the other end (defines the sub-patch port).
+		// An edge touching an In/Out pill wires that boundary to the member slot on the other end.
 		const srcB = parseBoundary(c.source);
 		const dstB = parseBoundary(c.target);
 		if (srcB || dstB) {
@@ -568,9 +465,8 @@
 			});
 			return;
 		}
-		// Otherwise a normal link. A top-level wire to a collapsed sub-patch port
-		// (target/source is an instance id, handle is the boundary id) is sent
-		// as-is: the bridge splices it to the inner member's flat link.
+		// A top-level wire to a collapsed sub-patch port is sent as-is: the bridge splices it to the
+		// inner member's flat link.
 		void g
 			.addLink({
 				node_out: c.source,
@@ -579,21 +475,13 @@
 				slot_in: c.targetHandle
 			})
 			.catch((e) => {
-				// The same trade the boundary path above makes, and for the same reason: SvelteFlow
-				// drew this cable optimistically BEFORE we ran, and a REFUSED wire produces no doc
-				// echo to rebuild the edges from — so the ghost has to be stripped here or it hangs
-				// off the pill indefinitely, a cable the authoritative graph does not have. The
-				// manager's message names the actual reason (dtype, duplicate, an endpoint naming
-				// nothing wirable), which is the only place the user can learn it.
 				notify().failure('Connect', e);
 				reconcileTick++;
 			});
 	}
 
-	/** Drag an existing edge's endpoint to a new slot — re-target in place instead
-	 * of delete-then-redraw (backlog #25). Removing the old link + adding the new
-	 * one is wrapped in one history entry so a single undo reverts the move.
-	 * Boundary edges are left to the explicit wire/unwire flow. */
+	/** Drag an existing edge's endpoint to a new slot. Remove + add are one history entry, so a
+	 * single undo reverts the move; boundary edges are left to the explicit wire/unwire flow. */
 	function onReconnect(oldEdge: Edge, c: Connection): void {
 		if (
 			parseBoundary(oldEdge.source) ||
@@ -615,9 +503,8 @@
 					slot_in: c.targetHandle as string
 				});
 			})
-			// `transaction` re-throws so the caller sees a refused move, which under a bare `void`
-			// was an unhandled rejection AND an edge left drawn where the drag dropped it. The
-			// rebuild puts every cable back where `g.links` actually says it is.
+			// `transaction` re-throws, so a refused move needs this catch: the rebuild puts every
+			// cable back where `g.links` says it is.
 			.catch((e) => {
 				notify().failure('Reconnect', e);
 				reconcileTick++;
@@ -629,19 +516,8 @@
 		sel.clickEdge(panelId, args.edge.id, e.shiftKey || e.ctrlKey || e.metaKey);
 	}
 
-	// --- input names, revealed by proximity while a cable is in flight ---------------------------
-	//
-	// An input slot's name is drawn only on its connector pill, and only a hover asked for it — so
-	// touch rested every tag on the canvas open, permanently. The door is proximity now, and it is
-	// the SAME door on both modalities: while a cable is being dragged, the inputs the pointer is
-	// closing on name themselves. The arithmetic is in `editor/slotProximity.ts`, where a unit test
-	// can reach it; what is left here is the seam.
-	//
-	// Cheap by construction — the anchors are computed from state this panel already holds (node
-	// positions + `nodeMetrics`' connector pitch), so nothing measures the DOM on a pointermove. They
-	// are snapshotted ONCE per drag in FLOW space and the pointer is converted into that space per
-	// move, which is also why a canvas that pans or zooms mid-drag (auto-pan on connect does exactly
-	// that) needs no invalidation: the transform is read fresh every time, the anchors never move.
+	// Input names, revealed by proximity while a cable is in flight. The anchors are snapshotted
+	// ONCE per drag in FLOW space, so a canvas that pans or zooms mid-drag needs no invalidation.
 	let cableAnchors: SlotAnchor[] = [];
 	let cableNear: ReadonlySet<string> = new Set();
 
@@ -655,8 +531,7 @@
 		const toFlow = screenToFlow;
 		if (!toFlow || cableAnchors.length === 0) return;
 		const zoom = getViewport?.().zoom ?? 1;
-		// The radius is a SCREEN distance (a fingertip is a physical size), so it is the radius that
-		// is converted into flow space, not the anchors out of it.
+		// The radius is a SCREEN distance, so it is converted into flow space, not the anchors out.
 		publishCableNear(
 			nearSlots(cableAnchors, toFlow({ x: e.clientX, y: e.clientY }), SLOT_PROXIMITY_PX / zoom)
 		);
@@ -674,8 +549,7 @@
 			slotKey
 		);
 		publishCableNear(new Set());
-		// On `window`, not the panel: a cable dragged past the panel's edge is still in flight, and
-		// SvelteFlow's own connection listeners sit on the document for the same reason.
+		// On `window`, not the panel: a cable dragged past the panel's edge is still in flight.
 		window.addEventListener('pointermove', onCableMove);
 	}
 
@@ -685,12 +559,7 @@
 		publishCableNear(new Set());
 	}
 
-	/** A node's snap footprint when Svelte Flow hasn't measured it yet. Computed
-	 * per node KIND so every first-class citizen snaps correctly: a sub-patch group
-	 * node from its wired-boundary slot layout (it's a `goofi` node like any other),
-	 * an In/Out boundary pill from the pill size, and a fresh real node from its
-	 * slots — instead of one fixed size that's right only for a typical mid node and
-	 * ~100px too tall for a short sub-patch. */
+	/** A node's snap footprint when Svelte Flow has not measured it yet, per node KIND. */
 	function nodeFallbackSize(flowNode: Node | undefined): { width: number; height: number } {
 		if (flowNode?.type === 'boundary') return { width: BOUNDARY.width, height: BOUNDARY.height };
 		const node = flowNode?.data?.node as NodeInstanceInfo | undefined;
@@ -708,8 +577,6 @@
 
 	function nodeBoundsFromFlow(id: string, x: number, y: number): Bounds {
 		const flowNode = flowNodes.find((n) => n.id === id);
-		// Prefer the real DOM measurement; fall back to the kind-accurate size so a
-		// just-appeared (or transiently unmeasured) node still snaps to its true box.
 		let w = flowNode?.measured?.width;
 		let h = flowNode?.measured?.height;
 		if (w == null || h == null) {
@@ -720,12 +587,8 @@
 		return makeBounds(x, y, w, h);
 	}
 
-	/** Snap-target bounds (flow coords) for every node on screen in THIS editor,
-	 * excluding `exclude`. The single retrieval shared by the node drag AND the
-	 * placement preview, so sub-patch instances and boundary pills are first-class
-	 * snap targets in both paths and the two can't diverge. Only what's actually
-	 * rendered here (flowNodes) — never hidden members of a collapsed sub-patch, nor
-	 * nodes outside the entered sub-patch (which g.nodes would wrongly include). */
+	/** Snap-target bounds for every node on screen in THIS editor, shared by the node drag and the
+	 * placement preview. Only `flowNodes` — `g.nodes` would include what this scope does not draw. */
 	function snapTargetBounds(exclude: Set<string>): Bounds[] {
 		const targets: Bounds[] = [];
 		for (const n of flowNodes) {
@@ -744,16 +607,13 @@
 		return computeSnapDelta(draggedBounds, snapTargetBounds(new Set(current.keys())), altKey);
 	}
 
-	// Positions at drag start, so a node reverts (snaps back) when the drag
-	// turns into a panel-link rather than an in-editor reposition.
+	// Positions at drag start, so a node snaps back when the drag turns into a panel-link.
 	let dragOrigin = new Map<string, { x: number; y: number }>();
-	// Floating chip following the cursor while a drag is a reference (not a
-	// coordinate move). null = normal reposition drag.
+	// The chip that follows the cursor while a drag is a reference; null = a reposition drag.
 	let linkGhost = $state<{ x: number; y: number; name: string } | null>(null);
 
-	/** The leaf panel under a screen point (panels tile, so at most one). Found
-	 * geometrically off panel rects — NOT elementFromPoint, since the dragged
-	 * node sits under the cursor and would mask the panel beneath it. */
+	/** The leaf panel under a screen point. Geometric, not `elementFromPoint`: the dragged node sits
+	 * under the cursor and would mask the panel beneath it. */
 	function panelUnder(x: number, y: number): { id: string; type: string } | null {
 		for (const el of document.querySelectorAll<HTMLElement>('[data-panel-id]')) {
 			const r = el.getBoundingClientRect();
@@ -764,8 +624,7 @@
 		return null;
 	}
 
-	/** A node-accepting panel under the cursor, other than this editor — i.e. a
-	 * valid drop target that turns the drag into a reference link. */
+	/** A node-accepting panel under the cursor, other than this editor. */
 	function linkTargetAt(event: MouseEvent | TouchEvent): { id: string; type: string } | null {
 		const p = eventPoint(event);
 		if (!p) return null;
@@ -773,7 +632,7 @@
 		return t && t.id !== panelId && getPanelType(t.type)?.acceptsNode === true ? t : null;
 	}
 
-	/** Put the dragged nodes back where the drag started (reference mode). */
+	/** Put the dragged nodes back where the drag started. */
 	function revertDragged(dragged: Set<string>): void {
 		flowNodes = flowNodes.map((n) => {
 			if (!dragged.has(n.id)) return n;
@@ -785,7 +644,6 @@
 	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
 		dragOrigin = new Map();
 		for (const n of args.nodes) dragOrigin.set(n.id, { x: n.position.x, y: n.position.y });
-		// Flag the drag so node-accepting panels show their drop outline.
 		uiStore.nodeDrag = args.nodes[0]?.id ?? null;
 	}
 
@@ -793,19 +651,15 @@
 		const dragged = new Set(args.nodes.map((n) => n.id));
 		const target = linkTargetAt(args.event);
 		if (target) {
-			// Reference drag: snap the node back to its origin and let a ghost
-			// follow the cursor instead — it's a reference, not a coordinate move.
+			// A reference drag, not a coordinate move: the node snaps back and a ghost follows.
 			uiStore.nodeDragTarget = target.id;
-			// Same extraction as `linkTargetAt`: the ghost has to follow the FINGER, not a `clientX`
-			// a TouchEvent does not have (it read `undefined`, so the chip parked at 0,0).
+			// `eventPoint`, because a TouchEvent carries no `clientX` of its own.
 			const p = eventPoint(args.event) ?? { clientX: 0, clientY: 0 };
-			// `id` is the uid; the floating chip shows the display name.
 			linkGhost = { x: p.clientX, y: p.clientY, name: g.nodeById(args.nodes[0]?.id ?? '')?.name ?? '' };
 			snapGuides = [];
 			revertDragged(dragged);
 			return;
 		}
-		// Normal reposition drag with snapping.
 		uiStore.nodeDragTarget = null;
 		linkGhost = null;
 		const current = new Map<string, { x: number; y: number }>();
@@ -828,13 +682,10 @@
 		event: MouseEvent | TouchEvent;
 	}): void {
 		const dragged = new Set(args.nodes.map((n) => n.id));
-		// A boundary pill isn't a real node — it can't be linked into a panel; it
-		// only repositions (mirrored across shared siblings via set_boundary_pos).
+		// A boundary pill is not a real node: it repositions but cannot be linked into a panel.
 		const draggingBoundary = args.nodes.some((n) => isBoundaryId(n.id));
 		const target = draggingBoundary ? null : linkTargetAt(args.event);
 		if (target) {
-			// Dropped on a node-accepting panel → link the node there and leave
-			// it where it started (the reference, not the node, moved).
 			revertDragged(dragged);
 			const name = args.nodes[0]?.id;
 			if (name) ws.linkNodeToPanel(target.id, name);
@@ -851,9 +702,8 @@
 					return { ...n, position: { x: c.x + dx, y: c.y + dy } };
 				});
 			}
-			// One transaction so moving N selected nodes is a single Ctrl+Z. Each set*Pos records
-			// AFTER its command RPC resolves (B3), so the calls must be AWAITED inside the transaction
-			// — else the buffer is empty at flush and each records its own top-level step.
+			// One transaction, so moving N nodes is a single undo. Each set*Pos records AFTER its RPC
+			// resolves, so the calls must be AWAITED inside it or the buffer is empty at flush.
 			const label = args.nodes.length > 1 ? `Move ${args.nodes.length} nodes` : 'Move node';
 			void history().transaction(label, async () => {
 				for (const n of args.nodes) {
@@ -885,7 +735,6 @@
 		const ddy = here.y - lastPaneClickPos.y;
 		const close = ddx * ddx + ddy * ddy < 30 * 30;
 		if (dt < DOUBLE_CLICK_MS && close) {
-			// Double-click on empty canvas → open add-node menu at the click.
 			openAddMenu(here.x - 8, here.y + 8);
 			lastPaneClickAt = 0;
 			return;
@@ -895,24 +744,19 @@
 		menuOpen = false;
 		sel.clickPane(panelId, args.event.shiftKey);
 		// SvelteFlow calls `unselectNodesAndEdges()` immediately AFTER this callback, whatever the
-		// store decided — so wherever the store KEEPS the selection (multi-select mode, where a stray
-		// tap on canvas must not undo what the mode is building) the canvas and the store would
-		// disagree: nothing painted as selected, every row gated on the rendered flags reading as
-		// dead, and the store still holding the operands a Delete would take. Re-derive after it.
+		// store decided, so wherever the store KEEPS the selection it must be re-derived after it.
 		if (sel.nodes(panelId).size || sel.edges(panelId).size) void tick().then(reassertSelection);
 	}
 
-	/** Push the store's selection back onto the rendered `selected` flags. The store is the source
-	 * of truth for everything but a live marquee, which `onSelectionEnd` folds into it. */
+	/** Push the store's selection back onto the rendered `selected` flags. */
 	function reassertSelection(): void {
 		flowNodes = flowNodes.map((n) => ({ ...n, selected: sel.nodes(panelId).has(n.id) }));
 		flowEdges = flowEdges.map((e) => ({ ...e, selected: sel.edges(panelId).has(e.id) }));
 	}
 
 	function onNodeClick(args: { node: Node; event: MouseEvent | TouchEvent }): void {
-		// A click can land in the window between a graph mutation and the flowNodes rebuild,
-		// carrying an id that no longer exists (SvelteFlow then logs "Node … does not exist").
-		// Ignore a click whose node is no longer in the current scene.
+		// A click can land between a graph mutation and the flowNodes rebuild, carrying an id that
+		// no longer exists.
 		if (!flowNodes.some((n) => n.id === args.node.id)) return;
 		const mouse = args.event as MouseEvent;
 		sel.clickNode(panelId, args.node.id, mouse.shiftKey || mouse.ctrlKey || mouse.metaKey);
@@ -924,24 +768,12 @@
 		return true;
 	}
 
-	// True only between a box/marquee drag's start and end. Gates onSelectionEnd so
-	// it can't resurrect a just-cleared selection if Flow happens to fire its end
-	// event for a plain pane click (where `selected` flags may still be stale).
+	// True only between a box/marquee drag's start and end, so a plain pane click's end event
+	// cannot resurrect a just-cleared selection.
 	let boxSelecting = false;
 
-	/** Mirror a finished marquee/box-drag selection into the store, which is then
-	 * the single source of truth — so a flowNodes rebuild reads `selected` straight
-	 * from it and a marquee selection survives a graph change (report B8).
-	 *
-	 * Keyed on `onselectionstart`/`onselectionend` (a real box gesture), NOT
-	 * `onselectionchange`: a store-driven selection (Ctrl+A, click, paste) replaces
-	 * every flowNodes object, which makes Flow emit transient echo events — empty
-	 * AND partial — mid-rebuild. Honoring those shrank the store the rebuild had just
-	 * populated (the bug that left Ctrl+A→group absorbing only one member). Store-
-	 * driven changes never start a box gesture, so there are no echoes to filter;
-	 * deselection stays owned by onPaneClick → clickPane, Escape, and node-click. We
-	 * read the authoritative `selected` flags Flow set on the bound flowNodes/
-	 * flowEdges rather than a payload, since the gesture is now complete. */
+	/** Mirror a finished marquee into the store. Keyed on start/end, never `onselectionchange`: a
+	 * store-driven selection replaces every flowNodes object and Flow then emits transient echoes. */
 	function onSelectionEnd(): void {
 		if (!boxSelecting) return;
 		boxSelecting = false;
@@ -951,26 +783,15 @@
 		sel.setSelection(panelId, nodeIds, edgeIds);
 	}
 
-	// Double-click a sub-patch group node → enter it. We can't use SvelteFlow's
-	// `onnodeclick` (it suppresses the 2nd click of a double-click), nor the native
-	// `dblclick` event (the 1st click selects the node, which rebuilds flowNodes and
-	// detaches the node element, so dblclick/elementFromPoint resolve to nothing on
-	// the 2nd click). So we detect it ourselves: record the group node hit by the
-	// 1st click, then a 2nd click at the same spot within the threshold enters it.
-	//
-	// Registered in the CAPTURE phase, and a recognised second click is CONSUMED. The FIRST click
-	// selects the instance, which slides the inspector in over 120ms across all but `--hit` of the
-	// editor — including the node the second click has to land on. In the bubble phase that click
-	// had already actuated whatever control had arrived under the pointer on its way up: for a
-	// sub-patch that is `subpatch-expand-inspector`, which DISSOLVES it. Capturing lets the gesture
-	// claim its own second half before a surface that was not there when the gesture started.
+	// Double-click to enter a sub-patch, detected here because `onnodeclick` suppresses the 2nd
+	// click. In CAPTURE and CONSUMED: the inspector slides over the node the 2nd click must hit.
 	const DBL_PX = 6; // a real double-click barely moves the pointer…
-	const DBL_PX_TOUCH = 16; // …but a finger does, and 6px is an order of magnitude under any tap slop
+	const DBL_PX_TOUCH = 16; // …but a finger does, and 6px is well under any tap slop
 	let lastClickInst = '';
 	let lastClickAt = 0;
 	let lastClickX = 0;
 	let lastClickY = 0;
-	/** The node a click landed on, or '' — real identity, not a coordinate. */
+	/** The node a click landed on, or ''. */
 	function nodeUnder(target: EventTarget | null): string {
 		return (
 			(target as HTMLElement | null)?.closest?.('.svelte-flow__node')?.getAttribute('data-id') ?? ''
@@ -981,26 +802,21 @@
 		const hereNode = nodeUnder(event.target);
 		// …of which only a sub-patch instance is something this gesture can ENTER.
 		const here = hereNode in g.instances ? hereNode : '';
-		// Per gesture, not per device (D-R2): the same `pointerType` seam the long-press door reads.
+		// Per gesture, not per device.
 		const slop = (event as PointerEvent).pointerType === 'touch' ? DBL_PX_TOUCH : DBL_PX;
 		if (
 			lastClickInst &&
 			now - lastClickAt < DOUBLE_CLICK_MS &&
 			Math.abs(event.clientX - lastClickX) < slop &&
 			Math.abs(event.clientY - lastClickY) < slop &&
-			// A second click that resolves to a DIFFERENT NODE is that node's first click, not this
-			// one's second — the widened touch slop puts two adjacent nodes inside one window. Asked
-			// of the NODE, not of the instance: `g.instances` holds only sub-patches, so an ordinary
-			// node also answered '' and so took the "nothing under the pointer" path this guard
-			// reserves for the inspector having slid over the node mid-gesture. `lastClickInst` is
-			// itself a node id whenever it is non-empty, which is the only case this branch runs in.
+			// A second click resolving to a DIFFERENT NODE is that node's first click. Asked of the
+			// NODE, not the instance: '' is reserved for the inspector having slid over it.
 			(hereNode === '' || hereNode === lastClickInst)
 		) {
 			const inst = lastClickInst;
 			lastClickInst = '';
-			// The gesture owns this click: neither the inspector that just slid over the node nor the
-			// pane behind it may also act on it. `preventDefault` covers the activation behaviour a
-			// checkbox would still run with propagation merely stopped.
+			// The gesture owns this click; `preventDefault` also covers a checkbox's activation
+			// behaviour, which propagation alone does not stop.
 			event.stopPropagation();
 			event.preventDefault();
 			enterInstance(inst);
@@ -1014,21 +830,15 @@
 
 	const nodeTypes = { goofi: GoofiNode, boundary: BoundaryNode };
 
-	/** Framing for every programmatic fit — the Controls/“F” button (via the
-	 * `fitViewOptions` prop) and the on-load fit in <FitToGraph>. */
+	/** Framing for every programmatic fit. */
 	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
 
-	/** How far the canvas may be zoomed. Stated once: <SvelteFlow> is told, and the double-tap zoom
-	 *  clamps itself to the same pair rather than discovering them by being refused. */
+	/** How far the canvas may be zoomed; the double-tap zoom clamps itself to the same pair. */
 	const MIN_ZOOM = 0.05;
 	const MAX_ZOOM = 4;
 
-	/** True when the CANVAS owns the keyboard rather than a control: nothing focused at all, the pane
-	 * itself, or a node's own wrapper — SvelteFlow gives that `tabindex="0"`, so a plain click on a
-	 * node parks focus there, and "select a node, then Tab to add the next one" is the whole point of
-	 * the shortcut. Deliberately NOT a focusable DESCENDANT of a node: R's `.conn` slot pills are
-	 * inside one and Tab is how a keyboard reaches the next of them (`.conn-label`'s focus reveal).
-	 * A header button, an add-menu row, an inspector control: all the browser's to traverse. */
+	/** True when the CANVAS owns the keyboard rather than a control. Deliberately NOT a focusable
+	 * DESCENDANT of a node: Tab is how a keyboard reaches the next slot pill inside one. */
 	function canvasHasKeys(target: HTMLElement | null): boolean {
 		if (!target) return false;
 		return (
@@ -1041,16 +851,9 @@
 	function onKeydown(e: KeyboardEvent): void {
 		if (!isActive()) return;
 		const t = e.target as HTMLElement | null;
-		// A modal <dialog> owns the keyboard while it is up, and the DOM is what says so — NOT
-		// `ui().modalOpen`, which is a ref-count that an in-panel fx editor raises for a merely
-		// expanded textarea. Reading that flag here would stand the canvas down for an inspector
-		// field; asking the top layer answers the narrower question exactly. (The file browser opens
-		// with focus on its path field, which the allowlist below covers — but load mode requires a
-		// navigation click, and from that <button> Escape used to dismiss the dialog AND run this
-		// panel's Escape ladder behind it.)
+		// The DOM says a modal owns the keyboard, NOT `ui().modalOpen` — that ref-count is also
+		// raised by a merely expanded in-panel textarea.
 		if (t?.closest?.('dialog[open]')) return;
-		// Not a tag list: since X the inspector's expression editor is a contenteditable, so Ctrl+A in
-		// it has to take the expression and not every node on the canvas (`ui/textEditing.ts`).
 		if (isTextEditingTarget(t)) return;
 
 		const meta = e.ctrlKey || e.metaKey;
@@ -1068,12 +871,8 @@
 			e.preventDefault();
 			void groupSelection();
 		} else if (e.key === 'Tab' && !e.shiftKey && canvasHasKeys(t)) {
-			// Scoped to the bare canvas (R2-3). Unscoped this was a ONE-WAY TRAP: the menu's #if block
-			// below is unkeyed, so re-entering `openAddMenu` with the menu already open neither
-			// remounts it nor re-fires the search focus that made the FIRST Tab look fine — every press
-			// after that was a bare preventDefault with nothing to refocus, and no chrome outside this
-			// canvas was ever Tab-reachable (WCAG 2.1.2). Shift+Tab is left alone on purpose: it is the
-			// way back OUT of a canvas that nothing has focused yet.
+			// Scoped to the bare canvas, or nothing outside it is ever Tab-reachable (WCAG 2.1.2).
+			// Shift+Tab is left alone: it is the way back OUT of a canvas nothing has focused yet.
 			e.preventDefault();
 			openAddMenu(mouseX, mouseY);
 		} else if (e.key === 'Escape') {
@@ -1090,12 +889,8 @@
 		}
 	}
 
-	/** The single delete path — SvelteFlow's `ondelete` (deleteKey wires Delete+Backspace to it;
-	 * the custom keydown handler no longer deletes) and the app header's Delete row, which is the
-	 * only door a phone has (R-Task 6). Covers app-store AND marquee selection: SvelteFlow filters
-	 * by each element's `selected`, and so does `deleteSelection` below.
-	 * Real nodes are deleted as ONE batch (removeNodes) so undo restores them all BEFORE their
-	 * links; boundary pills are unwired individually. */
+	/** The single delete path, for SvelteFlow's `ondelete` and the app header's Delete row. Real
+	 * nodes go as ONE batch so undo restores them all BEFORE their links. */
 	async function deleteElements({ nodes, edges }: { nodes: Node[]; edges: Edge[] }): Promise<void> {
 		const nodeIds: string[] = [];
 		for (const n of nodes) {
@@ -1106,15 +901,13 @@
 		const deleted = new Set(nodeIds);
 		await g.removeNodes(nodeIds).catch(() => {});
 		for (const e of edges) {
-			// Deleting an In→member / member→Out edge unwires the boundary (the
-			// pill survives); a normal flat link is removed.
+			// Deleting a boundary edge unwires it; the pill survives.
 			const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
 			if (bnd && entered) {
 				await g.wireBoundary(entered, bnd, null, null).catch(() => {});
 				continue;
 			}
-			// A normal link touching a batch-deleted node was already removed
-			// with it (removeNodes), so don't double-record its removal.
+			// A link touching a batch-deleted node went with it; don't double-record its removal.
 			if (deleted.has(e.source) || deleted.has(e.target)) continue;
 			const so = e.sourceHandle;
 			const si = e.targetHandle;
@@ -1126,8 +919,7 @@
 		sel.clear(panelId);
 	}
 
-	/** What the Delete key would delete: the rendered `selected` flags, which is the union of the
-	 * store's selection and a live marquee. */
+	/** The rendered `selected` flags: the store's selection unioned with a live marquee. */
 	function selectedElements(): { nodes: Node[]; edges: Edge[] } {
 		return { nodes: flowNodes.filter((n) => n.selected), edges: flowEdges.filter((e) => e.selected) };
 	}
@@ -1141,9 +933,7 @@
 		if (hasSelection()) void deleteElements(selectedElements());
 	}
 
-	/** Select what's actually on screen: the entered sub-patch's members, or every top-level node
-	 * PLUS the collapsed sub-patch group nodes (which are virtual nodes — they select like any
-	 * node). ⌘A's action, and the app header's Select all row. */
+	/** Select what is on screen: the entered scope's members, group nodes included. */
 	function selectAll(): void {
 		const kids = childrenOfScope(
 			entered ?? ROOT_ID,
@@ -1165,7 +955,7 @@
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		// One transaction so duplicating N nodes (+ their internal links) is a single Ctrl+Z.
+		// One transaction, so duplicating N nodes and their links is a single undo.
 		const rename = await history().transaction('Duplicate nodes', () =>
 			g.cloneNodes(selectedNodeNames(), [40, 40], entered ?? undefined)
 		);
@@ -1183,17 +973,14 @@
 		}
 		const clip = parseClipboard(text);
 		if (!clip) return;
-		// Anchor the paste at the visible viewport centre, in FLOW space — the
-		// old screen-space anchor (window/4) landed pasted nodes off-screen once
-		// the editor was panned or zoomed (report B9). clipToSpecs adds each
-		// node's relative offset on top of this anchor.
+		// Anchor the paste at the visible viewport centre, in FLOW space; `clipToSpecs` adds each
+		// node's relative offset on top of it.
 		const rect = rootEl?.getBoundingClientRect();
 		let at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
 		if (rect && screenToFlow) {
 			const c = screenToFlow({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 			at = [c.x, c.y];
 		}
-		// One transaction so pasting N nodes (+ their internal links) is a single Ctrl+Z.
 		const rename = await history().transaction('Paste nodes', () =>
 			g.instantiateNodes(clipToSpecs(clip, at), clip.links, entered ?? undefined)
 		);
@@ -1201,8 +988,7 @@
 		if (created.length > 0) sel.selectNodes(panelId, created);
 	}
 
-	/** Open the add-node menu centered over this panel — the `window.goofi` façade's entry point,
-	 * which names a panel rather than a point. */
+	/** Open the add-node menu centered over this panel, for callers that name a panel not a point. */
 	function openAddMenuCentered(): void {
 		const r = rootEl?.getBoundingClientRect();
 		if (r) openAddMenu(r.left + r.width / 2, r.top + 60, 'center');
@@ -1221,8 +1007,7 @@
 		const match = candidates.find(([, dt]) => dt === seed.dtype);
 		if (!match) return;
 		const [matchedSlot] = match;
-		// Inputs take a single source: replace whatever cable was already feeding
-		// this input. Outputs fan out, so the source side never disconnects.
+		// Inputs take a single source, so an existing cable is replaced; outputs fan out.
 		if (seed.side === 'target') {
 			const existing = g.links.filter((l) => l.node_in === seed.node && l.slot_in === seed.slot);
 			for (const l of existing) await g.removeLink(l).catch(() => {});
@@ -1242,19 +1027,14 @@
 		const placement = pendingPlacement;
 		if (!placement) return;
 		pendingPlacement = null;
-		// An In/Out boundary pseudo-type adds a virtual boundary to the entered
-		// sub-patch rather than spawning a real node.
+		// An In/Out pseudo-type adds a virtual boundary rather than spawning a real node.
 		const bspec = boundarySpec(placement.typeInfo.type);
 		if (bspec && placement.typeInfo.category === 'boundary') {
 			if (!entered) return;
-			// One undo step for "add boundary (+ wire it to the clicked slot)".
 			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
 				try {
 					const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
-					// Seeded from a member slot click → wire the new boundary straight to
-					// that slot, so In/Out behave like any other auto-connected node. The
-					// seed's node is the member uid; wire_boundary wants its local template
-					// key (`inst.members` maps uid -> local).
+					// The seed's node is the member uid; `wire_boundary` wants its local template key.
 					if (bndId && placement.seed) {
 						const local = memberIndex.get(placement.seed.node)?.local;
 						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
@@ -1265,23 +1045,18 @@
 			});
 			return;
 		}
-		// One undo step for "add node (+ auto-wire to the clicked slot)".
 		const label = placement.seed
 			? `Add ${placement.typeInfo.type} + connect`
 			: `Add ${placement.typeInfo.type}`;
 		await history().transaction(label, async () => {
 			try {
-				// Inside a sub-patch, the node becomes a member of the entered instance.
 				const newName = await g.addNode(
 					placement.typeInfo.type,
 					placement.typeInfo.category,
 					pos,
 					entered ?? undefined
 				);
-				// Auto-select the freshly-placed node so its parameters open in the
-				// inspector immediately — matching duplicate / paste / agent placement.
-				// Safe before node_added lands: flowNodes derives `selected` from this
-				// set, so the node renders selected the moment it appears.
+				// Safe before `node_added` lands: flowNodes derives `selected` from this set.
 				if (newName) sel.selectNodes(panelId, [newName]);
 				if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
 			} catch (e) {
@@ -1297,18 +1072,15 @@
 		mouseY = e.clientY;
 	}
 
-	// Bound from <FlowApi> inside <SvelteFlow>; converts a client point to flow
-	// space so paste anchors in the visible viewport (report B9).
+	// Bound from <FlowApi> inside <SvelteFlow>.
 	let screenToFlow = $state<((p: { x: number; y: number }) => { x: number; y: number }) | undefined>(
 		undefined
 	);
-	// Likewise the viewport itself, which the double-tap zoom reads and writes.
 	let getViewport = $state<(() => FlowViewport) | undefined>(undefined);
 	let setViewport = $state<((v: FlowViewport) => void) | undefined>(undefined);
 
-	// The pan/zoom, bound both ways so every change — a drag, a pinch, a fit — lands in the panel's
-	// camera. A layout reshape or a page switch DESTROYS this component, so the camera outliving it
-	// is what carries the framing across (see `editor/camera.ts`).
+	// A layout reshape or a page switch DESTROYS this component, so the camera outliving it is what
+	// carries the framing across.
 	const cam = camera(untrack(() => panelId));
 	let viewport = $state<FlowViewport>(cam.viewport ?? { x: 0, y: 0, zoom: 0.85 });
 	$effect(() => {
@@ -1319,11 +1091,8 @@
 		rootEl?.querySelector<HTMLButtonElement>('.svelte-flow__controls-fitview')?.click();
 	}
 
-	/** Select a node in this editor (and make it the active selection the
-	 * standalone panels follow). The shared handle the error panel and the agent
-	 * surface use to focus a node. */
+	/** Select a node in this editor — the shared handle for focusing one from elsewhere. */
 	function focusNode(uid: string): void {
-		// Flow nodes are keyed by uid (id: uid); select by uid, not display name.
 		sel.selectNodes(panelId, [uid]);
 	}
 
@@ -1348,10 +1117,8 @@
 		rootEl?.addEventListener('pointermove', canvasPress.move);
 		rootEl?.addEventListener('pointerup', canvasPress.cancel);
 		rootEl?.addEventListener('pointercancel', canvasPress.cancel);
-		// CAPTURE, so these run before d3-zoom's own listeners further in; `passive: false` so the
-		// `preventDefault` above is honoured. A touch is delivered to the element it STARTED on for
-		// its whole life, so a gesture that began on this canvas keeps reaching these even when the
-		// finger wanders off the panel.
+		// CAPTURE, so these run before d3-zoom's own listeners; `passive: false` so the
+		// `preventDefault` above is honoured.
 		const touchOpts = { capture: true, passive: false } as const;
 		rootEl?.addEventListener('touchstart', onCanvasTouchStart, touchOpts);
 		rootEl?.addEventListener('touchmove', onCanvasTouchMove, touchOpts);
@@ -1371,14 +1138,11 @@
 			canvasPress.cancel(); // a press in flight must not fire into an unmounted editor
 			tapZoom.cancel(); // …and neither may a zoom gesture keep writing a torn-down viewport
 			onCableEnd(); // …nor may a cable in flight leave name tags lit on a torn-down canvas
-			// NB: do NOT forget this panel's selection here — unmount also fires
-			// on a tab switch (the inactive tab's tree is torn down), and the
-			// selection must survive switching away and back. It only clears
-			// when the user clicks blank space in the focused editor.
+			// Do NOT forget this panel's selection here: unmount also fires on a tab switch, and the
+			// selection must survive switching away and back.
 			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('mousemove', trackMouse);
-			// If a node drag was mid-flight when this editor unmounts, clear the
-			// shared drag flags so other panels don't keep showing drop outlines.
+			// A drag in flight must not leave drop outlines lit on the other panels.
 			if (uiStore.nodeDrag !== null) {
 				uiStore.nodeDrag = null;
 				uiStore.nodeDragTarget = null;
@@ -1388,11 +1152,9 @@
 </script>
 
 <SvelteFlowProvider>
-	<!-- `canvas-wrap` is the marker PlacementPreview uses to tell a commit
-	     click (inside the canvas) from a cancel click (outside). -->
+	<!-- `canvas-wrap` is the marker PlacementPreview uses to tell a commit click from a cancel. -->
 	<div class="editor-panel canvas-wrap" bind:this={rootEl}>
 		{#if enteredPath.length > 0}
-			<!-- Sub-patch breadcrumb: where in the patch hierarchy this editor is. -->
 			<nav class="breadcrumb" data-testid="subpatch-breadcrumb" aria-label="Sub-patch path">
 				<Button variant="ghost" size="sm" onclick={() => exitToDepth(0)} title="Back to the top-level patch"
 					>Patch</Button
@@ -1437,10 +1199,7 @@
 			zoomOnDoubleClick={false}
 			autoPanOnNodeDrag={false}
 		>
-			<!-- Viewport controls only. `showLock` is Flow's Toggle Interactivity button, which flips
-			     nodesDraggable/nodesConnectable/elementsSelectable off in one click: goofi has no
-			     read-only mode and nothing else in the UI would say the canvas is locked, so it reads
-			     as breakage rather than as a mode. -->
+			<!-- `showLock` off: goofi has no read-only mode, so Flow's lock reads as breakage. -->
 			<Controls showLock={false} />
 			<FitToGraph {panelId} options={FIT_OPTIONS} />
 			<FlowApi bind:screenToFlowPosition={screenToFlow} bind:getViewport bind:setViewport />
@@ -1464,8 +1223,6 @@
 		</SvelteFlow>
 
 		{#if flowNodes.length === 0 && !pendingPlacement && !menuOpen}
-			<!-- First-run / empty-canvas hint. pointer-events:none so double-click
-			     (open add-node menu) and panning still reach the canvas underneath. -->
 			<div class="empty-hint" data-testid="empty-hint">
 				<EmptyState>
 					{#snippet title()}{entered ? 'This sub-patch is empty' : 'Empty patch'}{/snippet}
@@ -1475,19 +1232,12 @@
 		{/if}
 
 		{#if menuOpen}
-			<!-- The add-node menu + its click-catcher are `position: fixed`, positioned in VIEWPORT
-			     coordinates (menuPos is computed from window.innerWidth / clientX). Portal them to
-			     <body> so their containing block is always the viewport, never the panel: `.panel-body`
-			     is now a `container-type` query container, and though `inline-size` containment alone
-			     does not trap fixed descendants, this keeps the menu correct if the body ever gains a
-			     real containing-block trigger (a transform/filter) — matching the sibling overlays
-			     (ViewerSettingsMenu / the link-ghost) which all portal for this reason. -->
+			<!-- Fixed and positioned in VIEWPORT coordinates, so both portal to <body>: `.panel-body`
+			     is a query container and must never become their containing block. -->
 			<div
 				class="menu-overlay"
 				use:portal
 				onclick={() => {
-					// The opening press's own release never reaches here — the one-shot window-capture
-					// swallow above consumes it, wherever the clamp put the menu.
 					menuOpen = false;
 					menuSeed = null;
 				}}
@@ -1521,12 +1271,8 @@
 			</div>
 		{/if}
 
-		<!-- The affordance that brings this editor's inspector back. It is absent exactly while
-		     the pane is open, because the pane covers this corner at every width — leaving it
-		     mounted meant an invisible, tabbable control under an opaque surface (D-R9's z-order
-		     half). Hidden-by-any-means, one press answers "show it" (clearing a ✕ dismissal AND
-		     the ◧ preference); visible-but-parked (no node selected), it is the standing
-		     off-switch. -->
+		<!-- Absent exactly while the pane is open: the pane covers this corner at every width, and a
+		     mounted control under it is invisible but still tabbable. -->
 		{#if !(inspectorOn && selectedNode)}
 			<IconButton
 				class="inspector-toggle"
@@ -1541,9 +1287,7 @@
 			</IconButton>
 		{/if}
 
-		<!-- Per-editor selection inspector — slides in within this panel. Its ✕ DISMISSES — a
-		     close that holds only until the selection changes — while the ◧ above is the standing
-		     off-switch. -->
+		<!-- Its ✕ DISMISSES, holding only until the selection changes; the ◧ above is the switch. -->
 		<InspectorOverlay
 			node={selectedNode}
 			enabled={inspectorOn}
@@ -1552,9 +1296,7 @@
 	</div>
 </SvelteFlowProvider>
 
-<!-- Reference chip that follows the cursor while a node is dragged onto a
-     node-accepting panel — the node itself stays put in the editor. Portaled
-     to <body> so it floats above every panel. -->
+<!-- Portaled to <body> so it floats above every panel. -->
 {#if linkGhost}
 	<div class="link-ghost" use:portal style="left: {linkGhost.x}px; top: {linkGhost.y}px">
 		<span class="lg-icon">🔗</span>{linkGhost.name}
@@ -1569,31 +1311,22 @@
 		min-width: 0;
 		min-height: 0;
 	}
-	/* Nudge SvelteFlow's controls off the panel corner so the 16px corner grips (drag-split /
-	   drag-join) stay reachable — that clearance is the whole reason for an inset here.
-	   `margin: 0` is load-bearing: Flow's own `.svelte-flow__panel` sets `margin: 15px`, which
-	   STACKS on these offsets, so the 20px this rule used to declare rendered as 35px. */
+	/* The inset keeps the 16px corner grips reachable. `margin: 0` is load-bearing: Flow's own
+	   `.svelte-flow__panel` sets `margin: 15px`, which STACKS on these offsets. */
 	.editor-panel :global(.svelte-flow__controls) {
 		margin: 0;
 		bottom: var(--space-8);
 		left: var(--space-8);
 	}
-	/* On touch every control button is floored to --hit in BOTH axes — `min-height` from app.css's
-	   blanket coarse rule and `min-width` from the scoped one beside it, because SvelteFlow's own
-	   stylesheet sizes them 26×26. (This comment claimed the slab before the width half existed,
-	   which is very plausibly why nobody re-measured it; the 44×44 is now a row in
-	   `tests/e2e/tests/touch-hit-floor.spec.ts`'s SITES registry rather than a claim here.) So the
-	   cluster is a slab rather than a strip, and a desktop-sized inset parks it well inside the
-	   canvas instead of in its corner. It tucks in — still clear of the grip, whose 16px box is
-	   clipped to its lower-left triangle, so a cluster cornered at (g, g) misses it once g + g > 16. */
+	/* On touch each button is floored to --hit in both axes, so the cluster is a slab and needs a
+	   smaller inset — still clear of the grip, whose 16px box is clipped to a triangle. */
 	@media (hover: none) and (pointer: coarse) {
 		.editor-panel :global(.svelte-flow__controls) {
 			bottom: var(--space-6);
 			left: var(--space-6);
 		}
 	}
-	/* First-run hint over an empty canvas. Non-interactive so it never eats the
-	   double-click that opens the add-node menu underneath it. */
+	/* Non-interactive, so it never eats the double-click that opens the add-node menu under it. */
 	.empty-hint {
 		position: absolute;
 		inset: 0;
@@ -1610,15 +1343,12 @@
 		border-radius: var(--radius-sm);
 		background: var(--surface-1);
 	}
-	/* Per-editor inspector affordance (an IconButton), parked top-right. Subtle until hovered so
-	   it doesn't compete with the canvas; brought forward while the inspector is on (aria-pressed). */
 	.editor-panel :global(.inspector-toggle) {
 		position: absolute;
 		top: 10px;
 		right: 10px;
 		z-index: 5;
-		/* opacity: intentional — a ghosted affordance over the canvas, not a disabled control;
-		   it rises to 1 on hover and while the inspector is on. */
+		/* Not `--disabled-opacity`: a ghosted affordance over the canvas, not a disabled control. */
 		opacity: 0.5;
 	}
 	.editor-panel :global(.inspector-toggle:hover),
@@ -1658,8 +1388,7 @@
 	.menu-anchor {
 		position: fixed;
 		z-index: var(--z-addmenu);
-		/* The clamp below can only SHIFT a surface that fits; a 320px menu on a 320px phone cannot
-		   sit inside the clamp's own 6px margins at any offset, so the width has to give first. */
+		/* The clamp can only SHIFT a surface that fits, so on a narrow phone the width gives first. */
 		width: min(320px, calc(100vw - var(--space-8)));
 	}
 	.breadcrumb {
@@ -1680,8 +1409,6 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 	}
-	/* The current (deepest) crumb reads as where-you-are: bold. The crumbs are ghost Buttons,
-	   so this targets the primitive's element via :global. */
 	.breadcrumb :global(.crumb-current) {
 		font-weight: 600;
 		color: var(--text);

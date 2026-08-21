@@ -1,14 +1,5 @@
-//! The subprocess Python tier: one GIL interpreter per node, running the SAME `goofi.Node`
-//! contract as the in-process tier through the SAME `goofi_pymod::exec` marshalling — so the two
-//! cannot drift, and the scheduler never branches on which is hosting.
-//!
-//! It exists for deps that are not free-threading-safe, and because a separate interpreter has its
-//! own object ownership, so parallel heavy-Python compute avoids the biased-refcount penalty.
-//!
-//! One run is one request/response over iceoryx2 shared memory, `[u32 seq][frame]` each way. The
-//! `seq` is what makes a re-publish — needed while the child's subscriber is still connecting —
-//! unable to return a stale frame. The parent also holds the write end of a LIVENESS PIPE the
-//! child watches for EOF, so a crashed manager can never orphan a forever-spinning child.
+//! The subprocess Python tier: one GIL interpreter per node, one run per `[u32 seq][frame]`
+//! request/response over iceoryx2 shared memory.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,60 +10,36 @@ use iceoryx2::prelude::*;
 use goofi_core::Data;
 use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
 
-/// Per-process counter giving each spawned subprocess a unique iceoryx2 service-name base
-/// (`goofi_sub_<pid>_<n>`), so concurrent nodes — and a respawn after a reset — never collide.
+/// Unique iceoryx2 service-name base per spawned subprocess, so concurrent nodes never collide.
 static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// iceoryx2 byte-slice pool ceiling per publisher (matches the child's `serve` config).
 const MAX_PAYLOAD: usize = 64 * 1024;
 
-/// How long a request waits on a child that has stopped answering. Public because it is the
-/// tier's documented deadline, not an internal tuning knob. A hung child is killed and surfaces
-/// as a node error rather than stranding the scheduler (and, in the bridge, the graph mutex).
+/// How long a request waits on a child that has stopped answering.
 pub const TICK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The deadline for the FIRST request after a spawn, which is a different animal.
-///
-/// [`Running::spawn`] does not wait for the child to be ready — it cannot, because a child that
-/// never gets there must be reported as the exit it was. So the whole cold start is charged to
-/// this one request: interpreter boot, `import goofi`, the node module's own imports, and
-/// `setup()`. A tick deadline sized for a steady-state call is the wrong bound for that, and
-/// sizing ONE deadline for both means the slower case picks it.
-///
-/// It cost a livelock. Four of the entropy nodes goofi ships import antropy, which imports numba:
-/// 4.5 s cold on its own and 7.5 s with four booting at once, which is past ten on any modest
-/// machine. Each timeout reaped the child, and the respawn paid the same import again — so the
-/// node never started, and said only that a subprocess did not respond in time.
-///
-/// Long is cheap here: a child that DIES is reported by `try_wait` at once, whatever this says, so
-/// what this actually bounds is a child that is alive and still working. Waiting is right for that.
+/// The deadline for the FIRST request after a spawn, which also pays interpreter boot, the node
+/// module's imports and `setup()` — seconds, not milliseconds, for a heavy import like numba.
 pub const COLD_START_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The iceoryx2 node + request publisher + response subscriber. Held directly on [`Running`]
-/// because `ipc_threadsafe::Service` makes the ports `Send` — the previous design pushed them onto a
-/// dedicated io thread solely to confine the `!Send` single-threaded (`ipc::Service`) ports. The node
-/// must outlive the ports, so it rides along.
+/// The iceoryx2 node + its ports. The node must outlive the ports it created.
 struct Ports {
     _node: iceoryx2::node::Node<ipc_threadsafe::Service>,
     req_pub: BytePublisher,
     resp_sub: ByteSubscriber,
 }
 
-/// The spawned child plus the iceoryx2 ports it talks over. `roundtrip` publishes a frame and polls
-/// for the matching-sequence response inline (bounded by `timeout`), so a dead/hung child never
-/// strands the caller — the port-owning io thread is gone.
+/// The spawned child plus the iceoryx2 ports it talks over.
 struct Running {
     child: Child,
     ports: Ports,
     seq: u32,
-    /// The parent's write end of the liveness pipe. Never written to: holding it open IS the
-    /// signal. It closes when this struct drops — on a node removal, on a reset, and (the
-    /// point of the exercise) when the OS tears this process down on a Ctrl-C or a crash,
-    /// where no `Drop` ever runs. The child reads EOF and exits itself.
+    /// Never written to: holding this end open IS the signal, and its close — including one the
+    /// OS does on a crash, where no `Drop` runs — is the EOF the child exits on.
     parent_alive: Option<std::io::PipeWriter>,
 }
 
-/// Build the iceoryx2 node + `<id>_req` publisher + `<id>_resp` subscriber.
 fn build_ports(req_name: &str, resp_name: &str) -> std::result::Result<Ports, String> {
     let node = NodeBuilder::new()
         .create::<ipc_threadsafe::Service>()
@@ -100,37 +67,28 @@ fn build_ports(req_name: &str, resp_name: &str) -> std::result::Result<Ports, St
 }
 
 impl Running {
-    /// Spawn `python -c "import goofi; goofi.serve()"` with the node source + iceoryx2 service
-    /// names in the environment, then build the parent's ports.
     fn spawn(python: &str, source: &str) -> std::result::Result<Running, String> {
         let id = format!("goofi_sub_{}_{}", std::process::id(), SUBPROC_SEQ.fetch_add(1, Ordering::Relaxed));
         let req_name = format!("{id}_req");
         let resp_name = format!("{id}_resp");
-        // The child talks over iceoryx2; stdout/stderr are inherited so node prints/tracebacks
-        // surface (the child routes its fd 1 to stderr, so a node print can't corrupt the SHM plane).
         let mut cmd = Command::new(python);
         cmd.arg("-c")
             .arg("import goofi; goofi.serve()")
             .env("GOOFI_NODE_SRC", source)
             .env("GOOFI_IOX_REQ", &req_name)
             .env("GOOFI_IOX_RESP", &resp_name)
-            // A subprocess node runs its OWN interpreter; a host `PYTHONPATH` (e.g. the pyo3/FT
-            // tier's, injected by `.cargo/config.toml`) must not leak in and shadow the child's
-            // numpy/goofi with an incompatible build. The child uses its interpreter's site-packages.
+            // The host's PYTHONPATH (the pyo3/FT tier's) must not shadow the child's own numpy/goofi.
             .env_remove("PYTHONPATH")
             .env_remove("PYTHONHOME")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        // Arm the liveness pipe BEFORE the spawn it guards: the child inherits the read end and
-        // stops itself the moment our write end closes, so a Ctrl-C or a crash here can't leave
-        // it orphaned, spinning its poll loop forever.
+        // Armed BEFORE the spawn it guards, so a Ctrl-C or a crash here cannot orphan the child.
         let armed = goofi_codec::liveness::arm(&mut cmd).map_err(|e| format!("liveness pipe: {e}"))?;
         let mut child = cmd.spawn().map_err(|e| format!("spawn `{python}`: {e}"))?;
         let parent_alive = Some(armed.into_writer());
         match build_ports(&req_name, &resp_name) {
             Ok(ports) => Ok(Running { child, ports, seq: 0, parent_alive }),
-            // A port-setup failure would strand the child with no peer — reap it before erroring.
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -139,19 +97,14 @@ impl Running {
         }
     }
 
-    /// Publish one frame and wait (bounded by `timeout`) for the matching-sequence response. On any
-    /// error the caller ([`RemoteNode::process`]) reaps the child so the next tick respawns a fresh one.
     fn roundtrip(&mut self, frame: &[u8], timeout: Duration) -> std::result::Result<Vec<u8>, String> {
         self.seq = self.seq.wrapping_add(1);
         one_roundtrip(&self.ports.req_pub, &self.ports.resp_sub, &mut self.child, self.seq, frame, timeout)
             .map_err(|e| format!("subprocess io: {e}"))
     }
 
-    /// Kill + reap the child. The ports drop with `self`.
     fn shutdown(&mut self) {
-        // Close the liveness pipe first: that stop reaches the child even when a signal or a
-        // dead handle would defeat `kill`, and it is the same door a crashed parent uses.
-        // The kill+wait then ends and reaps it immediately rather than waiting on the poll.
+        // Closed first: this stop reaches the child even where a signal or a dead handle defeats `kill`.
         drop(self.parent_alive.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -161,11 +114,8 @@ impl Running {
 type BytePublisher = iceoryx2::port::publisher::Publisher<ipc_threadsafe::Service, [u8], ()>;
 type ByteSubscriber = iceoryx2::port::subscriber::Subscriber<ipc_threadsafe::Service, [u8], ()>;
 
-/// One request/response: publish `[seq][frame]` and poll `<resp>` for the sample whose leading
-/// sequence matches. Re-publishes each idle millisecond (so the child gets it even if its
-/// subscriber was still connecting when we first published) and drops any stale/mismatched
-/// sample. Bounded by `timeout` — and by the child's own life: a process that has already died
-/// is not a hang, so it is reported as the exit it was rather than after the full deadline.
+/// One request/response: publish `[seq][frame]` and poll for the reply with the matching sequence.
+/// Re-published each idle millisecond, because the child's subscriber may still be connecting.
 fn one_roundtrip(
     req_pub: &BytePublisher,
     resp_sub: &ByteSubscriber,
@@ -174,7 +124,6 @@ fn one_roundtrip(
     frame: &[u8],
     timeout: Duration,
 ) -> std::io::Result<Vec<u8>> {
-    // Discard any stale response left from a prior tick before we start.
     while matches!(resp_sub.receive(), Ok(Some(_))) {}
 
     let mut msg = Vec::with_capacity(4 + frame.len());
@@ -198,16 +147,12 @@ fn one_roundtrip(
                     {
                         return Ok(payload[4..].to_vec());
                     }
-                    // A mismatched (stale) sample — keep draining this batch.
                 }
                 Ok(None) => break, // drained; re-publish + wait
                 Err(e) => return Err(std::io::Error::other(format!("iox receive: {e}"))),
             }
         }
-        // Checked AFTER draining the response port, so a child that answered and then exited still
-        // has its answer returned. An import crash, a C-extension segfault or an OOM kill leaves
-        // nobody to answer, and waiting out the deadline would both park a worker for the full
-        // production timeout and then name the wrong cause.
+        // Checked AFTER draining, so a child that answered and then exited still gets its answer returned.
         if let Ok(Some(status)) = child.try_wait() {
             return Err(std::io::Error::other(format!("subprocess exited: {status}")));
         }
@@ -218,23 +163,16 @@ fn one_roundtrip(
     }
 }
 
-/// A Python node running in an isolated GIL subprocess. Construction is cheap and
-/// infallible ([`RemoteNode::new`]); the subprocess is spawned lazily on the first
-/// `process` (so a discovery factory never panics, and a spawn failure surfaces on
-/// the node's error channel instead of crashing the graph).
+/// A Python node in an isolated GIL subprocess, spawned lazily on its first `process`.
 pub struct RemoteNode {
     python: String,
     source: String,
-    /// This node's declared INPUT slot names (from its manifest) — the keys `process` gathers
-    /// from `Inputs`. Outputs are set by the child-returned slot names (the child is authoritative
-    /// for output naming, via its `OUTPUTS`), so the parent keeps no output list.
+    /// Declared INPUT slot names only: the child is authoritative for output naming.
     in_slots: Vec<&'static str>,
     proc: Option<Running>,
 }
 
 impl RemoteNode {
-    /// A remote node backed by `python` running `source` (a `goofi.Node` subclass), with the
-    /// engine-facing INPUT slot names from its manifest. No process spawns until the first tick.
     pub fn new(python: impl Into<String>, source: impl Into<String>, in_slots: Vec<&'static str>) -> RemoteNode {
         RemoteNode {
             python: python.into(),
@@ -251,7 +189,6 @@ impl RemoteNode {
         Ok(self.proc.as_mut().unwrap())
     }
 
-    /// Kill + reap the current child (if any) so the next tick respawns a fresh one.
     fn reset(&mut self) {
         if let Some(mut p) = self.proc.take() {
             p.shutdown();
@@ -261,18 +198,12 @@ impl RemoteNode {
 
 impl Node for RemoteNode {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        // Only the PRESENT slots cross the wire — an absent one is the absence of an entry, and
-        // the child rebuilds the full declared kwarg set from its own `INPUTS`.
-        // A node with inputs but none arrived still ticks: what a missing non-required input
-        // means is the node's own call (it receives `None`), and a required one never gets here.
+        // Only the PRESENT slots cross the wire; the child rebuilds the declared kwarg set from `INPUTS`.
         let present: Vec<(&str, &Data)> =
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
 
         let frame = goofi_codec::encode_request(p.groups(), &present);
-        // Which deadline this request gets is decided by whether it is the one that also spawns.
         let timeout = if self.proc.is_none() { COLD_START_TIMEOUT } else { TICK_TIMEOUT };
-        // A dead/hung child (io error or timeout) is reaped so the NEXT tick spawns
-        // a fresh subprocess, instead of leaving a zombie and erroring forever.
         let resp = match self.ensure().and_then(|r| r.roundtrip(&frame, timeout)) {
             Ok(r) => r,
             Err(e) => {
@@ -280,9 +211,7 @@ impl Node for RemoteNode {
                 return Err(e.into());
             }
         };
-        // A node RAISE comes back as a NodeError WITHOUT killing the child: surface it like the
-        // in-process tier's `Ok(Err)` and leave the child alive — node state preserved, error
-        // reported instantly (no 10s respawn-timeout loop, no lost exception text).
+        // A node RAISE does not kill the child: its state is preserved and the error is instant.
         match goofi_codec::decode_response(&resp).map_err(NodeError)? {
             goofi_codec::Response::Slots(outs) => {
                 for (slot, data) in outs {
@@ -301,8 +230,6 @@ impl Drop for RemoteNode {
     }
 }
 
-// ── Discovery: the SAME probe the in-process tier uses, so a file yields one manifest either way ─
-
 use std::path::Path;
 
 use goofi_node::discover::{Discovered, NodeFactory};
@@ -311,22 +238,17 @@ use goofi_node::{Isolation, NodeManifest};
 /// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
 pub struct SubprocNodeType {
     pub manifest: &'static NodeManifest,
-    /// Builds a node instance (spawns lazily on first tick).
     pub factory: NodeFactory,
 }
 
 use crate::Discovery;
 
-/// Probe one file for this tier, reporting all three outcomes — the ONE discovery door. The CLI
-/// needs the failure REASON to list a node as unavailable, and one probe spawn must answer both
-/// questions, so a caller pairs this with [`node_type_from`] rather than asking twice.
+/// Probe one file for this tier, reporting all three outcomes.
 pub fn probe(path: &Path, python: &str) -> Discovery {
     goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
 }
 
-/// Turn a probe-[`Discovered`] (rich manifest + source path) into a subprocess [`SubprocNodeType`]:
-/// the factory reads the file's source + builds a [`RemoteNode`] bound to the manifest's slot names.
-/// Public so a caller that already ran [`probe`] can build the type without a second spawn.
+/// Turn a probe-[`Discovered`] into a [`SubprocNodeType`], without a second spawn.
 pub fn node_type_from(python: &str, d: Discovered) -> SubprocNodeType {
     subproc_type_from_discovered(python, d)
 }
@@ -342,19 +264,12 @@ fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType 
     SubprocNodeType { manifest, factory }
 }
 
-// The rest of this tier's suite lives in `goofi-tests`. What stayed is the liveness mechanism: it
-// reaches `Running` and the child handle directly, and re-enters this very binary as an
-// intermediate parent so a SIGKILL can be delivered to a process that gets no chance to clean up.
-// Neither is reachable from outside, and publishing them so a test could name them would be worse.
 #[cfg(test)]
 mod tests {
     use super::*;
     use goofi_core::{Data, Meta, Value};
     use goofi_node::ParamGroups;
     use indexmap::IndexMap;
-
-    // Node sources are authored to the `goofi.Node` class contract (the one authoring shape;
-    // the bare `def process(x)` function is gone). Raw strings keep Python indentation verbatim.
 
     /// Doubles its `data` input into `out`.
     const DOUBLE: &str = r#"
@@ -383,8 +298,7 @@ class Double(goofi.Node):
         }
     }
 
-    /// Tick a node once: feed the named inputs + params, allocate the named output slots,
-    /// return the output slot map (or the node error).
+    /// Tick a node once, returning the output slot map or the node error.
     fn tick(
         node: &mut RemoteNode,
         inputs: Vec<(&'static str, Data)>,
@@ -418,19 +332,14 @@ class Double(goofi.Node):
         Ok(m.get("out").unwrap().clone().expect("output frame"))
     }
 
-    /// A python with BOTH goofi (the abi3 wheel) and numpy (the subprocess child needs both),
-    /// or None. Prefers `$GOOFI_SUBPROC_TEST_PYTHON`, then the repo's `.gfivenv`, then a PATH python.
-    /// The probe strips `PYTHONPATH` exactly like the real child spawn ([`Running::spawn`]), so a
-    /// host/pyo3 `PYTHONPATH` can't produce a false negative (it once masked real bugs by making
-    /// the venv python import an incompatible numpy → every tier test silently SKIPPED).
+    /// A python with both goofi and numpy, or None. It strips `PYTHONPATH` exactly like the real
+    /// child spawn, so a host `PYTHONPATH` cannot produce a false negative.
     fn usable_python() -> Option<String> {
         let mut cands: Vec<String> = Vec::new();
         if let Ok(p) = std::env::var("GOOFI_SUBPROC_TEST_PYTHON") {
             cands.push(p);
         }
-        // Both venv layouts — `bin/` on unix, `Scripts/` on Windows — because the fallbacks below
-        // are worse than a miss on Windows: `python3` there is an App Execution Alias that answers
-        // every probe with a Microsoft Store advert instead of failing.
+        // Both venv layouts, because on Windows `python3` is a Store-advert alias that never fails.
         cands.push(format!("{}/../../.gfivenv/bin/python", env!("CARGO_MANIFEST_DIR")));
         cands.push(format!("{}/../../.gfivenv/Scripts/python.exe", env!("CARGO_MANIFEST_DIR")));
         cands.push("python3".to_string());
@@ -453,14 +362,10 @@ class Double(goofi.Node):
         None
     }
 
-    /// Serializes the subprocess-tier tests. Cargo runs a crate's tests on parallel threads and
-    /// every one of these spawns a Python interpreter, so without this the latency measurement
-    /// below is taken while a dozen siblings are booting numpy on the same cores — it measured
-    /// the test harness, not the transport, and failed its budget at ~7 ms median.
+    /// Serializes the subprocess-tier tests; each of them spawns a Python interpreter.
     static TIER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// The interpreter to spawn children with, plus the tier lock — held until the value drops,
-    /// i.e. for the rest of the test. Derefs to `&str`, so call sites read as a plain path.
+    /// The interpreter to spawn children with, plus the tier lock held for the rest of the test.
     struct Tier {
         py: String,
         _lock: std::sync::MutexGuard<'static, ()>,
@@ -473,12 +378,9 @@ class Double(goofi.Node):
         }
     }
 
-    /// Like [`usable_python`] but PANICS with an actionable message when none is found — the
-    /// subprocess tier tests HARD-REQUIRE a python (goofi + numpy) rather than silently
-    /// skipping, so a missing/misconfigured interpreter fails loudly instead of hiding bugs.
+    /// Like [`usable_python`] but panics with an actionable message: these tests never skip.
     fn require_python() -> Tier {
-        // A panicking test poisons the mutex; recover rather than cascade its failure onto
-        // every sibling, which would bury the one real error.
+        // A panicking test poisons the mutex; recover so its failure does not bury every sibling.
         let _lock = TIER.lock().unwrap_or_else(|e| e.into_inner());
         let py = usable_python().unwrap_or_else(|| {
             panic!(
@@ -507,8 +409,6 @@ class Double(goofi.Node):
 
     #[test]
     fn the_child_stops_when_the_parents_liveness_pipe_closes() {
-        // The mechanism itself, through the REAL spawn path: close only the parent's write end
-        // — no kill, no signal — and the child must reach EOF and exit on its own.
         let py = require_python();
         let mut node = RemoteNode::new(&*py, DOUBLE, vec!["data"]);
         // A real tick first, so the child is fully up and inside its serve loop.
@@ -519,25 +419,18 @@ class Double(goofi.Node):
 
         let exited = child_exits_within(&mut running.child, Duration::from_secs(5));
         if !exited {
-            // Never leave a spinning orphan behind, even when this test fails.
             let _ = running.child.kill();
             let _ = running.child.wait();
         }
         assert!(exited, "the child must exit on the liveness pipe's EOF; it was still alive after 5s");
     }
 
-    /// Set on the helper process of [`a_hard_killed_parent_still_stops_the_child`]; its value
-    /// is the interpreter to spawn the grandchild with. Gated with the two tests that read it —
-    /// they are `/proc`-and-signals work — or it is a constant declared everywhere and used on
-    /// one platform, which every other platform reports as dead code.
+    /// The interpreter the helper process spawns its grandchild with.
     #[cfg(target_os = "linux")]
     const HELPER_ENV: &str = "GOOFI_LIVENESS_HELPER_PYTHON";
 
-    /// The intermediate parent for the hard-kill test, re-entered as a separate process (this
-    /// test binary, one `#[test]` filtered in). With [`HELPER_ENV`] set it spawns a real child,
-    /// announces its pid and then blocks forever holding the liveness pipe, so the outer test
-    /// can `kill -9` a process that never gets to run a handler or a `Drop`. Unset — every
-    /// ordinary suite run — it does nothing.
+    /// The intermediate parent for the hard-kill test, re-entered as a separate process: with
+    /// [`HELPER_ENV`] set it spawns a child, announces its pid and blocks; unset it does nothing.
     #[cfg(target_os = "linux")]
     #[test]
     fn liveness_helper_process() {
@@ -564,14 +457,9 @@ class Double(goofi.Node):
     #[cfg(target_os = "linux")]
     #[test]
     fn a_hard_killed_parent_still_stops_the_child() {
-        // The fidelity case a ctrl_c handler cannot cover: SIGKILL the intermediate parent, which
-        // gets no chance to clean up. The OS closes its write end anyway, so the child still EOFs.
         let py = require_python();
-        // libtest names a test by its module path MINUS the crate root, so deriving the filter
-        // rather than spelling it keeps this working when the module moves. It has moved: this
-        // file was its own crate, where the name was `tests::…`; hard-coded, the filter silently
-        // matched NOTHING the moment it became `subproc::tests::…` — no helper, no announced pid,
-        // and a failure that reads as "the child was orphaned" rather than "nobody ran".
+        // libtest names a test by its module path MINUS the crate root; derived, so a move cannot
+        // leave the filter matching nothing.
         let module = module_path!().split_once("::").map_or(module_path!(), |(_, rest)| rest);
         let helper_test = format!("{module}::liveness_helper_process");
         let mut helper = Command::new(std::env::current_exe().expect("test binary path"))
@@ -582,7 +470,6 @@ class Double(goofi.Node):
             .spawn()
             .expect("spawn the intermediate parent");
 
-        // Read the announced pid with a bound; a helper that never gets there must not hang us.
         // libtest writes `test <name> ... ` without a newline, so the marker lands mid-line.
         let out = helper.stdout.take().expect("helper stdout");
         let (tx, rx) = std::sync::mpsc::channel();
@@ -597,14 +484,12 @@ class Double(goofi.Node):
         });
         let announced = rx.recv_timeout(Duration::from_secs(30));
         if announced.is_err() {
-            // Never strand the helper (and its child) when this test fails.
             let _ = helper.kill();
             let _ = helper.wait();
         }
         let child_pid: u32 =
             announced.expect("the helper must announce its child's pid").parse().expect("a numeric pid");
 
-        // SIGKILL: no handler, no unwind, no Drop — only the OS closing the write end.
         let killed = Command::new("kill").args(["-9", &helper.id().to_string()]).status();
         assert!(killed.is_ok_and(|s| s.success()), "kill -9 the intermediate parent");
         let _ = helper.wait();
@@ -615,7 +500,6 @@ class Double(goofi.Node):
         }
         let orphaned = pid_alive(child_pid);
         if orphaned {
-            // Never leave a spinning orphan behind, even when this test fails.
             let _ = Command::new("kill").args(["-9", &child_pid.to_string()]).status();
         }
         assert!(

@@ -1,25 +1,6 @@
 /**
- * Thin-plate spline (TPS) interpolation for EEG topographic maps.
- *
- * Approximates MNE's `mne.viz.plot_topomap` look. MNE's default is
- * `image_interp="cubic"` (scipy `CloughTocher2DInterpolator` over a
- * Delaunay triangulation of the sensor positions, with an outer ring
- * of extrapolation points so the field decays smoothly to the head
- * boundary). MNE's own source notes that the previous TPS-RBF default
- * "looks about the same" — and TPS is much easier to ship in pure JS
- * without a Delaunay dependency.
- *
- * Strategy:
- *  - Add a ring of N_extra extrapolation points just outside the head
- *    circle, each carrying the mean of its K nearest real channels
- *    (matches MNE's `border="mean"`).
- *  - Fit f(x,y) = a₀ + a₁x + a₂y + Σ wᵢ φ(‖(x,y) - pᵢ‖) with
- *    φ(r) = r²·log(r) over the augmented point set.
- *  - Pre-invert the (n+3)×(n+3) augmented kernel-polynomial matrix
- *    once per layout, and pre-compute φ at every inside-circle pixel
- *    once per (layout, canvas size). The per-frame cost is then a
- *    single matvec for the weights plus an O(n·pixels) FMA sweep —
- *    no log() calls in the hot path.
+ * Thin-plate spline interpolation for EEG topomaps, approximating MNE's `plot_topomap`.
+ * The ring of extra points outside the head carries its neighbours' mean, as MNE's `border="mean"`.
  */
 
 const TPS_EPS_SQ = 1e-12;

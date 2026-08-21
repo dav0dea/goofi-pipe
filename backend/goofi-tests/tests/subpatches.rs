@@ -1,9 +1,6 @@
 //! Sub-patches: a flat tree of uids plus stub "symlinks", and no sharing.
 //!
-//! A boundary is a NAMING indirection — the runtime link is always flat, leaf to leaf. Everything
-//! here reads the instance forest out of the replicated projection, which is where it lives; the
-//! structural broadcast events were retired. The boundary ops carry their own half of the
-//! strictness rule, because a stub is the one place where a target can be real and still unwirable.
+//! A boundary is a NAMING indirection — the runtime link is always flat, leaf to leaf.
 
 use serde_json::Value;
 
@@ -35,8 +32,7 @@ fn grouping_re_tags_the_members_and_expanding_gives_them_back() {
     let inst = group(&g, &[hex(osc), hex(buf)]);
 
     let rec = g.doc()["instances"][&inst].clone();
-    // A top-level scope's parent must be ROOT, not null: the editor renders it on the root canvas
-    // only when `instance.parent === ROOT_ID`.
+    // A top-level scope's parent must be ROOT, not null: the editor gates on `parent === ROOT_ID`.
     assert_eq!(rec["parent"], "__root__");
     assert!(rec.get("def_id").is_none(), "no sharing ⇒ no def_id");
     assert_eq!(members(&g, &inst).len(), 2, "both members in the scope");
@@ -49,9 +45,7 @@ fn grouping_re_tags_the_members_and_expanding_gives_them_back() {
 
 #[test]
 fn a_node_added_inside_an_entered_scope_stays_inside_it_through_undo_and_redo() {
-    // The canvas renders only the entered scope's children, so a dropped `inst_id` makes the node
-    // invisible exactly where it was placed. The placement rides on the COMMAND, so it has to
-    // survive undo→redo too — a missing command field shows up there first.
+    // The placement rides on the COMMAND, so a missing field shows up at undo→redo first.
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
@@ -70,9 +64,7 @@ fn a_node_added_inside_an_entered_scope_stays_inside_it_through_undo_and_redo() 
 
 #[test]
 fn add_node_refuses_an_inst_id_it_cannot_honour_and_creates_nothing() {
-    // No partial mutation and no silent rooting. Dropping the scope would put the node where the
-    // canvas cannot show it; creating it and THEN failing would leave the graph and its mirror
-    // disagreeing.
+    // No partial mutation and no silent rooting.
     let g = Goofi::new();
     let osc = g.add("Oscillator");
 
@@ -121,8 +113,6 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    // Grouping only the Buffer cuts osc→buf, so an input boundary appears; buf.out has no
-    // downstream, so an output one can be authored onto it.
     let inst = group(&g, &[hex(buf)]);
 
     let bnd = boundary(&g, &inst, "out");
@@ -139,8 +129,7 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
 
 #[test]
 fn a_boundary_wires_to_a_nested_scopes_own_port() {
-    // Inside an entered scope a nested sub-patch shows its collapsed facade, whose handles ARE its
-    // own stub ids — so dropping a cable from the parent's pill onto one sends exactly this.
+    // A nested sub-patch's collapsed facade handles ARE its own stub ids.
     let g = Goofi::new();
     let buf = g.add("Buffer");
     let inner = group(&g, &[hex(buf)]);
@@ -160,8 +149,7 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
 
 #[test]
 fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
-    // Deleting an In→member edge is an UNWIRE: the pill survives and its inner target clears.
-    // `Command::WireStub` models exactly that, and the delete path is the only door to it.
+    // Deleting an In→member edge is an UNWIRE, and `Command::WireStub` is the only door to it.
     let g = Goofi::new();
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
@@ -198,19 +186,16 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
         g.refuse(op, payload);
     }
 
-    // A port that DOES exist, aimed at an inner target that cannot take the wire. `set_stub_inner`
-    // already refused this; the command used to swallow the refusal.
+    // A port that DOES exist, aimed at an inner target that cannot take the wire.
     let bnd = boundary(&g, &inst, "in");
     g.refuse("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                    "inner_node": hex(buf), "inner_slot": "nope" }));
 
-    // …and a cable onto a real but UNWIRED port has nothing behind it to reach. The reply used to
-    // claim there was; it now names the op that fills the port.
+    // …and a cable onto a real but UNWIRED port names the op that fills the port.
     let why = g.refuse("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                                         "node_in": inst, "slot_in": bnd }));
     assert!(why.contains("wire_boundary"), "an unwired port names the op that fills it: {why}");
-    // Once the port IS wired the same call lands, so the refusal gates the impossible rather than
-    // sub-patch wiring itself.
+    // Once the port IS wired the same call lands, so the refusal gates the impossible.
     g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                  "inner_node": hex(buf), "inner_slot": "data" }));
     let made = g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
@@ -220,7 +205,6 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
 
 #[test]
 fn a_stale_boundary_toggle_still_flips_after_a_peer_removed_the_port() {
-    // The replay half of the same rule: an `Err` inside a flip wedges that session's undo stack.
     let one = Goofi::new();
     let two = one.client("s2");
     let buf = one.add("Buffer");

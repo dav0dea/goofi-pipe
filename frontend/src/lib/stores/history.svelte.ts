@@ -1,15 +1,5 @@
-/**
- * Unified undo/redo history — ONE client stack, and it is a stack of markers.
- *
- * Every mutation the user makes is a manager command: the graph's, and (since the arrangement
- * became the fifth doc root) the layout's too. The manager captured the exact inverse in its
- * per-session history, so an entry here carries no payload — it records that a step happened, with
- * a label and a `NavContext`, and its undo/redo delegate. The one exception is a node's INLINE
- * viewer state, which no command owns and which therefore still replays a snapshot.
- *
- * Recording happens at the store-method layer (graph + workspace) behind the `suspend` guard so
- * replays don't re-record. See `docs/superpowers/specs/2026-06-19-undo-redo-redesign-design.md`.
- */
+/** Unified undo/redo — ONE client stack of markers that delegate to the manager's own history. A
+ * node's INLINE viewer state is the one exception: no command owns it, so it replays a snapshot. */
 import type { Control, ControlEvent, InstanceInfo } from '$lib/api/control';
 import { getControl } from '$lib/api/control';
 import type { ViewerKind } from '$lib/viewers/kind';
@@ -22,8 +12,7 @@ import { notify } from './notify.svelte';
 
 export type ActionDomain = 'graph' | 'view';
 
-/** Where an action was performed — restored before its inverse/forward runs so
- * the undone/redone change is highlighted in the right tab/panel/sub-patch. */
+/** Where an action was performed, restored before its inverse/forward runs. */
 export interface NavContext {
 	activeWorkspaceId: string;
 	activePanelId: string | null;
@@ -41,35 +30,26 @@ export interface BaseAction {
 	context: NavContext;
 }
 
-// --- graph domain: the MANAGER owns the inverse; the client entry just marks the step -----------
-// Every mutation — of the graph AND of the layout, since the arrangement became the fifth doc root
-// — is applied by a manager command RPC (the manager captured its exact pre-state and recorded the
-// inverse in its per-session history). So the entry carries no inverse payload: its undo/redo
-// DELEGATE to the manager's `undo`/`redo` and the UI re-renders from the synced doc.
+/** A manager command. The manager owns the exact inverse, so this carries no payload. */
 export type GraphAction = BaseAction & {
 	kind: 'graph_cmd';
 	domain: 'graph';
 };
 
-/** Several primitive actions grouped into one undo step (e.g. a slot-click that
- * creates a node AND wires it). Children are replayed in order on redo and in
- * reverse on undo, each through its own executor. */
+/** Several actions grouped into one undo step, replayed in order and reversed in reverse. */
 export type CompoundAction = BaseAction & {
 	domain: 'graph';
 	kind: 'compound';
 	payload: { children: Action[] };
 };
 
-// --- view domain: a data viewer's kind/settings (frontend-only state) --------
 /** A viewer's kind + cog-menu settings snapshot. */
 export interface ViewSnapshot {
 	kind?: ViewerKind;
 	settings: SettingsMap;
 }
 
-/** Where a viewer's view-state lives. Only the node's INLINE body viewer is client-local now — a
- * docked Viewer panel's kind and settings ride its panel state, which the manager holds, so their
- * undo step is an ordinary manager command. */
+/** Only a node's INLINE body viewer is client-local; a docked Viewer panel rides its panel state. */
 export type ViewTarget = { kind: 'inline'; node: string; slot: string };
 
 export type ViewAction = BaseAction & {
@@ -80,7 +60,6 @@ export type ViewAction = BaseAction & {
 
 export type Action = GraphAction | CompoundAction | ViewAction;
 
-// --- executors ---------------------------------------------------------------
 export type GraphStoreT = ReturnType<typeof graph>;
 
 /** Injected dependencies so executors are unit-testable against fakes. */
@@ -90,18 +69,15 @@ export interface ExecutorDeps {
 }
 
 export interface Executor<A extends Action = Action> {
-	/** Re-apply (redo). May mutate the action to record fresh ids (e.g. a
-	 *  re-grouped instId) so the next inverse targets the right thing. */
+	/** Re-apply (redo). May mutate the action to record fresh ids for the next inverse. */
 	forward(action: A, deps: ExecutorDeps): Promise<void>;
 	/** Reverse (undo). */
 	inverse(action: A, deps: ExecutorDeps): Promise<void>;
 }
 
-// A `ControlEvent` re-export keeps test imports terse.
 export type { ControlEvent, InstanceInfo };
 
-/** Replays a CompoundAction's children through their own executors — forward in
- * order, inverse in reverse. */
+/** Replays a CompoundAction's children — forward in order, inverse in reverse. */
 const compoundExecutor: Executor = {
 	async forward(action, deps) {
 		const a = action as CompoundAction;
@@ -113,12 +89,7 @@ const compoundExecutor: Executor = {
 	}
 };
 
-/** The one MANAGER executor (B3). It owns the exact inverse (it captured the pre-state), so
- * undo/redo just DELEGATE to its per-session command history — the UI re-renders from the synced
- * doc, layout included. A delete's emptied panel bindings come back the same way: the manager
- * clears them inside `RemoveNode`, so its inverse restores them. One `graph_cmd` child inside a
- * transaction's compound maps to one manager undo/redo, and the N children pop the N contiguous
- * session commands in the right order. */
+/** The one MANAGER executor: undo/redo delegate to its per-session command history. */
 const graphExecutor: Executor = {
 	async forward(_action, deps) {
 		await deps.control.call('redo', {});
@@ -128,22 +99,18 @@ const graphExecutor: Executor = {
 	}
 };
 
-/** The merged dispatch registry: the single manager executor + the client-local inline-view
- * snapshot executor + the compound grouper. */
+/** The merged dispatch registry. */
 export const executors: Record<string, Executor> = {
 	graph_cmd: graphExecutor,
 	...viewExecutors,
 	compound: compoundExecutor
 };
 
-/** Build the live dependency bundle for replaying actions. Lazy singletons, so
- * this is safe despite the history ↔ graph import cycle (never called at
- * module-eval time). */
+/** The live dependency bundle. Lazy singletons, so the history ↔ graph import cycle is safe. */
 function liveDeps(): ExecutorDeps {
 	return { control: getControl(), graph: graph() };
 }
 
-// --- the store ---------------------------------------------------------------
 export class HistoryStore {
 	canUndo = $state(false);
 	canRedo = $state(false);
@@ -153,30 +120,22 @@ export class HistoryStore {
 	private undoStack: Action[] = [];
 	private redoStack: Action[] = [];
 	private suspendDepth = 0;
-	/** Re-entrancy guard for undo()/redo(): two awaits sit between reading the
-	 * top action and pop(), so a held Ctrl+Z could double-replay and double-pop
-	 * the same action. While a replay is in flight, further undo/redo are
-	 * dropped (report B13). */
+	/** Re-entrancy guard: two awaits sit between reading the top action and popping it, so a held
+	 * Ctrl+Z would otherwise double-replay it. */
 	private replaying = false;
-	/** While a transaction is open, records collect here instead of pushing —
-	 * see `transaction`. Null when no transaction is active. */
+	/** While a transaction is open, records collect here instead of pushing. */
 	private txBuffer: Action[] | null = null;
-	/** How undo/redo resolve the stores+control to replay against. Defaults to
-	 * the live singletons; tests override it to inject a FakeControl-backed
-	 * store. */
+	/** How undo/redo resolve the stores+control to replay against. */
 	private depsProvider: () => ExecutorDeps = liveDeps;
 
-	/** Test seam: replay against an injected store/control instead of the live
-	 * singletons. */
+	/** Test seam: replay against an injected store/control. */
 	configureDeps(provider: () => ExecutorDeps): void {
 		this.depsProvider = provider;
 	}
 
-	/** Record a completed action. No-op while suspended. Clears the redo stack
-	 * (a new edit invalidates any redo future). */
+	/** Record a completed action, clearing the redo stack. No-op while suspended. */
 	record(action: Action): void {
 		if (this.suspendDepth > 0) return;
-		// Inside a transaction: collect rather than push — flushed as one entry.
 		if (this.txBuffer) {
 			this.txBuffer.push(action);
 			return;
@@ -186,10 +145,8 @@ export class HistoryStore {
 		this._recompute();
 	}
 
-	/** Move the top action of `from` to `to`, replaying it through `direction`
-	 * (inverse for undo, forward for redo): restore its nav context, run it with
-	 * recording suspended, then relocate it. Atomic — on RPC failure the action
-	 * stays on `from` and the failure is raised as a toast; the stacks are untouched. */
+	/** Move the top action of `from` to `to`, replaying it through `direction`. Atomic: on failure
+	 * the action stays on `from` and the failure is raised as a toast. */
 	private async _replay(
 		from: Action[],
 		to: Action[],
@@ -224,9 +181,7 @@ export class HistoryStore {
 		return this._replay(this.redoStack, this.undoStack, 'forward', 'Redo');
 	}
 
-	/** Run `fn` with recording disabled, then resume. Reentrant, and async-aware:
-	 * if `fn` returns a promise the guard stays up until it settles (so an
-	 * awaited replay or batch doesn't re-record mid-flight). */
+	/** Run `fn` with recording disabled. Reentrant, and async-aware: a promise keeps the guard up. */
 	suspend<T>(fn: () => T): T {
 		this.suspendDepth += 1;
 		let result: T;
@@ -245,9 +200,7 @@ export class HistoryStore {
 		return result;
 	}
 
-	/** Group every action recorded inside `fn` into ONE undo step. A single
-	 * recorded child is kept as-is (no wrapper); two or more become a `compound`.
-	 * Async-aware; nested transactions fold into the outer one. */
+	/** Group every action recorded inside `fn` into ONE undo step; nested transactions fold in. */
 	async transaction<T>(label: string, fn: () => Promise<T>): Promise<T> {
 		if (this.txBuffer || this.suspendDepth > 0) return fn(); // nested / suspended → passthrough
 		this.txBuffer = [];
@@ -255,10 +208,7 @@ export class HistoryStore {
 		try {
 			result = await fn();
 		} catch (e) {
-			// A thrown transaction did NOT complete atomically — discard its buffered
-			// children rather than committing a partial compound. Recording the partial
-			// set would push an undo step whose inverse replays ops the backend rejected
-			// (or only half of an intended atomic edit). The caller still sees the throw.
+			// A thrown transaction did not complete, so its buffered children are discarded whole.
 			this.txBuffer = null;
 			throw e;
 		}
@@ -287,13 +237,7 @@ export class HistoryStore {
 		return this.undoStack.length;
 	}
 
-	/** Hard reset — only on a new backend session (see graph store). Drops the
-	 * stacks; the deps provider is config, not state, so it is left intact.
-	 *
-	 * It deliberately does NOT take down a showing toast, though it used to when the alarm was a
-	 * field here. The channel is SHARED now — a failed save or load raises on it too — so clearing
-	 * it here would silence an alarm this store never raised, over a reset it has no way to relate
-	 * to. A toast is transient and self-dismissing; a session reset need not police it. */
+	/** Hard reset on a new backend session; the deps provider is config, not state, so it stays. */
 	reset(): void {
 		this.undoStack = [];
 		this.redoStack = [];

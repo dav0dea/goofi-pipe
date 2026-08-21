@@ -3,22 +3,14 @@
 export interface BaseParam {
 	value: unknown;
 	doc: string | null;
-	/** True when the node declared a refresh method for this param (device /
-	 * stream pickers) — the UI shows a ⟳ button that re-evaluates the options. */
+	/** True when the node declared a refresh method for this param. */
 	refreshable: boolean;
-	/** The source code of a bound expression, or null if none has been
-	 * authored. Surviving a toggle-off of `expression_enabled` means a
-	 * user can flip fx mode back on without losing what they typed. */
+	/** The source of a bound expression; it survives a toggle-off of `expression_enabled`. */
 	expression: string | null;
-	/** Whether the expression is currently being evaluated. UI's fx
-	 * button is bound to this; toggling fx off preserves the source. */
 	expression_enabled: boolean;
-	/** Per-expression flag: when true, a re-eval that changes the param's
-	 * value wakes the node's `process()`. */
+	/** When true, a re-eval that changes the value wakes the node's `process()`. */
 	expression_triggers_process: boolean;
-	/** The last evaluation/compile error for this expression, or null. A core
-	 * node error (surfaced on the node too); this field drives the per-param
-	 * red field indicator so the failing param is pinpointed. */
+	/** The last evaluation/compile error for this expression, or null. */
 	expression_error: string | null;
 }
 

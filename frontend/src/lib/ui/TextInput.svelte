@@ -1,21 +1,9 @@
-<!--
-  TextInput — a dumb text control (spec §2.2, §4): `value` in, `onChange` out, committing on blur /
-  Enter via the shared `useLiveValue` latch (echoes suppressed while typing). Its one variant axis is
-  `inputmode` (`text | decimal | search | path`), which sets the right mobile keyboard plus the
-  matching `enterkeyhint` / `autocapitalize` / `autocorrect` / `spellcheck` — collapsing the audit's
-  zero-`inputmode` gap into one closed union (F's responsive-keyboard requirement, baked in here).
-
-  `path` maps to the `url` inputmode: that virtual keyboard surfaces `/` and `.` and drops the space
-  bar — genuinely the filesystem-path keyboard — and keeps every variant's inputmode distinct. The
-  input is the root: `class` merged, `data-testid` (and any other attribute) forwarded via `...rest`;
-  it claims the enclosing Field's label id so clicking the label focuses it.
--->
+<!-- TextInput — a dumb text control: `value` in, `onChange` out, committed on blur / Enter. Its
+     one variant axis is `inputmode`, which carries the keyboard and editing hints. -->
 <script lang="ts">
 	import type { HTMLInputAttributes } from 'svelte/elements';
 	import { useLiveValue } from './liveValue.svelte';
 	import { claimFieldControlId } from './field';
-	// One source of truth for the per-variant keyboard + editing hints — shared with the handful of
-	// raw `<input>`s that legitimately stay native (per-keystroke bind + Enter/Escape + autofocus).
 	import { MODE_ATTRS, type InputModeVariant } from './inputMode';
 
 	let {
@@ -58,7 +46,6 @@
 />
 
 <style>
-	/* Inherits the app-wide input chrome + coarse --hit floor; just fill its container. */
 	.ui-text {
 		flex: 1 1 auto;
 		min-width: 0;

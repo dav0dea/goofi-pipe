@@ -1,12 +1,9 @@
-//! The read ops an agent uses to see what it built: a scope as a diagram, a node as a page of
-//! text. Pure reads — they clone what they need and format off the graph lock, never wait, never
-//! sample, and never write a file.
+//! The read ops an agent uses to see what it built: a scope as a diagram, a node as a page of text.
 
 use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 
-/// A uid as a mermaid node id. Mermaid ids may not start with a digit, so every node id is the uid
-/// with an `n` in front — and the raw uid rides the LABEL too, so a reader never has to know that.
+/// A uid as a mermaid node id: mermaid ids may not start with a digit, hence the leading `n`.
 fn mid(uid: Uid) -> String {
     format!("n{}", uid.to_hex())
 }
@@ -16,8 +13,8 @@ fn label(name: &str) -> String {
     name.replace(['"', '\n'], "'")
 }
 
-/// The direct members of a scope — leaves and nested sub-patch facades. `None` is the root scope,
-/// whose members are everything the `scope_of` tree does not place anywhere else.
+/// The direct members of a scope; `None` is the root, which holds everything `scope_of` places
+/// nowhere else.
 fn members(g: &Graph, scope: Option<Uid>) -> Vec<Uid> {
     match scope {
         Some(s) => g.scope_members(s),
@@ -30,9 +27,7 @@ fn members(g: &Graph, scope: Option<Uid>) -> Vec<Uid> {
     }
 }
 
-/// Which member of `scope` contains `uid` — `uid` itself when it is a direct member, else the
-/// ancestor sub-patch facade it lives inside. `None` when it is somewhere else entirely. This is
-/// what lets a flat leaf→leaf link draw as an edge onto a collapsed sub-patch.
+/// Which member of `scope` contains `uid` — itself, or the ancestor facade it lives inside.
 fn member_in(g: &Graph, scope: Option<Uid>, uid: Uid) -> Option<Uid> {
     let mut at = uid;
     loop {
@@ -55,7 +50,7 @@ fn scope_path(g: &Graph, scope: Uid) -> String {
     parts.join("/")
 }
 
-/// A node's full path, so a whole-patch error listing says WHERE the node is.
+/// A node's full path, so an error listing says where the node is.
 fn node_path(g: &Graph, uid: Uid) -> String {
     let name = g.name(uid).map(str::to_string).unwrap_or_else(|| uid.to_hex());
     match g.scope_of(uid) {
@@ -64,8 +59,7 @@ fn node_path(g: &Graph, uid: Uid) -> String {
     }
 }
 
-/// One second, one decimal — enough to tell a settling pipeline from a broken one, and no more
-/// precision than a 2 Hz observer could act on.
+/// How long an error has stood, to one decimal of a second.
 fn age(g: &Graph, uid: Uid) -> String {
     match g.error_age(uid) {
         Some(d) => format!(" — for {:.1}s", d.as_secs_f64()),
@@ -100,8 +94,7 @@ pub fn patch(
         out.push_str("\n(no nodes)\n");
     } else {
         out.push_str("\n```mermaid\nflowchart LR\n");
-        // Boundary ports first: their mermaid ids ARE their stub ids, verbatim, because that is
-        // what `wire_boundary` and friends address them by.
+        // A boundary port's mermaid id IS its stub id, which is what the ops address it by.
         for (id, stub) in stubs.into_iter().flatten() {
             out.push_str(&format!(
                 "  {id}([\"{} · {} {}\"])\n",
@@ -125,8 +118,8 @@ pub fn patch(
                 }
             }
         }
-        // The runtime links are always flat leaf→leaf, so each end is folded onto whichever member
-        // of THIS scope contains it — that is how a wire into a collapsed sub-patch gets drawn.
+        // Runtime links are flat leaf→leaf, so each end folds onto the member of THIS scope that
+        // contains it.
         let mut edges: Vec<String> = Vec::new();
         for l in g.links_view() {
             let (Some(a), Some(b)) =
@@ -134,9 +127,8 @@ pub fn patch(
             else {
                 continue;
             };
-            // Both ends folding onto ONE member means the wire is internal to a collapsed
-            // sub-patch — a fact one level down. Unless the member IS both endpoints: a node wired
-            // to its own input is a real self-loop at this level, and drawing it is the point.
+            // Both ends on ONE member is a wire internal to a collapsed sub-patch — unless the
+            // member IS both endpoints, which is a real self-loop at this level.
             if a == b && (l.node_out != a || l.node_in != b) {
                 continue;
             }
@@ -145,7 +137,7 @@ pub fn patch(
                 edges.push(e);
             }
         }
-        // A port's own wire: the stub's inner side, which is not a flat link and so is not above.
+        // The stub's inner side is not a flat link, so it is not in the loop above.
         for (id, stub) in stubs.into_iter().flatten() {
             let Some((inner, slot)) = &stub.inner else { continue };
             let Some(m) = member_in(g, scope, *inner) else { continue };
@@ -176,12 +168,10 @@ pub fn patch(
     Ok(out)
 }
 
-/// One param as the goldened inline form — the one an agent reads and then feeds straight back
-/// into `update_param` (`group.name` + value) or `set_expression` (the source + enabled).
+/// One param in the inline form an agent feeds straight back into `update_param` or
+/// `set_expression`.
 fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> String {
     use goofi_core::Param as P;
-    // Value and declared type in ONE match, so a variant cannot be described by one arm and
-    // rendered by another.
     let (value, ty) = match p {
         P::Float { value, vmin, vmax } => (format!("{value}"), format!("float {vmin}..{vmax}")),
         P::Int { value, vmin, vmax } => (format!("{value}"), format!("int {vmin}..{vmax}")),
@@ -193,8 +183,6 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
         P::Str { value, .. } => (format!("\"{value}\""), "string".to_string()),
     };
     match expr {
-        // A bound param shows its SOURCE and what it currently evaluates to, which is what
-        // `set_expression` takes back; the declared range belongs to the literal it replaced.
         Some(e) => format!(
             "expr: {} → {value} ({}){}",
             e.source,
@@ -205,14 +193,8 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
     }
 }
 
-/// `inspect_node`: the cheap peek — what the node is, what its params say, which output slots it
-/// has and whether it is emitting on them, and whether it is erroring.
-///
-/// It does NOT report the frames themselves, and has no way to: §7 leaves exactly one door onto a
-/// node's data, and it is `/data/<node>/<slot>`. An agent that wants the values subscribes to that
-/// stream like any viewer. What is left here is the question inspection can answer without one —
-/// *is anything coming out of this slot at all* — and it comes from the same measured `ufreq` the
-/// node header shows, which the status worker collects.
+/// `inspect_node`: what the node is, what its params say, which output slots it has and whether it
+/// is emitting on them. The frames themselves are only on `/data/<node>/<slot>`.
 pub fn node(
     g: &Graph,
     uid: Uid,
@@ -256,11 +238,8 @@ pub fn node(
     if manifest.outputs.is_empty() {
         out.push_str("  (none)\n");
     }
-    // The rate is the NODE's, not the slot's: `ufreq` measures how often the node RUNS, and the
-    // graph holds no per-slot rate to report. So every slot line carries the same number, and a
-    // node that writes only some of its outputs in a given run still reads as one rate here.
-    // Repeated rather than hoisted because `slot=` narrows this list to a single line, and that
-    // line has to be able to answer the question on its own.
+    // The rate is the NODE's, not the slot's: `ufreq` measures how often the node RUNS, so every
+    // slot line carries the same number.
     let rate = match g.node_ufreq(uid) {
         Some(hz) => format!("emitting at {hz:.1} Hz"),
         None => "nothing emitted yet".to_string(),
@@ -295,9 +274,7 @@ pub fn globals(g: &Graph) -> Value {
     json!({ "globals": entries })
 }
 
-/// `read_node_source`: a node type's text where it has one, and its provenance either way. A
-/// native type is compiled in — there is nothing to read and nothing to edit, which the reply
-/// says rather than leaving the caller to infer from a null.
+/// `read_node_source`: a node type's text where it has one, and its provenance either way.
 pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
     let native = goofi_node::find(ty);
     let manifest = native
@@ -307,8 +284,7 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
         manifest,
         if g.is_patch_type(ty) { "patch" } else { "builtin" },
     );
-    // The file a discovered node came from: the type name is its CamelCased stem, and the scan
-    // walks exactly these directories, so re-deriving the path here needs no second registry.
+    // The type name is its file's CamelCased stem, so the path re-derives without a registry.
     let found = dirs.iter().find_map(|(dir, provenance)| {
         let entries = std::fs::read_dir(dir).ok()?;
         let path = entries
@@ -342,15 +318,9 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
     Ok(info)
 }
 
-// ---------------------------------------------------------------------------
-// The arrangement — the flat layout read back as something a caller can navigate
-// ---------------------------------------------------------------------------
-
 use goofi_engine::layout::{Layout, Node};
 
-/// One node's line in the tree, and its children under it. A split names its axis, a panel its type
-/// and binding; both carry the share of their parent they take, which is the number a caller adjusts
-/// with `resize_split`.
+/// One node's line in the arrangement tree, and its children under it.
 fn layout_line(n: &Node, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match n {

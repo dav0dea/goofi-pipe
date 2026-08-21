@@ -1,21 +1,7 @@
 //! `/patch.gfi` — the patch as a file the BROWSER carries, in both directions.
 //!
-//! **Why this exists.** A container reaches only what was bind-mounted, and that boundary cannot be
-//! lifted from inside — no `docker run` flag means "the whole host filesystem" on Linux, macOS and
-//! Windows alike. The browser has no such limit: it runs ON the host, and its own Save/Open dialogs
-//! reach anywhere the user can. So the bytes travel over HTTP and the browser does the filesystem
-//! half. Nothing here is Docker-specific; it is simply the only door that is the same door
-//! everywhere.
-//!
-//! **What it is NOT.** This is a copy in and a copy out, not a second save semantics. `save_path`
-//! is untouched, so Ctrl-S keeps meaning "overwrite the file this patch came from" and never
-//! silently retargets a download. That distinction is the whole reason an earlier browser-download
-//! save was removed (see the `save` arm): it left the dirty flag standing and gave the save-path
-//! design a second thing to carry.
-//!
-//! **Both directions reuse the ops.** Download packs through `archive::write_gfi` — the same
-//! packer `save` uses — and upload runs the real `load` op against a staged copy. Neither route
-//! holds its own idea of what a `.gfi` is, so neither can drift from the disk path.
+//! A copy in and a copy out, not a second save semantics: `save_path` is untouched, so Ctrl-S keeps
+//! meaning "overwrite the file this patch came from".
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -25,9 +11,7 @@ use serde_json::json;
 
 use crate::AppState;
 
-/// The name the browser's Save dialog opens with. The open patch's own filename when it has one,
-/// so re-exporting a patch offers to overwrite the file it came from rather than minting
-/// `patch (3).gfi` — and a bare default when it has none.
+/// The name the browser's Save dialog opens with: the open patch's own filename, or a default.
 fn download_name(state: &AppState) -> String {
     state
         .save_path
@@ -38,12 +22,8 @@ fn download_name(state: &AppState) -> String {
         .unwrap_or_else(|| "patch.gfi".into())
 }
 
-/// `GET /patch.gfi` — pack the open patch and hand it over.
-///
-/// Packed **under the graph lock**, exactly as `save` does: the manifest and the workspace must
-/// describe one moment, and taking them separately would let a graph EDIT land between them. The pack
-/// goes through a temp file rather than a `Vec` because `archive::write_gfi` writes to a path and
-/// names its errors by that path — reusing it verbatim keeps one packer instead of two.
+/// `GET /patch.gfi` — pack the open patch and hand it over. Packed under the graph lock, so the
+/// manifest and the workspace describe one moment.
 pub(crate) async fn download(State(state): State<AppState>) -> Response {
     let mount = state.mount();
     let tmp = std::env::temp_dir().join(format!("goofi-export-{}.gfi", crate::nonce_hex()));
@@ -68,22 +48,12 @@ pub(crate) async fn download(State(state): State<AppState>) -> Response {
             bytes,
         )
             .into_response(),
-        // The patch could not be packed — this end's fault, not the caller's.
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
-/// `POST /patch.gfi` — replace the open patch with the uploaded archive.
-///
-/// The bytes are staged to a temp file and handed to the **real `load` op**, so the upload inherits
-/// every part of a load that is easy to get wrong: the fresh mount, the type registration that must
-/// precede `load_doc`, the all-or-nothing swap, the history clear, the harness stop, the broadcast.
-/// Reimplementing that here would be sixty lines of load-bearing ordering kept in step by hand.
-///
-/// `adopt: false` is the one difference, and it is the honest one: the file the user picked lives
-/// on THEIR machine, at a path this process cannot name and must not invent. The staged copy is
-/// deleted the moment the load returns, so adopting it would aim the next silent Ctrl-S at a file
-/// that no longer exists.
+/// `POST /patch.gfi` — replace the open patch with the uploaded archive, through the real `load`
+/// op. `adopt: false`, because the staged copy is deleted the moment the load returns.
 pub(crate) async fn upload(State(state): State<AppState>, body: Bytes) -> Response {
     let tmp = std::env::temp_dir().join(format!("goofi-import-{}.gfi", crate::nonce_hex()));
     if let Err(e) = std::fs::write(&tmp, &body) {
@@ -92,9 +62,6 @@ pub(crate) async fn upload(State(state): State<AppState>, body: Bytes) -> Respon
     let load = state.call("load", json!({ "path": tmp.to_string_lossy(), "adopt": false }), "upload");
     let _ = std::fs::remove_file(&tmp);
 
-    // A refused load left the open patch untouched (the arm guarantees it), so the only thing to do
-    // here is report why. 400, not 500: the overwhelmingly likely cause is the wrong file in a file
-    // dialog, which is the caller's mistake and one they can act on.
     match load {
         Ok(_) => (StatusCode::OK, "loaded\n").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, format!("{e}\n")).into_response(),

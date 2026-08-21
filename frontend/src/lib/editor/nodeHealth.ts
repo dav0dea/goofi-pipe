@@ -1,17 +1,4 @@
-/**
- * Pure health-state derivation for a node's status dot (no DOM, unit-tested).
- *
- * Four states, in priority order:
- *  - `dead`: nothing is running behind this node. Its host failed to start, or its bootstrap /
- *    `setup()` raised — and the backend does not restart it, so the dot BLINKS rather than resting.
- *  - `error`: it IS running, and its last `process()` raised.
- *  - `booting`: still coming up — `creating` (building its implementation, which for a Python node
- *    executes the module and can take seconds) or `setup` (running `setup()`).
- *  - `ok`: running.
- *
- * The dot's TONE is decided here too, so every surface that draws one — the node card, a
- * node-linked panel's bar — colours the same node the same way.
- */
+/** The one derivation of a node's status dot, so every surface that draws one agrees. */
 import type { StatusTone } from '$lib/ui';
 
 export type HealthKind = 'ok' | 'error' | 'booting' | 'dead';

@@ -1,12 +1,5 @@
-/**
- * Data-plane Web Worker (reports A11/A12/A13).
- *
- * Owns one WebSocket per (node, slot), keeps only the LATEST raw frame, and on
- * a ~display-rate tick decodes just that survivor and posts the decoded frame to
- * the main thread — transferring the array buffer (zero-copy). This moves the WS
- * receive + decode (a per-frame ArrayBuffer copy, ~180 MB/s for HD video) off
- * the main thread, and decodes ~60 frames/s/slot instead of every kHz frame.
- */
+/** Data-plane Web Worker: one WebSocket per (node, slot), latest-wins, decoded on a tick and
+ * posted to the main thread with its array buffer transferred. */
 import { decodeData, type DataFrame } from '$lib/codec/decode';
 import { dataUrl } from './dataUrl';
 import { streamKey } from './streamKey';
@@ -20,10 +13,7 @@ interface SlotState {
 	closed: boolean;
 	reconnectMs: number;
 	latestRaw: ArrayBuffer | null;
-	/** The ViewSpecs every viewer of this slot has contributed. Sent inband on
-	 * (re)connect and whenever they change; the bridge merges them against the real
-	 * frame and reduces the slot to their union. Empty until a viewer reports its
-	 * capacity (the bridge sends full-resolution frames until then). */
+	/** The ViewSpecs every viewer of this slot has contributed; empty means full resolution. */
 	specs: unknown[];
 }
 
@@ -47,7 +37,7 @@ function openWs(st: SlotState): void {
 	st.ws = ws;
 	ws.addEventListener('open', () => {
 		st.reconnectMs = 250;
-		sendSpecs(st); // re-send the ViewSpecs on every (re)connect (no server resume)
+		sendSpecs(st); // no server resume
 	});
 	ws.addEventListener('message', (e) => {
 		if (e.data instanceof ArrayBuffer) st.latestRaw = e.data; // overwrite — latest wins
@@ -79,9 +69,6 @@ function collectBuffers(frame: DataFrame, out: Set<ArrayBufferLike>): void {
 self.addEventListener('message', (e: MessageEvent) => {
 	const m = e.data as { op: string; node: string; slot: string; specs?: unknown[] };
 	const k = streamKey(m.node, m.slot);
-	// One owner decides: the viewer registry in `frames.ts` sends exactly one 'sub' per stream and
-	// one 'unsub' to end it, so there is no count to keep here. A second opinion on how many
-	// viewers a slot has is what this file used to hold, and what it must not hold again.
 	if (m.op === 'sub') {
 		let st = slots.get(k);
 		if (!st) {
@@ -93,10 +80,7 @@ self.addEventListener('message', (e: MessageEvent) => {
 			openWs(st);
 		}
 	} else if (m.op === 'spec') {
-		// Viewers reported (or updated) the ViewSpecs for this slot. The 'sub' for a
-		// slot is always posted before any 'spec' (ViewerFeed subscribes in a
-		// source-earlier effect, and every spec post is microtask-deferred), so a spec
-		// for an absent slot is only a post-unsub straggler — drop it.
+		// A 'sub' always precedes a 'spec', so a spec for an absent slot is a post-unsub straggler.
 		const st = slots.get(k);
 		if (st) {
 			st.specs = m.specs ?? [];
@@ -133,8 +117,7 @@ function drain(): void {
 	}
 }
 
-/** The decode ticker services SUBSCRIBED slots, so it runs only while there are some. Call after
- * every `slots` insert/delete; `DemandTicker.sync` is idempotent. */
+/** Call after every `slots` insert/delete; `DemandTicker.sync` is idempotent. */
 const ticker = new DemandTicker(drain, TICK_MS);
 function syncTicker(): void {
 	ticker.sync(slots.size);

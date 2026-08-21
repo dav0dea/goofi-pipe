@@ -38,8 +38,7 @@ fn a_failing_node_reports_why_and_a_healthy_one_stays_quiet() {
     let why = g.until("the fault to reach the graph", |g| g.error(bad));
     assert!(why.contains("unplugged"), "{why}");
     assert!(g.stays(|g| g.error(good).is_none()), "a healthy node has no standing error");
-    // …and the same watcher answers false for the node that DOES carry one, or the line above is
-    // decoration: a `stays` that could only ever say true would pass against any bug at all.
+    // …and false for the node that DOES carry one, or the line above is decoration.
     assert!(!g.stays(|g| g.error(bad).is_none()), "the watcher can see a fault");
 }
 
@@ -52,9 +51,7 @@ fn a_refusal_says_what_was_wrong() {
     assert!(why.contains("nope"), "the refusal names the slot: {why}");
 }
 
-/// The replicated projection — the five doc roots a client mirrors — read as plain JSON through the
-/// ordinary op path. Without this a test can only reach it by speaking the CRDT sync protocol,
-/// which pins the projection to whichever transport happens to carry it.
+/// The replicated projection read as plain JSON through the ordinary op path.
 #[test]
 fn the_state_clients_replicate_is_readable_as_plain_json() {
     let g = Goofi::new();

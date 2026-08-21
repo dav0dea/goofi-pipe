@@ -1,13 +1,5 @@
-<!-- Globals panel — a two-column key/value table over the patch's globals (the CRDT
-     `globals` root, doc-authoritative via graph().globals). Each row edits a named
-     typed scalar that expressions read as `globals.<name>` and node process/setup read
-     from `ctx.globals`.
-
-     System globals (e.g. `default_ufreq`) are editable in value but locked for
-     delete/rename (badged 🔒); user globals can be added, renamed, retyped-by-recreation,
-     and removed. All edits are command RPCs (add_global / set_global / rename_global /
-     remove_global); the manager applies each and mirrors the result back into the doc,
-     which this panel reads. -->
+<!-- Globals panel — a key/value table over the patch's globals. System globals are editable in
+     value but locked for delete/rename. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -24,15 +16,12 @@
 		Toggle
 	} from '$lib/ui';
 
-	// The globals are patch-scoped, not panel-scoped, so this panel reads none of the panel
-	// contract — but it must still DECLARE it, or its inferred props type is `{}` and the
-	// registry (`Component<PanelProps>`) won't take it.
+	// Nothing of the panel contract is read, but it must be DECLARED: without it the inferred
+	// props type is `{}` and the registry (`Component<PanelProps>`) won't take this component.
 	let {}: PanelProps = $props();
 	const g = graph();
 	const globals = $derived(g.globals);
 
-	// Add-row draft. A new global is created with a type-appropriate zero value; the user
-	// then edits the value inline. Kept minimal so the common case (name + Add) is one field.
 	let newName = $state('');
 	let newType = $state<GlobalType>('float');
 	const nameTaken = $derived(globals.some((gv) => gv.name === newName));
@@ -52,9 +41,6 @@
 		}
 	}
 
-	// Commit a value edit, parsing the raw widget value into the global's declared type.
-	// A non-numeric entry into a number type is rejected locally; a server rejection snaps the
-	// input back to the committed value on the next render (the mirrored doc is the source of truth).
 	function commitValue(gv: GlobalView, raw: string | number | boolean): void {
 		let val: number | string | boolean;
 		if (gv.type === 'bool') val = raw === true;
@@ -69,8 +55,6 @@
 		});
 	}
 
-	// Commit a rename (user globals only). On rejection (invalid / collision / system) the store keeps
-	// the current name, so the control's live-value latch snaps the field back on the next render.
 	function commitName(gv: GlobalView, raw: string): void {
 		const next = raw.trim();
 		if (next === gv.name) return;
@@ -121,10 +105,7 @@
 										onChange={(v) => commitValue(gv, v)}
 									/>
 								{:else if gv.type === 'string'}
-									<!-- Machine-read, like the name beside it: expressions resolve `globals.<name>`
-									     and nodes read `ctx.globals`, so the `text` default's autocorrect /
-									     sentence-capitalisation / spellcheck would corrupt or red-underline a
-									     perfectly good value. -->
+									<!-- Machine-read: the `text` default's autocorrect would corrupt a good value. -->
 									<TextInput
 										inputmode="search"
 										data-testid="global-value"
@@ -218,10 +199,7 @@
 		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 		vertical-align: middle;
 	}
-	/* Names AND values are mono (D-T3): a name is an expression identifier (`globals.<name>`) and a
-	   value is what an expression resolves to. Stated on the CELLS, not on each control: the ui
-	   inputs carry `font: inherit` by design, so the cell is the seam that hands them a face — and
-	   `td` keeps the `th` above it (a column header, chrome) out of it. */
+	/* Stated on the CELLS: the ui inputs carry `font: inherit`, so the cell hands them a face. */
 	td.c-name,
 	td.c-val {
 		font-family: var(--font-mono);
@@ -249,15 +227,10 @@
 	.lock {
 		font-size: var(--fs-micro);
 		filter: grayscale(1);
-		/* opacity: intentional — the padlock is a quiet affordance beside the name, not a
-		   disabled control; --disabled-opacity would read as "this row is inert". */
+		/* Not `--disabled-opacity`: the padlock is a quiet affordance, not a disabled control. */
 		opacity: 0.7;
 	}
-	/* The add-row name field is the one remaining native input (kept native for its live
-	   per-keystroke validation + Enter-to-add); the table cells are now ui primitives. Being native
-	   is also why it states its own mono rather than inheriting one: it sits OUTSIDE the table, so
-	   the `td` seam above cannot reach it — and a name being TYPED is the same identifier the cell
-	   will hold the moment Add is pressed (D-T3). */
+	/* The one native input, kept for live per-keystroke validation; the `td` seam cannot reach it. */
 	input.name {
 		width: 100%;
 		box-sizing: border-box;
@@ -291,9 +264,7 @@
 	.hint.bad {
 		color: var(--danger);
 	}
-	/* Touch: iOS force-zooms the page when a control under 16px takes focus, and `input.name`
-	   (0,1,1) out-specifies app.css's `input` floor (0,0,1) — so this one field defeated it. The
-	   threshold is absolute, not a type rung, which is why it is a literal here as it is there. */
+	/* iOS force-zooms a focused control under 16px, and `input.name` out-specifies app.css's floor. */
 	@media (hover: none) and (pointer: coarse) {
 		input.name {
 			font-size: 16px;

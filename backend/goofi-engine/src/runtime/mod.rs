@@ -1,23 +1,4 @@
 //! The per-node runtime: the wake loop's body, the three run paths, and a node's faults.
-//!
-//! A node decides for itself when to run, and there are exactly three reasons, all decided
-//! node-locally: a frame on a `trigger_process` input, `common.autotrigger`, and a value arriving
-//! in a bound non-`common` param's mailbox. Nothing here consults topology — autotrigger is
-//! INDEPENDENT of input slots, so a node that declares no trigger input and leaves autotrigger off
-//! never runs, which is correct.
-//!
-//! A [`NodeRuntime`] owns one node against a [`Transport`], and [`spawn`] gives it the thread it
-//! runs on. [`Graph`] builds one per node at birth, plans its wiring ([`plan`]) and reads back what
-//! it reports ([`Status`]); it never runs a node itself. There is no tick.
-//!
-//! The birth barrier is the one piece of ordering worth holding: a node publishes [`Status::Ready`]
-//! once its own services exist, and the graph attaches its control sink on that report and not
-//! before, because a `Control` sent earlier is published to a subscriber that does not exist and
-//! pub/sub has no history. `add_node` answers INSIDE that window — so what was said during it is
-//! re-planned on attach where the graph can re-derive it, and queued where it cannot (a
-//! `RefreshParam` is a request, not a state).
-//!
-//! [`Graph`]: crate::Graph
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +25,7 @@ pub use transport::{
     reclaim_stale_resources, service_base, sweep_once, ByteSubscriber, Doorbell, IoxNode,
     IoxTransport, NodeChannel,
 };
-/// Only [`Graph`] mints a scope, and it is in this crate.
+/// Only the graph mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;
 pub use wire::{
     Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
@@ -55,29 +36,19 @@ pub use wire::{
 /// before the gates are read and never inside a run (§1.1).
 const COMMON: &str = "common";
 
-/// `SETUP_RETRY_INTERVAL` in the wall-clock milliseconds a [`NodeFault`] carries, so the interval
-/// is stated once for the whole engine rather than once per clock.
+/// `SETUP_RETRY_INTERVAL` in the wall-clock milliseconds a [`NodeFault`] carries.
 const SETUP_RETRY_MS: f64 = crate::SETUP_RETRY_INTERVAL * 1000.0;
 
-/// How often a node reports its measured update rate. Every other [`Status`] is a transition and is
-/// sent when it happens; a rate is a MEASUREMENT and an uncapped producer takes one per emit, so
-/// reporting each would flood the status service with what the bridge coalesces to 10 Hz anyway.
+/// How often a node reports its measured update rate. A rate is a MEASUREMENT rather than a
+/// transition, and an uncapped producer would take one per emit.
 const UFREQ_REPORT_MS: u128 = 250;
 
-/// How close to its deadline a node stops listening for rings and sleeps to it instead.
-///
-/// A bounded listener wait is the only park that can be cut short by a ring, and its timeout is
-/// rounded up by the OS — to a jiffie on Linux, to the 15.6 ms scheduler tick on Windows. That
-/// rounding is harmless while the deadline is far and fatal once it is near, so the last stretch
-/// is a plain `sleep`, which no platform rounds. This is the crossover, floored by the coarsest
-/// rounding across targets plus margin. Not a tuning knob, and deliberately not adaptive: an
-/// estimate of the rounding is a bound that must never be under-shot, and a running median
-/// under-shoots half the time by construction.
+/// How close to its deadline a node stops listening for rings and sleeps to it instead. A timed
+/// wait's timeout is rounded up by the OS — to a jiffie on Linux, 15.6 ms on Windows — and `sleep`
+/// is not, so the last stretch uses it. Not a tuning knob, and deliberately not adaptive.
 const LISTEN_FLOOR: Duration = Duration::from_millis(25);
 
-/// The smoothing factor of the `ufreq` EMA: how much the newest inter-emit interval moves the
-/// estimate. Low enough that a single slow frame does not swing the readout, high enough that a
-/// real rate change is visible within a second.
+/// The smoothing factor of the `ufreq` EMA: how much the newest interval moves the estimate.
 const UFREQ_EMA_ALPHA: f64 = 0.2;
 
 /// The `ufreq` meter's state: when this node last emitted, and the smoothed interval between emits.
@@ -87,15 +58,13 @@ struct UfreqMeter {
     ema: Option<f64>,
 }
 
-/// The one thing that stops a node's manager-side thread. See [`wire`]'s note on why this is a flag
-/// and not a `Control::Terminate`: a node removed before it answered [`Status::Ready`] has no sink,
-/// and a whole-graph `clear` has no sequence to order.
+/// The one thing that stops a node's manager-side thread. A flag rather than a control message: a
+/// node removed before it answered [`Status::Ready`] has no sink to receive one.
 #[derive(Default)]
 pub struct Halt {
     stop: AtomicBool,
     /// Set once the [`NodeRuntime`] — and with it every iceoryx2 port — has been DROPPED, which is
-    /// what releases the shared memory. The halt flag says the thread was asked; this says it is
-    /// done, and it is the only thing a teardown can usefully wait for.
+    /// what releases the shared memory. The only thing a teardown can usefully wait for.
     released: AtomicBool,
 }
 
@@ -159,7 +128,7 @@ pub struct NodeRuntime {
     started: Instant,
 
     /// Something asked this node to run and it has not run since. Autotrigger is not here — it
-    /// lives in `run_policy`, beside the cap that paces it, so there is nothing to keep in step.
+    /// lives in `run_policy`, beside the cap that paces it.
     pub(crate) trigger_pending: bool,
     pub(crate) run_policy: RunPolicy,
     pub(crate) last_run: Option<Instant>,
@@ -167,23 +136,22 @@ pub struct NodeRuntime {
     pub(crate) common_dirty: bool,
 
     /// The param RECORD: literals only, which is what the `.gfi` persists and what a broken or
-    /// not-yet-arrived binding falls back to (§2.1). Kept apart from `effective` because an
-    /// evaluated value would otherwise erase the number the user authored.
+    /// not-yet-arrived binding falls back to (§2.1). Apart from `effective`, or an evaluated value
+    /// would erase the number the user authored.
     pub(crate) literals: ParamGroups,
     /// The node's FULL params — the literal record overlaid with evaluated bindings. What
     /// `process()` reads and what `RunPolicy::from_params` is given.
     pub(crate) effective: ParamGroups,
     /// The SPARSE bound subset, which exists only as the wire projection in
-    /// [`Status::ParamValues`]. Handing THIS to `RunPolicy::from_params` would silently default
-    /// every absent key — which is why the two maps are named apart (§2).
+    /// [`Status::ParamValues`]. Handing THIS to `RunPolicy::from_params` would default every
+    /// absent key.
     pub(crate) evaluated: IndexMap<ParamKey, Param>,
     pub(crate) bindings: IndexMap<ParamKey, Binding>,
 
     /// Latest-wins input cells, one per declared single input slot.
     pub(crate) inputs: IndexMap<&'static str, Option<Data>>,
     /// Per-WIRE latest-wins cells for each `multi` input slot, in the order the last `InSlot` set
-    /// named — which IS `Inputs::get_multi`'s connection order. Apart from [`Self::inputs`] because
-    /// the two partition the manifest's slots, and the required-input gate has to see both.
+    /// named — which IS `Inputs::get_multi`'s connection order.
     pub(crate) multi_wires: IndexMap<&'static str, Vec<(ServiceName, Option<Data>)>>,
     pub(crate) ctx: NodeCtx,
     /// Per-output-slot emit counter for `meta["index"]` — engine-owned, the node never sees it.
@@ -191,20 +159,17 @@ pub struct NodeRuntime {
     /// Per-NODE measured update rate for `meta["ufreq"]`: one meter, stamped onto every slot this
     /// node emits, because ufreq describes the node rather than a slot.
     ufreq_meter: UfreqMeter,
-    /// When the rate was last REPORTED, which is not when it was last measured — see
-    /// [`UFREQ_REPORT_MS`].
+    /// When the rate was last REPORTED, which is not when it was last measured.
     last_ufreq_report: Option<Instant>,
     stage: NodeStage,
 
     pub(crate) fault: Option<NodeFault>,
-    /// A MAP, not a fault variant: several bindings can be errored at once, each rendering on its
-    /// own field. [`NodeFault::Expr`] is the derived node-level roll-up, not the record.
+    /// A MAP, not a fault variant: several bindings can be errored at once, each on its own field.
     pub(crate) binding_errors: HashMap<ParamKey, String>,
     initialized: bool,
 }
 
-/// Everything a node's thread needs that is the GRAPH's rather than the node's. One struct because
-/// each is handed over at birth and never replaced — a restart builds a new runtime.
+/// Everything a node's thread needs that is the GRAPH's rather than the node's.
 pub struct NodeEnv {
     pub evaluator: Option<Arc<dyn ExprEvaluator>>,
     pub globals: Arc<ArcSwap<GlobalsSnapshot>>,
@@ -213,7 +178,7 @@ pub struct NodeEnv {
 
 impl NodeEnv {
     /// The environment of a node that belongs to no graph — what a test driving a [`NodeRuntime`]
-    /// directly gets, and what `NodeCtx::default` already meant by empty globals.
+    /// directly gets.
     pub fn detached() -> NodeEnv {
         NodeEnv {
             evaluator: None,
@@ -226,9 +191,6 @@ impl NodeEnv {
 impl NodeRuntime {
     /// Seed the node's params, then `setup()`. A failing `setup` leaves it UNINITIALIZED with a
     /// [`NodeFault::Setup`] standing, and nothing runs against it until a retry succeeds.
-    ///
-    /// `params` is the record the graph holds, so the node's literals and the `.gfi` are the same
-    /// numbers from its first `setup()` rather than from its first param message.
     pub fn new(
         manifest: &'static NodeManifest,
         node: Box<dyn Node>,
@@ -267,9 +229,8 @@ impl NodeRuntime {
             binding_errors: HashMap::new(),
             initialized: false,
         };
-        // §4's birth barrier: the graph addresses nothing until this lands, because the control
-        // SUBSCRIBER now exists and a message published before it did would simply be lost. Sent
-        // before `setup()` runs, so a `setup` that fails at birth still has somewhere to report to.
+        // §4's birth barrier: the graph addresses nothing until this lands. Sent before `setup()`
+        // runs, so a `setup` that fails at birth still has somewhere to report to.
         runtime.transport.report(Status::Ready);
         runtime.transport.report(Status::Stage { stage: NodeStage::Setup });
         runtime.initialize();
@@ -278,8 +239,7 @@ impl NodeRuntime {
     }
 
     /// Announce the node's lifecycle stage when it CHANGED. `error` is the graph's derivation from
-    /// the fault and is deliberately not a stage a node can claim, so an initialized node is
-    /// `ready` whatever its last `process` did.
+    /// the fault and is not a stage a node can claim.
     fn publish_stage(&mut self) {
         let next = if self.initialized { NodeStage::Ready } else { NodeStage::Setup };
         if next != self.stage {
@@ -287,10 +247,6 @@ impl NodeRuntime {
             self.transport.report(Status::Stage { stage: next });
         }
     }
-
-    // -----------------------------------------------------------------------
-    // The gates (§2)
-    // -----------------------------------------------------------------------
 
     /// Whether this wake runs `process()`. An autotriggering node always wants to; any other node
     /// runs when something triggered it; both are held to the rate cap.
@@ -304,13 +260,8 @@ impl NodeRuntime {
         (self.run_policy.autotrigger || self.trigger_pending).then(|| self.cap_release())
     }
 
-    /// When the cap next admits a run: one period after the last one. `None` means now — an
-    /// uncapped node, or one that has yet to run.
-    ///
-    /// The cap says ONE thing — at least `1/max_frequency` between two runs — and it is read
-    /// fresh from `last_run` every time, never carried as a standing deadline. That is what makes
-    /// a cap edited mid-park take effect on the spot, with nothing to re-anchor and no schedule
-    /// to catch up on.
+    /// When the cap next admits a run: one period after the last one. `None` means now. Read fresh
+    /// from `last_run` every time, so a cap edited mid-park takes effect on the spot.
     fn due(&self) -> Option<Instant> {
         Some(self.last_run? + Duration::from_secs_f64(self.run_policy.period()?))
     }
@@ -319,19 +270,13 @@ impl NodeRuntime {
         self.due().is_none_or(|d| Instant::now() >= d)
     }
 
-    /// How long until the cap admits another run. Zero when it already does — an uncapped node
-    /// wakes immediately, which is what free-running means.
+    /// How long until the cap admits another run. Zero when it already does.
     fn cap_release(&self) -> Duration {
         self.due().map_or(Duration::ZERO, |d| d.saturating_duration_since(Instant::now()))
     }
 
-    // -----------------------------------------------------------------------
-    // The wake loop (§2)
-    // -----------------------------------------------------------------------
-
-    /// One iteration of the wake loop, minus the park: §3.3 makes a notification a pure hint — the
-    /// truth is in the control mailbox and the latest-wins cells — so the drain never consults the
-    /// event ids, and [`Self::run_forever`] wraps this rather than replacing it.
+    /// One iteration of the wake loop, minus the park. §3.3 makes a notification a pure hint, so
+    /// the drain never consults the event ids.
     pub fn run_once(&mut self) {
         // Frames FIRST: a control message may re-wire the slot a frame just arrived on, and
         // applying the wiring before draining would throw away the frame the old wire delivered.
@@ -354,11 +299,8 @@ impl NodeRuntime {
         }
     }
 
-    /// Apply every waiting control message and ACK each one — the wire sequence's phases are
-    /// ordered by nothing else, so a message applied but not acked stalls the change that sent it.
-    ///
-    /// Slot messages go to the transport: which subscribers a wire needs is its subject, not this
-    /// one's, which is when to run.
+    /// Apply every waiting control message and ACK each one — a message applied but not acked
+    /// stalls the wire change that sent it. Slot messages go to the transport.
     fn drain_control(&mut self) {
         let transport = self.transport.clone();
         for Envelope { seq, control } in transport.drain_control() {
@@ -385,8 +327,7 @@ impl NodeRuntime {
     }
 
     /// Re-enumerate a refreshable `Str` param's options and report them (§8.5). The hook is
-    /// third-party code and it runs here rather than under the graph lock, which is the whole point
-    /// of the move — but a panic in it still has to become a report rather than kill this thread.
+    /// third-party code, so a panic in it has to become a report rather than kill this thread.
     fn refresh_param(&mut self, key: ParamKey) {
         // D3: an interaction retries the initialization first, so a picker whose node failed
         // `setup()` rescans as soon as that node comes up.
@@ -398,8 +339,8 @@ impl NodeRuntime {
         };
         self.publish_stage();
         if let Some(options) = &options {
-            // The record moves too, so the next `serialize` and the next inspector read agree with
-            // what was just reported rather than with the type's declaration.
+            // The record moves too, so the next `serialize` and inspector read agree with what was
+            // just reported.
             if let Some(Param::Str { options: slot, .. }) =
                 self.literals.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
             {
@@ -414,9 +355,8 @@ impl NodeRuntime {
         self.transport.report(Status::RefreshOptions { key, options });
     }
 
-    /// Apply a slot's new wire set to the node's OWN cells. The transport keeps the subscribers;
-    /// these are the frames already in hand, and what happens to them is the runtime's call: a
-    /// surviving wire keeps its frame, a wire that left takes its frame with it.
+    /// Apply a slot's new wire set to the node's OWN cells: a surviving wire keeps its frame, and a
+    /// wire that left takes its frame with it.
     fn reslot(&mut self, slot: &str, services: &[ServiceName]) {
         if let Some(cells) = self.multi_wires.get_mut(slot) {
             let mut previous = std::mem::take(cells);
@@ -442,8 +382,7 @@ impl NodeRuntime {
     }
 
     /// Write a param. A `Literal` on a bound param unbinds it (§3.4); an `Expr` binds it and is
-    /// evaluated once here — the authoring moment — because without that a binding error can
-    /// neither appear nor clear on a node that never runs (§2.1).
+    /// evaluated once here, or a binding error could never appear on a node that never runs.
     pub fn set_param(&mut self, key: ParamKey, value: ParamValue) {
         // §5.2: a re-send carrying a resolved value IS an arrival — that is how a globals edit
         // reaches a bound param — while binding a bare `nd()` reference only subscribes.
@@ -473,8 +412,7 @@ impl NodeRuntime {
             ParamValue::Expr { source, vars, trigger, id } => {
                 let binding = Binding::new(source, vars, trigger, id);
                 // §5.3: an expression reference IS a link, so its producers are subscribed through
-                // the one subscribe door every wire goes through — on a pseudo-slot named after the
-                // param, which is what lets a frame arriving there address a variable.
+                // the one subscribe door, on a pseudo-slot named after the param.
                 let services: Vec<ServiceName> =
                     binding.streams.iter().map(|(_, service)| service.clone()).collect();
                 let _ = self.transport.wire_in(&expr_wire_slot(&key), &services);
@@ -492,14 +430,12 @@ impl NodeRuntime {
             }
         };
         self.arrived(&key, triggering);
-        // A param write is an INTERACTION, and an interaction retries the initialization first: a
-        // node whose `setup()` failed on a bad param has no other way back when it never runs.
+        // A param write is an INTERACTION, and an interaction retries the initialization first.
         // Unthrottled, unlike a wake — this is a user asking.
         let was_initialized = self.initialized;
         let healed = self.ensure_initialized() && !was_initialized;
         // `initialize` replays the whole record through `on_param_changed`, so a retry that
-        // succeeded has already delivered this edit — notifying again would double-apply it. And
-        // an UNINITIALIZED node hears nothing at all (D3).
+        // succeeded has already delivered this edit. An UNINITIALIZED node hears nothing (D3).
         if let Some(p) = literal {
             if self.initialized && !healed && key.group != COMMON {
                 self.on_param_changed(&key, &p);
@@ -507,13 +443,8 @@ impl NodeRuntime {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // The three arrival paths (§1)
-    // -----------------------------------------------------------------------
-
     /// A frame off one of this node's wires. ONE door for a declared slot and a bound param alike:
     /// an [`expr_wire_slot`] name lands in a binding's mailbox, a declared one in an input cell.
-    /// A `trigger_process` slot wakes the node; a reference slot only updates the cell.
     pub fn deliver_input(&mut self, slot: &str, wire: usize, frame: Data) {
         if let Some(key) = expr_wire_key(slot) {
             let Some(binding) = self.bindings.get_mut(&key) else {
@@ -533,9 +464,8 @@ impl NodeRuntime {
         if decl.multi {
             match self.multi_wires.get_mut(decl.name).and_then(|cells| cells.get_mut(wire)) {
                 Some(cell) => cell.1 = Some(frame),
-                // A wire index the last `InSlot` set does not name — a frame that crossed the
-                // sequence that removed it. Dropped rather than appended: appending would put the
-                // frame at a position `Inputs::get_multi` reads as a different producer's.
+                // A wire index the last `InSlot` set does not name. Dropped rather than appended:
+                // appending would put the frame where `Inputs::get_multi` reads another producer.
                 None => return,
             }
         } else {
@@ -546,22 +476,15 @@ impl NodeRuntime {
         }
     }
 
-    /// What an arrival does to the schedule, stated ONCE and by key NAMESPACE rather than per
-    /// path. Both planes call it: the same `common.autotrigger` arrives on the data plane when
-    /// bound to `nd('gate')` and on the control plane when bound to a global.
+    /// What an arrival does to the schedule, stated ONCE and by key NAMESPACE rather than per path.
     fn arrived(&mut self, key: &ParamKey, trigger: bool) {
         if key.group == COMMON {
-            // Re-pacing is not a reason to run, so `trigger` is IGNORED on this namespace: a
-            // producer runs anyway, and a consumer must not fire because a global changed.
+            // Re-pacing is not a reason to run, so `trigger` is IGNORED on this namespace.
             self.common_dirty = true;
         } else if trigger {
             self.trigger_pending = true;
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Bindings (§2.1)
-    // -----------------------------------------------------------------------
 
     /// The `common.*` bindings, evaluated on ARRIVAL because they decide whether a run happens at
     /// all — the deliberate exception to §2.1's evaluate-before-the-run rule.
@@ -579,9 +502,8 @@ impl NodeRuntime {
         let mut errors: Vec<(ParamKey, Option<String>)> = Vec::new();
         let mut values_changed = false;
         for key in keys {
-            // An empty mailbox is not an error — the literal stands. The target param is the type
-            // template the evaluator coerces to, and it is the LITERAL rather than the last
-            // evaluated value, which would let a binding drift its own type between runs.
+            // An empty mailbox is not an error — the literal stands. The target is the LITERAL
+            // rather than the last evaluated value, which would let a binding drift its own type.
             let target = self.literal(&key).unwrap_or_else(|| Param::float(0.0, f64::NEG_INFINITY, f64::INFINITY));
             let now = self.ctx.now;
             let evaluator = self.evaluator.clone();
@@ -605,8 +527,7 @@ impl NodeRuntime {
             }
             self.set_effective(&key, next.clone());
             // The hook is the only way an evaluated value reaches a node's mirrored field. A
-            // `common.*` param has none — it is the scheduler's — and an UNINITIALIZED node hears
-            // nothing: the value is in the record, so the retry's replay delivers it.
+            // `common.*` param has none, and an UNINITIALIZED node gets it from the retry's replay.
             if key.group != COMMON && self.initialized {
                 self.on_param_changed(&key, &next);
             }
@@ -635,10 +556,8 @@ impl NodeRuntime {
         }
     }
 
-    /// Record or clear a binding's error, answering only when it CHANGED. The map is the record
-    /// and the status is a delta, so an unchanged error is silent and a cleared one is announced.
-    /// A delta is safe only because the graph files it against the INSTANCE: this map is born
-    /// empty, so a reborn node has nothing to announce clearing and must not need to.
+    /// Record or clear a binding's error, answering only when it CHANGED. The status is a delta,
+    /// which is safe only because the graph files it against the INSTANCE.
     fn record_binding_error(
         &mut self,
         key: &ParamKey,
@@ -675,10 +594,6 @@ impl NodeRuntime {
         self.effective.entry(key.group.clone()).or_default().insert(key.name.clone(), value);
     }
 
-    // -----------------------------------------------------------------------
-    // Running, and faults (§6)
-    // -----------------------------------------------------------------------
-
     fn run(&mut self) {
         // The frame that asked for this run has been seen; holding it would fire the node twice
         // the moment it recovers. Consumed whether or not the run itself gets as far as `process`.
@@ -713,11 +628,10 @@ impl NodeRuntime {
         match result {
             Ok(()) => {
                 // Clearing on success is safe because `process` is unreachable while a setup error
-                // stands, so a clean run PROVES setup succeeded. It does NOT clear a binding
-                // error, which only that binding evaluating successfully clears.
+                // stands. It does NOT clear a binding error, which only a good evaluation clears.
                 self.set_fault(None);
-                // The engine's own meta goes on before anything leaves the node, so a consumer and
-                // a viewer read the same `index`/`ufreq` — there is no second stamping site.
+                // The engine's own meta goes on before anything leaves the node — there is no
+                // second stamping site.
                 let ufreq = stamp_meta(
                     self.manifest,
                     &self.inputs,
@@ -738,8 +652,7 @@ impl NodeRuntime {
     }
 
     /// A `required` input slot holding no frame, or `None`. Read over the WIRE CELLS: a `multi`
-    /// slot's frames live in [`Self::multi_wires`], so reading `inputs` alone passes every node
-    /// with a required multi slot.
+    /// slot's frames live in [`Self::multi_wires`], not in `inputs`.
     fn missing_required(&self) -> Option<&'static str> {
         self.manifest.inputs.iter().filter(|s| s.required).find_map(|slot| {
             let absent = if slot.multi {
@@ -773,8 +686,7 @@ impl NodeRuntime {
     }
 
     /// The initialization gate (D3): a node whose `setup()` failed is UNINITIALIZED, so nothing
-    /// runs against it — not `process`, not a param callback — and any interaction retries the
-    /// initialization first. Answers whether the node may be run against.
+    /// runs against it, and any interaction retries the initialization first.
     fn ensure_initialized(&mut self) -> bool {
         if self.initialized {
             return true;
@@ -797,8 +709,7 @@ impl NodeRuntime {
         self.ensure_initialized()
     }
 
-    /// The param replay and `setup()` together, which are one unit — a retry re-runs both, on the
-    /// same instance.
+    /// The param replay and `setup()` together, which are one unit — a retry re-runs both.
     fn initialize(&mut self) {
         let attempt = now_ms();
         match crate::seed_node(&mut *self.node, &self.effective, &mut self.ctx) {
@@ -814,11 +725,8 @@ impl NodeRuntime {
         }
     }
 
-    /// Install a fault, keeping `since` when nothing changed — the node reports only TRANSITIONS,
-    /// so an error recurring every run is one console line rather than one per run.
-    ///
-    /// An unchanged fault still moves the rest of the record. `last_attempt` is one: freezing it
-    /// at the first failure turns the backoff off entirely. `since` is what must not move.
+    /// Install a fault, keeping `since` when nothing changed — the node reports only TRANSITIONS.
+    /// An unchanged fault still moves `last_attempt`, or the backoff turns off entirely.
     fn set_fault(&mut self, next: Option<NodeFault>) {
         let unchanged = match (&self.fault, &next) {
             (Some(current), Some(next)) => {
@@ -842,35 +750,27 @@ impl NodeRuntime {
         self.transport.report(Status::Fault { fault: self.fault.clone() });
     }
 
-    /// The node-level roll-up the editor's badge draws: the standing fault, or — when there is
-    /// none — the lowest-keyed binding error, which is `entry_error`'s precedence.
     /// Run the node until it is halted — the body of its manager-side thread (§2). One loop for
-    /// every execution kind: a native Rust node, an in-process Python node and a subprocess node's
-    /// proxy differ only in what `process()` does.
+    /// every execution kind, which differ only in what `process()` does.
     pub fn run_forever(mut self, halt: Arc<Halt>) {
         while !halt.stopped() {
             self.run_once();
             match self.next_wake() {
                 // Nothing due: block until something rings. Indefinitely, because every reason to
-                // wake IS a ring — a frame, a control message, and the [`Halt`] flag, which
-                // `NodeHost::signal_stop` rings the door for precisely so this park does not have
-                // to poll for it.
+                // wake IS a ring — the [`Halt`] flag included, whose door `signal_stop` rings.
                 None => {
                     self.transport.wait(None);
                 }
-                // Due now — an uncapped free-runner. Looping straight back is what §8.9 means by
-                // "an uncapped producer saturates a core"; parking on a zero timeout would add a
-                // syscall per run and change nothing.
+                // Due now — an uncapped free-runner. Parking on a zero timeout would add a syscall
+                // per run and change nothing.
                 Some(d) if d.is_zero() => continue,
                 // Due, but not yet: listen while the deadline is far enough away that the wait's
                 // rounding has room, so a ring is still answered at once.
                 Some(d) if d > LISTEN_FLOOR => {
                     self.transport.wait(Some(d - LISTEN_FLOOR));
                 }
-                // The last stretch. `sleep` is the one timed primitive no platform rounds, and a
-                // node this close to its deadline has nothing to multiplex: it already knows what
-                // it does next. The zero-timeout wait is what keeps the listener drained while
-                // this park is deaf to it.
+                // The last stretch. `sleep` is the one timed primitive no platform rounds; the
+                // zero-timeout wait keeps the listener drained while this park is deaf to it.
                 Some(d) => {
                     self.transport.wait(Some(Duration::ZERO));
                     std::thread::sleep(d);
@@ -880,15 +780,8 @@ impl NodeRuntime {
     }
 }
 
-/// Give a node its own thread. The [`NodeRuntime`] is built INSIDE it, which is what takes
-/// `setup()` off the graph lock — a `setup` that opens a device is exactly the one that blocks.
-/// The transport is the caller's, because its failure has nowhere to be reported to.
-/// How a node's instance is BUILT, deferred so the building happens on the node's own thread.
-///
-/// A Python node's construction executes its module, and a module that imports numba is seconds of
-/// CPU. The caller is `Graph::add_node`, which holds the graph mutex — so constructing there put
-/// the whole control plane behind an import: measured, 8.0 s for the first antropy node, during
-/// which no op answered and no delta reached a browser.
+/// How a node's instance is BUILT, deferred so the building happens on the node's own thread. A
+/// Python node's construction executes its module, and `Graph::add_node` holds the graph mutex.
 pub type NodeBuild = Box<dyn FnOnce(&ParamGroups) -> Box<dyn Node> + Send>;
 
 pub fn spawn(
@@ -906,8 +799,7 @@ pub fn spawn(
             // device — and releases at once rather than after the import it no longer needs.
             if !halt.stopped() {
                 // `run_forever` takes the runtime by value, so returning from it drops this node's
-                // whole iceoryx2 end. Only after that is the node's shared memory actually gone,
-                // which is why the flag is raised HERE and not inside the loop.
+                // whole iceoryx2 end — which is why the flag is raised HERE and not in the loop.
                 let node = build(&params);
                 NodeRuntime::new(manifest, node, params, transport, env).run_forever(halt.clone());
             }
@@ -926,14 +818,8 @@ fn frame_count(d: &Data) -> usize {
 }
 
 /// Stamp the engine-owned meta on every frame just emitted, and answer the node's measured rate.
-///
-/// **index** propagates from the SINGLE index-bearing TRIGGERING input whose frame count equals
-/// the output's — the same data timeline, so an upstream drop stays visible downstream. A
-/// reference input is never a candidate even when its length matches. With zero or several
-/// matches, the slot starts a fresh counter advancing one per emit.
-///
-/// **ufreq** is the NODE's measured rate: an EMA of the inter-emit interval, `None` until a second
-/// emit, the same value on every slot. Authoritative — never inherited from upstream meta.
+/// `index` follows the one matching TRIGGERING input, else a fresh per-slot counter; `ufreq` is the
+/// node's own EMA, never inherited from upstream.
 fn stamp_meta(
     manifest: &'static NodeManifest,
     inputs: &IndexMap<&'static str, Option<Data>>,

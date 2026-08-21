@@ -1,27 +1,9 @@
-/**
- * The pure assembly that builds render-time `InstanceInfo` records for the sub-patch forest from the
- * CRDT doc (Phase-2 instances read cutover — see the plan doc). Kept Svelte-free and doc-handle-free
- * so it unit-tests directly; the store gathers `instanceViews(doc)` + node identities + a runtime
- * error lookup and calls this.
- *
- * Flat model: the doc mirror persists only a scope's STRUCTURAL fields (`name`, `parent`, `pos`,
- * `members: uid→{is_instance}`, `stubs: id→{dir,dtype,name,pos,inner_node?,inner_slot?}` — read into
- * the view's `interface`). No sharing (no def_id/kind/siblings). Every other render field is
- * reconstructed here to MATCH the backend's `describe_instance`:
- *
- *   slots     — a stub is a slot iff wired (`inner_node != null`), keyed `stub_id → dtype`, by `dir`.
- *   is_instance — a member uid that is itself a nested scope.
- *   error     — runtime (first errored descendant); supplied by the caller's overlay, NOT the doc.
- *   viewers   — a backend stub ({} end-to-end today).
- *
- * ROOT is NOT mirrored (the manager writes only real scope uids), so `assembleRoot` synthesizes it
- * exactly as the backend's `root_instance`: its members are every TOP-LEVEL entity keyed by uid.
- */
+/** Render-time `InstanceInfo` records for the sub-patch forest; what the doc does not mirror is
+ * reconstructed here to MATCH the backend's `describe_instance`. */
 import type { InstanceInfo, SubPatchPort } from '$lib/api/control';
 import type { InstanceView, BoundaryView } from './graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 
-/** Map a doc `BoundaryView` to the render `SubPatchPort` (the interface value type). */
 function toPort(b: BoundaryView): SubPatchPort {
 	return {
 		dir: b.dir === 'in' ? 'in' : 'out',
@@ -33,8 +15,7 @@ function toPort(b: BoundaryView): SubPatchPort {
 	};
 }
 
-/** Assemble ONE sub-patch scope from its doc view + the live scope-uid set (for `members.is_instance`)
- * + its runtime error overlay. Pure. Members are keyed by uid (flat model: no template locals). */
+/** Assemble ONE sub-patch scope from its doc view, the live scope-uid set and its runtime error overlay. */
 export function assembleInstance(
 	view: InstanceView,
 	instanceUids: Set<string>,
@@ -67,8 +48,7 @@ export function assembleInstance(
 	};
 }
 
-/** Synthesize the ROOT scope (the top-level canvas). Not mirrored — its members are every TOP-LEVEL
- * entity (a node/scope owned by no scope), keyed by uid, mirroring the backend's `root_instance`. */
+/** Synthesize the ROOT scope: it is not mirrored, so its members are every entity no scope owns. */
 export function assembleRoot(
 	nodes: { uid: string; name: string }[],
 	instances: InstanceView[]
@@ -91,10 +71,7 @@ export function assembleRoot(
 	};
 }
 
-/** A scope's deep error = the first errored descendant across its subtree (mirroring the backend
- * `instance_error`): a plain member's runtime NODE error, or a nested scope's own derived error.
- * `null` when the whole subtree is healthy. Derived — the bridge only emits `error` keyed by a real
- * node uid, never a scope uid. */
+/** A scope's deep error: the first errored descendant — derived, as the bridge keys `error` by node uid. */
 export function instanceError(
 	view: InstanceView,
 	byUid: Map<string, InstanceView>,
@@ -108,9 +85,7 @@ export function instanceError(
 	return null;
 }
 
-/** Build the full render instances map (INCLUDING synthetic ROOT) from the doc's scope forest +
- * node identities + a NODE-error lookup (each scope's deep error is derived from its members).
- * Pure — the store gathers the inputs and calls this. */
+/** Build the full render instances map, including the synthetic ROOT. */
 export function assembleInstances(
 	instances: InstanceView[],
 	nodes: { uid: string; name: string }[],

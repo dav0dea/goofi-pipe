@@ -1,7 +1,4 @@
-/** Compact numeric label for a tick / bound: a fixed precision ladder that keeps
- * small values readable and falls back to exponential at the extremes. Shared by the
- * array + trajectory viewers and the param-field bounds (the single source of truth for
- * this presentation rule). Non-finite → '' so a NaN/Infinity never renders as a label. */
+/** Compact numeric label for a tick or bound; non-finite → '' so no NaN ever renders. */
 export function formatTick(v: number): string {
 	if (!Number.isFinite(v)) return '';
 	const abs = Math.abs(v);

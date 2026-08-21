@@ -1,16 +1,5 @@
-<!-- Console panel — a Chrome-devtools-style log of every node's stdout/stderr. The lines arrive on
-     the control WS like every other event and are buffered by `stores/console.svelte.ts`, so this
-     panel subscribes to a ring, never to a transport. Shows all nodes by default; the bar's node
-     picker — the same `NodeSelect` the node-linked panels wear — filters to one node, and so does
-     dragging a node onto the panel. stdout/stderr chips filter by stream.
-
-     Every entry renders the same way: wrapped monospace text, clamped to 3 lines
-     by default (CSS line-clamp). An entry that overflows 3 lines shows a caret
-     and clicks to expand to its full height. The list is virtualized over the
-     console store's ring buffer with a cumulative-height model — each rendered
-     row's real height is measured (ResizeObserver) and fed into a prefix-sum so
-     the scrollbar stays accurate at any line count. Auto-scrolls to the newest
-     line unless the user has scrolled up. -->
+<!-- Console panel — every node's stdout/stderr, virtualized over the console store's ring buffer
+     with a measured cumulative-height model. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import { consoleStore, type ConsoleEntry, type ConsoleView } from '$lib/stores/console.svelte';
@@ -30,8 +19,6 @@
 	const cs = consoleStore();
 
 	const filterName = $derived(linkedNodeName(linkState)); // the bound node's uid (identity)
-	/** Every node the console names is keyed by uid (the store ingests what the bridge sends). A
-	 * label shows the display name — on each row's source button (the bar's picker builds its own). */
 	const nodeLabel = (uid: string): string => graph().nodeById(uid)?.name ?? uid;
 	const dragActive = $derived(uiStore.nodeDrag !== null);
 	const over = $derived(uiStore.nodeDragTarget === panelId);
@@ -41,19 +28,11 @@
 
 	const OVERSCAN = 8;
 
-	// Per-row expansion + measured geometry, keyed by uid. Panel-local: wrapped
-	// heights depend on *this* panel's width, so they can't live in the store.
+	// Panel-local: wrapped heights depend on *this* panel's width, so they can't live in the store.
 	let expanded = $state(new Set<number>());
 	let measured = $state(new Map<number, { h: number; trunc: boolean }>());
 
-	/**
-	 * The row's content floor, in the px `estimateRowHeight` computes in (C16). A row is one 16px
-	 * text line on a fine pointer, but every control it hosts — the node chip and the copy button —
-	 * is floored to `--hit` under a coarse one, so the row is too while its TEXT still says 16.
-	 *
-	 * Read from the same token, behind the same query, the CSS floors with, so the two cannot drift.
-	 * Not a device branch: a measurement of the floor that is actually in force.
-	 */
+	/** The row's content floor in px, read from the same token and query the CSS floors with. */
 	function contentFloor(): number {
 		if (typeof window === 'undefined') return 0;
 		if (!window.matchMedia('(hover: none) and (pointer: coarse)').matches) return 0;
@@ -63,13 +42,10 @@
 		return measured.get(e.uid)?.h ?? estimateRowHeight(e.lines, expanded.has(e.uid), floor);
 	}
 	function expandable(e: ConsoleEntry): boolean {
-		// Truncated once measured; before that, fall back to logical line count.
 		return measured.get(e.uid)?.trunc ?? e.lines > COLLAPSE_LINES;
 	}
 
-	// Observe a rendered row: record its height (for the offset model) and, while
-	// collapsed, whether its text is clipped (→ expandable). ResizeObserver fires
-	// after layout, so writing `measured` here can't recurse into the row's size.
+	// ResizeObserver fires after layout, so writing `measured` here can't recurse into the size.
 	function measure(node: HTMLElement, params: { uid: number; exp: boolean }) {
 		let cur = params;
 		const report = (): void => {
@@ -103,9 +79,7 @@
 		expanded = next;
 	}
 
-	// A text-selection drag ends with a mouseup→click on the row, which would
-	// otherwise toggle it. Record where the press started; only a stationary click
-	// with nothing selected counts as a pure click that toggles.
+	// A text-selection drag ends with a click on the row; only a stationary click toggles it.
 	let downX = 0;
 	let downY = 0;
 	function onRowDown(ev: MouseEvent): void {
@@ -114,13 +88,10 @@
 	}
 	function onRowClick(ev: MouseEvent, uid: number, canToggle: boolean): void {
 		if (!canToggle) return;
-		// A text-selection drag travels before the mouseup; a pure click barely
-		// moves. Anything past a few px is a selection, not a toggle.
 		if (Math.hypot(ev.clientX - downX, ev.clientY - downY) > 4) return;
 		toggle(uid);
 	}
 
-	// Copy one entry's full text; flash a check on the button briefly.
 	let copiedUid = $state(-1);
 	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 	async function copy(text: string, uid: number): Promise<void> {
@@ -137,10 +108,7 @@
 		clearTimeout(copiedTimer);
 	});
 
-	// Acquire a console view (ring) for the active filter; release the prior one.
-	// Each view has its own uid space (restarting at 0), so reset the uid-keyed
-	// geometry/expansion when switching views — otherwise a new filter would
-	// inherit the prior view's heights for colliding uids.
+	// Each view has its own uid space, so the uid-keyed geometry resets when the filter changes.
 	let view = $state<ConsoleView | null>(null);
 	$effect(() => {
 		const v = cs.acquireView(filterName, showStdout, showStderr);
@@ -155,9 +123,7 @@
 	let viewportH = $state(0);
 	let stuck = $state(true); // pinned to the bottom until the user scrolls up
 
-	// Cumulative row offsets: cum[i] = total height of rows [0, i). Rebuilt only
-	// when the entry set, expansion, or measured heights change (NOT on a
-	// coalesce count-bump — that's what layoutVersion gates).
+	// Cumulative row offsets: cum[i] = total height of rows [0, i).
 	const layout = $derived.by<{ n: number; cum: Float64Array; height: number }>(() => {
 		cs.layoutVersion;
 		measured;
@@ -165,7 +131,7 @@
 		const v = view;
 		const n = v ? v.total() : 0;
 		const cum = new Float64Array(n + 1);
-		const floor = contentFloor(); // once per rebuild, not once per row
+		const floor = contentFloor();
 		for (let i = 0; i < n; i++) cum[i + 1] = cum[i] + heightOf(v!.get(i), floor);
 		return { n, cum, height: cum[n] };
 	});
@@ -184,8 +150,8 @@
 
 	const start = $derived(Math.max(0, indexAt(layout.cum, scrollTop) - OVERSCAN));
 	const end = $derived(Math.min(layout.n, indexAt(layout.cum, scrollTop + viewportH) + OVERSCAN + 1));
-	// Shallow-copy each visible entry so the keyed {#each} re-renders the row when
-	// `count` is bumped in place on coalesce (a same-reference item would not).
+	// Shallow-copy each visible entry: `count` is bumped in place on coalesce, and the keyed
+	// {#each} would not re-render a same-reference item.
 	const windowRows = $derived.by<{ e: ConsoleEntry; exp: boolean; canToggle: boolean }[]>(() => {
 		cs.version;
 		const v = view;
@@ -215,7 +181,6 @@
 		stuck = true;
 	}
 
-	// Keep pinned to the bottom as the content height grows (new lines, expansion).
 	$effect(() => {
 		layout.height;
 		if (stuck && scrollEl) {
@@ -249,9 +214,6 @@
 			>
 		{/snippet}
 		{#snippet end()}
-			<!-- The same picker the node-linked panels wear, saying what a console means by a binding.
-			     It replaced a `filtering <name> ✕` readout, which could only ever CLEAR the filter a
-			     drag had set — this one can also set it, which is the whole point on a phone. -->
 			<NodeSelect {panelId} state={linkState} emptyLabel="All nodes" />
 		{/snippet}
 	</Bar>
@@ -270,8 +232,6 @@
 			<div style="height:{topPad}px"></div>
 			{#each windowRows as row (row.e.uid)}
 				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-				<!-- A toggleable row carries role="button" + tabindex in the same branch;
-				     the static check can't pair the conditional attributes. -->
 				<div
 					class="row"
 					class:err={row.e.stream === 'stderr'}
@@ -312,12 +272,6 @@
 								>×{row.e.count}</Badge
 							>
 						{/if}
-						<!-- `ghost`, like every other chrome-density icon button in the app. The coarse
-						     door below rests this one open, and `.ui-icon-btn`'s base paint (a filled
-						     surface plus a border) would then draw a 44×44 box on every console row —
-						     the highest repetition rate anywhere in the UI, against app.css's own rule
-						     that a surface step is what carries separation. On a fine pointer it was
-						     invisible (16px at `opacity: 0`), which is why nobody saw it. -->
 						<IconButton
 							class="console-copy-btn"
 							variant="ghost"
@@ -362,9 +316,7 @@
 		flex-direction: column;
 		min-height: 0;
 	}
-	/* The virtual scroller keeps its own DOM handle (scrollTop / measured heights / onscroll), so
-	   the container stays a native div rather than the ScrollArea component; it wears the shared
-	   `.thin-scrollbar` skin (app.css) instead of restating it. */
+	/* A native div, not ScrollArea: the virtual scroller keeps its own DOM handle. */
 	.scroll {
 		flex: 1;
 		overflow-y: auto;
@@ -377,10 +329,7 @@
 		display: flex;
 		align-items: flex-start;
 		gap: var(--space-5);
-		/* The 2px sides are mirrored by `PAD = 4` in consoleRowHeight.ts (and `line-height: 16px` by
-		   its `LINE_H`):
-		   the pre-measurement height estimate is computed in px, so a rem here would make the
-		   estimate wrong at every root size but 14. */
+		/* Mirrored by `PAD = 4` in consoleRowHeight.ts; px, because that estimate precedes layout. */
 		padding: 2px var(--space-6);
 		border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 		box-sizing: border-box;
@@ -445,13 +394,7 @@
 		align-items: center;
 		gap: var(--space-2);
 	}
-	/* Hover-only per-message copy (an IconButton). Always occupies its slot (no reflow on hover);
-	   only fades in — and becomes clickable — when the row is hovered/focused.
-	   A row IS a chrome strip: it is one 16px text line tall, shorter than --hit, so the button
-	   states its box through the primitive's `density="chrome"` seam. Anything taller drives the
-	   row's height instead of the text and desyncs `estimateRowHeight`'s model. IconButton restores
-	   the --hit floor under a coarse pointer by itself, and the row grows with it — which is right
-	   (the row is the tap target) and is why the estimate carries the same floor (C16, closed). */
+	/* Always occupies its slot, so hover reflows nothing and `estimateRowHeight`'s model holds. */
 	.row :global(.console-copy-btn) {
 		--panelty-icon-btn-size: 16px;
 		opacity: 0;
@@ -463,18 +406,13 @@
 		opacity: 1;
 		pointer-events: auto;
 	}
-	/* Touch: copying a log line is an ACTION, and it was reachable by hover or keyboard focus only —
-	   neither of which a phone has, so it did not exist there at all (C15). It rests open instead.
-	   The button already occupies its slot when hidden, so nothing reflows and the row-height model
-	   is untouched. Its own `--hit` floor (IconButton's coarse `::after`) is what makes it tappable. */
+	/* Touch has no hover, so the copy button rests open. */
 	@media (hover: none) and (pointer: coarse) {
 		.row :global(.console-copy-btn) {
 			opacity: 1;
 			pointer-events: auto;
 		}
 	}
-	/* Appears only while scrolled up; jumps back to the live tail. Round FAB chrome on top of
-	   the IconButton primitive. */
 	.wrap :global(.to-bottom-fab) {
 		position: absolute;
 		right: 12px;

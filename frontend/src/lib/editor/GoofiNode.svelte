@@ -13,76 +13,42 @@
 
 	let { data, selected }: NodeProps = $props();
 	const node = $derived(data.node as NodeInstanceInfo);
-	// Inside a sub-patch the node shows its local (un-namespaced) name; elsewhere
-	// its display name. The id stays the uid (the universal identity) — only the
-	// label differs.
 	const label = $derived((data.label as string | undefined) ?? node?.name);
 	const inputs = $derived(Object.keys(node?.input_slots ?? {}));
 	const outputs = $derived(Object.keys(node?.output_slots ?? {}));
 	const uiStore = ui();
-	// Reached HERE, not inside the `flashing` derived below: both are lazy singletons, and a first
-	// call from inside a derived creates the store's `$state` in that tracking scope, where a later
-	// `pulse()` from outside can never re-run it. `singletonScope.test.ts` is the guard.
+	// Reached HERE, never inside a derived: a lazy singleton first called in a tracking scope
+	// creates its `$state` there, where an outside `pulse()` can never re-run it.
 	const flashStore = flash();
 
-	// A sub-patch instance is rendered by THIS component with no special-casing: its
-	// wired boundaries are its slots, its output viewers stream its inner members.
-	// Enter it by double-click; its sharing/expand controls live in the inspector
-	// (SubPatchInspector) when selected — so the node body never diverges from a
-	// regular node's.
-
 	function onInputClick(e: MouseEvent, slot: string, dtype: string): void {
-		// Clicking an input opens the add-node menu seeded for this slot — whether
-		// or not a cable is attached. Picking a node REPLACES the existing input
-		// connection (inputs are single-source); see autoLink in NodeEditorPanel.
-		// A drag from the handle is still a drag, not a click, so reconnect by
-		// dragging keeps working.
 		e.stopPropagation();
 		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'target', clientX: e.clientX, clientY: e.clientY });
 	}
 
 	function onOutputClick(e: MouseEvent, slot: string, dtype: string): void {
-		// Mirror of the slot-name click in SlotViewer: outputs fan out, so this
-		// seeds a new downstream node without disconnecting anything. Dragging the
-		// pill still starts a connection.
 		e.stopPropagation();
 		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
 
-	// Health: ok / error / dead (both red-bordered) / booting.
 	const health = $derived(nodeHealth(node));
 	const isError = $derived(health.kind === 'error' || health.kind === 'dead');
-	// Still coming up (building its implementation / running setup()) — the dot goes amber and the
-	// stage names itself beside it, body slightly dimmed.
 	const isBooting = $derived(health.kind === 'booting');
-	// Brief "this just changed" pulse after an undo/redo reorients here (#19).
 	const flashing = $derived(flashStore.active(node?.uid));
-	// Glanceable update rate at the right of the header — faint by default, brought
-	// forward on hover or selection. Null until the node's first NODE_STATS push. Adds no height.
 	const rateLabel = $derived(formatUpdateRate(node?.stats));
 
-	// Inputs are bare connectors on the left edge, stepping down from the top. A
-	// single slot is one unit tall; a MULTI (list) slot is 2× tall — the affordance
-	// that it accepts an arbitrary number of cables. `input_multi` is static type
-	// shape from the backend (which slots are multi), read-only here.
 	const multiInputs = $derived(new Set(node?.input_multi ?? []));
-	// Plain closure over the reactive set — read at call time, no $derived needed.
 	const isMulti = (slot: string) => multiInputs.has(slot);
 	const inPorts = $derived(
 		inputPorts(inputs, isMulti).map((p) => ({
 			...p,
 			dtype: node.input_slots[p.slot],
-			multi: p.units === 2 // multi ⇔ 2 units (see inputPorts)
+			multi: p.units === 2
 		}))
 	);
-	// The node must be tall enough to host every input block (viewers grow it past
-	// that when there are more outputs).
 	const minBody = $derived(inputUnits(inputs, isMulti));
 
-	// Output ports live in the unclipped overlay, so we position them ourselves by
-	// walking the slot stack: header first, then each slot — one unit tall when
-	// collapsed, plus the viewer plot when open. This mirrors how the SlotViewers
-	// lay out inside the surface, so every pill lands on its slot's header bar.
+	// The overlay is unclipped, so it walks the slot stack itself to place each output pill.
 	const outPorts = $derived.by(() => {
 		let y = NODE.border + NODE.header;
 		return outputs.map((slot) => {
@@ -102,13 +68,10 @@
 	style="min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
 	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
 >
-	<!-- Visual surface: clipped to the rounded node shape, so the header's top
-	     corners and the last slot's bottom corners are rounded once, here, no
-	     matter how the slots stack. Nothing inside it needs to round itself. -->
+	<!-- Clipped to the rounded node shape, so nothing inside it needs to round itself. -->
 	<div class="surface">
 		<div class="header">
-			<!-- The node card is sized in fixed px, so the dot is told its diameter rather than
-			     tracking the responsive rem the primitive defaults to. -->
+			<!-- The card is sized in fixed px, so the dot is told its diameter. -->
 			<StatusDot
 				tone={health.tone}
 				pulse={health.kind === 'dead'}
@@ -133,13 +96,9 @@
 		{/if}
 	</div>
 
-	<!-- Connector overlay: sits outside the clip so the pills can overhang the
-	     left/right edges. Pointer-transparent except for each connector box. -->
+	<!-- Connector overlay: outside the clip, so the pills can overhang the edges. -->
 	<div class="ports">
 		{#each inPorts as port (port.slot)}
-			<!-- Pointer-only connector pill: opens the add-node menu at the cursor;
-			     keyboard users reach "add node" via the topbar + menu. A multi (list)
-			     slot renders 2× tall with a bar-shaped handle. -->
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<div
 				class="conn in"
@@ -161,8 +120,6 @@
 		{/each}
 
 		{#each outPorts as port (port.slot)}
-			<!-- Pointer-only connector pill: opens the add-node menu at the cursor;
-			     keyboard users reach "add node" via the topbar + menu. -->
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<div
 				class="conn out"
@@ -188,9 +145,6 @@
 		color: var(--text);
 		font-family: var(--font-mono);
 	}
-	/* The painted node. It carries the flow height (header + viewers), and the
-	   min-height on .goofi-node grows it to fit the inputs; flex:1 stretches it to
-	   fill that. Clipping it rounds every inner corner uniformly. */
 	.surface {
 		flex: 1 1 auto;
 		overflow: hidden;
@@ -210,9 +164,6 @@
 	.goofi-node.has-error .surface {
 		border-color: var(--danger);
 	}
-	/* A booting node (child importing / running setup): dimmed body + a small
-	   spinner and stage label in the header. Fully shaped from spec metadata —
-	   slots and params render normally — just not live yet. */
 	.goofi-node.booting .surface {
 		opacity: 0.75;
 	}
@@ -222,9 +173,6 @@
 		color: var(--text-muted);
 		font-style: italic;
 	}
-	/* Undo/redo just reoriented here — a one-shot ring pulse to catch the eye
-	   (#19). The class is removed after the window, so the animation re-fires on
-	   the next undo/redo that lands on this node. */
 	.goofi-node.undo-flash .surface {
 		animation: undo-flash 0.7s ease-out;
 	}
@@ -265,9 +213,6 @@
 		flex: 1 1 auto;
 		min-width: 0;
 	}
-	/* Glanceable update rate, right-aligned. Faint at rest so it doesn't compete
-	   with the name; brought forward when the node is hovered or selected. Tabular so the 2 Hz
-	   number updates don't jitter the layout. */
 	.rate {
 		flex: 0 0 auto;
 		font-size: 9px;
@@ -280,9 +225,7 @@
 	.goofi-node.selected .rate {
 		opacity: 0.85;
 	}
-	/* Touch: 0.3 is a "there if you look for it" resting state that hover then resolves. With no
-	   hover there is nothing to resolve it, so the rate rests at the value hover would have given
-	   it. Opacity only — the box, and therefore the frozen header geometry, is untouched. */
+	/* No hover to resolve the faint resting state, so the rate rests where hover would leave it. */
 	@media (hover: none) and (pointer: coarse) {
 		.rate {
 			opacity: 0.85;
@@ -293,17 +236,8 @@
 		flex-direction: column;
 	}
 
-	/* Connector overlay — pointer-transparent layer over the whole node; each
-	   .conn re-enables pointer events. Inputs step down the left edge by one unit;
-	   outputs are placed (in px) on their slot's header bar by outPorts above.
-
-	   R's floors sweep deliberately left these BELOW --hit, which is a decision, not an oversight.
-	   Input connectors TILE the left edge at exactly --node-u (24px) — the same pitch nodeMetrics.ts
-	   computes cable anchors from — so a 44px target cannot be centred on one without covering its
-	   neighbours. Growing them would not make the canvas tappable, it would make the WRONG slot
-	   answer the tap, and connecting to the wrong slot is worse than a small target. D1's escape
-	   (grow the hit rect, never the painted ladder) has no room here: the rect is what collides.
-	   The canvas is pinch-zoomable, which is the door touch actually has. */
+	/* These connectors sit BELOW `--hit` deliberately: they tile the left edge at `--node-u`, so a
+	   44px target would cover its neighbours and make the WRONG slot answer a tap. */
 	.ports {
 		position: absolute;
 		inset: 0;
@@ -327,13 +261,10 @@
 		width: 16px;
 		transform: translate(50%, -50%);
 	}
-	/* Centre each handle within its connector box (the box hugs the border), so the
-	   pill — and the cable anchor SvelteFlow measures from it — lands on the edge. */
+	/* Centre the handle in its box, so the cable anchor SvelteFlow measures lands on the edge. */
 	.conn.in :global(.svelte-flow__handle-left) {
 		left: 50%;
 	}
-	/* A multi (list) input: a taller, bar-shaped handle spanning the 2× box, so it
-	   reads as "accepts a stack of cables" rather than a single connector. */
 	.conn.in.multi :global(.svelte-flow__handle-left) {
 		height: calc(var(--node-u) * 1.15);
 		border-radius: 3px;
@@ -359,15 +290,8 @@
 		transition: opacity var(--dur-fast) var(--ease);
 	}
 	.conn.in:hover .conn-label,
-	/* The pill is focusable (tabindex="0") but had no reveal of its own, so an input's name was
-	   unreachable by keyboard as well as by touch. */
 	.conn.in:focus-visible .conn-label,
-	/* PROXIMITY, and the door BOTH modalities get: while a cable is in flight, the inputs the
-	   pointer is closing on name themselves (`editor/slotProximity.ts` owns the arithmetic, the
-	   editor panel publishes the near set). It replaces the coarse always-open rule, which was the
-	   only way a finger could read an input's name and which therefore hung a name tag on every
-	   input on the canvas, permanently, for a question nobody had asked. A name is an ANSWER, so it
-	   arrives when the question does — and a mouse keeps its hover reveal on top of this. */
+	/* The touch door: while a cable is in flight, the inputs it nears name themselves. */
 	.conn.in.cable-near .conn-label {
 		opacity: 1;
 	}

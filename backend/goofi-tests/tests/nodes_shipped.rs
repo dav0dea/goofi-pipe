@@ -1,18 +1,5 @@
 //! The node library goofi SHIPS, run as a user gets it: the real `.py` files under `nodes/`,
 //! installed through the same probe the CLI's scan uses, wired to real producers and read back.
-//!
-//! Its own test BINARY, and that is the point. Every node here imports antropy, which imports
-//! numba — seconds of CPU per interpreter, and this scenario starts eight of them. Sharing a
-//! process with `python.rs` made that file's own latency assertions fail one after another as the
-//! load moved around: 38 s and green alone, 150 s and flaky together. A node whose dependency is
-//! genuinely heavy is not a node whose neighbours should be re-timed around it.
-//!
-//! Subprocess tier throughout, and not by choice: antropy re-enables the GIL, so the routing probe
-//! quarantines every one of these — which is exactly the tier a user gets for them. That is also
-//! why the file is compiled out of the `embed` build rather than run by both: it reaches Python
-//! only through `subproc`, so the second run is the same code path at the same tier — 79 s of the
-//! gate list to re-decide what the first run decided. What `embed` adds is the OTHER tier, and the
-//! suites that drive it are the ones that assert on it.
 #![cfg(not(feature = "embed"))]
 
 use std::process::{Command, Stdio};
@@ -30,9 +17,7 @@ fn shape(d: &Data) -> Vec<usize> {
     a.shape().to_vec()
 }
 
-/// Serializes this binary's tier tests. Cargo runs a crate's tests on parallel threads and every
-/// one of these spawns an interpreter, so without this a latency or liveness assertion is taken
-/// while a dozen siblings boot numpy on the same cores.
+/// Serializes this binary's tier tests: every one of them spawns an interpreter.
 static TIER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The interpreter to spawn children with, plus the tier lock — held for the rest of the test.
@@ -41,19 +26,13 @@ struct Tier {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-/// A python with BOTH goofi (the abi3 wheel) and numpy, or a PANIC naming the fix. These tests
-/// HARD-REQUIRE one rather than skipping: a silent skip once hid real bugs for days.
-///
-/// The probe strips `PYTHONPATH` exactly as the real child spawn does, so a host/pyo3 `PYTHONPATH`
-/// cannot produce a false negative — it once made the venv python import an incompatible numpy.
+/// A python with BOTH goofi and numpy, or a PANIC naming the fix — these never skip. The probe
+/// strips `PYTHONPATH` as the real child spawn does, so a host one cannot give a false negative.
 fn require_python() -> Tier {
-    // A panicking test poisons the mutex; recover rather than cascade its failure onto every
-    // sibling, which would bury the one real error.
+    // A panicking test poisons the mutex; recover rather than cascade onto every sibling.
     let _lock = TIER.lock().unwrap_or_else(|e| e.into_inner());
     let mut cands: Vec<String> = std::env::var("GOOFI_SUBPROC_TEST_PYTHON").into_iter().collect();
-    // Both venv layouts — `bin/` on unix, `Scripts/` on Windows — because the fallbacks are worse
-    // than a miss there: `python3` on Windows is an App Execution Alias that answers every probe
-    // with a Microsoft Store advert instead of failing.
+    // Both venv layouts: `python3` on Windows is an alias that answers a probe with an advert.
     cands.push(format!("{}/../../.gfivenv/bin/python", env!("CARGO_MANIFEST_DIR")));
     cands.push(format!("{}/../../.gfivenv/Scripts/python.exe", env!("CARGO_MANIFEST_DIR")));
     cands.push("python3".into());
@@ -72,11 +51,8 @@ fn require_python() -> Tier {
             the venvs and installs the goofi wheel into them.");
 }
 
-/// Write `source` into the patch's own node directory, probe it the way the CLI's scan does, and
+/// Write `source` into the patch's own node directory, probe it as the CLI's scan does, and
 /// register what comes back. Answers the type name the palette now offers.
-///
-/// This is the real seam: `probe` + `node_type_from` are the pair the node scan routes with, so a
-/// node reaching the graph through them reaches it the way a user's file does.
 fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
     let dir = g.state.mount().join("nodes");
     std::fs::create_dir_all(&dir).unwrap();
@@ -97,9 +73,6 @@ fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
 
 
 /// One of the `.py` files goofi SHIPS, installed through the same seam a user's own file takes.
-/// Reading the real file is the point: a node that ships broken — an API that moved under it, a
-/// dependency provisioning forgot — is a node every user gets, and no hand-written fixture beside
-/// it would notice.
 fn install_shipped(g: &Goofi, py: &str, file: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nodes").join(file);
     let source = std::fs::read_to_string(&path)
@@ -109,9 +82,7 @@ fn install_shipped(g: &Goofi, py: &str, file: &str) -> String {
 
 #[test]
 fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alone() {
-    // Four measures over the same window, on a frame that is NOT a vector — because the mistake
-    // they all invite is to flatten first, and against a single channel a flattening node and a
-    // correct one are indistinguishable.
+    // A frame that is NOT a vector: against a single channel a flattening node reads as correct.
     let py = require_python();
     let g = Goofi::new();
     let src = g.add("_TestGrid");
@@ -119,15 +90,8 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
     g.link(src, "out", buf, "data");
 
-    // All four PROBED AND WIRED AT ONCE, one interpreter per file — which is what `register_routed`
-    // does for a real scan, and for the same reason: a probe is a whole interpreter importing a
-    // whole module, and antropy pulls numba. Measured on four cores, which is what CI has: 29.6 s
-    // serially against 7.8 s at once.
-    //
-    // What that buys is not speed, it is MARGIN. Probing one at a time spent the whole budget
-    // before the first `until` was reached, so the ceiling was left covering the probes AND the
-    // node boots; two runs of one commit timed out on a runner three times slower than the one
-    // that had passed the same code the day before. The ceiling now covers the boots alone.
+    // All four PROBED AND WIRED AT ONCE, one interpreter per file, as a real scan does — so the
+    // ceiling below covers the node boots rather than the probes.
     let (g, py) = (&g, &py.py);
     let nodes: Vec<_> = std::thread::scope(|s| {
         [
@@ -151,17 +115,14 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     });
 
     for (ty, node, probe) in nodes {
-        // A node that never STARTED and a node that started and failed both present as a probe
-        // that stays empty, so a bare wait can only ever report a silence — which is all two CI
-        // failures reported. The birth barrier splits the two, and the error channel is read WHILE
-        // waiting rather than after it, so a node that says why fails with its own words.
+        // The birth barrier splits "never started" from "started and failed", and the error channel
+        // is read WHILE waiting, so a node that says why fails with its own words.
         g.until(&format!("{ty} to start"), |g| {
             if let Some(e) = g.error(node) {
                 panic!("{ty} failed to start: {e}");
             }
             (g.stage(node) == "ready").then_some(())
         });
-        // [3, 256] in, [3] out: the measure consumes time and hands back one value per channel.
         let d = g.until(&format!("{ty} to answer once it is ready"), |g| {
             if let Some(e) = g.error(node) {
                 panic!("{ty} failed instead of answering: {e}");
@@ -170,8 +131,7 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
         });
         let v = f32s(&d);
         assert!(v.iter().all(|x| x.is_finite()), "{ty} answered {v:?}");
-        // The three rows are the same signal at three offsets, and every one of these measures
-        // ignores a constant offset — so three answers that DISAGREE mean the rows were mixed.
+        // The three rows are one signal at three offsets, so answers that DISAGREE mean a mix.
         assert!(
             v.iter().all(|x| (x - v[0]).abs() <= v[0].abs() * 1e-3 + 1e-4),
             "{ty} read the three channels as three different signals: {v:?}",
@@ -182,9 +142,7 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
 
 #[test]
 fn a_shipped_entropy_node_reads_a_real_signal_rather_than_answering_a_constant() {
-    // The scenario above is blind to a node that returns the same number whatever it is given: its
-    // rows are one signal three times over. A sine says otherwise — permutation entropy of one is
-    // solidly inside its range, where a flat or a saturated answer is not.
+    // A sine says otherwise: permutation entropy of one is solidly inside its range.
     let py = require_python();
     let g = Goofi::new();
     let osc = g.add("Oscillator");

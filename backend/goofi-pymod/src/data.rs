@@ -1,8 +1,4 @@
-//! `goofi.Data` — the Python view of `goofi_core::Data`. Construction copies a numpy
-//! array into an `Arc<[u8]>` f32 buffer (keeping the core pyo3-free); `.data` builds a
-//! fresh numpy `<f4` array via `numpy.frombuffer` (the expr.rs pattern, no rust-numpy
-//! crate); `.meta` mirrors the core `Meta` map as a Python dict. `channels` is the one
-//! structured key: a nested `{dimN: [coords...]}` dict.
+//! `goofi.Data` — the Python view of `goofi_core::Data`.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -14,9 +10,7 @@ pub struct Data {
     inner: CoreData,
 }
 
-/// What `data.assert_ndims` answers: a rank waiting to be compared. Every comparison dunder
-/// checks the claim and raises when it fails, naming the SHAPE rather than only the rank — "needs
-/// ndim > 1, got (512,)" is actionable where "needs > 1, got 1" is a puzzle.
+/// A rank waiting to be compared: every comparison dunder raises unless the claim holds.
 #[pyclass]
 pub struct Ndims {
     shape: Vec<usize>,
@@ -64,8 +58,7 @@ impl Ndims {
 }
 
 impl Data {
-    /// The array's shape, or empty for a string/table frame — which reports rank 0, the same
-    /// answer the data plane's `Reducible` gives.
+    /// The array's shape; empty (rank 0) for a string/table frame.
     fn shape_or_empty(&self) -> Vec<usize> {
         match self.inner.value() {
             Value::Array(a) => a.shape().to_vec(),
@@ -87,17 +80,7 @@ impl Data {
         Ok(Data { inner })
     }
 
-    /// The frame's rank, ready to be compared against what this node needs:
-    ///
-    /// ```python
-    /// data.assert_ndims > 1     # raises unless the frame has more than one dimension
-    /// data.assert_ndims == 2
-    /// ```
-    ///
-    /// The comparison IS the assertion — it raises on failure and answers `True` otherwise, so a
-    /// node states its shape requirement on one line and gets an error naming the shape that
-    /// arrived. A plain `assert` would work too, and would vanish under `python -O`; this one
-    /// cannot be optimised away, and it writes the message.
+    /// The frame's rank, ready to be compared: `data.assert_ndims > 1` raises unless it holds.
     #[getter]
     fn assert_ndims(&self) -> Ndims {
         Ndims { shape: self.shape_or_empty() }
@@ -124,9 +107,7 @@ impl Data {
 }
 
 impl Data {
-    /// Wrap an existing core `Data` (no numpy round-trip) — the seam the in-process
-    /// executor + the subprocess serve loop use to hand a node its inputs and to read
-    /// its `goofi.Data` outputs back out.
+    /// Wrap an existing core `Data` (no numpy round-trip).
     pub fn from_core(inner: CoreData) -> Data {
         Data { inner }
     }
@@ -136,10 +117,7 @@ impl Data {
     }
 }
 
-/// `np.ascontiguousarray(array)` → `(source dtype, shape, f32 bytes)` — the ONE numpy→f32
-/// funnel at the pyo3 boundary: read the native dtype + bytes, cast to f32 via the core
-/// guard. Returns the `SrcDtype` so the caller can decide whether to dedup-warn on a
-/// foreign dtype (the executor does; `Data::new` does not — see the cast-warn design note).
+/// `np.ascontiguousarray(array)` → `(source dtype, shape, f32 bytes)`, the one numpy→f32 funnel.
 pub(crate) fn array_to_f32(
     py: Python<'_>,
     array: &Bound<'_, PyAny>,
@@ -156,8 +134,7 @@ pub(crate) fn array_to_f32(
     Ok((src, shape, bytes))
 }
 
-/// Build a `Meta` from a Python dict. `channels` (a `{dimN: [...]}` dict) → `Axes` via the
-/// dedicated mapping; every other value → a `MetaValue` via `depythonize` (serde).
+/// Build a `Meta` from a Python dict; `channels` (a `{dimN: [...]}` dict) maps to `Axes`.
 pub(crate) fn dict_to_meta(d: &Bound<'_, PyDict>) -> PyResult<Meta> {
     let mut m = Meta::new();
     for (k, v) in d.iter() {

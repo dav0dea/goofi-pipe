@@ -1,30 +1,7 @@
 <!--
-  ParamField — the descriptor-driven inspector field (spec §2, D-N2). Renders ONE P `<Field>` whose
-  control region is chosen by the pure `controlKind(descriptor)` discriminant (N-Task 1): the component
-  is a thin type-switch over the P primitives, never re-deriving the mapping inside the render path.
-  Identity-blind — the same callback contract the old ParamField had, so the ParamForm assembler
-  (N-Task 4) drives it unchanged.
-
-  Echo-suppression is INHERITED, not re-hand-rolled: the P Slider / NumberInput / TextInput embody the
-  `useLiveValue` latch, so a live backend echo can't yank a control mid-edit without any latch here.
-
-  The numeric pair (float | int) is a Slider + an UNBOUNDED NumberInput sharing the value. `vmin/vmax`
-  are SOFT bounds — the engine does not clamp on set — so they scope ONLY the Slider's track (which
-  auto-extends past them when the live value is out of range); the NumberInput takes no min/max, so
-  typing 5 into a [0,1] field commits 5, not 1. Both share a REAL numeric `step` (int → 1, float → the
-  slider's ~200-stop span over the auto-extended bounds) — never the native `'any'` string, which would
-  NaN the NumberInput's `inputmode=decimal` scrub arithmetic.
-
-  The always-present fx binding (spec §3, D-N3/D-N4) hangs off the Field's `adornment` snippet — the `fx`
-  Chip on every field (accent when active, danger when the expression errors) plus a `trig` Chip while
-  active. When `expression_enabled`, the control region becomes the `ExprEditor` — a real code surface
-  with Python highlighting, one merged completion popup and the compile error as an inline diagnostic
-  (sub-project X) — with an expand affordance that grows the SAME editor into an IN-PANEL multi-line
-  one (no modal — the graph stays visible), and a `= preview` / error row below. The error ROW stays:
-  the squiggle carries the position, the row carries the text, and information that exists only behind
-  a hover is not allowed. The three enabled-semantics are preserved exactly: inline commit FORCES
-  `enabled`, the multi-line apply PRESERVES the flags, fx-off STASHES the source. `class`/`data-testid`
-  (and any attribute) forward to the Field root via `...rest`.
+  ParamField — one inspector field, its control region chosen by `controlKind(descriptor)`, with the fx
+  expression binding on every field. `vmin/vmax` are SOFT bounds: they scope only the Slider's track,
+  and the NumberInput beside it commits what is typed.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
@@ -68,60 +45,38 @@
 		refreshing?: boolean;
 	} = $props();
 
-	// The one SSOT for the control decision (pure + unit-tested); the template switches on it. `onSetExpression`
-	// is part of the frozen contract — the fx editor that consumes it lands in N-Task 3.
 	const kind = $derived(controlKind(descriptor));
 
-	// Numeric bounds + step, narrowed to float | int (`num` is truthy exactly when the control is
-	// 'numeric', once the fx branch has been excluded). `step` is computed against the SAME
-	// auto-extended bounds the Slider uses so it matches the slider's stop spacing and the NumberInput's
-	// scrub increment.
+	// `step` is computed against the SAME auto-extended bounds the Slider uses; a native `'any'` would
+	// NaN the NumberInput's scrub arithmetic.
 	const num = $derived(descriptor.type === 'float' || descriptor.type === 'int' ? descriptor : null);
 	const lo = $derived(num ? Math.min(num.vmin, num.value) : 0);
 	const hi = $derived(num ? Math.max(num.vmax, num.value) : 1);
 	const step = $derived(num ? (num.type === 'int' ? 1 : Math.max((hi - lo) / 200, 1e-6)) : 1);
 
-	// Options live only on a StringParam; empty for every other kind (the select branch is only reached
-	// for a string anyway).
 	const options = $derived(descriptor.type === 'string' ? (descriptor.options ?? []) : []);
 
-	// --- fx (expression) binding (spec §3, D-N3/D-N4) ---
 	const fxActive = $derived(descriptor.expression_enabled);
-	// The fx Chip's tone: danger PINS an error (a pointer to the row below), accent = active, else neutral.
 	const fxTone = $derived<BadgeTone>(
 		descriptor.expression_error ? 'danger' : fxActive ? 'accent' : 'neutral'
 	);
 
-	// The in-panel multi-line editor (D-N4: no modal — it grows in place so the graph stays visible).
 	let multilineOpen = $state(false);
-	// The expanded editor OWNS its text (a code editor's document is not a bindable string), so the
-	// `apply` Chip asks it to commit rather than reading a mirrored buffer — which also means the
-	// keystroke stream never re-renders this field.
+	// The expanded editor OWNS its text, so `apply` asks it to commit rather than reading a mirror.
 	let applyExpanded = $state<(() => void) | null>(null);
-	// A ref to the fx control region so, on collapse, focus returns to the ⤢ expand button (which only
-	// exists in the collapsed inline branch) instead of dropping to <body>.
 	let fxRegionEl = $state<HTMLDivElement | null>(null);
 
-	// A stable per-field id so the global standdown is REF-COUNTED, not a shared boolean: two fields
-	// with an open editor each register their own id, and the standdown lifts only when the last one
-	// unregisters (§ inspector fix #3).
+	// A stable per-field id, so the global standdown below is ref-counted rather than a shared boolean.
 	const editorId = $props.id();
 
-	// If the field leaves expression mode while its editor is open — fx toggled off via the adornment
-	// Chip, or an external descriptor change swaps this row to a non-expression param — drop the editor.
-	// This re-runs the standdown effect below so its cleanup fires and the field stops holding down
-	// global undo/redo (§ inspector fix #2A), instead of stranding `multilineOpen` on an unmounted
-	// editor.
+	// Leaving expression mode with the editor open must re-run the standdown effect below, so its
+	// cleanup fires instead of stranding `multilineOpen` on an unmounted editor.
 	$effect(() => {
 		if (!fxActive && multilineOpen) multilineOpen = false;
 	});
 
-	// While the multi-line editor is open EVERY app-global chord stands down — it owns a full-height
-	// code surface, so Ctrl+S is its editor's, not the app's. (Ctrl+Z is separately safe in both modes:
-	// `ui/textEditing.ts` keeps a keystroke aimed at a text-editing surface out of the graph's history.)
-	// Registering by `editorId` clears the standdown on collapse AND on unmount (e.g. a node switch
-	// remounts this field) via the effect's cleanup — and ref-counts, so collapsing one editor never
-	// lifts another's standdown.
+	// While the multi-line editor is open every app-global chord stands down: it owns a full-height code
+	// surface, so Ctrl+S is its editor's, not the app's.
 	$effect(() => {
 		if (multilineOpen) {
 			ui().openEditor(editorId);
@@ -136,7 +91,7 @@
 		};
 	}
 
-	// The current value rendered as a Python literal — the seed when fx is first switched on.
+	// The current value as a Python literal — the seed when fx is first switched on.
 	function literalFor(d: ParamDescriptor): string {
 		const v = d.value;
 		if (typeof v === 'number') return String(v);
@@ -146,13 +101,12 @@
 
 	function toggleFx(): void {
 		if (fxActive) {
-			// OFF — stop the engine but STASH the source so a later flip-on doesn't retype.
+			// Stash the source, so a later flip-on does not retype it.
 			onSetExpression(descriptor.expression, {
 				enabled: false,
 				triggers_process: descriptor.expression_triggers_process
 			});
 		} else {
-			// ON — reuse the stashed source if there is one, else seed the current value as a literal.
 			const seed = descriptor.expression ?? literalFor(descriptor);
 			onSetExpression(seed, {
 				enabled: true,
@@ -168,8 +122,7 @@
 		});
 	}
 
-	// Committing the inline buffer FORCES enabled — editing implies "make this active"; the fx toggle is
-	// the way to disable. (The multi-line apply, by contrast, PRESERVES the flags as-is.)
+	// The inline commit FORCES enabled; the multi-line apply below PRESERVES the flags.
 	function commitExpr(v: string): void {
 		onSetExpression(v, { ...currentFlags(), enabled: true });
 	}
@@ -177,15 +130,10 @@
 	function openMultiline(): void {
 		multilineOpen = true;
 	}
-	// ⌃⏎ inside the editor lands here — the multi-line apply PRESERVES the flags (enabled-semantic #3),
-	// unlike the inline commit, which forces `enabled`.
 	function applyMultiline(v: string): void {
 		onSetExpression(v, currentFlags());
 		void cancelMultiline();
 	}
-	// The `apply` Chip — the door touch has to the ⌃⏎ chord. Ask the editor to commit (a no-op when
-	// nothing changed, so an untouched apply is not an RPC), then collapse either way; the collapse is
-	// idempotent, so it does not matter whether the commit already ran it.
 	async function applyFromChip(): Promise<void> {
 		applyExpanded?.();
 		await cancelMultiline();
@@ -194,14 +142,12 @@
 		multilineOpen = false;
 		await restoreExpandFocus();
 	}
-	// Escape/⌃⏎/collapse-click all route through the functions above; after the editor unmounts,
-	// return focus to the ⤢ expand affordance (mirrors autofocus-on-expand) so it never falls to <body>.
+	// After the editor unmounts, focus returns to the ⤢ expand affordance rather than falling to <body>.
 	async function restoreExpandFocus(): Promise<void> {
 		await tick();
 		fxRegionEl?.querySelector<HTMLElement>('[data-testid="param-expr-expand"]')?.focus();
 	}
 
-	// The live evaluated value shown under the input — strings truncated ~32 chars (the old preview).
 	function previewText(): string {
 		const v = descriptor.value;
 		if (v === null || v === undefined) return '—';
@@ -213,8 +159,7 @@
 
 </script>
 
-<!-- The always-present fx binding: the fx Chip on every field + the trig Chip while active. A SIBLING of
-     the label (via Field's adornment slot) so its button never steals the label's focus target. -->
+<!-- A SIBLING of the label (via Field's adornment slot), so its button never steals the label's focus target. -->
 {#snippet fx()}
 	{#if fxActive}
 		<Chip
@@ -227,8 +172,6 @@
 			trig
 		</Chip>
 	{/if}
-	<!-- Both are two-state toggles, so both say so: `trig`'s title is static, which left its state
-	     in the tone alone — i.e. in colour alone. `Chip` forwards the attribute through `...rest`. -->
 	<Chip
 		tone={fxTone}
 		aria-pressed={fxActive}
@@ -241,18 +184,10 @@
 {/snippet}
 
 <Field label={paramName} doc={descriptor.doc ?? undefined} adornment={fx} class={klass} {...rest}>
-	<!-- The value region, and the one place this component states its face (D-T3): what a control
-	     here shows IS data — a number, a string, an option, an expression — so it reads in mono,
-	     while the label above it and the fx Chips beside it are chrome and stay sans (they are
-	     outside this element; the primitives that are chrome, like Trigger, state sans themselves
-	     and win over this inheritance). `display: contents` so it inherits WITHOUT laying out:
-	     Field requires paired controls to be its direct children, and a real box here would take
-	     the Slider + NumberInput out of the @container column-flip's reach. -->
+	<!-- `display: contents` so the face inherits WITHOUT laying out: Field requires paired controls to
+	     be its direct children, and a real box would take them out of the @container column-flip. -->
 	<div class="pf-value">
 		{#if kind === 'expression'}
-			<!-- The fx editor takes over the control region (spec §3): the code surface (or, expanded, the
-			     same editor in its in-panel multi-line mode — D-N4, no modal), with a preview / error row
-			     below. Both branches are `ExprEditor`; only the mode differs (D-X1). -->
 			<div class="fx-region" bind:this={fxRegionEl}>
 				{#if multilineOpen}
 					<ExprEditor
@@ -304,7 +239,7 @@
 				{/if}
 			</div>
 		{:else if num}
-			<!-- SOFT bounds → Slider only (it auto-extends); the NumberInput is UNBOUNDED (no clamp on set). -->
+			<!-- SOFT bounds → Slider only; the NumberInput is UNBOUNDED (the engine does not clamp on set). -->
 			<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />
 			<NumberInput value={num.value} onChange={onCommit} {step} scrub data-testid="param-number" />
 		{:else if kind === 'trigger'}
@@ -312,9 +247,7 @@
 		{:else if kind === 'toggle'}
 			<Toggle value={Boolean(descriptor.value)} onChange={onCommit} data-testid="param-toggle" />
 		{:else if kind === 'select'}
-			<!-- Delegate the ⟳ to the P Select (its built-in refresh affordance), gated on
-			     `descriptor.refreshable`: a non-refreshable dropdown passes `onRefresh={undefined}` so no ⟳
-			     renders (the engine rejects a refresh for a non-refreshable param by contract). -->
+			<!-- A non-refreshable dropdown passes no `onRefresh`, so the Select renders no ⟳. -->
 			<Select
 				{options}
 				value={String(descriptor.value)}
@@ -333,14 +266,12 @@
 </Field>
 
 <style>
-	/* Values are data; the label above them is chrome (D-T3). Box-less, so the controls inside stay
-	   Field's own direct children — this element inherits the face to them and lays out nothing. */
+	/* Values are data; the label above them is chrome. Box-less, so the controls inside stay Field's
+	   own direct children. */
 	.pf-value {
 		display: contents;
 		font-family: var(--font-mono);
 	}
-	/* The fx editor occupies the whole control region as one column-flexed child (the Field row lays its
-	   children horizontally; a single full-width child stacks the input over the preview/error). */
 	.fx-region {
 		flex: 1;
 		min-width: 0;
@@ -396,8 +327,7 @@
 		color: var(--text-muted);
 	}
 	.fx-preview .prefix {
-		/* opacity: intentional — the `=` lead-in recedes behind the evaluated value it introduces;
-		   the preview itself is live, not disabled. */
+		/* The `=` lead-in recedes behind the value; the preview itself is live, not disabled. */
 		opacity: 0.6;
 	}
 	.fx-preview .value {
@@ -407,8 +337,6 @@
 		white-space: nowrap;
 		min-width: 0;
 	}
-	/* The read-only fallback for an unrecognised param type — a monospace JSON dump, wrapping so a long
-	   value never forces a horizontal scroll. */
 	.unknown {
 		min-width: 0;
 		font-size: var(--fs-micro);

@@ -10,17 +10,13 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { dtypeColor } from '$lib/editor/categoryColor';
 
-	// `label` overrides the displayed slot name (the handle id stays `slot`): a sub-patch
-	// synth node passes its renameable portal name so the collapsed output header matches
-	// the In/Out pill. Absent for a real node → the slot id is shown.
+	// `label` overrides the displayed slot name for a sub-patch portal; the handle id stays `slot`.
 	type Props = { node: string; slot: string; dtype: string; label?: string };
 	const { node, slot, dtype, label }: Props = $props();
 
 	const g = graph();
 
-	// The inline viewer's binding: backed by the node record's own `viewers` blob, which
-	// `graph.setSlotView` is the one writer of. Built here (its single use site) so viewBinding.ts
-	// stays rune-free and unit-testable.
+	// Built here, its single use site, so viewBinding.ts stays rune-free.
 	const rec = $derived(g.nodeById(node));
 	// Raw (pre-resolution) snapshot of this slot's view state, for undo capture.
 	function snap(): { kind?: ViewerKind; settings: SettingsMap } {
@@ -35,8 +31,7 @@
 			return resolveSettings(this.kind, slotView(rec, slot).settings);
 		},
 		setKind(k) {
-			// The write is a round-trip through the document, so the AFTER snapshot is the one being
-			// asked for, not a re-read — the record still holds the before until the delta lands.
+			// The write round-trips through the document, so AFTER is the value asked for, not a re-read.
 			const before = snap();
 			const after = { ...before, kind: k };
 			g.setSlotView(node, slot, after);
@@ -51,10 +46,7 @@
 	};
 
 	function onSlotClick(e: MouseEvent): void {
-		// Clicking the slot name opens the add-node menu seeded to wire a new node
-		// onto this output — outputs fan out, so this never disconnects existing
-		// cables. The matching connector pill (in GoofiNode's overlay) does the
-		// same; dragging the pill starts a connection instead.
+		// Opens the add-node menu seeded to wire onto this output; outputs fan out, so nothing disconnects.
 		e.stopPropagation();
 		ui().requestSlotClick({ node, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
 	}
@@ -62,23 +54,13 @@
 	const expanded = $derived(isSlotExpanded(rec, slot));
 
 	function toggleExpanded(e?: Event): void {
-		// Stop the toggle from bubbling to SvelteFlow's node handlers, so
-		// collapsing or expanding a viewer never selects (or grabs) the node.
+		// Keep the toggle off SvelteFlow's node handlers, so a collapse never selects the node.
 		e?.stopPropagation();
 		g.setSlotView(node, slot, { collapsed: expanded });
 	}
 	function stopSelect(e: PointerEvent): void {
-		// Keeps a press on the header bar off the WINDOW-level bubble listeners the canvas sits
-		// under (`Popover`'s outside-press dismiss is the one that matters — see
-		// viewer-settings.spec). It does NOT keep SvelteFlow from starting a node drag, whatever
-		// this file used to claim: `@xyflow/svelte` drags by d3-drag, which binds `mousedown` and
-		// `touchstart`, neither of which a `pointerdown` handler can reach.
-		//
-		// Released for TOUCH — the live `pointerType`, D-R2's gate, not a media query. A viewer is
-		// most of a node's surface, so a finger landing on one is reaching for the NODE, and the
-		// header has to hand it the same press its body would. A mouse keeps the desktop path
-		// byte-for-byte; children (kind dropdown, cog, slot name) still get their own clicks either
-		// way, since stopPropagation doesn't preventDefault.
+		// Keeps the press off the window-level bubble listeners (`Popover`'s outside-press dismiss).
+		// Released for TOUCH: a viewer is most of a node's surface, so a finger there is reaching for the node.
 		if (e.pointerType === 'touch') return;
 		e.stopPropagation();
 	}
@@ -91,8 +73,7 @@
 	data-node={node}
 	data-slot={slot}
 >
-	<!-- The whole header bar is a pointer click-target for collapse/expand;
-	     keyboard users toggle it via the ► button it contains. -->
+	<!-- The header bar is the pointer target for collapse/expand; keyboard uses the ► button. -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<header
 		onclick={toggleExpanded}
@@ -108,8 +89,7 @@
 		{#if expanded}
 			<ViewerControls {dtype} {binding} />
 		{/if}
-		<!-- Pointer convenience: opens the add-node menu at the cursor (like the
-		     connector pill). Keyboard "add node" is the topbar + menu. -->
+		<!-- Pointer convenience: opens the add-node menu at the cursor. -->
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<span
 			class="slot-name"
@@ -132,16 +112,10 @@
 	.slot-viewer {
 		display: flex;
 		flex-direction: column;
-		/* No background of its own — the header bar and the viewer body each draw
-		   their own, so the slot-viewer box never overhangs the node's rounded
-		   corners (which is what was clipping the bottom border). */
+		/* No background of its own, so the box never overhangs the node's rounded corners. */
 	}
 	header {
-		/* A collapsed slot is exactly one unit tall so slots stack on the node's
-		   grid. A faint, dark tint of the slot's dtype colour sets the header bar
-		   apart from the node body. The horizontal padding keeps the triangle and
-		   the slot name clear of the input/output connectors in GoofiNode's
-		   overlay. */
+		/* Exactly one unit tall, so slots stack on the node's grid. */
 		height: var(--node-u);
 		box-sizing: border-box;
 		border-top: 1px solid var(--border);
@@ -155,24 +129,12 @@
 		user-select: none;
 		transition: background var(--dur-fast) var(--ease);
 	}
-	/* The first slot sits directly under GoofiNode's `.header`, which paints its own
-	   `border-bottom` — so this row's `border-top` abutted it with no margin and the seam rendered
-	   at 2 CSS px, against the node card's own 1px outline. Asked from THIS side rather than the
-	   parent's, so the rule stays inside the component that owns the line: `PlacementPreview`,
-	   documented as mirroring GoofiNode exactly, already ships the same de-duplication as
-	   `.viewers .slot-row:first-child`. GoofiNode's `border-bottom` deliberately stays — `inputUnits`
-	   floors every body at one unit, so a node with NO outputs has no slot row to carry the line.
-	   Geometry-neutral: the header is `box-sizing: border-box` at a fixed `--node-u`. */
+	/* GoofiNode's `.header` paints its own `border-bottom`, so a first slot would double the seam. */
 	.slot-viewer:first-child header {
 		border-top: none;
 	}
-	/* The viewer's hover chrome, gated on the device actually HAVING a hover.
-	   `:hover` still MATCHES on a phone — the browser resolves it for whatever synthetic pointer
-	   passes over — so without this the header tinted, the triangle brightened and the slot name
-	   washed for a state a finger can never be in, and each one had to be un-painted again on the
-	   press that followed. This is a hover-CAPABILITY query, not a pointer one: D-R7's single coarse
-	   idiom answers "is this a touch target" and is untouched (`theme/styleDrift.test.ts` scans
-	   every prelude that mentions `pointer`, and this one deliberately does not). */
+	/* Hover chrome gated on real hover: `:hover` still MATCHES on a phone, for a state a finger
+	   is never in. A hover-CAPABILITY query, deliberately not a `pointer` one. */
 	@media (hover: hover) {
 		header:hover {
 			background: color-mix(in srgb, var(--dtype, var(--accent)) 20%, var(--bg));
@@ -185,10 +147,7 @@
 		}
 	}
 
-	/* A proper disclosure triangle: an SVG that rotates open/shut, vertically
-	   centred, no button chrome. `color: inherit` because a <button> is coloured
-	   `buttontext` (white) by the UA now that app.css's base skin is gone — invisible
-	   while the only content is a `fill:`-ed SVG, and a trap the moment it isn't. */
+	/* `color: inherit` because the UA colours a bare <button> `buttontext`, invisible under a fill-ed SVG. */
 	.tri {
 		display: inline-grid;
 		place-items: center;
@@ -243,22 +202,13 @@
 		min-height: 0;
 	}
 
-	/* Touch, and the one place in this file where the frozen canvas has to say so out loud. This
-	   header is exactly one `--node-u` (24px) and `.surface` clips it, so nothing inside it can take
-	   the 44px control floor — a floored control is not a bigger target here, it is a control
-	   hanging out of the node with its bottom half cut off.
-	   `.tri` states `height`, not `min-height`, so app.css's coarse floor DID apply and did exactly
-	   that. Released, and the viewer-kind select re-pinned through the Select primitive's own hook.
-	   The stated exception: both keep their fine-pointer boxes on touch. What actually takes the tap
-	   is the header BAR — full node width, one unit tall, and already the collapse target — and the
-	   canvas is a pinch-zoomable surface, which no other strip in the app is. */
+	/* This header is one `--node-u` and `.surface` clips it, so nothing inside may take the 44px
+	   coarse floor: the header BAR takes the tap instead. */
 	@media (hover: none) and (pointer: coarse) {
 		header {
 			--select-min-h: 0;
 			--select-fs: var(--fs-small);
-			/* …and the cog keeps its frozen 16px paint here for the same reason (its coarse target is
-			   carried outward by a `::after` bounded to this header instead). Every other host — a
-			   docked ViewerPanel header is the one there is — floors the box. */
+			/* The cog keeps its 16px paint for the same reason; a `::after` carries its coarse target outward. */
 			--vs-cog-box: 16px;
 		}
 		.tri {

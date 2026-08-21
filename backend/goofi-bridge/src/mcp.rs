@@ -1,31 +1,9 @@
-//! The MCP endpoint — the op registry's third consumer, after `dispatch` and the frontend's
-//! `OpName` union. Every `Surface::Mcp` row becomes one tool; nothing is hand-listed, because a
-//! hand-list is exactly how a name drifts past the 64-character budget that makes a provider reject
-//! the WHOLE tool list with a 400.
+//! The MCP endpoint: every `Surface::Mcp` registry row becomes one tool, over one JSON object per
+//! POST — no session state, no SSE.
 //!
-//! **Why a route and not a process.** The user's lifecycle decision (2026-08-10) is ONE MCP server
-//! per goofi instance — "Claude never spawns a server, it only creates its client". A stdio server
-//! is spawned *by* its client and is therefore one per client, so the transport has to be HTTP; and
-//! once goofi owns the server's lifetime, a sidecar process buys nothing and costs a process, a
-//! port and a supervision path. So it is `/mcp` on the axum server that already serves `/control`
-//! and `/data`, and there is no lazy connect, no "goofi isn't running" path and no reconnect.
-//!
-//! **Why there is no async seam.** A tool call is a SYNCHRONOUS [`crate::dispatch`] inside an async
-//! task — byte for byte what the `/control` socket does — so nothing awaits while the graph lock is
-//! held. That is load-bearing: an async dispatch would re-open W0's save-on-lock and W1's
-//! rescan-on-lock, and moving the save off-lock once cost a discarded attempt ~450 lines of race
-//! machinery.
-//!
-//! **Protocol shape.** One JSON object per POST: no session state, no SSE. The revisions split into
-//! two eras — one opens with an `initialize` handshake, the other carries identity per request —
-//! and a stateless tools-only server serves both by answering `initialize` when it comes and never
-//! requiring it. A revision outside [`SUPPORTED_PROTOCOLS`] is negotiated DOWN rather than echoed:
-//! claiming one this server does not implement only moves the failure later.
-//!
-//! **One deliberate deviation.** An unknown or withheld tool name comes back as a `CallToolResult`
-//! with `isError: true`, where the spec classes it as a protocol error (`-32602`). That is on
-//! purpose: `isError` puts the reason in front of the MODEL, which is the only party that can
-//! correct the call, whereas a JSON-RPC error is swallowed by the client's transport layer.
+//! A tool call is a SYNCHRONOUS [`crate::dispatch`] inside an async task, so nothing awaits while
+//! the graph lock is held. And a refused tool name comes back as an `isError` result where the spec
+//! says `-32602`, because only the `isError` shape reaches the model that can correct the call.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -36,28 +14,21 @@ use serde_json::{json, Value};
 use crate::ops::{self, Surface};
 use crate::AppState;
 
-/// The undo scope every MCP call runs in. An agent has no session identity to present — the
-/// transport is stateless by design — so every agent call shares one stack. That is the isolation
-/// that matters: an agent's undo never reaches into a human tab's. Two agents on one patch are
-/// collaborators, exactly as two humans in two tabs are.
+/// The undo scope every central MCP call runs in: the transport is stateless, so agents share one
+/// stack, which is still isolated from every human tab's.
 const AGENT_SESSION: &str = "mcp";
 
-/// The revision to claim when a client names none. `2025-06-18` is the last one that a client which
-/// omits the field can be assumed to speak (the transport spec says to assume `2025-03-26` for a
-/// missing header, and every client that sends none at all predates the split).
+/// The revision to claim when a client names none.
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
 /// The newest revision this server implements, and what an unsupported ask is answered with.
 const LATEST_PROTOCOL: &str = "2025-11-25";
 
-/// Every revision whose `initialize`/`tools/list`/`tools/call` shapes this server actually speaks.
-/// `2026-07-28` is deliberately absent: it requires `resultType` on every result, `ttlMs`/
-/// `cacheScope` on `tools/list` and a `server/discover` method, none of which are here.
+/// Every revision this server actually speaks; `2026-07-28` is absent because `resultType`,
+/// `ttlMs`/`cacheScope` and `server/discover` are not implemented here.
 const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", LATEST_PROTOCOL];
 
-/// One registry argument type as JSON Schema. The list `ops.rs` admits is pinned by its own schema
-/// test, so the string arm is a genuine default (`uid` and `string` share it) rather than a
-/// fallback for a type that could slip through.
+/// One registry argument type as JSON Schema; `uid` and `string` share the default arm.
 fn json_schema(ty: &str) -> Value {
     if let Some(item) = ty.strip_suffix("[]") {
         return json!({ "type": "array", "items": json_schema(item) });
@@ -66,16 +37,12 @@ fn json_schema(ty: &str) -> Value {
         "float" => json!({ "type": "number" }),
         "int" => json!({ "type": "integer" }),
         "bool" => json!({ "type": "boolean" }),
-        // A canvas position. Bounded, so a model cannot send one number and get a silent default.
         "float2" => {
             json!({ "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 })
         }
-        // An opaque value the engine round-trips (a param value, a panel's state bag): any JSON.
-        // An empty schema is how JSON Schema spells "anything", and the doc line says what it is.
+        // An empty schema is how JSON Schema spells "anything".
         "json" => json!({}),
-        // A vocabulary word, advertised as the SET it may take. An enum is what stops the guess at
-        // the source — the model reads the choices instead of inventing a plausible one, and a
-        // client that validates against the schema never lets a wrong word leave.
+        // Advertised as the SET it may take, so a model reads the choices instead of guessing.
         "panel_type" => json!({ "type": "string", "enum": crate::vocab::panel_type_ids() }),
         _ => json!({ "type": "string" }),
     }
@@ -97,8 +64,6 @@ pub fn tools() -> Vec<Value> {
             }
             json!({
                 "name": op.name,
-                // The result schema rides in the description: a model that knows the reply's shape
-                // chains the next call instead of probing for it.
                 "description": format!("{}\n\nReturns: {}", op.doc(), op.result),
                 "inputSchema": {
                     "type": "object",
@@ -110,9 +75,8 @@ pub fn tools() -> Vec<Value> {
         .collect()
 }
 
-/// A tool's answer as the text a model reads. The inspect ops already produce prose (`{text: …}`)
-/// and several ops answer a bare uid, so re-encoding either as JSON would only add quoting for the
-/// model to strip; everything else is pretty-printed, which reads in a transcript.
+/// A tool's answer as the text a model reads: prose and bare strings verbatim, everything else
+/// pretty-printed.
 fn render(result: &Value) -> String {
     if let Value::String(s) = result {
         return s.clone();
@@ -126,9 +90,7 @@ fn render(result: &Value) -> String {
     }
 }
 
-/// A `CallToolResult`. A failed op is `isError` inside a successful JSON-RPC reply, not a transport
-/// error: that is what puts the manager's refusal in front of the model, which is the only way it
-/// can correct itself.
+/// A `CallToolResult`: a failed op is `isError` inside a successful JSON-RPC reply.
 fn tool_result(text: String, is_error: bool) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
 }
@@ -137,13 +99,11 @@ fn tool_result(text: String, is_error: bool) -> Value {
 fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    // The registry is the gate, checked BEFORE dispatch: `load`/`new`/`save` have live arms and
-    // would run perfectly well if asked for by name, and each replaces the patch the agent is
-    // working inside — with, for the three sharing the `load` arm, its undo history.
+    // The registry is the gate, checked BEFORE dispatch: a ControlOnly op has a live arm and would
+    // run perfectly well if asked for by name.
     if !ops::find(name).is_some_and(|op| op.surface == Surface::Mcp) {
         return tool_result(format!("unknown tool `{name}`"), true);
     }
-    // Synchronous, exactly as the `/control` handler calls it — see the module note.
     match state.call(name, arguments, session) {
         Ok(result) => tool_result(render(&result), false),
         Err(e) => tool_result(e, true),
@@ -159,19 +119,14 @@ fn rpc_error(id: Value, code: i64, message: String) -> Response {
         .into_response()
 }
 
-/// The central MCP endpoint — the address an external agent connects to, and the one that has no
-/// harness behind it. Registered with `post`, so axum answers the retired GET stream and the
-/// retired DELETE session-teardown with the 405 the transport spec asks a server without them to
-/// give.
+/// The central MCP endpoint — the address an external agent connects to. Registered with `post`,
+/// so axum answers the retired GET stream and DELETE teardown with the 405 the spec asks for.
 pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
     serve(&state, AGENT_SESSION, None, &body).await
 }
 
-/// The address `spawn_harness` minted for ONE harness and wrote into its config. Identity is the
-/// route itself: nothing about it travelled through the agent, so there is no id to spoof and none
-/// to validate — a stopped instance simply has no route, which is what `gone` says here. The undo
-/// session follows the address, so a harness's undo reaches its own edits and neither the central
-/// agent's nor a browser tab's.
+/// The address `spawn_harness` minted for ONE harness. Identity is the route itself, so there is
+/// nothing to spoof and nothing to validate, and the undo session follows the address.
 pub async fn instance_endpoint(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
@@ -182,21 +137,18 @@ pub async fn instance_endpoint(
 }
 
 /// One JSON-RPC request, in the undo session the address names. `gone` names an instance whose
-/// address has been dropped — answered rather than 404'd, because a refusal a model can read is
-/// the only kind it can act on.
+/// address has been dropped, and is answered rather than 404'd so a model can read the refusal.
 async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) -> Response {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
     };
-    // A batch is a JSON ARRAY, and an array has no top-level `id` — so without this it would fall
-    // into the notification branch and every request in it would go unanswered. Batching was
-    // retired in 2025-06-18, so refusing it readably beats leaving a client waiting forever.
+    // A batch is a JSON ARRAY with no top-level `id`, so without this it falls into the
+    // notification branch below and every request in it goes unanswered.
     let Some(req) = req.as_object() else {
         return rpc_error(Value::Null, -32600, "invalid request: expected one JSON-RPC object".into());
     };
-    // A notification carries no id and therefore has no reply. 202-with-no-body is what the
-    // transport requires; a JSON-RPC object here leaves the client matching a response to nothing.
+    // A notification carries no id and therefore has no reply: 202 with no body.
     let Some(id) = req.get("id").filter(|v| !v.is_null()).cloned() else {
         return StatusCode::ACCEPTED.into_response();
     };
@@ -207,18 +159,15 @@ async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) 
             "harness instance `{instance}` has been stopped, so this address no longer serves \
              goofi's tools. The patch itself is unchanged and still reachable at /mcp."
         );
-        // A call is refused as a tool ERROR — the module note's deliberate deviation, and the only
-        // shape the MODEL reads — while anything else, which no model is waiting on, is a plain
-        // JSON-RPC error.
+        // A call is refused as a tool ERROR, the only shape the model reads; anything else, which
+        // no model waits on, is a plain JSON-RPC error.
         return match method {
             "tools/call" => ok(id, tool_result(why, true)),
             _ => rpc_error(id, -32001, why),
         };
     }
     match method {
-        // Answered for a legacy client, never required of a modern one. A supported ask is echoed;
-        // anything else is answered with the newest revision this server really implements, which
-        // is what the spec asks of a server that cannot speak what it was offered.
+        // Answered for a legacy client, never required of a modern one.
         "initialize" => ok(
             id,
             json!({
@@ -229,9 +178,7 @@ async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) 
                 },
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "goofi-pipe", "version": env!("CARGO_PKG_VERSION") },
-                // No `instructions`: the orientation is `AGENTS.md` in the harness's cwd, and this
-                // field is the copy of it a client would silently truncate — see
-                // [`crate::term::seed_orientation`] for the measurement that retired it.
+                // No `instructions`: the orientation is `AGENTS.md` in the harness's cwd.
             }),
         ),
         "tools/list" => ok(id, json!({ "tools": tools() })),

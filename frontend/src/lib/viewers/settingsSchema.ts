@@ -1,12 +1,4 @@
-/**
- * Per-viewer settings schema — the single source of truth for which settings a
- * viewer kind exposes in its cog menu, their types, defaults, and grouping.
- *
- * The cog dropdown renders these (Blender-style collapsible groups); `resolveSettings`
- * merges a viewer instance's overrides over these defaults. Each viewer instance
- * owns its overrides via its ViewBinding (inline → node.viewers; panel → layout),
- * persisted into the .gfi.
- */
+/** Per-viewer settings schema: what each viewer kind exposes in its cog menu. */
 import type { ViewerKind } from './kind';
 import { COLORMAPS } from './colormaps';
 
@@ -18,12 +10,11 @@ export interface SettingDescriptor {
 	label: string;
 	type: SettingType;
 	default: SettingValue;
-	options?: string[]; // select
+	options?: string[];
 	min?: number;
 	max?: number;
-	step?: number; // number
-	/** Only show this control when another setting holds a given value (e.g. the
-	 * manual min/max only when "auto" is off). */
+	step?: number;
+	/** Only show this control when another setting holds a given value. */
 	showWhen?: { key: string; equals: SettingValue };
 }
 
@@ -98,15 +89,13 @@ export function settingsSchemaFor(kind: ViewerKind): SettingGroup[] {
 /** A bag of explicitly-set setting overrides (or resolved values). */
 export type SettingsMap = Record<string, SettingValue>;
 
-/** The default value bag for a kind — every declared key, its default. */
 function defaultSettings(kind: ViewerKind): SettingsMap {
 	const out: SettingsMap = {};
 	for (const g of settingsSchemaFor(kind)) for (const s of g.settings) out[s.key] = s.default;
 	return out;
 }
 
-/** Resolved settings for a kind: its declared defaults with the explicit
- * overrides applied on top. */
+/** A kind's declared defaults with the explicit overrides applied on top. */
 export function resolveSettings(kind: ViewerKind, overrides: SettingsMap | undefined): SettingsMap {
 	return { ...defaultSettings(kind), ...(overrides ?? {}) };
 }

@@ -1,15 +1,5 @@
-/**
- * Node geometry constants — these mirror the `--node-*` CSS custom properties in
- * `app.css`. They live here in JS too so the connector overlay can compute each
- * output port's y-position (which depends on how the output slots stack)
- * deterministically, without measuring the DOM.
- *
- * A node is drawn as two layers: a clipped visual `surface` (rounds the corners)
- * and an unclipped `ports` overlay (the connector pills, which overhang the
- * edges). The output handles can't be inside the clipped surface, so the overlay
- * positions them here using the same rhythm the SlotViewers lay out with:
- * header, then each slot — one unit tall collapsed, `unit + viewer` open.
- */
+/** Node geometry, mirroring the `--node-*` custom properties in `app.css` so the connector
+ * overlay can place ports without measuring the DOM. Keep the two in step. */
 export const NODE = {
 	width: 233,
 	header: 36,
@@ -18,21 +8,16 @@ export const NODE = {
 	border: 1
 } as const;
 
-/** An In/Out boundary pill's footprint (mirrors BoundaryNode.svelte's min-width +
- * padding/font). Pills are first-class draggables inside a sub-patch, so snapping
- * needs their real size — a node-sized fallback would be wildly off. */
+/** An In/Out boundary pill's footprint, mirroring BoundaryNode.svelte's min-width and padding. */
 export const BOUNDARY = {
 	width: 96,
 	height: 26
 } as const;
 
-/** A slot's height in units — the one place the "multi (list) slot is 2× tall,
- * single is 1" rule lives. */
+/** A slot's height in units: a multi (list) slot is 2× tall. */
 const slotUnits = (multi: boolean): number => (multi ? 2 : 1);
 
-/** Total input-block height in units, floored at 1 so a node with no inputs still
- * has a body. The input-side height GoofiNode reserves and the snap-geometry fallback
- * uses. */
+/** Total input-block height in units, floored at 1 so a node with no inputs still has a body. */
 export function inputUnits(slots: string[], isMulti: (slot: string) => boolean): number {
 	return Math.max(
 		slots.reduce((n, s) => n + slotUnits(isMulti(s)), 0),
@@ -40,9 +25,7 @@ export function inputUnits(slots: string[], isMulti: (slot: string) => boolean):
 	);
 }
 
-/** Vertical placement of each input connector. Slots stack from below the header in
- * declaration order; a MULTI (list) slot is 2 units tall, a single slot 1. `top` is
- * the centre (px) of each slot's block — the rhythm GoofiNode's overlay draws with. */
+/** Vertical placement of each input connector; `top` is the centre (px) of the slot's block. */
 export function inputPorts(
 	slots: string[],
 	isMulti: (slot: string) => boolean
@@ -56,18 +39,8 @@ export function inputPorts(
 	});
 }
 
-/**
- * The rendered size of a node's surface box, computed from its slot layout — the
- * same rhythm GoofiNode draws with (header, then each output slot one unit tall
- * collapsed / `unit + viewer` open, with a floor of one unit for the input body).
- * This is the snap geometry's fallback when Svelte Flow hasn't measured a node yet,
- * and the accurate size for short sub-patch group nodes — for which the old single
- * fixed fallback was ~100px too tall, misaligning every snap.
- *
- * `inputUnitsTotal` is the input body's height in units (a multi slot counts as 2 —
- * see {@link inputUnits}); `outputExpanded[i]` is whether output slot i's inline
- * viewer is open.
- */
+/** The rendered size of a node's surface box, the snap geometry's fallback until Svelte Flow
+ * has measured the node. `outputExpanded[i]` is whether output slot i's inline viewer is open. */
 export function nodeSurfaceSize(
 	inputUnitsTotal: number,
 	outputExpanded: boolean[]

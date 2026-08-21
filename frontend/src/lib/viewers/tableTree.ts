@@ -5,9 +5,7 @@ export function tableChildren(f: DataFrame): [string, DataFrame][] {
 	return f.dtype === 'TABLE' ? Object.entries(f.data as Record<string, DataFrame>) : [];
 }
 
-/** A one-line summary of a table cell: string (truncated), scalar (formatted),
- * array (by shape), or nested table (field count). Used as the collapsed label
- * in the recursive TableTree (backlog #13). */
+/** A one-line summary of a table cell, used as the collapsed label in TableTree. */
 export function leafSummary(f: DataFrame, decimals: number): string {
 	if (f.dtype === 'STRING') return String(f.data).slice(0, 120);
 	if (f.dtype === 'TABLE') return `{${tableChildren(f).length} fields}`;

@@ -1,6 +1,4 @@
-<!-- Metadata panel — shows the incoming Data.meta of the node dragged into it.
-     The slot picker lives in the panel header bar (next to the node name).
-     Linking + empty state are handled by NodeLinkedPanel. -->
+<!-- Metadata panel — shows the incoming Data.meta of the bound node. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -16,7 +14,6 @@
 	function st(): Record<string, unknown> {
 		return asStateObject(props.state);
 	}
-	// Selected slot persists in the panel state alongside the linked node.
 	function curSlot(node: NodeInstanceInfo): string | null {
 		const names = Object.keys(node.output_slots ?? {});
 		const cur = st().slot;

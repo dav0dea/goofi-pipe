@@ -1,15 +1,5 @@
-<!--
-  Slider — a dumb range control (spec §2.2): `value` in, `onChange` out. `min`/`max`/`step`, an
-  accent track, and the min/max bound labels. It opts into `useLiveValue` so a live backend echo can't
-  yank the thumb mid-drag: `editing` is latched on pointer-down and released on pointer-up OR
-  pointer-cancel (`touch-action: pan-y` below lets a vertical scroll gesture through, and the UA
-  claiming the pointer for that pan fires cancel, not up), and each drag step commits live.
-
-  The track auto-extends when the live value lies outside [min, max] (as goofi3 / ParamField do) so a
-  value of 5 on a [0, 1] slider renders in range instead of clipping at the edge. The wrapping row is
-  the root — `class` merged, `data-testid` (and any other attribute) forwarded via `...rest`; the
-  range input claims the enclosing Field's label id so clicking the label focuses it.
--->
+<!-- Slider — a dumb range control: `value` in, `onChange` out. The latch is released on pointer-up
+     OR pointer-cancel, because a touch pan the UA claims fires cancel and never up. -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import { useLiveValue } from './liveValue.svelte';
@@ -41,7 +31,7 @@
 	// Auto-extend so an out-of-range live value never clips at an edge.
 	const lo = $derived(Math.min(min, live.value));
 	const hi = $derived(Math.max(max, live.value));
-	// A default step gives the range ~200 stops across the (possibly extended) span.
+	// A default step gives the range ~200 stops across the span.
 	const stp = $derived(step ?? Math.max((hi - lo) / 200, 1e-6));
 
 	function fmtBound(v: number): string {
@@ -84,7 +74,7 @@
 		background: transparent;
 		padding: 0;
 		border: none;
-		/* Let vertical scroll gestures pass through on touch while horizontal drags the thumb. */
+		/* A vertical touch gesture scrolls; a horizontal one drags the thumb. */
 		touch-action: pan-y;
 	}
 	.ui-slider-bound {

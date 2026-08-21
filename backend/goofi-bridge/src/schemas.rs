@@ -1,6 +1,5 @@
-//! JSON projections of the engine graph into the exact shapes the frontend
-//! mirrors (`control.ts` types). These are the wire contract; keep field names
-//! and shapes aligned with the frontend or co-edit it.
+//! JSON projections of the engine graph into the shapes the frontend mirrors (`control.ts`).
+//! These are the wire contract: co-edit the frontend when a field or shape changes.
 
 use goofi_core::Param;
 use goofi_engine::{ExprInfo, Graph, Uid};
@@ -10,9 +9,8 @@ use serde_json::{json, Map, Value};
 pub const ROOT_ID: &str = "__root__";
 pub const PROTOCOL_VERSION: i64 = 3;
 
-/// A single param descriptor (discriminated on `type`). `expr` is the instance's
-/// expression binding (or `None` for a plain literal / a palette type-level param); `doc` is
-/// the static help text from the type's declaration, which the runtime [`Param`] cannot carry.
+/// A single param descriptor, discriminated on `type`. `doc` is the type declaration's help text,
+/// which the runtime [`Param`] cannot carry.
 pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
     m.insert("value".into(), goofi_engine::param_value_json(p, true));
@@ -21,9 +19,6 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
         "refreshable".into(),
         json!(matches!(p, Param::Str { refresh: true, .. })),
     );
-    // Real expression state (or nulls/false for an unbound param). `expression_error`
-    // drives the per-param field indicator. Auto-eval is always on, so there is no
-    // autoeval flag on the wire.
     m.insert("expression".into(), expr.map(|e| json!(e.source)).unwrap_or(Value::Null));
     m.insert("expression_enabled".into(), json!(expr.is_some_and(|e| e.enabled)));
     m.insert("expression_triggers_process".into(), json!(expr.is_some_and(|e| e.triggers_process)));
@@ -61,9 +56,7 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
     Value::Object(m)
 }
 
-/// Look up a param's declared help text. A node's own declaration wins over the universal
-/// `common` fallback, matching `with_common`'s keep-what-the-node-declared rule — which is why the
-/// universal declarations are read through the same manifest that materialized the values.
+/// A param's declared help text; a node's own declaration wins over the universal `common` one.
 fn param_doc(m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> {
     m.params
         .iter()
@@ -73,9 +66,7 @@ fn param_doc(m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> 
         .and_then(|d| d.doc)
 }
 
-/// Type-level / literal params (no expression bindings) — used for the palette. This is the
-/// projection the frontend renders param tooltips from: the instance descriptors override only
-/// value/expression/options, so `doc` has to be right *here*.
+/// Type-level params for the palette, and the projection param tooltips are rendered from.
 pub fn describe_params(p: &ParamGroups, m: &NodeManifest) -> Value {
     let mut groups = Map::new();
     for (gname, g) in p {
@@ -88,10 +79,8 @@ pub fn describe_params(p: &ParamGroups, m: &NodeManifest) -> Value {
     Value::Object(groups)
 }
 
-/// A node instance's params, each carrying its real expression binding state (source /
-/// enabled / triggers / error) for the fx toggle + field error indicator.
+/// A node instance's params, each carrying its real expression binding state.
 pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
-    // Params and manifest live on the same entry, so a node has both or is not a node.
     let (Some(params), Some(m)) = (g.params(uid), g.manifest(uid)) else {
         return Value::Object(Map::new());
     };
@@ -107,11 +96,8 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
     Value::Object(groups)
 }
 
-/// The live values of a node's expression-driven params, shaped `{group: {name: value}}`
-/// for the `param_values` event. Empty object when the node has no active expressions.
-/// Unlike [`describe_node_params`] this carries ONLY the evaluated values (no descriptor
-/// metadata), so the frontend applies it surgically — it can never clobber a concurrent
-/// edit the way a full-params replace would.
+/// The live values of a node's expression-driven params, `{group: {name: value}}`. Values only, so
+/// the frontend applies it surgically and cannot clobber a concurrent edit.
 pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     let mut groups = Map::new();
     for (group, name, p) in g.expression_values(uid) {
@@ -123,9 +109,7 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     Value::Object(groups)
 }
 
-/// A node instance's param VALUES, shaped `{group: {name: value}}` — what a caller that just
-/// created the node needs to see, without the descriptor metadata `describe_node_params` carries
-/// for the inspector.
+/// A node instance's param VALUES, `{group: {name: value}}`, without descriptor metadata.
 pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
     Value::Object(
         params
@@ -138,8 +122,7 @@ pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
     )
 }
 
-/// Project `(slot_name, dtype_name)` pairs into a `{name: dtype}` JSON object — shared by
-/// [`input_slots`] / [`output_slots`], whose only difference was the source collection.
+/// Project `(slot_name, dtype_name)` pairs into a `{name: dtype}` JSON object.
 fn slot_map<'a>(slots: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
     Value::Object(slots.map(|(name, dtype)| (name.to_string(), json!(dtype))).collect())
 }
@@ -147,9 +130,7 @@ pub fn input_slots(m: &NodeManifest) -> Value {
     slot_map(m.inputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
-/// The names of the node type's `multi` (variadic) input slots — static shape the
-/// frontend reads to render those slots tall and accept many cables. Peer of the
-/// dtype in [`input_slots`]; not a mutable per-instance flag.
+/// The names of the node type's `multi` (variadic) input slots — static shape, not per-instance.
 fn input_multi(m: &NodeManifest) -> Value {
     Value::Array(m.inputs.iter().filter(|s| s.multi).map(|s| json!(s.name)).collect())
 }
@@ -157,10 +138,7 @@ pub fn output_slots(m: &NodeManifest) -> Value {
     slot_map(m.outputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
-/// Where a palette row's type came from, for the badge the add-menu shows: the patch you have open,
-/// or the goofi you are running. Everything a scan did not attribute to the patch reads as
-/// `builtin` — compiled-in nodes, the shipped `nodes/` tree, and every `--extra-nodes` directory
-/// alike. A separate badge for that last one is a design question, not a scan fact.
+/// Where a palette row's type came from, for the add-menu badge: the open patch, or `builtin`.
 fn source_of(g: &Graph, type_name: &str) -> &'static str {
     if g.is_patch_type(type_name) {
         "patch"
@@ -173,8 +151,6 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
     json!({
         "type": m.type_name,
         "source": source,
-        // A node's pillar (signal/audio/video) routes it to its editor panel. All current
-        // node types are signal; audio/video manifests will declare their own (layering §9).
         "pillar": "signal",
         "category": m.category,
         "doc": m.doc,
@@ -183,15 +159,13 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
         "input_slots": input_slots(m),
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),
-        // Project the same universal `common` group instances carry, so the palette
-        // and an instantiated node agree on a type's params.
+        // The same universal `common` group instances carry, so palette and instance agree.
         "params": describe_params(&goofi_node::with_common(m.default_params(), m), m),
     })
 }
 
-/// The `list_nodes` palette catalog, sorted by (category, type). Includes both
-/// the compile-time catalog and the graph's runtime-registered types (e.g.
-/// discovered Python nodes). Hidden test nodes (`_`-prefixed) are excluded.
+/// The `list_nodes` palette catalog, sorted by (category, type), compile-time and runtime types
+/// alike. Hidden test nodes (`_`-prefixed) are excluded.
 pub fn catalog_types(g: &Graph) -> Value {
     let mut items: Vec<(String, String, Value)> = goofi_node::catalog()
         .chain(g.dyn_type_manifests())
@@ -200,9 +174,7 @@ pub fn catalog_types(g: &Graph) -> Value {
             (m.category.to_string(), m.type_name.to_string(), node_type_info(m, source_of(g, m.type_name)))
         })
         .collect();
-    // Node files that exist but cannot load are listed too, greyed and with the reason. Dropping
-    // them would leave the author of a node with an uninstalled dependency staring at a palette
-    // where it simply is not, which reads as "my file was ignored".
+    // Node files that exist but cannot load are listed too, greyed and with the reason.
     items.extend(g.unavailable_types().map(|(name, reason)| {
         (
             "unavailable".to_string(),
@@ -226,10 +198,8 @@ pub fn catalog_types(g: &Graph) -> Value {
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }
 
-/// The per-node RUNTIME overlay: the event-sourced state that never enters the CRDT doc, keyed by
-/// node uid. Rides the `hello`/`graph_replaced` snapshot because its live stream (the stats sweep)
-/// pushes only *transitions* — without this seed a client that connects to a running graph would
-/// show an errored node as healthy until it happened to change.
+/// The per-node RUNTIME overlay that never enters the doc. It rides the snapshot because its live
+/// stream pushes only transitions.
 pub fn runtime_overlay(g: &Graph) -> Value {
     let mut m = Map::new();
     for uid in g.node_uids() {
@@ -241,11 +211,8 @@ pub fn runtime_overlay(g: &Graph) -> Value {
     Value::Object(m)
 }
 
-/// The snapshot (`hello` / `graph_replaced` payload). Deliberately carries NO graph structure:
-/// nodes, links and the sub-patch forest live in the CRDT doc alone (the client assembles them
-/// from doc + catalog). What it does carry is the session frame — instance id, palette, save
-/// path, viewpoint — plus [`runtime_overlay`] and the harness roster, the two truths the doc
-/// never holds.
+/// The `hello` / `graph_replaced` payload: the session frame plus the truths the doc never holds.
+/// It carries NO graph structure — that lives in the document alone.
 pub fn snapshot(
     g: &Graph,
     instance_id: &str,
@@ -256,27 +223,17 @@ pub fn snapshot(
 ) -> Value {
     let mut snap = json!({
         "instance_id": instance_id,
-        // The pillars this backend build actually hosts — the frontend shows only these
-        // editors. Signal-only for now; audio/video are added as their runtimes land.
         "pillars": ["signal"],
         "runtime": runtime_overlay(g),
-        // The spawned harnesses and the detected ones, seeded here for exactly the reason the
-        // runtime overlay is: `harness_changed` pushes only transitions, so a tab that joins after
-        // a spawn would otherwise draw an empty switcher over a running harness.
+        // Seeded for the same reason the runtime overlay is: `harness_changed` pushes transitions.
         "harnesses": harnesses,
         "save_path": save_path,
         "unsaved_changes": unsaved,
-        // Where the saver was looking. Client-local, so it is not a doc root — but it still has to
-        // arrive, or reopening a patch would forget which tab and sub-patch it was left on.
         "viewpoint": g.viewpoint().clone(),
     });
     if with_protocol {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
-        // hello / graph_replaced carry the node palette so the client has descriptors in hand
-        // immediately — no async `list_nodes` round-trip, so the doc is authoritative for node
-        // identity from the first render (no catalog-loading fallback window). Structural echoes
-        // (subpatch_changed, with_protocol=false) omit it — the catalog changes only when a
-        // runtime type registers, which arrives on the next hello/graph_replaced.
+        // The palette rides along, so the first render needs no `list_nodes` round-trip.
         snap["node_types"] = catalog_types(g);
     }
     snap

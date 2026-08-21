@@ -1,23 +1,5 @@
-<!--
-  Popover — one anchored, self-dismissing overlay (spec §2.4). It portals its content to <body>
-  (escaping panel/SvelteFlow transform + clip contexts), positions it against the `anchor` element
-  via the pure `clampToViewport` SSOT, and dismisses on Escape OR a pointerdown outside both the
-  surface and the anchor (calling `onDismiss` — the parent owns the open state). Its product
-  consumers are the error chip's list and the per-slot viewer settings menu; the two POINT-anchored
-  menus (ContextMenu and the add-node menu) keep their own shells and share only the clamp — see
-  D-M2, and each file's own note on why.
-
-  The anchor is excluded from "outside" so the trigger's own onclick toggles cleanly (an outside
-  pointerdown that also hit the anchor would dismiss-then-reopen). Surface chrome is F tokens, each
-  a `var(--popover-*, <token>)` per-instance hook (spec §1). `class` merged, `data-testid` (and any
-  other attribute) forwarded via `...rest`.
-
-  Semantics are the consumer's, not the primitive's: this is an unstyled-semantics positioned
-  surface that imposes NO role of its own — the anchored, self-dismissing model, not the modal,
-  focus-trapping `Dialog` (that primitive owns the name + focus context a `role="dialog"` demands).
-  A consumer declares the fitting role/name (`role="menu"`, `aria-label`, …) via `...rest`, or lets
-  the interactive children carry their own roles.
--->
+<!-- Popover — an anchored, self-dismissing overlay portalled to <body> and clamped to the
+     viewport. It imposes no role of its own; the consumer declares one through `...rest`. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -46,8 +28,7 @@
 
 	let menuEl = $state<HTMLDivElement | null>(null);
 	let pos = $state<{ left: number; top: number }>({ left: 0, top: 0 });
-	// Hidden until the first measurement lands, so the popover never flashes at (0,0) before the
-	// clamp positions it (the element-anchored analogue of ContextMenu's known-spawn-point start).
+	// Hidden until the first measurement lands, so nothing flashes at (0,0).
 	let placed = $state(false);
 
 	$effect(() => {
@@ -63,15 +44,10 @@
 			pos = clampToViewport(ar, { width: m.width, height: m.height }, overlayViewport(), { flip });
 			placed = true;
 		};
-		// Measured on every resize, not once per open: the surface's content is the consumer's and can
-		// grow while it is open (the error list derives live from the control plane). With `flip` the
-		// surface is pinned by its TOP, so growth extends DOWNWARD over the very trigger the flip
-		// exists to keep clear. No feedback loop — repositioning a fixed element does not resize it.
+		// Re-measured on every resize, not once per open: the consumer's content can grow while open.
 		const ro = new ResizeObserver(place);
 		ro.observe(el);
-		// …and on every VISUAL-viewport change, because a popover's own content can raise the soft
-		// keyboard (the viewer-settings menu is a form): the surface does not resize, the space under
-		// it disappears. `overlayViewport()` is what reads the new inset; this is what re-asks it.
+		// …and on every visual-viewport change: a soft keyboard shrinks the space without resizing us.
 		const vv = window.visualViewport;
 		vv?.addEventListener('resize', place);
 		place();
@@ -83,32 +59,20 @@
 
 	function onWindowPointerDown(e: PointerEvent): void {
 		const t = e.target as Node | null;
-		// Inside the surface, or on the anchor (its own onclick toggles) → not an outside dismiss.
+		// The anchor is not "outside": its own onclick toggles, so a dismiss here would reopen.
 		if (t && menuEl?.contains(t)) return;
 		if (t && anchor?.contains(t)) return;
 		onDismiss();
 	}
 	function onWindowKeydown(e: KeyboardEvent): void {
 		if (e.key !== 'Escape') return;
-		// CONSUMED, and that is why the listener below is capture-phase. An open surface is the
-		// topmost thing on screen, so the Escape that closes it is ITS event and must not also run
-		// whatever is underneath. `NodeEditorPanel` binds its own window keydown in `onMount` — long
-		// before any popover can mount — so two bubble-phase window listeners run in registration
-		// order and the editor's went first: dismissing the slot-header settings menu also cleared
-		// the canvas selection, or, inside a sub-patch, popped one level. Its guards cannot exclude
-		// this (the trigger is slot-header chrome, so the panel stays active, and a <button> is
-		// neither in the tag allowlist nor inside a `dialog[open]`). Window-capture runs before every
-		// window-bubble listener for a key targeted at a descendant.
-		// Safe inside the surface: no `$lib/ui` control binds Escape — TextInput and NumberInput
-		// commit on blur/Enter. The trade is the same one ContextMenu takes: while a surface is open,
-		// an Escape meant for something under it goes to the surface.
+		// Consumed, and capture-phase for it: the open surface is topmost, so no window-bubble
+		// listener beneath it may also act on this Escape.
 		e.stopPropagation();
 		onDismiss();
 	}
 </script>
 
-<!-- svelte:window must be top-level; the handlers are nulled out while closed rather than the tag
-     being conditionally rendered (mirrors ContextMenu). -->
 <svelte:window
 	onpointerdown={open ? onWindowPointerDown : undefined}
 	onkeydowncapture={open ? onWindowKeydown : undefined}
@@ -116,18 +80,8 @@
 
 {#if open}
 	{#if catcher}
-		<!-- Opt-in click catcher: a portalled full-screen layer one step under the surface. It carries
-		     no handler, because it needs none — the window `pointerdown` above is what dismisses, and
-		     it is armed exactly when this layer is mounted (both gated on `open`). What the layer does
-		     is ABSORB the pointer event, so a dismissing click CONSUMES instead of also acting on
-		     whatever it landed on. The window listener alone cannot do that: the handler under the
-		     pointer still fires, and a target that stops propagation (the slot header, which must keep
-		     SvelteFlow from starting a node drag) never lets the listener see the event at all. So the
-		     job here is entirely the CSS below; it reads --popover-z from the portal root, exactly as
-		     the surface does. (It once mirrored the add-node menu's overlay and carried an `onclick`
-		     too — dead here: the dismissal unmounts this branch at the microtask checkpoint ending the
-		     pointerdown task, so `click` is never dispatched to it. The add-node menu, which has no
-		     window listener at all, still needs its own.) -->
+		<!-- Handler-free by design: the layer only ABSORBS the pointer event, so a dismissing click
+		     does not also act on what it landed on. The window listener above dismisses. -->
 		<div class="ui-popover-catcher" use:portal></div>
 	{/if}
 	<div

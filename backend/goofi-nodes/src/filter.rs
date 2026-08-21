@@ -1,12 +1,5 @@
-//! Filter — a streaming Butterworth filter along one axis.
-//!
-//! IIR rather than FIR, and stateful rather than per-frame: a biosignal arrives in small blocks,
-//! and a filter that restarted on each one would ring at every block boundary. Each independent
-//! signal — every position along the axes that are NOT being filtered — carries its own delay
-//! line, so a `[C, T]` frame is C separate filters and never mixes a channel into its neighbour.
-//!
-//! The rank is unchanged and so is the length: filtering is a transformation of a signal, not of
-//! its shape.
+//! Filter — a streaming Butterworth filter along one axis, one delay line per signal.
+//! Stateful rather than per-frame: a filter restarted on each block would ring at every boundary.
 
 use goofi_core::{resolve_axis, Data, SlotType};
 use goofi_node::{
@@ -24,8 +17,6 @@ struct Biquad {
     a2: f32,
 }
 
-/// Which of the RBJ forms a section takes. They share a denominator and differ only in the
-/// numerator, which is why the three arms below are three lines.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Low,
@@ -36,9 +27,7 @@ enum Kind {
 impl Biquad {
     /// An RBJ section at `f0` Hz with quality `q`, for a stream sampled at `sfreq`.
     fn new(kind: Kind, f0: f64, q: f64, sfreq: f64) -> Biquad {
-        // Nyquist is a wall, not a limit to approach: a cutoff at or past it makes `alpha` zero or
-        // negative and the section unstable. Clamping is what keeps a slider dragged to the end
-        // from destroying the node's state.
+        // A cutoff at or past Nyquist makes `alpha` zero or negative, and the section unstable.
         let f0 = f0.clamp(sfreq * 1e-6, sfreq * 0.49);
         let w0 = std::f64::consts::TAU * f0 / sfreq;
         let (cos, alpha) = (w0.cos(), w0.sin() / (2.0 * q));
@@ -58,8 +47,7 @@ impl Biquad {
     }
 }
 
-/// The Butterworth cascade of `order` (rounded up to even) at `f0`: the section quality factors are
-/// the poles' — identical sections would give a soft, wrong roll-off, not a steeper Butterworth.
+/// The Butterworth cascade of `order` (rounded up to even) at `f0`: each section takes a pole's Q.
 fn butterworth(kind: Kind, f0: f64, order: usize, sfreq: f64, into: &mut Vec<Biquad>) {
     let n = order.max(2).div_ceil(2) * 2;
     for k in 0..n / 2 {
@@ -70,12 +58,8 @@ fn butterworth(kind: Kind, f0: f64, order: usize, sfreq: f64, into: &mut Vec<Biq
 
 #[derive(Default)]
 struct Filter {
-    /// The cascade, rebuilt every frame — a handful of trig calls, against an FFT-free filter that
-    /// has to follow a slider being dragged.
     sections: Vec<Biquad>,
-    /// Two delay elements per (signal, section), laid out signal-major. Reset only when the frame's
-    /// shape or the cascade's length changes; a coefficient edit keeps the history, because the
-    /// signal it summarizes did not go anywhere.
+    /// Two delay elements per (signal, section), laid out signal-major.
     state: Vec<[f32; 2]>,
     layout: (Vec<usize>, usize, usize),
 }
@@ -91,8 +75,6 @@ impl Node for Filter {
         let Some(d) = inp.get("data") else { return Ok(()) };
         let a = d.assert_ndims().at_least(1)?;
         let axis = resolve_axis(p.i64("filter", "axis").unwrap_or(-1), a.ndim())?;
-        // A cutoff is stated in Hz, so an unstamped stream is genuinely unfilterable — unlike Psd,
-        // which can fall back to cycles per sample.
         let sfreq = d.meta().sfreq().ok_or(
             "no sfreq on the incoming frame: a cutoff in Hz needs to know the sample rate",
         )?;
@@ -108,8 +90,7 @@ impl Node for Filter {
             "lowpass" => butterworth(Kind::Low, high, order, sfreq, &mut self.sections),
             "highpass" => butterworth(Kind::High, low, order, sfreq, &mut self.sections),
             "notch" => {
-                // A stopband stated by its edges, as the other modes state theirs: the RBJ notch
-                // takes a centre and a quality instead, and this is the pair that means the same.
+                // The RBJ notch takes a centre and a quality; this is the pair that means low..high.
                 let centre = (low * high).sqrt();
                 for _ in 0..order.div_ceil(2) {
                     self.sections.push(Biquad::new(Kind::Notch, centre, centre / (high - low), sfreq));
@@ -143,8 +124,7 @@ impl Node for Filter {
                 let st = &mut self.state[(o * inner + i) * self.sections.len()..][..self.sections.len()];
                 for k in 0..along {
                     let mut x = buf[base + k * inner];
-                    // Direct form II transposed: one multiply-add pair per delay element, and the
-                    // form that stays accurate in f32 at the low cutoffs a biosignal filter uses.
+                    // Direct form II transposed, which stays accurate in f32 at low cutoffs.
                     for (s, z) in self.sections.iter().zip(st.iter_mut()) {
                         let y = s.b0 * x + z[0];
                         z[0] = s.b1 * x - s.a1 * y + z[1];

@@ -8,9 +8,7 @@
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
 
-	// Cog-menu settings (persisted per node+slot).
 	const pointSize = $derived(Number(settings.pointSize ?? 2));
-	// Auto adapts the shared range to the data each frame; off freezes it.
 	const autoRange = $derived(settings.auto !== false);
 
 	let container: HTMLDivElement | null = $state(null);
@@ -18,29 +16,18 @@
 	let ctx: CanvasRenderingContext2D | null = null;
 	let resizer: ResizeObserver | null = null;
 
-	// Adaptive range SHARED by both axes — ported from the dearpygui
-	// TrajectoryViewer (margin=0.1, shrinking=0.01). It grows instantly to fit
-	// new extremes and decays back slowly, so the view tracks the path's span
-	// without jitter, and an equal x/y data range keeps the shape undistorted.
-	//
-	// Why a custom canvas instead of uPlot (which every other line plot uses):
-	// uPlot assumes a sorted, monotonic x-axis. It derives the x-range from the
-	// FIRST and LAST x samples (`autoScaleX`), which a trajectory's non-monotonic
-	// path violates — that was the broken xlim. uPlot also shares one x-array
-	// across series, so it can't draw N independent (x,y) paths. A trajectory is
-	// simply not a time series, so it gets its own renderer.
+	// One adaptive range for both axes, so the shape stays undistorted. A custom canvas, not uPlot:
+	// uPlot assumes a monotonic x-axis and shares one x-array across series.
 	const MARGIN = 0.1;
 	const SHRINKING = 0.01;
 	const MAX_TRAJ = 64; // guard against n*(n-1)/2 pair explosion for large n
 	let vmin: number | null = null;
 	let vmax: number | null = null;
 
-	// Last parsed rows (n × nTime), kept so a resize or settings change can
-	// redraw without waiting for a fresh data frame.
+	// Kept so a resize or settings change can redraw without waiting for a frame.
 	let rows: number[][] = [];
 
-	/** All i<j row pairs → one trajectory each, matching the old viewer's
-	 * n*(n-1)/2 behaviour (row i is x, row j is y). Capped for safety. */
+	/** All i<j row pairs → one trajectory each; row i is x, row j is y. */
 	function pairList(n: number): [number, number][] {
 		const out: [number, number][] = [];
 		for (let i = 0; i < n; i++) {
@@ -54,7 +41,6 @@
 
 	function pushData(arr: ArrayData): void {
 		const shape = arr.shape;
-		// Trajectories need a 2-D (dims × frames) array with at least 2 dims.
 		if (shape.length !== 2 || shape[0] < 2) {
 			rows = [];
 			draw();
@@ -84,8 +70,7 @@
 		if (Number.isFinite(mn) && Number.isFinite(mx)) {
 			const have = vmin !== null && vmax !== null;
 			if (autoRange) {
-				// Shrink the live range toward its centre, then grow to fit the new
-				// extremes (order ported verbatim from the dearpygui viewer).
+				// Shrink toward the centre first, then grow to fit — the order is load-bearing.
 				if (have) {
 					const nvmin = (vmin as number) * (1 - SHRINKING) + (vmax as number) * SHRINKING;
 					const nvmax = (vmax as number) * (1 - SHRINKING) + nvmin * SHRINKING;
@@ -103,8 +88,7 @@
 		draw();
 	}
 
-	/** The shared [lo, hi] data range for both axes, with margin + a degenerate
-	 * guard. Mirrors `vmin - |vmax|·margin … vmax + |vmax|·margin`. */
+	/** The shared [lo, hi] data range for both axes, with margin and a degenerate guard. */
 	function rangeLoHi(): [number, number] {
 		if (vmin === null || vmax === null) return [-1, 1];
 		let lo = vmin - Math.abs(vmax) * MARGIN;
@@ -126,7 +110,6 @@
 		py: (y: number) => number
 	): void {
 		if (!ctx) return;
-		// Faint even grid for spatial reference.
 		ctx.lineWidth = 1;
 		ctx.strokeStyle = 'rgba(255,255,255,0.04)';
 		ctx.beginPath();
@@ -140,7 +123,6 @@
 			ctx.lineTo(w, gy);
 		}
 		ctx.stroke();
-		// Origin cross — the key reference for a phase portrait — when 0 is in view.
 		ctx.strokeStyle = 'rgba(255,255,255,0.10)';
 		ctx.beginPath();
 		if (lo < 0 && hi > 0) {
@@ -159,13 +141,11 @@
 		ctx.font = tickFont(10);
 		ctx.fillStyle = AXIS_INK;
 		const pad = 4;
-		// y-axis: max top-left, min bottom-left.
 		ctx.textAlign = 'left';
 		ctx.textBaseline = 'top';
 		ctx.fillText(fmtTick(hi), pad, pad);
 		ctx.textBaseline = 'bottom';
 		ctx.fillText(fmtTick(lo), pad, h - pad);
-		// x-axis: max bottom-right (min shares the bottom-left corner with y-min).
 		ctx.textAlign = 'right';
 		ctx.fillText(fmtTick(hi), w - pad, h - pad);
 	}
@@ -175,8 +155,7 @@
 		const dpr = window.devicePixelRatio || 1;
 		const w = container.clientWidth;
 		const h = container.clientHeight;
-		// Keep the backing store in step with the element + DPR, then draw in CSS
-		// pixels via a scaled transform (crisp text + lines on HiDPI).
+		// Backing store tracks element × DPR; the transform then lets everything draw in CSS pixels.
 		const bw = Math.max(1, Math.round(w * dpr));
 		const bh = Math.max(1, Math.round(h * dpr));
 		if (canvas.width !== bw || canvas.height !== bh) {
@@ -246,8 +225,6 @@
 					}
 				}
 
-				// "Head" marker at the current (latest) position — reads the
-				// trajectory's live tip at a glance.
 				if (Number.isFinite(lastX) && Number.isFinite(lastY)) {
 					ctx.fillStyle = color;
 					ctx.beginPath();

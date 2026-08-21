@@ -1,8 +1,7 @@
 //! What an agent READS: the patch as a diagram, a node as a tab of text, the globals an
 //! expression can name, and a node type's source.
 //!
-//! These are goldens on purpose. The text IS the interface — a model reads it and acts on it — so
-//! a drift in the wording is a change to the product, not to a formatting detail.
+//! Goldens on purpose: the text IS the interface a model reads and acts on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,9 +11,7 @@ use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
 use goofi_tests::{hex, j, Goofi};
 use serde_json::Value;
 
-/// Ages and the workspace path are wall-clock and per-run, so the golden pins everything BUT those
-/// — while still requiring that each is there at all: a line that loses its age keeps its text and
-/// fails the compare.
+/// Ages and the workspace path are per-run, so the golden pins everything but their values.
 fn stable(s: &str, mount: &str) -> String {
     s.replace(mount, "<workspace>")
         .split_inclusive('\n')
@@ -105,8 +102,7 @@ errors (whole patch):
 
 #[test]
 fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade() {
-    // Both ends of an internal wire fold onto the same facade. Drawing it would put a loop on the
-    // sub-patch that states nothing about the scope being read — the wire is a fact one level down.
+    // Both ends of an internal wire fold onto the same facade; the wire is a fact one level down.
     let g = Goofi::new();
     let a = g.add("Oscillator");
     let b = g.add("Buffer");
@@ -120,9 +116,7 @@ fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade
 
 #[test]
 fn a_node_wired_to_itself_keeps_its_edge() {
-    // The fold above is why `a == b` is skipped — but a node wired to its OWN input folds onto
-    // itself for the honest reason. The engine tolerates the cycle, so the diagram must show it:
-    // an agent debugging a feedback loop would otherwise read that the wire is not there.
+    // A node wired to its OWN input folds onto itself honestly, and the engine tolerates the cycle.
     let g = Goofi::new();
     let buf = g.add("Buffer");
     g.link(buf, "out", buf, "data");
@@ -145,9 +139,7 @@ fn an_empty_scope_says_so_rather_than_drawing_an_empty_diagram() {
 
 const BLEW_UP: &str = "the expression blew up";
 
-/// An evaluator that compiles anything and hands the target value straight back — or, while
-/// `broken` is set, refuses. The harness injects none, so an error the NODE reports about a
-/// binding, as against one the graph found before it would ship it, has no other producer here.
+/// An evaluator that compiles anything and hands the target value back, or refuses while `broken`.
 struct Flaky {
     broken: Arc<AtomicBool>,
 }
@@ -171,8 +163,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let osc = g.add("Oscillator");
     g.call("set_expression", j!({ "node": hex(osc), "group": "oscillator", "name": "amplitude",
                                  "expression": "globals.default_ufreq / 30", "enabled": true }));
-    // A rate is MEASURED, so it needs two emits and a report to have crossed the status service —
-    // which is the very thing the emitting line reads.
+    // A rate is MEASURED, so it needs two emits and a report across the status service.
     g.until("the oscillator's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
     });
@@ -184,16 +175,13 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
-    // …and into set_expression, for a param that is bound instead of literal. This binding cannot
-    // compile (no evaluator in this build), which is itself worth showing inline.
+    // …and into set_expression. This binding cannot compile (no evaluator here), shown inline.
     assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 (on) [error: "),
             "{out}");
-    // The slot line: name, kind, and whether the node is emitting — never the frame. There is one
-    // door onto a node's data and it is `/data`.
+    // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.
     assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
     assert!(!out.contains("f32["), "no frame contents leak into an inspection: {out}");
-    // The wording is the GRAPH's: it could not bind this source at all, so the node was never
-    // handed a binding to have a second opinion about — one error, from the end that found it.
+    // The wording is the GRAPH's: it could not bind the source, so the node never saw it.
     let err = out.lines().find(|l| l.starts_with("error: ")).unwrap_or_else(|| panic!("{out}"));
     assert!(err.contains("no expression evaluator available") && err.contains(" — for <age>"),
             "an error line carries its age, so a settling node reads differently from a broken one: {out}");
@@ -212,9 +200,8 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let why = g.refuse("inspect_node", j!({ "node": hex(osc), "slot": "psd" }));
     assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
 
-    // With an evaluator the error line changes hands: the graph can bind the source, so what the
-    // tab carries is what the NODE found EVALUATING it. A node is handed the evaluator at BIRTH,
-    // so this one is born after the injection.
+    // With an evaluator the error changes hands to the NODE. A node is handed one at BIRTH, so this
+    // one is born after the injection.
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
     let bound = g.add("Oscillator");
@@ -226,8 +213,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     assert!(live.contains(&format!("(on) [error: {BLEW_UP}]")),
             "the bound param's own field carries it too: {live}");
 
-    // That finding belongs to the INSTANCE, and a restart is a new one: it evaluates cleanly and
-    // has nothing to report, so nothing is what the tab must say.
+    // The finding belongs to the INSTANCE, and a restart is a new one with nothing to report.
     broken.store(false, Ordering::Relaxed);
     g.call("restart_node", j!({ "node": hex(bound) }));
     let reborn = text(&g, "inspect_node", j!({ "node": hex(bound) }));
@@ -260,9 +246,7 @@ fn read_node_source_says_a_native_type_has_no_file_to_edit() {
 
 #[test]
 fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
-    // The half a caller actually wants: the text to edit, the path to write it back to, and which
-    // tree it came from. The path is RE-DERIVED from the type name rather than recorded, so this
-    // pins the derivation — a scan stores no path for it to disagree with.
+    // The path is RE-DERIVED from the type name rather than recorded, so this pins the derivation.
     static OUT: &[goofi_node::OutputDecl] =
         &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
     static BOOM: goofi_node::NodeManifest = goofi_node::NodeManifest {
@@ -290,8 +274,7 @@ fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
     assert_eq!(v["source"], "class Boom:\n    pass\n", "{v}");
     assert_eq!(v["language"], "python", "{v}");
 
-    // A tree that holds no file of that name leaves the discovery half empty and SAYS so, rather
-    // than handing back a bare null the caller has to interpret.
+    // A tree holding no such file leaves the discovery half empty and SAYS so, rather than null.
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
     let v = g.call("read_node_source", j!({ "type": "Boom" }));
     assert_eq!(v["source"], Value::Null);

@@ -1,18 +1,8 @@
 //! `GraphDoc` — goofi's control-plane document, and the deltas that keep a browser replica equal
 //! to it.
 //!
-//! The document is plain JSON: five roots (`nodes`, `links`, `instances`, `globals`,
-//! `arrangement`), each a tree of scalars, plus `links`, the one array, which is written
-//! wholesale. Nothing here names an engine type — [`crate::projection`] owns what the roots hold,
-//! and this module sees `serde_json::Value` and nothing else.
-//!
-//! **A delta is an RFC 7386 JSON merge patch.** That is exact for this document because the
-//! document has no null leaf: merge patch spends `null` on "delete this key", so a document that
-//! could hold one would be ambiguous. `goofi-tests` pins the property rather than trusting it.
-//!
-//! Ordering and gaps are the wire's business, not a merge rule's. Each patch names the version it
-//! applies TO and the version it produces, so a replica that has missed one can say so instead of
-//! applying it onto the wrong base.
+//! A delta is an RFC 7386 merge patch, which is exact only while the document has no null leaf,
+//! because merge patch spends `null` on "delete this key".
 
 use serde_json::{Map, Value};
 
@@ -20,10 +10,6 @@ use serde_json::{Map, Value};
 const ROOTS: [&str; 5] = ["nodes", "links", "instances", "globals", "arrangement"];
 
 /// The RFC 7386 merge patch that turns `before` into `after`, or `None` when they are equal.
-///
-/// Recurses into objects so an unchanged sibling costs nothing on the wire; anything else (a
-/// scalar, and `links`, the one array) is carried whole. A key `before` has and `after` does not
-/// becomes `null`, which is how merge patch spells a delete.
 pub fn merge_patch(before: &Value, after: &Value) -> Option<Value> {
     match (before, after) {
         (Value::Object(b), Value::Object(a)) => {
@@ -75,7 +61,6 @@ pub fn apply_merge(target: &mut Value, patch: &Value) {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Patch {
     Applied,
-    /// Already held — the seed included it.
     Stale,
     /// This replica is missing everything between `at` and `from`, and can only be re-seeded.
     Gap { from: u64, at: u64 },
@@ -88,8 +73,7 @@ pub struct GraphDoc {
 }
 
 impl GraphDoc {
-    /// An empty document: the five roots present and empty, at version 0. The roots exist from the
-    /// start so a replica never has to invent one, and so an empty patch means an empty patch.
+    /// An empty document: the five roots present and empty, at version 0.
     pub fn new() -> GraphDoc {
         let mut state = Map::new();
         for root in ROOTS {
@@ -103,14 +87,13 @@ impl GraphDoc {
         self.state.clone()
     }
 
-    /// The version this document is at. A replica applies a patch only onto the version it names.
+    /// The version this document is at.
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// Take the document to `target`, answering the patch that gets a replica there — or `None`
-    /// when nothing changed, which is the common case after a read-only op and is what keeps an
-    /// idle patch off the wire. The version advances only on a real change.
+    /// Take the document to `target`, answering the patch that gets a replica there, or `None`
+    /// when nothing changed; the version advances only on a real change.
     pub fn reconcile_root(&mut self, target: &Value) -> Option<Value> {
         let patch = merge_patch(&self.state, target)?;
         self.state = target.clone();
@@ -118,14 +101,8 @@ impl GraphDoc {
         Some(patch)
     }
 
-    /// Apply a patch a peer produced.
-    ///
-    /// Three answers, because a version that does not match means two different things. A patch
-    /// whose RESULT this replica already holds is stale — the manager subscribes a socket before it
-    /// snapshots the document, so a peer's edit in that window is broadcast and then included in
-    /// the snapshot as well. Skipping it is correct and unremarkable. A patch reaching FORWARD of
-    /// this replica is a gap: the client fell behind the broadcast ring, and applying onto the
-    /// wrong base would leave a replica that looks healthy and is wrong.
+    /// Apply a patch a peer produced. A result already held is stale and skipped; one reaching
+    /// forward of this replica is a gap and refused.
     pub fn apply_patch(&mut self, from: u64, to: u64, patch: &Value) -> Patch {
         if to <= self.version {
             return Patch::Stale;
@@ -138,8 +115,7 @@ impl GraphDoc {
         Patch::Applied
     }
 
-    /// Adopt a peer's whole document — what a replica does on connect, and what recovers it from a
-    /// gap.
+    /// Adopt a peer's whole document.
     pub fn reset_to(&mut self, version: u64, state: Value) {
         self.state = state;
         self.version = version;
@@ -154,7 +130,7 @@ impl GraphDoc {
         Some(cur.clone())
     }
 
-    /// The keys of one root map — `nodes` and `instances` are the two anything asks for.
+    /// The keys of one root map.
     fn root_keys(&self, root: &str) -> Vec<String> {
         self.state
             .get(root)

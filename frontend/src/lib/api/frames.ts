@@ -1,19 +1,5 @@
-/**
- * The viewer registry, display-rate frame delivery, and a global paint scheduler (reports A16).
- *
- * The worker (`dataWorker.ts`) does the WS receive, GOOF decode, and latest-wins
- * coalescing. This main-thread layer adds ONE rAF-driven flush with a per-frame
- * time budget: when the worker delivers a frame it's stashed as the slot's
- * pending frame and a single rAF is requested; on that rAF we deliver pending
- * frames to viewers, most-starved-slot first, and once the budget (~8 ms,
- * leaving room for Svelte Flow + compositing) is spent we defer the rest to the
- * next frame. Latest-wins makes deferral free — a deferred slot just shows its
- * newest frame next tick — so no viewer is starved and no queue grows.
- *
- * It also records the latest frame per subscribed slot for the agent surface
- * (`latestFrame`). `subscribeFrames` / `latestFrame` keep their exact
- * signatures, so the viewer layer and agent surface are unchanged.
- */
+/** The viewer registry and display-rate frame delivery: ONE rAF flush per tick, most-starved
+ * slot first, with a per-frame time budget. */
 import { closeStream, openStream, sendSpecs, setFrameSink } from './data';
 import { paintDelay } from './paintCap';
 import { perfStats } from './perfStats.svelte';
@@ -24,13 +10,8 @@ import { streamKey } from './streamKey';
 
 type FrameCallback = (frame: DataFrame) => void;
 
-/**
- * One viewer bound to a stream: where its frames go, and what it needs to draw.
- *
- * `spec` is null for a viewer that reads frames without constraining them — the metadata panel —
- * and for one that has not measured itself yet. A null contributes nothing to the reduction, which
- * is not the same as contributing an empty list: an empty LIST means full resolution.
- */
+/** One viewer bound to a stream. A null `spec` contributes nothing to the reduction, which an
+ * empty LIST does not: that means full resolution. */
 interface BoundViewer {
 	cb: FrameCallback;
 	spec: ViewSpec | null;
@@ -40,15 +21,12 @@ interface Slot {
 	/** Every viewer bound to this stream, by its own stable token. THE registry: nothing else
 	 *  counts viewers, and nothing else decides what the backend is asked for. */
 	viewers: Map<string, BoundViewer>;
-	/** Newest frame from the worker, not yet delivered to consumers. */
 	pending: DataFrame | null;
-	/** Latest frame delivered — what `latestFrame` returns. */
 	current: DataFrame | null;
 	/** When this slot last delivered, for most-starved-first fairness. */
 	lastFlush: number;
-	/** This stream's own coalescing rate. Per slot rather than app-wide: a drop belongs to the
-	 * stream whose frame was overwritten, and summing them put a total beside an fps counter that
-	 * is emphatically not a total — two numbers that could not be read together. */
+	/** This stream's own coalescing rate — per slot, because a drop belongs to the stream that
+	 * overwrote a frame. */
 	drops: RateMeter;
 }
 
@@ -72,10 +50,8 @@ let lastFlushStart = -Infinity;
 function requestFlush(): void {
 	if (scheduled) return;
 	scheduled = true;
-	// The cap (paintCap.ts): inside the cooldown, hold the latest-wins frames on a TIMER — an
-	// rAF here would fire at display rate just to decide "not yet", which is the exact battery
-	// spend the cap exists to stop. The timer lands the cooldown; the rAF after it aligns the
-	// actual paint to the next vsync.
+	// Inside the cap's cooldown, hold the frames on a TIMER: an rAF would fire at display rate
+	// just to decide "not yet". The rAF after it aligns the paint to the next vsync.
 	const wait = paintDelay(lastFlushStart, nowMs());
 	const arm = (): void => {
 		scheduleFlush(() => {
@@ -90,8 +66,7 @@ function requestFlush(): void {
 function flush(): void {
 	const start = nowMs();
 	lastFlushStart = start;
-	// Most-starved slot first (smallest lastFlush) so no slot is permanently
-	// deferred by the budget; new slots (lastFlush 0) lead.
+	// Most-starved slot first, so the budget can never permanently defer a slot.
 	const queue = [...dirty].sort((a, b) => a.lastFlush - b.lastFlush);
 	let painted = 0;
 	for (const s of queue) {
@@ -112,34 +87,17 @@ function flush(): void {
 			}
 		}
 	}
-	// ONE paint per flush, not one per slot. This is the quantity the cap bounds (paintCap.ts caps
-	// flush STARTS at 30/s) and the quantity the HUD names, so counting per slot made the readout
-	// the sum of the open streams' rates — ~30 x N, a staircase climbing with every node added
-	// while the cap itself never moved. A flush that painted nothing is not a paint.
+	// ONE paint per flush, not one per slot: that is the quantity the cap bounds and the HUD names.
 	if (painted > 0) perfStats().delivered();
-	if (dirty.size > 0) requestFlush(); // deferred slots → next frame
+	if (dirty.size > 0) requestFlush();
 }
 
 
-/**
- * What the backend has been told to serve for a stream: the encoded spec list. Absent means no
- * stream is open. This is the ONLY record of what the far end believes, and it is compared against
- * what the registry wants — so nothing is sent that would not change anything.
- */
+/** What the backend has been told to serve for a stream; absent means no stream is open. */
 const synced = new Map<string, string>();
 const reconciling = new Set<string>();
 
-/**
- * Bring the backend in line with the registry for one stream.
- *
- * Deferred to a microtask on purpose, and this is the whole design: every registry mutation asks
- * for a reconcile, and the reconcile reads the registry once the tick has SETTLED. A viewer that
- * detaches and re-attaches in the same tick — which a re-render does, and which one viewer of a
- * slot closing makes its siblings do — leaves the registry exactly as it found it, so the compare
- * below finds nothing to say and the socket is never touched. Sequencing the backend off each
- * individual mutation is what let a momentary count of zero tear down a stream other viewers were
- * still drawing from.
- */
+/** Bring the backend in line with the registry for one stream, read once the tick has SETTLED. */
 function reconcile(node: string, slot: string, k: string): void {
 	const s = slots.get(k);
 	const want = s && s.viewers.size > 0 ? JSON.stringify(demand(s)) : null;
@@ -158,13 +116,8 @@ function reconcile(node: string, slot: string, k: string): void {
 	synced.set(k, want);
 }
 
-/**
- * What this page needs a stream reduced to: every bound viewer's constraint, DISTINCT ones only.
- *
- * The bridge folds richest-per-dim, so a repeated constraint adds nothing to the result — and
- * dropping it here is what makes two equally-sized viewers of a slot a single demand. Without
- * that, closing either one rewrites the list and renegotiates a reduction that cannot change.
- */
+/** What this page needs a stream reduced to: every bound viewer's constraint, DISTINCT ones only
+ * — the bridge folds richest-per-dim, so a repeat would renegotiate nothing. */
 function demand(s: Slot): ViewSpec[] {
 	const seen = new Set<string>();
 	const out: ViewSpec[] = [];
@@ -202,15 +155,8 @@ function ensureSlot(k: string): Slot {
 	return s;
 }
 
-/**
- * Bind a viewer to a (node, slot) stream. `token` identifies THIS viewer, so several viewers of
- * one slot collect rather than evict — a node's own viewer and a panel bound to the same slot are
- * two entries here and nothing else distinguishes them. Returns the unbind.
- *
- * `spec` is what this viewer needs the frame reduced to, or null for a reader that constrains
- * nothing. Re-binding with a changed spec is how a resize, a kind switch or a scroll out of view
- * is reported: one call, one registry, one reconcile.
- */
+/** Bind a viewer to a (node, slot) stream under `token`, so several viewers of one slot collect
+ * rather than evict. Re-binding with a changed `spec` reports a resize or a kind switch. */
 export function bindViewer(
 	node: string,
 	slot: string,
@@ -222,12 +168,8 @@ export function bindViewer(
 	const s = ensureSlot(k);
 	s.viewers.set(token, { cb, spec });
 	scheduleReconcile(node, slot, k);
-	// A viewer arriving on an open stream is invisible to the backend — the reconcile above finds
-	// nothing to send — and the backend only speaks when something changed, so nothing is coming
-	// to paint this one's first frame. The frame it needs is already here: replay it to the
-	// joiner alone (the settled viewers have painted it; re-marking the slot dirty would repaint
-	// them all). Without this, a panel joining a slot viewer's stream showed its empty state until
-	// the producer's next emit — indefinitely for a stopped one.
+	// An open stream sends nothing new for a joiner, so replay the current frame to it alone —
+	// re-marking the slot dirty would repaint every settled viewer.
 	if (s.current) {
 		try {
 			cb(s.current);
@@ -246,18 +188,15 @@ export function bindViewer(
 /** Everything the worker decodes lands here, latest-wins, and is painted on the next flush. */
 setFrameSink((node, slot, frame) => {
 	const s = slots.get(streamKey(node, slot));
-	if (!s) return; // a frame for a stream nothing is bound to any more
-	// A still-pending frame overwritten before it painted is a dropped frame (latest-wins) —
-	// charged to THIS stream, which is the one that dropped it.
+	if (!s) return;
+	// A pending frame overwritten before it painted is a drop, charged to THIS stream.
 	if (s.pending !== null) s.drops.dropped();
 	s.pending = frame;
 	dirty.add(s);
 	requestFlush();
 });
 
-/** Coalesced-frame rate for ONE stream — frames overwritten latest-wins before they painted,
- * measured per (node, slot). `null` for a slot with no live subscriber: absent is not zero, and a
- * panel reading `0/s` for a stream that is not running asserts something false. */
+/** Coalesced-frame rate for ONE stream. Null when nothing is subscribed: absent is not zero. */
 export function dropRate(node: string, slot: string): number | null {
 	const s = slots.get(streamKey(node, slot));
 	if (!s) return null;
@@ -265,9 +204,7 @@ export function dropRate(node: string, slot: string): number | null {
 	return s.drops.dps;
 }
 
-/** The latest frame for a (node, slot) while it has at least one live subscriber.
- * Null for an unsubscribed (off-screen) slot. One stream per slot, so this is an
- * exact lookup. */
+/** The latest frame for a (node, slot), or null when nothing is subscribed to it. */
 export function latestFrame(node: string, slot: string): DataFrame | null {
 	return slots.get(streamKey(node, slot))?.current ?? null;
 }

@@ -1,6 +1,4 @@
-<!-- Parameters panel — edits the parameters of the node dragged into it.
-     The group tabs, header-less, are owned by ParamForm (D-N6); this panel just
-     supplies the NodeLinkedPanel chrome (linkbar + drag-in + empty state). -->
+<!-- Parameters panel — edits the parameters of the bound node. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import NodeLinkedPanel from './NodeLinkedPanel.svelte';

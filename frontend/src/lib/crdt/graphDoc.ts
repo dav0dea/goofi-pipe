@@ -1,23 +1,12 @@
 /**
- * The browser replica of goofi's control-plane document — the exact shape
- * `goofi_bridge::projection` builds: `nodes: {uid: {type, name, pos:{x,y}, params: {group: {name:
- * {value, expr?}}}, viewers}}`, `links: [{node_out, slot_out, node_in, slot_in}]`, plus
- * `instances`, `globals` and `arrangement`.
- *
- * Plain JSON, and plain readers over it (no Svelte, no WebSocket) so they unit-test directly. The
- * reactive `.svelte.ts` layer holds the document and re-exposes these as runes.
- *
+ * The browser replica of goofi's control-plane document, as `goofi_bridge::projection` builds it.
  * Every reader is total: an absent or wrongly-typed leaf answers a default rather than throwing.
- * The manager is the sole author, so a surprise here means the two ends have drifted — and a
- * half-drawn graph is a better report of that than a blank page.
  */
 import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
 import type { LayoutNode, Workspace } from 'panelty';
 
-/** The document, as it arrives. */
 export type Doc = Record<string, unknown>;
 
-/** An empty document: the five roots present, so a reader never has to invent one. */
 export function emptyDoc(): Doc {
 	return { nodes: {}, links: [], instances: {}, globals: {}, arrangement: {} };
 }
@@ -52,8 +41,7 @@ export interface InstanceView {
 	/** Parent scope uid, or `'__root__'` for a top-level scope. */
 	parent: string;
 	pos: [number, number];
-	/** member uid → whether the member is itself a nested scope (flat model: keyed by uid, no
-	 * template-local names). */
+	/** member uid → whether the member is itself a nested scope. */
 	members: Record<string, boolean>;
 	/** The scope's boundary stubs (read from the doc's `stubs` map). */
 	interface: BoundaryView[];
@@ -71,41 +59,34 @@ const optStr = (m: Obj | undefined, key: string): string | undefined => {
 	return typeof v === 'string' ? v : undefined;
 };
 
-/** The `nodes` root, by uid. */
 export function nodesMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.nodes) as Record<string, Obj>;
 }
 
-/** The `links` root, in order. */
 export function linksArray(doc: Doc): Obj[] {
 	return Array.isArray(doc.links) ? (doc.links as Obj[]) : [];
 }
 
-/** The `instances` root (the sub-patch forest), by uid. */
 export function instancesMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.instances) as Record<string, Obj>;
 }
 
-/** The `globals` root, by name. */
 export function globalsMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.globals) as Record<string, Obj>;
 }
 
-/** `{x, y}` as the pair the editor draws with. */
 function pos2(m: Obj | undefined): [number, number] {
 	const p = obj(m?.pos);
 	const n = (k: string) => (typeof p[k] === 'number' ? (p[k] as number) : 0);
 	return [n('x'), n('y')];
 }
 
-/** A node's identity view, or `null` if the uid is absent. */
 export function nodeView(doc: Doc, uid: string): NodeView | null {
 	const n = nodesMap(doc)[uid];
 	if (!n) return null;
 	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n) };
 }
 
-/** All node identity views, in the document's key order. */
 export function nodeViews(doc: Doc): NodeView[] {
 	const out: NodeView[] = [];
 	for (const uid of Object.keys(nodesMap(doc))) {
@@ -121,15 +102,11 @@ export interface ParamExpr {
 	triggers: boolean;
 }
 
-/** The document-owned param leaves for one node: value + optional expression binding, per
- * group/name. Exactly the `{value, expr?}` structure the document stores (nodeAssembly merges
- * these with the catalog descriptor + runtime overlay). */
 export type DocParamLeaves = Record<
 	string,
 	Record<string, { value?: number | string | boolean; expr?: ParamExpr }>
 >;
 
-/** Read a node's committed param leaves (value + expression binding), per group/name. */
 export function docParams(doc: Doc, uid: string): DocParamLeaves {
 	const out: DocParamLeaves = {};
 	const params = obj(nodesMap(doc)[uid]?.params);
@@ -150,8 +127,7 @@ export function docParams(doc: Doc, uid: string): DocParamLeaves {
 	return out;
 }
 
-/** The `nodes[uid].params[group][name]` entry, get-or-inserted, or `undefined` when the node is
- * absent from this replica — never mint a phantom node. Backs the test-seed writers below. */
+/** The param entry, get-or-inserted, or `undefined` when the node is absent — never mint a phantom node. */
 function paramEntry(doc: Doc, uid: string, group: string, name: string): Obj | undefined {
 	const node = nodesMap(doc)[uid];
 	if (!node) return undefined;
@@ -162,9 +138,7 @@ function paramEntry(doc: Doc, uid: string, group: string, name: string): Obj | u
 	return into(into(into(node, 'params'), group), name);
 }
 
-/** Write a param value at `nodes[uid].params[group][name].value`. The replica is READ-ONLY in
- * production — the manager owns every write — so this is a test-seed double, letting a store test
- * stand in for the manager's projection. Answers whether it landed. */
+/** Write a param value — a test-seed double, because the replica is READ-ONLY in production. */
 export function setParamValue(
 	doc: Doc,
 	uid: string,
@@ -178,8 +152,7 @@ export function setParamValue(
 	return true;
 }
 
-/** Write (or, with `null`, clear) a param's expression binding. A test-seed double, as
- * [`setParamValue`] is. Answers whether it landed. */
+/** Write (or, with `null`, clear) a param's expression binding — a test-seed double, as [`setParamValue`] is. */
 export function setParamExpr(
 	doc: Doc,
 	uid: string,
@@ -205,7 +178,6 @@ export function viewersJson(doc: Doc, uid: string): unknown {
 	}
 }
 
-/** A sub-patch instance's forest view, or `null` if the uid is absent. */
 export function instanceView(doc: Doc, uid: string): InstanceView | null {
 	const inst = instancesMap(doc)[uid];
 	if (!inst) return null;
@@ -236,7 +208,6 @@ export function instanceView(doc: Doc, uid: string): InstanceView | null {
 	};
 }
 
-/** All sub-patch instance views, in the document's key order. */
 export function instanceViews(doc: Doc): InstanceView[] {
 	const out: InstanceView[] = [];
 	for (const uid of Object.keys(instancesMap(doc))) {
@@ -246,7 +217,6 @@ export function instanceViews(doc: Doc): InstanceView[] {
 	return out;
 }
 
-/** All links, in array order. */
 export function linkViews(doc: Doc): LinkView[] {
 	return linksArray(doc).map((m) => ({
 		node_out: str(m, 'node_out'),
@@ -256,12 +226,7 @@ export function linkViews(doc: Doc): LinkView[] {
 	}));
 }
 
-// ── Globals ────────────────────────────────────────────────────────────────────────────────────
-// The `globals` root — patch-scoped named scalars. Each entry is `{value, type, system}`. `type`
-// disambiguates float↔int after JS's number normalization; `system` marks a code-owned global that
-// the panel locks (no delete/rename) and the manager refuses to delete.
-
-/** A global's declared scalar type — mirrors `GlobalValue::type_tag` on the Rust side. */
+/** A global's declared scalar type — it disambiguates float↔int after JS's number normalization. */
 export type GlobalType = 'float' | 'int' | 'bool' | 'string';
 
 export interface GlobalView {
@@ -289,13 +254,7 @@ export function globalViews(doc: Doc): GlobalView[] {
 	return out;
 }
 
-// ── The arrangement ────────────────────────────────────────────────────────────────────────────
-// The `arrangement` root — the editor's panel layout, held as a TREE: `tabs` is an array whose
-// order IS the strip order, and each tab holds one root node. This reads it straight into the shape
-// the panel system draws; there is no intermediate.
-
-/** Parse one node, answering the share it takes of its parent alongside it — a split carries its
- * children's shares, so they are collected on the way up rather than stored on each child twice. */
+/** Parse one layout node, answering the share it takes of its parent — a split carries its children's shares. */
 function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: number } | null {
 	const n = obj(raw);
 	const id = optStr(n, 'id');
@@ -324,8 +283,7 @@ function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: numb
 	};
 }
 
-/** A panel's opaque bag, out of its JSON string leaf. It rides as a STRING because a panel clears a
- * key with an explicit `null`, and a null leaf in the document would make the merge patch ambiguous. */
+/** A panel's opaque bag, out of its JSON string leaf — a string, because a null leaf would make the merge patch ambiguous. */
 function panelState(raw: unknown): unknown {
 	if (typeof raw !== 'string') return undefined;
 	try {
@@ -336,8 +294,7 @@ function panelState(raw: unknown): unknown {
 	}
 }
 
-/** The tab strip as the panel system draws it. A tab whose root will not parse is dropped rather
- * than drawn as a hole. */
+/** The tab strip as the panel system draws it; a tab whose root will not parse is dropped. */
 export function arrangementTabs(doc: Doc): Workspace[] {
 	const raw = obj(doc.arrangement).tabs;
 	if (!Array.isArray(raw)) return [];
@@ -352,9 +309,7 @@ export function arrangementTabs(doc: Doc): Workspace[] {
 	return out;
 }
 
-/** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`:
- * `[A-Za-z_][A-Za-z0-9_]*`, and not the reserved namespace token `globals`. The panel gates a
- * rename/add on this so an illegal name never reaches the manager (which would reject it anyway). */
+/** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`. */
 export function isValidGlobalName(name: string): boolean {
 	return name !== 'globals' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
 }

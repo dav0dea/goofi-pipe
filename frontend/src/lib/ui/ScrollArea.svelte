@@ -1,15 +1,4 @@
-<!--
-  ScrollArea — the panel-body vertical scroller (spec §2.3). It OWNS `min-height: 0` so it can
-  shrink below its content inside a flex column (the classic "flex child won't scroll" trap) and
-  `overflow-y: auto` so the overflow scrolls. `flex: 1 1 auto` makes it fill the remaining column
-  space by default — its dominant use — while a consumer can bound it with an explicit height via
-  the merged `class`. Snippet `children`, merged `class`, forwarded `data-testid` via `...rest`.
-
-  The scrollbar skin is the global `.thin-scrollbar` (app.css), worn by this component and by the
-  scrollers that cannot be one — ConsolePanel's virtual list (it owns its own scrollTop handle) and
-  the two horizontal chrome strips — so the slim scrollbar is one rule, not a copy per scroller.
-  The other auto-overflow scrollers in the tree opt out on purpose and keep the default skin.
--->
+<!-- ScrollArea — the panel-body vertical scroller, wearing the global `.thin-scrollbar` skin. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -29,8 +18,7 @@
 
 <style>
 	.ui-scrollarea {
-		/* Fill the remaining column space and own min-height:0 so overflow scrolls instead of
-		   pushing the layout (the reason a flex-child scroller needs this). */
+		/* `min-height: 0` is what lets a flex child scroll instead of pushing the layout. */
 		flex: 1 1 auto;
 		min-height: 0;
 		overflow-y: auto;

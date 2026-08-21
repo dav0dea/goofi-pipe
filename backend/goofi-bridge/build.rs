@@ -1,33 +1,11 @@
 //! Build the SPA this crate serves, and embed it.
-//!
-//! `goofi-pipe` ships as ONE file, so the built bundle is compiled in rather than read from a
-//! `frontend/build/` that has to travel beside the binary and can silently go stale against it.
-//! Both halves live here, in the crate that SERVES the bundle: putting the npm build in
-//! `goofi-cli` instead left cargo free to compile this crate first, against whatever `build/`
-//! happened to be on disk.
-//!
-//! The npm build runs only when a frontend source is newer than the last build, and a failure of
-//! it FAILS the Rust build. It used to warn and leave the previous bundle in place, which is the
-//! one thing it must not do: the bundle is compiled in, so "the previous build" is a frontend that
-//! does not match the binary around it — and on a fresh clone, where `npm run build` exits 127
-//! because `node_modules` is absent, there is no previous build at all. That combination started a
-//! server that answered every route with nothing.
-//!
-//! **`GOOFI_HEADLESS` builds without the frontend at all** — no npm run, and nothing embedded,
-//! because the bundle is most of this binary's size and not wanting it is the whole of the ask. The
-//! binary it produces is headless for life: it stamps `HEADLESS_BUILD`, and the CLI reads that as
-//! one more door onto the mode `--headless` opens. Two spellings, one outcome.
-//!
-//! An empty table WITHOUT that request is the other thing entirely — nobody asked for a binary
-//! with no app — so it is left to be refused at startup rather than quietly served.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
-    // Emitted before anything reads it and outside every early return below: toggling
-    // GOOFI_HEADLESS has to re-run this script, or the verdict outlives the change that revoked it.
+    // Outside every early return below, or the headless verdict outlives the change that revoked it.
     println!("cargo:rerun-if-env-changed=GOOFI_HEADLESS");
     let frontend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../frontend");
     if headless() {
@@ -38,16 +16,13 @@ fn main() {
     embed_spa(&frontend.join("build"), false);
 }
 
-/// Whether this is a headless build. Only a truthy value opts in — `=0`/empty must NOT, because a
-/// user spelling `=0` is asking for the app. The CLI spells its runtime half of this the same way;
-/// a build script shares no code with the crate it builds, so the two agree by being one line each.
+/// Whether this is a headless build; only a truthy value opts in, so `=0` asks for the app.
 fn headless() -> bool {
     matches!(std::env::var("GOOFI_HEADLESS").as_deref(), Ok("1") | Ok("true"))
 }
 
-/// Frontend inputs (relative to `frontend/`) whose change should trigger a rebuild. Deliberately
-/// NOT `build/`, `.svelte-kit/`, or `node_modules/` — watching those would self-retrigger or be
-/// enormous.
+/// Frontend inputs that trigger a rebuild — never `build/`, `.svelte-kit/` or `node_modules/`,
+/// which self-retrigger or are enormous.
 const INPUTS: &[&str] = &[
     "src",
     "static",
@@ -58,16 +33,13 @@ const INPUTS: &[&str] = &[
     "tsconfig.json",
 ];
 
-/// Rebuild the served SPA when its sources are newer than the last build (see the module doc). A
-/// build that cannot be made current panics: by here, the caller has asked for an app.
+/// Rebuild the served SPA when its sources are newer than the last build; a build that cannot be
+/// made current panics, because by here the caller has asked for an app.
 fn sync_frontend(frontend: &Path) {
-    // No frontend source tree (e.g. the crate vendored alone) → nothing to manage. Whether that
-    // leaves anything to serve is `embed_spa`'s question.
     if !frontend.join("src").is_dir() {
         return;
     }
 
-    // Watch every source path + track the newest source mtime in one walk.
     let mut newest_src: Option<SystemTime> = None;
     for input in INPUTS {
         if let Some(t) = newest_mtime(&frontend.join(input), true) {
@@ -77,7 +49,6 @@ fn sync_frontend(frontend: &Path) {
         }
     }
 
-    // `build/` is the output — walk it for its newest mtime here; `embed_spa` is what watches it.
     let built = newest_mtime(&frontend.join("build"), false);
 
     let stale = match (newest_src, built) {
@@ -89,22 +60,15 @@ fn sync_frontend(frontend: &Path) {
         return;
     }
 
-    // Asked before npm runs, because npm cannot say this. A fresh clone fails as `svelte-kit: not
-    // found`, exit 127 — which names neither the cause nor the fix. `goofi-init` installs these,
-    // so the fix is the setup command that already exists rather than a second one to learn.
+    // Asked before npm runs: without it a fresh clone fails as `svelte-kit: not found`, exit 127.
     assert!(
         frontend.join("node_modules").is_dir(),
         "the frontend's dependencies are not installed — {}",
         goofi_init::RUN_ME
     );
 
-    // Report AFTER the build, in the PAST tense with the measured duration. Cargo caches a build
-    // script's `cargo:warning` lines and REPLAYS them on every later build until the script next
-    // re-runs — so a present-tense "rebuilding…" reads as a fresh claim on a no-op build where npm
-    // never ran (the confusing case: the line appears, then cargo finishes in milliseconds). Past
-    // tense + a duration describe a completed event, so the line stays true when it is replayed.
-    // Nothing is printed before the build because cargo captures build-script output and only shows
-    // it once the script finishes — a pre-announcement could not act as live progress anyway.
+    // Past tense, after the fact: cargo REPLAYS a build script's warnings on later builds where
+    // npm never ran, so only a completed-event wording stays true.
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
     let started = SystemTime::now();
     match Command::new(npm).args(["run", "build"]).current_dir(frontend).status() {
@@ -124,11 +88,8 @@ fn sync_frontend(frontend: &Path) {
 }
 
 
-/// Newest modification time of `path` (a file) or anything under it (a dir), or `None` if absent.
-/// When `watch`, also emits `cargo:rerun-if-changed` for every path visited — a per-path emit (not a
-/// bare directory) is robust across cargo versions, which differ on whether a watched directory is
-/// scanned recursively. Sources pass `watch = true`; the `build/` output passes `false`, because
-/// `embed_spa` watches it per embedded file instead.
+/// Newest modification time of `path` or anything under it, or `None` if absent. `watch` emits
+/// `cargo:rerun-if-changed` per path visited — cargo versions differ on recursing a watched dir.
 fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if watch {
@@ -149,23 +110,13 @@ fn newest_mtime(path: &Path, watch: bool) -> Option<SystemTime> {
     newest
 }
 
-/// Emit `$OUT_DIR/spa.rs`: every file under `build/`, keyed by the URL path it is served at.
+/// Emit `$OUT_DIR/spa.rs`: every file under `build/`, keyed by the URL path it is served at, plus
+/// the `HEADLESS_BUILD` stamp that tells an empty table that was asked for from a broken build.
 ///
-/// An absent or empty tree emits an empty table rather than failing — a crate vendored without the
-/// frontend still builds. `HEADLESS_BUILD` goes out beside it, which is what tells an empty table
-/// that was ASKED for from one that is a broken build: the first is a mode, the second is refused
-/// at startup rather than answering every route with nothing.
-///
-/// Every embedded file is WATCHED, and the tree's directories with it. `include_bytes!` names an
-/// absolute path, so a `build/` rewritten behind cargo's back — which is what `npm run build` does,
-/// and what `tests/e2e` runs before it builds the binary — leaves this table naming hashed files that
-/// are gone, and the crate stops compiling. Watching does not self-retrigger: `sync_frontend`'s npm
-/// run dirties the tree once, the next build re-runs this script, finds no source newer than the
-/// build, and settles.
+/// Every embedded file is watched: `include_bytes!` names an absolute path, so a `build/` rewritten
+/// behind cargo's back would leave this table naming hashed files that are gone.
 fn embed_spa(build: &Path, headless: bool) {
     let mut files = Vec::new();
-    // A headless build embeds nothing and watches nothing: `build/` is not an input to a binary
-    // that has no app, so a rebuild of it must not rebuild this crate either.
     if !headless {
         walk(build, build, &mut files);
         files.sort();
@@ -196,12 +147,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     for e in entries.filter_map(Result::ok) {
         let path = e.path();
         if path.is_dir() {
-            // Watched so a file APPEARING in it re-runs this script — no file's own mtime can say
-            // that, and a fresh bundle is all-new hashed names.
+            // Watched so a file APPEARING in it re-runs this script; no file's own mtime says that.
             println!("cargo:rerun-if-changed={}", path.display());
             walk(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
-            // `/` in the URL on every platform, and the absolute path for `include_bytes!`.
             let url = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
             out.push((url, path.to_string_lossy().into_owned()));
         }

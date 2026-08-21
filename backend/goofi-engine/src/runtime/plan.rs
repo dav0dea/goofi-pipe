@@ -1,30 +1,6 @@
-//! The graph-side wire planner (spec §4): one sequence per consumer slot, three phases, ordered by
-//! acks.
-//!
-//! Attach, detach and replace are ONE operation, because a slot message carries the full desired set
-//! and can add and remove at once. The order is what closes the attach window a history-less
-//! transport leaves open:
-//!
-//! ```text
-//! 1. producer-shrink   → OutSlot with removed targets gone          ack
-//! 2. consumer-apply    → InSlot with the full new service set       ack
-//! 3. producer-grow     → OutSlot with added targets present         ack
-//! ```
-//!
-//! Removals leave the producer first, so no frame lands on a torn-down consumer; additions reach the
-//! producer last, so it is never told to notify a subscriber that does not exist yet.
-//!
-//! **Supersede at the sequence level, not the message level.** A later change to a slot cancels the
-//! in-flight sequence and starts again from phase 1 against the new desired set — superseding
-//! individual messages would collapse phase 1 into phase 3 and destroy the ordering the phases exist
-//! to establish. A cancelled sequence's ack is inert rather than an error: its seq is no longer
-//! awaited, so answering it advances nothing. What the cancelled messages already SAID still stands,
-//! because a slot message is declarative and its delivery never depended on the ack.
-//!
-//! What replans is every link change, every EXPRESSION BINDING change (a binding is a consumer
-//! subscription like any other — what differs is only that its phase 2 is a `SetParam`), and a
-//! channel being attached, which plans that node's slots from an EMPTY base because it heard
-//! nothing said before it arrived.
+//! The graph-side wire planner (spec §4): one sequence per consumer slot, three phases ordered by
+//! acks — producer-shrink, consumer-apply, producer-grow. Attach, detach and replace are one
+//! operation, because a slot message carries the full desired set.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,14 +8,11 @@ use std::sync::Arc;
 use super::wire::{Control, ControlSink, Envelope};
 use crate::Uid;
 
-/// The producer end of a wire: a node and one of its output slots. A producer end is always an
-/// output slot, whichever kind of consumer it feeds.
+/// The producer end of a wire: a node and one of its output slots.
 pub(crate) type Wire = (Uid, &'static str);
 
-/// What a consumer subscribes THROUGH. An expression reference IS a link — a bound param attaches
-/// and detaches through the same three phases, its `SetParam` being the consumer-apply — so the
-/// planner is keyed by subscription rather than by input slot. A binding names itself by a
-/// graph-minted id that survives a rebind, so the key stays `Copy`.
+/// What a consumer subscribes THROUGH. An expression binding attaches through the same three
+/// phases as a link, so the planner is keyed by subscription rather than by input slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Slot {
     In(&'static str),
@@ -56,8 +29,7 @@ pub(crate) enum Phase {
     Grow,
 }
 
-/// One slot's in-flight wire change. The set it applies is [`WirePlanner::planned`] — one holder,
-/// written by `begin` and taken back by `abandon` together with the sequence itself.
+/// One slot's in-flight wire change. The set it applies is [`WirePlanner::planned`].
 struct Sequence {
     /// The producers that lost this consumer, and the ones that gained it.
     removed: Vec<Wire>,
@@ -67,8 +39,7 @@ struct Sequence {
 }
 
 impl Sequence {
-    /// Whether the consumer has NOT yet acked a set from this sequence — it has been told nothing,
-    /// or has been sent an `InSlot` it has not answered. Past `Apply` it holds the planned set.
+    /// Whether the consumer has NOT yet acked a set from this sequence.
     fn unapplied(&self) -> bool {
         matches!(self.phase, None | Some(Phase::Shrink) | Some(Phase::Apply))
     }
@@ -81,33 +52,25 @@ pub(crate) struct WirePlanner {
     /// One per live node. A uid with no channel is not addressable — its messages are dropped and
     /// never awaited, so a partially attached graph converges instead of stalling.
     sinks: HashMap<Uid, Arc<dyn ControlSink>>,
-    /// Bumped on EVERY birth at a uid and never reset: it is what keeps a reborn node's service
-    /// names clear of its predecessor's, whose teardown does not block (§3.1).
+    /// Bumped on EVERY birth at a uid and never reset: it keeps a reborn node's service names
+    /// clear of its predecessor's, whose teardown does not block.
     generations: HashMap<Uid, u64>,
     sequences: HashMap<SlotKey, Sequence>,
     /// seq → the sequence waiting on it, and the ONLY record of what is outstanding: a phase is
-    /// complete when no entry here still names its slot. That is also what makes a cancelled
-    /// sequence's ack inert — cancelling drops its entries, so the late answer finds nothing to
-    /// advance, a refusal included.
+    /// complete when no entry here still names its slot.
     awaiting: HashMap<u64, SlotKey>,
-    /// What each slot was last PLANNED to hold — not what it is confirmed to hold. It is the base a
-    /// shrink/grow diff is taken against, and it moves when the plan is made because a slot message
-    /// is declarative: the node applies what it was sent whether or not its ack came back. A REFUSAL
-    /// is the one answer that says otherwise, and [`Self::abandon`] takes the base back for it.
+    /// What each slot was last PLANNED to hold, not what it is confirmed to hold — the base a
+    /// shrink/grow diff is taken against. [`Self::abandon`] takes it back on a refusal.
     planned: HashMap<SlotKey, Vec<Wire>>,
-    /// Messages for nodes that are not addressable yet. The birth barrier is a WINDOW, not a state:
-    /// a ⟳ clicked on a node the user has only just placed falls inside it, and a dropped request
-    /// is a button that does nothing. A wire change needs no queue — it is re-PLANNED on attach —
-    /// but a request has no state to re-derive from, so it is held.
+    /// Messages for nodes that are not addressable yet. A wire change needs no queue — it is
+    /// re-PLANNED on attach — but a request has no state to re-derive from, so it is held.
     pending: Vec<(Uid, Control)>,
     next_seq: u64,
 }
 
 impl WirePlanner {
-    /// Send one message that belongs to no sequence, and await no ack for it. A `RefreshParam` is
-    /// the case: it is a request, not a wire change, and its answer comes back as its own
-    /// [`super::Status`] rather than on the ack. HELD for a node with no channel yet — see
-    /// [`Self::pending`] — and delivered when its channel attaches.
+    /// Send one message that belongs to no sequence, and await no ack for it. HELD for a node with
+    /// no channel yet, and delivered when its channel attaches.
     pub(crate) fn send(&mut self, uid: Uid, control: Control) {
         let Some(sink) = self.sinks.get(&uid).cloned() else {
             self.pending.push((uid, control));
@@ -149,17 +112,9 @@ impl WirePlanner {
         self.generations.get(&uid).copied().unwrap_or(0)
     }
 
-    /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces.
-    ///
-    /// Not tidiness. The sink OWNS the graph's end of that node's services, so keeping it keeps them
-    /// allocated for the rest of the process, and the startup sweep is blind to that: a live
-    /// process's own nodes read `Alive`. It has to be released here or not at all. It is also what
-    /// makes the birth barrier hold for a REBIRTH — a sink outliving its node makes the next node
-    /// at that uid look addressable while it is not.
-    ///
-    /// Only what this node CONSUMED is dropped; what it produced belongs to its consumers.
-    /// [`Self::pending`] SURVIVES: a rebirth is the same node, so a request queued before it ever
-    /// attached is still a request for it.
+    /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces. The sink
+    /// OWNS the graph's end of that node's services, so it is released here or not at all;
+    /// [`Self::pending`] survives, since a rebirth is the same node.
     pub(crate) fn detach(&mut self, uid: Uid) {
         self.sinks.remove(&uid);
         self.sequences.retain(|(consumer, _), _| *consumer != uid);
@@ -168,32 +123,26 @@ impl WirePlanner {
     }
 
     /// [`Self::detach`], plus the queue: the node at this uid is RETIRED rather than reborn, so
-    /// anything still held for it addresses nobody. Delivering it to whatever is added at that uid
-    /// next — an undo of the delete, say — would run one node's device scan against another's.
+    /// anything still held for it addresses nobody.
     pub(crate) fn forget(&mut self, uid: Uid) {
         self.detach(uid);
         self.pending.retain(|(to, _)| *to != uid);
     }
 
-    /// Drop every channel and everything in flight, keeping the generations: a `clear` destroys the
-    /// nodes those channels addressed, and a channel held past its node's death would deliver one
-    /// node's wiring to another born at the same uid.
+    /// Drop every channel and everything in flight, keeping the generations.
     pub(crate) fn reset_channels(&mut self) {
         self.sinks.clear();
         self.sequences.clear();
         self.awaiting.clear();
         self.planned.clear();
-        // A held request addresses a node this clear destroyed. Delivering it to whatever is born
-        // at that uid next would run one patch's device scan against another's node.
+        // A held request addresses a node this clear destroyed, so it must not reach a successor.
         self.pending.clear();
     }
 
     /// Start a slot's sequence, cancelling whatever it had in flight.
     pub(crate) fn begin(&mut self, key: SlotKey, desired: Vec<Wire>, removed: Vec<Wire>, added: Vec<Wire>) {
-        // A cancelled sequence that never applied leaves its own additions unapplied while the diff
-        // base has moved past them — so unless they are carried, the evidence that this consumer
-        // never subscribed disappears, and some other slot's phase 3 tells their producer to ring
-        // it. Rebuilt in `desired` order, so a phase's messages go out in the set's own order.
+        // A cancelled sequence's unapplied additions are carried, or the evidence that this
+        // consumer never subscribed disappears and another slot's phase 3 rings it.
         let carried = self
             .sequences
             .get(&key)
@@ -208,12 +157,8 @@ impl WirePlanner {
     }
 
     /// Forget a slot's sequence, everything it was waiting on, and the base that sequence moved to.
-    ///
-    /// The base is taken back because a refusal is what abandons a sequence, and the graph learns
-    /// only THAT the node did not reach the planned set — never which wires it ended up holding. So
-    /// the next change to this slot diffs against nothing and re-sends the whole set: a base that
-    /// claims less than the node holds costs one redundant message, and one that claims more costs a
-    /// producer that is never told to ring this consumer, which no later edit to the slot repairs.
+    /// The base goes back because one claiming MORE than the node holds leaves a producer that is
+    /// never told to ring this consumer, which no later edit repairs.
     fn abandon(&mut self, key: SlotKey) {
         self.sequences.remove(&key);
         self.awaiting.retain(|_, waiting| *waiting != key);
@@ -225,15 +170,13 @@ impl WirePlanner {
         self.planned.get(&key).cloned().unwrap_or_default()
     }
 
-    /// Forget what a slot was planned to hold, so the next plan runs against nothing. What a node
-    /// that has just become addressable is owed: it heard none of it.
+    /// Forget what a slot was planned to hold, so the next plan runs against nothing.
     pub(crate) fn forget_planned(&mut self, key: SlotKey) {
         self.planned.remove(&key);
     }
 
-    /// Whether `key`'s in-flight sequence is still ABOUT to subscribe `wire` — the consumer has been
-    /// told nothing yet, or has been sent an `InSlot` it has not acked. A producer must not be told
-    /// to ring it until then (§4).
+    /// Whether `key`'s in-flight sequence is still ABOUT to subscribe `wire`. A producer must not
+    /// be told to ring it until then (§4).
     pub(crate) fn unapplied(&self, key: SlotKey, wire: Wire) -> bool {
         self.sequences.get(&key).is_some_and(|s| s.unapplied() && s.added.contains(&wire))
     }
@@ -265,16 +208,14 @@ impl WirePlanner {
         }
     }
 
-    /// The full desired set of the sequence in flight on this slot — the planned base itself, since
-    /// only [`Self::begin`] writes that base and it cancels what was in flight as it does. So a
-    /// phase can never compose against a set a later plan has moved past.
+    /// The full desired set of the sequence in flight on this slot — the planned base itself, which
+    /// only [`Self::begin`] writes.
     pub(crate) fn desired(&self, key: SlotKey) -> Vec<Wire> {
         self.planned(key)
     }
 
     /// Send one phase's messages and start awaiting their acks. Answers whether anything is now
-    /// awaited — a phase with nothing to say, or one every recipient of which is unaddressable, must
-    /// not park the sequence on an ack that will never come.
+    /// awaited — a phase with nothing to say must not park on an ack that never comes.
     pub(crate) fn dispatch(&mut self, key: SlotKey, messages: Vec<(Uid, Control)>) -> bool {
         let mut waiting = false;
         for (uid, control) in messages {
@@ -288,10 +229,8 @@ impl WirePlanner {
         waiting
     }
 
-    /// Answer one ack. `Some(key)` when it completed a phase and the sequence is ready to advance;
-    /// `None` when the phase is still outstanding, when the ack is a cancelled sequence's, or when
-    /// the node refused — a refusal abandons the sequence rather than leaving it half applied, since
-    /// there is no retry and `restart_node` is the recovery door (§4).
+    /// Answer one ack. `Some(key)` when it completed a phase and the sequence may advance; `None`
+    /// when it is still outstanding, cancelled, or refused — a refusal abandons the sequence.
     pub(crate) fn ack(&mut self, seq: u64, ok: Result<(), String>) -> Option<SlotKey> {
         let key = self.awaiting.remove(&seq)?;
         if ok.is_err() {

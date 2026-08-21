@@ -1,8 +1,6 @@
 /**
- * View-domain executor: undo/redo of a data viewer's kind + cog-menu settings.
- * No manager command owns a node's INLINE view state, so this replays a captured
- * snapshot through the one writer of it. (A docked Viewer panel's state is layout
- * state, so its undo is an ordinary manager command and never comes here.)
+ * Undo/redo of an INLINE viewer's kind + settings, which no manager command owns —
+ * a docked panel's is layout state and never comes here.
  */
 import { history } from '$lib/stores/history.svelte';
 import { captureNavContext } from '$lib/stores/navContext';
@@ -10,8 +8,7 @@ import type { SettingsMap } from './settingsSchema';
 import type { Executor, ExecutorDeps, ViewAction, ViewSnapshot } from '$lib/stores/history.svelte';
 
 function apply(target: ViewAction['payload']['target'], snap: ViewSnapshot, deps: ExecutorDeps): void {
-	// Kind + settings only: a snapshot carries no collapse, so undoing a kind change leaves the
-	// viewer open or shut as the user has it. No-op if the node is gone.
+	// A snapshot carries no collapse, so an undo leaves the viewer open or shut as the user has it.
 	deps.graph.setSlotView(target.node, target.slot, snap);
 }
 
@@ -28,10 +25,8 @@ const setView: Executor = {
 
 export const viewExecutors: Record<string, Executor> = { set_view: setView };
 
-/** Record a viewer kind/settings change as an undoable `set_view` action.
- * Called by both binding setters AFTER they apply the change, with the raw
- * (pre-resolution) before/after snapshots. No-op while a replay is suspended,
- * and skips no-op changes. Imports history lazily to avoid an import cycle. */
+/** Record a viewer kind/settings change as an undoable `set_view` action, called by the
+ * binding setters AFTER they apply it with the raw (pre-resolution) snapshots. */
 export function recordViewChange(
 	target: ViewAction['payload']['target'],
 	before: ViewSnapshot,

@@ -1,13 +1,5 @@
-//! Filesystem browsing for the Save/Load modal.
-//!
-//! Deliberately **unjailed** — this is a single-user, local/trusted-LAN app and the user
-//! saves patches wherever they like. Nothing here touches graph state, so `dispatch` serves
-//! it without the graph mutex — a slow or huge directory would otherwise hold that mutex, and
-//! every graph EDIT waits on it.
-//!
-//! Navigation must never fail: an unreadable or not-yet-existing directory lists *empty*
-//! rather than erroring, because the browser keeps the previous directory's entries on an
-//! error, which reads as "the click did nothing".
+//! Filesystem browsing for the Save/Load modal. Deliberately unjailed, and served without the
+//! graph mutex. An unreadable directory lists EMPTY rather than erroring, so navigation never fails.
 
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
@@ -24,17 +16,12 @@ pub fn list_dir(path: Option<&str>) -> Value {
     })
 }
 
-/// Interpret a user-supplied path the same way the browser does — `~` expanded, made absolute
-/// and symlink-free — so a path that can be navigated to is also one that can be saved to or
-/// loaded from. Shared with the `save` / `load` arms; without it those take `~/patches` literally
-/// and create (or fail to find) a directory named `~`.
+/// Interpret a user-supplied path the way the browser does — `~` expanded, absolute, symlink-free.
 pub fn resolve(path: &str) -> String {
     display(&normalize(&expand_tilde(path)))
 }
 
-/// The directory a request lands in: `~` expanded, made absolute and symlink-free, and
-/// stepped up to the parent when the path names a file (the browser navigates directories,
-/// but a remembered save path points at the `.gfi` itself).
+/// The directory a request lands in, stepped up to the parent when the path names a file.
 fn base_dir(path: Option<&str>) -> PathBuf {
     let base = match path.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => normalize(&expand_tilde(p)),
@@ -55,9 +42,8 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
-/// Absolute and symlink-free. A path that is not on disk yet (a fresh Save-As target) still
-/// normalizes: canonicalize its longest existing ancestor and re-attach the rest, so the
-/// result stays comparable with the roots — the sidebar highlights by string equality.
+/// Absolute and symlink-free, including for a path not on disk yet: canonicalize its longest
+/// existing ancestor and re-attach the rest.
 fn normalize(path: &Path) -> PathBuf {
     let abs = if path.is_absolute() {
         path.to_path_buf()
@@ -67,8 +53,8 @@ fn normalize(path: &Path) -> PathBuf {
     if let Ok(real) = goofi_core::path::canonical(&abs) {
         return real;
     }
-    // Not on disk, so resolve `.`/`..` ourselves before walking ancestors: `Path::file_name()`
-    // is None for `..`, which would drop the component silently and land somewhere else entirely.
+    // Resolve `.`/`..` before walking ancestors: `Path::file_name()` is None for `..`, which would
+    // drop the component silently.
     let abs = lexical(&abs);
     let mut tail = Vec::new();
     let mut cur = abs.as_path();
@@ -83,8 +69,7 @@ fn normalize(path: &Path) -> PathBuf {
     abs
 }
 
-/// Resolve `.` and `..` textually. Only used for paths that are NOT on disk — an existing path
-/// goes through `canonicalize`, which resolves them symlink-aware.
+/// Resolve `.` and `..` textually, for paths that are NOT on disk.
 fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
@@ -100,21 +85,18 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 fn home() -> PathBuf {
-    // No HOME is survivable — fall back to the working directory so the modal still opens.
     std::env::home_dir()
         .map(|h| normalize(&h))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
 
-/// The one place a browsed path becomes a string for the client. Every `path`, `parent` and root
-/// in a listing goes through here, which is what makes goofi's spelling — `/`, on every platform —
-/// something the sidebar's raw string-equality highlight can rely on.
+/// The one place a browsed path becomes a string for the client — `/`, on every platform.
 fn display(path: &Path) -> String {
     goofi_core::path::to_slash(path)
 }
 
-/// The sidebar shortcuts. Normalized through the same function as `path`, or the "active"
-/// highlight (raw string equality) would never fire.
+/// The sidebar shortcuts, normalized through the same function as `path` so the "active"
+/// highlight's string equality fires.
 fn roots() -> Value {
     let mut out = vec![json!({ "label": "Home", "path": display(&home()) })];
     if let Ok(cwd) = std::env::current_dir() {
@@ -126,8 +108,7 @@ fn roots() -> Value {
     Value::Array(out)
 }
 
-/// Directories first, then case-insensitive by name — the ordering is the server's job, the
-/// browser renders the array as given.
+/// Directories first, then case-insensitive by name; the browser renders the array as given.
 fn entries(base: &Path) -> Value {
     let Ok(read) = std::fs::read_dir(base) else {
         return Value::Array(Vec::new());
@@ -136,11 +117,9 @@ fn entries(base: &Path) -> Value {
     for entry in read.flatten() {
         let path = entry.path();
         // `metadata()` follows symlinks (unlike `entry.file_type()`), so a link to a directory
-        // browses as one. A broken link or an unreadable child errors here and is skipped.
+        // browses as one.
         let Ok(meta) = path.metadata() else { continue };
-        // A name that is not valid UTF-8 cannot survive the JSON round trip: lossy-encoding it
-        // yields an entry the browser can neither open nor key uniquely (two different names can
-        // collapse to the same replacement string). Skip it rather than show something broken.
+        // A non-UTF-8 name cannot survive the JSON round trip, and lossy names collide.
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
         let is_dir = meta.is_dir();
         let row = json!({

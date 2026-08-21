@@ -1,21 +1,6 @@
-//! `goofi.serve()` — the subprocess child loop (wheel only; `extension-module`).
-//!
-//! The child bootstrap is uniform: `import goofi; goofi.serve()`. `serve` reads its node
-//! source + iceoryx2 service names from the environment, runs the node over the SAME
-//! [`crate::exec`] seam the in-process tier uses, and speaks the shared `goofi_codec`
-//! request/response frames over the **Rust** iceoryx2 transport.
-//!
-//! This REPLACES the old ~106-line inline Python `WORKER_SRC` + its Python `iceoryx2`
-//! binding. Because the child is now Rust and shares `goofi_codec`, meta (channels/sfreq/
-//! index/dtype) crosses with full fidelity, and cast-to-f32 + `warn_cast_once` live only in
-//! the one shared `run_process` — fixing the WORKER_SRC silent-cast gap by construction.
-//!
-//! The transport-level `seq` (re-publish dedup) is the OUTER 4-byte prefix, matching the
-//! parent's `one_roundtrip`; the codec payload knows nothing about it.
-//!
-//! The child also holds the read end of the parent's liveness pipe
-//! ([`goofi_codec::liveness`]): a watcher thread ends this process the moment the parent's
-//! write end closes, so a Ctrl-C'd or crashed manager cannot leave it spinning forever.
+//! `goofi.serve()` — the subprocess child loop (wheel only; `extension-module`): read the node
+//! source and service names from the environment, run the node over the same [`crate::exec`]
+//! seam the in-process tier uses, and speak `goofi_codec` frames over iceoryx2.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -31,18 +16,16 @@ use crate::loader::{find_node_class, module_from_source};
 /// iceoryx2 byte-slice pool ceiling — matches the parent publisher's default.
 const MAX_PAYLOAD: usize = 64 * 1024;
 
-/// The subprocess entry point (`import goofi; goofi.serve()`). Blocks forever running the
-/// node's tick loop; returns only on a fatal error — which surfaces as a Python exception,
-/// so the parent sees the child exit and reaps + respawns it.
+/// The subprocess entry point (`import goofi; goofi.serve()`); returns only on a fatal error.
 #[pyfunction]
 pub fn serve(py: Python<'_>) -> PyResult<()> {
-    // The parent-liveness watcher goes up FIRST — before the user module is even compiled —
-    // so a child orphaned during a slow import still stops instead of reaching the poll loop.
+    // FIRST, before the user module is even compiled, so a child orphaned during a slow import
+    // still stops instead of reaching the poll loop.
     goofi_codec::liveness::watch_parent(&env(goofi_codec::liveness::ENV_VAR)?)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("parent-liveness watcher: {e}")))?;
 
-    // Route stdout -> stderr BEFORE compiling the user module, so any node/C-extension
-    // write to stdout is harmless (the frame plane is SHM; there is no stdout protocol).
+    // Route stdout -> stderr BEFORE compiling the user module, so a node's prints cannot reach
+    // the parent's stdout.
     let os = py.import("os")?;
     os.call_method1("dup2", (2, 1))?;
     let sys = py.import("sys")?;
@@ -54,9 +37,6 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
 
     let module = module_from_source(py, "goofi_node_main", &source)?;
     let instance = find_node_class(py, &module)?.call0()?;
-    // The child is authoritative for BOTH slot lists: outputs name a bare return's slot, and
-    // inputs are the kwarg set `process()` is called with. The request carries only the slots that
-    // hold a frame, so the declared input names are what turn an absent one into `None`.
     let out_slots = slot_names(&instance, "OUTPUTS")?;
     let in_slots = slot_names(&instance, "INPUTS")?;
     let out_refs: Vec<&str> = out_slots.iter().map(|s| s.as_str()).collect();
@@ -66,9 +46,7 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
-/// The slot names one declaration constant holds, in declaration order. Only the keys matter here
-/// — the dtypes (and any `InputSlot` options) are the probe's business, and the parent has already
-/// routed on them.
+/// The slot names one declaration constant holds, in declaration order.
 fn slot_names(instance: &Bound<'_, PyAny>, constant: &str) -> PyResult<Vec<String>> {
     instance.getattr(constant)?.cast::<PyDict>()?.iter().map(|(k, _)| k.extract()).collect()
 }
@@ -78,8 +56,7 @@ fn env(key: &str) -> PyResult<String> {
     std::env::var(key).map_err(|_| pyo3::exceptions::PyRuntimeError::new_err(format!("{key} unset")))
 }
 
-/// Open the iceoryx2 ports (child = subscriber on `<id>_req`, publisher on `<id>_resp` —
-/// the mirror of the parent) and run the request→process→response loop until a fatal error.
+/// Open the iceoryx2 ports (the mirror of the parent's) and run the request→process→response loop.
 fn run_loop(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -89,7 +66,7 @@ fn run_loop(
     resp_name: &str,
 ) -> Result<(), String> {
     let node = NodeBuilder::new().create::<ipc::Service>().map_err(|e| format!("iox node: {e}"))?;
-    // Same byte-slice service config as the parent's `build_ports` (0.9.3 ABI compatible).
+    // Must stay the same service config as the parent's `build_ports`.
     let mk = |name: &str| {
         node.service_builder(&name.try_into().map_err(|e| format!("bad service `{name}`: {e:?}"))?)
             .publish_subscribe::<[u8]>()
@@ -113,7 +90,7 @@ fn run_loop(
     let mut last_seq: Option<u32> = None;
 
     loop {
-        // Drain to the latest request (latest-wins, mirroring the parent + iceoryx2 semantics).
+        // Latest-wins, mirroring the parent + iceoryx2 semantics.
         let mut latest = None;
         loop {
             match req_sub.receive() {
@@ -123,11 +100,8 @@ fn run_loop(
             }
         }
         let Some(sample) = latest else {
-            // Idle poll; a request wakes it ~0.5ms. DETACHED: this loop is pure Rust between
-            // requests, so holding the GIL here would starve the node's own Python threads — and
-            // a receiver thread started in `setup()` (OSC/LSL/serial) is the canonical shape of
-            // the device-input nodes this tier exists to host. Unwired or slowly paced, such a
-            // node would otherwise get no scheduling at all.
+            // DETACHED: holding the GIL over the idle poll would starve a node's own Python
+            // threads, and a receiver thread started in `setup()` is this tier's canonical shape.
             py.detach(|| std::thread::sleep(Duration::from_micros(500)));
             continue;
         };
@@ -142,7 +116,7 @@ fn run_loop(
         let resp = handle(py, instance, in_slots, out_slots, &mut warned, &mut did_setup, &payload[4..])
             .map_err(|e| format!("node process: {e}"))?;
 
-        // [u32 seq][response frame] — the seq lets the parent dedup a re-publish.
+        // [u32 seq][response frame]
         let mut msg = Vec::with_capacity(4 + resp.len());
         msg.extend_from_slice(&seq.to_le_bytes());
         msg.extend_from_slice(&resp);
@@ -156,12 +130,8 @@ fn run_loop(
     }
 }
 
-/// Decode one request → run the node → encode the response. A MALFORMED request is a fatal
-/// protocol error (the `?` kills the child). A node RAISE in `setup()`/`process()` is a
-/// per-tick error reported back as an error response — the parent surfaces it like the
-/// in-process `Ok(Err)` WITHOUT respawning the child (preserving node state + the real
-/// exception text, using the SAME `e.to_string()` the in-process tier uses, so the two tiers'
-/// error channels agree). The cast-to-f32 warning is deduped in `run_process`.
+/// Decode one request → run the node → encode the response. A MALFORMED request is fatal; a node
+/// raise is a per-tick error response, which the parent surfaces without respawning the child.
 fn handle(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -172,9 +142,8 @@ fn handle(
     body: &[u8],
 ) -> PyResult<Vec<u8>> {
     let (params, arrived) = decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)?;
-    // The wire carries only the slots that hold a frame; widen it back to every declared slot so
-    // `process()` gets its full kwarg set, `None` where nothing arrived — the same list the
-    // in-process tier hands `run_process` directly.
+    // The wire carries only the slots that hold a frame; widen it back to every declared slot,
+    // `None` where nothing arrived.
     let inputs: Vec<(&str, Option<&CoreData>)> = in_slots
         .iter()
         .map(|name| (*name, arrived.iter().find(|(n, _)| n == name).map(|(_, d)| d)))
@@ -188,12 +157,8 @@ fn handle(
     }
 }
 
-/// Run `setup()` (once it has SUCCEEDED, on the first request) then `process()`; a raise in either
-/// is the node error. `did_setup` is set after success, so a setup that raised is retried on the
-/// next request — the initialization gate (D3), which the parent applies to an inline node and the
-/// child must apply to itself, since a `RemoteNode` cannot reach in here. A node whose device was
-/// not ready at the first tick therefore comes back on a later one instead of needing a restart.
-/// The `?` is the other half of the same contract: `process()` never runs after a failed setup.
+/// Run `setup()` until it SUCCEEDS, then `process()`; a setup that raised is retried on the next
+/// request, and `process()` never runs after a failed one.
 fn run_node(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,

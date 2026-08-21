@@ -1,11 +1,5 @@
-<!-- Viewer panel — visualizes an output slot of the node dragged into it. The
-     slot picker plus the shared viewer-type dropdown + settings cog live in the
-     panel header (next to the node name); the body is the shared ViewerFeed.
-     Each panel is an INDEPENDENT viewer instance: its viewer type + settings
-     live in this panel's own layout state (a panelBinding) and persist with the
-     panel, so it never tracks the node's inline viewer or another panel. The
-     data stream is still shared (one WS per node+slot). Linking + empty state
-     via NodeLinkedPanel. -->
+<!-- Viewer panel — visualizes an output slot of the bound node. Each panel is an independent
+     viewer instance; the data stream is still shared (one WS per node+slot). -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import type { NodeInstanceInfo } from '$lib/api/control';
@@ -37,10 +31,7 @@
 		ws.setPanelSlot(props.panelId, slot);
 	}
 
-	// Resolve the chosen slot, its dtype, and this panel's binding in one place so
-	// the controls and content snippets (separate scopes) don't each re-derive it.
-	// A kind/settings change is a `set_panel` command like any other panel write, so the
-	// binding's own labelled setter is the whole undo step — no client-side snapshot to capture.
+	// One place, so the controls and content snippets (separate scopes) don't each re-derive it.
 	function view(node: NodeInstanceInfo): { slot: string | null; dtype: string | null; binding: ViewBinding } {
 		const slot = curSlot(node);
 		const dtype = slot ? node.output_slots[slot] : null;

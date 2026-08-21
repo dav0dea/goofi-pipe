@@ -1,16 +1,4 @@
 //! Patch commands with exact inverses — the manager's undo/redo unit.
-//!
-//! [`Command::execute`] mutates the [`Graph`] and returns `(outcome, inverse)`, and the inverse
-//! itself returns the forward again — so redo is executing what undo returned, and an entry
-//! ping-pongs rather than being rebuilt.
-//!
-//! The surface is deliberately minimal: add/remove node, add/remove link, and one `Edit*` op per
-//! target covering every field of it. Loading a patch is NOT a command — a load resets the
-//! session, so there is nothing to undo across it.
-//!
-//! **Tolerance belongs to replay.** An edit or remove against an already-absent target is a benign
-//! no-op, so two clients undoing the same change converge. What a FRESH caller must satisfy is
-//! [`Command::precondition`], checked in `apply` and never in `flip`.
 
 use crate::subpatch::{self, Dir, Stub, StubId};
 use crate::{Graph, Uid};
@@ -19,8 +7,7 @@ use goofi_core::Param;
 use goofi_node::{param, ParamGroups};
 use indexmap::IndexMap;
 
-/// What a command produced, for the caller (the RPC reply). Kept serde-free so the engine needs no
-/// JSON dep — the bridge maps it to the wire.
+/// What a command produced, for the caller. Kept serde-free so the engine needs no JSON dep.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// A plain success (`{ ok: true }` on the wire).
@@ -29,8 +16,8 @@ pub enum Outcome {
     Uid(Uid),
     /// A minted/restored stub id — `add_stub` returns the stub's id (`in0`/`out0`).
     StubId(StubId),
-    /// Nodes the command touched that need a runtime echo — `EditNode`'s rename returns the
-    /// referrers whose `nd()` expressions were rewritten, so the bridge re-broadcasts their params.
+    /// Nodes the command touched that need a runtime echo — a rename's rewritten referrers, so
+    /// the bridge re-broadcasts their params.
     Nodes(Vec<Uid>),
 }
 
@@ -43,9 +30,8 @@ pub struct ExprState {
     pub triggers: bool,
 }
 
-/// The captured state to recreate a scope EXACTLY — carried by [`Command::Group`]'s restore form
-/// (the inverse of [`Command::Expand`]). Redo-of-group / undo-of-expand restores the exact scope id
-/// + stubs (uid-stable), never a freshly-minted one.
+/// The captured state to recreate a scope EXACTLY — the inverse of [`Command::Expand`], which
+/// restores the exact scope id and stubs rather than minting fresh ones.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScopeRestore {
     pub scope_id: Uid,
@@ -54,17 +40,15 @@ pub struct ScopeRestore {
     /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
     /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
     pub parent: Option<Uid>,
-    /// Parent-scope stubs `Expand` re-pointed away from this scope (`(parent, stub_id, old_inner)`),
-    /// so the Group inverse re-points them back exactly. Empty for a delete-undo (which prunes, not
-    /// re-points) — see [`Graph::parent_stubs_referencing`].
+    /// Parent-scope stubs `Expand` re-pointed away from this scope, so the Group inverse re-points
+    /// them back exactly. Empty for a delete-undo, which prunes rather than re-points.
     pub parent_stubs: Vec<subpatch::ParentStub>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// Executed in order; its inverse is the children's inverses in REVERSE order. Also how a
-    /// multi-step edit (e.g. a global rename = add-new + remove-old) is expressed as one undo step.
+    /// Executed in order; its inverse is the children's inverses in REVERSE order.
     Compound(Vec<Command>),
     AddNode {
         type_name: String,
@@ -74,14 +58,12 @@ pub enum Command {
         name: Option<String>,
         /// `Some` restores captured params (a `RemoveNode` inverse); `None` uses the type's defaults.
         params: Option<ParamGroups>,
-        /// Captured expression bindings `(group, name, binding)` to re-apply — restores a node's
-        /// live-driven params on a `RemoveNode` inverse. Empty for a user add.
+        /// Captured expression bindings `(group, name, binding)` to re-apply. Empty for a user add.
         exprs: Vec<(String, String, ExprState)>,
         /// Captured viewer view-state blob to restore; `None` for a user add (defaults to empty).
         viewers: Option<serde_json::Value>,
         /// The scope to create the node INSIDE (`None` = ROOT). NOT used by a `RemoveNode`
-        /// inverse, which restores membership with its own [`Command::SetScope`] child — so a
-        /// restore leaves this `None` and nothing re-parents a node already placed.
+        /// inverse, which restores membership with its own [`Command::SetScope`] child.
         scope: Option<Uid>,
     },
     RemoveNode {
@@ -115,37 +97,27 @@ pub enum Command {
         value: Option<Param>,
         expr: Option<ExprState>,
     },
-    /// Add / edit / remove a global: `Some(value)` upserts, `None` removes. A rename is two of these
-    /// (add-new then remove-old), composed into one undo step via [`Command::Compound`]. `at` is the
-    /// ordered slot to re-add at — `None` for every user-issued mutation (an add appends); `Some(i)`
-    /// only on a delete's captured inverse, so undo restores the global to its original position
-    /// (order is observable via `.gfi`/mirror/panel) rather than the tail.
+    /// Add / edit / remove a global: `Some(value)` upserts, `None` removes. `at` is the ordered
+    /// slot to re-add at — only a delete's captured inverse carries one, since order is observable.
     EditGlobal {
         name: String,
         value: Option<GlobalValue>,
         at: Option<usize>,
     },
-    /// Move a tab to a position in the strip. The one layout op whose CONTENT is a position, so it
-    /// is also the one that cannot ride [`Command::LayoutContents`] — that command reads each slot
-    /// back at flip time, which for a reorder would make the undo a no-op. Its inverse is another
-    /// reorder, aimed at the index the tab holds right now: a forward re-plan like every other
-    /// layout inverse, rather than the raw entry restore this replaced.
+    /// Move a tab to a position in the strip. Its CONTENT is a position, so it cannot ride
+    /// [`Command::LayoutContents`]; it inverts as another reorder, aimed at where the tab is now.
     LayoutReorderTab {
         tab: crate::layout::Id,
         to_index: usize,
     },
-    /// Set a split's children's shares. Like [`Command::LayoutReorderTab`] its content is a
-    /// GEOMETRY rather than a thing an entry holds, so it inverts as itself — against the shares
-    /// the split carries at flip time, which is a peer's own resize if one landed since.
+    /// Set a split's children's shares. A GEOMETRY rather than a thing an entry holds, so it
+    /// inverts as itself, against the shares the split carries at flip time.
     LayoutResizeSplit {
         split: crate::layout::Id,
         fractions: Vec<f64>,
     },
-    /// A layout op that BIRTHS `born`. Its inverse is NOT the slots the writes displaced: it is
-    /// [`Command::LayoutClose`], planned at undo time. Restoring the slots would delete a wrapper a
-    /// PEER has since hung a panel off — a lost update no graph command can make. Close-with-promote
-    /// already knows how to hand a split's survivors to its parent, so borrowing it makes a foreign
-    /// undo non-destructive by construction rather than by a guard.
+    /// A layout op that BIRTHS `born`. Its inverse is [`Command::LayoutClose`], planned at undo
+    /// time: restoring the displaced slots would delete a wrapper a PEER has since built on.
     LayoutBirth {
         plan: crate::layout::Layout,
         born: crate::layout::Id,
@@ -155,19 +127,16 @@ pub enum Command {
     LayoutClose {
         born: crate::layout::Id,
     },
-    /// The inverse of [`Command::LayoutClose`]. It puts the closed subtree's own entries back —
-    /// dead ids, referenced by nothing — and then RE-PLANS where its root belongs. Restoring the
-    /// slots the close's promote rewrote is precisely what it exists not to do.
+    /// The inverse of [`Command::LayoutClose`]. It puts the closed subtree's own entries back and
+    /// RE-PLANS where its root belongs, never restoring the slots the close's promote rewrote.
     LayoutRevive {
         dead: crate::layout::Dead,
         born: crate::layout::Id,
         /// Where `born` sat before the close. `None` for a tab, which is put back by strip index.
         home: Option<crate::layout::Home>,
     },
-    /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's, not restored:
-    /// another move, back to wherever `home` still lives. Restoring the slots a move displaced puts
-    /// back the split the move promoted away — on top of whatever a peer has since built in its
-    /// place, which leaves that tab two roots and the peer's panel in the one nothing renders.
+    /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's: another move,
+    /// back to wherever `home` still lives.
     LayoutMove {
         /// The forward plan, when this is the user's own op; `None` on an inverse, which is planned
         /// from `home` against the arrangement as it stands at flip time.
@@ -176,24 +145,20 @@ pub enum Command {
         /// Where `root` sat before — captured by [`Command::execute`], so a forward carries `None`.
         home: Option<crate::layout::Home>,
     },
-    /// A layout op that edits what entries HOLD, leaving where they sit alone. Its inverse lands
-    /// the same way, reading each slot at flip time — restoring the whole entry instead puts back
-    /// the `order` a peer's adjacent split has since taken.
+    /// A layout op that edits what entries HOLD, leaving where they sit alone. Its inverse reads
+    /// each slot at flip time rather than restoring the whole entry.
     LayoutContents {
         writes: Vec<crate::layout::Write>,
     },
-    /// Re-parent a node or scope into `scope` (`None` = ROOT). The one membership move — used inside
-    /// a delete's inverse to restore a member back INSIDE its scope. Inverse re-parents to the old
-    /// scope.
+    /// Re-parent a node or scope into `scope` (`None` = ROOT). Used inside a delete's inverse to
+    /// restore a member back INSIDE its scope.
     SetScope {
         uid: Uid,
         scope: Option<Uid>,
     },
 
-    // ── Structural sub-patch commands (uid-stable on the flat scope model) ─────────
     /// Group `members` into a new sub-patch scope at `pos`. `restore` is `None` for a user group
-    /// (mints the scope + derives crossing stubs); `Some` recreates an exact scope (the inverse of
-    /// `Expand`). Returns the scope uid.
+    /// and `Some` recreates an exact scope (the inverse of `Expand`). Returns the scope uid.
     Group {
         members: Vec<Uid>,
         pos: [f64; 2],
@@ -217,9 +182,8 @@ pub enum Command {
         scope: Uid,
         stub_id: StubId,
     },
-    /// Wire (`Some`) or unwire (`None`) a stub's inner target. `dtype` is `None` on a user wire (the
-    /// dtype is resolved from the wired slot); the inverse carries the old dtype so unwire restores
-    /// the exact pre-wire advertised type. Inverse restores the old inner + dtype.
+    /// Wire (`Some`) or unwire (`None`) a stub's inner target. `dtype` is `None` on a user wire;
+    /// the inverse carries the old dtype, so unwire restores the pre-wire advertised type.
     WireStub {
         scope: Uid,
         stub_id: StubId,
@@ -237,13 +201,9 @@ pub enum Command {
 }
 
 impl Command {
-    /// What a FRESH caller must satisfy, checked in [`CommandHistory::apply`] ONLY — so `flip`
-    /// keeps its tolerance and convergence is unchanged by construction. A first-hand RPC earns
-    /// none of replay's benefit of the doubt: an `{ok: true}` for a target that is not there
-    /// asserts a state the patch is not in, and every later decision is taken against it.
-    ///
-    /// `Compound` is deliberately absent: its later children are validated against a graph its
-    /// earlier children have not built yet, so checking the PRE state would refuse legal restores.
+    /// What a FRESH caller must satisfy, checked in [`CommandHistory::apply`] ONLY, so `flip` keeps
+    /// its tolerance. `Compound` is absent: its later children need a graph its earlier ones have
+    /// not built yet.
     fn precondition(&self, g: &Graph) -> Result<(), String> {
         let stub = |scope: Uid, id: &str| -> Result<(), String> {
             let s = g.scope(scope).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))?;
@@ -275,9 +235,7 @@ impl Command {
                 g.contains(*uid).then_some(()).ok_or_else(|| format!("no node {}", uid.to_hex()))
             }
             // RemoveNode/RemoveLink stay tolerant ON PURPOSE: removing something already gone is
-            // not a caller error, and both report `{removed: false}` so the caller is told the
-            // truth without one. AddLink is validated at the dispatch boundary by
-            // `wirable_endpoint`, which says far more than a generic existence check could.
+            // not a caller error. AddLink is validated at dispatch by `wirable_endpoint`.
             _ => Ok(()),
         }
     }
@@ -294,14 +252,11 @@ impl Command {
                             last = res;
                             inverses.push(inv);
                         }
-                        // A Compound is a restoration UNIT, and the bridge gates its re-mirror on
-                        // `is_ok()` — so abandoning one half-applied leaves a graph mutation no
-                        // client is told about. Unwind what landed, newest first, with the exact
-                        // inverses those children just handed back.
+                        // A Compound is a restoration UNIT, so abandoning one half-applied leaves
+                        // a graph mutation no client is told about. Unwind what landed, newest first.
                         Err(e) => {
                             for inv in inverses.into_iter().rev() {
-                                // Best-effort by necessity: each inverse was minted moments ago
-                                // against this same graph, and stopping the unwind on one that
+                                // Best-effort by necessity: stopping the unwind on an inverse that
                                 // will not re-apply leaves strictly more wreckage than finishing.
                                 let _ = inv.execute(g);
                             }
@@ -315,8 +270,7 @@ impl Command {
 
             Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
                 // Validate the destination BEFORE mutating anything: an add that cannot honour its
-                // scope must leave the graph exactly as it found it, else the caller is told the
-                // command failed while a stray node stays behind and the CRDT mirror disagrees.
+                // scope must leave the graph exactly as it found it.
                 if let Some(s) = scope {
                     if g.scope(s).is_none() {
                         return Err(format!("add_node: no such scope {s}"));
@@ -334,15 +288,13 @@ impl Command {
                         u
                     }
                 };
-                // Only when a scope was ASKED for: the idempotent branch above can hand back a
-                // node already placed, so an unconditional re-parent to ROOT would yank a live
-                // member out of its sub-patch.
+                // Only when a scope was ASKED for: the idempotent branch above can hand back a node
+                // already placed, and an unconditional re-parent to ROOT would yank it out.
                 if let Some(s) = scope {
                     g.reparent(u, Some(s))?;
                 }
                 let _ = g.set_node_pos(u, pos);
-                // Re-apply captured expression bindings + viewer state (a RemoveNode inverse restores
-                // them; a user add carries none). Bindings are separate node state from param values.
+                // Re-apply captured expression bindings and viewer state; a user add carries none.
                 for (group, name, e) in &exprs {
                     let _ = g.set_expression(u, group, name, &e.source, e.enabled, e.triggers);
                 }
@@ -359,9 +311,8 @@ impl Command {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 let (inverse, gone) = capture_subtree_restore(g, uid);
-                // A panel bound to a uid this delete takes renders empty and explains nothing, so
-                // the binding goes with the node — HERE, inside the one command, so it is one undo
-                // step and a peer's replica never holds a panel naming a node that is not there.
+                // A panel bound to a uid this delete takes renders empty, so the binding goes with
+                // the node — HERE, inside the one command, so it is one undo step.
                 let unbind = g.arrangement().unbind(&gone);
                 // A scope MEMBER routes through remove_member (prunes the enclosing scope's stubs); a
                 // top-level scope tears down its subtree; a plain leaf is a single-node removal.
@@ -382,20 +333,17 @@ impl Command {
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
                 // An endpoint is gone, so the wire cannot exist and restoring it is a no-op.
-                // Without this, a concurrent delete would error through `flip` — wedging the
-                // session AND leaving the Compound's earlier child applied but unbroadcast.
+                // Without this a concurrent delete would error through `flip`, wedging the session.
                 if !g.contains(node_out) || !g.contains(node_in) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
-                // Idempotent: the exact wire already exists → the forward `add_link` is a silent
-                // no-op, so its inverse must be one too. A bare RemoveLink would DESTROY the
-                // pre-existing wire on undo (the inverse of a no-op is not a mutation).
+                // Idempotent: the exact wire already exists, so its inverse must be one too — a
+                // bare RemoveLink would DESTROY the pre-existing wire on undo.
                 if g.has_link(node_out, &slot_out, node_in, &slot_in) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
-                // A single-input connect EVICTS a prior wire on that input — capture the displaced
-                // wire so the inverse RESTORES it (else undo-of-reconnect leaves the input empty). A
-                // multi input appends (nothing displaced); reconnecting the same wire displaces nothing.
+                // A single-input connect EVICTS a prior wire, so capture the displaced one for the
+                // inverse. A multi input appends, and reconnecting the same wire displaces nothing.
                 let displaced = g
                     .single_input_source(node_in, &slot_in)
                     .filter(|(o, s)| !(*o == node_out && *s == slot_out));
@@ -426,8 +374,7 @@ impl Command {
             }
 
             Command::EditNode { uid, name, pos } => {
-                // A node OR a scope facade (collapsed instance) is editable here; only a truly
-                // vanished uid is the idempotent no-op (a redo racing a delete).
+                // A node OR a scope facade is editable here; only a vanished uid is the no-op.
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node/scope gone
                 }
@@ -436,8 +383,7 @@ impl Command {
                 // touched referrers so the bridge re-broadcasts their runtime-enriched descriptors.
                 let mut referrers = Vec::new();
                 // Capture the pre-rename name only if the rename lands: a peer may have reclaimed
-                // the target name since this toggle was recorded. A forward rename is pre-validated
-                // at the bridge, so a collision reaching here is always a stale replay.
+                // the target name since. A collision reaching here is always a stale replay.
                 let inv_name = match &name {
                     None => None,
                     Some(n) => {
@@ -470,19 +416,16 @@ impl Command {
                     ),
                     None => None,
                 };
-                // Captured when the caller names an `expr` — and ALSO when it names only a literal
-                // over a param that is bound, because §3.4 makes a literal write an unbind. The
-                // binding is part of what this edit destroys, so it is part of what the inverse
-                // owes; without this, undo hands back the number and the expression stays gone.
+                // Captured when the caller names an `expr`, and ALSO for a bare literal over a
+                // bound param, since §3.4 makes a literal write an unbind the inverse owes back.
                 let bound = g.param_expression(uid, &group, &name);
                 let old_expr = (expr.is_some() || (value.is_some() && bound.is_some())).then(|| {
                     bound
                         .map(|e| ExprState { source: e.source, enabled: e.enabled, triggers: e.triggers_process })
                         .unwrap_or(ExprState { source: String::new(), enabled: false, triggers: false })
                 });
-                // Literal FIRST, then binding, and the order is load-bearing: §3.4 makes a
-                // literal write an UNBIND, so an `EditParam` carrying both would otherwise bind and
-                // then immediately undo it.
+                // Literal FIRST, then binding, and the order is load-bearing: §3.4 makes a literal
+                // write an UNBIND, so an `EditParam` carrying both would bind and then undo it.
                 if let Some(v) = value {
                     g.update_param(uid, &group, &name, v)?;
                 }
@@ -527,9 +470,8 @@ impl Command {
             }
 
             Command::LayoutClose { born } => {
-                // A tab is closed whole (its panels are its own); anything else is closed with
-                // promote — the SAME planners the forward ops call, so there is one algebra, not a
-                // second subtly-different removal living in the inverse.
+                // A tab is closed whole; anything else is closed with promote — the SAME planners
+                // the forward ops call, so there is one algebra rather than two.
                 let plan = match g.arrangement().tab_index(&born) {
                     Some(_) => g.arrangement().remove_tab(&born),
                     None => g.arrangement().remove_subtree(&born),
@@ -582,9 +524,8 @@ impl Command {
             }
 
             Command::LayoutContents { writes } => {
-                // What those entries hold RIGHT NOW, which is what the inverse lands — and it lands
-                // it the same way, so the pair is closed under inversion and a redo re-plans too. An
-                // id that has gone contributes nothing, in both directions.
+                // What those entries hold RIGHT NOW, landed the same way, so the pair is closed
+                // under inversion. An id that has gone contributes nothing, in both directions.
                 let back = writes
                     .iter()
                     .filter_map(|(id, _)| Some((id.clone(), g.arrangement().contents(id)?)))
@@ -598,9 +539,8 @@ impl Command {
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
-                // The destination scope was dissolved. `SetScope` is never a user RPC — only the
-                // membership-restoring child of a `RemoveNode` inverse — so this is always a stale
-                // replay, and the restored member simply lands at ROOT.
+                // The destination scope was dissolved. `SetScope` is never a user RPC, so this is
+                // always a stale replay and the restored member simply lands at ROOT.
                 if scope.is_some_and(|s| g.scope(s).is_none()) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
@@ -609,9 +549,8 @@ impl Command {
             }
 
             Command::Group { members, pos, restore } => {
-                // `minted` collects any stub group_nodes must add to a PRE-EXISTING nested member to
-                // re-expose an orphaned crossing link — a side effect on a scope OUTSIDE the new one,
-                // which Expand alone would not undo. Only a fresh group (restore=None) can mint.
+                // `minted` collects any stub `group_nodes` must add to a PRE-EXISTING nested member
+                // — a side effect on a scope OUTSIDE the new one, which Expand alone would not undo.
                 let mut minted: Vec<(Uid, StubId)> = Vec::new();
                 let scope = match restore {
                     None => g.group_nodes_capturing(&members, pos, &mut minted)?,
@@ -623,9 +562,8 @@ impl Command {
                         } else {
                             g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?
                         };
-                        // The exact reversal of `expand_instance`, written onto the stub with NO
-                        // validation: this restores a known-good captured state, which may
-                        // legitimately name a nested scope.
+                        // The exact reversal of `expand_instance`, written with NO validation: this
+                        // restores a known-good captured state, which may name a nested scope.
                         for (p, sid, inner) in r.parent_stubs {
                             if let Some(st) = g.stub_mut(p, &sid) {
                                 st.inner = inner;
@@ -675,9 +613,8 @@ impl Command {
             Command::AddStub { scope, dir, dtype, pos, restore } => {
                 let id = match restore {
                     None => g.add_boundary(scope, dir, dtype, pos)?,
-                    // Idempotent: the scope was dissolved (a concurrent expand) → the restore is moot,
-                    // like every sibling structural inverse. (A user add to a missing scope still errors
-                    // via `add_boundary` above — that is a caller mistake, not a redo race.)
+                    // Idempotent: the scope was dissolved by a concurrent expand, so the restore is
+                    // moot. A user add to a missing scope still errors via `add_boundary` above.
                     Some(_) if g.scope(scope).is_none() => {
                         return Ok((Outcome::Ok, Command::Compound(vec![])));
                     }
@@ -695,8 +632,8 @@ impl Command {
                 let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id).cloned()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
                 };
-                // External flat links stay valid leaf->leaf links — they never referenced the
-                // stub at runtime — so they are left in place.
+                // External flat links stay valid leaf->leaf links — they never referenced the stub
+                // at runtime — so they are left in place.
                 if let Some(stubs) = g.stubs_mut(scope) {
                     stubs.shift_remove(&stub_id);
                 }
@@ -713,9 +650,8 @@ impl Command {
                 let old_inner = st.inner.clone();
                 let old_dtype = st.dtype;
                 match inner {
-                    // A wire can stop being applicable under a peer edit — the target is no longer
-                    // a member, or another stub already exposes that slot. `set_stub_inner`
-                    // validates before mutating, so a refused attempt leaves the stub untouched.
+                    // A wire can stop being applicable under a peer edit. `set_stub_inner` validates
+                    // before mutating, so a refused attempt leaves the stub untouched.
                     Some(target) => {
                         if g.set_stub_inner(scope, &stub_id, Some(target)).is_err() {
                             return Ok((Outcome::Ok, Command::Compound(vec![])));
@@ -725,8 +661,7 @@ impl Command {
                     None => g.set_stub_inner(scope, &stub_id, None)?,
                 }
                 // The inverse path forces the captured dtype back: wiring resolves a stub's dtype
-                // from the inner slot, so without this an unwired pill would keep the wired slot's
-                // type instead of its own provisional one.
+                // from the inner slot, so an unwired pill would else keep the wired slot's type.
                 if let Some(dt) = dtype {
                     if let Some(st) = g.stub_mut(scope, &stub_id) {
                         st.dtype = dt;
@@ -757,10 +692,9 @@ impl Command {
     }
 }
 
-/// A per-session undo/redo history over one shared [`Graph`]. Each entry holds ONE toggle plus the
-/// session that issued it, and executing a toggle returns the next one — so an entry ping-pongs and
-/// stays **uid-stable**: redo restores the very uid the undo removed, never a fresh one. Scoped by
-/// session, so one client's timeline is independent of another's over the one shared history.
+/// A per-session undo/redo history over one shared [`Graph`]. An entry holds ONE toggle, and
+/// executing it returns the next — so an entry ping-pongs and stays uid-stable. Scoped by session,
+/// so one client's timeline is independent of another's.
 #[derive(Default)]
 pub struct CommandHistory {
     entries: Vec<HistoryEntry>,
@@ -779,15 +713,13 @@ impl CommandHistory {
     }
 
     /// Execute `cmd` against `g`, record its inverse tagged with `session`, and return the outcome.
-    /// A new command clears THIS session's redo run (its trailing undone entries) — a fresh edit
-    /// invalidates that session's redo future, but never another session's.
+    /// A new command clears THIS session's redo run, never another session's.
     pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
         // The fresh-caller gate. `flip` deliberately does NOT call this — see `Command::precondition`.
         cmd.precondition(g)?;
         let (outcome, inverse) = cmd.execute(g)?;
-        // Record EVERY successful command, a forward no-op included. The client records exactly
-        // one entry per successful mutating RPC, unconditionally, so the two stacks must stay 1:1
-        // — skipping a no-op here desyncs them and a later undo flips the WRONG entry.
+        // Record EVERY successful command, a forward no-op included: the client records one entry
+        // per mutating RPC, so skipping one here desyncs the stacks and a later undo flips wrong.
         self.entries.retain(|e| !(e.session == session && e.undone));
         self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
         Ok(outcome)
@@ -831,15 +763,12 @@ impl CommandHistory {
     }
 }
 
-/// Capture the exact inverse to restore the subtree rooted at `root` — a plain leaf, a scope member
-/// (leaf or nested scope), or a top-level instance — BEFORE the caller removes it. The Compound
-/// recreates every node (uid + params), every scope (innermost-first), the deleted top's membership,
-/// any enclosing-scope stub the removal will prune, and every link touching the subtree — uid-stable.
+/// Capture the exact inverse to restore the subtree rooted at `root`, BEFORE the caller removes it.
+/// The Compound recreates every node, scope, membership, pruned stub and touching link, uid-stable.
 fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::HashSet<Uid>) {
     // Where the restored top returns to: `None` = ROOT (a top-level instance / leaf).
     let orig_parent = g.scope_of(root);
 
-    // Walk the subtree (root + all descendants), splitting live nodes from scopes.
     let mut leaves: Vec<Uid> = Vec::new();
     let mut scopes: Vec<Uid> = Vec::new(); // discovery order (root first)
     let mut stack = vec![root];
@@ -855,7 +784,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     let mut cmds: Vec<Command> = Vec::new();
 
     // 1. Recreate every leaf (any depth) at ROOT, uid-stable, with its FULL persisted state —
-    //    params, expression bindings, and viewer view-state (not just literal param values).
+    //    params, expression bindings and viewer view-state.
     for &u in &leaves {
         let exprs = g
             .param_bindings(u)
@@ -878,10 +807,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         });
     }
 
-    // 2. Recreate every scope INNERMOST-FIRST (a nested scope must exist before its parent groups
-    //    it). `scopes` is root-first, so reverse ⇒ deepest-first. Each carries its captured parent,
-    //    so it lands in place (a nested scope re-nests, an EMPTY scope restores without a []-Group
-    //    choking on `common_parent`).
+    // 2. Recreate every scope INNERMOST-FIRST — a nested scope must exist before its parent groups
+    //    it — each carrying its captured parent so it lands in place.
     for &s in scopes.iter().rev() {
         cmds.push(Command::Group {
             members: g.scope_members(s),
@@ -919,9 +846,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         }
     }
 
-    // 5. Recreate every link touching the subtree (internal + crossing), after all endpoints exist.
-    // The set is handed back too: it is exactly the uids the delete takes off the canvas, which is
-    // what a panel bound to one of them has to stop naming.
+    // 5. Recreate every link touching the subtree, after all endpoints exist. The set is handed
+    //    back too: it is what a panel bound to one of these uids has to stop naming.
     let subtree: std::collections::HashSet<Uid> = leaves.iter().chain(scopes.iter()).copied().collect();
     for l in g.links_view() {
         if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {

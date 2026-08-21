@@ -1,9 +1,4 @@
-/**
- * A small set of colormaps as RGB control stops, plus a LUT sampler. Shared by
- * the ImageViewer (grayscale mapping) and TopomapViewer. Kept tiny and
- * dependency-free — linear interpolation between a handful of stops is visually
- * indistinguishable from the real 256-entry maps at our sizes.
- */
+/** Colormaps as RGB control stops, plus a LUT sampler. */
 export type RGB = [number, number, number];
 
 const STOPS: Record<string, RGB[]> = {
@@ -40,7 +35,6 @@ const STOPS: Record<string, RGB[]> = {
 		[250, 0, 0],
 		[128, 0, 0]
 	],
-	// matplotlib coolwarm — the diverging map the topomap has always used.
 	coolwarm: [
 		[59, 76, 192],
 		[120, 160, 245],
@@ -55,8 +49,7 @@ const STOPS: Record<string, RGB[]> = {
 /** Selectable colormap names, in menu order. */
 export const COLORMAPS = Object.keys(STOPS);
 
-/** Build a `size`×3 RGB lookup table for the named colormap (defaults to gray
- * for unknown names). */
+/** Build a `size`×3 RGB lookup table for the named colormap; unknown names fall back to gray. */
 export function makeLUT(name: string, size = 256): Uint8Array {
 	const stops = STOPS[name] ?? STOPS.gray;
 	const lut = new Uint8Array(size * 3);
@@ -72,9 +65,7 @@ export function makeLUT(name: string, size = 256): Uint8Array {
 	return lut;
 }
 
-/** A single-slot LUT memo: returns a function that rebuilds the LUT only when the
- * requested colormap name changes. Shared by the image + topomap viewers so the
- * per-paint cache lives in one place. */
+/** A single-slot LUT memo that rebuilds only when the colormap name changes. */
 export function makeLUTCache(): (name: string) => Uint8Array {
 	let lut: Uint8Array | null = null;
 	let name = '';

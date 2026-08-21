@@ -1,11 +1,4 @@
-<!--
-  Chip — the pressable sibling of <Badge> (spec §2.5): the same uppercase tone pill, but a real
-  <button> that fires `onclick`. Reuses Badge's tone scale (imported so the two never drift) and its
-  visual language, adding an interactive layer — a hover that warms the fill, a :focus-visible ring,
-  and the coarse-pointer --hit floor so it is a legal touch target. Fully self-styled from F tokens
-  (it does NOT lean on the app.css base `button` rule; its own class specifies everything). `onclick`
-  (and every other button attribute) forwards via `...rest`; `class` merged; `data-testid` forwarded.
--->
+<!-- Chip — the pressable sibling of <Badge>: the same tone pill as a real <button>. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLButtonAttributes } from 'svelte/elements';
@@ -21,9 +14,7 @@
 		...rest
 	}: HTMLButtonAttributes & {
 		tone?: BadgeTone;
-		/** Box density. `chrome` is the dense box a toolbar strip wears — the same axis `IconButton`
-		 * and `Select` spend `density` on, sized off `--chip-size` and floored back under a coarse
-		 * pointer. */
+		/** Box density; `chrome` is the dense box a toolbar strip wears. */
 		density?: ButtonDensity;
 		children?: Snippet;
 	} = $props();
@@ -34,8 +25,7 @@
 	{type}
 	class={`ui-chip t-${tone} ${density === 'chrome' ? 'd-chrome ' : ''}${klass}`.trim()}
 >
-	<!-- Same ink wrapper as Badge, same reason: the glyph run on its own, so the gallery's ink pin
-	     has something to measure. No correction rides on it — the vendored faces centre themselves. -->
+	<!-- Same ink wrapper as Badge: the glyph run alone, for the gallery's ink pin to measure. -->
 	<span class="ui-chip-ink">{@render children?.()}</span>
 </button>
 
@@ -61,22 +51,17 @@
 			border-color var(--dur-fast) var(--ease),
 			color var(--dur-fast) var(--ease);
 	}
-	/* Chrome density — the same trade IconButton's makes, stated the same way: a toolbar strip is
-	   shorter than --hit by construction, so a chip in one takes the strip's box (`--chip-size`,
-	   published by `Bar`) and gets the full target back below under a coarse pointer. Unset, the
-	   hook resolves to --hit, so `density="chrome"` alone is a no-op rather than a collapsed pill. */
+	/* Unset, the hook falls back to --hit, so `density="chrome"` alone is a no-op, not a collapse. */
 	.ui-chip.d-chrome {
 		min-height: var(--chip-size, var(--hit));
 	}
-	/* app.css's coarse floor is `min-height` ONLY — a blanket `min-width` there would widen the three
-	   frozen node-canvas exceptions. A Chip is chrome and none of those three is one, so the width
-	   floor belongs here: a chip whose content is a glyph and a digit measured 34 × 44. */
+	/* The width floor lives here, not in app.css: a blanket one there widens the frozen node-canvas
+	   exceptions. */
 	@media (hover: none) and (pointer: coarse) {
 		.ui-chip {
 			min-width: var(--hit);
 			justify-content: center;
 		}
-		/* …and the dense box gives the height back, at the specificity the rule above cannot reach. */
 		.ui-chip.d-chrome {
 			min-height: var(--hit);
 		}
@@ -95,17 +80,8 @@
 		outline-offset: 2px;
 	}
 
-	/* Tones mirror Badge's fills; hover intensifies the tint (never the sole affordance — the pill is
-	   always visible + clickable, and keyboard focus rings it).
-
-	   `neutral` is the exception, and deliberately so: it is the RESTING state, and most Chips in
-	   this app rest — the inspector's `fx` toggle is on every parameter row in every state, and the
-	   console's `out`/`err` filters rest off. As a fill plus a hairline it made the loudest element
-	   on a param label row the toggle rather than the parameter NAME, which the inspector's own
-	   spec calls the primary scan target. So it is a ghost, the same shape `Button`/`IconButton`
-	   already ship, hovering onto the shared `--hover-fill` that exists for exactly this — a
-	   control with no surface of its own, which must lift whatever rung it happens to sit on. Badge
-	   keeps its filled neutral: it is a static label, not a control at rest. */
+	/* `neutral` is a ghost, unlike Badge's filled one: it is the RESTING state and must not outshout
+	   the label it sits beside. */
 	.ui-chip.t-neutral {
 		background: transparent;
 		border-color: transparent;

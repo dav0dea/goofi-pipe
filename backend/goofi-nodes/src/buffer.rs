@@ -1,12 +1,5 @@
-//! Buffer — a rolling window along one axis.
-//!
-//! Keeps the most recent `size` entries along `axis` and emits them. **The rank never changes**:
-//! a `[C, T]` frame buffered on the time axis stays `[C, size]`, and a scalar — which is `[1]`
-//! here, since a 0-d array is promoted on construction — becomes `[size]`. A node adds or drops a
-//! dimension only when its computation demands one, and rolling a window demands none.
-//!
-//! Each position along the OTHER axes gets its own window, so buffering `[C, T]` on time keeps C
-//! independent channel histories rather than interleaving them into one stream.
+//! Buffer — a rolling window along one axis, one window per position along the other axes.
+//! The rank never changes.
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
 use goofi_node::{
@@ -16,11 +9,9 @@ use goofi_node::{
 
 #[derive(Default)]
 struct Buffer {
-    /// One window per position along the axes OUTSIDE the buffered one — `windows[o]` holds that
-    /// block's kept entries back to back, as raw f32-LE bytes, `inner * 4` per entry.
+    /// One window per position along the axes OUTSIDE the buffered one, as raw f32-LE bytes.
     windows: Vec<Vec<u8>>,
-    /// The shape the windows were filled from, with the buffered axis set to 0. A frame that
-    /// disagrees describes a different signal, so the windows are dropped rather than mixed.
+    /// The shape the windows were filled from, with the buffered axis set to 0.
     layout: Vec<usize>,
 }
 
@@ -38,8 +29,6 @@ impl Node for Buffer {
         let axis = resolve_axis(p.i64("buffer", "axis").unwrap_or(-1), a.ndim())?;
 
         let shape = a.shape();
-        // Bytes per entry along the buffered axis, and how many independent windows the axes
-        // before it demand.
         let stride: usize = shape[axis + 1..].iter().product::<usize>() * 4;
         let outer: usize = shape[..axis].iter().product();
         let block = shape[axis] * stride;
@@ -68,9 +57,7 @@ impl Node for Buffer {
 
         let mut shape_out = shape.to_vec();
         shape_out[axis] = kept;
-        // Everything the frame carried stays, EXCEPT the buffered axis' own labels: they name
-        // entries that have since rolled past. The other axes are untouched — a channel name is
-        // still that channel's.
+        // Only the buffered axis' labels are dropped: they name entries that have rolled past.
         let mut meta = d.meta().clone();
         if meta.channels().get(axis).is_some_and(|x| !x.is_empty()) {
             let axes = meta.channels().clone().with(axis, Axis::default());

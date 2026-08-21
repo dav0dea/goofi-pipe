@@ -1,15 +1,5 @@
-/**
- * Copy text to the system clipboard.
- *
- * `navigator.clipboard` only exists in a *secure context* — https, or http on
- * `localhost`/`127.0.0.1`. goofi-pipe is usually opened over plain http on a LAN
- * address (`http://<host>:8000`), where the Clipboard API is absent and
- * `navigator.clipboard.writeText` throws. Fall back to the legacy
- * hidden-textarea + `execCommand('copy')` path, which works in any context as
- * long as it runs inside a user gesture (a click handler).
- *
- * Returns whether the copy succeeded.
- */
+/** Copy text to the clipboard. The Clipboard API is absent outside a secure context (plain http on
+ * a LAN), so fall back to the hidden-textarea `execCommand` path, which needs a user gesture. */
 export async function copyText(text: string): Promise<boolean> {
 	try {
 		if (navigator.clipboard?.writeText) {
@@ -17,7 +7,6 @@ export async function copyText(text: string): Promise<boolean> {
 			return true;
 		}
 	} catch {
-		// Permission/context refusal — fall through to the legacy path.
 	}
 	return legacyCopy(text);
 }

@@ -1,14 +1,5 @@
-//! The test harness — one live goofi, driven the way anything drives goofi.
-//!
-//! Every suite in `tests/` reaches the system through [`Goofi::call`], the same entry `/control`
-//! and `/mcp` are transports over. That is the point: a test that reaches past it pins an
-//! implementation detail, and this crate cannot reach past it — it is a separate crate and sees
-//! only public API.
-//!
-//! Observation has exactly three doors, and no test needs a fourth:
-//!   * [`Goofi::call`] — every op, including the `Surface::Internal` rows that exist for this;
-//!   * [`Events`] — the broadcast a `/control` client hears;
-//!   * [`OutputProbe`] — one subscriber on one output slot, the same door `/data` opens.
+//! The test harness — one live goofi, driven through [`Goofi::call`], the entry `/control` and
+//! `/mcp` are transports over. Observation is [`Goofi::call`], [`Events`] and [`OutputProbe`].
 
 use std::time::{Duration, Instant};
 
@@ -20,24 +11,13 @@ pub use goofi_engine::testing::OutputProbe;
 pub use goofi_engine::Uid;
 pub use serde_json::json as j;
 
-/// How long [`Goofi::until`] waits before it calls a condition unmet. Generous, and it has to be:
-/// a node reaches `Ready` on its own thread, a loaded machine running the whole suite in parallel
-/// is the normal case rather than the exception, and cargo runs the test BINARIES in parallel too —
-/// so a scenario here waits behind whatever `nodes_shipped` is doing, which is starting eight
-/// interpreters that each import numba. Ten seconds was calibrated before this repo shipped a node
-/// with a heavy dependency, and it made three different tests fail on three different runs. Thirty
-/// then did the same, twice, on a 32-core machine that was merely also running a build — and CI's
-/// runner has four cores, so the number has to clear the SLOWEST machine that runs this suite, not
-/// the fastest.
-///
-/// Only a FAILING assertion pays this; a passing one returns as soon as its condition holds. That
-/// asymmetry is why the answer to "is this generous enough?" is always yes.
+/// How long [`Goofi::until`] waits before it calls a condition unmet. Only a FAILING assertion
+/// pays it, so the number clears the slowest machine that runs the suite rather than the fastest.
 const WAIT: Duration = Duration::from_secs(90);
-/// How long [`Goofi::stays`] watches a negative. A bare "check once" holds trivially against a
-/// runtime that has not got round to the thing yet.
+/// How long [`Goofi::stays`] watches a negative.
 const SETTLE: Duration = Duration::from_millis(250);
 
-/// A running goofi: the graph, the runtime, the CRDT doc, the status-drain worker.
+/// A running goofi: the graph, the runtime, the document, the status-drain worker.
 pub struct Goofi {
     pub state: AppState,
     session: String,
@@ -51,16 +31,14 @@ impl Default for Goofi {
 }
 
 impl Goofi {
-    /// Boot one. The status-drain worker runs, which is what makes a node addressable and what
-    /// advances a wire's three-phase attach — without it nothing in the runtime ever completes.
+    /// Boot one, with the status-drain worker that makes a node addressable.
     pub fn new() -> Goofi {
         let state = AppState::new();
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
         Goofi { state, session: "test".into(), patience: WAIT }
     }
 
-    /// Boot one whose `/data` sockets probe on a short clock: fast enough that the suite never
-    /// waits on a production deadline, slow enough that ordinary scheduler jitter cannot trip it.
+    /// Boot one whose `/data` sockets probe on a short clock.
     pub fn impatient() -> Goofi {
         let mut state = AppState::new();
         state.data_liveness = goofi_bridge::DataLiveness {
@@ -77,8 +55,7 @@ impl Goofi {
         Goofi { state: self.state.clone(), session: session.into(), patience: self.patience }
     }
 
-    /// Run an op and unwrap it. The common case: a test that expected a refusal says so with
-    /// [`Goofi::refuse`], so an unexpected one is a failure here rather than a silent `Err`.
+    /// Run an op and unwrap it; an unexpected refusal is a failure here.
     #[track_caller]
     pub fn call(&self, op: &str, payload: Value) -> Value {
         self.try_call(op, payload.clone())
@@ -98,7 +75,7 @@ impl Goofi {
         }
     }
 
-    /// Add a node and answer its uid — three lines that appear in almost every test.
+    /// Add a node and answer its uid.
     #[track_caller]
     pub fn add(&self, type_name: &str) -> Uid {
         let r = self.call("add_node", json!({ "type": type_name }));
@@ -115,28 +92,23 @@ impl Goofi {
         );
     }
 
-    /// The replicated projection every client mirrors — nodes, links, instances, globals,
-    /// arrangement.
+    /// The replicated projection every client mirrors.
     pub fn doc(&self) -> Value {
         self.call("get_state", json!({}))
     }
 
-    /// Bind a real server on a free port and answer its `ws://host:port` base. For the suite that
-    /// tests the TRANSPORT — the `hello` snapshot, the binary sync relay, `/data`, `/term`, `/mcp`,
-    /// the Origin guard. Everything else drives [`Goofi::call`] and needs no socket at all.
+    /// Bind a real server on a free port and answer its `ws://host:port` base.
     pub async fn serve(&self) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // As the CLI does once it knows the bound port: a URL a spawned harness is handed has to be
-        // one this very process answers, which is the whole claim `/mcp/<instance>` makes.
+        // As the CLI does: a `/mcp/<instance>` URL must name the process that answers it.
         self.state.set_mcp_port(addr.port());
         let served = self.state.clone();
         tokio::spawn(async move { goofi_bridge::serve_app(listener, served, &[]).await.unwrap() });
         format!("ws://{addr}")
     }
 
-    /// As [`Goofi::serve`], but also serving a bundle on the fallback route — so the page is a
-    /// real route rather than an argued one. Pass `goofi_bridge::SPA` for the one that ships.
+    /// As [`Goofi::serve`], but also serving a bundle on the fallback route.
     pub async fn serve_spa(&self, spa: goofi_bridge::Spa) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -146,9 +118,7 @@ impl Goofi {
         format!("ws://{addr}")
     }
 
-    /// Register a node type with a PER-INSTANCE factory — what the CLI does for a discovered
-    /// Python node. The only way to cover a node whose second instance differs from its first,
-    /// which is what makes a restart observable at all.
+    /// Register a node type with a per-instance factory, as the CLI does for a Python node.
     pub fn register_dyn(
         &self,
         manifest: &'static goofi_node::NodeManifest,
@@ -167,21 +137,18 @@ impl Goofi {
         keys(&self.doc()["instances"])
     }
 
-    /// Subscribe to the event broadcast. Take this BEFORE the action that should emit: the channel
-    /// keeps no history, so a receiver opened afterwards hears nothing and reads as a pass.
+    /// Subscribe to the event broadcast — take it BEFORE the action, the channel keeps no history.
     pub fn events(&self) -> Events {
         Events { rx: self.state.events.subscribe() }
     }
 
-    /// Open a subscriber on one output slot — the same door `/data` opens, and the only way to
-    /// observe a node's output without a privileged path into the node.
+    /// Open a subscriber on one output slot — the same door `/data` opens.
     #[track_caller]
     pub fn probe(&self, node: Uid, slot: &str) -> OutputProbe {
         OutputProbe::open(&self.state.graph.lock().unwrap(), node, slot)
     }
 
-    /// Poll `f` until it answers `Some`, or fail naming `what`. The runtime is asynchronous, so
-    /// this — not a sleep, and not a single look — is how an integration test asserts a positive.
+    /// Poll `f` until it answers `Some`, or fail naming `what`.
     #[track_caller]
     pub fn until<T>(&self, what: &str, mut f: impl FnMut(&Goofi) -> Option<T>) -> T {
         let deadline = Instant::now() + self.patience;
@@ -196,8 +163,7 @@ impl Goofi {
         }
     }
 
-    /// Watch a NEGATIVE for a settle window: a node that must not run, an error that must not
-    /// appear. Answers whether `holds` was true throughout.
+    /// Watch a NEGATIVE for a settle window; answers whether `holds` was true throughout.
     pub fn stays(&self, mut holds: impl FnMut(&Goofi) -> bool) -> bool {
         let deadline = Instant::now() + SETTLE;
         while Instant::now() < deadline {
@@ -209,8 +175,7 @@ impl Goofi {
         true
     }
 
-    /// Wait until a node reports `Ready` — the birth barrier. A `Control` sent before a node's
-    /// subscriber exists is simply lost, so a test that acts on a fresh node without this races it.
+    /// Wait until a node reports `Ready`: a `Control` sent before that is lost.
     #[track_caller]
     pub fn ready(&self, node: Uid) {
         self.until(&format!("{node} to report ready"), |g| {
@@ -239,8 +204,7 @@ pub struct Events {
 }
 
 impl Events {
-    /// The next event named `name`, skipping the others. Fails if none arrives — every event this
-    /// suite waits on is emitted by an op it just called.
+    /// The next event named `name`, skipping the others.
     #[track_caller]
     pub fn next(&mut self, name: &str) -> Value {
         let deadline = Instant::now() + WAIT;
@@ -258,8 +222,7 @@ impl Events {
         }
     }
 
-    /// Answers whether an event named `name` arrives inside the settle window — the oracle for
-    /// "this must NOT be broadcast".
+    /// Answers whether an event named `name` arrives inside the settle window.
     pub fn quiet(&mut self, name: &str) -> bool {
         let deadline = Instant::now() + SETTLE;
         while Instant::now() < deadline {
@@ -286,10 +249,6 @@ fn keys(v: &Value) -> Vec<String> {
     k
 }
 
-// ---------------------------------------------------------------------------
-// The transport half: a real WebSocket client, for the suite that tests the wire
-// ---------------------------------------------------------------------------
-
 pub use goofi_bridge::doc::{GraphDoc, Patch};
 pub use tokio_tungstenite::tungstenite::Message;
 
@@ -297,13 +256,7 @@ pub type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// A `/control` client — what a browser tab is. One socket carrying JSON: RPC replies, events, and
-/// the `doc_state` / `doc_patch` events that keep its replica equal to the manager's document.
-///
-/// The replica is the CLIENT's, and every frame this type reads feeds it — including the frames
-/// read while waiting for an RPC reply. A browser tab has no way to skip those, so neither does
-/// this: a harness that dropped them would show a client which edits as permanently behind one
-/// that only watches, and it would look like a product defect rather than a test one.
+/// A `/control` client — what a browser tab is: RPC replies, events, and the doc replica it feeds.
 pub struct Client {
     pub ws: Ws,
     next_id: i64,
@@ -329,11 +282,8 @@ impl Client {
         &self.doc
     }
 
-    /// Read frames until the replica satisfies `want`, or fail. Every read feeds the replica, so a
-    /// client that is also issuing RPCs converges on the same terms as one that only listens.
-    ///
-    /// `want` must be POSITIVE about something the document will deliver: an "absence" predicate is
-    /// already true of the empty replica, before a single event lands.
+    /// Read frames until the replica satisfies `want`. `want` must be POSITIVE: an absence
+    /// predicate is already true of the empty replica.
     pub async fn until_doc(&mut self, want: impl Fn(&GraphDoc) -> bool) {
         for _ in 0..200 {
             if want(&self.doc) {
@@ -378,10 +328,8 @@ impl Client {
         }
     }
 
-    /// The next TEXT frame, as JSON — feeding the replica on the way past, whatever the caller was
-    /// waiting for. A GAP panics: the events arrive in order on one socket, so a replica missing one
-    /// is a defect, not a condition to tolerate. A STALE patch does not — see
-    /// [`goofi_bridge::doc::Patch`].
+    /// The next TEXT frame, as JSON, feeding the replica on the way past. A GAP panics; a stale
+    /// patch does not.
     pub async fn text(&mut self) -> Value {
         loop {
             let Message::Text(t) = self.next().await else { continue };
@@ -439,7 +387,7 @@ pub fn panels(doc: &GraphDoc) -> Vec<String> {
     panel_ids(&doc.to_json()["arrangement"])
 }
 
-/// One node's JSON in an arrangement, by id — what a scenario reads a panel's type or binding off.
+/// One node's JSON in an arrangement, by id.
 pub fn arrangement_node<'a>(arrangement: &'a Value, id: &str) -> Option<&'a Value> {
     fn down<'a>(n: &'a Value, id: &str) -> Option<&'a Value> {
         if n["id"] == id {
@@ -450,8 +398,7 @@ pub fn arrangement_node<'a>(arrangement: &'a Value, id: &str) -> Option<&'a Valu
     arrangement["tabs"].as_array()?.iter().find_map(|t| down(&t["root"], id))
 }
 
-/// Every panel id in an arrangement JSON, depth-first. The `.gfi` section and the document root
-/// share this ONE shape, so both are read here.
+/// Every panel id in an arrangement JSON, depth-first.
 pub fn panel_ids(arrangement: &Value) -> Vec<String> {
     fn down(n: &Value, out: &mut Vec<String>) {
         if n["kind"] == "panel" {
@@ -468,8 +415,7 @@ pub fn panel_ids(arrangement: &Value) -> Vec<String> {
     out
 }
 
-/// A `/data` viewer — one subscriber on one (node, slot) stream. Binary frames are GOOF; a text
-/// frame is the inband ViewSpec a viewer publishes to say what it can draw.
+/// A `/data` viewer — one subscriber on one (node, slot) stream.
 pub struct Viewer {
     pub ws: Ws,
 }
@@ -482,8 +428,7 @@ impl Viewer {
         Viewer { ws }
     }
 
-    /// Publish this viewer's constraints inband. The bridge folds every viewer's specs against the
-    /// real frame and reduces ONCE, on its own subscription to the producer.
+    /// Publish this viewer's constraints inband.
     pub async fn view(&mut self, specs: Value) {
         self.ws.send(Message::Text(json!({ "op": "view", "specs": specs }).to_string().into()))
             .await
@@ -507,8 +452,7 @@ impl Viewer {
         goofi_codec::decode(&raw).expect("a decodable GOOF frame")
     }
 
-    /// Read frames until one satisfies `want`. A stream carries whatever the producer had emitted
-    /// before this viewer's spec was folded in, so the frame a test is about is rarely the first.
+    /// Read frames until one satisfies `want`.
     pub async fn until(&mut self, mut want: impl FnMut(&goofi_core::Data) -> bool) -> goofi_core::Data {
         let deadline = Instant::now() + WAIT;
         loop {
@@ -532,9 +476,7 @@ impl Viewer {
     }
 }
 
-/// Poll until `f` holds or `limit` elapses, and answer whether it held. Asserting the PROPERTY
-/// ("reclaimed by T") rather than a window is what keeps a liveness test stable under cargo's
-/// parallel runner.
+/// Poll until `f` holds or `limit` elapses, and answer whether it held.
 pub async fn holds_within(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
@@ -551,12 +493,8 @@ pub fn host(base: &str) -> &str {
     base.trim_start_matches("ws://")
 }
 
-/// One HTTP request over a raw `TcpStream`, answering `(status, head, body)`.
-///
-/// Hand-rolled for two reasons. `Connection: close` makes a reply "read to EOF", which is smaller
-/// than the dev-dependency an HTTP client crate would add; and an HTTP client crate cannot ask the
-/// WebSocket-upgrade question the Origin guard has to be asked. The body stays BYTES — a `.gfi` is
-/// a zip, and lossy-decoding it to a string would corrupt exactly what those tests are about.
+/// One HTTP request over a raw `TcpStream`, answering `(status, head, body)`. The body stays
+/// bytes because a `.gfi` is a zip.
 pub async fn http(
     addr: &str,
     method: &str,

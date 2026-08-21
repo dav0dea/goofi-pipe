@@ -1,14 +1,6 @@
 //! Latency + concurrency-scaling probe for the in-process Python node path.
-//! Not a test — run under the FT env:
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
 //!     cargo run -p goofi-python --features embed --example py_latency --release
-//!
-//! Measures (1) the rate a single engine-hosted Python node SUSTAINS and (2) how an N-wide
-//! fan-out of Python nodes scales, which only overlaps because the interpreter is free-threaded
-//! (GIL off).
-//!
-//! There is no tick to time any more — every node paces itself on its own thread — so the number
-//! is the throughput the graph actually holds, counted from each consumer's `meta["index"]`.
 use std::time::{Duration, Instant};
 
 use goofi_core::globals::GlobalValue;
@@ -47,9 +39,7 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
 
 fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     let mut g = Graph::new();
-    // Every producer carries `globals.default_ufreq` as its rate cap, so a benchmark that left it
-    // at the patch default would measure 30 Hz and nothing else. Raise the reference instead of
-    // unbinding each node: it is the one knob the whole graph reads.
+    // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6))).unwrap();
     g.register_dyn_type(
         &PY_MANIFEST,
@@ -67,14 +57,10 @@ fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     (g, probes)
 }
 
-/// The rate the fan-out sustains, summed over its consumers.
-///
-/// Counted from `meta["index"]`, which advances once per emit, rather than from how many frames a
-/// probe catches: the data services are latest-wins one deep, so a subscriber that looks less often
-/// than the producer emits legitimately sees fewer.
+/// The rate the fan-out sustains, counted from `meta["index"]` rather than from the frames a probe
+/// catches — the data services are latest-wins one deep.
 fn bench(label: &str, g: &mut Graph, probes: &[OutputProbe], window: Duration) {
-    // The links attach over a three-phase sequence that advances on acks, so the chain carries
-    // nothing until the status drain has run a few times.
+    // A link attaches over a sequence that advances on acks, so nothing flows until status drains.
     let warm = Instant::now();
     while warm.elapsed() < Duration::from_secs(2) {
         g.drain_status();
@@ -98,9 +84,7 @@ fn bench(label: &str, g: &mut Graph, probes: &[OutputProbe], window: Duration) {
 fn main() {
     println!("GIL enabled: {}", PyNode::gil_enabled().unwrap());
 
-    // (0) Root-cause micro-probe: bare `Python::attach(|_| {})` cost on the main
-    // thread vs a freshly spawned worker thread. Isolates the per-call attach
-    // overhead from any numpy work.
+    // (0) Bare `Python::attach` cost, main thread against a fresh worker thread.
     {
         use pyo3::prelude::*;
         let iters = 20_000u32;
@@ -111,7 +95,7 @@ fn main() {
         let main_ns = t.elapsed().as_nanos() as f64 / iters as f64;
 
         let worker_ns = std::thread::spawn(move || {
-            // Prime one attach, then time the steady state on this worker thread.
+            // Prime one attach, then time the steady state.
             Python::attach(|_| {});
             let t = Instant::now();
             for _ in 0..iters {
@@ -143,21 +127,17 @@ fn main() {
         bench(&format!("1 Python node, len={len}"), &mut g, &probes, Duration::from_secs(2));
     }
 
-    // (2) Concurrency scaling: fan out N nodes over one source. Ideal free-threaded scaling keeps
-    // the PER-NODE rate ~flat until cores saturate.
+    // (2) Concurrency scaling: ideal free-threaded scaling holds the per-node rate flat.
     println!("--- fan-out scaling on the async runtime (len=1024, real numpy) ---");
     for n in [1usize, 2, 4, 8, 16] {
         let (mut g, probes) = build(n, work, 1024);
         bench(&format!("{n} Python nodes"), &mut g, &probes, Duration::from_secs(2));
     }
 
-    // (3) Isolation: run the SAME numpy work on N raw std::threads, no engine,
-    // no rayon. If this also collapses, the contention is in Python/numpy itself
-    // (free-threaded compute), not the scheduler.
+    // (3) The same work on raw threads: a collapse here is Python/numpy, not the scheduler.
     println!("--- same numpy work on raw std::threads (isolates Python/numpy contention) ---");
     let bytes: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_le_bytes()).collect();
     for n in [1usize, 2, 4, 8, 16] {
-        // Each thread owns its own PyNode and calls process() `rounds` times.
         let rounds = 2000u32;
         // Warm.
         {
@@ -176,7 +156,7 @@ fn main() {
                 });
             }
         });
-        // Per-call latency = wall / rounds (all N threads overlap the `rounds` loop).
+        // All N threads overlap the `rounds` loop.
         let per = t.elapsed().as_secs_f64() / rounds as f64;
         println!(
             "{n:>2} raw threads x {rounds} calls          {:>8.1} us/round  (round = one call on every thread)",

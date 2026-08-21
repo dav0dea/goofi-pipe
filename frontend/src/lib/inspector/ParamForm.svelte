@@ -1,9 +1,7 @@
 <script module lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
-	/** Parameter group names in display order: node-specific groups alphabetical,
-	 * 'common' last. Exported as module API (spec §6) and used internally to build the
-	 * tab strip — ParamForm now owns the tabs, so both mounts share this one ordering. */
+	/** Parameter group names in display order: node-specific groups alphabetical, 'common' last. */
 	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
 		if (!node) return [];
 		return Object.keys(node.params).sort((a, b) => {
@@ -15,21 +13,8 @@
 </script>
 
 <!--
-  ParamForm — the node-driven form assembler (spec §4, D-N6; the rebuilt ParamPanel). A handful of P
-  primitives assemble the inspector: an identity header (P `Bar` + inline rename + `Badge` state + a
-  docs `Disclosure`), the connected P `Tabs` bar it now OWNS (the old hideTabs/external-group split is
-  dropped — both mounts get the same strip), and one `<ParamField>` per param in the active group.
-
-  `show_when` (spec §5) filters fields by another param's live value: a field whose predicate evaluates
-  false is OMITTED, and a group whose EVERY field is thus hidden renders NO tab (never a live tab over
-  an all-hidden group). `liveValues` spans ALL groups because a dependency may cross them; it is rebuilt
-  reactively so committing a controller shows/hides its dependents live. A genuinely empty group (no
-  fields at all) keeps its tab + the empty-group message.
-
-  Identity-blind rows: each `<ParamField>` is wired to the store via closures over `(activeGroup, name)`.
-  The store contract is preserved verbatim (`updateParam`/`setExpression`/`refreshParam`/`isRefreshing`/
-  `renameNode`), as is the rename null-first commit/cancel dance and the `node.subpatch` delegation.
-  `class`/`data-testid` forward to the root via `...rest`.
+  ParamForm — the node-driven inspector: an identity header, the group tab strip it owns, and one
+  `<ParamField>` per param in the active group.
 -->
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -48,19 +33,15 @@
 		...rest
 	}: HTMLAttributes<HTMLElement> & {
 		node: NodeInstanceInfo | null;
-		/** Show the identity header (rename + state + docs). True in the editor's slide-in inspector;
-		 * false in the dedicated Parameters panel, which already names the node in its linkbar. */
+		/** Show the identity header (rename + state + docs). */
 		showHeader?: boolean;
-		/** Renders a ✕ in the identity Bar, left of the state badge. Only the slide-in inspector
-		 * supplies one — the pane's close belongs to the header the user is already reading, not to
-		 * a strip of its own. The dedicated Parameters panel passes nothing and gets no ✕. */
+		/** Renders a ✕ in the identity Bar; only the slide-in inspector supplies one. */
 		onClose?: () => void;
 	} = $props();
 
 	const g = graph();
 
-	// The store seam — closures over the node uid; each RPC is fire-and-forget with a logged failure
-	// (matching the refresh idiom) so a rejected call never surfaces as an unhandled rejection.
+	// Each RPC is fire-and-forget with a logged failure, so a rejection is never unhandled.
 	function setValue(group: string, name: string, value: unknown): void {
 		if (!node) return;
 		void g.updateParam(node.uid, group, name, value).catch((e) => console.warn('update failed', e));
@@ -81,10 +62,8 @@
 		);
 	}
 
-	// --- inline name editing (header) --------------------------------------------------------------
-	// The display `name` is the only mutable, display-only attribute (identity is the uid). Keyed by
-	// uid so switching nodes auto-closes the editor while live state updates (which re-create the node
-	// object) leave an open edit untouched.
+	// Keyed by uid, so switching nodes closes the editor while a live state update (which re-creates the
+	// node object) leaves an open edit untouched.
 	let editingUid = $state<string | null>(null);
 	let nameDraft = $state('');
 	const editingName = $derived(node != null && editingUid === node.uid);
@@ -95,8 +74,7 @@
 		editingUid = node.uid;
 	}
 	function commitRename(): void {
-		// Escape/cancel nulls editingUid first, so the blur it triggers as the input unmounts is a
-		// no-op here — only a live edit commits.
+		// Escape/cancel nulls editingUid first, so the blur the unmounting input fires is a no-op here.
 		const uid = editingUid;
 		editingUid = null;
 		if (!uid || !node || node.uid !== uid) return;
@@ -112,24 +90,12 @@
 		el.select();
 	}
 
-	// --- show_when + group tabs --------------------------------------------------------------------
-	// Live param values across ALL groups (dependencies may cross groups); rebuilt reactively so a
-	// committed controller re-evaluates its dependents.
 	const groupNames = $derived(paramGroupNames(node));
 
 	const tabItems = $derived(groupNames.map((name) => ({ id: name, label: name })));
 
-	// This component owns the tabs. The active group is DERIVED — the group in front when it is still
-	// visible, else the first visible one, else none — and an effect then ADOPTS that fallback.
-	//
-	// Both halves earn their place. It used to be an `$effect` assigning `activeGroup` from `null`,
-	// which is why the strip flashed on every open: an effect runs after the first paint, so the
-	// initial render had no `.active` tab, and the class then flipped INTO `.ui-tab`'s `background`
-	// transition — animating --surface-2 → --surface-1. Deriving it puts the right tab in the first
-	// paint, so there is no transition to animate. But a pure derivation is not enough: groups sort
-	// alphabetically, so when a hidden group reappears (`filter` before `signal`) `valid[0]` would
-	// steal the front from a still-valid group. Adopting the fallback keeps it sticky — the front
-	// group only moves when it actually vanishes.
+	// DERIVED, so the right tab is in the first paint and there is no `.ui-tab` background transition to
+	// animate; the effect then ADOPTS the fallback, which keeps the front group sticky.
 	let frontGroup = $state<string | null>(null);
 	const activeGroup = $derived.by<string | null>(() => {
 		const valid = groupNames;
@@ -154,7 +120,6 @@
 			{#snippet hint()}Select a node to edit its parameters.{/snippet}
 		</EmptyState>
 	{:else if node.subpatch}
-		<!-- A virtual sub-patch node: sharing controls + mirror list, not params. -->
 		<SubPatchInspector {node} />
 	{:else}
 		{#if showHeader}
@@ -195,8 +160,6 @@
 						{node.error ? 'error' : 'running'}
 					</Badge>
 					{#if onClose}
-						<!-- Right-most, after the badge: the way out sits at the bar's far corner,
-						     where every panel's ✕ already lives. -->
 						<IconButton
 							variant="ghost"
 							density="chrome"
@@ -231,8 +194,7 @@
 			/>
 		{/if}
 
-		<!-- The panel is a tabpanel only when a tablist exists (a zero-param node renders no tabs — an
-		     orphaned `tabpanel` role would have no owning tablist); named by its active group. -->
+		<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
 		<div
 			class="pf-rows"
 			role={tabItems.length > 0 ? 'tabpanel' : undefined}
@@ -277,10 +239,8 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The name reads as text until clicked; the dotted underline on hover hints it is editable.
-	   Mono, stated after the `font: inherit` reset that would otherwise wipe it (D-T3): a node's
-	   name is the same identifier the canvas paints on the node itself, and the two must match —
-	   the inspector's surrounding chrome is sans. Same for the rename input it swaps with. */
+	/* Mono, stated after the `font: inherit` reset that would otherwise wipe it: this is the same
+	   identifier the canvas paints on the node. Same for the rename input it swaps with. */
 	.pf-name {
 		font: inherit;
 		font-family: var(--font-mono);
@@ -322,18 +282,12 @@
 		color: var(--text-dim);
 		white-space: pre-wrap;
 	}
-	/* The pane's way out, resident in the identity Bar (migrated from the strip it used to own).
-	   Dim at rest so the badge beside it keeps the row's emphasis; text ink on hover.
-	   Anchored on `.param-form` — a real element of THIS template — because `pf-identity-bar` is a
-	   class passed to the Bar COMPONENT: Svelte's scoping hash never reaches another component's
-	   markup, so a selector scoped on the passed class compiles to one that matches nothing. */
+	/* Anchored on `.param-form`, a real element of THIS template: `pf-identity-bar` is a class passed to
+	   another component, and Svelte's scoping hash never reaches its markup. */
 	.param-form :global(.pf-identity-bar) {
-		/* The ✕ (and the badge while it fits) must never be squeezed into overflow past the pane's
-		   edge — the name is what ellipsizes. The badge's own yield point is the @container rule
-		   below. */
+		/* The ✕ must never be squeezed into overflow past the pane's edge; the name is what ellipsizes. */
 		--bar-end-min: max-content;
-		/* …and this bar stacks a name over a type, so it is two lines tall by construction and not a
-		   panel toolbar. It takes the padding back that a one-row strip has none of. */
+		/* Two lines tall by construction, so it takes back the padding a one-row strip has none of. */
 		--bar-pad-y: var(--space-2);
 	}
 	.param-form :global(.pf-identity-bar .pf-close) {
@@ -343,20 +297,14 @@
 	.param-form :global(.pf-identity-bar .pf-close:hover) {
 		color: var(--text);
 	}
-	/* Dragged toward its floor, the pane cannot seat name + state + ✕ on one row, and a flex row
-	   whose items refuse to shrink puts the OVERFLOW on the right — which walked the ✕, the pane's
-	   one way out (D-I4), clean off a landscape phone's screen. The state badge is what yields: the
-	   name is the row's identity and the state survives elsewhere (the error section below, the
-	   node's own chrome). Asked of the PANE (InspectorOverlay's inline-size container), not the
-	   host panel — only the pane's width says how much room this row has. 180px is a structural
-	   threshold like Field's 240px: below it the badge would leave the name an unreadable sliver. */
+	/* Below this the row cannot seat name + state + ✕, and the overflow would walk the ✕ off screen; the
+	   badge is what yields. Asked of the PANE, not the host panel. */
 	@container (max-width: 180px) {
 		.param-form :global(.pf-identity-bar .pf-state) {
 			display: none;
 		}
 	}
-	/* The active tab drops to --surface-1 (the Tabs `--tabs-body` default); the rows paint the SAME
-	   surface so the connected tab merges into the body flush beneath it — one piece, no seam line. */
+	/* The SAME surface the active tab drops to, so the tab merges into the body with no seam line. */
 	.pf-rows {
 		display: flex;
 		flex-direction: column;
@@ -370,10 +318,7 @@
 		text-align: center;
 		padding: var(--space-6) 0;
 	}
-	/* Touch: the name's only editable cue is a hover underline, invisible on a device with no hover
-	   — give it a resting dotted underline so it reads as editable without one. Gated on the app's
-	   single coarse idiom (D-R7): the cue exists BECAUSE hover is unavailable, so a hover-capable
-	   touchscreen neither needs it nor should carry it. */
+	/* The editable cue is a hover underline, so with no hover it rests visible instead. */
 	@media (hover: none) and (pointer: coarse) {
 		.pf-name {
 			text-decoration: underline;
@@ -381,8 +326,7 @@
 			text-underline-offset: 2px;
 		}
 	}
-	/* Touch: lift the rename input to 16px so focusing it does not force-zoom iOS (the desktop
-	   --fs-strong size below 16px is kept). Mirrors app.css's coarse input/textarea floor. */
+	/* 16px so focusing it does not force-zoom iOS; mirrors app.css's coarse input floor. */
 	@media (hover: none) and (pointer: coarse) {
 		.pf-rename {
 			font-size: 16px;

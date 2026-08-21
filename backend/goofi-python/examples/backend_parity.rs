@@ -1,16 +1,8 @@
-//! Unified backend-parity benchmark — the SAME `x*2+1` workload run through all
-//! three node backends inside ONE engine, for a directly comparable measurement:
-//!   1. native Rust           (an inline element-wise node)
-//!   2. in-process FT Python  (pyo3, GIL off — `goofi_python::inproc::PyNode`)
-//!   3. subprocess Python     (a separate GIL interpreter — `goofi_python::subproc::RemoteNode`)
-//!
-//! Each backend is hosted identically (_TestConst -> node), warmed up, then
-//! timed per-tick, followed by a sustained stability run (no faulted error
-//! channel). Not a test — run under the FT env (same vars as `py_latency`):
+//! Backend-parity benchmark: the same `x*2+1` workload through native Rust, in-process FT Python
+//! and subprocess Python, in one engine.
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
 //!     cargo run -p goofi-python --features embed --example backend_parity --release
-//! The subprocess tier talks iceoryx2, so point GOOFI_SUBPROC_PYTHON at an
-//! iceoryx2-capable interpreter (e.g. the repo .gfivenv); it falls back to PYO3_PYTHON.
+//! GOOFI_SUBPROC_PYTHON names an iceoryx2-capable interpreter for the subprocess tier.
 
 use std::time::{Duration, Instant};
 
@@ -25,7 +17,7 @@ use goofi_node::{
 use goofi_python::inproc::PyNode;
 use goofi_python::subproc::RemoteNode;
 
-/// The identical workload every backend computes, so the comparison is apples-to-apples.
+/// The identical workload every backend computes.
 const PY_SRC: &str = concat!(
     "import goofi\n",
     "import numpy as np\n",
@@ -73,7 +65,6 @@ static NO_PARAMS: &[ParamDecl] = &[];
 fn stub_factory() -> Box<dyn Node> {
     unreachable!("dyn types build via their registered factory")
 }
-// One leaked-'static manifest per backend type (their `factory` is never called).
 static NATIVE_M: NodeManifest = manifest("bench_native");
 static FTPY_M: NodeManifest = manifest("bench_ftpy");
 static SUBPY_M: NodeManifest = manifest("bench_subpy");
@@ -93,17 +84,11 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
 
 type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
-/// Build _TestConst(len) -> `n` fanned `type_name` nodes, warm up, gate correctness, measure the
-/// rate each one SUSTAINS over `window`, then re-check its error channel. Returns the per-node
-/// frames/s and whether every node stayed clean.
-///
-/// There is no tick to time: each node runs on its own thread and paces itself, so what compares
-/// three backends is the throughput each holds, counted from `meta["index"]` (which advances once
-/// per emit — a latest-wins subscriber legitimately catches fewer frames than were sent).
+/// Fan `n` nodes off one _TestConst and measure the rate each sustains, counted from
+/// `meta["index"]`, plus whether every error channel stayed clean.
 fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, window: Duration) -> (f64, bool) {
     let mut g = Graph::new();
-    // Every producer carries `globals.default_ufreq` as its rate cap, so leaving it at the patch
-    // default would measure 30 Hz for all three backends alike.
+    // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6))).unwrap();
     g.register_dyn_type(manifest, factory);
     let src = g.add_node("_TestConst", None).unwrap();
@@ -118,14 +103,13 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
         nodes.push(node);
     }
 
-    // The links attach over a three-phase sequence that advances on acks, so nothing flows until
-    // the status drain has run a few times; a subprocess node also has an interpreter to start.
+    // A link attaches over a sequence that advances on acks, so nothing flows until status drains.
     let warm = Instant::now();
     while warm.elapsed() < Duration::from_secs(3) {
         g.drain_status();
         std::thread::sleep(Duration::from_millis(1));
     }
-    // Correctness + clean-error gate on every node: 0.5*2+1 = 2.0.
+    // 0.5*2+1 = 2.0.
     for (&node, probe) in nodes.iter().zip(&probes) {
         let frame = probe.expect_frame(&mut g, "the backend to emit");
         if let Value::Array(s) = frame.value() {
@@ -155,9 +139,7 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
 
 fn main() {
     let len: i64 = 1024;
-    // The subprocess tier now talks iceoryx2, so its interpreter needs `iceoryx2` + `numpy`
-    // (PYO3_PYTHON — the FT build interpreter — usually lacks iceoryx2). Point it at an
-    // iceoryx2-capable python via GOOFI_SUBPROC_PYTHON; else fall back to PYO3_PYTHON/python3.
+    // The subprocess tier needs an `iceoryx2` + `numpy` python, which PYO3_PYTHON usually is not.
     let python = std::env::var("GOOFI_SUBPROC_PYTHON")
         .or_else(|_| std::env::var("PYO3_PYTHON"))
         .unwrap_or_else(|_| "python3".to_string());
@@ -171,7 +153,6 @@ fn main() {
     println!("{:<26} {:>16} {:>18}   stability", "backend", "1 node", "8-node fan-out");
     println!("{}", "-".repeat(78));
     for (label, m) in backends {
-        // A fresh factory per pass (closures aren't Clone) via `rebuild`.
         let (one, s1) = bench(m, rebuild(m, &python), len, 1, Duration::from_secs(2));
         let (eight, s8) = bench(m, rebuild(m, &python), len, 8, Duration::from_secs(2));
         println!(
@@ -191,8 +172,7 @@ fn main() {
     );
 }
 
-/// Rebuild the per-backend factory (closures aren't Clone; the mapping mirrors the
-/// `backends` vec above).
+/// Rebuild the per-backend factory, once per pass, because a closure is not `Clone`.
 fn rebuild(m: &'static NodeManifest, python: &str) -> Factory {
     match m.type_name {
         "bench_native" => Box::new(|_| Box::new(NativeMul) as Box<dyn Node>),

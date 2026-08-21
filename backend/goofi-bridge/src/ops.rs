@@ -1,54 +1,31 @@
-//! The op registry — one row per `/control` op, and the single place the op SET is declared.
-//!
-//! `dispatch` is a string-keyed match, which has no way to say "this arm is missing" and has bitten
-//! this project twice. The registry closes both directions of that hazard:
-//!
-//! * an op **not** in this table is refused before the match is reached, so a dispatch arm without a
-//!   row is unreachable rather than a second, invisible definition of the op set;
-//! * a row without an arm answers `unknown op`, which [`tests::every_registry_op_has_a_dispatch_arm`]
-//!   catches;
-//! * the frontend's `OpName` union is GENERATED from these names, so a call site cannot name an op
-//!   that does not exist — a compile error on one side, a refusal on the other;
-//! * `writes` replaces the parallel `read_only` list dispatch used to carry, so classifying a new op
-//!   is part of declaring it rather than a second edit somewhere else;
-//! * Task 4's MCP tool list is generated from the `Surface::Mcp` rows.
+//! The op registry — one row per `/control` op, and the single place the op SET is declared. An op
+//! not in this table is refused before `dispatch`, and the MCP tool list and the frontend's
+//! `OpName` union are both generated from it.
 
 /// Where an op is offered.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Surface {
     /// Mirrored as an MCP tool for an agent.
     Mcp,
-    /// `/control` only, and INTERNAL: state a test needs to observe deterministically, which no
-    /// product surface consumes. Kept out of the MCP tool list and out of the frontend's `OpName`
-    /// union, so neither grows a name it will never call — reachable through the one op vocabulary
-    /// all the same, rather than through a second back door with its own schema and its own drift.
+    /// `/control` only, and internal: state a test observes, which no product surface consumes.
     Internal,
-    /// `/control` only. An agent calling `load` would replace the patch it is working in — and
-    /// itself, once the harness lives inside that patch's workspace; `save`/`serialize`/`list_dir`
-    /// are the human file-browser's half of the same door. `new` shares that very arm: it empties
-    /// the patch AND clears the undo history, so an agent that called it could not take it back
-    /// (user, 2026-08-10 — a human who wants a fresh patch makes one). `set_viewpoint` is here
-    /// because a viewpoint belongs to a client that has a screen — an agent has no camera to move,
-    /// and moving the human's would be the whole hazard.
+    /// `/control` only: an op an agent must not reach, because it would replace the patch — or the
+    /// camera — it is working in.
     ControlOnly,
 }
 
 /// One op's contract.
 pub struct Op {
-    /// MCP-safe by invariant: `[a-z0-9_]+`, short enough that `mcp__goofi__<name>` fits in 64
-    /// characters. A longer or dotted name makes a model provider reject the WHOLE tool list.
+    /// `[a-z0-9_]+`, short enough that `mcp__goofi__<name>` fits in 64 characters: a longer or
+    /// dotted name makes a model provider reject the WHOLE tool list.
     pub name: &'static str,
     pub surface: Surface,
-    /// Whether a successful call may have changed the graph — the gate on the post-dispatch CRDT
-    /// re-mirror (and, with the exceptions dispatch names, on the unsaved-changes flag).
+    /// Whether a successful call may have changed the graph.
     pub writes: bool,
     /// The params schema: space-separated `name:type`, `!` marking a required one. Types are
-    /// `uid`, `string`, `float`, `int`, `bool`, `float2` (an `[x, y]` pair), `json` (an opaque
-    /// value the engine round-trips), `panel_type` (a string out of [`crate::vocab`], advertised
-    /// as a JSON-Schema `enum`), and the `[]` suffix for a list.
+    /// `uid`, `string`, `float`, `int`, `bool`, `float2`, `json`, `panel_type`, and `[]` for a list.
     pub args: &'static str,
-    /// The doc TEMPLATE. `{panel_types}` and `{viewer_kinds}` expand to the vocabularies — see
-    /// [`Op::doc`]. Read it through that, never as the raw field.
+    /// The doc TEMPLATE; read it through [`Op::doc`], which expands the vocabularies.
     pub doc: &'static str,
     /// The result schema, as the shape a caller gets back.
     pub result: &'static str,
@@ -63,9 +40,7 @@ impl Op {
         })
     }
 
-    /// The doc with its vocabulary placeholders expanded. A caller reading this never has to GUESS
-    /// a panel type or a viewer kind — which is the point: the teachable refusal is the fallback,
-    /// and a description that enumerates the choices is the mechanism.
+    /// The doc with its vocabulary placeholders expanded.
     pub fn doc(&self) -> String {
         self.doc
             .replace("{panel_types}", &crate::vocab::panel_types_help())
@@ -73,8 +48,7 @@ impl Op {
     }
 }
 
-/// The prefix a model provider gives every tool of this server. Its length is the budget the op
-/// names are checked against.
+/// The prefix a model provider gives every tool of this server; its length is the name budget.
 pub const MCP_PREFIX: &str = "mcp__goofi__";
 
 use Surface::{ControlOnly, Internal, Mcp};
@@ -269,9 +243,7 @@ pub fn find(name: &str) -> Option<&'static Op> {
     REGISTRY.iter().find(|o| o.name == name)
 }
 
-/// The frontend's `OpName` union, generated from the registry. Checked into the tree (see
-/// [`tests::the_frontend_op_union_is_generated_from_the_registry`]) rather than emitted by a build
-/// script: the artifact is small, reviewable in a diff, and needs no new build machinery.
+/// The frontend's `OpName` union, generated from the registry and checked into the tree.
 pub fn typescript() -> String {
     let names: Vec<String> = REGISTRY
         .iter()

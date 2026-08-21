@@ -1,19 +1,7 @@
 //! The harness plane: one PTY per spawned agent harness, and the MCP address goofi minted for it.
 //!
-//! **The address is the design's centre.** A spawn mints `/mcp/<instance_id>` and writes THAT url
-//! into the config it hands its harness, so no part of the identity travels through the agent —
-//! nothing to spoof, nothing to validate. A path rather than a port: a port per harness buys
-//! network isolation a single-user local app has no use for, at the cost of a real OS lifecycle.
-//!
-//! **The environment is inherited whole**, so the harness's own login and auth work. Only the
-//! terminal contract is overlaid, because a dumb `TERM` or a non-UTF-8 locale makes a TUI refuse to
-//! start. Nothing redirects `HOME` — the harness writes its state there rather than into the cwd,
-//! so credentials never land in the workspace.
-//!
-//! **Nothing here emulates a terminal.** No grid, no scrollback, no replay: the client keeps its
-//! own `Terminal` alive across a panel close, and a re-attach nudges the size so a full-screen TUI
-//! repaints. History across a page reload is allowed to be lost, and that is what buys this
-//! module its size.
+//! The environment is inherited WHOLE, so the harness's own login and auth work; only the terminal
+//! contract is overlaid. Nothing here emulates a terminal, so history is lost on a page reload.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -28,15 +16,12 @@ use tokio::sync::{broadcast, watch};
 /// How long a stopped harness has to leave on its own before it is killed outright.
 const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// How many PTY chunks a `/term` socket may fall behind before it starts losing bytes. Losing them
-/// only garbles the screen until the next repaint, which is the trade the no-emulator decision
-/// already made; blocking the reader instead would stall the child itself.
+/// How many PTY chunks a `/term` socket may fall behind before it loses bytes; blocking the reader
+/// instead would stall the child.
 const OUTPUT_BACKLOG: usize = 1024;
 
-/// One harness goofi knows how to launch, and how to point it at an MCP address. `file`, `args`
-/// and `env` are the whole adapter — `{url}` expands to the minted address and `{file}` to that
-/// file's path — so a harness that changes its config mechanism is a one-row edit. A `_`-prefixed
-/// name is a TEST adapter, hidden from detection as the node catalog hides its `_` types.
+/// One harness goofi knows how to launch: `{url}` expands to the minted address and `{file}` to
+/// the written config's path. A `_`-prefixed name is a TEST adapter, hidden from detection.
 struct Adapter {
     name: &'static str,
     bin: &'static str,
@@ -46,26 +31,19 @@ struct Adapter {
 }
 
 static ADAPTERS: &[Adapter] = &[
-    // Claude Code loads MCP servers from the JSON config files named on its command line.
     Adapter { name: "claude", bin: "claude", args: &["--mcp-config", "{file}"], env: &[],
               file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
-    // Codex has no per-invocation config FILE — `CODEX_HOME` would move its credentials with it —
-    // but `-c` overrides one dotted key whose value is parsed as TOML, which is exactly the shape
-    // `codex mcp add goofi --url …` would otherwise have written into `config.toml`.
+    // Codex has no per-invocation config FILE: `-c` overrides one dotted key, parsed as TOML.
     Adapter { name: "codex", bin: "codex", args: &["-c", "mcp_servers.goofi.url=\"{url}\""],
               env: &[], file: None },
-    // opencode reads the config file `$OPENCODE_CONFIG` names.
     Adapter { name: "opencode", bin: "opencode", args: &[], env: &[("OPENCODE_CONFIG", "{file}")],
               file: Some(("opencode.json",
                           r#"{"mcp":{"goofi":{"type":"remote","url":"{url}","enabled":true}}}"#)) },
-    // The test adapter: a plain shell, so the PTY, the roster, the reaper and the minted address
-    // are drivable on a machine with no harness installed. It writes the same config file a real
-    // adapter does (and ignores it), so the minting path under test is the shipping one.
+    // The test adapter: a plain shell, writing the same config a real adapter does.
     Adapter { name: "_sh", bin: "sh", args: &[], env: &[],
               file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
-    // And one that REPORTS the SIGTERM and then refuses to leave. It says `armed` on EVERY pass,
-    // because nothing replays what a harness wrote before a socket attached. The loop matters too:
-    // a bare `sleep` is a child of the same group and would die of the group signal.
+    // One that reports the SIGTERM and refuses to leave. The loop matters: a bare `sleep` is a
+    // child of the same group and would die of the group signal.
     Adapter { name: "_deaf", bin: "sh", env: &[], file: None,
               args: &["-c", "trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done"] },
 ];
@@ -74,8 +52,7 @@ static ADAPTERS: &[Adapter] = &[
 struct Detected {
     name: &'static str,
     path: PathBuf,
-    /// The binary's size+mtime — what `version` is cached under, so a re-detect re-probes only a
-    /// harness that was actually updated.
+    /// The binary's size+mtime, so a re-detect re-probes only a harness that was updated.
     stamp: Option<crate::Stamp>,
     version: Option<String>,
 }
@@ -89,9 +66,8 @@ pub struct Harnesses {
 }
 
 impl Harnesses {
-    /// Re-detect OFF the request path: detection runs a `--version` per binary and a login shell
-    /// whenever a PATH lookup misses — seconds of spawning that must not sit on a request loop or
-    /// be paid by a reconnect. The roster answers from the cache and converges by broadcast.
+    /// Re-detect OFF the request path: detection can spawn for seconds. The roster answers from the
+    /// cache and converges by broadcast.
     pub fn refresh_in_background(self: &Arc<Self>, events: broadcast::Sender<String>) {
         let harnesses = self.clone();
         std::thread::spawn(move || {
@@ -120,9 +96,7 @@ impl Harnesses {
         *self.detected.lock().unwrap() = found;
     }
 
-    /// The roster the snapshot seeds and `harness_changed` broadcasts — ONE shape, for the reason
-    /// the `runtime` overlay exists: the live stream carries only transitions, so a tab that joins
-    /// after a spawn would otherwise draw an empty switcher over a running harness.
+    /// The roster the snapshot seeds and `harness_changed` broadcasts — one shape for both.
     pub fn roster(&self) -> Value {
         let instances: Vec<Value> = self.instances.lock().unwrap().iter()
             .map(|(id, i)| {
@@ -130,10 +104,7 @@ impl Harnesses {
                 json!({
                     "id": id,
                     "harness": i.harness,
-                    // A stop that has been asked for but not yet obeyed is its OWN state: the
-                    // address stops serving the moment it is asked, and a client that could only
-                    // read `running` would draw a live harness for the whole grace — which is
-                    // exactly as long as the harnesses the grace exists for take to leave.
+                    // A stop asked for but not yet obeyed is its OWN state, for the whole grace.
                     "state": match (exit, i.stopping.load(Ordering::Relaxed)) {
                         (Some(_), _) => "exited",
                         (None, true) => "stopping",
@@ -160,17 +131,14 @@ impl Harnesses {
         self.instances.lock().unwrap().iter().find(|(k, _)| k == id).map(|(_, i)| i.clone())
     }
 
-    /// Whether `/mcp/<id>` still serves. False for an instance that is unknown, stopping or gone —
-    /// a stop closes the address BEFORE it signals the child, so the last window in which a tool
-    /// call could land on a harness that is already leaving is closed by construction.
+    /// Whether `/mcp/<id>` still serves; false for an instance that is unknown, stopping or gone.
     pub fn serves_mcp(&self, id: &str) -> bool {
         self.get(id).is_some_and(|i| !i.stopping.load(Ordering::Relaxed) && i.exit_code().is_none())
     }
 
     /// Launch `harness` on a PTY with the patch workspace as its cwd, minting the MCP address it is
-    /// handed. `env` is the parent environment it inherits — see [`parent_env`]. `events` is the
-    /// broadcast the reaper announces the exit on; the caller announces the spawn, so one
-    /// `harness_changed` follows each.
+    /// handed. `env` is the parent environment it inherits; the reaper announces the exit on
+    /// `events`, and the caller announces the spawn.
     pub fn spawn(
         self: &Arc<Self>,
         harness: &str,
@@ -180,9 +148,7 @@ impl Harnesses {
         events: broadcast::Sender<String>,
     ) -> Result<String, String> {
         let adapter = ADAPTERS.iter().find(|a| a.name == harness).ok_or_else(|| {
-            // Naming the set is the whole refusal: a harness name is a closed vocabulary the
-            // caller cannot see from where it is standing. The `_`-prefixed test adapters are
-            // spawnable but not advertised — `list_harnesses` hides them for the same reason.
+            // The `_`-prefixed test adapters are spawnable but never advertised.
             let have: Vec<&str> =
                 ADAPTERS.iter().map(|a| a.name).filter(|n| !n.starts_with('_')).collect();
             format!("unknown harness `{harness}` — this build knows: {}", have.join(", "))
@@ -209,10 +175,7 @@ impl Harnesses {
             cmd.arg(expand(a));
         }
         cmd.cwd(cwd);
-        // The parent environment, then the terminal contract ON TOP of it — see the module note on
-        // why inheriting whole is the contract and not an oversight. `CommandBuilder` seeds itself
-        // from this process's environment, so what production passes here re-states what the child
-        // would inherit anyway; a test passes what it needs the parent to have said instead.
+        // The parent environment, then the terminal contract ON TOP of it.
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -225,8 +188,7 @@ impl Harnesses {
             cmd.env(k, expand(v));
         }
         let child = pty.slave.spawn_command(cmd).map_err(|e| format!("spawn {harness}: {e}"))?;
-        // The slave end is closed here, or the master would never see EOF when the child exits and
-        // the drain below would block forever on a PTY nothing writes to.
+        // Closed here, or the master never sees EOF when the child exits and the drain blocks.
         drop(pty.slave);
         let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
@@ -248,9 +210,8 @@ impl Harnesses {
             seats: AtomicU64::new(0),
         });
 
-        // Drain the PTY unconditionally: a child whose output nobody reads eventually blocks on a
-        // full buffer, whether or not a panel is open. `send` failing means no socket is attached,
-        // which is the normal state, so it is discarded rather than treated as an end.
+        // Drained unconditionally: a child whose output nobody reads blocks on a full buffer. A
+        // failed `send` only means no socket is attached, which is the normal state.
         let answering = inst.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -260,13 +221,12 @@ impl Harnesses {
                 }
                 let _ = output.send(answer_cursor_query(&answering, &buf[..n]));
             }
-            // Announced AFTER the final send, which is what makes it a gate a viewer can trust: a
-            // socket that waits on this has provably been offered everything the child wrote.
+            // AFTER the final send, so a socket that waits on this was offered every byte.
             ended.send_replace(true);
         });
 
-        // Registered BEFORE the reaper starts, or a child that dies instantly would announce a
-        // roster this instance is not yet on.
+        // BEFORE the reaper starts, or a child that dies instantly announces a roster this
+        // instance is not yet on.
         self.instances.lock().unwrap().push((id.clone(), inst.clone()));
         let harnesses = self.clone();
         std::thread::spawn(move || {
@@ -278,9 +238,8 @@ impl Harnesses {
         Ok(id)
     }
 
-    /// Stop a running instance — or DISMISS an exited one, which is the same button pressed twice
-    /// and so needs no second op. Returns as soon as the child has been signalled: `dispatch` is
-    /// synchronous, and a grace the caller waits out is not a grace. The reaper records the code.
+    /// Stop a running instance, or dismiss an exited one. It returns as soon as the child is
+    /// signalled, because `dispatch` is synchronous and a grace the caller waits out is not one.
     pub fn stop(&self, id: &str) -> Result<(), String> {
         let inst = self.get(id).ok_or_else(|| format!("no harness instance `{id}`"))?;
         if inst.exit_code().is_some() {
@@ -290,11 +249,8 @@ impl Harnesses {
         begin_stop(inst)
     }
 
-    /// Stop every instance and clear the roster — what opening another patch does. A harness
-    /// belongs to the patch that spawned it, so surviving a load would leave it editing a patch it
-    /// was never launched for from a directory that no longer exists. Dropped from the roster at
-    /// once rather than when each child is reaped: the mount is reclaimed while the grace runs, so
-    /// a doomed child briefly lives on a deleted cwd rather than holding a workspace open.
+    /// Stop every instance and clear the roster — what opening another patch does. The roster is
+    /// cleared at once, so a doomed child lives briefly on a deleted cwd rather than holding it.
     pub fn stop_all(&self) {
         for (_, inst) in std::mem::take(&mut *self.instances.lock().unwrap()) {
             if inst.exit_code().is_none() {
@@ -305,7 +261,7 @@ impl Harnesses {
 }
 
 /// Ask a running instance to leave, and insist after the grace. The address closes FIRST, so an
-/// in-flight tool call finishes while the next one is refused — the child is only signalled after.
+/// in-flight tool call finishes while the next is refused.
 fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     inst.stopping.store(true, Ordering::Relaxed);
     signal(&inst, crate::proc::request_stop)?;
@@ -316,21 +272,16 @@ fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     Ok(())
 }
 
-/// The terminal size every view of one instance shares. A PTY has ONE window, so the size is
-/// ARBITRATED and **the last view to speak wins** — the answer is the newest proposal still seated.
-///
-/// The two ways a proposal stops counting are why this is a structure and not a field. A view
-/// RETRACTS when its panel unmounts (it keeps its socket, which is what keeps its scrollback
-/// flowing) and LEAVES when its socket closes. Either way the terminal goes back to whichever
-/// survivor spoke last, or closing the size-owning view strands every other.
+/// The terminal size every view of one instance shares: a PTY has ONE window, so the last view to
+/// speak wins, and a view that retracts or leaves hands it back to the newest survivor.
 #[derive(Default)]
 struct Sizes {
     seats: Vec<(u64, Option<(u16, u16)>)>,
 }
 
 impl Sizes {
-    /// `size` is `None` for a retraction. Moving the seat to the end is what makes "last writer"
-    /// mean the last to have SPOKEN rather than the last to have arrived.
+    /// `size` is `None` for a retraction. The seat moves to the end, so "last writer" means the
+    /// last to have SPOKEN rather than the last to have arrived.
     fn propose(&mut self, seat: u64, size: Option<(u16, u16)>) -> Option<(u16, u16)> {
         self.seats.retain(|(s, _)| *s != seat);
         self.seats.push((seat, size));
@@ -351,23 +302,18 @@ impl Sizes {
 pub struct Instance {
     harness: String,
     pid: Option<u32>,
-    /// Writing can block if the child has stopped reading and the PTY's input buffer fills. Bounded
-    /// in practice by what a person types or pastes into one terminal, so it is taken inline rather
-    /// than through the `/data` plane's non-parking send.
+    /// Writing can block when the child stops reading, but it is bounded by what a person types,
+    /// so it is taken inline.
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     output: broadcast::Sender<Vec<u8>>,
-    /// The child's exit code once reaped — and the channel a `/term` socket waits on, so the exit
-    /// frame is pushed to an attached viewer rather than polled for.
+    /// The child's exit code once reaped, and the channel a `/term` socket waits on.
     exit: watch::Sender<Option<u32>>,
-    /// Whether the PTY has reached end-of-stream. NOT the same event as the exit: `child.wait()`
-    /// returns while the words the child wrote on its way out are still in flight, and those are
-    /// exactly the ones worth having. The drain sets this after its last send, so a viewer that
-    /// announces the exit only once this is true cannot truncate a crash message.
+    /// End-of-stream, which is NOT the exit: `child.wait()` returns while the words the child wrote
+    /// on its way out are still in flight.
     eof: watch::Sender<bool>,
     /// Set the moment a stop begins, ahead of the signal.
     stopping: AtomicBool,
-    /// Every attached view's last word on the window size, and the answer they all draw against.
     sizes: Mutex<Sizes>,
     size: watch::Sender<Option<(u16, u16)>>,
     seats: AtomicU64,
@@ -381,16 +327,14 @@ impl Instance {
         (self.output.subscribe(), self.exit.subscribe(), self.eof.subscribe())
     }
 
-    /// Take a seat number in the size arbitration, and read the answer as it changes. The seat
-    /// itself is materialised by its first PROPOSAL: an unseated view speaks for nothing, which is
-    /// what `current()` reads a seated `None` as anyway. The receiver is taken here rather than
-    /// through `attach` so a socket cannot hold one without a seat.
+    /// Take a seat number in the size arbitration, and read the answer as it changes; the seat is
+    /// materialised by its first proposal.
     pub fn join(&self) -> (u64, watch::Receiver<Option<(u16, u16)>>) {
         (self.seats.fetch_add(1, Ordering::Relaxed), self.size.subscribe())
     }
 
-    /// This view's word on the size — `None` when it has nothing on screen to speak for. The lock
-    /// is held across the settle so two views resizing at once cannot land out of order.
+    /// This view's word on the size, `None` when it has nothing on screen. The lock is held across
+    /// the settle, so two views resizing at once cannot land out of order.
     pub fn propose(&self, seat: u64, size: Option<(u16, u16)>) {
         let mut sizes = self.sizes.lock().unwrap();
         self.settle(sizes.propose(seat, size));
@@ -402,9 +346,7 @@ impl Instance {
         self.settle(sizes.leave(seat));
     }
 
-    /// Apply an arbitrated answer once: the kernel first (which is what raises the child's
-    /// SIGWINCH), then the views. A `None` — nobody is speaking — leaves the window where it was
-    /// rather than resizing a live TUI to nothing.
+    /// Apply an arbitrated answer once, the kernel first; a `None` leaves the window where it was.
     fn settle(&self, now: Option<(u16, u16)>) {
         let Some((cols, rows)) = now else { return };
         if *self.size.borrow() == now {
@@ -426,31 +368,11 @@ impl Instance {
     }
 }
 
-/// The whole of an agent's orientation. A FILE rather than a literal, because it is also the file
-/// [`seed_orientation`] lays in the workspace — a reviewer edits the same bytes the agent gets.
-/// The tool descriptions say what each op does; this says how to behave.
+/// The whole of an agent's orientation — the very bytes [`seed_orientation`] lays in a workspace.
 pub(crate) const ORIENTATION: &str = include_str!("orientation.md");
 
-/// Seed a NEW workspace with the orientation an agent reads — only ever one goofi minted empty
-/// itself, never one a `.gfi` was unpacked into, and absent-only on top of that.
-///
-/// **Why a file and nothing else.** The MCP handshake could answer `initialize.instructions`, and
-/// once did. Measured: codex receives it intact and surfaces it as one namespace blurb among ~180
-/// tools, and an agent given it there answered "add an oscillator" by shelling out to look for a
-/// framework. As `AGENTS.md` it lands in the model-visible prompt and the agent adds the node.
-///
-/// **Why IN the workspace.** The same measurement against the directory one level up put the text
-/// in NO prompt. The project doc is found at the project root, so that is where it goes.
-///
-/// **Why these two names.** `AGENTS.md` is what codex and opencode read; Claude Code reads
-/// `CLAUDE.md`, whose `@` import points at the other — so one text serves all three.
-///
-/// **Why a load never calls this.** The agent may edit it, and what it learns about THIS patch
-/// belongs to this patch, rides the `.gfi` and comes back on load. The accepted price: a patch
-/// saved before this existed carries no orientation ever.
-///
-/// The packaging ignore list rides along because it is the same act — what goofi lays into a
-/// workspace it minted, once, for its author to own from then on.
+/// Seed a NEW workspace with the orientation an agent reads, plus the packaging ignore list —
+/// absent-only, and never into a workspace a `.gfi` was unpacked into, whose files are the patch's.
 pub fn seed_orientation(mount: &Path) {
     for (name, body) in [
         ("AGENTS.md", ORIENTATION),
@@ -464,29 +386,21 @@ pub fn seed_orientation(mount: &Path) {
     }
 }
 
-/// Where one instance's config is written: BESIDE the workspace, not inside it. Inside would pack a
-/// stale URL into every `.gfi` and would DIRTY the patch merely for launching an agent, since the
-/// workspace fingerprint has no exclusion list. Reclaimed with the mount either way.
+/// Where one instance's config is written: BESIDE the workspace, since inside would pack a stale
+/// URL into every `.gfi` and dirty the patch merely for launching an agent.
 pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
     mount.parent().unwrap_or(mount).join("harness").join(id)
 }
 
-/// The cursor-position query, answered only while nobody else can answer it.
-///
-/// ConPTY asks the terminal where the cursor is the moment a child starts and **blocks the child
-/// until something answers**. goofi keeps no terminal, so with no viewer attached the harness hangs
-/// before running one command — and attaching later cannot rescue it, because the query went to a
-/// broadcast with no subscribers. Not an edge case: an agent spawned over MCP has no panel open.
-///
-/// So goofi answers, but **only while no viewer is attached** — with one there, xterm.js gives the
-/// REAL position. The answered query is also stripped from what viewers receive, or a socket
-/// attaching mid-query answers it a second time and that reply lands on the shell as typed input.
+/// Answer ConPTY's cursor-position query, which BLOCKS the child until something replies — but only
+/// while no viewer is attached, since xterm.js gives the real position and a second reply is typed
+/// input.
 fn answer_cursor_query(inst: &Instance, bytes: &[u8]) -> Vec<u8> {
     if inst.output.receiver_count() > 0 {
         return bytes.to_vec();
     }
     let Some(stripped) = take_cursor_queries(bytes) else { return bytes.to_vec() };
-    // Row 1, column 1 — a lie, but one only ever told when there is no screen to contradict it.
+    // Row 1, column 1 — a lie, told only when there is no screen to contradict it.
     if let Ok(mut w) = inst.writer.lock() {
         let _ = w.write_all(b"\x1b[1;1R");
         let _ = w.flush();
@@ -497,10 +411,7 @@ fn answer_cursor_query(inst: &Instance, bytes: &[u8]) -> Vec<u8> {
 /// The bytes ConPTY sends to ask where the cursor is.
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
-/// `bytes` with every [`CURSOR_QUERY`] taken out, or `None` when there was none — so a stream that
-/// never asked is neither copied nor answered. Split out from [`answer_cursor_query`] because it is
-/// the half that can be reached from a test on any platform: only ConPTY sends this query, so on
-/// unix nothing else here exercises a single line of it.
+/// `bytes` with every [`CURSOR_QUERY`] taken out, or `None` when there was none.
 fn take_cursor_queries(bytes: &[u8]) -> Option<Vec<u8>> {
     if !bytes.windows(CURSOR_QUERY.len()).any(|w| w == CURSOR_QUERY) {
         return None;
@@ -515,9 +426,8 @@ fn take_cursor_queries(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Reach the instance with one of [`crate::proc`]'s two asks — skipped once the child has been
-/// reaped, since a recycled pid would name a stranger. WHICH ask, and how hard it pushes, is that
-/// module's business; that a departed instance is never signalled at all is this one's.
+/// Reach the instance with one of [`crate::proc`]'s two asks, skipped once the child has been
+/// reaped, since a recycled pid would name a stranger.
 fn signal(inst: &Instance, how: fn(u32) -> Result<(), String>) -> Result<(), String> {
     if inst.exit_code().is_some() {
         return Ok(());
@@ -525,29 +435,21 @@ fn signal(inst: &Instance, how: fn(u32) -> Result<(), String>) -> Result<(), Str
     how(inst.pid.ok_or("the harness reported no pid to signal")?)
 }
 
-/// Resolve `bin`: a plain `PATH` walk, then — only on a miss — a LOGIN shell's own lookup. The
-/// fallback is not hypothetical, since a desktop-launched process inherits none of nvm's shims.
-/// `path` and `shell` are PARAMETERS so a test can drive the fallback without mutating the
-/// environment every other test shares.
-///
-/// The walk is `which`'s, so what counts as an executable is the platform's answer.
-/// `which_in_global` searches the named list ALONE, so nothing in the patch workspace can shadow
-/// the harness that was asked for.
+/// Resolve `bin`: a plain `PATH` walk, then — only on a miss — a LOGIN shell's lookup, because a
+/// desktop-launched process inherits none of nvm's shims. `which_in_global` searches `path` ALONE,
+/// so nothing in the patch workspace can shadow the harness.
 fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
     let found = |name: &OsStr| which::which_in_global(name, path).ok()?.next();
     if let Some(direct) = found(OsStr::new(bin)) {
         return Some(direct);
     }
-    // `bin` is a literal from `ADAPTERS`, never a caller's string, so there is nothing here for a
-    // shell metacharacter to escape into.
+    // `bin` is an `ADAPTERS` literal, never a caller's string, so nothing can escape the shell.
     let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {bin}")]).output();
     found(OsStr::new(answer(&String::from_utf8_lossy(&out.ok()?.stdout))?))
 }
 
 /// What a login shell actually answered, out of everything its profile said first: the LAST
-/// non-empty line. Reading all of stdout instead would make a machine whose profile greets — a
-/// banner, a version line, nvm's own chatter — report every harness as "not installed", with no
-/// diagnostic. nvm is the very setup the fallback exists for.
+/// non-empty line.
 fn answer(stdout: &str) -> Option<&str> {
     stdout.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim)
 }
@@ -557,8 +459,7 @@ fn stamp(p: &Path) -> Option<crate::Stamp> {
     Some((m.len(), m.modified().ok()?))
 }
 
-/// What a harness calls itself. Best-effort and untimed: it runs off the graph lock, and a binary
-/// that answers nothing is still listed — being on PATH is the fact, the version is a nicety.
+/// What a harness calls itself; best-effort, and a binary that answers nothing is still listed.
 fn probe_version(bin: &Path) -> Option<String> {
     let out = std::process::Command::new(bin).arg("--version").output().ok()?;
     let line = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
@@ -569,16 +470,12 @@ fn login_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
 
-/// The environment a spawned harness inherits: goofi's own, whole. A PARAMETER of
-/// [`Harnesses::spawn`] rather than a read inside it, so a test can state what the parent had
-/// without changing it for every other test at the same time.
+/// The environment a spawned harness inherits: goofi's own, whole.
 pub fn parent_env() -> Vec<(OsString, OsString)> {
     std::env::vars_os().collect()
 }
 
-/// Whether what the child will SEE already names a UTF-8 locale, in the precedence the C library
-/// resolves them in. A parent that deliberately named a non-UTF-8 one is overridden too: a TUI
-/// drawing mojibake is worse than a locale nobody asked for.
+/// Whether what the child will SEE names a UTF-8 locale, in the C library's precedence.
 fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
     ["LC_ALL", "LC_CTYPE", "LANG"].iter()
         .find_map(|k| {
@@ -594,9 +491,7 @@ fn parent_speaks_utf8(env: &[(OsString, OsString)]) -> bool {
 mod tests {
     use super::*;
 
-    /// A new workspace is seeded with the WHOLE of [`ORIENTATION`], under the two names the three
-    /// harnesses read. Whole is the load-bearing word: this is the only channel, so a seed carrying
-    /// an abridged version of it would orient an agent with the sections missing.
+    /// A new workspace is seeded with the WHOLE of [`ORIENTATION`], under both names.
     #[test]
     fn a_new_workspace_is_seeded_with_the_whole_orientation() {
         let tmp = tempfile::tempdir().expect("a temp dir");
@@ -604,20 +499,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), ORIENTATION);
         // Claude Code reads CLAUDE.md, and its `@` import is what points it at the other file.
         assert_eq!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
-        // …and what was seeded is documentation, not a blurb: an agent needs the sections that
-        // answer "how do I see this", "how do I build" and "what is a patch node", and a file
-        // short enough to have lost them would still pass the equality above.
         for section in ["\n## Seeing", "\n## Building", "\n## Custom Python nodes"] {
             assert!(ORIENTATION.contains(section), "the orientation has no `{section}` section");
         }
-        // It is read in EVERY turn of every agent working in this patch, so its size is a cost the
-        // patch pays continuously. The aim is ~6 KB; this is the ceiling that keeps it near it.
+        // Read in EVERY turn of every agent in this patch, so the aim is ~6 KB.
         assert!(ORIENTATION.len() < 8192, "the orientation is {} bytes", ORIENTATION.len());
     }
 
-    /// …and an orientation the agent has already edited is ITS OWN. This is the whole reason the
-    /// file lives in the patch: what an agent learns about this patch rides the `.gfi` and comes
-    /// back on load, so a seed that overwrote would erase exactly what it is there to carry.
+    /// …and an orientation the agent has already edited is ITS OWN.
     #[test]
     fn an_orientation_the_agent_has_edited_is_never_seeded_over() {
         let tmp = tempfile::tempdir().expect("a temp dir");
@@ -631,9 +520,7 @@ mod tests {
         assert!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap().contains("its own"));
     }
 
-    /// The ignore list is seeded on the same terms as the orientation: absent-only, into a
-    /// workspace goofi minted, and the patch's from then on. Its name and body are the ENGINE's,
-    /// so the syntax doc sits beside the parser and a `.gfi` is filtered by the file it packages.
+    /// The ignore list is seeded on the same terms as the orientation: absent-only.
     #[test]
     fn a_new_workspace_is_seeded_with_the_packaging_ignore_list() {
         let tmp = tempfile::tempdir().expect("a temp dir");
@@ -647,17 +534,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&at).unwrap(), "*.wav\n");
     }
 
-    /// The half of [`answer_cursor_query`] a test can reach anywhere. Only ConPTY sends `\x1b[6n`,
-    /// so on unix every integration test would pass with the stripping deleted — this is the only
-    /// thing standing between it and a silent Windows regression.
+    /// The half of [`answer_cursor_query`] a test can reach anywhere: only ConPTY sends `\x1b[6n`,
+    /// so on unix nothing else exercises the stripping.
     #[test]
     fn a_cursor_query_is_taken_out_of_the_stream_and_everything_else_survives() {
         assert_eq!(take_cursor_queries(b"plain output"), None, "nothing asked, nothing to strip");
         assert_eq!(take_cursor_queries(b"\x1b[6"), None, "half a query is not one");
         assert_eq!(take_cursor_queries(b"\x1b[6n").as_deref(), Some(&b""[..]));
         assert_eq!(take_cursor_queries(b"before\x1b[6nafter").as_deref(), Some(&b"beforeafter"[..]));
-        // The load-bearing one: a `while` downgraded to an `if` passes every case above and leaves
-        // the second query in the stream here.
+        // A `while` downgraded to an `if` passes every case above and fails this one.
         assert_eq!(
             take_cursor_queries(b"\x1b[6nmiddle\x1b[6nend").as_deref(),
             Some(&b"middleend"[..]),
@@ -669,10 +554,8 @@ mod tests {
     /// than the fallback.
     const NO_SHELL: &str = "/goofi-no-such-shell";
 
-    /// The direct walk, on the PLATFORM's terms. Driven against this test binary — the one
-    /// executable guaranteed to exist wherever the suite runs — and by its STEM, because on Windows
-    /// it sits on disk as `…-<hash>.exe` while a caller still types the stem, exactly as an
-    /// npm-installed `claude.cmd` does.
+    /// The direct walk, driven against this test binary by its STEM, as an npm-installed
+    /// `claude.cmd` is typed.
     #[test]
     fn a_binary_is_found_by_the_name_a_caller_types_not_the_one_it_has_on_disk() {
         let exe = std::env::current_exe().expect("this test binary's path");
@@ -689,9 +572,7 @@ mod tests {
         assert_eq!(resolve("goofi-not-a-real-binary", Some(&dir), NO_SHELL), None);
     }
 
-    /// The other half of [`resolve`]: a binary the bare walk misses is found through a LOGIN shell,
-    /// and a name no shell resolves stays unresolved — a lookup, not a rubber stamp. Unix-only
-    /// because the MECHANISM is: it asks a POSIX shell a POSIX question.
+    /// The other half of [`resolve`]: a binary the bare walk misses is found through a LOGIN shell.
     #[cfg(unix)]
     #[test]
     fn a_binary_the_bare_path_lookup_misses_is_found_through_a_login_shell() {
@@ -701,9 +582,8 @@ mod tests {
         assert_eq!(resolve("goofi-not-a-real-binary", Some(nothing), "/bin/sh"), None);
     }
 
-    /// The arbitration, without a socket in the way: last writer wins, and both ways of ceasing to
-    /// speak — a retraction and a departure — fall back to the newest SURVIVING proposal rather
-    /// than to nothing, to the oldest, or to the leaver's own.
+    /// The arbitration, without a socket in the way: last writer wins, and a retraction or a
+    /// departure falls back to the newest SURVIVING proposal.
     #[test]
     fn the_last_view_to_speak_owns_the_size_and_hands_it_back_when_it_stops() {
         let mut s = Sizes::default();
@@ -713,17 +593,13 @@ mod tests {
         assert_eq!(s.propose(2, None), Some((100, 30)), "a retraction hands it to the survivor");
         assert_eq!(s.propose(2, Some((80, 24))), Some((80, 24)), "…and it can speak again");
         assert_eq!(s.leave(2), Some((100, 30)), "so does leaving");
-        // A view that speaks twice does not thereby seat itself twice — the second word REPLACES
-        // the first, or leaving would strand the terminal at its own stale earlier proposal.
+        // A view that speaks twice is not seated twice: the second word REPLACES the first.
         s.propose(1, Some((90, 20)));
         s.propose(1, Some((70, 15)));
         assert_eq!(s.leave(1), None, "the last view out leaves nobody speaking");
     }
 
-    /// …and it understands a login shell whose profile had something to say first, which is the
-    /// setup the fallback exists for in the first place. Driven on the text rather than on a real
-    /// chatty shell: writing an executable and running it is a race against every OTHER thread in
-    /// this process that forks, and a flaky test proves less than none.
+    /// …and it understands a login shell whose profile had something to say first.
     #[test]
     fn a_login_shell_that_greets_before_it_answers_is_still_understood() {
         assert_eq!(answer("nvm: Now using node v22\n/usr/bin/claude\n"), Some("/usr/bin/claude"));

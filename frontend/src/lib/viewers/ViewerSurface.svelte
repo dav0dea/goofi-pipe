@@ -1,13 +1,4 @@
-<!--
-  Renders a decoded Data frame with the chosen viewer kind, falling back to a
-  numeric summary when the array shape can't be drawn. This is the single owner
-  of the frame→component dispatch shared by the in-canvas SlotViewer and the
-  standalone Viewer panel — neither re-implements the if/else chain or the
-  renderability check.
-
-  Subscription is the caller's concern (it differs: the canvas viewer also gates
-  on collapse). The caller passes the latest `frame` and the resolved `kind`.
--->
+<!-- The single owner of the frame→component dispatch; subscription is the caller's concern. -->
 <script lang="ts">
 	import { isArrayFrame, isStringFrame, isTableFrame, type DataFrame } from '$lib/codec/decode';
 	import { isRenderable, type ViewerKind } from './kind';
@@ -30,9 +21,7 @@
 
 	const arraySpec = $derived(frame && isArrayFrame(frame) ? frame.data : null);
 	const renderable = $derived(isRenderable(kind, arraySpec));
-	// A locally-non-renderable array (a shape this kind can't draw) resolves to the
-	// text fallback — float stats computed from the received frame (Option C frames
-	// are float-accurate, so there's no separate backend summary anymore).
+	// A shape this kind cannot draw resolves to the text fallback.
 	const summary = $derived.by(() => {
 		if (!frame || !arraySpec) return null;
 		if (!renderable) return summaryOf(arraySpec);

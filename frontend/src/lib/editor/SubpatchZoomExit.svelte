@@ -1,16 +1,5 @@
-<!--
-  TouchDesigner-style "zoom out to leave a sub-patch". When inside a sub-patch and
-  the user zooms out far enough, it pops up one level. Must live INSIDE <SvelteFlow>
-  so the viewport/store hooks resolve from the provider context (the parent panel's
-  <script> can't see them — same reason FitToGraph is a child). Renders nothing.
-
-  The threshold is computed LIVE from the actual content: exit when zoomed to half
-  the "all-node-fit" zoom (the zoom at which every currently-visible node just fits
-  the viewport, capped the same way the enter-fit is). That makes it size-aware —
-  a large sub-patch has a smaller fit zoom, so you must zoom out further before it
-  pops — and robust to panning/zooming after entry. A short arm delay + a one-shot
-  guard (the exit re-fit restores a higher zoom) prevent an immediate second pop.
--->
+<!-- Zoom out far enough to leave a sub-patch. Must live INSIDE <SvelteFlow> for the hooks to
+     resolve, and renders nothing. The threshold is derived live from the content's fit zoom. -->
 <script lang="ts">
 	import { useViewport, useSvelteFlow, useStore, getViewportForBounds } from '@xyflow/svelte';
 
@@ -23,10 +12,10 @@
 	const vp = useViewport();
 	const store = useStore();
 	const { getNodesBounds } = useSvelteFlow();
-	let armed = false; // plain (not a reactive dep) — only zoom changes drive the check
+	let armed = false; // plain, not reactive: only a zoom change drives the check
 
 	$effect(() => {
-		// Arm shortly after descending so the enter-fit settles first; disarm at top.
+		// Arm shortly after descending, so the enter-fit settles first.
 		const cur = entered;
 		armed = false;
 		if (!cur) return;
@@ -37,7 +26,7 @@
 	});
 
 	$effect(() => {
-		const z = vp.current.zoom; // reactive: fires continuously while zooming
+		const z = vp.current.zoom;
 		if (!entered || !armed) return;
 		const w = store.width;
 		const h = store.height;

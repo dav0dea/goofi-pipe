@@ -1,9 +1,4 @@
-<!--
-  An In/Out boundary node, shown only INSIDE a sub-patch (enter-to-edit view).
-  An In node feeds data into the sub-patch (output handle on its right, toward
-  the members); an Out node carries data out (input handle on its left). The
-  node name is the sub-patch's boundary slot name; the colour is its data type.
--->
+<!-- An In/Out boundary node, drawn only INSIDE a sub-patch. -->
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { dtypeColor } from './categoryColor';
@@ -13,11 +8,8 @@
 	const dir = $derived(data.dir as 'in' | 'out');
 	const name = $derived(data.name as string);
 	const dtype = $derived(data.dtype as string);
-	// Unwired = added but not yet connected to a member; shown dimmed/dashed and it
-	// exposes no port on the collapsed node until wired.
 	const wired = $derived(data.wired !== false);
-	// Renaming the portal renames the sub-patch's exposed in/out SLOT (the routing key
-	// is unchanged, so wires survive). Double-click the label to edit.
+	// Renames the exposed SLOT only; the routing key is unchanged, so wires survive.
 	const rename = $derived(data.rename as ((name: string) => void) | undefined);
 	let editing = $state(false);
 	let draft = $state('');
@@ -123,19 +115,14 @@
 		border-radius: 3px;
 		padding: 0 3px;
 		width: 7ch;
-		/* No outline suppression: the app-wide :focus-visible accent ring (app.css) is the one
-		   focus convention — a keyboard rename must show it. */
+		/* No outline suppression: a keyboard rename must show app.css's :focus-visible ring. */
 	}
 	.dt {
 		color: var(--text-muted);
 		font-size: 9px;
 	}
-	/* Touch: `.lbl-edit` (0,1,0) out-specifies app.css's `input` type floor (0,0,1) — so the 11px
-	   face force-zooms iOS on focus — while the `min-height: var(--hit)` it does NOT out-specify
-	   swells the field to 44px inside a 26px pill (BOUNDARY.height, frozen and mirrored in
-	   nodeMetrics.ts for snapping). Both are answered on the pill's terms: 16px type, and the floor
-	   released rather than the canvas grown. The pill does gain a few px while a rename is OPEN,
-	   which is transient, touch-only, and cheaper than a rename nobody can read. */
+	/* Answered on the pill's terms: 16px so iOS does not force-zoom, and the coarse `--hit` floor
+	   released rather than the 26px pill (BOUNDARY.height in nodeMetrics.ts) grown to 44px. */
 	@media (hover: none) and (pointer: coarse) {
 		.lbl-edit {
 			min-height: 0;

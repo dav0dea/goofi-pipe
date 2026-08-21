@@ -1,8 +1,4 @@
 //! The ONE node abstraction, its runtime plumbing, and the native compile-time catalog.
-//!
-//! Every node — native Rust, in-process pyo3, or subprocess — implements [`Node`], and nothing
-//! branches on which. A node holds its live param values as fields, so a run does no map lookup;
-//! trigger arbitration, rate limiting, index stamping and output gating are all outside it.
 
 use std::fmt;
 
@@ -11,12 +7,7 @@ use indexmap::IndexMap;
 
 pub mod discover;
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Defines a `pub struct $name(pub String)` error newtype with the byte-identical
-/// Display / Error / `From<String>` / `From<&str>` impls every node-error string type wants.
+/// Defines a `pub struct $name(pub String)` error newtype with its Display / Error / `From` impls.
 macro_rules! string_error {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -45,15 +36,10 @@ string_error!(NodeError);
 
 pub type NodeResult = std::result::Result<(), NodeError>;
 
-// ---------------------------------------------------------------------------
-// Params
-// ---------------------------------------------------------------------------
-
 /// Grouped params: `group -> (name -> Param)`, insertion-ordered.
 pub type ParamGroups = IndexMap<String, IndexMap<String, Param>>;
 
-/// A `(group, name)` address into a node's params. Serializable because it addresses a param over
-/// the wire too — every `SetParam`, ack and binding error the async runtime sends names one.
+/// A `(group, name)` address into a node's params.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ParamKey {
     pub group: String,
@@ -69,40 +55,27 @@ impl ParamKey {
     }
 }
 
-/// Look up a param by `(group, name)`.
 pub fn param<'a>(p: &'a ParamGroups, group: &str, name: &str) -> Option<&'a Param> {
     p.get(group)?.get(name)
 }
 
-/// A static param descriptor: only `&'static str` and primitives, so a node declares its params
-/// as a `static PARAMS: &[ParamDecl]` — a literal `&[Param]` is impossible, since `Param::Str`
-/// owns heap data.
+/// A static param descriptor, so a node declares its params as a `static &[ParamDecl]`.
 #[derive(Clone, Copy)]
 pub struct ParamDecl {
     pub group: &'static str,
     pub name: &'static str,
     pub spec: ParamSpec,
-    /// An optional default *expression* (e.g. `"globals.default_ufreq"`): when a node is freshly
-    /// instantiated, the engine seeds a binding on this param instead of a plain literal, so it
-    /// tracks the referenced globals/refs. The `spec` default is the graceful fallback (used verbatim
-    /// when no evaluator is wired). `None` ⇒ an ordinary literal-default param.
+    /// An optional default expression the engine seeds as a binding; `None` ⇒ a literal default.
     pub expression: Option<ExprDecl>,
-    /// Help text for the UI's tooltip. Static per-type metadata, so it lives here and never on
-    /// the runtime [`Param`] — a doc string on the value would be copied into the CRDT doc, the
-    /// `.gfi`, and every param clone.
+    /// Help text for the UI's tooltip.
     pub doc: Option<&'static str>,
 }
 
 /// A declared param expression: its source plus the two flags the fx editor exposes per binding.
-/// One optional struct rather than three flat fields on [`ParamDecl`], so a mode or a trigger flag
-/// with no source is unconstructible — and so the ~30 params that declare no expression say so in
-/// one word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExprDecl {
     pub source: &'static str,
-    /// Whether this expression starts live. `Off` is a *carried* expression — the source is there
-    /// for the inspector's fx toggle to turn on, so a param can ship the expression its author
-    /// expects the user to want without imposing it.
+    /// Whether this expression starts live; `Off` merely carries it for the inspector's fx toggle.
     pub mode: ExprMode,
     /// Whether re-evaluating it also wakes `process()`.
     pub trigger: bool,
@@ -111,9 +84,7 @@ pub struct ExprDecl {
 /// Whether a declared [`ExprDecl`] is live or merely carried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExprMode {
-    /// Saved on the declaration, awaiting the inspector toggle — the `spec` literal is in force.
     Off,
-    /// Live: the engine seeds an enabled binding, and the param tracks what the expression reads.
     On,
 }
 
@@ -128,7 +99,6 @@ pub enum ParamSpec {
 }
 
 impl ParamSpec {
-    /// Materialize the runtime [`Param`] this descriptor declares.
     fn to_param(self) -> Param {
         match self {
             ParamSpec::Float { default, min, max } => Param::float(default, min, max),
@@ -145,9 +115,7 @@ impl ParamSpec {
     }
 }
 
-/// Build a grouped [`ParamGroups`] from a flat, group-tagged declaration list —
-/// group order = first-seen, name order = declaration order (matching the old
-/// imperative `default_params()` builders).
+/// Build a grouped [`ParamGroups`] from a flat, group-tagged declaration list.
 pub fn params_from_decls(decls: &[ParamDecl]) -> ParamGroups {
     let mut groups = ParamGroups::new();
     for d in decls {
@@ -159,9 +127,7 @@ pub fn params_from_decls(decls: &[ParamDecl]) -> ParamGroups {
     groups
 }
 
-/// A typed read-only view of a node's params, so a COLD param — read occasionally, mirrored to no
-/// field — needs no field and no `on_param_changed` arm. Read each into a local at the top of
-/// `process`; the per-sample loop reads the local, never the map.
+/// A typed read-only view of a node's params, for a cold param that is mirrored to no field.
 pub struct Params<'a>(&'a ParamGroups);
 
 impl<'a> Params<'a> {
@@ -180,38 +146,28 @@ impl<'a> Params<'a> {
     pub fn str(&self, group: &str, name: &str) -> Option<&str> {
         param(self.0, group, name).and_then(Param::as_str)
     }
-    /// The underlying groups, for the rare node that needs to iterate.
     pub fn groups(&self) -> &ParamGroups {
         self.0
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tick I/O
-// ---------------------------------------------------------------------------
-
-/// The per-run input view. A single slot holds the latest `Data`; a `multi` slot holds one frame
-/// per connected wire, present-only, in connection order. The two maps are keyed disjointly — a
-/// slot is single XOR multi.
+/// The per-run input view; the two maps are keyed disjointly, so a slot is single XOR multi.
 pub struct Inputs<'a> {
     singles: &'a IndexMap<&'static str, Option<Data>>,
     multis: Option<&'a IndexMap<&'static str, Vec<Data>>>,
 }
 
 impl<'a> Inputs<'a> {
-    /// A single-source-only input view (no `multi` slots).
     pub fn new(singles: &'a IndexMap<&'static str, Option<Data>>) -> Inputs<'a> {
         Inputs { singles, multis: None }
     }
-    /// An input view with `multi` slots (the engine's materialized per-wire lists).
     pub fn with_multi(
         singles: &'a IndexMap<&'static str, Option<Data>>,
         multis: &'a IndexMap<&'static str, Vec<Data>>,
     ) -> Inputs<'a> {
         Inputs { singles, multis: Some(multis) }
     }
-    /// The latest frame on a single slot. On a `multi` slot, the first present frame
-    /// (a convenience — `multi` nodes read [`get_multi`](Self::get_multi)).
+    /// The latest frame on a single slot, or the first present frame on a `multi` slot.
     pub fn get(&self, name: &str) -> Option<&Data> {
         if let Some(o) = self.singles.get(name) {
             if let Some(d) = o.as_ref() {
@@ -220,8 +176,7 @@ impl<'a> Inputs<'a> {
         }
         self.multis.and_then(|m| m.get(name)).and_then(|v| v.first())
     }
-    /// The ordered list of present frames on a `multi` slot (connection order). On a
-    /// single slot, a total 0/1-element slice — so a node need not special-case arity.
+    /// The present frames on a `multi` slot, or a 0/1-element slice on a single slot.
     pub fn get_multi(&self, name: &str) -> &[Data] {
         if let Some(m) = self.multis {
             if let Some(v) = m.get(name) {
@@ -235,8 +190,7 @@ impl<'a> Inputs<'a> {
     }
 }
 
-/// A pre-sized output sink (seeded with the manifest's output slot names). A
-/// node writes with `out.set(slot, data)`; slots left unset emit nothing.
+/// A pre-sized output sink; slots left unset emit nothing.
 pub struct Outputs<'a> {
     slots: &'a mut IndexMap<&'static str, Option<Data>>,
 }
@@ -256,13 +210,9 @@ impl<'a> Outputs<'a> {
 /// Per-run engine context handed to a node.
 #[derive(Debug, Default, Clone)]
 pub struct NodeCtx {
-    /// Wall-clock seconds since the PATCH began (monotonic). One clock across every
-    /// node thread rather than one per birth, so a node born later does not start at
-    /// `0.0`. Wall-clock-paced generators (audio) read this to emit exactly the
-    /// samples that elapsed, drift-free; most nodes ignore it.
+    /// Monotonic seconds since the PATCH began — one clock across every node thread.
     pub now: f64,
-    /// The patch globals as of this run. `process` reads them live (a mid-run edit is seen on the
-    /// next run); `setup` latches them once at setup time. Empty for a node run outside a graph.
+    /// The patch globals as of this run; empty for a node run outside a graph.
     pub globals: goofi_core::globals::GlobalsSnapshot,
 }
 
@@ -272,40 +222,26 @@ impl NodeCtx {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RunPolicy — the scheduler's projection of the `common` param group
-// ---------------------------------------------------------------------------
-
-/// The two ways a user can author `common.max_frequency`. A pure INPUT convention: [`RunPolicy`]
-/// normalizes both to Hz, so nothing downstream reasons in periods. Public because these strings
-/// ARE the vocabulary — they reach the catalog, the wire and the inspector.
+/// The two ways a user can author `common.max_frequency`; [`RunPolicy`] normalizes both to Hz.
 pub const FREQ_MODE_UPDATES_PER_SECOND: &str = "updates-per-second";
 pub const FREQ_MODE_SECONDS_PER_UPDATE: &str = "seconds-per-update";
 
-/// When a node's `process` may run, lifted out of the params so a run does no map lookup. A capped
-/// node PARKS for the remainder of its period rather than being skipped — it owns its thread.
+/// When a node's `process` may run, lifted out of the params.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct RunPolicy {
-    /// Run whenever the rate cap allows, with no fresh input — a free-running producer. INDEPENDENT
-    /// of the input slots: it is one of the three wake reasons, and none consults topology.
-    /// Defaults to `false`.
+    /// Run whenever the rate cap allows, with no fresh input — a free-running producer.
     pub autotrigger: bool,
-    /// Max run rate in Hz; `<= 0` is unbounded. A free-running node must set a finite cap or it
-    /// saturates a core. Always a RATE — the seconds-per-update mode is normalized on the way in.
+    /// Max run rate in Hz; `<= 0` is unbounded. Seconds-per-update is normalized to a rate here.
     pub max_frequency: f64,
 }
 
 impl RunPolicy {
-    /// The minimum seconds between runs, or `None` when unbounded (`max_frequency
-    /// <= 0`). Ported from the Python `_rate_limit_sleep` period computation.
+    /// The minimum seconds between runs, or `None` when unbounded.
     pub fn period(&self) -> Option<f64> {
         (self.max_frequency > 0.0).then(|| 1.0 / self.max_frequency)
     }
 
-    /// Read the policy from a node's `common` param group, defaulting each field
-    /// when the group or a key is absent (so a node without a `common` group is a
-    /// triggered, unbounded node — the safe default). A `seconds-per-update` period is
-    /// normalized to a Hz rate here (`1/period`), so `max_frequency` is always a rate.
+    /// Read the policy from a node's `common` param group, defaulting each absent field.
     pub fn from_params(p: &ParamGroups) -> RunPolicy {
         let autotrigger = param(p, "common", "autotrigger")
             .and_then(Param::as_bool)
@@ -315,22 +251,16 @@ impl RunPolicy {
             .unwrap_or(0.0);
         let seconds_per_update = param(p, "common", "frequency_mode").and_then(Param::as_str)
             == Some(FREQ_MODE_SECONDS_PER_UPDATE);
-        // A period P seconds is a rate of 1/P Hz; `raw <= 0` stays unbounded in either mode.
         let max_frequency = if seconds_per_update && raw > 0.0 { 1.0 / raw } else { raw };
         RunPolicy { autotrigger, max_frequency }
     }
 }
 
-/// One universal `common` param, as a function of the manifest it is added to. The function IS the
-/// declaration — no base-plus-override pair — so a param is defined once and states its own
-/// condition there. It may read the manifest's static shape, but never `m.params` for a `common`
-/// key: that is a half-built world.
+/// One universal `common` param, as a function of the manifest it is added to. It may read the
+/// manifest's static shape, but never `m.params` for a `common` key — that is a half-built world.
 pub type CommonDecl = fn(&NodeManifest) -> ParamDecl;
 
-/// Run on the node's own schedule instead of waiting for an input frame — which is exactly what
-/// being a producer means, so the default IS `m.producer`. It is the spec *default* that moves and
-/// not the materialized value, so the declaration a reader sees — or that Task 4's seeding walk
-/// reads — is the one `with_common` materializes. One number, not two kept in step.
+/// Run on the node's own schedule instead of waiting for an input frame; defaults to `m.producer`.
 fn autotrigger(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
@@ -344,12 +274,8 @@ fn autotrigger(m: &NodeManifest) -> ParamDecl {
     }
 }
 
-/// The rate cap. Every node CARRIES the patch rate as an expression, so any node can be paced by
-/// `globals.default_ufreq` with one toggle; on a producer it is already live.
-///
-/// `trigger: true` is INERT here — a `common.*` arrival never sets `trigger_pending`, because
-/// re-pacing is not a reason to run. What re-paces a sleeping producer is the graph re-resolving
-/// this binding and re-sending it. Declared for interface completeness only.
+/// The rate cap, carried by every node as a `globals.default_ufreq` expression and live on a
+/// producer. `trigger: true` is inert here — a `common.*` arrival never sets `trigger_pending`.
 fn max_frequency(m: &NodeManifest) -> ParamDecl {
     ParamDecl {
         group: "common",
@@ -385,22 +311,14 @@ fn frequency_mode(_: &NodeManifest) -> ParamDecl {
     }
 }
 
-/// The universal `common` scheduling group, declared once. A fourth param is added here and
-/// nowhere else: the loop in [`with_common`] carries no name match, and
-/// `Graph::seed_default_expressions` walks the same list for the expression half.
+/// The universal `common` scheduling group; a fourth param is added here and nowhere else.
 pub static COMMON_DECLS: &[CommonDecl] = &[autotrigger, max_frequency, frequency_mode];
 
-/// The universal declarations as THIS node type sees them — the ONE place a manifest is allowed to
-/// change what the `common` group means. The value half ([`with_common`]) and Task 4's expression
-/// seeding both read this, so they cannot disagree about what a producer gets.
 pub fn common_decls(m: &NodeManifest) -> impl Iterator<Item = ParamDecl> + '_ {
     COMMON_DECLS.iter().map(move |d| d(m))
 }
 
-/// Guarantee a node carries the universal `common` group, so rate controls exist on every node
-/// uniformly. **Any key the node declared itself is kept untouched** — `or_insert_with` is the
-/// whole of that rule. Used both when instantiating a node and when projecting a type to the
-/// palette, so type-level and instance-level params agree.
+/// Guarantee a node carries the universal `common` group, keeping any key it declared itself.
 pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
     let mut common = params.get("common").cloned().unwrap_or_default();
     for d in common_decls(m) {
@@ -416,20 +334,13 @@ pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
     merged
 }
 
-// ---------------------------------------------------------------------------
-// The node trait
-// ---------------------------------------------------------------------------
-
 pub trait Node: Send {
-    /// Derived init, after the params have been seeded. Runs once if it succeeds; an `Err` leaves
-    /// the node UNINITIALIZED — nothing runs against it, and the next interaction retries the whole
-    /// initialization on this same instance.
+    /// Derived init, after the params have been seeded. An `Err` leaves the node uninitialized and
+    /// the next interaction retries the whole initialization on this same instance.
     fn setup(&mut self, _ctx: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
-    /// The run body: read latest inputs + live params, write outputs. Pure w.r.t.
-    /// transport. Cold params are read from `p`; hot/stateful params are mirrored to
-    /// fields via `on_param_changed`.
+    /// The run body: read latest inputs + live params, write outputs.
     fn process(
         &mut self,
         inp: &Inputs<'_>,
@@ -437,55 +348,37 @@ pub trait Node: Send {
         ctx: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult;
-    /// React to a param edit — mirror a hot field, reallocate a buffer. The engine REPLAYS this
-    /// per declared param at initialization, so it is the one source of truth for param→field.
-    /// A cold param needs no arm.
+    /// React to a param edit; the engine replays it per declared param at initialization.
     fn on_param_changed(&mut self, _key: &ParamKey, _v: &Param) -> NodeResult {
         Ok(())
     }
-    /// Re-enumerate a `Str` param's options — the ⟳ button. `p` is the node's LIVE params, because
-    /// a picker enumerates against its current settings and a node that never runs would otherwise
-    /// see only what it was constructed with.
+    /// Re-enumerate a `Str` param's options — the ⟳ button. `p` is the node's LIVE params.
     fn on_param_refreshed(&mut self, _key: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
         None
     }
-    // Teardown is `impl Drop`, not a trait method, so it cannot be forgotten. It does NOT fire
-    // between initialization retries: a `setup` that fails partway is called again on the same
-    // instance, so it must release what it acquired before returning `Err`.
+    // Teardown is `impl Drop`, and does NOT fire between initialization retries: a `setup` that
+    // fails partway must release what it acquired before returning `Err`.
 }
 
-/// The generic node factory the manifest stores — construct a default instance,
-/// type-erased. The engine seeds its params afterward by replaying
-/// `on_param_changed`, so no per-node constructor boilerplate is written.
+/// The generic node factory the manifest stores: a default instance, type-erased.
 pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
     Box::new(T::default())
 }
-
-// ---------------------------------------------------------------------------
-// Param expressions — the injected evaluator seam (impl lives in goofi-python, so the
-// engine core carries no pyo3 dependency). See the param-expressions design.
-// ---------------------------------------------------------------------------
 
 /// An opaque handle to a compiled expression, owned by the evaluator.
 pub type BindingId = u64;
 
 string_error!(
-    /// A param-expression failure: compile error, runtime exception, ambiguous bare
-    /// `nd()`, missing ref with no fallback, or a type-incompatible result. Surfaced as a
-    /// core node error (the same channel as a `process` error) plus a per-param indicator.
+    /// A param-expression failure: a compile error, an exception, or an incompatible result.
     ExprError
 );
 
-/// The result of compiling an expression: the evaluator's opaque handle. What the snippet
-/// REFERENCES is not extracted here — the graph rewrote every `nd()` and `globals.*` term into a
-/// generated variable before compiling (spec §5.3), so the compiled source names none of them and
-/// the graph already holds the resolved variable map.
+/// The result of compiling an expression: the evaluator's opaque handle.
 pub struct Compiled {
     pub id: BindingId,
 }
 
-/// One expression variable's value, as the graph resolved it (spec §5.3). A stream variable carries
-/// a producer's frame; a `globals.*` variable carries a scalar.
+/// One expression variable's value, as the graph resolved it.
 #[derive(Clone, Debug)]
 pub enum Local {
     Frame(Data),
@@ -494,9 +387,8 @@ pub enum Local {
 
 /// Per-evaluation context handed to [`ExprEvaluator::eval`].
 pub struct EvalCtx<'a> {
-    /// The expression's variables, keyed by the GENERATED name the rewrite minted. `None` is a
-    /// variable that has not arrived yet, which the expression sees as absent. One way to reach a
-    /// reference — the graph resolves it, and the evaluator never resolves one for itself.
+    /// The expression's variables, keyed by the generated name the rewrite minted; `None` has not
+    /// arrived yet, and the expression sees it as absent.
     pub locals: &'a std::collections::HashMap<String, Option<Local>>,
     /// Engine wall-clock seconds (`NodeCtx::now`) — for time-based (variable-less) expressions.
     pub t: f64,
@@ -504,40 +396,27 @@ pub struct EvalCtx<'a> {
     pub target: &'a Param,
 }
 
-/// Evaluates param expressions. Implemented by `goofi-python` against the free-threaded
-/// interpreter and injected into the engine, so the engine core carries no pyo3
-/// dependency. The engine owns the binding lifecycle + scheduling and calls this only
-/// to compile / evaluate / release.
+/// Evaluates param expressions; implemented in `goofi-python` and injected, so the engine core
+/// carries no pyo3 dependency.
 pub trait ExprEvaluator: Send + Sync {
-    /// Compile a snippet once; returns the opaque handle + extracted `nd()` refs.
     fn compile(&self, source: &str) -> Result<Compiled, ExprError>;
-    /// Evaluate a compiled expression to a concrete [`Param`] value.
     fn eval(&self, id: BindingId, ctx: &EvalCtx<'_>) -> Result<Param, ExprError>;
-    /// Release a compiled expression (on unbind / node removal).
     fn release(&self, id: BindingId);
 }
 
-// ── `nd()` scanning: extraction and rewriting run off ONE scan, so they cannot disagree ────────
-
-/// One `nd(..)` call, with both spans its consumers need: a RENAME replaces the name literal and
-/// must leave every other byte alone, while the REWRITE replaces the whole term. Drift between two
-/// word-boundary rules is invisible, which is why there is one scan.
+/// One `nd(..)` call, with both spans its consumers need: the name literal a rename replaces, and
+/// the whole term a rewrite replaces.
 pub struct NdCall<'a> {
-    /// Byte offset of the `n` in `nd` — where the TERM begins.
     pub start: usize,
-    /// The name literal's content, between the quotes — what a rename replaces.
     pub name_start: usize,
     pub name_end: usize,
-    /// One past the call's closing `)`, or `None` when the call does not close with one (an extra
-    /// argument, an unterminated call). A rename still applies to those; a rewrite cannot span
-    /// them, and leaves them verbatim so the failure is a visible eval error.
+    /// One past the closing `)`, or `None` when the call does not close cleanly — a rewrite leaves
+    /// those verbatim, so the failure shows up as an eval error.
     pub end: Option<usize>,
     pub name: &'a str,
 }
 
-/// Scan `source` for `nd('name')` calls, in source order. A lexical scan, not a parse: `nd` must
-/// be a standalone token (so `round('x')` does not match), whitespace before `(` is tolerated, and
-/// the first argument must be a string literal.
+/// Scan `source` for `nd('name')` calls, in source order. A lexical scan, not a parse.
 pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
     let b = source.as_bytes();
     let mut out = Vec::new();
@@ -547,7 +426,6 @@ pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
             i += 1;
             continue;
         }
-        // Word boundary before `nd` — reject `grand(`, `round(`, `.rfind(`, etc.
         let boundary = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
         let mut j = i + 2;
         while j < b.len() && (b[j] as char).is_whitespace() {
@@ -566,8 +444,6 @@ pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
                     j += 1;
                 }
                 if j < b.len() {
-                    // Where the whole call ends, when it ends cleanly: past the closing quote,
-                    // past any whitespace, on a `)`.
                     let mut close = j + 1;
                     while close < b.len() && (b[close] as char).is_whitespace() {
                         close += 1;
@@ -590,17 +466,14 @@ pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
     out
 }
 
-/// One `globals.<name>` read [`scan_globals`] found.
+/// One `globals.<name>` read [`scan_globals`] found; the span covers the `globals.` prefix too.
 pub struct GlobalRead<'a> {
-    /// The whole term, `globals.` included — what the expression rewrite replaces.
     pub start: usize,
     pub end: usize,
     pub name: &'a str,
 }
 
-/// Scan `source` for `globals.<name>` reads, on the same word-boundary rule — so `myglobals.x` is
-/// not one. A byte scan: a match inside a string literal costs a variable nothing else names,
-/// never a missed one.
+/// Scan `source` for `globals.<name>` reads, on the same word-boundary rule.
 pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     const PREFIX: &str = "globals.";
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -626,12 +499,9 @@ pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     out
 }
 
-/// Rewrite every `nd('name')` literal `rename` answers for, preserving quote style and every other
-/// byte. Edits the AUTHORED source, which is the SSOT — the form the node runs is re-derived from
-/// it after every rename.
+/// Rewrite every `nd('name')` literal `rename` answers for, leaving every other byte alone.
 pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
-    // Collect (start, end, replacement) then splice right-to-left so earlier byte offsets
-    // stay valid as the string is edited.
+    // Splice right-to-left, so earlier byte offsets stay valid as the string is edited.
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for call in scan_nd_calls(source) {
         if let Some(new) = rename(call.name) {
@@ -648,10 +518,6 @@ pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) ->
     Some(out)
 }
 
-// ---------------------------------------------------------------------------
-// Manifest + native catalog (inventory)
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isolation {
     InProcess,
@@ -663,15 +529,9 @@ pub struct SlotDecl {
     pub kind: SlotType,
     /// Whether fresh data on this slot wakes `process()` (vs. a held reference input).
     pub trigger_process: bool,
-    /// A `multi` (variadic) input slot accepts an arbitrary number of wires and
-    /// delivers them to the node as an ordered `&[Data]` (via `inp.get_multi`),
-    /// latest-wins per wire, in connection order. Fixed by the node author here —
-    /// a slot is single or multi for the life of the node type, never toggled.
+    /// A `multi` slot takes any number of wires and delivers them as an ordered `&[Data]`.
     pub multi: bool,
-    /// A **required** slot must hold data when the node runs. The engine checks the slot's
-    /// last-store — presence, never wiring — before `process` is invoked, and reports an error
-    /// instead of running. So a required slot is one a node may read unconditionally; a
-    /// non-required slot may be absent and the node handles that itself.
+    /// A required slot must hold data when the node runs, so the node may read it unconditionally.
     pub required: bool,
 }
 
@@ -687,28 +547,20 @@ pub struct NodeManifest {
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],
-    /// Declared params — the param analogue of `inputs`/`outputs`. The runtime
-    /// `ParamGroups` is built on demand by [`Self::default_params`].
+    /// Declared params; the runtime `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
     pub isolation: Isolation,
-    /// This type is a SOURCE: it makes frames on its own schedule. The only pacing an author
-    /// declares — everything downstream inherits its cadence through triggers. It defaults
-    /// `common.autotrigger` on and turns the carried `globals.default_ufreq` expression LIVE, so a
-    /// source is paced by the patch rate out of the box where a consumer merely carries it.
+    /// This type is a SOURCE: it makes frames on its own schedule, so `common.autotrigger` and the
+    /// carried `globals.default_ufreq` expression both default on.
     pub producer: bool,
-    /// Build a default instance (type-erased). The engine seeds params afterward by
-    /// replaying `on_param_changed`; for native nodes this is `default_factory::<T>`.
+    /// Build a default instance, type-erased.
     pub factory: fn() -> Box<dyn Node>,
 }
 
 impl NodeManifest {
-    /// A fresh output buffer seeded with this manifest's output slot names.
     pub fn output_buffer(&self) -> IndexMap<&'static str, Option<Data>> {
         self.outputs.iter().map(|o| (o.name, None)).collect()
     }
-    /// The runtime default params, built from the static [`ParamDecl`] list. Callers
-    /// layer [`with_common`] on top (as before). Replaces the old
-    /// `default_params: fn() -> ParamGroups` field.
     pub fn default_params(&self) -> ParamGroups {
         params_from_decls(self.params)
     }
@@ -716,12 +568,10 @@ impl NodeManifest {
 
 inventory::collect!(NodeManifest);
 
-/// Iterate the native node catalog.
 pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
     inventory::iter::<NodeManifest>()
 }
 
-/// Find a native node manifest by type name.
 pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
     catalog().find(|m| m.type_name == type_name)
 }

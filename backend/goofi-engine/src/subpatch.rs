@@ -1,28 +1,18 @@
 //! Flat sub-patch scopes — a purely organizational overlay over the flat node graph.
-//!
-//! Sub-patches are facades, not a separate runtime. Nodes live in one flat set (`Graph.nodes`);
-//! a [`Scope`] references member uids (via the Graph's `scope_of` tree index) and holds In/Out
-//! [`Stub`]s (boundary ports). The runtime is flat — `Graph.links` is ALWAYS leaf→leaf — so a stub
-//! stores only its CHILD (inner) side; the parent side *is* the flat links (an Out stub fans out to
-//! N consumers as N links, for free). [`resolve_stub`] walks a stub's `inner` chain-to-leaf (through
-//! nested scopes) to the single physical leaf it exposes — the resolution the data plane and
-//! link-authoring perform. No defs, no sharing, no materialize: nodes never move or re-mint, so
-//! group/expand are pure reference moves and undo is uid-stable by construction.
+//! Nodes live in one flat set; a scope references member uids and holds boundary stubs.
 
 use indexmap::IndexMap;
 
 use crate::Uid;
 use goofi_core::SlotType;
 
-/// Stable boundary key inside a scope (`"in0"`, `"out0"`). Never re-minted on rename, so external
-/// wires (which resolve through it to a flat leaf link) survive a relabel.
+/// Stable boundary key inside a scope (`"in0"`, `"out0"`), never re-minted on rename.
 pub type StubId = String;
 
 /// What a stub points at: `(inner member uid, inner slot-or-StubId)`. `None` = UNWIRED.
 pub type StubInner = Option<(Uid, String)>;
 
-/// One parent-scope stub and where it pointed — `(parent scope, stub id, inner)`. `Expand`
-/// captures these so its `Group` inverse can re-point them back exactly.
+/// One parent-scope stub and where it pointed — `(parent scope, stub id, inner)`.
 pub type ParentStub = (Uid, StubId, StubInner);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,11 +30,7 @@ impl Dir {
     }
 }
 
-/// A boundary port on a scope: a naming indirection over an inner member slot. Stores ONLY its
-/// child side — `inner` is the concrete inner member+slot it exposes: a leaf `(leaf_uid, slot)`,
-/// or a nested scope's `(facade_uid, StubId)` when the member is itself a sub-patch. `None` = an
-/// unwired pill (a present-but-dangling port). The parent side is not stored here — it is the flat
-/// leaf→leaf links that resolve through this stub.
+/// A boundary port on a scope: a naming indirection over an inner member slot, child side only.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stub {
     pub dir: Dir,
@@ -52,16 +38,12 @@ pub struct Stub {
     pub dtype: SlotType,
     /// `(inner member uid, inner slot-or-StubId)`; `None` = UNWIRED.
     pub inner: StubInner,
-    /// Pill position inside the entered view.
     pub pos: [f64; 2],
-    /// Renameable display label (defaults `in0`/`out0`).
     pub name: String,
 }
 
-/// A sub-patch scope: organizational metadata for a set of member nodes. Membership + parentage
-/// live in the Graph's `scope_of` index (the one tree SSOT — absent ⇒ ROOT); a `Scope` holds only
-/// its own display name, the canvas position of its collapsed facade node, and its boundary stubs.
-/// The scope's uid (its key in `Graph.scopes`) doubles as the facade node's uid.
+/// A sub-patch scope: its display name, facade position and boundary stubs. Membership lives in
+/// the Graph's `scope_of` index.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scope {
     pub name: String,
@@ -69,17 +51,10 @@ pub struct Scope {
     pub stubs: IndexMap<StubId, Stub>,
 }
 
-/// Chain-to-leaf: resolve `(scope_uid, stub_id)` to the single physical inner leaf `(uid, slot)` it
-/// exposes, walking through nested-scope stubs. `None` if the stub (or any stub in its chain) is
-/// unwired, or the ids don't resolve. This is the resolution the data plane performs before
-/// subscribing, and that link authoring uses to store a boundary wire as a flat leaf→leaf link.
+/// Chain-to-leaf: resolve `(scope_uid, stub_id)` to the physical inner leaf it exposes.
 ///
-/// The walk carries a visited set because it CANNOT assume the chain is acyclic: a `.gfi` is
-/// hand-editable and `reload_scopes` admits whatever stub graph it finds, so a stub pointing back
-/// into its own chain is representable persisted state. Recursing on it does not raise a
-/// recoverable panic — a Rust stack overflow aborts the process, taking every node thread and every
-/// connected client with it, and `/data/<scope>/<stub>` reaches here from an ordinary subscribe.
-/// A cycle is malformed, so it answers `None`, the same answer an unknown stub already gives.
+/// The visited set is load-bearing: a hand-edited `.gfi` can persist a cyclic stub chain, and
+/// recursing on it aborts the process rather than raising.
 pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> StubInner {
     let mut seen: Vec<(Uid, &str)> = Vec::new();
     let (mut scope_uid, mut stub_id) = (scope_uid, stub_id);
@@ -92,7 +67,6 @@ pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str
         if !scopes.contains_key(inner_uid) {
             return Some((*inner_uid, inner_slot.clone()));
         }
-        // The inner member is itself a nested sub-patch — continue through its exposing stub.
         scope_uid = *inner_uid;
         stub_id = inner_slot.as_str();
     }

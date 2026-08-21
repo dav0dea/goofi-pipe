@@ -1,21 +1,5 @@
 //! The editor's panel arrangement, held as a TREE: an ordered strip of tabs, each holding one root
 //! node, each split holding its children in order.
-//!
-//! It was flat and id-keyed — every entry naming its `parent` and its `order` among that parent's
-//! children — because the CRDT reconciler mirrored nested maps and scalars but ERASED nested
-//! arrays, so an id-keyed map was the only shape it could carry. There is no CRDT any more, and a
-//! tree makes unconstructible most of what the flat model could express and rendering could not: an
-//! entry hanging off a leaf panel, two children claiming one order, a parent pointer into nothing,
-//! a cycle, a tab with two roots or none. Those were five of `validate`'s seven checks; what is
-//! left is what a tree can still get wrong.
-//!
-//! The WIRE is still flat ([`Layout::to_json`]), and so is the delta a command applies
-//! ([`Write`]) — one projection of this tree, derived on the way out and validated on the way in.
-//!
-//! Every mutation is a PLANNER: it mutates a clone and returns the writes that turn this
-//! arrangement into that one. That is what makes a layout op an ordinary command with an exact
-//! inverse, and it keeps the tricky cases — a promote whose survivor is also the move's destination
-//! — out of hand-rolled delta bookkeeping.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -25,11 +9,8 @@ use std::collections::BTreeMap;
 pub type Id = String;
 
 /// What one entry HOLDS, addressed by id — the unit a CONTENTS command lands and inverts. It says
-/// nothing about where the entry sits, which is exactly what makes an inverse safe to land against
-/// an arrangement a peer has moved under it. A structural plan is not one of these: it is the whole
-/// next [`Layout`], because it executes once, under the lock, on the arrangement it was planned
-/// against (`LayoutBirth` and `LayoutMove` both hand their forward plan over exactly once and
-/// invert by re-planning).
+/// nothing about where the entry sits, which makes an inverse safe against an arrangement a peer
+/// has moved under it.
 pub type Write = (Id, Contents);
 
 /// See [`Write`].
@@ -43,8 +24,7 @@ pub enum Contents {
 /// a split from assuming content). Both mirror `model.ts`.
 pub const DEFAULT_PANEL_TYPE: &str = "node-editor";
 pub const EMPTY_PANEL_TYPE: &str = "empty";
-/// The first tab's name. Numbered from 1, like every one the client claims after it — an
-/// unnumbered first name reads as a different KIND of tab beside `Tab 2`.
+/// The first tab's name. Numbered from 1, like every one the client claims after it.
 const DEFAULT_TAB_NAME: &str = "Tab 1";
 
 /// Smallest share a split may hand a child, so a panel can always be grabbed again (`MIN_FRACTION`).
@@ -99,8 +79,7 @@ impl Axis {
 }
 
 /// One tab: a labelled root of the arrangement. Its POSITION in [`Layout::tabs`] is its position in
-/// the strip — there is no `order` field to keep in step with it, which is one of the invariants
-/// this shape makes unconstructible.
+/// the strip — there is no `order` field to keep in step with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: Id,
@@ -108,9 +87,8 @@ pub struct Tab {
     pub root: Node,
 }
 
-/// A node of one tab's tree. `size` is its share of its PARENT; a root's is not read (it fills its
-/// tab), and it is carried there anyway so a lifted subtree can name the share it asks for on the
-/// way back in.
+/// A node of one tab's tree. `size` is its share of its PARENT; a root's is not read, and is
+/// carried anyway so a lifted subtree can name the share it asks for on the way back in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Node {
@@ -131,9 +109,7 @@ fn whole() -> f64 {
 }
 
 /// A panel's `state` rides the wire as a JSON STRING, and it must stay one: a panel clears a key
-/// with an explicit `null` (`set_panel {state: {node: null}}`), and a null LEAF in the document is
-/// exactly what would make the merge-patch delta ambiguous — merge patch spends `null` on "delete
-/// this key". Wrapping the bag in a string keeps every null it holds inside the leaf.
+/// with an explicit `null`, and a null LEAF would make the merge-patch delta ambiguous.
 mod json_string {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use serde_json::Value;
@@ -188,37 +164,31 @@ impl Node {
     }
 }
 
-/// What a close carried away, for its own inverse to put back. A tab and a subtree are different
-/// enough that the branch belongs in the type: one is re-born by NAME into the strip, the other is
-/// re-homed beside a surviving sibling.
+/// What a close carried away, for its own inverse to put back. A tab is re-born by NAME into the
+/// strip; a subtree is re-homed beside a surviving sibling.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Dead {
     Tab(Tab),
     Node(Node),
 }
 
-/// Where a subtree sat before it moved — everything [`Layout::re_home`] needs to plan a move BACK
-/// without restoring one slot of it. Recorded as IDS rather than positions: a peer's concurrent edit
-/// moves positions about, where an id either still stands or is gone.
+/// Where a subtree sat before it moved — what [`Layout::re_home`] needs to plan a move BACK without
+/// restoring one slot of it. Recorded as IDS: an id either still stands or is gone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Home {
     /// Its old siblings, NEAREST FIRST — the landing is the first of them still standing.
     siblings: Vec<Id>,
-    /// Every entry's share at capture time. The move widens the split it leaves and narrows the one
-    /// it lands in; this is what gives the arrangement its geometry back. A move renormalizes the
-    /// split it leaves AND the split it enters — and a promote pushes that another level up — so the
-    /// set of slices it disturbs is not knowable from one level of siblings.
+    /// Every entry's share at capture time — what gives the arrangement its geometry back. A move
+    /// disturbs more slices than one level of siblings can name.
     shares: BTreeMap<Id, f64>,
     /// The old parent's id and axis. The id is handed back only to a wrapper that has to be minted
-    /// anyway, and only while it is free — an absent split is referenced by nothing, so reusing its
-    /// id strands nobody, where restoring its SLOT would.
+    /// anyway, and only while it is free — restoring its SLOT would strand a peer's work.
     parent: Id,
     axis: Axis,
     /// It sat before its nearest sibling, and held this share of its parent.
     before: bool,
     size: f64,
-    /// Its tab's name and strip index — the last resort, for the frozen drag where the tab went with
-    /// its last panel and there is neither a sibling nor a tab left to land on.
+    /// Its tab's name and strip index — the last resort, when the tab went with its last panel.
     tab: (String, usize),
 }
 
@@ -238,15 +208,12 @@ type Path = (usize, Vec<usize>);
 pub struct Layout {
     tabs: Vec<Tab>,
     /// The id counter, monotone: nothing ever lowers it, so a closed panel's id is never handed out
-    /// again. It rides [`Self::to_json`] so a reopened patch keeps counting forward. Recycling would
-    /// silently give a fresh panel a dead one's client-side state, the viewpoint's `subpatchPath`
-    /// among it. A minted id is always `{prefix}-{n}`, so no entry can claim this key.
+    /// again. Recycling would give a fresh panel a dead one's client-side state.
     #[serde(rename = "#seq", default)]
     seq: u64,
 }
 
-/// Two arrangements are the same when they DRAW the same. The id counter is bookkeeping that only
-/// counts up — an undo deliberately does NOT wind it back, which is the whole point of it.
+/// Two arrangements are the same when they DRAW the same; the id counter is bookkeeping.
 impl PartialEq for Layout {
     fn eq(&self, other: &Layout) -> bool {
         self.tabs == other.tabs
@@ -275,8 +242,6 @@ impl Default for Layout {
 }
 
 impl Layout {
-    // --- ids ---------------------------------------------------------------
-
     /// A fresh id — one counter across all three kinds. Advances the counter, so minting twice
     /// without attaching still cannot collide.
     fn mint(&mut self, prefix: &str) -> Id {
@@ -285,15 +250,12 @@ impl Layout {
     }
 
     /// Raise the counter past an id being ADMITTED rather than minted — a revive putting dead ids
-    /// back, or a stored arrangement being read. Every id this arrangement has ever held stays
-    /// spent.
+    /// back, or a stored arrangement being read. Every id this arrangement held stays spent.
     fn spend(&mut self, id: &str) {
         if let Some(n) = id.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()) {
             self.seq = self.seq.max(n);
         }
     }
-
-    // --- navigation --------------------------------------------------------
 
     /// The tabs, in strip order.
     pub fn tabs(&self) -> Vec<Id> {
@@ -358,8 +320,7 @@ impl Layout {
         n
     }
 
-    /// The node carrying `id`, or `None` — a tab is not one. Ordinary recursive descent; the
-    /// [`Path`] above is for the planners that need to know WHERE a node sits, not merely which.
+    /// The node carrying `id`, or `None` — a tab is not one.
     pub fn node(&self, id: &str) -> Option<&Node> {
         fn down<'a>(n: &'a Node, id: &str) -> Option<&'a Node> {
             if n.id() == id {
@@ -446,8 +407,6 @@ impl Layout {
         self.seq = seq;
     }
 
-    // --- tree surgery -------------------------------------------------------
-
     /// Scale a split's children so their sizes sum to 1.
     fn normalize(n: &mut Node) {
         let Node::Split { children, .. } = n else { return };
@@ -461,8 +420,7 @@ impl Layout {
 
     /// Lift `id` out of its parent and hand it back — the shared half of a close and a move. The
     /// freed slice goes to the siblings in proportion, and a split left with ONE child is replaced
-    /// by that child in its own slot, so the tree never keeps a one-armed wrapper. The subtree
-    /// hanging off `id` is untouched (a move re-attaches it whole).
+    /// by that child, so the tree never keeps a one-armed wrapper.
     fn detach(&mut self, id: &str) -> Result<Node, String> {
         let Some((tab, at)) = self.path_of(id) else {
             return Err(format!("no such panel `{id}`"));
@@ -484,7 +442,6 @@ impl Layout {
             c.set_size(v + gone.size() * v / total);
         }
         Layout::normalize(parent);
-        // One child left: it takes its parent's whole slot, and the wrapper goes.
         let lone = matches!(parent, Node::Split { children, .. } if children.len() == 1);
         if lone {
             let slot = parent.size();
@@ -514,15 +471,11 @@ impl Layout {
         Ok(())
     }
 
-    /// Put `node` beside `target` along `axis` — the ONE place split-or-wrap lives. A parent already
-    /// running along `axis` gains a sibling; otherwise the target is wrapped in a fresh split
-    /// inheriting its slot. `node`'s `size` is READ as the share it asks for, so a caller hands over
-    /// a lifted subtree or a new panel indifferently. `wrap` names the id a minted wrapper takes if
-    /// still free — how an undo gives a promoted-away split its id back without restoring its slot.
+    /// Put `node` beside `target` along `axis` — the ONE place split-or-wrap lives. `node`'s `size`
+    /// is READ as the share it asks for; `wrap` names the id a minted wrapper takes if still free.
     fn insert_at(&mut self, mut node: Node, target: &str, axis: Axis, before: bool, wrap: Option<&str>) {
         let Some((tab, at)) = self.path_of(target) else { return };
         let f = node.size();
-        // A parent running along the same axis absorbs the newcomer as a sibling.
         if let Some((&mine, up)) = at.split_last() {
             let parent_path: Path = (tab, up.to_vec());
             if matches!(self.at(&parent_path), Node::Split { axis: a, .. } if *a == axis) {
@@ -535,7 +488,6 @@ impl Layout {
                 return;
             }
         }
-        // Otherwise the target is wrapped, and the wrapper inherits its slot.
         let free = wrap.filter(|w| self.node(w).is_none() && self.tab_index(w).is_none());
         let id = match free {
             Some(w) => w.to_string(),
@@ -554,9 +506,8 @@ impl Layout {
         *self.at_mut(&p) = Node::Split { id, size: slot, axis, children };
     }
 
-    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its tab's ONLY
-    /// root the TAB goes with it, which is the frozen "the panel was the tab's only node → the tab
-    /// goes with it" branch of `_takeNode`. The last tab never goes.
+    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its tab's
+    /// ONLY root the TAB goes with it. The last tab never goes.
     fn take(&mut self, root: &str) -> Result<Node, String> {
         if self.tab_index(root).is_some() {
             return Err("a tab is not a subtree — reorder it with reorder_tab".into());
@@ -573,12 +524,8 @@ impl Layout {
         Ok(self.tabs.remove(tab).root)
     }
 
-    // --- planners -----------------------------------------------------------
-
-    /// Add a tab and return its id. It holds one fresh node-editor panel — unless `subtree` names an
-    /// existing one, in which case the tab is built AROUND it: the frozen drop-onto-the-tab-bar
-    /// gesture, which `add_tab` + `move_panel` cannot express (a move needs a split to land in, and
-    /// a fresh tab has none). `index` places it in the strip.
+    /// Add a tab and return its id. It holds one fresh node-editor panel unless `subtree` names an
+    /// existing one, in which case the tab is built AROUND it. `index` places it in the strip.
     pub fn add_tab(
         &self,
         name: &str,
@@ -615,9 +562,8 @@ impl Layout {
         Ok((next, id))
     }
 
-    /// Re-home the subtree rooted at `subtree` beside `target`, splitting along `axis` —
-    /// `dropOnPanel` as ONE plan. Three ops would cost the user three ctrl-Z for one drag and show
-    /// every peer two arrangements that were never on screen.
+    /// Re-home the subtree rooted at `subtree` beside `target`, splitting along `axis` — one drag as
+    /// ONE plan, or the user pays three ctrl-Z for it and every peer sees two arrangements.
     pub fn insert_at_panel(
         &self,
         subtree: &str,
@@ -654,9 +600,8 @@ impl Layout {
     pub fn home_of(&self, root: &str) -> Option<Home> {
         let (tab, at) = self.path_of(root)?;
         let Some((&mine, up)) = at.split_last() else {
-            // A tab's ROOT has no split above it, and its home is the tab. Flattening gave it a
-            // parent pointer here and the tree does not — without this branch a torn-off panel's
-            // undo captured no home at all and silently degraded to a no-op.
+            // A tab's ROOT has no split above it, and its home is the tab. Without this branch a
+            // torn-off panel's undo captures no home at all and degrades to a no-op.
             return Some(Home {
                 siblings: Vec::new(),
                 shares: self.shares(),
@@ -698,10 +643,8 @@ impl Layout {
     }
 
     /// Plan a move of `root` back to `home`, against the arrangement AS IT STANDS — the inverse of
-    /// every layout op that moves something. It lands beside the first old sibling still standing,
-    /// else beside its old tab's current root, else inside a tab re-born around it. What it never
-    /// does is restore its old parent's slot: the move may have promoted that split away, and a peer
-    /// may have built on whatever took its place, which a restore would strand.
+    /// every layout op that moves something. What it never does is restore its old parent's slot,
+    /// which the move may have promoted away and a peer may have built over.
     pub fn re_home(&self, root: &str, home: &Home) -> Result<Layout, String> {
         let mut next = self.clone();
         // Lifted FIRST, so the landing is chosen among what survives closing up behind it.
@@ -714,9 +657,8 @@ impl Layout {
             .cloned()
             .or_else(|| next.tab_named(&home.tab.0).and_then(|t| next.root_of(&t)));
         let Some(landing) = landing else {
-            // Even the tab went with it (the tab followed its last panel) — re-born AROUND the
-            // subtree, which is `add_tab`'s own adopt branch rather than a raw restore. Lifting it
-            // out still widens the split it leaves, so the shares are given back the same way.
+            // Even the tab went with it — re-born AROUND the subtree, through `add_tab`'s own adopt
+            // branch rather than a raw restore.
             let (mut born, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
             born.give_back_shares(self, home);
             return Ok(born);
@@ -728,10 +670,8 @@ impl Layout {
         Ok(next)
     }
 
-    /// Re-assert the shares `home` remembers wherever this plan disturbed them — what makes an
-    /// undisturbed undo exact to the pixel. SHARES only: where an entry sits is still re-planned
-    /// and never restored. A split the plan left alone keeps what it holds, so a peer's resize
-    /// elsewhere survives.
+    /// Re-assert the shares `home` remembers wherever this plan disturbed them. SHARES only: where
+    /// an entry sits is still re-planned, so a peer's resize elsewhere survives.
     fn give_back_shares(&mut self, before: &Layout, home: &Home) {
         let kids_of = |l: &Layout, id: &str| -> Vec<Id> {
             l.node(id).map(|n| n.children().iter().map(|c| c.id().to_string()).collect()).unwrap_or_default()
@@ -755,8 +695,7 @@ impl Layout {
     }
 
     /// What a close carries into its own inverse. The ids are dead the moment the close lands and
-    /// nothing ever mints one again, so putting them back strands nobody; WHERE the root lands is
-    /// [`Self::revive`]'s question, not theirs.
+    /// nothing ever mints one again, so putting them back strands nobody.
     pub fn dead_subtree(&self, root: &str) -> Option<Dead> {
         if let Some(t) = self.tabs.iter().find(|t| t.id == root) {
             return Some(Dead::Tab(t.clone()));
@@ -764,10 +703,8 @@ impl Layout {
         self.node(root).cloned().map(Dead::Node)
     }
 
-    /// Plan the inverse of a close: put `dead` back, then RE-PLAN where it belongs —
-    /// [`Self::re_home`] for a subtree, the strip for a tab. What it never does is pin the root into
-    /// the slot it held: the close promoted that split away, a peer may have built where it stood,
-    /// and a later undo may even have handed its id to a live wrapper.
+    /// Plan the inverse of a close: put `dead` back, then RE-PLAN where it belongs. What it never
+    /// does is pin the root into the slot it held, which the close promoted away.
     pub fn revive(&self, dead: &Dead, home: Option<&Home>) -> Result<Layout, String> {
         let mut back = self.clone();
         match dead {
@@ -801,10 +738,8 @@ impl Layout {
         }
     }
 
-    /// Land `writes` as CONTENTS edits. WHERE each entry sits is never touched — that is what makes
-    /// the inverse of a type change safe, since the slot an entry held at plan time may be a peer's
-    /// by undo time. An id that has since gone is skipped, so a stale replay degrades instead of
-    /// resurrecting it.
+    /// Land `writes` as CONTENTS edits. WHERE each entry sits is never touched, and an id that has
+    /// since gone is skipped, so a stale replay degrades instead of resurrecting it.
     pub fn set_contents(&mut self, writes: &[Write]) {
         for (id, c) in writes {
             match c {
@@ -835,9 +770,8 @@ impl Layout {
         }
     }
 
-    /// Set every child of `split` at once — what a resize drag commits on pointer-up, and the only
-    /// op that sizes anything. Scaling ONE child and renormalizing its siblings would make N of them
-    /// chase a moving target and never land on the fraction set the user drew.
+    /// Set every child of `split` at once — what a resize drag commits on pointer-up. Scaling ONE
+    /// child and renormalizing its siblings would never land on the fraction set the user drew.
     pub fn resize_split(&self, split: &str, fractions: &[f64]) -> Result<Layout, String> {
         let n = match self.node(split) {
             Some(n @ Node::Split { .. }) => n,
@@ -935,10 +869,8 @@ impl Layout {
         Ok((next, fresh))
     }
 
-    /// Clear the node binding of every panel naming a uid in `gone`, as the writes a
-    /// [`crate::Command::LayoutContents`] lands. A panel's `state` is opaque here save for this one
-    /// key, which the frontend and the bind validation already share (`set_panel`'s `state.node`) —
-    /// a panel pointing at a deleted node is the one arrangement the manager can know is wrong.
+    /// Clear the node binding of every panel naming a uid in `gone`. A panel's `state` is opaque
+    /// here save for this one key — a panel pointing at a deleted node is the one knowable wrong.
     pub fn unbind(&self, gone: &std::collections::HashSet<crate::Uid>) -> Vec<Write> {
         let mut writes = Vec::new();
         for n in self.nodes() {
@@ -957,12 +889,8 @@ impl Layout {
     }
 
     /// Set a panel's type and/or state. `panel_type` lands FIRST because changing it clears the old
-    /// type's state — so a combined `{type, state}` must land the state afterwards, and re-asserting
-    /// the SAME type must not wipe, or an agent passing `type` redundantly destroys a live binding.
-    ///
-    /// `state` MERGES key by key. Every caller reads the bag, edits one key and writes it back, so
-    /// two writes in one round trip would have the second replace a bag missing the first's key.
-    /// Merging where the write lands kills that class rather than asking each caller to be careful.
+    /// type's state, and re-asserting the SAME type must not wipe. `state` MERGES key by key, so two
+    /// writes in one round trip cannot drop the first's key.
     pub fn set_panel(
         &self,
         panel: &str,
@@ -988,9 +916,8 @@ impl Layout {
         Ok(vec![(panel.to_string(), Contents::Panel { panel_type: pt, state: st })])
     }
 
-    /// Move the subtree rooted at `root` under `new_parent` at `order_index`. A panel is a subtree of
-    /// one, so this covers both the panel case and the tab-onto-panel merge that carries an
-    /// arbitrary subtree across tabs — identity, state and every descendant preserved.
+    /// Move the subtree rooted at `root` under `new_parent` at `order_index`. A panel is a subtree
+    /// of one, so this covers the tab-onto-panel merge too — every descendant preserved.
     pub fn move_subtree(
         &self,
         root: &str,
@@ -1046,16 +973,9 @@ impl Layout {
         Ok(next)
     }
 
-    // --- the wire -----------------------------------------------------------
-
-    /// The arrangement as plain JSON. The `.gfi` section and the document root share this ONE
-    /// shape, and it is the types' own — `Serialize` on `Tab`/`Node`/`Axis`, so there is no second
-    /// description of the wire to keep in step with the first.
-    ///
-    /// `tabs` is an ARRAY, and the strip order is its order — there is no `order` field beside it.
-    /// A merge-patch delta carries an array whole, so any change re-sends every tab; at layout
-    /// scale that is a couple of kilobytes, and it is the price of the positions being implicit
-    /// rather than stored twice.
+    /// The arrangement as plain JSON — the types' own `Serialize`, so there is no second
+    /// description of the wire. `tabs` is an ARRAY whose order IS the strip order, so a merge-patch
+    /// delta re-sends every tab.
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| Value::Object(Default::default()))
     }
@@ -1072,10 +992,8 @@ impl Layout {
         Ok(l)
     }
 
-    /// What a TREE can still get wrong. The shapes flattening admitted — an entry hanging off a
-    /// leaf panel, two children claiming one order, a parent pointer into nothing, a cycle, a tab
-    /// with two roots or none — have no spelling here at all, so they are absent from this list
-    /// rather than checked. A duplicate id is the one class a tree admits and a keyed map could not.
+    /// What a TREE can still get wrong. A duplicate id is the one class a tree admits and a keyed
+    /// map could not; the shapes flattening allowed have no spelling here at all.
     fn validate(&self) -> Result<(), String> {
         if self.tabs.is_empty() {
             return Err("arrangement: no tabs".into());

@@ -1,15 +1,5 @@
-/**
- * Reactive perf store backing the TopBar HUD (backlog #12). It owns a
- * {@link RateMeter} that the frame layer bumps once per PAINT (one rAF flush,
- * whatever it repainted), and mirrors the meter's per-second rate into a `$state`
- * field each `tick()` so the HUD updates. The HUD drives `tick()` on a timer while
- * mounted; the paint scheduler (`frames.ts`) drives `delivered()`.
- *
- * There is deliberately no drop counter here any more: a coalesced frame belongs to
- * the STREAM whose frame was overwritten, so summing them app-wide put a total beside
- * a paint rate that is not one. `frames.dropRate(node, slot)` owns it per stream, and
- * the Metadata panel shows it beside that node's update rate.
- */
+/** Reactive perf store backing the TopBar HUD: paints per second, mirrored into `$state` on
+ * `tick()`. Drops are per stream (`frames.dropRate`), never summed app-wide. */
 import { RateMeter } from './rateMeter';
 
 const nowMs =

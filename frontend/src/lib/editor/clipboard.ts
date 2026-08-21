@@ -1,12 +1,4 @@
-/**
- * Copy/paste payload for a selection of nodes + the links among them.
- *
- * Owns the on-the-wire clipboard schema (`__goofi_clip__`) so both the editor's
- * keyboard handlers and any programmatic driver serialize/parse it the same way.
- * Instantiation is done by `graph.instantiateNodes`, keyed on each node's
- * original uid — the same identity the copied links' endpoints use, so paste can
- * remap them onto the new nodes; this module only shapes the payload.
- */
+/** Copy/paste payload for a selection of nodes + the links among them. */
 import { paramValues, type LinkInfo, type NodeInstanceInfo } from '$lib/api/control';
 
 const CLIP_VERSION = 2;
@@ -17,8 +9,7 @@ export interface ClipNode {
 	type: string;
 	category: string;
 	params: Record<string, Record<string, unknown>>;
-	/** Position relative to the selection's centroid, so a paste can be
-	 * re-centered anywhere while preserving the relative layout. */
+	/** Position relative to the selection's centroid. */
 	offset: [number, number];
 }
 
@@ -65,8 +56,7 @@ export function parseClipboard(text: string): Clipboard | null {
 	return { __goofi_clip__: CLIP_VERSION, nodes: clip.nodes, links: clip.links ?? [] };
 }
 
-/** Map clipboard nodes to instantiation specs anchored at `at` (screen-space
- * base point each node's centroid-relative offset is added to). */
+/** Map clipboard nodes to instantiation specs anchored at `at`, the paste base point. */
 export function clipToSpecs(
 	clip: Clipboard,
 	at: [number, number]

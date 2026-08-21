@@ -1,26 +1,11 @@
-/**
- * The pure three-way merge that assembles a `NodeInstanceInfo` for rendering from its three
- * sources of truth (CRDT Phase-2 read cutover — see the plan doc). Kept Svelte-free and free of any
- * store/doc handle so it unit-tests directly; the reactive store gathers the three inputs and calls
- * this per node.
- *
- *   DOC     — existence, uid/type/name/pos, per-param value + expression binding (the merge-safe
- *             leaves clients write straight to the doc).
- *   CATALOG — the STATIC per-type shape from `list_nodes` (`NodeTypeInfo`): category, doc, slots,
- *             and each param's descriptor structure (type/vmin/vmax/trigger/doc/refreshable + the
- *             default options/value). The adopted "static PARAMS" node-authoring pattern guarantees
- *             a node instance's param group/name set equals its type's — so the catalog is a
- *             reliable structural source.
- *   RUNTIME — event-sourced state that never enters the doc: error/stage/stats/
- *             membership, and per-param expression_error + refreshed StringParam options.
- */
+/** The three-way merge of a render `NodeInstanceInfo` from doc leaves, the static per-type catalog and
+ * the event-sourced runtime overlay. */
 import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
 import type { NodeView, DocParamLeaves } from './graphDoc';
 
 export type { DocParamLeaves };
 
-/** The persisted per-slot viewer blob (seeded into ui/inlineView by the store, not rendered here). */
 export type ViewersBlob = NodeInstanceInfo['viewers'];
 
 /** Per-param runtime overlay (event-sourced, never in the doc). */
@@ -28,12 +13,11 @@ export interface ParamRuntime {
 	expression_error?: string | null;
 	/** Refreshed StringParam options (device/stream pickers) — override the catalog default. */
 	options?: string[] | null;
-	/** For an expression-enabled param: its LIVE evaluated value (from `param_values`), which never
-	 * enters the doc. Overrides the committed leaf so the inspector preview tracks each evaluation. */
+	/** For an expression-enabled param, its LIVE evaluated value — it overrides the committed doc leaf. */
 	liveValue?: unknown;
 }
 
-/** Node-level runtime overlay (event-sourced from state_update/error/node_stage/node_stats/…). */
+/** Node-level runtime overlay (event-sourced, never in the doc). */
 export interface RuntimeOverlay {
 	error?: string | null;
 	stage?: NodeStage;
@@ -42,8 +26,7 @@ export interface RuntimeOverlay {
 	params?: Record<string, Record<string, ParamRuntime>>;
 }
 
-/** A descriptor for a param whose type is unknown (its node type is absent from the catalog — e.g.
- * missing deps). Renders the doc's value/binding with no bounds/options. */
+/** A descriptor for a param whose node type is absent from the catalog: no bounds, no options. */
 function unknownParam(): ParamDescriptor {
 	return {
 		type: 'unknown',
@@ -57,7 +40,6 @@ function unknownParam(): ParamDescriptor {
 	};
 }
 
-/** Merge one param: catalog structure (or an unknown descriptor) + doc value/binding + runtime. */
 function mergeParam(
 	catalog: ParamDescriptor | undefined,
 	leaf: DocParamLeaves[string][string] | undefined,
@@ -65,7 +47,6 @@ function mergeParam(
 ): ParamDescriptor {
 	// Shallow-copy so the shared catalog descriptor is never mutated.
 	const p: ParamDescriptor = catalog ? { ...catalog } : unknownParam();
-	// Doc leaves override the committed value + expression binding.
 	if (leaf && leaf.value !== undefined) (p as { value: unknown }).value = leaf.value;
 	if (leaf?.expr) {
 		p.expression = leaf.expr.source;
@@ -76,17 +57,14 @@ function mergeParam(
 		p.expression_enabled = false;
 		p.expression_triggers_process = false;
 	}
-	// Runtime overlay: expression_error always; refreshed options only for a StringParam.
 	p.expression_error = runtime?.expression_error ?? null;
 	if (p.type === 'string' && runtime?.options !== undefined) p.options = runtime.options;
-	// An enabled expression's displayed value is the LIVE evaluated one (param_values), not the
-	// committed doc leaf — override it when the runtime carries one (see _extractRuntime).
 	if (p.expression_enabled && runtime?.liveValue !== undefined)
 		(p as { value: unknown }).value = runtime.liveValue;
 	return p;
 }
 
-/** Assemble a full render `NodeInstanceInfo` from the doc view + catalog + runtime overlay. Pure. */
+/** Assemble a full render `NodeInstanceInfo` from the doc view, catalog and runtime overlay. */
 export function assembleNode(
 	view: NodeView,
 	docParams: DocParamLeaves,
@@ -94,8 +72,6 @@ export function assembleNode(
 	catalog: NodeTypeInfo | undefined,
 	runtime: RuntimeOverlay
 ): NodeInstanceInfo {
-	// Params iterate the CATALOG structure (static per type). When the type is unknown, fall back to
-	// the doc's own param keys so at least the committed values/bindings still render.
 	const params: Record<string, Record<string, ParamDescriptor>> = {};
 	const groupNames = catalog ? Object.keys(catalog.params) : Object.keys(docParams);
 	for (const group of groupNames) {

@@ -1,27 +1,4 @@
-/**
- * TypeScript port of goofi.codec — decode side only.
- *
- * Mirrors the GOOF wire format, whose source of truth is backend/goofi-codec/src/lib.rs:
- *
- *   offset  size  field
- *   ------  ----  ----------------------------------------------
- *   0       4     magic "GOOF"
- *   4       1     version (=2)
- *   5       1     dtype tag (0=ARRAY, 1=STRING, 2=TABLE)
- *   6       4     meta_len   (LE u32) — msgpack-encoded meta dict
- *   10      4     body_len   (LE u32)
- *   14      *     meta bytes
- *   14+ml   *     body
- *
- * ARRAY body:
- *   u8 ndim, u8 dtype_str_len, dtype_str ascii, ndim × u32 shape, raw bytes
- * STRING body:
- *   utf-8
- * TABLE body:
- *   u32 n, then repeated: u16 key_len, key utf-8, u32 value_len, encoded Data
- *
- * ARRAY bodies are always `<f4`: the engine casts every array to f32 at ingest.
- */
+/** Decode side of the GOOF wire format, whose source of truth is backend/goofi-codec/src/lib.rs. */
 import { decode as msgpackDecode } from '@msgpack/msgpack';
 
 export type DataType = 'ARRAY' | 'STRING' | 'TABLE';
@@ -35,7 +12,6 @@ const DTYPE_TAG: Record<number, DataType> = {
 /** A decoded Data frame. */
 export interface DataFrame {
 	dtype: DataType;
-	/** ARRAY → TypedArray + shape; STRING → string; TABLE → Record<string, DataFrame> */
 	data: ArrayData | string | Record<string, DataFrame>;
 	meta: Record<string, unknown>;
 }
@@ -143,10 +119,6 @@ function readTypedArray(
 	byteOffset: number,
 	nBytes: number
 ): ArrayLike<number> & { length: number } {
-	// numpy dtype strings start with byteorder ('<', '>', '=', '|') then a
-	// kind char (i/u/f/b) then itemsize. We only support little-endian or
-	// byte-agnostic types (most goofi data is one of those — and js
-	// TypedArrays are LE on every platform we care about).
 	const bo = dtypeStr.charAt(0);
 	if (bo === '>') {
 		throw new Error(`Big-endian arrays unsupported: ${dtypeStr}`);
@@ -155,23 +127,17 @@ function readTypedArray(
 	const kind = tail.charAt(0);
 	const itemsize = parseInt(tail.slice(1), 10);
 	const count = nBytes / itemsize;
-	// Slice into a fresh buffer so the consumer can outlive the WS message
-	// frame (which may be reused by the runtime).
+	// Slice into a fresh buffer: the consumer outlives the WS message frame, which may be reused.
 	const slice = buffer.slice(byteOffset, byteOffset + nBytes);
 	if (kind + itemsize !== 'f4') {
-		// The canonical encoder (`backend/goofi-codec`) writes `<f4` for EVERY array — the engine
-		// casts at ingest (`cast_to_f32`), so there is no other array dtype on the wire. Anything
-		// else means the encoder changed without this port; fail loudly rather than mis-read bytes.
 		throw new Error(`Unsupported numpy dtype: ${dtypeStr} (the wire is f32-only)`);
 	}
 	return new Float32Array(slice, 0, count);
 }
 
-/** Helpers consumed by viewers. */
 export function isArrayFrame(f: DataFrame): f is DataFrame & { data: ArrayData } {
 	return f.dtype === 'ARRAY';
 }
-/** True if a numpy dtype string names a (little-endian / byte-agnostic) float. */
 export function isFloatDtype(dtype: string): boolean {
 	return dtype.startsWith('<f') || dtype.startsWith('|f') || dtype.startsWith('=f');
 }

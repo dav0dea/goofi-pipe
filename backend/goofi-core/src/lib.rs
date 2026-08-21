@@ -1,17 +1,5 @@
-//! goofi-core — the shared data vocabulary for the Rust engine.
-//!
-//! `Data` is the unit that flows between nodes: an immutable, `Arc`-backed value
-//! (n-d array, string, or recursive table) plus a `Meta` sidecar. In-process, a
-//! `Data` crosses a node boundary as a cheap `Clone` (one `Arc` bump) — never a
-//! copy or a serialization. Serialization exists only at the browser (GOOF) and
-//! subprocess boundaries, in other crates.
-//!
-//! Every array `Data` is **f32** — the only element type. Foreign node outputs are
-//! cast to f32 at the ingest boundary ([`cast_to_f32`], the one place a dtype is
-//! parsed); `ArrayStore` stores no dtype. Construction ([`Data::array_f32`])
-//! promotes 0-d arrays to 1-d and validates per-dim channel coordinate lists
-//! against the shape. `shape`/`dtype` are DERIVED (dtype is always `float32`) and
-//! never stored in `Meta`; the GOOF encoder projects them into the wire meta dict.
+//! The shared data vocabulary: `Data` — an immutable `Arc`-backed value (array, string or table)
+//! plus a `Meta` sidecar. Every array is f32; `shape`/`dtype` are derived, never stored.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,13 +11,8 @@ pub mod path;
 pub mod probe;
 pub mod reduce;
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoofiError {
-    /// A `Data` construction invariant was violated.
     Invalid(String),
 }
 
@@ -45,11 +28,7 @@ impl std::error::Error for GoofiError {}
 
 pub type Result<T> = std::result::Result<T, GoofiError>;
 
-// ---------------------------------------------------------------------------
-// SrcDtype — the ingest-only source dtype. NEVER stored on a `Data` (storage is
-// always f32); used solely at the boundary to cast a foreign numpy array to f32.
-// ---------------------------------------------------------------------------
-
+/// An ingest-only source dtype, used to cast a foreign array to f32; never stored on a `Data`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum SrcDtype {
     F16,
@@ -76,7 +55,6 @@ impl SrcDtype {
         }
     }
 
-    /// numpy `str(dtype)` — the human name, used in the ingest cast warning.
     pub fn numpy_name(self) -> &'static str {
         match self {
             SrcDtype::F16 => "float16",
@@ -118,7 +96,6 @@ impl SrcDtype {
         })
     }
 
-    /// Read element `i` of a raw little-endian buffer as `f32`.
     fn read_f32(self, b: &[u8], i: usize) -> f32 {
         let sz = self.itemsize();
         let s = &b[i * sz..i * sz + sz];
@@ -138,7 +115,6 @@ impl SrcDtype {
     }
 }
 
-/// Decode an IEEE-754 half (raw bits) to f32 — handles subnormals, inf, NaN.
 fn f16_to_f32(bits: u16) -> f32 {
     let sign = (bits >> 15) & 1;
     let exp = ((bits >> 10) & 0x1f) as i32;
@@ -153,9 +129,7 @@ fn f16_to_f32(bits: u16) -> f32 {
     if sign == 1 { -val } else { val }
 }
 
-/// Reinterpret a foreign little-endian array buffer as f32 LE bytes. `did_cast`
-/// is false only when `src == SrcDtype::F32` (bytes returned unchanged). Errors if
-/// `bytes.len()` is not a multiple of the source itemsize (never a silent misread).
+/// Reinterpret a foreign little-endian buffer as f32 LE bytes; the flag is false when no cast ran.
 pub fn cast_to_f32(src: SrcDtype, bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
     let sz = src.itemsize();
     if !bytes.len().is_multiple_of(sz) {
@@ -175,11 +149,7 @@ pub fn cast_to_f32(src: SrcDtype, bytes: &[u8]) -> Result<(Vec<u8>, bool)> {
     Ok((out, true))
 }
 
-/// Emit a one-time operator warning that a node's `slot` output was cast to f32 from a
-/// foreign dtype `src`. Deduped via `warned` (keyed by dtype) so a node emitting e.g. f64
-/// every tick warns exactly once. No-op (returns `false`) when `src` is already f32 or was
-/// warned before; returns `true` on the tick it actually warns. The node/slot identity a
-/// caller has is folded into the message (there is no per-node UI warning channel yet).
+/// Warn once per source dtype that `slot`'s output was cast to f32; true on the tick it warns.
 pub fn warn_cast_once(warned: &mut std::collections::HashSet<SrcDtype>, slot: &str, src: SrcDtype) -> bool {
     if src == SrcDtype::F32 || !warned.insert(src) {
         return false;
@@ -192,14 +162,8 @@ pub fn warn_cast_once(warned: &mut std::collections::HashSet<SrcDtype>, slot: &s
     true
 }
 
-// ---------------------------------------------------------------------------
-// Array storage
-// ---------------------------------------------------------------------------
-
-/// A row-major, little-endian, contiguous **f32** array with a derived shape. The
-/// buffer is `Arc`-shared so in-process fan-out is a refcount bump, never a copy
-/// (a numpy view or audio view can alias it zero-copy). f32 is the *only* element
-/// type a `Data` array carries — there is no stored dtype.
+/// A row-major, little-endian, contiguous f32 array; the buffer is `Arc`-shared, so fan-out
+/// is a refcount bump and a numpy or audio view can alias it zero-copy.
 #[derive(Clone, Debug)]
 pub struct ArrayStore {
     shape: Vec<usize>,
@@ -207,7 +171,7 @@ pub struct ArrayStore {
 }
 
 impl ArrayStore {
-    /// Build without normalization — assumes `buf.len() == nelem * 4`.
+    /// Build without normalization — the caller guarantees `buf.len() == nelem * 4`.
     pub fn new(shape: Vec<usize>, buf: Arc<[u8]>) -> ArrayStore {
         ArrayStore { shape, buf }
     }
@@ -222,10 +186,6 @@ impl ArrayStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Meta
-// ---------------------------------------------------------------------------
-
 /// A per-axis coordinate label (electrode name, frequency, time, …).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Coord {
@@ -233,31 +193,22 @@ pub enum Coord {
     Str(Arc<str>),
 }
 
-/// Labels for one array dimension. An unlabeled dimension is `Axis::default()` (the
-/// "null entry"); `coords`, when present, has one entry per index along the dimension.
-/// Coords are `Arc`-shared so large (kHz/HD) axes don't copy on fan-out. (An axis NAME
-/// belongs with the named-dim op that would read it — and with the codec and pymod wire
-/// mappings it would need — not ahead of one.)
+/// Labels for one array dimension; `coords`, when present, has one entry per index along it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Axis {
     pub coords: Option<Arc<[Coord]>>,
 }
 
 impl Axis {
-    /// An axis carrying coords.
     pub fn coords(c: impl Into<Arc<[Coord]>>) -> Axis {
         Axis { coords: Some(c.into()) }
     }
-    /// Whether this axis carries no coords (the "null entry").
     pub fn is_empty(&self) -> bool {
         self.coords.is_none()
     }
 }
 
-/// Positional per-dimension labels: `axes[d]` describes dimension `d`; an empty
-/// leading/middle dimension is `Axis::default()`; trailing unlabeled dimensions may
-/// be omitted (`len <= ndim`). Replaces the old dim-keyed map — the field and wire
-/// key stay `channels`.
+/// Positional per-dimension labels; trailing unlabeled dimensions may be omitted (`len <= ndim`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Axes(pub Vec<Axis>);
 
@@ -265,7 +216,6 @@ impl Axes {
     pub fn new() -> Axes {
         Axes(Vec::new())
     }
-    /// Whether no dimension carries labels.
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(Axis::is_empty)
     }
@@ -281,8 +231,7 @@ impl Axes {
         self
     }
 
-    /// Subset dimension `dim`'s coords to `indices` (slice/select). A missing index
-    /// is skipped; an unlabeled dim is unchanged.
+    /// Subset dimension `dim`'s coords to `indices`; a missing index is skipped.
     pub fn sliced(&self, dim: usize, indices: &[usize]) -> Axes {
         let mut v = self.0.clone();
         if let Some(a) = v.get_mut(dim) {
@@ -295,15 +244,8 @@ impl Axes {
     }
 }
 
-/// A meta value (the open map the inspector renders). The `Axes` variant carries the
-/// structured channel labels so `channels` keeps its typed slicing API *inside* the map;
-/// it only ever appears as the top-level `channels` value.
-///
-/// serde is `untagged`, so a value serializes as itself (`250.0`, not `{"Float":250.0}`) —
-/// this is how pymod pythonizes the meta map to/from a Python dict. `Bytes`/`Axes` are
-/// `skip`ped from serde: `channels` (the only `Axes`) is (de)serialized by pymod's dedicated
-/// `{dimN:[…]}` mapping, and `Bytes` never appears in a Python-facing meta value — skipping
-/// both avoids the untagged list/bytes ambiguity and needs no serde on `Axes`/`Coord`.
+/// A meta value. serde is `untagged`, so a value serializes as itself; `Bytes`/`Axes` are skipped
+/// because pymod maps `channels` with its own `{dimN:[…]}` form and the untagged list/bytes clash.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum MetaValue {
@@ -321,9 +263,7 @@ pub enum MetaValue {
     Axes(Axes),
 }
 
-/// Reserved builtin meta keys — always present in a [`Meta`] at runtime (`Null`/empty when
-/// unset), so a lookup never distinguishes "absent" from "unset". `shape`/`dtype` are NOT
-/// keys — they are derived from the array and projected only at encode time.
+/// Reserved builtin meta keys — always present in a [`Meta`], `Null`/empty when unset.
 pub const META_SFREQ: &str = "sfreq";
 pub const META_UFREQ: &str = "ufreq";
 pub const META_INDEX: &str = "index";
@@ -333,12 +273,7 @@ const BUILTIN_KEYS: [&str; 5] = [META_SFREQ, META_UFREQ, META_INDEX, META_CHANNE
 
 static EMPTY_AXES: Axes = Axes(Vec::new());
 
-/// A `Data`'s metadata sidecar: an insertion-ordered map from key to [`MetaValue`], with the
-/// builtin keys guaranteed present. Typed accessors read/write the builtins without the caller
-/// touching string keys; `sfreq`/`ufreq`/`index` are the hot ones (a small map lookup, not a
-/// struct field — a deliberate uniformity-for-speed trade). `channels` is stored as a
-/// [`MetaValue::Axes`] so it keeps its typed API. The codec skips `Null` at encode time so an
-/// unset builtin stays off the wire.
+/// A `Data`'s metadata sidecar: an insertion-ordered map with the builtin keys always present.
 #[derive(Clone, Debug)]
 pub struct Meta(IndexMap<String, MetaValue>);
 
@@ -363,22 +298,17 @@ impl Meta {
         Meta::new()
     }
 
-    // --- generic map access ---
-
     /// The value at `key`, or `None` if absent OR present-but-`Null` (an unset builtin).
     pub fn get(&self, key: &str) -> Option<&MetaValue> {
         self.0.get(key).filter(|v| !matches!(v, MetaValue::Null))
     }
-    /// Insert/overwrite `key`.
     pub fn set(&mut self, key: impl Into<String>, v: MetaValue) {
         self.0.insert(key.into(), v);
     }
-    /// Iterate ALL entries (builtins + extras), including `Null` builtins.
+    /// Iterate ALL entries, `Null` builtins included.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &MetaValue)> {
         self.0.iter()
     }
-
-    // --- typed builtin accessors (coerce leniently; a round-tripped Int reads as its number) ---
 
     pub fn sfreq(&self) -> Option<f64> {
         as_f64(self.0.get(META_SFREQ))
@@ -418,8 +348,6 @@ impl Meta {
         self.set(META_REDUCED, v.unwrap_or(MetaValue::Null));
     }
 
-    // --- builders (replace the `Meta { field, ..Default::default() }` literals) ---
-
     pub fn with_sfreq(mut self, v: Option<f64>) -> Meta {
         self.set_sfreq(v);
         self
@@ -442,7 +370,7 @@ impl Meta {
     }
 }
 
-/// Coerce a meta value to f64 (a wire round-trip may deliver an integer for a rate).
+/// Coerce a meta value to f64 — a wire round-trip may deliver an integer for a rate.
 fn as_f64(v: Option<&MetaValue>) -> Option<f64> {
     match v {
         Some(MetaValue::Float(f)) => Some(*f),
@@ -451,10 +379,6 @@ fn as_f64(v: Option<&MetaValue>) -> Option<f64> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Data
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -484,8 +408,7 @@ pub struct DataInner {
 #[derive(Clone, Debug)]
 pub struct Data(Arc<DataInner>);
 
-/// The data plane queries a `Data` frame's shape through this shared seam so the ViewSpec
-/// merge stays payload-free (goofi-view never sees `Data`). Non-array frames report 0 dims.
+/// Non-array frames report 0 dims.
 impl goofi_view::Reducible for Data {
     fn dtype_tag(&self) -> u8 {
         self.0.value.dtype_tag()
@@ -524,11 +447,7 @@ impl Data {
         }))
     }
 
-    /// A copy of this `Data` with the engine-owned meta stamped on — the continuity
-    /// `index` and the measured update-rate `ufreq` — sharing the value buffer (an
-    /// `Arc` bump — never a payload copy). Only the small `Meta` sidecar is cloned.
-    /// The engine calls this once per emitted frame; both fields are authoritative
-    /// (overwritten, never inherited). `ufreq` is `None` before a rate is measured.
+    /// A copy with the engine-owned `index` and `ufreq` stamped on — overwritten, never inherited.
     pub fn with_stamps(&self, index: u64, ufreq: Option<f64>) -> Data {
         let mut meta = self.0.meta.clone();
         meta.set_index(Some(index));
@@ -553,14 +472,9 @@ impl Data {
         }))
     }
 
-    /// Build an f32 array `Data` from raw little-endian f32 bytes, applying the
-    /// construction invariants: 0-d → 1-d promotion and channel coord-length
-    /// validation against the (post-promotion) shape. Foreign dtypes are cast to
-    /// f32 at the ingest boundary via [`cast_to_f32`] before reaching here.
+    /// Build an f32 array `Data`, promoting 0-d to 1-d and validating channel coords.
     pub fn array_f32(shape: Vec<usize>, buf: Vec<u8>, meta: Meta) -> Result<Data> {
-        // Checked arithmetic: a hostile/garbled shape (e.g. from a decoded frame)
-        // could otherwise overflow `usize` and wrap `expect` to a small value that
-        // spuriously matches a short buffer. Overflow is a clean error, never a wrap.
+        // Checked: a garbled shape could otherwise wrap `expect` down onto a short buffer.
         let nelem: usize = shape
             .iter()
             .try_fold(1usize, |a, &d| a.checked_mul(d))
@@ -575,11 +489,8 @@ impl Data {
             )));
         }
 
-        // 0-d -> 1-d promotion (a scalar becomes a length-1 vector).
         let shape = if shape.is_empty() { vec![1] } else { shape };
 
-        // Validate positional axis coords against the array shape: no more axes than
-        // dimensions, and each labeled dim's coord count matches its extent.
         if meta.channels().0.len() > shape.len() {
             return Err(GoofiError::Invalid(format!(
                 "channels has {} axes, exceeds ndim {}",
@@ -602,7 +513,6 @@ impl Data {
         Ok(Data::array(ArrayStore::new(shape, Arc::from(buf.into_boxed_slice())), meta))
     }
 
-    /// The array this frame carries, or a message naming what it carries instead.
     pub fn as_array(&self) -> std::result::Result<&ArrayStore, String> {
         match &self.0.value {
             Value::Array(a) => Ok(a),
@@ -611,24 +521,13 @@ impl Data {
         }
     }
 
-    /// State what shape this node can work with, and get the array back if it holds:
-    ///
-    /// ```text
-    /// let a = data.assert_ndims().at_least(2)?;
-    /// ```
-    ///
-    /// The `?` is the whole of the sugar — a node says what it needs on one line and the message
-    /// it would otherwise have written by hand becomes the node's error.
+    /// State the rank this node needs and get the array back when it holds.
     pub fn assert_ndims(&self) -> Ndims<'_> {
         Ndims(self)
     }
 }
 
-/// A pending claim about a frame's rank. Every method answers the array when the claim holds, and
-/// a message naming both the claim and what arrived when it does not.
-///
-/// It carries the frame rather than the number so the error can say what SHAPE disagreed: "needs
-/// at least 2 dimensions, got [512]" is actionable where "needs at least 2, got 1" is a puzzle.
+/// A pending claim about a frame's rank; it carries the frame so the error can name the shape.
 pub struct Ndims<'a>(&'a Data);
 
 impl<'a> Ndims<'a> {
@@ -656,14 +555,8 @@ impl<'a> Ndims<'a> {
     }
 }
 
-/// Resolve a signed axis against a rank, the way numpy does: `-1` is the last dimension, `-2` the
-/// one before it. Out of range is an error rather than a clamp — a node told to work on an axis
-/// that is not there has been misconfigured, and silently working on a different one is worse than
-/// saying so.
-///
-/// **Time is the last dimension and channels the second-to-last**, throughout goofi. A node with an
-/// `axis` param defaults to `-1` for that reason; everything before the axes it names is carried
-/// through untouched.
+/// Resolve a signed axis against a rank the way numpy does; out of range is an error, never a clamp.
+/// Throughout goofi time is the last dimension and channels the second-to-last.
 pub fn resolve_axis(axis: i64, ndim: usize) -> std::result::Result<usize, String> {
     let n = ndim as i64;
     let resolved = if axis < 0 { n + axis } else { axis };
@@ -673,10 +566,7 @@ pub fn resolve_axis(axis: i64, ndim: usize) -> std::result::Result<usize, String
     Ok(resolved as usize)
 }
 
-// ---------------------------------------------------------------------------
-// SlotType — the Data kind a slot carries (frontend `input_slots` dtype name)
-// ---------------------------------------------------------------------------
-
+/// The `Data` kind a slot carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum SlotType {
     Array,
@@ -693,7 +583,6 @@ impl SlotType {
             SlotType::Table => "TABLE",
         }
     }
-    /// Parse the frontend-facing slot name (`"ARRAY"`/`"STRING"`/`"TABLE"`).
     pub fn from_name(name: &str) -> Option<SlotType> {
         match name {
             "ARRAY" => Some(SlotType::Array),
@@ -704,11 +593,7 @@ impl SlotType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Param — the typed parameter descriptors (the `common` scheduling group is
-// lifted into RunPolicy elsewhere and is NOT a Param).
-// ---------------------------------------------------------------------------
-
+/// A typed parameter descriptor; the `common` scheduling group is a RunPolicy, not a `Param`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Param {
     Float {
@@ -727,13 +612,10 @@ pub enum Param {
     Str {
         value: String,
         options: Option<Vec<String>>,
-        /// Whether this param is refreshable — the node re-enumerates its `options`
-        /// via `on_param_refreshed` when the UI's ⟳ button fires (device pickers).
-        /// Dispatch is by `ParamKey`, so a bool ("is refreshable") suffices.
+        /// Whether the UI's ⟳ button makes the node re-enumerate `options` via `on_param_refreshed`.
         refresh: bool,
     },
-    /// Momentary trigger. The graph clears `fired` by writing the param through
-    /// `param_from_json` with `fire_triggers: false`; there is no read-and-clear accessor.
+    /// Momentary trigger; the graph clears `fired` by writing the param, not by a read-and-clear.
     Trigger {
         fired: bool,
     },

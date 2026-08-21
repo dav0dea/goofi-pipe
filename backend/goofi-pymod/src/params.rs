@@ -1,13 +1,10 @@
 //! The Python-facing param + slot-type descriptors a node states in its `PARAMS` and
-//! `INPUTS` constants. Plain data holders — `introspect` reads their attributes to build
-//! the Rust manifest.
+//! `INPUTS` constants.
 
 use pyo3::prelude::*;
 
-/// `goofi.DataType.ARRAY|STRING|TABLE` — the slot element type. `.value` is the
-/// wire name (`"ARRAY"`/…) so introspect serializes it directly. The variant names
-/// are the Python-facing API (`goofi.DataType.ARRAY`) + wire names, so they stay
-/// screaming-case despite the acronym lint.
+/// `goofi.DataType.ARRAY|STRING|TABLE` — the slot element type; `.value` is the wire name.
+/// The variants are the Python-facing API, so they stay screaming-case despite the acronym lint.
 #[pyclass(eq, eq_int)]
 #[derive(PartialEq)]
 #[allow(clippy::upper_case_acronyms)]
@@ -29,10 +26,8 @@ impl DataType {
     }
 }
 
-/// `goofi.InputSlot(dtype, required=False, trigger=True)` — an input-slot declaration that
-/// carries the per-slot options a bare `goofi.DataType` has nowhere to put. The defaults ARE
-/// the bare form's behaviour, so `INPUTS` may name either and no existing node has to change. `multi` is deliberately absent: the Python tier has no variadic plumbing, and
-/// a flag that does nothing is worse than none.
+/// `goofi.InputSlot(dtype, required=False, trigger=True)` — the per-slot options a bare
+/// `goofi.DataType` has nowhere to put; the defaults are the bare form's behaviour.
 #[pyclass]
 pub struct InputSlot {
     #[pyo3(get)]

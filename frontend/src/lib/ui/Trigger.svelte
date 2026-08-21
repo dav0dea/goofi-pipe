@@ -1,13 +1,4 @@
-<!--
-  Trigger — the action-button param control (spec §2.2): a value-less "do it now" button (the goofi
-  `trigger` param). Quiet by default so it sits in the same visual register as the other controls,
-  warming to the accent on hover and filling accent on press. Dumb: it forwards `onclick` (and every
-  other button attribute) via `...rest`; N wires it to fire the param. `children` is the label.
-
-  Fully self-styled from F tokens (like `Button`) so it renders correctly independent of the app.css
-  base `button` rule, which is a permanent `font: inherit` + `cursor` reset and never a skin.
-  `class` merged, `data-testid` forwarded.
--->
+<!-- Trigger — the value-less "do it now" button behind a `trigger` param. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLButtonAttributes } from 'svelte/elements';
@@ -51,7 +42,6 @@
 		background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
 		border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
 	}
-	/* Press fills accent — the tactile "fired" confirmation. */
 	.ui-trigger:active:not(:disabled) {
 		background: var(--accent);
 		border-color: var(--accent);

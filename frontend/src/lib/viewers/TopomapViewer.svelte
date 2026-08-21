@@ -33,7 +33,6 @@
 	let field: Float32Array | null = null;
 
 
-	// The active colormap LUT, rebuilt only when the colormap setting changes.
 	const lutFor = makeLUTCache();
 
 	function drawMessage(ctx: CanvasRenderingContext2D, w: number, h: number, msg: string): void {
@@ -141,9 +140,7 @@
 		const count = pixelCache.count;
 		const L = lutFor(colormap);
 
-		// Value range: scanned from the field when auto, else the manual [vmin,
-		// vmax]. Contours posterize the normalized value into bands so their
-		// boundaries read as iso-lines.
+		// Contours posterize the normalized value into bands, so the boundaries read as iso-lines.
 		let lo = vmin;
 		let hi = vmax;
 		if (autoRange) {

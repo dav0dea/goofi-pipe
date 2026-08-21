@@ -1,8 +1,5 @@
-//! Loading a node module + finding its `goofi.Node` subclass — the one implementation
-//! shared by the discovery probe (`introspect`) and the in-process executor
-//! (`goofi-python`'s `inproc::PyNode`). A module is loaded from a file path (discovery) or an
-//! in-memory source string (the host's factory + tests); either way `find_node_class`
-//! returns the first strict `Node` subclass, and `instantiate` calls it.
+//! Loading a node module + finding its `goofi.Node` subclass — the one implementation the
+//! discovery probe and the in-process executor share.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};

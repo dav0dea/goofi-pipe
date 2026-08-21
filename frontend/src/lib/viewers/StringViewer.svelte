@@ -9,8 +9,7 @@
 	const useMarkdown = $derived(Boolean(settings.markdown));
 	const wrap = $derived(settings.wrap !== false);
 	const text = $derived(typeof frame.data === 'string' ? frame.data : String(frame.data));
-	// Node-sourced strings are untrusted — renderMarkdown escapes raw HTML and
-	// blocks dangerous URL schemes before {@html} (report B14).
+	// Node strings are untrusted: renderMarkdown escapes raw HTML before {@html}.
 	const html = $derived(useMarkdown ? renderMarkdown(text) : '');
 </script>
 
@@ -21,10 +20,7 @@
 {/if}
 
 <style>
-	/* String Data is a payload, so mono (D-T3) — the same face the node canvas paints it in, and
-	   stated here rather than inherited: `.text` is a bare <pre>, which app.css resets to `font:
-	   inherit`, and the panel around it is chrome. The markdown body inherits this too, including
-	   its `code`/`pre` runs (same reset), so the document reads in one face. */
+	/* Mono stated, not inherited: `.text` is a bare <pre>, which app.css resets to `font: inherit`. */
 	.text,
 	.md {
 		width: 100%;
@@ -51,9 +47,7 @@
 	.md {
 		line-height: 1.5;
 	}
-	/* The rendered document's own type scale is deliberately `em`-relative: headings, lists and
-	   quotes size against the viewer root (which IS on --fs-*), so the prose keeps its internal
-	   hierarchy at every root size. Absolute rungs here would flatten it. */
+	/* `em`-relative so the prose keeps its internal hierarchy at every root size. */
 	.md :global(h1),
 	.md :global(h2),
 	.md :global(h3) {

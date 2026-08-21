@@ -1,6 +1,4 @@
-//! The node-introspection probe schema: the JSON `goofi.introspect` emits and the discoverer
-//! parses. Defined once (serde) so the producer (`goofi-pymod`) and consumer (`goofi-node`)
-//! can't drift, and neither hand-rolls (de)serialization.
+//! The node-introspection probe schema — defined once, so producer and consumer cannot drift.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,10 +7,8 @@ pub struct Introspection {
     pub gil_safe: bool,
     #[serde(default)]
     pub doc: String,
-    /// Whether the node makes frames on its own schedule (`producer = True` on the class) rather
-    /// than in answer to an input. `#[serde(default)]` is load-bearing, for the same reason
-    /// [`Slot::required`]'s is: an older installed `goofi` wheel emits no `producer` key, and a
-    /// hard parse failure would silently grey out every node it discovers.
+    /// Whether the node makes frames on its own schedule rather than in answer to an input.
+    /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default)]
     pub producer: bool,
     pub inputs: Vec<Slot>,
@@ -27,9 +23,7 @@ pub struct Slot {
     pub trigger: bool,
     pub multi: bool,
     /// Whether the engine refuses to tick the node while this slot's last-store is empty.
-    /// `#[serde(default)]` is load-bearing, for the same reason [`Param::doc`]'s is: an older
-    /// installed `goofi` wheel emits no `required` key, and a hard parse failure would silently
-    /// grey out every node it discovers (the probe swallows failures by design).
+    /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default)]
     pub required: bool,
 }
@@ -44,18 +38,15 @@ pub struct OutSlot {
 pub struct Param {
     pub group: String,
     pub name: String,
-    /// Help text for the UI tooltip. `#[serde(default)]` is load-bearing: an older installed
-    /// `goofi` wheel emits no `doc` key, and a hard parse failure would silently grey out every
-    /// node it discovers (the probe swallows failures by design). Skipped when absent so an
-    /// undocumented param's JSON is unchanged from before the field existed.
+    /// Help text for the UI tooltip.
+    /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     #[serde(flatten)]
     pub spec: ParamSpec,
 }
 
-/// The kind-specific fields, tagged by `kind` (`{"kind":"int",…}`) — exhaustive, so neither
-/// side has an unknown-kind path.
+/// The kind-specific fields, tagged by `kind` — exhaustive, so neither side has an unknown kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ParamSpec {

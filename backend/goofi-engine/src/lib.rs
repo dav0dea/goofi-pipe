@@ -1,7 +1,4 @@
 //! The graph, and the nodes that schedule themselves.
-//!
-//! A node's DATA never comes back here: frames go out on that node's own shared-memory service and
-//! a consumer subscribes to it, so there is no last-output cache and no privileged path in.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -58,8 +55,7 @@ impl std::fmt::Display for Uid {
 const MANIFEST_VERSION: i64 = 7;
 
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
-/// `add_node` answers and *addressable* only once it reports [`runtime::Status::Ready`]: pub/sub
-/// has no history, so a `Control` sent before its subscriber exists is simply lost.
+/// `add_node` answers and *addressable* only once it reports [`runtime::Status::Ready`].
 struct NodeHost {
     /// A flag rather than a `Control::Terminate`, because a node removed before it was
     /// addressable has no sink to receive one.
@@ -96,9 +92,8 @@ struct NodeEntry {
     /// What the node last reported evaluating its bindings to. Kept apart from `params` so a
     /// broken binding still has the authored literal to fall back to.
     evaluated: IndexMap<ParamKey, Param>,
-    /// Every error THIS INSTANCE reported, by param — a refused literal, a binding that would not
-    /// evaluate. A whole-record projection of the node's own map, and it dies with the instance:
-    /// `restart_node` clears it, where `ExprBinding::bind_error` survives because the source does.
+    /// Every error THIS INSTANCE reported, by param. It dies with the instance, where
+    /// `ExprBinding::bind_error` survives because the source does.
     param_errors: IndexMap<ParamKey, String>,
     /// `Some` when INITIALIZATION failed — the param replay and `setup()` together, which are one
     /// unit. Not `last_error`, which a later process failure would overwrite.
@@ -134,9 +129,8 @@ struct Link {
     slot_in: &'static str,
 }
 
-/// Every entry point into a node's own code goes through here: a node is third-party — a crate
-/// registered through `inventory`, or a `.py` the user just edited — and an unguarded panic costs
-/// its thread silently and for good.
+/// Every entry point into a node's own code goes through here: a node is third-party, and an
+/// unguarded panic costs its thread silently and for good.
 fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
 }
@@ -157,10 +151,7 @@ fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// A param's value as JSON, and the one definition of it — the inverse of [`param_from_json`].
-///
-/// `fire_triggers` is where the two callers want opposite answers: a PERSISTED value must never
-/// record a trigger as fired, or reloading the patch fires it again, while a UI projection must
-/// show the live state.
+/// `fire_triggers` differs by caller: a PERSISTED value must never record a trigger as fired.
 pub fn param_value_json(p: &Param, fire_triggers: bool) -> serde_json::Value {
     use serde_json::json;
     match p {
@@ -172,9 +163,8 @@ pub fn param_value_json(p: &Param, fire_triggers: bool) -> serde_json::Value {
     }
 }
 
-/// Coerce a JSON scalar into a `Param` of `existing`'s type, keeping its bounds — the inverse of
-/// [`param_value_json`]. `fire_triggers` is `false` on a `.gfi` load: a persisted or hand-edited
-/// value must never trip a node's trigger on the way in.
+/// Coerce a JSON scalar into a `Param` of `existing`'s type, keeping its bounds. `fire_triggers` is
+/// `false` on a `.gfi` load: a persisted value must never trip a node's trigger on the way in.
 pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: bool) -> Param {
     match existing {
         Param::Float { vmin, vmax, .. } => Param::Float { value: v.as_f64().unwrap_or(0.0), vmin: *vmin, vmax: *vmax },
@@ -236,9 +226,8 @@ struct DynType {
     factory: SharedFactory,
 }
 
-/// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the
-/// CALLER can read them: `Replaced` is an ordinary refresh under a rescan, and two node files
-/// claiming one name under a boot scan.
+/// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the CALLER
+/// can tell a rescan's refresh from two node files claiming one name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registration {
     /// The name was free; the type entered the registry.
@@ -263,23 +252,20 @@ struct ExprBinding {
     rewritten: String,
     /// Derived: one entry per variable `rewritten` names, resolved against the graph.
     vars: Vec<BoundVar>,
-    /// The rewrite's variable list BEFORE resolution — kept because a variable that failed to
-    /// resolve no longer says what it was looking for, and those are what a new node or a freshly
-    /// defined global has to re-resolve.
+    /// The rewrite's variable list BEFORE resolution — a variable that failed to resolve no longer
+    /// says what it was looking for, and that is what a new node or global has to re-resolve.
     terms: Vec<expr_rewrite::VarRef>,
     /// This binding's identity in the wire planner, stable across a rebind — its index into
     /// [`Graph::bind_keys`].
     bind_id: usize,
-    /// Why the GRAPH could not bind this source: a rewrite, a resolution or a compile failure.
-    /// Written by `set_expression` and nowhere else — it describes the SOURCE, so it outlives any
-    /// one instance, where what the node found evaluating (`NodeEntry::param_errors`) does not.
+    /// Why the GRAPH could not bind this source. Written by `set_expression` and nowhere else — it
+    /// describes the SOURCE, so it outlives any one instance.
     bind_error: Option<String>,
 }
 
 impl ExprBinding {
-    /// Whether the graph SHIPS this binding. A disabled one is source the user is holding, and one
-    /// the graph could not bind is source the node can do nothing with: both leave the param on its
-    /// literal, and the node is TOLD so rather than left to discover a second reason for itself.
+    /// Whether the graph SHIPS this binding. A disabled one and one the graph could not bind both
+    /// leave the param on its literal, and the node is TOLD so.
     fn live(&self) -> bool {
         self.enabled && self.bind_error.is_none()
     }
@@ -381,7 +367,6 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 impl Drop for Graph {
     /// A node's transport is owned by its own thread and releases its segments when it DROPS, so
     /// raising the halt flags and returning leaves every one allocated if the process exits first.
-    /// Measured after one such run: 82 leaked `/dev/shm/iox2_*` files holding 4.7 GB.
     fn drop(&mut self) {
         self.shutdown();
     }
@@ -456,9 +441,7 @@ impl Graph {
             std::thread::sleep(Duration::from_millis(1));
         }
         // The graph's OWN end of each node goes here too: `NodeChannel` holds an iceoryx2 node of
-        // its own — and the wire planner keeps a SECOND handle on it, which is why `remove_node`
-        // forgets a uid there as well as dropping its entry. Clearing the entries alone released a
-        // node's own transport and kept the graph's half of it for the process lifetime.
+        // its own, and the wire planner keeps a SECOND handle on it.
         self.nodes.clear();
         self.wire.reset_channels();
     }
@@ -470,8 +453,7 @@ impl Graph {
     }
 
     /// Apply one global change (`None` = remove; a system delete is refused). Every binding that
-    /// READS this global is re-resolved and re-sent — there is no invalidation message, because
-    /// the graph resolves a global's value and ships it inline.
+    /// READS this global is re-resolved and re-sent — a global's value is shipped inline.
     pub fn apply_global_change(
         &mut self,
         name: &str,
@@ -504,10 +486,8 @@ impl Graph {
         self.rebind(&reading);
     }
 
-    /// Re-resolve and re-send every binding whose source references the node display name `name`.
-    /// §5.3's "renamed, added, removed or restarted", stated once — what all four have in common is
-    /// that a NAME started or stopped meaning what it did, and the authored source is written
-    /// against names.
+    /// Re-resolve and re-send every binding whose source references the node display name `name` —
+    /// §5.3's "renamed, added, removed or restarted", stated once.
     fn rebind_naming(&mut self, name: &str) {
         let naming = self.bindings_where(|b| {
             b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Node { name: n, .. } if n == name))
@@ -526,9 +506,7 @@ impl Graph {
     }
 
     /// Re-run `set_expression` on each of these bindings from its AUTHORED source — the one
-    /// operation that re-derives everything a resolution depends on (the rewrite, the variables,
-    /// the compiled handle, the wire plan). Every "the graph changed under a binding" path funnels
-    /// here rather than patching a resolved field in place, so there is one re-resolution.
+    /// operation that re-derives the rewrite, the variables, the handle and the wire plan together.
     fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
         for (uid, key) in bindings {
             let Some(b) = self.nodes.get(uid).and_then(|e| e.bindings.get(key)) else { continue };
@@ -543,13 +521,8 @@ impl Graph {
         self.evaluator = Some(evaluator);
     }
 
-    /// Register a type discovered at runtime; `manifest` leaks, once per type.
-    ///
-    /// A built-in's name is REFUSED — a built-in always wins resolution, so such a type could
-    /// never be reached. Another runtime type's name is REPLACED, because a rescan re-registers
-    /// everything it finds and refusing would make the second scan a silent no-op. Live instances
-    /// keep running: an entry owns its own manifest, so only the next one is built from the new
-    /// factory. Silent either way — only the caller can tell a refresh from a collision.
+    /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name is
+    /// REFUSED and another runtime type's is REPLACED, because a rescan re-registers what it finds.
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
@@ -560,9 +533,8 @@ impl Graph {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
             return Registration::Refused;
         }
-        // A name that loads now is not unloadable any more: `unavailable` had no removal, so a
-        // rescan after a `pip install` would otherwise leave the greyed row standing beside the
-        // working type — two palette rows for one name.
+        // A name that loads now is not unloadable any more: leaving the greyed row standing would
+        // give one name two palette rows.
         self.unavailable.remove(name);
         match self.dyn_types.insert(name, DynType { manifest, factory: Arc::from(factory) }) {
             Some(_) => Registration::Replaced,
@@ -570,9 +542,8 @@ impl Graph {
         }
     }
 
-    /// Forget a runtime type — a rescan whose file has vanished. ONE door for both registries,
-    /// because that caller knows only that the file is gone. Live instances are untouched: removal
-    /// stops the next `add_node` and the load gate, nothing more.
+    /// Forget a runtime type — a rescan whose file has vanished. ONE door for both registries. Live
+    /// instances are untouched: removal stops the next `add_node` and the load gate, nothing more.
     pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
         let had_dyn = self.dyn_types.remove(type_name).is_some();
         self.unavailable.remove(type_name).is_some() || had_dyn
@@ -594,24 +565,19 @@ impl Graph {
     }
 
     /// `creating` / `setup` / `ready` / `error`. Only `creating` is the graph's own — a node whose
-    /// thread has not reported in yet, which for a Python node covers building the instance (its
-    /// module executes there). `error` means there is NO instance running: the host failed to
-    /// start, or `setup()` raised and nothing runs against a node that never initialized.
+    /// thread has not reported in yet. `error` means there is NO instance running.
     pub fn node_stage(&self, uid: Uid) -> &'static str {
         let Some(entry) = self.nodes.get(&uid) else { return "error" };
-        // A `process()` raise is deliberately NOT folded in. The stage says whether the node has an
-        // instance behind it, and a node that ran and raised has one; what its last tick did is the
-        // ERROR, which rides its own field. Folded together, the client could not tell a node that
-        // never started from one that is running badly — and they want different indicators.
+        // A `process()` raise is deliberately NOT folded in: the stage says whether the node has an
+        // instance behind it, and what its last run did is the ERROR, which rides its own field.
         if entry.setup_error.is_some() {
             return "error";
         }
         entry.stage
     }
 
-    /// The node's current measured update frequency (Hz) — the same value it stamps as
-    /// `meta["ufreq"]` on its output, as it last reported it ([`runtime::Status::Ufreq`]). `None`
-    /// until it has been measured (≥2 emits).
+    /// The node's current measured update frequency (Hz), as it last reported it. `None` until it
+    /// has been measured (≥2 emits).
     pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
         self.nodes.get(&uid).and_then(|e| e.ufreq)
     }
@@ -642,8 +608,7 @@ impl Graph {
     }
 
     /// Record a type that could not be loaded, and why. Refused when a BUILT-IN owns the name; a
-    /// runtime type of that name is displaced, mirroring `register_dyn_type` — both registries
-    /// answer "what is on disk under this name", and the latest scan is the answer.
+    /// runtime type of that name is displaced, since the latest scan is the answer.
     pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
         if goofi_node::find(&type_name).is_some() {
             return false;
@@ -658,10 +623,8 @@ impl Graph {
         self.unavailable.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
-    /// Declare which runtime types came from the open patch's own workspace rather than the shipped
-    /// node directory — the palette's provenance badge. Written WHOLESALE by the scan, because the
-    /// scan is the only thing that knows which directory a type came from, and a rescan re-derives
-    /// the answer for every name at once.
+    /// Declare which runtime types came from the open patch's own workspace — the palette's
+    /// provenance badge. Written WHOLESALE, because only the scan knows the answer.
     pub fn set_patch_types(&mut self, names: std::collections::HashSet<String>) {
         self.patch_types = names;
     }
@@ -672,9 +635,8 @@ impl Graph {
         self.patch_types.contains(type_name)
     }
 
-    /// The manifests of all runtime-registered node types, sorted by type name
-    /// (the compile-time catalog is enumerated separately via `goofi_node::catalog`).
-    /// Used by the bridge to include runtime types in the editor palette.
+    /// The manifests of all runtime-registered node types, sorted by type name; the compile-time
+    /// catalog is enumerated separately via `goofi_node::catalog`.
     pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
         let mut ms: Vec<&'static NodeManifest> =
             self.dyn_types.values().map(|dt| dt.manifest).collect();
@@ -704,15 +666,13 @@ impl Graph {
     }
 
     /// Derived fresh on read, so a binding that recovers on a node which never runs again still
-    /// clears. Initialization failure wins, then a process error, then the errored param with the
-    /// smallest key — deterministic, since `bindings` iterates in randomized order.
+    /// clears. Initialization failure wins, then a process error, then the smallest errored key.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
         entry_error(self.nodes.get(&uid)?)
     }
 
     /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The
-    /// clock restarts when the message changes, so a node cycling through different failures
-    /// always reads young — which is exactly the signal a reader wants.
+    /// clock restarts when the message changes, so a node cycling through failures reads young.
     pub fn error_age(&self, uid: Uid) -> Option<Duration> {
         let (_, since) = self.nodes.get(&uid)?.error_since.as_ref()?;
         Some(since.elapsed())
@@ -724,12 +684,8 @@ impl Graph {
         u
     }
 
-    /// The uid a loaded record restores at — the one the archive named, unless it is unreadable
-    /// or already `claimed`, so an odd file still opens.
-    ///
-    /// Restoring rather than reminting is what makes a load a restore of IDENTITY: everything the
-    /// load does not itself remap — a viewer panel's node, an editor panel's path, the viewpoint —
-    /// depends on it. Reminting only ever showed up in an instance that had already held nodes.
+    /// The uid a loaded record restores at — the one the archive named, unless it is unreadable or
+    /// already `claimed`. Restoring rather than reminting is what makes a load restore IDENTITY.
     fn restore_uid(&mut self, key: &str, claimed: &HashSet<Uid>) -> Uid {
         match Uid::from_hex(key).filter(|u| !claimed.contains(u)) {
             Some(u) => {
@@ -749,16 +705,14 @@ impl Graph {
     }
 
     /// The params a fresh instance of `type_name` starts from, resolved WITHOUT constructing the
-    /// node. The `.gfi` load path needs these first: it folds the saved values in before building,
-    /// so `setup()` sees what the user saved rather than the type's defaults.
+    /// node — the `.gfi` load folds the saved values in before building.
     fn default_params_of(&self, type_name: &str) -> Result<ParamGroups, String> {
         let m = self.manifest_of(type_name)?;
         Ok(goofi_node::with_common(m.default_params(), m))
     }
 
-    /// Construct (but do not insert) a node by type name — the shared front half of `add_node` /
-    /// `add_node_at`. Resolves the compile-time catalog or a runtime-registered type and builds its
-    /// params (defaulting to the type's defaults).
+    /// Construct (but do not insert) a node by type name — the shared front half of `add_node` and
+    /// `add_node_at`.
     fn build_node(
         &self,
         type_name: &str,
@@ -788,17 +742,14 @@ impl Graph {
         type_name: &str,
         params: Option<ParamGroups>,
     ) -> Result<Uid, String> {
-        // A fresh mint + an empty name is exactly what `add_node_at` treats as "pick them for me",
-        // so the two paths share one body. (An unknown type now burns the minted uid — harmless:
-        // uids are u64 and never user-visible.)
+        // A fresh mint plus an empty name is what `add_node_at` treats as "pick them for me", so
+        // the two paths share one body.
         let uid = self.mint();
         self.add_node_at(type_name, params, uid, "")
     }
 
-    /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path, so
-    /// uid-keyed links and panels reconnect to the same node (redo-of-add, undo-of-delete). The uid
-    /// must be free; `next_uid` is advanced past it so a later mint can never collide. A requested
-    /// name already in use falls back to a fresh unique name (the uniqueness invariant wins).
+    /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path. The
+    /// uid must be free; a requested name already in use falls back to a fresh unique one.
     pub fn add_node_at(
         &mut self,
         type_name: &str,
@@ -831,9 +782,8 @@ impl Graph {
         Ok(uid)
     }
 
-    /// The fresh-add analogue of a literal default. An `ExprMode::Off` declaration is CARRIED —
-    /// stored so the fx toggle has a source to turn on while the literal stands. Skipped without
-    /// an evaluator: the literal is the graceful fallback, never an errored binding.
+    /// The fresh-add analogue of a literal default. An `ExprMode::Off` declaration is CARRIED, so
+    /// the fx toggle has a source to turn on. Skipped without an evaluator.
     fn seed_default_expressions(&mut self, uid: Uid, manifest: &'static NodeManifest) {
         if self.evaluator.is_none() {
             return;
@@ -853,10 +803,8 @@ impl Graph {
         }
     }
 
-    /// Where a node gets its manager-side thread. The transport is created HERE rather than on
-    /// that thread because it is the one step whose failure has nowhere to report to — without
-    /// services there is no status service to carry a fault. Everything after it, `setup()`
-    /// included, runs on the node's own thread and off the graph lock.
+    /// Where a node gets its manager-side thread. The transport is created HERE because it is the
+    /// one step whose failure has nowhere to report to; everything after it is off the graph lock.
     fn insert_node_at(
         &mut self,
         uid: Uid,
@@ -890,9 +838,8 @@ impl Graph {
         );
     }
 
-    /// Create one node's services, open the graph's end of them, and start its thread. A node
-    /// whose services failed is still INSERTED, holding its place and saying why it is not running
-    /// — rather than failing an `add_node` the user cannot act on.
+    /// Create one node's services, open the graph's end of them, and start its thread. A node whose
+    /// services failed is still INSERTED, holding its place and saying why it is not running.
     fn spawn_host(
         &self,
         uid: Uid,
@@ -911,9 +858,8 @@ impl Graph {
                     globals: self.globals_record.clone(),
                     started: self.start,
                 };
-                // The join handle is dropped on purpose: a node's thread is stopped by its `Halt`
-                // and reaped by the OS, and holding one would tempt a caller into joining under
-                // the graph mutex while the node is inside a long `process()`.
+                // The join handle is dropped on purpose: holding one would tempt a caller into
+                // joining under the graph mutex while the node is inside a long `process()`.
                 runtime::spawn(manifest, build, params.clone(), Arc::new(transport), env, halt.clone())
                     .map(|_| channel)
                     .map_err(|e| format!("could not start the node's thread: {e}"))
@@ -924,17 +870,14 @@ impl Graph {
         }
     }
 
-    /// Whether a display name is taken by any live leaf node OR sub-patch scope facade. The two
-    /// share one display-name namespace (a scope facade renders as a node), so uniqueness must span
-    /// both — else a leaf renamed onto a scope's `subpatch{N}` name would collide on the canvas.
+    /// Whether a display name is taken by any live leaf node OR sub-patch scope facade — the two
+    /// share one display-name namespace, so uniqueness must span both.
     fn name_in_use(&self, name: &str) -> bool {
         self.nodes.values().any(|e| e.name == name) || self.scopes.values().any(|s| s.name == name)
     }
 
-    /// Is `name` already a display name of a node OR scope facade OTHER than `except`? The bridge
-    /// pre-validates a forward rename with this: `Command::EditNode` tolerates a rename collision as
-    /// a no-op (so a stale undo-replay converges instead of wedging the stack), so the user-facing
-    /// duplicate-name error must be raised up front at the RPC boundary.
+    /// Is `name` already a display name of a node OR scope facade OTHER than `except`? `EditNode`
+    /// tolerates a collision as a no-op, so the user-facing error is raised at the RPC boundary.
     pub fn name_taken(&self, name: &str, except: Uid) -> bool {
         self.nodes.iter().any(|(u, e)| *u != except && e.name == name)
             || self.scopes.iter().any(|(u, s)| *u != except && s.name == name)
@@ -951,9 +894,8 @@ impl Graph {
         unreachable!()
     }
 
-    /// A display name for a fresh scope. Leaves and instances share one namespace, so a name a
-    /// leaf already holds falls back to `fresh_name` — a collision would collapse two members onto
-    /// one local key on a later group.
+    /// A display name for a fresh scope. Leaves and scopes share one namespace, so a name a leaf
+    /// already holds falls back to `fresh_name`.
     fn mint_subpatch_name(&self, uid: Uid) -> String {
         let base = format!("subpatch{}", uid.0);
         if self.name_in_use(&base) {
@@ -995,9 +937,8 @@ impl Graph {
         out
     }
 
-    /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')` — expressions resolve
-    /// producers by NAME — and the referrer uids come back so the bridge can rebroadcast them. The
-    /// rewrite happens only when the rename succeeds.
+    /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')`, and the referrer uids
+    /// come back so the bridge can rebroadcast them. The rewrite happens only on success.
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
@@ -1018,16 +959,14 @@ impl Graph {
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
         let touched = self.rewrite_nd_refs_for_rename(&old_name, name);
-        // …and re-resolve the ones ALREADY written against the new name: a binding authored as
-        // `nd('src')` before anything was called `src` has no `nd('<old>')` for the rewrite to
-        // follow, and this rename is what makes it resolvable.
+        // …and re-resolve the ones ALREADY written against the new name: such a binding has no
+        // `nd('<old>')` for the rewrite to follow, and this rename is what makes it resolvable.
         self.rebind_naming(name);
         Ok(touched)
     }
 
-    /// Rewrite `nd('old')` -> `nd('new')` across all nodes' param expressions, re-binding
-    /// each changed source (recompiling so its extracted refs track the new name). Returns
-    /// the distinct referrer uids whose source changed.
+    /// Rewrite `nd('old')` -> `nd('new')` across every param expression, re-binding each changed
+    /// source. Returns the distinct referrer uids whose source changed.
     fn rewrite_nd_refs_for_rename(&mut self, old: &str, new: &str) -> Vec<Uid> {
         let mut edits: Vec<(Uid, ParamKey, String, bool, bool)> = Vec::new();
         for (&ruid, entry) in &self.nodes {
@@ -1083,10 +1022,8 @@ impl Graph {
         self.nodes.get(&uid).map(|e| &e.viewers)
     }
 
-    // ── Sub-patch forest: accessors + group/expand (bookkeeping-only) ─────────────
-    // Grouping never touches the flat runtime — the members stay the exact live nodes they
-    // were; only their membership re-tags. So there is no respawn, no data gap, and undo is
-    // just the inverse tag flip. `reconcile` (Phase 5) is what SPAWNS subtrees.
+    // Grouping never touches the flat runtime — the members stay the exact live nodes they were,
+    // and only their membership re-tags.
 
     /// The parent scope of a node/scope (`None` = ROOT). Absent ⇒ ROOT, so a plain flat graph
     /// needs no entries.
@@ -1103,9 +1040,8 @@ impl Graph {
         self.scopes.get(&uid)
     }
 
-    /// The direct member uids of a scope (leaf nodes + child scopes), in flat-`nodes` then scope
-    /// insertion order — a deterministic display/serialization order derived from the `scope_of`
-    /// tree (the SSOT), so there is no parallel member list to keep in sync.
+    /// The direct member uids of a scope, in flat-`nodes` then scope insertion order — derived from
+    /// the `scope_of` tree, so there is no parallel member list to keep in sync.
     pub fn scope_members(&self, scope: Uid) -> Vec<Uid> {
         let mut out: Vec<Uid> = self
             .nodes
@@ -1117,9 +1053,8 @@ impl Graph {
         out
     }
 
-    /// Chain-resolve a scope's stub port to the single physical inner leaf `(uid, slot)` it exposes
-    /// (walking nested scopes); `None` if unwired. Used by the snapshot projection and the data
-    /// plane (a viewer on `scope/stub` subscribes to this leaf) + link authoring.
+    /// Chain-resolve a scope's stub port to the single physical inner leaf `(uid, slot)` it exposes,
+    /// walking nested scopes; `None` if unwired.
     pub fn resolve_stub(&self, scope: Uid, stub: &str) -> subpatch::StubInner {
         subpatch::resolve_stub(&self.scopes, scope, stub)
     }
@@ -1144,9 +1079,8 @@ impl Graph {
         self.find_input(uid, slot).map(|s| s.kind)
     }
 
-    /// Move a node or scope into `scope` (`None` = ROOT), returning its prior membership. The one
-    /// validated re-parent seam a `SetScope` command drives (restoring a member back inside its
-    /// scope on a delete-undo). Errors on an unknown uid or a `scope` that is not a live scope.
+    /// Move a node or scope into `scope` (`None` = ROOT), returning its prior membership — the one
+    /// validated re-parent seam. Errors on an unknown uid or a `scope` that is not a live scope.
     pub fn reparent(&mut self, uid: Uid, scope: Option<Uid>) -> Result<Option<Uid>, String> {
         if !self.nodes.contains_key(&uid) && !self.scopes.contains_key(&uid) {
             return Err(format!("reparent: no such node/scope {uid}"));
@@ -1174,10 +1108,8 @@ impl Graph {
         }
     }
 
-    /// The member of `member_set` that transitively contains `uid` — `uid` itself if it is a direct
-    /// member, else the ancestor scope (walking up `scope_of`) that is a member. `None` if `uid`
-    /// lies outside every member. Lets link classification treat a leaf buried in a nested member
-    /// scope as "inside the group".
+    /// The member of `member_set` that transitively contains `uid`, or `None` when it lies outside
+    /// every member. Lets link classification treat a buried leaf as inside the group.
     fn containing_member(&self, uid: Uid, member_set: &std::collections::HashSet<Uid>) -> Option<Uid> {
         let mut cur = uid;
         loop {
@@ -1189,9 +1121,7 @@ impl Graph {
     }
 
     /// The stub id on nested scope `scope` whose chain-to-leaf resolution is exactly `(leaf, slot)`
-    /// in direction `dir`. Used to name the interior endpoint of a link that crosses into a nested
-    /// member: the stub references the nested scope's PORT, not the buried leaf. Handles arbitrary
-    /// nesting depth (`resolve_stub` recurses down).
+    /// in direction `dir` — the interior endpoint of a link crossing into a nested member.
     fn stub_exposing(&self, scope: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> Option<subpatch::StubId> {
         let s = self.scopes.get(&scope)?;
         s.stubs
@@ -1201,9 +1131,8 @@ impl Graph {
             .map(|(id, _)| id.clone())
     }
 
-    /// The direct member of `scope` on the path from `leaf` up the `scope_of` tree — the child of
-    /// `scope` that (transitively) contains `leaf`, or `leaf` itself when it is a direct member.
-    /// `None` if `leaf` is not inside `scope`.
+    /// The direct member of `scope` on the path from `leaf` up the `scope_of` tree, or `leaf` itself
+    /// when it is a direct member. `None` if `leaf` is not inside `scope`.
     fn direct_child_containing(&self, scope: Uid, leaf: Uid) -> Option<Uid> {
         let mut cur = leaf;
         loop {
@@ -1227,17 +1156,8 @@ impl Graph {
         unreachable!()
     }
 
-    /// The inner-slot key that a group boundary stub should reference for a crossing link whose
-    /// direct group member is `member` and whose buried leaf endpoint is `(leaf, slot)`:
-    /// * `member == leaf` — the member IS the leaf endpoint: the real slot.
-    /// * `member` is a nested scope already exposing the leaf: its existing stub id.
-    /// * otherwise — MINT the missing chain of stubs (one fresh port per nesting level) down to the
-    ///   leaf and return the top one's id.
-    ///
-    /// The last case keeps `group_nodes` TOTAL: a crossing link outlives the port that exposed it
-    /// (`remove_boundary` drops the stub and leaves the leaf→leaf link), so a re-group has to
-    /// reconstruct rather than assert. Everything minted here is recorded in `minted`, or the
-    /// group's inverse would leave the reconstructed port standing.
+    /// The inner-slot key a group boundary stub should reference for a crossing link: the real slot,
+    /// a nested scope's existing stub, or a freshly MINTED chain of ports, each recorded in `minted`.
     fn expose_in_nested_member(
         &mut self,
         member: Uid,
@@ -1280,9 +1200,8 @@ impl Graph {
         id
     }
 
-    /// The single common parent scope of `members` (each must exist as a node or scope), or an error
-    /// if the set is empty or spans multiple scopes. Shared validation for `group_nodes` (mint) and
-    /// `restore_scope` (undo/redo) so the check lives in one place.
+    /// The single common parent scope of `members`, or an error if the set is empty or spans several
+    /// scopes. Shared by `group_nodes` and `restore_scope`.
     fn common_parent(&self, members: &[Uid]) -> Result<Option<Uid>, String> {
         if members.is_empty() {
             return Err("group: empty selection".into());
@@ -1302,17 +1221,14 @@ impl Graph {
         Ok(parent.unwrap())
     }
 
-    /// Group `members`, all of ONE scope, into a new one. Pure reference-move bookkeeping: mint a
-    /// scope, mint a stub per crossing link, re-tag membership. The flat `nodes`/`links` and every
-    /// uid are UNCHANGED, so it is uid-stable by construction.
+    /// Group `members`, all of ONE scope, into a new one. Pure reference-move bookkeeping: the flat
+    /// `nodes`/`links` and every uid are UNCHANGED, so it is uid-stable by construction.
     pub fn group_nodes(&mut self, members: &[Uid], pos: [f64; 2]) -> Result<Uid, String> {
         self.group_nodes_capturing(members, pos, &mut Vec::new())
     }
 
     /// Like [`Self::group_nodes`], but records into `minted` every stub it has to MINT on a
-    /// pre-existing nested member (to re-expose an orphaned crossing link). The `Group` command
-    /// threads this into its inverse so undo un-mints them — else group→undo would leave those ports
-    /// resurrected on the nested member (an inexact inverse).
+    /// pre-existing nested member, so the `Group` inverse can un-mint them.
     pub fn group_nodes_capturing(
         &mut self,
         members: &[Uid],
@@ -1325,15 +1241,13 @@ impl Graph {
         let member_set: std::collections::HashSet<Uid> = members.iter().copied().collect();
         let scope_uid = self.mint();
 
-        // 2. Classify each link by TRANSITIVE containment — an endpoint buried in a nested member
-        //    counts as inside. Exactly one endpoint inside mints a stub naming the DIRECT member;
-        //    both or neither leaves the link verbatim. One stub per inner (node, slot).
+        // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
+        //    naming the DIRECT member; both or neither leaves the link verbatim.
         let mut stubs: IndexMap<subpatch::StubId, Stub> = IndexMap::new();
         let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
-        // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub on a nested
-        // member (re-exposing a leaf whose port was dropped by `remove_boundary`), which needs
-        // `&mut self` — so the classification can't hold a borrow on `self.links`.
+        // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub and needs
+        // `&mut self`, so the classification cannot hold a borrow on `self.links`.
         let links = self.links.clone();
         for l in &links {
             let out_m = self.containing_member(l.node_out, &member_set);
@@ -1391,9 +1305,8 @@ impl Graph {
         Ok(scope_uid)
     }
 
-    /// Recreate a scope EXACTLY — the inverse of `expand_instance`. The members are wherever
-    /// expand left them; this moves them back under `scope_id` with the captured stubs verbatim,
-    /// so undo/redo is uid-stable.
+    /// Recreate a scope EXACTLY — the inverse of `expand_instance`, moving the members back under
+    /// `scope_id` with the captured stubs verbatim, so undo/redo is uid-stable.
     pub fn restore_scope(
         &mut self,
         scope_id: Uid,
@@ -1406,27 +1319,22 @@ impl Graph {
         if self.scopes.contains_key(&scope_id) {
             return Err(format!("restore_scope: scope {scope_id} already live"));
         }
-        // The parent is captured explicitly (not derived from members via `common_parent`), so an
-        // EMPTY scope restores fine and a subtree restore need not thread parentage through member
-        // placement. Re-tag only members that actually exist (a redo-race may have dropped one).
+        // The parent is captured explicitly rather than derived from members, so an EMPTY scope
+        // restores fine. Re-tag only members that actually exist.
         self.scopes.insert(scope_id, subpatch::Scope { name, pos, stubs });
         for &m in members {
             if self.nodes.contains_key(&m) || self.scopes.contains_key(&m) {
                 self.set_member_scope(m, Some(scope_id));
             }
         }
-        // A peer may have dissolved the captured parent since this restore was recorded (a nested
-        // scope's delete-undo racing an expand). Writing it verbatim would install a dangling-parent
-        // orphan — a scope whose parentage names a scope that no longer exists, which no member walk
-        // can reach. Degrade to ROOT, exactly as the membership-restoring `SetScope` child does.
+        // A peer may have dissolved the captured parent since. Writing it verbatim would install a
+        // dangling-parent orphan, so degrade to ROOT, as the `SetScope` child does.
         self.set_member_scope(scope_id, parent.filter(|p| self.scopes.contains_key(p)));
         Ok(scope_id)
     }
 
-    /// The parent-scope stubs that currently expose `scope` (each as `(parent, stub_id, inner)`).
-    /// `Expand` captures these BEFORE dissolving so its `Group` inverse can re-point them back
-    /// exactly (Expand re-points them forward to the child stub's inner). Empty if `scope` is at ROOT
-    /// or no parent stub references it.
+    /// The parent-scope stubs that currently expose `scope`, as `(parent, stub_id, inner)`. `Expand`
+    /// captures these BEFORE dissolving so its `Group` inverse can re-point them back exactly.
     pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<subpatch::ParentStub> {
         let Some(p) = self.scope_of(scope) else {
             return vec![];
@@ -1449,16 +1357,14 @@ impl Graph {
         self.scopes.get_mut(&scope)?.stubs.get_mut(stub)
     }
 
-    /// A scope's whole stub map, for the two edits that are map-shaped rather than field-shaped.
-    /// Deliberately NOT `&mut Scope`: that would hand out `Scope::name` and `Scope::pos` as well,
-    /// and let a caller bypass the validated rename path.
+    /// A scope's whole stub map. Deliberately NOT `&mut Scope`, which would hand out `name` and
+    /// `pos` as well and let a caller bypass the validated rename path.
     pub fn stubs_mut(&mut self, scope: Uid) -> Option<&mut IndexMap<subpatch::StubId, subpatch::Stub>> {
         self.scopes.get_mut(&scope).map(|s| &mut s.stubs)
     }
 
-    /// Inline a scope back into its parent: re-tag each member to the parent scope, then drop the
-    /// scope + its stubs. The crossing flat links already point at the members leaf→leaf, so they
-    /// survive verbatim — nothing to reconnect. Returns the restored member uids. Uid-stable.
+    /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
+    /// The crossing flat links already point leaf→leaf, so they survive verbatim. Uid-stable.
     pub fn expand_instance(&mut self, scope: Uid) -> Result<Vec<Uid>, String> {
         if !self.scopes.contains_key(&scope) {
             return Err(format!("expand_instance: no such scope {scope}"));
@@ -1466,8 +1372,7 @@ impl Graph {
         let restored = self.scope_members(scope);
         let parent = self.scope_of(scope); // the grandparent scope members fall back to
         // The scope dissolves but its members survive, so a parent stub that exposed one of its
-        // ports must FOLLOW to the leaf rather than dangle. (`remove_member` PRUNES the analogous
-        // stub instead, because there the member is gone.)
+        // ports must FOLLOW to the leaf rather than dangle.
         if let Some(p) = parent {
             let targets: Vec<(subpatch::StubId, String)> = self
                 .scopes
@@ -1482,10 +1387,8 @@ impl Graph {
                 })
                 .unwrap_or_default();
             for (id, cid) in targets {
-                // Re-point to the child stub's OWN inner (ONE level down) — that direct member of
-                // `scope` becomes a direct member of `p` after expand, so the parent stub stays
-                // structurally valid. (Using the fully-resolved leaf would be wrong when the leaf is
-                // buried in a NESTED scope that only moves up one level.)
+                // Re-point to the child stub's OWN inner, ONE level down: the fully-resolved leaf
+                // would be wrong when it is buried in a nested scope that only moves up one level.
                 let child_inner = self.scopes.get(&scope).and_then(|s| s.stubs.get(&cid)).and_then(|st| st.inner.clone());
                 if let Some(st) = self.scopes.get_mut(&p).and_then(|ps| ps.stubs.get_mut(&id)) {
                     st.inner = child_inner;
@@ -1500,9 +1403,8 @@ impl Graph {
         Ok(restored)
     }
 
-    /// Delete a whole sub-patch scope: tear down every member (recursing into nested scopes, and
-    /// removing leaves + their flat links), then drop the scope. The frontend routes
-    /// Delete-on-a-collapsed-sub-patch here.
+    /// Delete a whole sub-patch scope: tear down every member, recursing into nested scopes, then
+    /// drop the scope.
     pub fn remove_instance(&mut self, scope: Uid) -> Result<(), String> {
         if !self.scopes.contains_key(&scope) {
             return Err(format!("remove_instance: no such scope {scope}"));
@@ -1536,10 +1438,8 @@ impl Graph {
         Ok(())
     }
 
-    // ── Stub authoring (boundary ports on a scope; never live nodes) ──────────────
-    // A stub is a naming indirection over an inner member slot (its `inner` child side). External
-    // wires stay flat leaf→leaf links that resolve through the stub; the stub itself stores only the
-    // inner side. All edits mutate the scope's stubs directly (no sharing, no def).
+    // A stub is a naming indirection over an inner member slot. External wires stay flat leaf→leaf
+    // links that resolve through it; the stub itself stores only the inner side.
 
     /// Is `uid` a direct member of `scope`?
     fn is_member_of(&self, scope: Uid, uid: Uid) -> bool {
@@ -1567,9 +1467,7 @@ impl Graph {
     }
 
     /// Validate a candidate stub wire and resolve the port dtype it would take, without mutating.
-    /// Extracted from [`Graph::set_stub_inner`] so the forward-RPC precondition (`Command::
-    /// precondition`) and the mutation share ONE algebra — a second copy of "is this inner target
-    /// legal" is exactly the drift this codebase spends its unification budget avoiding.
+    /// Shared by the RPC precondition and the mutation, so there is ONE such algebra.
     pub fn stub_wire_dtype(
         &self,
         scope: Uid,
@@ -1586,10 +1484,8 @@ impl Graph {
             .and_then(|s| s.stubs.get(stub))
             .map(|st| st.dir)
             .ok_or("set_stub_inner: no such stub")?;
-        // A member may itself be a sub-patch, in which case its ports are that scope's own
-        // stubs, not slot decls — the `(facade uid, StubId)` shape `Stub.inner` documents
-        // and that `group_nodes` mints itself. `is_member_of` above already proved a DIRECT
-        // child, so chaining one port onto another cannot close a cycle.
+        // A member may itself be a sub-patch, whose ports are that scope's own stubs rather than
+        // slot decls. `is_member_of` proved a DIRECT child, so chaining cannot close a cycle.
         let dtype = match self.scopes.get(inner_node) {
             Some(nested) => nested.stubs.get(inner_slot.as_str()).filter(|st| st.dir == dir).map(|st| st.dtype),
             None => match dir {
@@ -1632,12 +1528,6 @@ impl Graph {
         }
     }
 
-
-    // The `update_member_param` / `set_member_pos` / `set_member_expression` wrappers are gone
-    // (B3a): with sharing dropped a member is just a live node, and every mutation now routes through
-    // an `EditParam` / `EditNode` command over `update_param` / `set_node_pos` / `set_expression`
-    // directly — the client-doc-write leaf path they served was retired with `apply_client_write`.
-
     /// All links as resolved views (snapshot projection).
     pub fn links_view(&self) -> Vec<LinkView> {
         self.links
@@ -1668,22 +1558,18 @@ impl Graph {
             return Err(format!("no such node {uid}"));
         };
         self.release_entry_bindings(&removed);
-        // The planner holds its OWN handle on this node's channel, and that handle is the graph's
-        // end of its services. Dropping the entry alone leaves them allocated for the process
-        // lifetime, where no sweep can reach them. `forget` rather than `detach`: this uid is
-        // retired, so anything still queued for it addresses nobody.
+        // The planner holds its OWN handle on this node's channel, which is the graph's end of its
+        // services. `forget` rather than `detach`: this uid is retired, so nothing queued applies.
         self.wire.forget(uid);
-        // §5.3: every binding that referenced this node by name is now unresolvable, and must be
-        // told so — a variable still naming a dead producer's service is one the node waits on
-        // forever.
+        // §5.3: every binding that referenced this node by name is now unresolvable and must be
+        // told so — a variable naming a dead producer's service is one the node waits on forever.
         let name = removed.name.clone();
         self.rebind_naming(&name);
         // Drop any membership tag: a removed node has no scope. Leaving it dangling would make a
         // reused uid (a delete→undo that restores the scope) self-parent via `common_parent`.
         self.scope_of.remove(&uid);
-        // Drop links touching the node, then re-plan every consumer slot one of them fed (§4:
-        // removal is a wire change like any other). Links INTO the removed node need no re-plan —
-        // its thread is already halted and its services are going with it.
+        // Drop links touching the node, then re-plan every consumer slot one of them fed. Links
+        // INTO it need none: its thread is halted and its services are going with it.
         let dropped: Vec<Link> = self
             .links
             .iter()
@@ -1698,21 +1584,14 @@ impl Graph {
         Ok(())
     }
 
-    /// Respawn a node's instance IN PLACE. Everything that identifies it in the patch survives —
-    /// uid, name, position, params, bindings, viewer state, scope membership — so remove+add is no
-    /// substitute: that drops the links and the membership and lands the node back at root.
-    ///
-    /// Not a `Command`: it changes no persisted state, so it has no meaningful inverse.
-    ///
-    /// A Python node re-runs the source CAPTURED AT DISCOVERY, so editing the `.py` and restarting
-    /// does not pick the edit up — a rescan does, and that is what drives the auto-restart.
+    /// Respawn a node's instance IN PLACE. Everything that identifies it in the patch survives, so
+    /// remove+add is no substitute. A Python node re-runs the source CAPTURED AT DISCOVERY.
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
         let held = entry.params.clone();
-        // Fold what the node HAS onto what its type declares NOW: a restart usually follows an
-        // edit to the file, and only the saved VALUE carries over — bounds, options and variant
-        // are the edited file's to state, or the instance stays on a spec the palette has dropped.
+        // Fold what the node HAS onto what its type declares NOW: only the saved VALUE carries
+        // over — bounds, options and variant are the edited file's to state.
         let mut params = self.default_params_of(type_name)?;
         for (group, held) in &*held {
             let Some(g) = params.get_mut(group) else { continue };
@@ -1727,24 +1606,18 @@ impl Graph {
         // instance running rather than half-killing the node.
         let (manifest, params, build) = self.build_node(type_name, Some(params))?;
 
-        // A restart is a BIRTH at this uid, and the corpse's teardown does not block: without the
-        // generation bump the reborn node re-opens service names its predecessor's ports still
-        // hold, and `max_publishers(1)` refuses it. The one birth not going via `insert_node_at`.
+        // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
+        // generation bump the reborn node re-opens names its predecessor's ports still hold.
         let generation = self.wire.bump_generation(uid);
         let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
 
         let entry = self.nodes.get_mut(&uid).expect("looked up above");
-        // Replacing the host halts the corpse's thread without waiting — it notices at its next
-        // wake, and this runs under the graph mutex.
-        //
-        // The MANIFEST goes with the instance. A rescan re-registers a stable `type_name` over a
-        // possibly-reshaped interface, so keeping the old one leaves the graph describing a node
-        // that is no longer running: a new slot unlinkable, a removed one still accepting wires.
+        // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with the
+        // instance: keeping the old one leaves the graph describing a node no longer running.
         entry.manifest = manifest;
         entry.host = host;
-        // The corpse's channel goes with it, and it must go BEFORE the new generation reports
-        // `Ready`: while it stands, the reborn node reads as addressable and anything sent to it is
-        // published to services nothing is listening on any more.
+        // The corpse's channel goes with it, and BEFORE the new generation reports `Ready`: while
+        // it stands, the reborn node reads as addressable and messages reach dead services.
         self.wire.detach(uid);
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
@@ -1755,16 +1628,14 @@ impl Graph {
         entry.last_error = None;
         entry.stage = "creating";
         entry.ufreq = None;
-        // The evaluated values are the CORPSE's report (§6.2): a fresh instance has evaluated
-        // nothing, and leaving them would let the inspector preview show a dead node's numbers
-        // until the new one reports its own.
+        // The evaluated values are the CORPSE's report (§6.2): leaving them would let the inspector
+        // preview a dead node's numbers until the new one reports its own.
         entry.evaluated.clear();
         // …and so are the errors it reported, which is what keeps a healthy reborn node from
         // drawing the corpse's: it starts with an empty map, so it has nothing to announce clearing.
         entry.param_errors.clear();
-        // `bindings` are left untouched — their compiled handles are evaluator-owned and may only
-        // be dropped through `release_entry_bindings`. `bind_error` goes on standing with them: it
-        // is the graph's finding about the SOURCE, which this rebirth did not touch.
+        // `bindings` are left untouched — their compiled handles may only be dropped through
+        // `release_entry_bindings`, and `bind_error` describes a SOURCE this rebirth did not touch.
 
         // A wire onto a slot the reshape retired can never propagate and cannot be repaired — the
         // slot is gone from the palette. Keeping it draws a cable the runtime ignores.
@@ -1781,8 +1652,7 @@ impl Graph {
             let _ = self.remove_link(out, so, into, si);
         }
         // The rebirth renamed every one of this node's services (§3.1), so a binding reading one
-        // is holding a name that no longer resolves. Re-resolved, not patched: the reshape may
-        // also have retired the very output slot the reference named.
+        // holds a name that no longer resolves. Re-resolved, not patched: the slot may be gone too.
         let name = self.nodes[&uid].name.clone();
         self.rebind_naming(&name);
         Ok(())
@@ -1805,13 +1675,8 @@ impl Graph {
         edit_params(entry, |p| {
             p.entry(group.to_string()).or_default().insert(name.to_string(), value.clone());
         });
-        // A LITERAL on a driven param unbinds it — which is what the node does with the `SetParam`
-        // this write sends, so the graph must mean the same or the two records disagree. It also
-        // drops this node from the producer's target set: an expression reference IS a link.
-        //
-        // An ENABLED binding only. A disabled one is source the fx toggle holds for the user, and
-        // every node carries one on `common.max_frequency` — unbinding those would make typing a
-        // number into a rate cap delete the patch-rate expression, and persist the loss.
+        // A LITERAL on a driven param unbinds it, which is what the node does with this write's
+        // `SetParam`. An ENABLED binding only: a disabled one is source the fx toggle holds.
         let key = ParamKey::new(group, name);
         if self.nodes[&uid].bindings.get(&key).is_some_and(|b| b.enabled) {
             self.unbind(uid, &key);
@@ -1822,13 +1687,8 @@ impl Graph {
         Ok(())
     }
 
-    /// Ask the node to re-enumerate a refreshable `Str` param's options — the ⟳ button.
-    ///
-    /// It answers only that the request was DISPATCHED: the hook runs on the node's own thread, so
-    /// a multi-second device scan stalls nothing and the caller cannot carry the list back. The
-    /// options arrive later as [`runtime::Status::RefreshOptions`] and reach the client on the
-    /// status worker's echo. `Err` is still a real refusal — an unknown node or param, or one the
-    /// type never declared refreshable.
+    /// Ask the node to re-enumerate a refreshable `Str` param's options — the ⟳ button. It answers
+    /// only that the request was DISPATCHED; the options arrive as a later `RefreshOptions` status.
     pub fn refresh_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let live = entry.params.clone();
@@ -1841,10 +1701,8 @@ impl Graph {
         Ok(())
     }
 
-    /// Bind or unbind a param. An EMPTY source unbinds; a non-empty one with `enabled == false`
-    /// is PRESERVED disabled, so an fx toggle off and on keeps the user's code. A compile error is
-    /// stored as the binding's field error rather than rejecting the call — the source is kept so
-    /// it can be fixed.
+    /// Bind or unbind a param. An EMPTY source unbinds; a non-empty one with `enabled == false` is
+    /// PRESERVED disabled. A compile error is stored as the binding's field error, not a refusal.
     pub fn set_expression(
         &mut self,
         uid: Uid,
@@ -1859,9 +1717,7 @@ impl Graph {
         }
         let key = ParamKey::new(group, name);
         // Only an empty source is a true unbind, and `unbind` owns the release on that path — so it
-        // goes FIRST, above the release below. Releasing here as well handed the evaluator two
-        // `release` calls for one handle, and `ExprEvaluator` is a public trait an implementation
-        // may reasonably treat as a refcount.
+        // goes FIRST. Releasing here too gave the evaluator two `release` calls for one handle.
         if source.trim().is_empty() {
             self.unbind(uid, &key);
             self.notify_param(uid, &key);
@@ -1873,16 +1729,14 @@ impl Graph {
                 ev.release(id);
             }
         }
-        // A non-empty source binds a real param — reject a dangling binding (invisible in
-        // the descriptor, unclearable from the UI, phantom scheduling edges), like
-        // update_param guards param existence.
+        // A non-empty source binds a real param: a dangling binding is invisible in the descriptor
+        // and unclearable from the UI.
         if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
         let bind_id = self.bind_id(uid, &key);
-        // Rewrite, resolve, compile the REWRITTEN source, ship. The scan runs even for a DISABLED
-        // binding, because `terms` is what a later rename or globals edit re-resolves against; what
-        // a disabled one does not get is variables, a handle, or a place in a target set.
+        // The scan runs even for a DISABLED binding, because `terms` is what a later rename or
+        // globals edit re-resolves against. What it does not get is variables, a handle, a target.
         let scanned = expr_rewrite::rewrite(source);
         let terms = scanned.as_ref().map(|(_, vars)| vars.clone()).unwrap_or_default();
         let (rewritten, vars, mut error) = match (enabled, scanned) {
@@ -1929,11 +1783,8 @@ impl Graph {
         Ok(())
     }
 
-    /// Drop a binding and release its compiled handle — the shared tail of an empty
-    /// `set_expression` and of a literal write over a bound param, which both mean unbind.
-    ///
-    /// It does NOT re-plan: its callers do, exactly once. A second `begin` on the same key cancels
-    /// the first mid-sequence, leaving the shrink it already sent waiting on an ack nobody answers.
+    /// Drop a binding and release its compiled handle — the shared tail of an empty `set_expression`
+    /// and of a literal write over a bound param. It does NOT re-plan: its callers do, exactly once.
     fn unbind(&mut self, uid: Uid, key: &ParamKey) {
         let Some(binding) = self.nodes.get_mut(&uid).and_then(|e| e.bindings.remove(key)) else {
             return;
@@ -1943,17 +1794,15 @@ impl Graph {
         }
     }
 
-    /// Storing the record is only HALF of a param edit: a node parked with no wake deadline is
-    /// never rung by a bare pointer swap, so the write has to be ANNOUNCED as well. ONE re-plan per
-    /// edit — a second `begin` on the same key cancels the first mid-sequence.
+    /// Storing the record is only HALF of a param edit: a parked node is never rung by a bare
+    /// pointer swap. ONE re-plan per edit — a second `begin` cancels the first mid-sequence.
     fn notify_param(&mut self, uid: Uid, key: &ParamKey) {
         let bind_id = self.bind_id(uid, key);
         self.replan_binding(uid, bind_id);
     }
 
     /// This PARAM's index into [`Self::bind_keys`]. Keyed by param, not by binding, because the
-    /// channel outlives any one binding on it: an unbind still has to announce that the param is a
-    /// literal again. Append-only, cleared only by a whole-graph `clear`.
+    /// channel outlives any one binding on it. Append-only, cleared only by a whole-graph `clear`.
     fn bind_id(&mut self, uid: Uid, key: &ParamKey) -> usize {
         if let Some(b) = self.nodes.get(&uid).and_then(|e| e.bindings.get(key)) {
             return b.bind_id;
@@ -1966,9 +1815,7 @@ impl Graph {
     }
 
     /// Resolve a rewrite's variables against the graph: a producer output, a global's value, or the
-    /// reason neither could be found. Event ids are drawn from §3.2's `65..=128` expression budget,
-    /// lowest free first among the ids this node's OTHER bindings already hold — `key`'s own ids are
-    /// being replaced and are therefore free.
+    /// reason neither was found. Event ids come from §3.2's `65..=128` budget, lowest free first.
     fn resolve_vars(&self, consumer: Uid, key: &ParamKey, refs: &[expr_rewrite::VarRef]) -> Vec<BoundVar> {
         let mut taken: Vec<runtime::EventId> = self
             .nodes
@@ -2009,9 +1856,8 @@ impl Graph {
             .collect()
     }
 
-    /// The producer output a `nd('name')` / `nd('name').slot` term names, or why it names none. A
-    /// bare reference to a multi-output node is refused HERE rather than at eval, where it used to
-    /// raise from inside the proxy — the graph is what knows how many outputs a node has.
+    /// The producer output a `nd('name')` term names, or why it names none. A bare reference to a
+    /// multi-output node is refused HERE — the graph is what knows how many outputs a node has.
     fn resolve_stream(&self, name: &str, slot: Option<&str>) -> Result<(Uid, &'static str), String> {
         let uid = self.uid_by_name(name).ok_or_else(|| format!("no node named `{name}`"))?;
         let outputs = self.nodes[&uid].manifest.outputs;
@@ -2043,9 +1889,8 @@ impl Graph {
         })
     }
 
-    /// Every expression binding on a node as `(group, name, source, enabled, triggers)` — the
-    /// bindings a delete's inverse must re-apply (params alone carry only the literal value, so
-    /// without this a restored node loses its live-driven params).
+    /// Every expression binding on a node as `(group, name, source, enabled, triggers)` — what a
+    /// delete's inverse must re-apply, since params alone carry only the literal value.
     pub fn param_bindings(&self, uid: Uid) -> Vec<(String, String, String, bool, bool)> {
         self.nodes
             .get(&uid)
@@ -2093,9 +1938,8 @@ impl Graph {
         self.find_input(uid, slot).is_some_and(|i| i.multi)
     }
 
-    /// The wire currently feeding a SINGLE input `(node_in, slot)` — the wire an `add_link` would
-    /// evict. `None` for a multi input (append, no eviction) or an empty input. Lets the `AddLink`
-    /// command capture the displaced wire so its inverse restores it.
+    /// The wire currently feeding a SINGLE input `(node_in, slot)` — the one an `add_link` would
+    /// evict, so the `AddLink` command's inverse can restore it. `None` for a multi input.
     pub fn single_input_source(&self, node_in: Uid, slot: &str) -> Option<(Uid, &'static str)> {
         let slot = self.resolve_input(node_in, slot)?;
         if self.is_multi_input(node_in, slot) {
@@ -2107,9 +1951,8 @@ impl Graph {
             .map(|l| (l.node_out, l.slot_out))
     }
 
-    /// Does this exact (resolved) wire already exist? False if either slot fails to resolve
-    /// (`add_link` will surface the real error). Lets a command detect an idempotent AddLink no-op
-    /// so its inverse can be a no-op too, instead of destroying the pre-existing wire.
+    /// Does this exact (resolved) wire already exist? Lets a command detect an idempotent AddLink,
+    /// so its inverse is a no-op too instead of destroying the pre-existing wire.
     pub fn has_link(&self, node_out: Uid, slot_out: &str, node_in: Uid, slot_in: &str) -> bool {
         let (Some(slot_out), Some(slot_in)) =
             (self.resolve_output(node_out, slot_out), self.resolve_input(node_in, slot_in))
@@ -2135,10 +1978,8 @@ impl Graph {
             .find_input(node_in, slot_in)
             .ok_or_else(|| format!("no input slot `{slot_in}` on {node_in}"))?;
         let (slot_out, slot_in) = (out.name, inp.name);
-        // A cross-dtype cable can never carry data — propagation writes the producer's frame into
-        // an input the consumer reads with the wrong accessor, so the consumer sits empty forever.
-        // Refuse it here, at the one door every link authoring path goes through (the canvas, the
-        // boundary resolution, a `.gfi` restore, an agent), naming both ends and both dtypes.
+        // A cross-dtype cable can never carry data — the consumer reads with the wrong accessor and
+        // sits empty forever. Refused here, the one door every link authoring path goes through.
         if out.kind != inp.kind {
             let label = |uid: Uid, slot: &str| {
                 format!("{}.{slot}", self.name(uid).unwrap_or("?"))
@@ -2161,9 +2002,8 @@ impl Graph {
         if self.links.contains(&new) {
             return Ok(()); // idempotent
         }
-        // A multi slot accepts many wires and keeps them in connection order, which IS `links`'
-        // own order; a single input takes one, so a second wire EVICTS the first. The node hears
-        // both as one declarative set — §4's "a displaced single-input wire needs no special case".
+        // A multi slot keeps its wires in connection order, which IS `links`' own order; a single
+        // input takes one, so a second wire EVICTS the first. The node hears one declarative set.
         if !self.is_multi_input(node_in, slot_in) {
             self.links
                 .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
@@ -2196,14 +2036,8 @@ impl Graph {
         Ok(())
     }
 
-    // ── The wire plane: what each node is told about its slots, and in what order ────────────
-
-    /// The birth barrier landing: on [`runtime::Status::Ready`], never at birth, because a
-    /// `Control` published before the node's subscriber exists is lost.
-    ///
-    /// Attaching RE-PLANS every slot this node touches, from an EMPTY base — a node that was not
-    /// addressable when those slots were planned had its message dropped while the diff base moved
-    /// anyway, so nothing would ever resend it.
+    /// The birth barrier landing: on [`runtime::Status::Ready`], never at birth. Attaching RE-PLANS
+    /// every slot this node touches, from an EMPTY base, since its earlier messages were dropped.
     pub fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
         self.wire.attach(uid, sink);
         for (consumer, slot) in self.slots_touching(uid) {
@@ -2212,9 +2046,8 @@ impl Graph {
         }
     }
 
-    /// Every consumer subscription whose wiring names `uid` — the input slots it consumes on and
-    /// feeds, and the expression bindings on either end of it. A subscription is named once however
-    /// many wires it has.
+    /// Every consumer subscription whose wiring names `uid`, named once however many wires it has —
+    /// the input slots it consumes on and feeds, and the bindings on either end.
     fn slots_touching(&self, uid: Uid) -> Vec<runtime::plan::SlotKey> {
         let mut slots: Vec<runtime::plan::SlotKey> = Vec::new();
         for link in self.links.iter().filter(|l| l.node_in == uid || l.node_out == uid) {
@@ -2223,9 +2056,8 @@ impl Graph {
                 slots.push(key);
             }
         }
-        // Every param channel spoken on for `uid`, bound or not. Becoming addressable is the FIRST
-        // moment anything it was told can arrive: `add_node` answers before the barrier lifts, so
-        // the ordinary `add_node(); update_param()` pair falls entirely inside the lost window.
+        // Every param channel spoken on for `uid`, bound or not: `add_node` answers before the
+        // barrier lifts, so the ordinary `add_node(); update_param()` pair falls inside the window.
         for (at, (owner, _)) in self.bind_keys.iter().enumerate() {
             let key = (*owner, runtime::plan::Slot::Bind(at));
             if *owner == uid && !slots.contains(&key) {
@@ -2233,8 +2065,7 @@ impl Graph {
             }
         }
         // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
-        // the same re-plan its input slots get — both ends of one, since a producer that could not
-        // be reached was never told to ring the reader.
+        // the same re-plan its input slots get — both ends of one.
         for (consumer, entry) in &self.nodes {
             for binding in entry.bindings.values() {
                 let touches = *consumer == uid
@@ -2248,10 +2079,8 @@ impl Graph {
         slots
     }
 
-    /// The generation the node at `uid` was born at — the third component of its service names, and
     /// One output slot's data service name — the whole of a wire's identity, which is why a slot
-    /// message carries names and never a source uid. Public because it is also the `/data` plane's
-    /// subscribe address: a viewer resolves `(uid, slot)` here once and is lock-free after (§7).
+    /// message carries names and never a source uid. Also the `/data` plane's subscribe address.
     pub fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
         runtime::output_service(&self.service_base_of(uid), slot)
     }
@@ -2266,15 +2095,13 @@ impl Graph {
     }
 
     /// Plan an input slot's full desired wire set and run the three-phase sequence (§4). Every link
-    /// change to a slot comes through here, which is why a displaced single-input wire needs no
-    /// special case anywhere: the consumer's new set is simply the new producer.
+    /// change comes through here: the consumer's new set is simply the new producer.
     pub(crate) fn replan_slot(&mut self, uid: Uid, slot: &'static str) {
         self.replan(uid, runtime::plan::Slot::In(slot));
     }
 
-    /// The same for an expression binding (§5.3), whose subscription set is the producers its
-    /// variables resolved to. Keyed by the binding's id rather than by its `ParamKey`, so an unbind
-    /// can still be planned after the binding itself is gone.
+    /// The same for an expression binding (§5.3), keyed by the binding's id rather than its
+    /// `ParamKey`, so an unbind can still be planned after the binding itself is gone.
     fn replan_binding(&mut self, uid: Uid, bind_id: usize) {
         self.replan(uid, runtime::plan::Slot::Bind(bind_id));
     }
@@ -2337,9 +2164,7 @@ impl Graph {
         let Some(entry) = self.nodes.get_mut(&uid) else { return };
         match status {
             // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
-            // the bridge locks with `.lock().unwrap()` throughout, so a panic site here would
-            // poison the control plane rather than cost one report — and "genuinely unreachable"
-            // is a claim about today's callers, which is what B's hardening pass stopped trusting.
+            // the bridge locks with `.lock().unwrap()`, so a panic here would poison the control plane.
             runtime::Status::Ack { .. } | runtime::Status::Ready => {}
             runtime::Status::Stage { stage } => entry.stage = stage.as_str(),
             runtime::Status::Ufreq { hz } => entry.ufreq = Some(hz),
@@ -2356,8 +2181,7 @@ impl Graph {
                     });
                 }
                 // Queued whether or not there were any: this IS the answer to a ⟳, and the client
-                // that asked lifts its spinner off the echo of it. A node with no hook for the
-                // param answers `None`, and would otherwise spin until a 15 s safety timeout.
+                // lifts its spinner off the echo. A node with no hook for the param answers `None`.
                 refreshed = Some(key);
             }
             runtime::Status::Fault { fault } => match fault {
@@ -2370,9 +2194,8 @@ impl Graph {
                 Some(runtime::NodeFault::Setup { msg, .. }) => entry.setup_error = Some(msg),
                 Some(runtime::NodeFault::Process { msg, .. }) => entry.last_error = Some(msg),
             },
-            // One record for what the instance reported, bound param or not — a binding's own
-            // field indicator folds this in on read. Landing it on the binding instead made it
-            // outlive the instance, because a reborn node has nothing to announce clearing.
+            // One record for what the instance reported, bound param or not. On the binding it would
+            // outlive the instance, since a reborn node has nothing to announce clearing.
             runtime::Status::BindingErrors { errors } => {
                 for (key, msg) in errors {
                     match msg {
@@ -2396,15 +2219,13 @@ impl Graph {
     }
 
     /// The params whose options were re-enumerated since the last call — the worker's cue to echo
-    /// them. A QUEUE rather than something derivable, because options are the one part of a node
-    /// the doc has no field for. Draining here is what makes each answered ⟳ echo exactly once.
+    /// them. A QUEUE, because options are the one part of a node the doc has no field for.
     pub fn take_refreshed(&mut self) -> Vec<(Uid, ParamKey)> {
         std::mem::take(&mut self.refreshed)
     }
 
-    /// Stamp when this node's error first read the way it does now. Derived from [`entry_error`]
-    /// rather than written at each site, so all three kinds are stamped by one rule and the stamp
-    /// cannot outlive the error it belongs to.
+    /// Stamp when this node's error first read the way it does now. Derived from [`entry_error`], so
+    /// all three kinds are stamped by one rule and the stamp cannot outlive its error.
     fn stamp_error_onset(&mut self, uid: Uid) {
         let Some(e) = self.nodes.get_mut(&uid) else { return };
         let current = entry_error(e);
@@ -2424,18 +2245,16 @@ impl Graph {
         }
     }
 
-    /// One phase's messages. The `OutSlot` phases are built from the graph as it stands NOW: a
-    /// producer's target set can change between two phases of this sequence. `Apply` carries the
-    /// sequence's own `desired`, which the phases are ordered around and must not shift.
+    /// One phase's messages. The `OutSlot` phases are built from the graph as it stands NOW; `Apply`
+    /// carries the sequence's own `desired`, which must not shift under it.
     fn compose_wire(
         &self,
         key: runtime::plan::SlotKey,
         phase: runtime::plan::Phase,
     ) -> Vec<(Uid, runtime::Control)> {
         match phase {
-            // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is: an input slot receives
-            // its full service set, a binding receives the whole re-resolved expression. Both are
-            // declarative, and both are what the producer phases are ordered around.
+            // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is — an input slot's full
+            // service set, or a binding's whole re-resolved expression. Both are declarative.
             runtime::plan::Phase::Apply => match key.1 {
                 runtime::plan::Slot::In(slot) => {
                     let services = self
@@ -2460,9 +2279,8 @@ impl Graph {
         }
     }
 
-    /// The `SetParam` a binding's phase 2 carries: the rewritten source with its resolved variables
-    /// while the binding stands, and the param's LITERAL once it does not — an unbind is a param
-    /// going back to its authored number, and §3.4 makes that the message that says so.
+    /// The `SetParam` a binding's phase 2 carries: the rewritten source while the binding stands,
+    /// and the param's LITERAL once it does not, which is what says the binding is gone.
     fn compose_set_param(&self, uid: Uid, bind_id: usize) -> Option<(Uid, runtime::Control)> {
         let (owner, key) = self.bind_keys.get(bind_id)?;
         if *owner != uid {
@@ -2501,12 +2319,8 @@ impl Graph {
         }
     }
 
-    /// Every producer a consumer subscription feeds from, in wire order — `links` order for an
-    /// input slot, variable order for a binding. `links` is the ONE record of that order; the
-    /// per-wire cells a node keeps are set from this same list.
-    ///
-    /// A slot with no event id yields nothing: the input-slot id budget is 1..=64, and a wire no
-    /// producer can ring is worse than no wire.
+    /// Every producer a consumer subscription feeds from, in wire order — `links` order for an input
+    /// slot, variable order for a binding. A slot with no event id yields nothing.
     fn desired_wires(&self, key: runtime::plan::SlotKey) -> Vec<runtime::plan::Wire> {
         match key.1 {
             runtime::plan::Slot::In(slot) => {
@@ -2533,13 +2347,11 @@ impl Graph {
         (*owner == uid).then(|| self.nodes.get(&uid)?.bindings.get(key)).flatten()
     }
 
-    /// Every doorbell one output slot rings, with the event id that says why the far node woke —
-    /// the UNION of this slot's wire consumers and its expression subscribers (§5.3). One set,
-    /// because a producer cannot tell an `nd()` reader from a wired consumer and does not need to.
+    /// Every doorbell one output slot rings, with the event id that says why the far node woke — the
+    /// UNION of its wire consumers and its expression subscribers (§5.3).
     fn out_targets(&self, producer: Uid, slot: &'static str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
-        // The ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence
-        // has not applied this wire is not a subscriber yet, so naming it here — because another
-        // consumer reached phase 3 first — is the very thing the phases prevent.
+        // The ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence has
+        // not applied this wire is not a subscriber yet, which is what the phases prevent.
         let wired = self
             .links
             .iter()
@@ -2657,9 +2469,8 @@ impl Graph {
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
 
-        // Sub-patch scopes (the flat overlay). Each scope emits its own metadata + its direct member
-        // uids + its stubs. The flat nodes/links above already hold the runtime, so there are no def
-        // bodies to persist — the scope block is purely the organizational tree.
+        // Sub-patch scopes: each emits its metadata, its direct member uids and its stubs. The flat
+        // nodes/links above already hold the runtime, so this block is purely organizational.
         let mut scope_map = Map::new();
         for (uid, scope) in &self.scopes {
             let mut stubs = Map::new();
@@ -2724,9 +2535,8 @@ impl Graph {
     pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
-            // v7 is the archive era: nodes/links nested under `root`, a flat `root.scopes`
-            // overlay, top-level `globals`, opaque top-level `layout`. The bare-YAML v3-v6
-            // files predate the zip container and are deliberately not read (spec Decision 3).
+            // v7 is the archive era. The bare-YAML v3-v6 files predate the zip container and are
+            // deliberately not read (spec Decision 3).
             Some(MANIFEST_VERSION) => {
                 let root = doc.get("root");
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
@@ -2746,10 +2556,8 @@ impl Graph {
         }
 
         self.clear();
-        // Globals load BEFORE nodes so a node's `globals.*` param default-expression resolves at
-        // instantiation. `clear()` already re-seeded the system globals; each entry sets an existing
-        // (system) global or adds a user one, IN FILE ORDER (so the observable order round-trips).
-        // Malformed entries are skipped (best-effort load).
+        // Globals load BEFORE nodes so a node's `globals.*` default-expression resolves at
+        // instantiation, IN FILE ORDER. Malformed entries are skipped (best-effort load).
         if let Some(serde_json::Value::Array(arr)) = doc.get("globals") {
             for entry in arr {
                 if let (Some(name), Some(value)) =
@@ -2766,12 +2574,7 @@ impl Graph {
         for (old, rec) in nodes {
             let ty = rec["type"].as_str().unwrap();
             // NON-seeding, because a load is a RESTORE: `add_node` would re-synthesize a binding
-            // for any `default_expr` param the user had unbound to a literal, and the reseed would
-            // clobber that literal on the node's next run.
-            //
-            // Params are folded in BEFORE construction because `insert_node` runs `setup()`, a
-            // one-time init that reads them — applying them afterwards boots every node against
-            // the type's defaults. The undo/redo restore path uses this same order.
+            // the user had unbound. Folded in BEFORE construction, since `insert_node` runs `setup()`.
             let mut params = self.default_params_of(ty)?;
             if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
                 for (group, names) in groups {
@@ -2807,7 +2610,6 @@ impl Graph {
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(uid, v.clone());
             }
-            // Reconstruct expression bindings (after literal params are applied).
             if let Some(exprs) = rec.get("expressions").and_then(|v| v.as_array()) {
                 for ex in exprs {
                     let g = ex.get("group").and_then(|v| v.as_str());
@@ -2839,16 +2641,13 @@ impl Graph {
                 }
             }
         }
-        // Reconstruct the flat sub-patch scopes. The members are already live flat nodes; here
-        // we restore each scope's uid, re-tag membership from its `nodes` list, and rebuild its
-        // stubs (resolving the stored inner uid). No def bodies to rehydrate — the runtime is flat.
+        // Reconstruct the flat sub-patch scopes: each scope's uid, its membership from the `nodes`
+        // list, and its stubs, resolving the stored inner uid.
         let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
         self.reload_scopes(scopes_v, &idmap, &mut claimed);
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
-        // A corrupt arrangement costs the CHROME, never the patch — the graph is the value, and a
-        // file that cannot be opened is the one outcome worse than a lost layout. The reason is kept
-        // for the load reply so the fallback is stated rather than silent. An ABSENT arrangement is
-        // not a corrupt one (a patch saved before this shape existed), so it warns about nothing.
+        // A corrupt arrangement costs the CHROME, never the patch. The reason is kept for the load
+        // reply; an ABSENT arrangement is not a corrupt one and warns about nothing.
         let (arrangement, warning) = match doc.get("arrangement") {
             None => (layout::Layout::default(), None),
             Some(v) => match layout::Layout::from_json(v) {
@@ -2862,8 +2661,7 @@ impl Graph {
     }
 
     /// Rebuild the scope forest once the flat nodes and links are live. A scope uid restores from
-    /// its key as a node's does — an editor panel's `subpatchPath` names scopes, and is persisted
-    /// beside the very scopes it points at.
+    /// its key as a node's does — an editor panel's `subpatchPath` names scopes.
     fn reload_scopes(
         &mut self,
         scopes_v: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -2892,7 +2690,6 @@ impl Graph {
                 .and_then(|v| v.as_array())
                 .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
                 .unwrap_or([0.0, 0.0]);
-            // Re-tag membership from the scope's `nodes` list (leaf uids + child-scope uids).
             if let Some(members) = rec.get("nodes").and_then(|v| v.as_array()) {
                 for mv in members {
                     if let Some(ru) = mv.as_str().and_then(resolve_uid) {
@@ -2900,7 +2697,6 @@ impl Graph {
                     }
                 }
             }
-            // Rebuild stubs (remapping each stored inner uid through idmap/scopemap).
             let mut stubs: IndexMap<subpatch::StubId, Stub> = IndexMap::new();
             if let Some(sm) = rec.get("stubs").and_then(|v| v.as_object()) {
                 for (id, st) in sm {
@@ -2935,22 +2731,19 @@ impl Graph {
 
 }
 
-/// One node's current error, derived fresh from the places one can arise — see
-/// [`Graph::last_error`], whose contract this is. A free function so [`Graph::stamp_error_onset`]
-/// can read it while holding a `&mut NodeEntry`, which keeps derivation and stamping on one rule.
+/// One node's current error, derived fresh from the places one can arise. A free function so
+/// [`Graph::stamp_error_onset`] can read it while holding a `&mut NodeEntry`.
 fn entry_error(e: &NodeEntry) -> Option<&str> {
     // Initialization failure outranks a process error, and is the only thing that CAN be true
-    // beside one: if `setup` failed, `process` never ran. A node whose services could not be
-    // created carries its boot failure here too — the same "never started" fact, one layer out.
+    // beside one: if `setup` failed, `process` never ran.
     if let Some(err) = e.setup_error.as_deref() {
         return Some(err);
     }
     if let Some(err) = e.last_error.as_deref() {
         return Some(err);
     }
-    // Both param-keyed error records, ordered by key together — the node rolls its own map up the
-    // same way (`NodeRuntime::node_fault`), and folding only one of them here would make which
-    // record an error landed in decide whether the badge ever shows it.
+    // Both param-keyed error records, ordered by key together, so which record an error landed in
+    // cannot decide whether the badge ever shows it.
     e.bindings
         .iter()
         .filter_map(|(k, b)| b.bind_error.as_deref().map(|s| (k, s)))
@@ -2986,8 +2779,7 @@ pub(crate) fn seed_node(
     last_error
 }
 
-/// How long a node waits between retries of a failed initialization. A `setup()` that fails is
-/// exactly the kind that BLOCKS first and leaks a handle per attempt, and a free-running producer
-/// would retry tens of times a second. Only a WAKE is paced: a param edit is a user asking.
+/// How long a node waits between retries of a failed initialization — a free-running producer would
+/// otherwise retry tens of times a second. Only a WAKE is paced: a param edit is a user asking.
 const SETUP_RETRY_INTERVAL: f64 = 1.0;
 

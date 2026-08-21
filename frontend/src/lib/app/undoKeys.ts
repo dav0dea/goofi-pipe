@@ -1,18 +1,10 @@
-/**
- * Pure decision for the global undo/redo keybindings, factored out of AppShell
- * so it is unit-testable without a DOM. Returns the action a keydown should
- * trigger, or 'none' when it should be ignored (typing in a field, a modal is
- * up, or the combo isn't an undo/redo chord).
- *
- * Bindings: Ctrl/Cmd+Z → undo · Ctrl/Cmd+Shift+Z and Ctrl+Y → redo.
- */
+/** The global undo/redo chords: Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl+Y redo. */
 export interface UndoKeyEvent {
 	key: string;
 	ctrlKey: boolean;
 	metaKey: boolean;
 	shiftKey: boolean;
-	/** Whether the event landed in a text-editing surface — `ui/textEditing.ts`'s answer, which covers
-	 *  a contenteditable (X's expression editor) as well as the form elements. */
+	/** Whether the event landed in a text-editing surface, a contenteditable included. */
 	editing: boolean;
 }
 

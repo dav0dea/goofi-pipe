@@ -1,27 +1,16 @@
-/**
- * A dumb test double for the `Control` interface. It RECORDS every `call` and
- * lets a test drive the event stream by hand via `emit` — it never synthesizes
- * an echo event on its own. That is deliberate: it forces executor tests to
- * emit the backend's response and assert on the resulting store state (the Iron
- * Law), instead of merely checking "an RPC was recorded".
- */
+/** Test double for `Control`: it records every `call`, and a test drives the event stream with `emit`. */
 import type { Control, ControlEvent } from '$lib/api/control';
 import type { OpName } from '$lib/api/ops';
 
 export class FakeControl implements Control {
-	/** A fixed stand-in for the tab's `sessionStorage` id — enough for a test to hand back "our
-	 * own" session and assert an echo is skipped. */
+	/** Fixed stand-in for the tab's `sessionStorage` id. */
 	readonly session = 'fake-session';
 	private calls: Array<{ op: OpName; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();
 	private results = new Map<string, unknown>();
 	private failing = new Set<string>();
-	// Starts connected — matches the real ControlClient, whose `onConnect` fires immediately
-	// with the current state so a fresh subscriber learns it's already connected. A test about
-	// BOOT asks for the other starting state (`new FakeControl({ connected: false })`): the real
-	// client is disconnected until its socket opens, and that window is where the difference
-	// between "not yet" and "lost" lives.
+	// Starts connected, like the real ControlClient; a boot test asks for `{ connected: false }`.
 	private _connected: boolean;
 	constructor({ connected = true }: { connected?: boolean } = {}) {
 		this._connected = connected;
@@ -57,8 +46,7 @@ export class FakeControl implements Control {
 		return () => this.connectListeners.delete(fn);
 	}
 
-	/** Synchronously fan an event out to every `on` listener — simulates the
-	 * backend broadcasting an echo after a mutation. */
+	/** Synchronously fan an event out to every `on` listener. */
 	emit(ev: ControlEvent): void {
 		for (const fn of this.listeners) fn(ev);
 	}

@@ -1,19 +1,11 @@
-<!--
-  ChoiceGrid — the icon-over-label tile grid an empty surface offers its choices with (spec §2.5's
-  companion): a responsive `auto-fit` grid of cards whose whole face is the affordance.
-
-  It was the empty panel's, and only the empty panel's; the agent panel's launcher had its own row
-  of Buttons, which is why the two "pick something to put here" surfaces did not look like one
-  thing. A tile is NOT a `Button`: the surface step carries the separation (D5) and the border is
-  the hover accent alone. `class` merged, `data-testid` (+ any attribute) forwarded onto the grid.
--->
+<!-- ChoiceGrid — the icon-over-label tile grid an empty surface offers its choices with. -->
 <script module lang="ts">
-	/** One tile. `id` keys the list; `testid` stamps the tile a consumer's e2e names. */
+	/** One tile; `id` keys the list. */
 	export interface Choice {
 		id: string;
 		label: string;
 		icon?: string;
-		/** Native tooltip — the version string, the path, whatever the label had no room for. */
+		/** Native tooltip: what the label had no room for. */
 		title?: string;
 		testid?: string;
 		choose: () => void;
@@ -48,10 +40,7 @@
 		width: 100%;
 		max-width: 340px;
 	}
-	/* A tile, not a Button: an icon-over-label card whose whole face is the affordance. The
-	   surface step carries the separation (D5) and the border is the hover accent alone. It owns
-	   its font for the same reason a menu row does: buttons don't inherit one, and a complete
-	   bespoke face does not lean on app.css's base reset to supply half of it. */
+	/* A tile, not a Button, so it states its own face — a button inherits no font. */
 	.choice {
 		font: inherit;
 		display: flex;

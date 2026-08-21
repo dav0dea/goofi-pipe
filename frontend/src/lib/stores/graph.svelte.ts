@@ -1,10 +1,5 @@
-/**
- * Central reactive graph state, backed by the control WS.
- *
- * Uses Svelte 5 runes — components subscribe by importing this store and
- * reading its `$state` fields directly. The store owns the only writes
- * (driven by control events) so consumers never have to merge.
- */
+/** Central reactive graph state, backed by the control WS. The store owns the only writes, so a
+ * component just reads its `$state` fields. */
 import {
 	getControl,
 	paramValues,
@@ -42,14 +37,11 @@ import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import { assembleInstances, instanceError } from '$lib/crdt/instanceAssembly';
 import type { StringParam } from '$lib/api/types';
 
-/** Safety net: if a node never reports a ⟳ refresh done (it crashed mid-scan, or
- * the option list was so trivially unchanged the push was coalesced away), lift the
- * spinner after this long so the entry can never stay disabled forever. Generous —
- * an LSL resolve blocks the node's ctrl thread ~4s. */
+/** Safety net: lift a ⟳ spinner after this long when a node never reports the refresh done.
+ * Generous — an LSL resolve blocks the node's ctrl thread ~4s. */
 const REFRESH_SPINNER_TIMEOUT_MS = 15000;
 
-/** Stable key for an in-flight param refresh. U+001F (unit separator) can't occur
- * in a uid/group/name, so it composes them unambiguously. */
+/** Stable key for an in-flight param refresh; U+001F cannot occur in a uid/group/name. */
 function refreshKey(node: string, group: string, name: string): string {
 	return `${node}\u001f${group}\u001f${name}`;
 }
@@ -62,38 +54,26 @@ export class GraphStore {
 	savePath = $state<string | null>(null);
 	unsavedChanges = $state(false);
 	connected = $state(false);
-	/** Has a control connection EVER been established in this tab? Latches on the first connect
-	 * and never clears — see {@link disconnected}. */
+	/** Latches on the first connect and never clears — see {@link disconnected}. */
 	private _everConnected = $state(false);
 	hadHello = $state(false);
 
-	/** Patch globals (system + user), doc-authoritative, in system-first/creation order. Derived from
-	 * the CRDT `globals` root on every doc transaction; the Globals panel reads + edits this. */
+	/** Patch globals (system + user), doc-authoritative, in system-first/creation order. */
 	globals = $state<GlobalView[]>([]);
 
-	/** Bumps on every *wholesale* graph load (hello / graph_replaced), never on
-	 * incremental node add/remove. Editor panels watch it to fit the view to a
-	 * freshly-loaded patch — without auto-fitting when nodes are placed one by
-	 * one (which is what made the first interactively-placed node jump). */
+	/** Bumps on every WHOLESALE graph load, never on an incremental add/remove; editors re-fit on it. */
 	loadEpoch = $state(0);
 
 	nodeTypes = $state<NodeTypeInfo[] | null>(null);
 
-	/** Params with a ⟳ refresh in flight, keyed by `refreshKey` → its safety-timeout
-	 * handle. Reactive so a param widget disables its control + shows a spinner while
-	 * present. A refresh completes asynchronously (the node re-scans off its ctrl
-	 * thread and pushes fresh options on a later `state_update`), so this is set when
-	 * the RPC is dispatched and cleared when the node reports the param done
-	 * (`refreshed_params`) — not on the fire-and-forget RPC ack. */
+	/** Params with a ⟳ refresh in flight → its safety-timeout handle. Cleared when the node reports
+	 * the param done (`refreshed_params`), never on the fire-and-forget RPC ack. */
 	private _refreshing = $state<Record<string, ReturnType<typeof setTimeout>>>({});
 
-	/** instance_id of the manager process we last hydrated from. A change means the backend was
-	 * restarted under our still-open tab — a fresh session, not a transient reconnect, which is
-	 * what tells a wholesale load apart from a reconnect that must keep its history. */
+	/** instance_id of the manager we last hydrated from; a change is a fresh session, not a reconnect. */
 	private _lastInstanceId: string | null = null;
 
-	/** The last snapshot's per-node runtime overlay, consumed by `_seedRuntime` as each node
-	 * materializes from the doc (the doc syncs *after* the snapshot event). */
+	/** The last snapshot's per-node runtime overlay, consumed by `_seedRuntime`. */
 	private _snapshotRuntime: GraphSnapshot['runtime'] = {};
 
 	/** The control client (injectable for tests; defaults to the live WS one). */
@@ -102,15 +82,8 @@ export class GraphStore {
 	/** The document driver — the browser replica of the manager's control-plane document. */
 	private _sync: SyncClient;
 
-	/** The one thing the UI says about the connection: it was ESTABLISHED and is now gone.
-	 *
-	 * Not `!connected`. A healthy socket is not news — the app says nothing and spends no width on
-	 * it — and at boot `connected` is false for the few hundred ms before the socket opens, so a
-	 * bare negation would alarm on every page load. The trade, stated plainly: a boot whose socket
-	 * NEVER opens stays quiet too (`control.ts`'s reconnect loop keeps trying behind it). That is
-	 * the honest reading of a page which itself arrived over this very server — if the socket is
-	 * not there now, it was there a moment ago — and it is the boot the user cannot tell apart from
-	 * a slow one anyway. From the first connect on, the state is exact. */
+	/** The connection was ESTABLISHED and is now gone. Not `!connected`: at boot that would alarm
+	 * for the few hundred ms before the socket first opens. */
 	get disconnected(): boolean {
 		return this._everConnected && !this.connected;
 	}
@@ -122,9 +95,6 @@ export class GraphStore {
 			if (c) this._everConnected = true;
 		});
 		ctl.on((ev) => this._handle(ev));
-		// Mount the replica and source the document-owned subtrees from it. The manager projects
-		// every control mutation and broadcasts the delta, so each applied change re-derives the
-		// reactive state.
 		this._sync = new SyncClient(ctl);
 		this._sync.onDocChange(() => this._syncFromDoc());
 		this._sync.start();
@@ -135,8 +105,7 @@ export class GraphStore {
 		return this._sync.doc;
 	}
 
-	/** Whether the replica has pulled from the manager yet (see `SyncClient.synced`) — until then
-	 * doc-derived reads describe an empty replica, not the graph. */
+	/** Whether the replica has pulled from the manager yet; until then doc reads describe nothing. */
 	get docSynced(): boolean {
 		return this._sync.synced;
 	}
@@ -145,42 +114,22 @@ export class GraphStore {
 	 * (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */
 	private _syncFromDoc(): void {
 		const doc = this._sync.doc;
-		// links: the whole set is replaced from the doc.
 		this.links = linkViews(doc);
-		// globals: the whole set is replaced from the doc (system-first, then user).
 		this.globals = globalViews(doc);
-		// arrangement: the panel layout, flat and id-keyed. The workspace store rebuilds its tree
-		// from it — the client holds no second copy and authors none.
+		// The workspace store rebuilds its tree from this; the client holds no second copy.
 		workspace().syncFromDoc(arrangementTabs(doc));
-		// The catalog is always present in production (it rides on `hello`), so the doc is authoritative
-		// for node AND sub-patch identity: build `this.nodes` + `this.instances` from the doc (+ catalog
-		// + runtime). Existence/type/name/pos/param value+expr and the whole sub-patch forest come from
-		// the doc; descriptors from the catalog; runtime (error/stage/…) stays event-sourced. Both
-		// reconcilers self-guard on an absent catalog (the pre-`hello` window) → they no-op until it
-		// lands, then `_replaceSnapshot`/`_refreshNodeTypes` rebuild from the doc.
+		// Both reconcilers no-op until the catalog lands, then rebuild from the doc.
 		this._reconcileNodesFromDoc();
 		this._reconcileInstancesFromDoc();
 	}
 
-	/** Apply a wholesale snapshot. `wholesale` says the snapshot REPLACED the patch
-	 * (`graph_replaced`) rather than re-announcing it (`hello`, which a reconnect also
-	 * delivers) — the one thing that disambiguates a missing `layout`. Returns whether it
-	 * came from a *new* backend session (changed `instance_id`) — the caller uses that to
-	 * decide whether to re-fit / clear history (a same-session reconnect must leave both
-	 * alone). */
+	/** Apply a wholesale snapshot, returning whether it came from a NEW backend session — which is
+	 * what a same-session reconnect must not look like. */
 	private _replaceSnapshot(snap: GraphSnapshot, wholesale: boolean): boolean {
-		// The node palette rides on hello/graph_replaced (Phase-2 read cutover) so the doc is
-		// authoritative for node identity from the first render — no async `list_nodes` window.
 		// Absent → an older backend; keep whatever the async fetch set.
 		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
-		// The snapshot carries NO graph structure: nodes, links and the sub-patch forest all reach
-		// us through the CRDT doc, whose binary sync drives `_syncFromDoc`. The two ride separate
-		// channels of one socket and the bridge sends them from separate `select!` branches, so
-		// their ORDER is not defined — on a load the delta routinely lands first. What the snapshot
-		// does carry is the runtime overlay: stash it so a node still to materialize seeds from it
-		// (`_seedRuntime`), and apply it now to every node the doc already produced. It is
-		// authoritative for runtime by definition, so applying it is correct in either order —
-		// without this half a freshly loaded errored node drew healthy until the 2 Hz sweep.
+		// The snapshot and the doc delta ride separate channels in no defined order, so the runtime
+		// overlay is both stashed for nodes still to materialize and applied to those already here.
 		this._snapshotRuntime = snap.runtime ?? {};
 		for (const [uid, rt] of Object.entries(this._snapshotRuntime)) {
 			const node = this._realNode(uid);
@@ -188,86 +137,47 @@ export class GraphStore {
 			node.stage = rt.stage;
 			node.error = rt.error ?? null;
 		}
-		// The overlay just rewrote member errors, and a same-session reconnect fires no doc
-		// transaction — so nothing else would refresh the collapsed facades above them.
+		// A same-session reconnect fires no doc transaction, so nothing else refreshes the facades.
 		this._recomputeInstanceErrors();
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
-		// The panel ARRANGEMENT is not here: it is the fifth doc root, and it reaches the workspace
-		// store through `_syncFromDoc` like nodes and links do. What the snapshot carries is the
-		// VIEWPOINT — the page in front, the focused panel, each editor's sub-patch depth — which is
-		// this client's alone, persisted but never converged, so a reload lands where it left off.
+		// The arrangement rides the doc; what the snapshot carries is the VIEWPOINT, this client's
+		// alone — persisted, never converged.
 		const freshSession = snap.instance_id !== this._lastInstanceId;
 		this._lastInstanceId = snap.instance_id;
 		if (snap.viewpoint != null) workspace().restoreViewpoint(snap.viewpoint);
-		// (History reset happens in `_onWholesaleLoad`, which runs on BOTH a fresh session and an
-		// in-session load — a same-session reconnect skips it and keeps its history.)
 		return freshSession;
 	}
 
-	/** React to a wholesale graph load (a new backend session, or a patch loaded
-	 * via the Load button). Fit the view (loadEpoch) and drop the error-console
-	 * history, which belongs to the graph that just went away — without this it
-	 * would show errors for nodes that no longer exist and could even merge a
-	 * reused node name's count across sessions. */
-	/** Drop every projection assembled from the OUTGOING document. A fresh backend session is a
-	 * GENERATION boundary, not merely a document swap: `SyncClient.reset()` hands us an empty
-	 * replica, but `nodes`/`links`/`instances`/`globals` are plain state that nothing else clears.
-	 *
-	 * Reconciliation runs only from the doc observer, and only when a transaction changed a Yjs
-	 * type — and a fresh manager whose graph is EMPTY answers our state vector with a transaction
-	 * that changes nothing. So without this the browser keeps rendering the graph that went away,
-	 * on uids the new engine is about to mint again from 1. */
+	/** Drop every projection assembled from the OUTGOING document. Reconciliation runs only from the
+	 * doc observer, and a fresh manager with an EMPTY graph answers our SV with no change at all. */
 	private _resetProjection(): void {
 		this.nodes = [];
 		this.links = [];
 		this.instances = {};
 		this.globals = [];
-		// `_snapshotRuntime` is deliberately NOT cleared here: `_replaceSnapshot` runs first and has
-		// already replaced it with the INCOMING session's overlay, so clearing would discard the
-		// runtime state this very hello just delivered — an errored node in the new session drawing
-		// healthy until the 2 Hz sweep. It is overwritten wholesale on every snapshot, so it can
-		// never carry the old session's state forward anyway.
-		// The arrangement is doc-derived too, and its store is a separate singleton — so it needs
-		// the same boundary, not merely the same document.
+		// `_snapshotRuntime` is NOT cleared: `_replaceSnapshot` ran first, so it already holds the
+		// INCOMING session's overlay. The arrangement store is a separate singleton, so it is here.
 		workspace().syncFromDoc([]);
 	}
 
 	private _onWholesaleLoad(): void {
 		this.loadEpoch += 1;
-		// The client's undo/redo stacks are meaningless across a wholesale load: a fresh backend
-		// session mints new uids, and an in-session load clears the manager's command history
-		// (`load`/`new` → CommandHistory::clear), so keeping client entries would pop mismatched.
-		// Reset here — this runs on a fresh session AND an in-session load or New, but NOT on a
-		// same-session reconnect.
+		// A wholesale load mints new uids and clears the manager's history, so a kept client entry
+		// would pop against a command that is not there. A same-session reconnect never comes here.
 		history().reset();
 		consoleStore().clear();
-		// Drop stale per-panel selection/inspector state: a loaded layout keeps
-		// its saved panel ids, which can collide with ids used earlier this
-		// session and silently apply old state to the new panels. (A transient
-		// same-session reconnect doesn't come here, so its selection survives.)
 		selection().forgetAll();
 	}
 
-	/** Write ONE slot's inline view — kind, settings, collapse — merging into the node's blob and
-	 * leaving its other slots alone. The blob is the only holder of that state, so this is the only
-	 * writer; the kind stored is the user's RAW pick (`resolveKind` applies the dtype's on read), so
-	 * a slot whose dtype pins a viewer never has the pick overwritten by what it drew.
-	 *
-	 * Soft, human-rate view state: NOT a manager command (the client's own `set_view` action is what
-	 * undoes it), but it rides the `.gfi`, so it dirties the patch like any other authoring write.
-	 *
-	 * A sub-patch SCOPE has no viewer blob in the engine — `set_node_viewers` refuses a scope uid —
-	 * so its blob is the instance record's own and stays client-side for the session, exactly as far
-	 * as it has ever reached. Everything else goes to the document and comes back as a delta, so a
-	 * second tab converges and a load restores. */
+	/** Write ONE slot's inline view, merging into the node's blob. The kind stored is the user's RAW
+	 * pick; a sub-patch SCOPE has no engine blob, so its record holds it client-side. */
 	setSlotView(uid: string, slot: string, view: SlotView): void {
 		const node = this.nodeById(uid);
 		if (!node?.output_slots[slot]) return;
-		// Re-assembled from the node's CURRENT output slots, never from the blob's own keys: the blob
-		// rides the `.gfi`, so one saved before a node file changed its slots carries a name the node
-		// no longer has — and the manager refuses the WHOLE write for it.
+		// From the node's CURRENT output slots, never the blob's keys: a blob saved before a node
+		// file changed its slots carries a name the manager refuses the WHOLE write for.
 		const viewers: NodeInstanceInfo['viewers'] = {};
 		for (const s of Object.keys(node.output_slots)) {
 			const stored = node.viewers?.[s];
@@ -280,7 +190,7 @@ export class GraphStore {
 			return;
 		}
 		void this.ctl.call('set_node_viewers', { node: uid, viewers }).catch(() => {
-			/* soft view state — a dropped write is harmless (the next edit re-sends the whole blob) */
+			/* soft view state — the next edit re-sends the whole blob */
 		});
 	}
 
@@ -290,74 +200,46 @@ export class GraphStore {
 				// Not wholesale: a `hello` is also what a transient reconnect delivers.
 				const fresh = this._replaceSnapshot(ev.payload, false);
 				this.hadHello = true;
-				// A reconnect to the *same* backend must not re-fit the view or wipe
-				// the error history; a new backend session (or first connect) should.
 				if (fresh) {
-					// A NEW backend session mints uids from 1 again — the stale replica must NOT
-					// survive: answering the server's SV would push stale param/pos/expr leaves onto
-					// the reused uids (silent corruption), and the reconnect would merge new content
-					// into the stale doc (ghost edges). Reset to a fresh empty doc NOW, synchronously,
-					// so it happens before this connection answers the server's binary hello SV.
-					// Projections first, then the replica: `_resetProjection` reads `this.nodes` to
-					// forget each uid's view state, and both must fall before the fresh session's
-					// first delta can land.
+					// A NEW session mints uids from 1 again, so the stale replica must fall NOW,
+					// synchronously, before this connection answers the server's binary hello SV.
+					// Projections first: `_resetProjection` reads `this.nodes`.
 					this._resetProjection();
 					this._sync.reset();
 					this._onWholesaleLoad();
 				}
-				// The catalog usually rides on the hello snapshot (`_replaceSnapshot`); only fetch it
-				// async when an older backend omitted it, so the doc-authoritative path still boots.
+				// The catalog usually rides on the hello snapshot; fetch it only if one omitted it.
 				if (!this.nodeTypes?.length) void this._refreshNodeTypes();
 				break;
 			}
 			case 'graph_replaced':
-				// A patch was loaded/replaced wholesale — always re-fit + reset history (a load is
-				// not undoable across; the manager cleared its history too).
 				this._replaceSnapshot(ev.payload, true);
 				this._onWholesaleLoad();
 				break;
-			// Structure (node existence/name, the sub-patch forest, positions, links) is entirely
-			// doc-owned (Phase-2 read cutover): the manager mirrors every group/expand/share/
-			// make-unique/add/remove/rename/move into the doc, and `_syncFromDoc`'s doc-reconcile
-			// rebuilds `this.nodes` + `this.instances` + `this.links` in place from the delta. The
-			// `subpatch_changed` / `node_added` / `node_removed` / `node_renamed` / `boundary_moved` /
-			// `node_moved` / `link_added` / `link_removed` events are therefore all retired — the store
-			// no longer handles them (the catalog is always present, so there is no fallback window).
 			case 'state_update': {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
-					// Params are doc-owned (the catalog is always present): merge ONLY the runtime bits
-					// (expression_error / refreshed options), never wholesale-replace (which would
-					// clobber the reconcile's value+descriptor assembly).
+					// Params are doc-owned: merge ONLY the runtime bits, never wholesale-replace, which
+					// would clobber the reconcile's value+descriptor assembly.
 					this._mergeParamRuntime(t, ev.payload.params);
-					// Lifecycle stage rides every state rebroadcast (authoritative:
-					// the manager-side ref derives it from the node's own pushes).
 					if (ev.payload.stage) t.stage = ev.payload.stage;
-					// The node carries its current error on the state plane (always on,
-					// re-pushed): a lost first PROCESSING_ERROR still surfaces here, and a
-					// healthy respawn's null clears the stale chip. Applied unconditionally
-					// when present so backend truth wins even when no diff-driven `error`
-					// event fired.
+					// The state plane re-pushes the current error, so backend truth wins here even
+					// when no diff-driven `error` event fired.
 					if ('error' in ev.payload) {
 						t.error = ev.payload.error ?? null;
-						// A collapsed sub-patch's health is DERIVED from its descendants and cached, so
-						// every writer of a node's `error` has to invalidate it — not just the discrete
-						// `error` event. This plane in particular is the one that heals a MISSED
-						// transition, which made it the path where staleness survived longest.
+						// A collapsed sub-patch's health is derived and cached, so every writer of a
+						// node's `error` has to invalidate it.
 						this._recomputeInstanceErrors();
 					}
 				}
-				// A ⟳ refresh finished for these params on this very push (the node
-				// re-scanned and now carries fresh options) — lift each spinner exactly
-				// when the new options land. Keyed by node id, independent of `t`.
+				// Lift each spinner exactly when the fresh options land. Keyed by node, not by `t`.
 				for (const [group, name] of ev.payload.refreshed_params ?? []) {
 					this._endRefresh(refreshKey(ev.payload.node, group, name));
 				}
 				break;
 			}
 			case 'node_stage': {
-				// Discrete stage transitions the state plane can't carry — today only
-				// the terminal bootstrap 'error' (import failure; no auto-restart).
+				// Discrete stage transitions the state plane cannot carry — today only a bootstrap error.
 				const t = this._realNode(ev.payload.node);
 				if (t) {
 					t.stage = ev.payload.stage;
@@ -369,26 +251,19 @@ export class GraphStore {
 				break;
 			}
 			case 'node_stats': {
-				// Low-rate (2 Hz) self-reported execution telemetry; drives the node's
-				// stats overlay + the inspector's stats section. Latest-wins.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.stats = ev.payload.stats;
 				break;
 			}
 			case 'param_values': {
-				// Live evaluated values of a node's expression-driven params. Applied
-				// surgically to the existing descriptors (never a wholesale `params` replace
-				// like state_update) so the inspector preview tracks each re-evaluation
-				// without clobbering a concurrent edit on a sibling param. These params are
-				// in expression mode — never user-editable literals — so there's nothing to
-				// race with.
+				// Applied surgically to the existing descriptors, so a re-evaluation preview cannot
+				// clobber a concurrent edit on a sibling param.
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					for (const [group, names] of Object.entries(ev.payload.values)) {
 						for (const [name, value] of Object.entries(names)) {
 							const p = t.params[group]?.[name];
-							// Widen past the discriminated union's narrowed `value` — the
-							// backend guarantees the value matches the param's own type.
+							// Widen past the union's narrowed `value`; the backend guarantees the type.
 							if (p) (p as { value: unknown }).value = value;
 						}
 					}
@@ -396,13 +271,8 @@ export class GraphStore {
 				break;
 			}
 			case 'error': {
-				// Live snapshot — drives the node's red border, the floating error chip, and the
-				// inspector's current-error section. Always on, via the control plane, independent of
-				// whether a Console is open. The bridge only ever keys this by a REAL node uid (its
-				// error-transition loop iterates node_uids); a collapsed sub-patch's deep error is
-				// DERIVED from its members, so after updating the member node we recompute the
-				// enclosing instances (this event fires no doc transaction, so the doc-reconcile that
-				// normally derives instance error does not run).
+				// Always keyed by a REAL node uid; a sub-patch's deep error is derived, and this event
+				// fires no doc transaction, so the enclosing instances are recomputed by hand.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.error = ev.payload.error;
 				if (ev.payload.error)
@@ -417,9 +287,6 @@ export class GraphStore {
 				this.savePath = ev.payload.save_path;
 				break;
 			case 'node_types':
-				// The palette changed under us — a rescan re-derived it, or another tab loaded a
-				// patch that ships its own nodes. Applied through the same path `list_nodes` uses,
-				// because a type that vanished has to reach the assembled nodes too.
 				this._applyNodeTypes(ev.payload.types);
 				break;
 		}
@@ -434,43 +301,31 @@ export class GraphStore {
 		}
 	}
 
-	/** Adopt a palette catalog, whoever it came from (the `list_nodes` reply, or the `node_types`
-	 * event a rescan/load broadcasts). The catalog supplies node descriptors — with it in hand the
-	 * doc is authoritative for node + sub-patch identity, so both are (re)built from the doc here. */
+	/** Adopt a palette catalog. It supplies the descriptors, so nodes and instances rebuild here. */
 	private _applyNodeTypes(types: NodeTypeInfo[]): void {
 		this.nodeTypes = types;
 		this._reconcileNodesFromDoc();
 		this._reconcileInstancesFromDoc();
 	}
 
-	/** Re-derive the node registry from the directories that exist right now — goofi's own `nodes/`
-	 * and the patch's `<workspace>/nodes/` — and report what changed. Explicit by decision: there is
-	 * no watcher, so an agent calls this after writing a node file and a human presses refresh. The
-	 * fresh catalog arrives as a `node_types` event, here and in every other open tab. */
+	/** Re-derive the node registry from disk and report what changed; explicit, since there is no
+	 * watcher. The fresh catalog arrives as a `node_types` event in every open tab. */
 	async rescanNodes(): Promise<ScanDiff> {
 		return this.ctl.call<ScanDiff>('rescan_nodes', {});
 	}
 
-	/** Where this patch's workspace files live right now — a per-run temp directory under a random
-	 * name, so asking the manager is the only way to find it. */
+	/** Where this patch's workspace files live — a per-run temp directory under a random name. */
 	async openWorkspace(): Promise<string> {
 		const r = await this.ctl.call<{ path: string }>('open_workspace', {});
 		return r.path;
 	}
-
-	// ------------------------------------------------------------------
-	// mutations (sent via control RPC; UI updates apply on response)
-	// ------------------------------------------------------------------
 
 	/** Push an action onto the history (unless a replay is in progress). */
 	private _record(action: Action): void {
 		if (!history().isSuspended) history().record(action);
 	}
 
-	/** Record ONE graph command on the client history. The manager owns the exact inverse (it
-	 * captured the pre-state), so this entry only marks the step — its undo/redo DELEGATE to the
-	 * manager's session history (B3) — and carries any client-local layout side-effect (panels
-	 * emptied when a node vanished) to re-bind on undo. */
+	/** Record ONE graph command. The manager owns the exact inverse, so this only marks the step. */
 	private _recordGraphCmd(label: string): void {
 		this._record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext() });
 	}
@@ -482,12 +337,8 @@ export class GraphStore {
 		instId?: string,
 		params?: Record<string, Record<string, unknown>>
 	): Promise<string> {
-		// `instId` lands the node inside that sub-patch (member of the instance);
-		// omitted, it goes in the root graph. `params` (paste/duplicate replay) are applied at
-		// creation UNDER THE GRAPH LOCK — a post-add leaf-write would no-op until the new node syncs
-		// into the replica, silently dropping the values.
-		// The reply carries the node as BORN — uid, minted name, slots and params — for a caller with
-		// no doc replica. This one has one, so it reads the uid and lets the mirror bring the rest.
+		// `params` are applied at creation UNDER THE GRAPH LOCK: a post-add leaf write would no-op
+		// until the new node syncs into the replica, silently dropping the values.
 		const born = await this.ctl.call<{ uid: string }>('add_node', {
 			type,
 			category,
@@ -496,34 +347,24 @@ export class GraphStore {
 			params
 		});
 		const uid = born?.uid ?? '';
-		// The manager recorded the add (its inverse is a subtree-capturing RemoveNode); mark the step.
 		if (uid) this._recordGraphCmd(`Add ${type}`);
 		return uid;
 	}
 
 	async removeNode(uid: string): Promise<void> {
-		// The manager's RemoveNode captures the WHOLE subtree (members, params, links, stubs,
-		// membership) for a leaf, a sub-patch member, OR a collapsed instance alike (B3b) AND
-		// empties every panel bound to a uid it takes, so its inverse restores both uid-stably. The
-		// client just marks the step. The label reads the node's name before it vanishes.
+		// The label reads the node's name before it vanishes.
 		const label = `Delete ${this.nodeById(uid)?.name ?? uid}`;
 		await this.ctl.call('remove_node', { node: uid });
 		this._recordGraphCmd(label);
 	}
 
-	/** Respawn a (typically crashed) node: the backend restarts its process IN PLACE,
-	 * preserving the uid (so links/panels reconnect), display name, params, position,
-	 * sub-patch membership, and links — and re-wires status forwarding itself. A recovery
-	 * action, not a semantic edit, so it records no history. (A remove+add would land a
-	 * sub-patch member back at ROOT and, post Bug-C, mirror-remove a SHARED member across
-	 * its siblings — restart_node avoids both.) */
+	/** Respawn a node in place, keeping its uid, name, params, position, membership and links. A
+	 * recovery action rather than an edit, so it records no history. */
 	async restartNode(uid: string): Promise<void> {
 		await this.ctl.call('restart_node', { node: uid });
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		// The manager's AddLink captures any wire its single-source rule displaces, so its inverse
-		// restores it — the client just marks the step.
 		await this.ctl.call('add_link', link as unknown as Record<string, unknown>);
 		this._recordGraphCmd('Connect');
 	}
@@ -534,21 +375,14 @@ export class GraphStore {
 	}
 
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
-		// Guard on the param's EXISTENCE (a real param may hold 0/false/''): a missing param (agent
-		// typo, or a call racing node hydration) would otherwise send a bogus edit the manager rejects.
+		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
 		if (!param) throw new Error(`update_param: no param ${group}.${name} on node ${node}`);
 		await this.ctl.call('update_param', { node, group, name, value });
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
-	// ── Globals mutators ────────────────────────────────────────────────────────────────────────
-	// Command ops (EditGlobal / a Compound rename) — undoable, and validated server-side (invalid
-	// name / collision / protected-system reject the RPC). Each resolves on success and REJECTS on a
-	// server refusal, so callers `await` + catch to surface/undo an invalid edit.
-
-	/** Add a NEW user global. Rejects on an invalid name or a collision (server-validated — a
-	 * distinct op from `set_global` so an add can't silently overwrite an existing/system global). */
+	/** Add a NEW user global; a distinct op from `set_global`, so an add cannot overwrite. */
 	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
 		await this.ctl.call('add_global', { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
@@ -568,33 +402,27 @@ export class GraphStore {
 		this._recordGraphCmd(`Remove global ${name}`);
 	}
 
-	/** Rename a user global (add-new + remove-old as one undo step; refs are not rewritten — a stale
-	 * `globals.<old>` throws at eval time, per spec). Rejects on a system global or a collision. */
+	/** Rename a user global; refs are NOT rewritten, so a stale `globals.<old>` throws at eval time. */
 	async renameGlobal(oldName: string, newName: string): Promise<void> {
 		await this.ctl.call('rename_global', { old: oldName, new: newName });
 		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
 	}
 
-	/** Ask a live node to re-evaluate a param's options (device / stream pickers).
-	 * Recomputes options only, never the value — so it is NOT an undoable edit; the
-	 * fresh list arrives on the node's next state_update. The param is marked
-	 * refreshing (disabling its widget with a spinner) until the node reports it done. */
+	/** Ask a live node to re-evaluate a param's options. Options only, never the value, so it is
+	 * not an undoable edit; the fresh list arrives on the node's next state_update. */
 	async refreshParam(node: string, group: string, name: string): Promise<void> {
 		const key = refreshKey(node, group, name);
 		this._beginRefresh(key);
 		try {
 			await this.ctl.call('refresh_param', { node, group, name });
 		} catch (e) {
-			// The RPC only *dispatches* the ctrl message; if even that failed the node
-			// will never re-scan or push, so lift the spinner now rather than wait out
-			// the safety timeout.
+			// A failed dispatch means the node never re-scans, so do not wait out the safety timeout.
 			this._endRefresh(key);
 			throw e;
 		}
 	}
 
-	/** Whether a ⟳ refresh is currently in flight for this param — the widget reads
-	 * this to disable its control and show a spinner. */
+	/** Whether a ⟳ refresh is in flight for this param. */
 	isRefreshing(node: string, group: string, name: string): boolean {
 		return refreshKey(node, group, name) in this._refreshing;
 	}
@@ -621,8 +449,6 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
-		// Guard on the param's EXISTENCE (like updateParam): a missing param (agent typo, or a call
-		// racing node hydration) would otherwise send a binding for a phantom param the manager rejects.
 		if (!d) throw new Error(`set_expression: no param ${group}.${name} on node ${node}`);
 		await this.ctl.call('set_expression', {
 			node,
@@ -636,8 +462,7 @@ export class GraphStore {
 	}
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
-		// Committed on drag-stop only; live drag stays local to Svelte Flow. The manager's EditNode
-		// captures the prior pos so its inverse restores it. Handles a node OR an instance facade.
+		// Committed on drag-stop only; a live drag stays local to Svelte Flow.
 		await this.ctl.call('set_node_pos', { node: uid, pos });
 		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
 	}
@@ -650,10 +475,8 @@ export class GraphStore {
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
 	}
 
-	/** Store where THIS client is looking — the page in front, the focused panel, each editor's
-	 * sub-patch depth. Fire-and-forget: a viewpoint is soft, so a dropped push is harmless. It
-	 * rides the `.gfi` and comes back on `hello`, and it neither converges to a peer nor dirties
-	 * the patch — persistence and dirtiness are separate axes. */
+	/** Store where THIS client is looking. Persisted in the `.gfi`, but never converged and never
+	 * dirtying: persistence and dirtiness are separate axes. */
 	async setViewpoint(viewpoint: unknown): Promise<void> {
 		try {
 			await this.ctl.call('set_viewpoint', { viewpoint });
@@ -662,31 +485,15 @@ export class GraphStore {
 		}
 	}
 
-	/** Write the patch. Where it landed comes back from the MANAGER, never from here.
-	 *
-	 * There used to be a `this.savePath = res.path` latch on this reply, because the manager kept
-	 * no save-path state of its own (its snapshot hard-coded `save_path: null` and its `save` arm
-	 * broadcast nothing). W made the manager the writer — the `save` arm stores the path and
-	 * publishes `save_path_changed`, and the snapshot carries it — so the latch went. It had to: it
-	 * only ever named the patch in the tab that did the saving, which is precisely the gap
-	 * (C38) that made a second tab, and every reload, forget where the patch lives. */
+	/** Write the patch. Where it landed comes back from the MANAGER (`save_path_changed`), never
+	 * latched from this reply — a latch names the patch only in the tab that saved it. */
 	async save(path: string): Promise<{ path: string }> {
-		// `path` is the whole payload, and it is REQUIRED — the arm refuses a save with no path
-		// ("Save in browser", the no-path serialize-only form, was removed 2026-08-08). The
-		// arrangement is NOT sent here: the manager holds it, and every edit to it already arrived
-		// as its own command.
+		// `path` is the whole payload and is REQUIRED; the arrangement is the manager's already.
 		return this.ctl.call<{ path: string }>('save', { path });
 	}
 
-	/** Reset to an empty, unnamed patch. Like a load, this fully RESETS the session — the manager
-	 * clears its command history and the client's stacks reset on `graph_replaced` — so there is
-	 * no history entry to record.
-	 *
-	 * Nothing is written here on purpose, and the `graph_replaced` snapshot is why: a New emits NO
-	 * `save_path_changed` (the manager only announces a path it HAS, and this one is cleared), so
-	 * the snapshot is the sole carrier of the null path — and `_replaceSnapshot` applies it
-	 * wholesale, along with the cleared dirty flag. A client that listened only for the event would
-	 * keep showing the old patch's name over an empty graph. */
+	/** Reset to an empty, unnamed patch. Nothing is written here: a New emits no
+	 * `save_path_changed`, so the `graph_replaced` snapshot is the sole carrier of the null path. */
 	async newPatch(): Promise<void> {
 		await this.ctl.call('new', {});
 	}
@@ -743,9 +550,7 @@ export class GraphStore {
 		this._recordGraphCmd('Remove boundary');
 	}
 
-	/** Rename an In/Out portal (its label + the sub-patch's exposed slot name). The routing key
-	 * (bndId) is unchanged, so external wires survive. Records AFTER the RPC lands so a rejected
-	 * rename (blank/duplicate) doesn't poison history. */
+	/** Rename an In/Out portal; the routing key (bndId) is unchanged, so external wires survive. */
 	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
 		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
 		if (name === oldName) return;
@@ -764,33 +569,23 @@ export class GraphStore {
 		return this.ctl.call<DirListing>('list_dir', { path });
 	}
 
-	/** Load a patch from a BACKEND filesystem path (destructive — replaces the graph). Like
-	 * {@link newPatch}, a load resets the session, so it is not undoable (no history entry).
-	 * A `.gfi` is an archive now, so a path is the only door the client has: the manager's inline
-	 * `load_text` survives, but a zip through `File.text()` is mojibake, so nothing calls it. */
+	/** Load a patch from a BACKEND filesystem path; destructive, and it resets the session, so
+	 * there is no history entry. A `.gfi` is a zip, so a path is the only door the client has. */
 	async load(path: string): Promise<void> {
 		await this.ctl.call('load', { path });
 	}
-
-	// ------------------------------------------------------------------
-	// reads
-	// ------------------------------------------------------------------
 
 	/** A real node by uid (no sub-patch synthesis), or null. */
 	private _realNode(uid: string): NodeInstanceInfo | null {
 		return this.nodes.find((n) => n.uid === uid) ?? null;
 	}
 
-	/** Resolve a node by its UID — the one accessor the rest of the app and the
-	 * agent surface use. A sub-patch instance id resolves to a *virtual* node
-	 * carrying a `subpatch` marker, so selection / inspector / drag treat a
-	 * sub-patch exactly like a node (no node class is instantiated). The synth
-	 * node's own `uid` is the instance id, so the identity stays uniform. */
+	/** Resolve a node by UID — the one accessor. A sub-patch instance id resolves to a VIRTUAL node
+	 * whose own uid is the instance id, so selection, inspector and drag treat it like a node. */
 	nodeById(id: string): NodeInstanceInfo | null {
 		const real = this._realNode(id);
 		if (real) return real;
-		// ROOT is a real scope in the mirror (the editor renders the root canvas from its
-		// members), but it is the canvas itself — never a selectable/synth group node.
+		// ROOT is a real scope in the mirror, but it is the canvas — never a selectable node.
 		if (id === ROOT_ID) return null;
 		const inst = this.instances[id];
 		if (!inst) {
@@ -800,24 +595,16 @@ export class GraphStore {
 		return this._synthSubpatchNode(id, inst);
 	}
 
-	/** Memoized virtual nodes for sub-patch instances, keyed by instance id. A real
-	 * node is one stable `$state` object across `nodeById` calls; without this the
-	 * synthesized stand-in was rebuilt every call, so a flowNodes rebuild (which
-	 * runs on any selection change) handed each sub-patch a fresh `data.node` and
-	 * its inline viewer re-subscribed/flickered. The cache restores that stability. */
+	/** Memoized virtual sub-patch nodes: a fresh object per call re-subscribed the inline viewer. */
 	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
 
-	/** Validate that `uid` is a direct member of `instId` and return it (flat model: members are
-	 * keyed by uid, so this is an identity-with-membership-check — used to draw a stub's inner edge
-	 * only when its `inner_node` is genuinely a member). */
+	/** Validate that `uid` is a direct member of `instId` and return it. */
 	memberUid(instId: string, uid: string): string | null {
 		return this.instances[instId]?.members[uid]?.uid ?? null;
 	}
 
-	/** Reconcile the flat node list IN PLACE by uid (mirror of _reconcileInstances): Object.assign a
-	 * surviving node's fields so its object reference — and thus its inline-viewer subscription —
-	 * stays stable, and insert genuinely-new ones. The structural cure for the viewer flicker a
-	 * wholesale `this.nodes = snap.nodes` caused on every group/expand/share/make-unique. */
+	/** Reconcile the flat node list IN PLACE by uid, so a survivor keeps its object reference and
+	 * with it its inline-viewer subscription. */
 	private _reconcileNodes(next: NodeInstanceInfo[]): void {
 		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
 		this.nodes = next.map((n) => {
@@ -828,22 +615,14 @@ export class GraphStore {
 		});
 	}
 
-	/** The runtime overlay for a node materializing from the doc for the FIRST time: whatever the
-	 * last snapshot reported for that uid. Only the seed — from then on `_extractRuntime` carries
-	 * the live, event-sourced state forward.
-	 *
-	 * A node created AFTER the snapshot has no entry, and `creating` is what that means: the add
-	 * answers as soon as the node is known, and its thread has yet to report a stage. Defaulting
-	 * to nothing drew a node that is still importing as running, green, for as long as the
-	 * manager's sweep took to notice — which for a heavy import is seconds. */
+	/** The runtime overlay for a node materializing from the doc for the FIRST time. A node created
+	 * after the snapshot has no entry, and `creating` is what that means. */
 	private _seedRuntime(uid: string): RuntimeOverlay {
 		const seed = this._snapshotRuntime[uid];
 		return { stage: seed?.stage ?? 'creating', error: seed?.error ?? null };
 	}
 
-	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off an existing node so a doc
-	 * re-assemble preserves them — error/stage/stats/membership at node level, and
-	 * per-param expression_error + refreshed StringParam options. */
+	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off a node so a re-assemble keeps them. */
 	private _extractRuntime(node: NodeInstanceInfo): RuntimeOverlay {
 		const params: NonNullable<RuntimeOverlay['params']> = {};
 		for (const group of Object.keys(node.params)) {
@@ -854,16 +633,12 @@ export class GraphStore {
 					expression_error: p.expression_error
 				};
 				if (p.type === 'string') pr.options = (p as StringParam).options;
-				// An expression param's DISPLAYED value is the live evaluated one (from param_values),
-				// which is never written to the doc. Carry it across the rebuild — else the re-assemble
-				// reverts it to the doc's committed literal (the fallback path's `expression_enabled`
-				// skip, ported to the doc-authoritative path).
+				// An expression param DISPLAYS its live evaluated value, which never reaches the doc.
 				if (p.expression_enabled) pr.liveValue = p.value;
 				params[group][name] = pr;
 			}
 		}
-		// `membership` is intentionally NOT extracted here — the caller (`_reconcileNodesFromDoc`)
-		// always re-derives it from the doc's instance forest, so carrying it would be dead.
+		// `membership` is NOT extracted: the caller always re-derives it from the doc's forest.
 		return {
 			error: node.error,
 			stage: node.stage,
@@ -872,9 +647,7 @@ export class GraphStore {
 		};
 	}
 
-	/** Merge ONLY the runtime param bits (expression_error + refreshed StringParam options) from a
-	 * state_update's descriptor map onto the existing node — used when the catalog is authoritative,
-	 * so the doc-reconcile's value/descriptor assembly is not clobbered by a wholesale replace. */
+	/** Merge ONLY the runtime param bits from a state_update's descriptor map onto an existing node. */
 	private _mergeParamRuntime(
 		t: NodeInstanceInfo,
 		params: Record<string, Record<string, unknown>>
@@ -890,8 +663,7 @@ export class GraphStore {
 		}
 	}
 
-	/** Derive a node's sub-patch membership from the doc's mirrored scope forest. Flat model:
-	 * `members` is keyed by uid, so `local_name` is just the uid (no template locals). ROOT → null. */
+	/** Derive a node's sub-patch membership from the doc's mirrored scope forest; ROOT → null. */
 	private _membershipFromDoc(
 		uid: string,
 		index: Map<string, string>
@@ -900,9 +672,7 @@ export class GraphStore {
 		return instance ? { instance, local_name: uid } : null;
 	}
 
-	/** uid -> owning instance id, built ONCE per reconcile. Read per node, this was a full walk of
-	 * every instance view for every node — an O(nodes x instances) term on a path that runs on every
-	 * single doc transaction, including ones that touched only a global or a layout entry. */
+	/** uid → owning instance id, built ONCE per reconcile: per node it is an O(nodes × instances) walk. */
 	private _membershipIndex(): Map<string, string> {
 		const index = new Map<string, string>();
 		for (const iv of instanceViews(this._sync.doc)) {
@@ -911,17 +681,12 @@ export class GraphStore {
 		return index;
 	}
 
-	/** Build `this.nodes` from the CRDT doc (Phase-2 node-identity read cutover): each real node is
-	 * assembled from the doc (existence/type/name/pos/param value+expr) + the catalog descriptor (by
-	 * type) + the runtime overlay (kept off the doc). Reuses `_reconcileNodes` so survivors keep
-	 * object identity (inline viewers don't re-subscribe) and their runtime, new nodes seed viewer
-	 * state, and vanished nodes tear down. Called on every doc transaction and when the catalog
-	 * (which supplies descriptors) arrives. */
+	/** Build `this.nodes` from the doc: each node is the doc's own fields, plus the catalog
+	 * descriptor for its type, plus the runtime overlay the doc never holds. */
 	private _reconcileNodesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep the current nodes; rebuild when it lands
 		const doc = this._sync.doc;
-		// Both indexes are built ONCE per reconcile rather than per node: the catalog lookup was a
-		// linear `find` over every type, and membership was a full instance walk.
+		// Both indexes are built ONCE per reconcile rather than per node.
 		const byType = new Map(this.nodeTypes.map((t) => [t.type, t]));
 		const membership = this._membershipIndex();
 		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
@@ -935,11 +700,8 @@ export class GraphStore {
 		this._reconcileNodes(next);
 	}
 
-	/** Build `this.instances` (the whole sub-patch forest, INCLUDING the synthetic ROOT scope) from
-	 * the CRDT doc (Phase-2 instances read cutover). Every structural field is reconstructed from the
-	 * doc to match the backend's `describe_instance`/`root_instance`; `error` is DERIVED from the
-	 * members' runtime node errors (the bridge only emits `error` keyed by a real node uid, never an
-	 * instance uid — so an instance's deep error must be recomputed, not overlaid). */
+	/** Build `this.instances` — the whole sub-patch forest, ROOT included — from the doc; `error` is
+	 * DERIVED from the members' runtime errors, since the bridge never keys one by an instance uid. */
 	private _reconcileInstancesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep event-sourced instances
 		const doc = this._sync.doc;
@@ -948,10 +710,8 @@ export class GraphStore {
 		this._reconcileInstances(next);
 	}
 
-	/** Re-derive every instance's deep error from its members' current runtime node errors and apply
-	 * it in place. Instance error is DERIVED (never in the doc), and a runtime member `error` event
-	 * fires no doc transaction — so the doc-reconcile that normally derives it doesn't run. Called
-	 * from the `error` handler so a collapsed sub-patch's badge tracks a member error/recovery live. */
+	/** Re-derive every instance's deep error in place: a member `error` event fires no doc
+	 * transaction, so the reconcile that normally derives it does not run. */
 	private _recomputeInstanceErrors(): void {
 		if (!this.nodeTypes?.length) return; // instances are event-sourced until the catalog lands
 		const views = instanceViews(this._sync.doc);
@@ -965,15 +725,12 @@ export class GraphStore {
 		}
 	}
 
-	/** Reconcile the instances map IN PLACE by uid: mutate an existing record's fields
-	 * (preserving the object reference so the inspector's `$derived inst` and the
-	 * synth-node memo stay stable), insert new ones, drop vanished ones. */
+	/** Reconcile the instances map IN PLACE by uid, so a survivor keeps its object reference. */
 	private _reconcileInstances(next: Record<string, InstanceInfo>): void {
 		for (const [uid, rec] of Object.entries(next)) {
 			const cur = this.instances[uid];
-			// A scope's `viewers` is not in the document (the engine has no field for it and
-			// `set_node_viewers` refuses a scope uid), so the record IS its holder — `assembleInstances`
-			// can only offer an empty one, which would blank a survivor's live view state.
+			// A scope's `viewers` is not in the document, so the record IS its holder — the assembled
+			// one is always empty and would blank a survivor's live view state.
 			if (cur) Object.assign(cur, rec, { viewers: cur.viewers });
 			else this.instances[uid] = rec;
 		}
@@ -985,22 +742,13 @@ export class GraphStore {
 		}
 	}
 
-	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance
-	 * wherever a node is looked up by name. A sub-patch behaves exactly like a
-	 * node: its WIRED boundaries become real input/output slots (so the canvas
-	 * renders connectors + output viewers and seeds add-node clicks the same way
-	 * as any node — the /data route splices an output boundary to its inner
-	 * member's stream). Live sharing state is recomputed by the inspector from
-	 * `instances`; the marker just rides the id + glyph/badge bits. */
+	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance: its WIRED
+	 * boundaries become real slots, so the canvas treats it exactly like a node. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const error = inst.error ?? null;
 		const memberCount = Object.keys(inst.members).length;
-		// Signature of everything the synth node RENDERS except position — which is
-		// applied to the flow node separately and updated in place below, so a drag
-		// (a per-frame pos change) keeps the same identity and never churns the
-		// viewer. A selection change touches none of these, so the cache hits.
-		// The slots are server-computed, so hashing them covers the wired-port set.
-		// Hash the portal names too so a rename re-synthesizes the node's slot labels.
+		// Everything the synth node RENDERS except position, which is applied in place below so a
+		// per-frame drag keeps one identity and never churns the viewer.
 		const labelSig = Object.entries(inst.interface)
 			.map(([bid, p]) => `${bid}=${p.name ?? ''}`)
 			.join(',');
@@ -1016,18 +764,14 @@ export class GraphStore {
 		// External ports ARE the server-computed slots (a pure passthrough).
 		const input_slots: Record<string, string> = { ...inst.slots.input };
 		const output_slots: Record<string, string> = { ...inst.slots.output };
-		// Exposed ports are keyed by the stable boundary id (the routing handle), but show
-		// the portal's renameable NAME — so a rename relabels the collapsed port without
-		// re-keying the wire.
+		// Keyed by the stable boundary id but labelled with the renameable portal NAME, so a rename
+		// relabels the collapsed port without re-keying the wire.
 		const slot_labels: Record<string, string> = {};
 		for (const [bid, port] of Object.entries(inst.interface)) {
 			if (port.name) slot_labels[bid] = port.name;
 		}
 		const node: NodeInstanceInfo = {
-			// The synth node's identity IS the instance uid, so `node.uid` is the
-			// uniform flow/selection/data key for real and sub-patch nodes alike.
 			uid: instId,
-			// Display label is the instance's separate name (the uid is opaque).
 			name: inst.name ?? instId,
 			type: 'Sub-patch',
 			category: 'subpatch',
@@ -1046,16 +790,8 @@ export class GraphStore {
 		return node;
 	}
 
-	// ------------------------------------------------------------------
-	// subgraph orchestration (clone / duplicate / paste / batch remove) —
-	// shared by the editor's keyboard handlers and the agent command surface
-	// ------------------------------------------------------------------
-
-	/** Create a batch of nodes, replay their param values, then wire the given
-	 * links with endpoints remapped to the new uids. Returns the original→new
-	 * uid map (spec `key` is the original uid, matching the uid link endpoints).
-	 * Per-node/-param/-link failures are swallowed so one bad item doesn't abort
-	 * the batch. */
+	/** Create a batch of nodes and wire the given links onto the new uids, returning the original→new
+	 * map. A per-item failure is swallowed so one bad item does not abort the batch. */
 	async instantiateNodes(
 		specs: {
 			key: string;
@@ -1070,10 +806,6 @@ export class GraphStore {
 		const rename: Record<string, string> = {};
 		for (const s of specs) {
 			try {
-				// `instId` lands the clones inside the sub-patch being edited (members of
-				// the instance); omitted, they go in the root graph. Params ride INLINE on add_node
-				// (applied under the graph lock) — a post-add updateParam is now a doc leaf-write that
-				// no-ops until the new node has synced into the replica, so it would drop the values.
 				const newUid = await this.addNode(s.type, s.category, s.pos, instId, s.params);
 				rename[s.key] = newUid;
 			} catch (e) {
@@ -1095,18 +827,15 @@ export class GraphStore {
 		return rename;
 	}
 
-	/** Duplicate the given nodes by uid (offset from their originals), carrying
-	 * their current params and the links among them. Returns the original→new uid
-	 * map so the caller can select the clones. */
+	/** Duplicate nodes by uid, offset from the originals, carrying their params and inner links. */
 	async cloneNodes(
 		uids: Iterable<string>,
 		offset: [number, number] = [40, 40],
 		instId?: string
 	): Promise<Record<string, string>> {
 		const set = new Set(uids);
-		// `uids` are node identities (selection sets + flow-node ids are uid-keyed), and link
-		// endpoints are uids — so the node filter and the spec key must be uids too,
-		// or the rename map in instantiateNodes won't line up with the link remap.
+		// Link endpoints are uids, so the filter and the spec key must be uids too, or the rename
+		// map will not line up with the link remap.
 		const nodes = this.nodes.filter((n) => set.has(n.uid));
 		if (nodes.length === 0) return {};
 		const links = this.links.filter((l) => set.has(l.node_in) && set.has(l.node_out));
@@ -1120,23 +849,13 @@ export class GraphStore {
 		return this.instantiateNodes(specs, links, instId);
 	}
 
-	/** Delete several nodes as ONE undoable step.
-	 *
-	 * Every link touching the batch is removed FIRST as a first-class remove_link
-	 * action, then the nodes (which no longer re-capture those links). Because the
-	 * transaction replays its children in reverse on undo, this restores every node
-	 * BEFORE any link — the only correct order, since a link between two co-deleted
-	 * nodes can't be re-added until both endpoints exist again. The old per-node
-	 * remove (each re-adding its own links) failed here: the first node's inverse
-	 * re-added a link to a sibling that hadn't been re-created yet. */
+	/** Delete several nodes as ONE undoable step. */
 	async removeNodes(uids: Iterable<string>): Promise<void> {
 		const uidList = [...uids];
 		if (uidList.length === 0) return;
 		const label = `Delete ${uidList.length} node${uidList.length > 1 ? 's' : ''}`;
-		// Each removeNode is a manager RemoveNode command that captures its OWN subtree (members +
-		// params + links + stubs), so a batch — even one containing collapsed instances — is just a
-		// transaction of deletes folded into one undo step. A link into a co-deleted node rides with
-		// whichever endpoint owns it, so delete order is immaterial.
+		// Each removeNode captures its OWN subtree, and a link rides with whichever endpoint owns
+		// it, so delete order is immaterial.
 		await history().transaction(label, async () => {
 			for (const uid of uidList) await this.removeNode(uid);
 		});

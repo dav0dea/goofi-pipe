@@ -1,15 +1,5 @@
-<!--
-  Per-slot viewer settings — a cog button that opens a Blender-style dropdown of
-  collapsible setting groups, driven by the viewer's settings schema. The dropdown
-  is the shared `Popover` (portalled to <body> so it escapes the zoomed/clipped
-  SvelteFlow viewport, clamped on-screen, self-dismissing on Escape or an outside
-  click); each group is a `Disclosure`; each setting is a `Field` + the control its
-  type maps to. Writes still go straight to the binding, which owns persistence.
-
-  It reads as a menu and is not one: nothing in it is a menuitem, so it declares the named `group`
-  it actually is — `Popover` imposes no role precisely so the consumer can be accurate — and the
-  cog carries the open state a sighted user reads off the surface simply being there.
--->
+<!-- Per-slot viewer settings: a cog opening a Popover of setting groups. Its role is `group`,
+     not a menu — nothing in it is a menuitem. -->
 <script lang="ts">
 	import { settingsSchemaFor, type SettingDescriptor, type SettingValue } from './settingsSchema';
 	import type { ViewBinding } from './viewBinding';
@@ -37,8 +27,7 @@
 	let collapsed = $state<Record<string, boolean>>({});
 
 	function toggle(e: MouseEvent): void {
-		// stopPropagation so picking the cog on a node header doesn't also toggle the
-		// slot's collapse; harmless in the panel header.
+		// stopPropagation so picking the cog on a node header does not also toggle the slot's collapse.
 		e.stopPropagation();
 		open = !open;
 	}
@@ -46,8 +35,6 @@
 	function visible(s: SettingDescriptor): boolean {
 		return !s.showWhen || settings[s.showWhen.key] === s.showWhen.equals;
 	}
-	// Writes go straight to the binding, which owns persistence (inline →
-	// node.viewers; panel → layout).
 	function set(key: string, value: SettingValue): void {
 		binding.setSetting(key, value);
 	}
@@ -63,8 +50,6 @@
 		data-testid="viewer-settings-cog"
 		onclick={toggle}
 	>
-		<!-- The app's icon renderer, not a hand-inlined <svg>: this file used to carry its own copy of
-		     the gear geometry, which is the second rendering path the one icon set exists to remove. -->
 		<Icon name="settings" />
 	</IconButton>
 </span>
@@ -121,20 +106,8 @@
 	.vs-anchor {
 		display: inline-flex;
 	}
-	/* The cog is the app's icon-button, but the frozen node header wants the original
-	   bare 16px glyph (not the 28px --hit box), so the visual box is pinned back to 16px.
-	   Muted at rest, brightening on hover / while open. What a coarse pointer gets is
-	   decided by the block below, per host.
-
-	   Scoped through `.vs-anchor` instead of reaching for `.ui-icon-btn`: a fully-`:global()`
-	   `.ui-icon-btn.vs-cog` scores exactly what the primitive's own `.ui-icon-btn.svelte-xxx`
-	   scores, and the two land in different built CSS chunks where a tie is settled by the emitted
-	   <link> order rather than by the source (the hazard `54de8a1` fixed for `.content-btn`). The
-	   anchor's scope class carries these above the tie in source.
-
-	   Deliberately NOT `density="chrome"` + `--icon-btn-size`: that density restores the box to
-	   --hit under a coarse pointer, which would stand a 44px cog inside this frozen 24px --node-u
-	   header (touch-floor.spec pins that). */
+	/* The frozen node header wants the bare 16px glyph, not the 28px --hit box. Scoped through
+	   `.vs-anchor` because a fully-`:global()` rule only TIES the primitive's, across CSS chunks. */
 	.vs-anchor :global(.vs-cog) {
 		min-width: 16px;
 		min-height: 16px;
@@ -143,27 +116,14 @@
 	.vs-anchor :global(.vs-cog.on) {
 		color: var(--text);
 	}
-	/* The hover half, split off and gated on the device having a hover — `:hover` still MATCHES for a
-	   synthetic pointer on a phone, so ungated the cog brightened for a state a finger is never in.
-	   The OPEN half above stays unconditional: it reports state, which every pointer has. A
-	   hover-CAPABILITY query, not a pointer one — D-R7's coarse idiom below is untouched. */
+	/* Hover half gated on real hover; the OPEN half above stays unconditional, as it reports state. */
 	@media (hover: hover) {
 		.vs-anchor :global(.vs-cog:hover) {
 			color: var(--text);
 		}
 	}
-	/* R closes the other half (C27). Two hosts, two answers, one hook.
-	   In REAL chrome — a docked ViewerPanel header, --hit tall, where the Unlink button and the kind
-	   select both take the floor — the cog's own BOX takes it too. A box lays out, so it cannot
-	   reach over the select 6px to its left the way a positioned pseudo would (C18); IconButton's
-	   coarse `::after` then adds nothing, which is exactly right.
-	   `--vs-cog-box` is the frozen host's opt-out: SlotViewer's 24px `--node-u` slot header, where a
-	   44px box is not a bigger target but a control hanging out of the node with its bottom half
-	   clipped. There the carve-out below is what the strip can offer instead — bounded to the
-	   header's own unit, so it cannot reach the rows above and below and take their taps, and it
-	   cannot touch a neighbour either (the flex gaps are wider than the 4px it grows). Bounding it
-	   to `--node-u` unconditionally is what left the docked cog at 24×24: `--node-u` is a `:root`
-	   token, so the frozen host's answer applied in both. */
+	/* Real chrome lets the cog's box take the coarse floor; `--vs-cog-box` is the frozen 24px slot
+	   header's opt-out, where a 44px box would hang out of the node. */
 	@media (hover: none) and (pointer: coarse) {
 		.vs-anchor :global(.vs-cog) {
 			min-width: var(--vs-cog-box, var(--hit));
@@ -173,14 +133,11 @@
 			inset: calc((var(--node-u) - 100%) / -2);
 		}
 	}
-	/* The dropdown surface: the shared Popover, tuned to the compact glassy menu it was —
-	   a fixed 212px column that scrolls its groups within 70dvh. */
 	:global(.vs-menu) {
 		--popover-bg: var(--surface-glass);
 		--popover-pad: var(--space-2);
 		--popover-min-width: 0;
-		/* This menu overhangs a small cog inside the viewer chrome, not a wide panel — Popover's
-		   default --radius-md rounds it visibly more than the pre-migration menu did (C13). */
+		/* This menu overhangs a small cog, which Popover's default --radius-md rounds visibly too much. */
 		--popover-radius: var(--radius-sm);
 		width: 212px;
 		max-height: 70dvh;

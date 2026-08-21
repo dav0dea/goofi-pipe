@@ -1,13 +1,5 @@
-//! `goofi.introspect(path)` — the discovery probe. Import a node module in THIS interpreter (real
-//! imports available — that is the point), find its `Node` subclass, read the four declaration
-//! constants and the GIL state, and return them as JSON. Raises on any failure so the Rust
-//! discoverer greys the node out.
-//!
-//! The JSON is the shared [`goofi_core::probe`] schema, `serde_json`-serialized — so it
-//! can't drift from the discoverer that parses it, and there is no hand-rolled escaper.
-//! Param descriptors are read by TYPED extraction into a closed `ParamDescr` enum, so
-//! "which kind is this param" is answered by the type system, not a string match with an
-//! error arm.
+//! `goofi.introspect(path)` — the discovery probe: import a node module in THIS interpreter,
+//! and return its declaration constants and GIL state as [`goofi_core::probe`] JSON.
 
 use goofi_core::probe::{Introspection, OutSlot, Param, ParamSpec, Slot};
 use pyo3::prelude::*;
@@ -18,11 +10,8 @@ use crate::params::{BoolParam, DataType, FloatParam, InputSlot, IntParam, String
 
 #[pyfunction]
 pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
-    // The IMPORT is what has to happen before the GIL is sampled: a node's declaration-time
-    // imports run in its module body and in its class body, and importing a C extension built
-    // without free-threading support re-enables the GIL process-wide — which the routing gate has
-    // to see. Reading the manifest afterwards cannot change that answer, because a class attribute
-    // was already evaluated by the import that produced it.
+    // The import must precede the GIL sample: a node's declaration-time imports can re-enable
+    // the GIL process-wide, and the routing gate has to see that.
     let module = module_from_path(py, path)?;
     let cls = find_node_class(py, &module)?;
 
@@ -39,9 +28,6 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|d| d.extract::<String>().ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
-        // `PRODUCER` not being a bool is an authoring mistake that RAISES, like a bad slot or
-        // param descriptor below — swallowing it would cost the author a node that silently never
-        // runs, with no diagnostic anywhere.
         producer: cls.getattr("PRODUCER")?.extract()?,
         inputs: slots(&cls.getattr("INPUTS")?)?,
         outputs: out_slots(&cls.getattr("OUTPUTS")?)?,
@@ -51,25 +37,20 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
-/// An input slot is declared either as a bare `goofi.DataType` — still the whole of it for a
-/// node with nothing to say beyond the type — or as a `goofi.InputSlot` carrying the per-slot
-/// options. Extracted typed, like [`ParamDescr`], so "which form is this" is a type-level
-/// question and anything else is a clean extract error, not an `else` arm.
+/// An input slot is declared as a bare `goofi.DataType` or as a `goofi.InputSlot`.
 #[derive(FromPyObject)]
 enum SlotDescr<'py> {
     Bare(Bound<'py, DataType>),
     Full(Bound<'py, InputSlot>),
 }
 
-/// `{name: DataType | InputSlot}` → the input slots. `multi` stays false: it is not authorable
-/// from Python, because this tier has no variadic plumbing to honour it.
+/// `{name: DataType | InputSlot}` → the input slots. `multi` stays false: this tier has no
+/// variadic plumbing to honour it.
 fn slots(d: &Bound<'_, PyAny>) -> PyResult<Vec<Slot>> {
     d.cast::<PyDict>()?
         .iter()
         .map(|(k, v)| {
             let (kind, required, trigger) = match v.extract::<SlotDescr>()? {
-                // The bare form's answers are exactly `InputSlot`'s defaults, so a node written
-                // before `InputSlot` existed declares the same slot it always did.
                 SlotDescr::Bare(t) => (slot_kind(t.as_any())?, false, true),
                 SlotDescr::Full(s) => {
                     let s = s.borrow();
@@ -107,9 +88,7 @@ fn params(d: &Bound<'_, PyAny>) -> PyResult<Vec<Param>> {
     Ok(out)
 }
 
-/// A param descriptor is exactly one of our pyclasses — extract it typed, so the "which
-/// kind" decision is exhaustive at the type level (a non-descriptor is a clean extract error,
-/// not an `else` branch).
+/// A param descriptor is exactly one of our pyclasses, extracted typed.
 #[derive(FromPyObject)]
 enum ParamDescr<'py> {
     Int(Bound<'py, IntParam>),
@@ -143,11 +122,8 @@ fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>)>
     })
 }
 
-// The interpreter these run in comes from the `host` feature (pyo3 auto-initialize); the
-// `extension-module` build links no libpython and cannot host one.
-// The suite lives in `goofi-tests`. This block stays because goofi-pymod is the `goofi` PYTHON
-// package: reaching it from Rust needs the `host` feature, which links it as an rlib, and
-// `cargo test -p goofi-pymod --features host` is the documented way to run exactly this.
+// Here rather than in `goofi-tests`: reaching this needs the `host` feature, which links
+// goofi-pymod as an rlib and brings the interpreter with it.
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
@@ -161,8 +137,8 @@ mod tests {
         got.pop().unwrap()
     }
 
-    /// `goofi.InputSlot(DataType.ARRAY, **kwargs)` built through the real constructor, so the
-    /// signature's own defaults are what the tests read back.
+    /// `goofi.InputSlot(DataType.ARRAY, **kwargs)` through the real constructor, so its own
+    /// defaults are what the tests read back.
     fn input_slot<'py>(py: Python<'py>, kwargs: &Bound<'py, PyDict>) -> Bound<'py, PyAny> {
         let dtype = Bound::new(py, DataType::ARRAY).unwrap();
         py.get_type::<InputSlot>().call((dtype,), Some(kwargs)).expect("InputSlot(…)")

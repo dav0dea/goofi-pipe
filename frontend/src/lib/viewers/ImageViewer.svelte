@@ -8,21 +8,13 @@
 	type Props = { frame: DataFrame; settings?: SettingsMap };
 	const { frame, settings = {} }: Props = $props();
 
-	// Colormap + value range apply to single-channel (grayscale) frames; true RGB
-	// frames are drawn as-is.
 	const colormap = $derived(String(settings.colormap ?? 'gray'));
 	const autoRange = $derived(settings.auto !== false);
 	const vmin = $derived(Number(settings.vmin ?? 0));
 	const vmax = $derived(Number(settings.vmax ?? 1));
-	// Keep the image's aspect ratio (letterbox) by default, or stretch it to fill
-	// the viewer. Both canvases hold the frame at its own aspect, so this is a pure
-	// object-fit switch: `contain` letterboxes, `fill` distorts to the box.
 	const objectFit = $derived(settings.stretch === true ? 'fill' : 'contain');
 
-	// Two canvases: a WebGL2 one (the fast path — HD video, float heatmaps) and a
-	// 2D one (fallback for the rare float-RGB / gray+alpha frames, or when WebGL2
-	// is unavailable). A canvas can hold only one context type, so we pick per
-	// frame and show the matching canvas.
+	// A canvas holds only one context type, so there are two: the WebGL2 fast path and a 2D fallback.
 	let glCanvas: HTMLCanvasElement | null = $state(null);
 	let canvas2d: HTMLCanvasElement | null = $state(null);
 	let useGl = $state(false);
@@ -48,15 +40,12 @@
 		renderer?.dispose();
 	});
 
-	// Reused 2D ImageData; reallocated only when the frame size changes.
 	let img: ImageData | null = null;
 
 	const lutFor = makeLUTCache();
 
 
-	/** Gray channel range — scanned from the data when auto, else the manual
-	 * [vmin, vmax]. The frame is float-accurate (Option C), so the manual window
-	 * is in the data's own units; no adapter-domain remap. */
+	/** Gray channel range: scanned from the data when auto, else the manual [vmin, vmax]. */
 	function grayRange(
 		src: ArrayLike<number | bigint>,
 		n: number,

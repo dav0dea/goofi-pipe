@@ -1,19 +1,6 @@
 /**
- * Min/max decimation for line plots (report A15).
- *
- * When a channel has far more samples than the canvas has pixel columns,
- * handing every sample to uPlot wastes time drawing sub-pixel detail. This
- * reduces each channel to ~2 points per target column — the per-bucket min and
- * max — which is the standard oscilloscope technique: it preserves spikes (the
- * bucket max/min survive) while cutting the point count to the display budget.
- *
- * All channels share one x grid (two x slots per bucket) so the result is valid
- * uPlot AlignedData. Pure and dependency-free, so it's unit-testable.
- *
- * `base` offsets every x (the sample-index origin), matching ArrayViewer's
- * `indexAxis`: 0 for a linear x-axis, 1 under log-x so the first bucket's x is 1
- * rather than 0 — log10(0) is -Infinity and would collapse uPlot's x-scale,
- * blanking the whole plot.
+ * Min/max decimation for line plots: each channel folds to two points per target column.
+ * `base` is the sample-index origin — 1 under log-x, since log10(0) collapses uPlot's x-scale.
  */
 export interface Decimated {
 	xs: number[];
@@ -34,7 +21,6 @@ export function decimateMinMax(
 	for (let b = 0; b < buckets; b++) {
 		const start = Math.floor(b * bucketSize);
 		const end = Math.min(m, Math.floor((b + 1) * bucketSize));
-		// Two distinct x slots per bucket so min and max are separate points.
 		xs[b * 2] = start + base;
 		xs[b * 2 + 1] = Math.max(start, end - 1) + base;
 		for (let c = 0; c < channels.length; c++) {

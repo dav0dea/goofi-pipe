@@ -1,13 +1,4 @@
-/**
- * Agent command surface — the flat, typed entry point for driving goofi-pipe
- * programmatically (a future in-app AI agent panel, Playwright e2e, the dev
- * console). Paired with `query` for reads.
- *
- * Every method delegates to the same store / editor logic the UI uses, so an
- * agent action and a human click take identical code paths — no behavior is
- * defined here, only a stable, discoverable façade. New verbs should route a
- * scattered call-site through here rather than reaching into a component.
- */
+/** Flat, typed command facade over the store logic the UI uses; paired with `query` for reads. */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
@@ -32,7 +23,6 @@ function activeEditor(): string | null {
 }
 
 export const commands = {
-	// --- graph mutations ---------------------------------------------------
 	addNode: (
 		type: string,
 		category: string,
@@ -56,7 +46,6 @@ export const commands = {
 	cloneNodes: (names: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> =>
 		graph().cloneNodes(names, offset),
 
-	// --- sub-patches -------------------------------------------------------
 	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
@@ -74,16 +63,10 @@ export const commands = {
 	): Promise<void> => graph().wireBoundary(instId, bndId, innerNode, innerSlot),
 	removeBoundary: (instId: string, bndId: string): Promise<void> =>
 		graph().removeBoundary(instId, bndId),
-	// Relabels the portal WITHOUT re-keying it: the exposed slot is still addressed by `bndId`, so
-	// external wires survive and only what the user reads changes. That split is exactly what the
-	// slot pickers have to honour — label out, boundary id in.
+	// Relabels the portal without re-keying it: the exposed slot is still addressed by `bndId`.
 	renameBoundary: (instId: string, bndId: string, name: string): Promise<void> =>
 		graph().renameBoundary(instId, bndId, name),
 
-	// --- globals -----------------------------------------------------------
-	// Patch-scoped named scalars (EditGlobal command ops, same path as the Globals panel — undoable).
-	// Each REJECTS on a server refusal (invalid name / collision / a protected system global).
-	// Expressions read them as `globals.<name>`.
 	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): Promise<void> =>
 		graph().addGlobal(name, value, type),
 	setGlobalValue: (name: string, value: number | string | boolean): Promise<void> =>
@@ -92,28 +75,13 @@ export const commands = {
 	renameGlobal: (oldName: string, newName: string): Promise<void> =>
 		graph().renameGlobal(oldName, newName),
 
-	// --- patch persistence -------------------------------------------------
-	// The header's Save, whole: the file is written AND the patch is named, so
-	// `query.graph().savePath` reads it back — published by the MANAGER, so every tab converges.
-	// The path is required — the no-path serialize-only form went with "Save in browser"
-	// (removed 2026-08-08).
 	save: (path: string): Promise<{ path: string }> => graph().save(path),
-	// A `.gfi` is a zip archive, so a backend PATH is the only way in. The manager still answers
-	// `load_text` (YAML inline), but no client can reach it: a zip handed through `File.text()` is
-	// mojibake, so the browser-upload door that was its only caller is gone.
 	load: (path: string): Promise<void> => graph().load(path),
-	// Empty and unnamed, in one manager transaction — the reset door a driver needs to hand the
-	// shared backend back between specs. The façade is the only door: the header has no New button.
 	newPatch: (): Promise<void> => graph().newPatch(),
-	// Where this patch's workspace files live right now — a per-run temp directory under a random
-	// name, so asking the manager is the only way for an agent (or a driver) to find it.
+	// Returns the patch workspace directory — a per-run temp path only the manager knows.
 	openWorkspace: (): Promise<string> => graph().openWorkspace(),
-	// Re-derive the node registry from the files on disk and report what changed. The verb an agent
-	// calls straight after writing into `<workspace>/nodes/`; the palette's refresh button is the
-	// human's door onto the same op. There is no watcher by decision.
 	rescanNodes: (): Promise<ScanDiff> => graph().rescanNodes(),
 
-	// --- selection / focus -------------------------------------------------
 	select: (names: string[], panelId: string | null = activeEditor()): void => {
 		if (panelId) selection().selectNodes(panelId, names);
 	},
@@ -123,14 +91,9 @@ export const commands = {
 	focusNode: (name: string, panelId: string | null = activeEditor()): void =>
 		editorFor(panelId)?.focusNode(name),
 
-	// --- editor viewport ---------------------------------------------------
 	openAddMenu: (panelId: string | null = activeEditor()): void => editorFor(panelId)?.openAddMenu(),
 	fitView: (panelId: string | null = activeEditor()): void => editorFor(panelId)?.fitView(),
 
-	// --- viewers -----------------------------------------------------------
-	// Each mutator goes through the one writer of a slot's view state, so an agent-driven change
-	// round-trips into the .gfi the same way a click does, regardless of whether a canvas
-	// SlotViewer happens to be mounted for the slot.
 	setSlotExpanded: (node: string, slot: string, expanded: boolean): void =>
 		graph().setSlotView(node, slot, { collapsed: !expanded }),
 	setViewerKind: (node: string, slot: string, kind: ViewerKind): void => {
@@ -146,12 +109,10 @@ export const commands = {
 		recordViewChange({ kind: 'inline', node, slot }, before, after, `Viewer ${key}`);
 	},
 
-	// --- panels / layout ---------------------------------------------------
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),
 	setPanelType: (panelId: string, type: string): void => workspace().setType(panelId, type),
 	addTab: (panelType?: string): void => workspace().addTab(panelType),
 
-	// --- history -----------------------------------------------------------
 	undo: (): Promise<void> => history().undo(),
 	redo: (): Promise<void> => history().redo()
 };

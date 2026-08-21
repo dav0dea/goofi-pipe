@@ -1,17 +1,4 @@
-/**
- * Graph selection — keyed per editor panel.
- *
- * Each node-editor panel has its own independent selection (selecting a node
- * in one panel doesn't affect another). The per-editor inspector reads its own
- * panel's selection; the standalone Parameters / Metadata / Errors panels
- * follow `activeSelectedNode` — the selection of whichever editor was last
- * focused.
- *
- * Selections are replaced (never mutated in place) so a plain assignment drives
- * reactivity. The click semantics are preserved from the original Editor,
- * including the asymmetry that a plain node click leaves edge selection intact
- * while a plain edge click clears node selection.
- */
+/** Graph selection, keyed per editor panel; a selection is replaced, never mutated in place. */
 import { graph } from './graph.svelte';
 import type { NodeInstanceInfo } from '$lib/api/control';
 
@@ -32,20 +19,13 @@ class SelectionStore {
 	private map = $state<Record<string, PanelSel>>({});
 	/** Last-focused editor panel — the standalone panels follow this one. */
 	activeEditorId = $state<string | null>(null);
-	/** Per-editor inspector visibility, keyed by panel id. Absent = enabled (the
-	 * default). Ephemeral — deliberately not persisted to any browser storage. */
+	/** Per-editor inspector visibility, keyed by panel id. Absent = enabled. */
 	private inspectorOn = $state<Record<string, boolean>>({});
-	/** Per-editor TRANSIENT dismissal — the ✕ in the pane's header. A close, not an off-switch:
-	 * it holds only until the panel's selection actually CHANGES (deselect+reselect, or another
-	 * node), which is why it clears inside `write()` — the one choke-point every real selection
-	 * change funnels through. The same-node re-click that drag-start suppresses is a skipped
-	 * write, so it leaves a dismissal standing by construction. `inspectorOn` above is the
-	 * standing preference (the ◧ toggle); this map never outlives a selection change. */
+	/** Per-editor TRANSIENT dismissal (the ✕), cleared in `write()` — the one choke-point every
+	 * real selection change funnels through. `inspectorOn` is the standing preference (the ◧). */
 	private inspectorDismissed = $state<Record<string, boolean>>({});
-	/** While on, a plain click adds to the selection instead of replacing it — the coarse-pointer
-	 * stand-in for shift/ctrl/meta, which a phone has none of (D-R4). A MODE, not a gesture: the
-	 * user asked for something you switch on and see, not a second way to tap. Session-wide and
-	 * deliberately not persisted (it is not the patch's business), so `forgetAll` leaves it. */
+	/** While on, a plain click adds to the selection — the coarse-pointer stand-in for
+	 * shift/ctrl/meta. Session-wide, so `forgetAll` leaves it. */
 	multiSelect = $state(false);
 
 	toggleMultiSelect(): void {
@@ -56,16 +36,12 @@ class SelectionStore {
 		return (panelId && this.map[panelId]) || EMPTY;
 	}
 	private write(panelId: string, next: PanelSel): void {
-		// Skip a no-op write: re-selecting the already-selected node (e.g. a drag-start
-		// mousedown on a selected node) would otherwise allocate a fresh selection object,
-		// retriggering the editor's flowNodes effect mid-drag so Svelte Flow's
-		// onnodedragstart never fires and the node can't be dragged (e.g. into a panel).
+		// A no-op write would allocate a fresh selection object, retriggering the editor's flowNodes
+		// effect mid-drag so Svelte Flow's onnodedragstart never fires.
 		const cur = this.map[panelId];
 		if (cur && setEq(cur.nodes, next.nodes) && setEq(cur.edges, next.edges)) return;
 		this.map = { ...this.map, [panelId]: next };
-		// A REAL selection change re-arms a dismissed inspector (the ✕ is a close, not an
-		// off-switch). Here and nowhere else: every genuine change funnels through this write,
-		// and the no-op skip above keeps a drag-start's same-node re-click from reviving it.
+		// A real selection change re-arms a dismissed inspector — here and nowhere else.
 		if (this.inspectorDismissed[panelId]) {
 			const { [panelId]: _, ...rest } = this.inspectorDismissed;
 			this.inspectorDismissed = rest;
@@ -96,8 +72,7 @@ class SelectionStore {
 		if (this.activeEditorId !== panelId) this.activeEditorId = panelId;
 	}
 
-	/** Whether `panelId`'s inspector pane appears when it has a node selected.
-	 * Defaults to enabled; a null panel id (no active editor) reads as off. */
+	/** Whether `panelId`'s inspector pane appears; a null panel id reads as off. */
 	inspectorEnabledFor(panelId: string | null): boolean {
 		return panelId !== null ? (this.inspectorOn[panelId] ?? true) : false;
 	}
@@ -108,8 +83,7 @@ class SelectionStore {
 	dismissInspectorFor(panelId: string): void {
 		this.inspectorDismissed = { ...this.inspectorDismissed, [panelId]: true };
 	}
-	/** Bring the pane back regardless of how it was hidden — the ◧'s "show" half: it clears a
-	 * dismissal AND flips the standing preference on, so one press always answers "show it". */
+	/** Bring the pane back regardless of how it was hidden — the ◧'s "show" half. */
 	showInspectorFor(panelId: string): void {
 		this.inspectorOn = { ...this.inspectorOn, [panelId]: true };
 		if (this.inspectorDismissed[panelId]) {
@@ -125,11 +99,8 @@ class SelectionStore {
 		);
 	}
 
-	// --- node selection ----------------------------------------------------
-
-	/** A click adds rather than replaces when the caller says so (shift/ctrl/meta) OR while
-	 * multi-select mode is on. Folded in here, not OR-ed in at each call site, so "additive" has
-	 * one definition and a caller cannot be written that forgets the mode. */
+	/** A click adds rather than replaces on a modifier OR while multi-select mode is on; folded in
+	 * here, not at each call site, so no caller can forget the mode. */
 	clickNode(panelId: string, name: string, modifier: boolean): void {
 		const cur = this.sel(panelId);
 		const additive = modifier || this.multiSelect;
@@ -152,11 +123,7 @@ class SelectionStore {
 		this.write(panelId, { nodes: new Set(nodes), edges: new Set(edges) });
 	}
 
-	// --- edge selection ----------------------------------------------------
-
-	/** Same fold as `clickNode`. The mode covers edges too because the asymmetry it would
-	 * otherwise leave is the surprising one: a plain edge click CLEARS the node selection, so a
-	 * stray tap on a cable would undo the multi-node selection the mode exists to build. */
+	/** Same fold as `clickNode`; the mode covers edges too, since a plain edge click clears nodes. */
 	clickEdge(panelId: string, id: string, modifier: boolean): void {
 		const cur = this.sel(panelId);
 		const additive = modifier || this.multiSelect;
@@ -170,12 +137,7 @@ class SelectionStore {
 		}
 	}
 
-	// --- clearing ----------------------------------------------------------
-
-	/** The same fold `clickNode`/`clickEdge` take, on the biggest target of all. A phone has no
-	 * shift, so with the mode on a stray tap on empty canvas wiped the multi-node selection the
-	 * mode exists to build. Deliberately shipped WITH the header menu's `Clear selection` row: this
-	 * is touch's only clear-all door, since Escape is keyboard-only. */
+	/** The same fold, on empty canvas: with the mode on, a stray tap must not wipe the selection. */
 	clickPane(panelId: string, shift: boolean): void {
 		if (shift || this.multiSelect) return;
 		this.clear(panelId);
@@ -186,10 +148,8 @@ class SelectionStore {
 		if (cur.nodes.size || cur.edges.size) this.write(panelId, { nodes: new Set(), edges: new Set() });
 	}
 
-	/** Drop ALL per-panel state — selection and inspector visibility. Called when
-	 * the layout is wholesale-replaced (reset / hydrate): a loaded `.gfi` keeps
-	 * its saved panel ids, which can collide with ids used earlier this session,
-	 * so any leftover per-id state would silently apply to the new panels. */
+	/** Drop ALL per-panel state on a layout replace: a loaded `.gfi` keeps its saved panel ids,
+	 * which can collide with ids this session already used. */
 	forgetAll(): void {
 		this.map = {};
 		this.inspectorOn = {};

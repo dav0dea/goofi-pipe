@@ -1,13 +1,5 @@
-<!--
-  Toggle — the on/off switch control (spec §2.1/§2.2): `value` in, `onChange` out. A native
-  `<input type=checkbox>` (visually hidden, so keyboard focus + the app :focus-visible ring still
-  work) behind a track + knob painted from F tokens. A checkbox commits atomically on change and
-  can't echo-jump mid-interaction, so it needs no `useLiveValue` latch.
-
-  The root is a real `<label>` wrapping the checkbox (its own switch label); it also claims an
-  enclosing `<Field>`'s label id so the Field label toggles it too. `class` merged, `data-testid`
-  (and any other attribute) forwarded via `...rest`.
--->
+<!-- Toggle — the on/off switch: a transparent native checkbox, so focus and the focus ring stay
+     real, behind a painted track and knob. -->
 <script lang="ts">
 	import type { HTMLLabelAttributes } from 'svelte/elements';
 	import { claimFieldControlId } from './field';
@@ -45,8 +37,6 @@
 		width: 2.4rem;
 		height: var(--hit);
 	}
-	/* The real control: full-box, transparent — it carries focus + the app focus ring, and its
-	   :checked state drives the track/knob below. */
 	.ui-toggle-input {
 		position: absolute;
 		inset: 0;
@@ -70,7 +60,6 @@
 		transition: background var(--dur-fast) var(--ease);
 		pointer-events: none;
 	}
-	/* The knob. */
 	.ui-toggle-track::before {
 		content: '';
 		position: absolute;
@@ -93,15 +82,13 @@
 		transform: translate(calc(2.4rem - 1.3rem), -50%);
 		background: var(--accent);
 	}
-	/* Keyboard focus rings the track (the visible surrogate for the hidden checkbox). */
+	/* The track is the visible surrogate for the transparent checkbox, so it takes the ring. */
 	.ui-toggle-input:focus-visible ~ .ui-toggle-track {
 		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: 2px;
 	}
-	/* Coarse-pointer hit-rect guarantee (mirrors IconButton, down to the two-clause gate D-R7
-	   standardises on): extend the clickable area outward to at least --hit WITHOUT widening the
-	   painted 2.4rem track (the knob's checked translate is tied to that width, so growing the box
-	   would distort the switch). A no-op under a fine pointer. */
+	/* The hit rect grows outward, never the painted track: the knob's translate is tied to its
+	   2.4rem width. */
 	@media (hover: none) and (pointer: coarse) {
 		.ui-toggle::after {
 			content: '';

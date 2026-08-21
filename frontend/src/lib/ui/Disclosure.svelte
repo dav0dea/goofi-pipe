@@ -1,14 +1,5 @@
-<!--
-  Disclosure — one collapse control (spec §2.5): a caret + a `summary` snippet that toggles the
-  `children` in and out of the DOM. The WAI-ARIA disclosure pattern — a real `<button>` whose
-  `aria-expanded` mirrors the open state and `aria-controls` names the region it reveals, so the
-  affordance is never behind `:hover` alone (it is a visible, keyboard-operable button).
-
-  `open` is `$bindable` (use `bind:open`) AND reports through `onToggle(next)` — a controlled parent
-  and a bound one both work. The caret rotates on open; the global `prefers-reduced-motion` guard (F,
-  app.css) neutralises that transition, so no per-component guard is needed. `class` merged,
-  `data-testid` (and any other attribute) forwarded via `...rest`.
--->
+<!-- Disclosure — one collapse control: a caret plus a `summary` that toggles `children` in and
+     out of the DOM. `open` is bindable and also reports through `onToggle`. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -58,8 +49,6 @@
 		flex-direction: column;
 		min-width: 0;
 	}
-	/* The summary is a full-width, self-styled button (does not lean on the app.css base rule) so its
-	   caret + label read as one clickable header. */
 	.ui-disclosure-summary {
 		display: flex;
 		align-items: center;
@@ -91,7 +80,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* The caret points right when closed, rotates down when open. Reduced-motion is handled globally. */
 	.ui-disclosure-caret {
 		flex-shrink: 0;
 		display: flex;

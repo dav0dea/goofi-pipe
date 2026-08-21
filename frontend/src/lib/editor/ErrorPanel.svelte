@@ -1,9 +1,4 @@
-<!-- Floating error chip — a small, always-visible badge of how many nodes are
-     *currently* errored (live snapshot from each node's `error` field, driven by
-     the control plane). Click to list them and focus one. Mounted once over the
-     editor (AppShell). The full, scrolling log of stdout/stderr + error
-     tracebacks lives in the Console panel; this is just the at-a-glance
-     indicator, independent of whether a Console is open. -->
+<!-- Floating chip counting the currently-errored nodes; click to list them and focus one. -->
 <script lang="ts">
 	import { graph } from '$lib/stores/graph.svelte';
 	import { Chip, StatusDot, Popover } from '$lib/ui';
@@ -15,8 +10,6 @@
 	const activeNodes = $derived(g.nodes.filter((n) => n.error));
 
 	let chipOpen = $state(false);
-	// The chip is the popover's anchor; wrapping it lets the Popover clamp against a real element
-	// and exclude it from its own outside-dismiss (so the toggle click never dismisses-then-reopens).
 	let anchorEl = $state<HTMLElement | null>(null);
 	function focus(uid: string): void {
 		onFocus(uid);
@@ -33,9 +26,7 @@
 				{activeNodes.length === 1 ? 'error' : 'errors'}
 			</Chip>
 		</span>
-		<!-- `flip`: the chip is anchored to the BOTTOM of the editor, so the plain shift would slide the
-		     surface up until it fit and then enclose the chip — burying its own toggle-to-close and the
-		     live error count. Opening upward is what this panel did before it delegated to Popover. -->
+		<!-- `flip`: the chip sits at the editor's BOTTOM, so a shifted surface would bury the chip. -->
 		<Popover anchor={anchorEl} open={chipOpen} onDismiss={() => (chipOpen = false)} flip>
 			<div class="error-list" data-testid="error-popover">
 				{#each activeNodes as n (n.uid)}
@@ -59,14 +50,8 @@
 	.chip-anchor {
 		display: inline-flex;
 	}
-	/* The popover surface + dismissal come from the Popover primitive; this just sizes and
-	   scrolls the error list inside it.
-
-	   The mono lives HERE, not on `.chip-host`: Popover portals its surface to <body>, so the rows
-	   are not DOM descendants of the chip at all and inherited the BODY face instead. That was
-	   invisible while the body was mono; the two-face flip made it visible as an error list in the
-	   chrome face while every other error surface (console, the inspector traceback) stayed mono.
-	   A node name and a traceback are data (D-T3), so the family is stated inside the portal. */
+	/* The mono is stated HERE, inside the portal: Popover moves this surface to <body>, so it does
+	   not inherit the chip's face. */
 	.error-list {
 		width: 320px;
 		max-height: 60dvh;
@@ -88,10 +73,8 @@
 		text-align: left;
 		cursor: pointer;
 		color: var(--text);
-		/* The whole font, not just the family: a <button> inherits none, so the size and
-		   line-height would drop to the UA default were app.css's base reset not there. */
+		/* The whole font, not just the family: a <button> inherits none of it. */
 		font: inherit;
-		/* Likewise the fade on the hover fill below — it came from the base skin M-Task 7 stripped. */
 		transition: background var(--dur-fast) var(--ease);
 	}
 	.prow:hover {

@@ -1,13 +1,5 @@
-//! Psd — power spectral density over the last axis.
-//!
-//! The last axis is time, so it is the one that becomes frequency: `[.., T]` in, `[.., T/2 + 1]`
-//! out. Everything before it is carried through untouched — a `[C, T]` frame keeps its channels,
-//! and so does a `[trial, C, T]` one. There is no `axis` param, because "which axis is time" is not
-//! a question: the convention answers it.
-//!
-//! One-sided periodogram: window, real FFT, magnitude squared, scaled so the sum over bins
-//! estimates the signal's power. The interior bins are doubled — the energy their negative-
-//! frequency twins carry is not emitted, and dropping it would halve the reading.
+//! Psd — a one-sided periodogram over the last axis: `[.., T]` in, `[.., T/2 + 1]` out.
+//! Interior bins are doubled, for the energy their negative-frequency twins carry.
 
 use std::sync::Arc;
 
@@ -20,8 +12,7 @@ use rustfft::{num_complex::Complex32, FftPlanner};
 
 struct Psd {
     planner: FftPlanner<f32>,
-    /// The window, and the length it was built for. Rebuilt when either changes — a cosine per
-    /// sample per frame is the one part of this node that is not already paid for by the FFT.
+    /// The window, and the length and kind it was built for.
     window: Vec<f32>,
     built: (usize, String),
 }
@@ -63,8 +54,7 @@ impl Node for Psd {
         if n < 2 {
             return Err(format!("needs at least 2 samples along the last axis, got {n}").into());
         }
-        // Absent, the bins are cycles per sample rather than Hz — a usable spectrum, so this is a
-        // fallback and not an error. (Filter, whose cutoff is stated in Hz, cannot do the same.)
+        // Absent, the bins are cycles per sample — a usable spectrum, so a fallback and not an error.
         let sfreq = d.meta().sfreq().unwrap_or(1.0);
 
         let kind = p.str("psd", "window").unwrap_or("hann");
@@ -76,8 +66,7 @@ impl Node for Psd {
 
         let bins = n / 2 + 1;
         let rows: usize = shape[..shape.len() - 1].iter().product();
-        // Power normalization: dividing by `sfreq · Σw²` makes the result a DENSITY, so a longer
-        // window resolves finer without changing the height of a peak.
+        // Dividing by `sfreq · Σw²` makes the result a DENSITY: window length cannot move a peak.
         let norm = 1.0 / (sfreq as f32 * self.window.iter().map(|w| w * w).sum::<f32>());
         let src = a.as_bytes();
         let mut scratch = vec![Complex32::default(); n];
@@ -100,8 +89,7 @@ impl Node for Psd {
         shape_out[last] = bins;
         let freqs: Vec<Coord> =
             (0..bins).map(|k| Coord::Num(k as f64 * sfreq / n as f64)).collect();
-        // The frame is no longer a time series: `sfreq` would read as the spacing of a domain that
-        // is gone, so it is dropped and the frequency of every bin is stated outright instead.
+        // No longer a time series: `sfreq` would read as the spacing of a domain that is gone.
         let mut meta = d.meta().clone();
         let axes = meta.channels().clone().with(last, Axis::coords(Arc::from(freqs)));
         meta.set_channels(axes);

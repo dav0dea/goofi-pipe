@@ -1,17 +1,4 @@
-/**
- * WebGL2 image renderer (reports A3/A14/A18).
- *
- * Replaces ImageViewer's per-pixel JS loop + putImageData (≈2M iterations per
- * HD frame on the main thread) with a single GPU texture upload + fragment
- * shader. The shader does dtype→[0,1], a grayscale colormap LUT, value-range
- * normalization, and — by sizing the drawing buffer to the element's CSS box —
- * the GPU downsamples an HD frame to the ~70× fewer on-screen pixels.
- *
- * The wire is f32-only, so every texture here is a float texture: grayscale (R32F),
- * RGB (RGB32F) and RGBA (RGBA32F) all go through the GPU. Only gray+alpha falls back
- * to the 2D path in ImageViewer. Returns null from tryCreate() when WebGL2 is
- * unavailable so the caller degrades to 2D.
- */
+/** WebGL2 image renderer; `tryCreate` returns null so the caller can degrade to 2D. */
 import { isFloatDtype } from '$lib/codec/decode';
 
 const VERT = `#version 300 es
@@ -47,23 +34,18 @@ void main() {
 
 export interface RenderOpts {
 	colormap: string;
-	lut: Uint8Array; // 256*3 RGB colormap, only read for grayscale
+	lut: Uint8Array;
 	lo: number;
 	hi: number;
 	cssW: number;
 	cssH: number;
 }
 
-/** Whether the GL path supports a given (channels, dtype). The rest fall to 2D.
- *
- * RGB32F is a REQUIRED sized internal format for textures in WebGL2 (ES 3.0 table 3.13) — it is
- * merely not color-renderable and not texture-filterable, neither of which this renderer needs
- * (it only samples, and already drops to NEAREST without `OES_texture_float_linear`). RGB used to
- * be excluded on the renderability grounds, which sent every video frame down the 2D path's
- * w*h*3-iteration JS loop. */
+/** Whether the GL path supports a given (channels, dtype); gray+alpha (c === 2) falls to 2D.
+ * RGB32F is neither color-renderable nor filterable, which is fine — this renderer only samples. */
 export function glSupports(c: number, dtype: string): boolean {
-	if (!isFloatDtype(dtype)) return false; // the wire is f32-only; anything else is a bug upstream
-	return c === 1 || c === 3 || c === 4; // R32F / RGB32F / RGBA32F — c === 2 (gray+alpha) is 2D
+	if (!isFloatDtype(dtype)) return false;
+	return c === 1 || c === 3 || c === 4;
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
@@ -102,7 +84,6 @@ export class GLImageRenderer {
 		gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
 		gl.uniform1i(gl.getUniformLocation(prog, 'u_lut'), 1);
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-		// LUT texture is always LINEAR-filterable RGB8.
 		gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -133,9 +114,7 @@ export class GLImageRenderer {
 	render(values: ArrayLike<number>, w: number, h: number, c: number, opts: RenderOpts): void {
 		const gl = this.gl;
 		const canvas = gl.canvas as HTMLCanvasElement;
-		// Drawing buffer = the data scaled to fit the on-screen box, preserving
-		// aspect (never upscaling past the source). The GPU thus downsamples HD to
-		// ~display resolution; CSS object-fit:contain then letterboxes it.
+		// Fit to the CSS box, never upscaling: the GPU does the HD downsample, CSS letterboxes.
 		const fit = Math.min(opts.cssW / w, opts.cssH / h, 1) || 1;
 		const dw = Math.max(1, Math.round(w * fit));
 		const dh = Math.max(1, Math.round(h * fit));
@@ -145,7 +124,6 @@ export class GLImageRenderer {
 		}
 
 		const mode = c === 1 ? 0 : c === 3 ? 1 : 2;
-		// f32-only wire → always a float texture, one per channel count (`glSupports` gates c).
 		const internal = c === 1 ? gl.R32F : c === 3 ? gl.RGB32F : gl.RGBA32F;
 		const format = c === 1 ? gl.RED : c === 3 ? gl.RGB : gl.RGBA;
 

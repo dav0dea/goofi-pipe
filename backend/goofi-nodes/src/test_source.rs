@@ -1,11 +1,4 @@
-//! `_TestConst` — a constant-valued float32 array source (value + length via the
-//! `constant` param group). The `_` prefix hides it from the palette (like the
-//! engine's other `_Test*` nodes): it is **test/bench scaffolding**, not part of the
-//! user-facing node library, kept here so the engine, bridge, and goofi-python test
-//! suites share one simple deterministic source instead of each defining its own.
-//!
-//! Both params are cold — read live from `p` — so the node is stateless (no fields,
-//! no `on_param_changed`).
+//! `_TestConst` — a constant float32 array source; the `_` prefix keeps it out of the palette.
 
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};

@@ -1,57 +1,30 @@
-//! The panel-type and viewer-kind vocabularies — the one place each word is declared.
-//!
-//! Sub-project A made the manager authoritative for layout, but the words that give a panel entry
-//! its MEANING stayed in the frontend: panel types were registered in `panels/register.ts`, viewer
-//! kinds were a TypeScript union in `viewers/kind.ts`. The manager wrote both into an entry as free
-//! strings it could not check, so `set_panel {type: "params"}` — a plausible guess for
-//! `parameters` — answered `{ok: true}` and left the panel in an "Unknown panel type" state (found
-//! by the user driving a real agent, 2026-08-10). An incomplete migration, not a missing guard.
-//!
-//! So the vocabulary and its metadata are declared HERE and the TypeScript is GENERATED from it,
-//! the way [`crate::ops`] generates the frontend's `OpName` union: a checked-in file plus a drift
-//! test, no build machinery. Three consumers follow from one table — the manager's refusal, the
-//! agent's tool schema, and the frontend's registration.
-//!
-//! **What deliberately does NOT live here: the behaviour keyed off a word.** Which Svelte component
-//! renders a panel type, and whether a particular array actually draws, are code over client state
-//! — moving them would be inventing an abstraction, not removing a duplicate. What collapses is the
-//! duplicated *lists* and the hand-maintained agreements between them.
+//! The panel-type and viewer-kind vocabularies — the one place each word is declared, and the
+//! source the frontend's module is generated from. The BEHAVIOUR keyed off a word stays client-side.
 
 use goofi_engine::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
 use serde_json::Value;
 
-/// One panel type — what a layout entry's `panel_type` may say, and what `set_panel {type}`
-/// may name.
+/// One panel type — what a layout entry's `panel_type` may say.
 pub struct PanelType {
     /// The layout key. Stored in the `.gfi`, so renaming one is a migration, not an edit.
     pub id: &'static str,
-    /// The header label. The frontend's, but declared here because it is a fact about the word
-    /// rather than about the component that happens to draw it.
     pub title: &'static str,
-    /// A name from the frontend's one icon set. Typed as `IconName` on the generated side, so a
-    /// glyph that does not exist is a `npm run check` error rather than an empty box at runtime.
+    /// A name from the frontend's one icon set, typed as `IconName` on the generated side.
     pub icon: &'static str,
-    /// Whether a node can be BOUND to this panel (`state.node`). The editor already gates its
-    /// drop target on this; declaring it here is what lets the manager refuse a bind the panel
-    /// would silently ignore, and lets the agent read which types take a node at all.
+    /// Whether a node can be BOUND to this panel (`state.node`).
     pub accepts_node: bool,
-    /// What the panel shows, for a caller choosing one. Short: every one of these rides in
-    /// `set_panel`'s tool description, which a model provider truncates at 2 KB.
+    /// What the panel shows. Short: these ride in `set_panel`'s tool description, which a model
+    /// provider truncates at 2 KB.
     pub doc: &'static str,
 }
 
-/// What a viewer kind can be handed. The two questions — which dtype it serves and how many
-/// dimensions it takes — are one enum so that "a STRING viewer that draws 2-D arrays" cannot be
-/// written down.
+/// What a viewer kind can be handed: dtype and dimensions in one enum, so "a STRING viewer that
+/// draws 2-D arrays" cannot be written down.
 pub enum Draws {
-    /// An ARRAY kind. `draws` is the dimension range the component actually renders; `accepts` is
-    /// the (equal or wider) range its ViewSpec declares compatible, so a frame it will only
-    /// SUMMARISE still arrives reduced instead of at full size. `line` is the one kind where they
-    /// differ, and that difference is exactly why both are stated: `capacity.ts` and `kind.ts` each
-    /// carried one of them, with a comment claiming they mirrored each other.
+    /// `draws` is what the component renders; `accepts` is the equal-or-wider range its ViewSpec
+    /// declares, so a frame it only SUMMARISES still arrives reduced.
     Array { draws: (u8, u8), accepts: (u8, u8) },
-    /// A kind PINNED to a non-array dtype: a slot of that dtype always resolves to this kind, and
-    /// the dimension question does not arise.
+    /// A kind PINNED to a non-array dtype: that dtype's slots always resolve to this kind.
     Pinned(&'static str),
 }
 
@@ -59,7 +32,7 @@ pub enum Draws {
 pub struct ViewerKind {
     pub id: &'static str,
     pub draws: Draws,
-    /// What the kind shows, for a caller choosing one. Same 2 KB budget as [`PanelType::doc`].
+    /// What the kind shows. Same 2 KB budget as [`PanelType::doc`].
     pub doc: &'static str,
 }
 
@@ -73,9 +46,8 @@ impl ViewerKind {
     }
 }
 
-/// Declaration order is the order the frontend registers them in, which is the order the panel
-/// menu lists them — so this table is also the menu. `empty` leads because it is the framework's
-/// own placeholder, registered before any app panel and filtered out of the choice grid.
+/// Declaration order is the order the panel menu lists them in; `empty` must lead, because the
+/// framework registers its placeholder before any app panel.
 pub static PANEL_TYPES: &[PanelType] = &[
     PanelType { id: "empty", title: "Empty", icon: "square-dashed", accepts_node: false,
                 doc: "a placeholder with no content yet — what a fresh split births" },
@@ -95,8 +67,7 @@ pub static PANEL_TYPES: &[PanelType] = &[
                 doc: "a terminal on an agent harness, running in the patch workspace" },
 ];
 
-/// The four ARRAY kinds first, in the order the viewer's type dropdown offers them; the two
-/// dtype-pinned kinds after, which no dropdown offers because the slot's dtype chooses them.
+/// The ARRAY kinds first, in the order the viewer's dropdown offers them; the pinned ones after.
 pub static VIEWER_KINDS: &[ViewerKind] = &[
     ViewerKind { id: "line", draws: Draws::Array { draws: (0, 2), accepts: (0, 3) },
                  doc: "a time plot: one series (1-D) or one per channel (C, N)" },
@@ -115,8 +86,7 @@ pub fn panel_type(id: &str) -> Option<&'static PanelType> {
     PANEL_TYPES.iter().find(|p| p.id == id)
 }
 
-/// Every panel type's id — the JSON-Schema `enum` an agent's tool list carries, and the set a
-/// refusal names.
+/// Every panel type's id — the JSON-Schema `enum` an agent's tool list carries.
 pub fn panel_type_ids() -> Vec<&'static str> {
     PANEL_TYPES.iter().map(|p| p.id).collect()
 }
@@ -126,9 +96,7 @@ pub fn viewer_kind_ids() -> Vec<&'static str> {
     VIEWER_KINDS.iter().map(|k| k.id).collect()
 }
 
-/// The vocabularies as prose, for the tool description a model reads BEFORE it calls. The teachable
-/// refusal is the fallback; this is the mechanism, because a caller that never guesses never has to
-/// be corrected. Each entry is `id — doc`, which is what makes it a choice rather than a list.
+/// The vocabularies as prose, for the tool description a model reads BEFORE it calls.
 fn described(entries: impl Iterator<Item = (&'static str, &'static str)>) -> String {
     entries.map(|(id, doc)| format!("{id} ({doc})")).collect::<Vec<_>>().join("; ")
 }
@@ -139,9 +107,7 @@ pub fn viewer_kinds_help() -> String {
     described(VIEWER_KINDS.iter().map(|k| (k.id, k.doc)))
 }
 
-/// The frontend's vocabulary module, generated from the tables above. Checked into the tree (see
-/// [`tests::the_frontend_vocabulary_is_generated_from_the_registry`]) for the same reason
-/// [`crate::ops::typescript`] is: small, reviewable in a diff, and no new build machinery.
+/// The frontend's vocabulary module, generated from the tables above and checked into the tree.
 pub fn typescript() -> String {
     let panel_ids = PANEL_TYPES.iter().map(|p| format!("\n\t| '{}'", p.id)).collect::<String>();
     let kind_ids = VIEWER_KINDS.iter().map(|k| format!("\n\t| '{}'", k.id)).collect::<String>();
@@ -221,9 +187,8 @@ pub fn typescript() -> String {
     )
 }
 
-/// A `{name: dtype}` map of a node's OUTPUT slots — a leaf's declared outputs, or a collapsed
-/// sub-patch's outward boundary ports, which is what a panel bound to an instance actually reads.
-/// One answer for both, so a caller's slot cannot be valid on one projection and not the other.
+/// A node's OUTPUT slots — a leaf's declared outputs, or a collapsed sub-patch's outward boundary
+/// ports.
 pub fn output_slots(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Vec<(String, &'static str)> {
     if let Some(scope) = g.scope(uid) {
         return scope
@@ -238,8 +203,7 @@ pub fn output_slots(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Vec<(Str
         .unwrap_or_default()
 }
 
-/// Check one word against a vocabulary, refusing with the whole set. Naming the set is the point:
-/// an agent that guessed can only correct itself if the refusal says what it could have meant.
+/// Check one word against a vocabulary, refusing with the whole set.
 fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<(), String> {
     match valid.contains(&word) {
         true => Ok(()),
@@ -248,7 +212,7 @@ fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<
 }
 
 /// Check one output slot name against the node it is addressed on, refusing with the ones that
-/// exist. Shared by the two ops that carry a slot name inside an opaque bag.
+/// exist.
 fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &str) -> Result<(), String> {
     let slots = output_slots(g, uid);
     if slots.iter().any(|(name, _)| name == slot) {
@@ -258,12 +222,8 @@ fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &
     Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
 }
 
-/// Validate a `set_node_viewers` bag: `{slot: {kind, settings, collapsed}}`. The same two free
-/// strings [`check_panel`] refuses, one door over — a node's stored per-slot view carries the very
-/// vocabulary a viewer panel's `state.kind` does, and the manager kept this bag opaque, so a guess
-/// was answered `{ok: true}` and the editor drew something else.
-///
-/// A uid naming no node is left alone: the engine's own write refuses it, and by name.
+/// Validate a `set_node_viewers` bag: `{slot: {kind, settings, collapsed}}`. A uid naming no node
+/// is left alone, because the engine's own write refuses it by name.
 pub fn check_viewers(
     g: &goofi_engine::Graph,
     uid: goofi_engine::Uid,
@@ -285,14 +245,8 @@ pub fn check_viewers(
     Ok(())
 }
 
-/// Validate a `set_panel` write against the vocabularies and the node it binds, BEFORE the
-/// layout is planned. Every one of these is a write that would otherwise succeed and mean something
-/// other than what was asked: an unknown type renders "Unknown panel type", an unknown kind falls
-/// back to the line plot, a slot the node does not have renders the panel's empty state, and a node
-/// bound to a panel that does not take one is simply ignored.
-///
-/// `bound` is the node the panel ends up bound to — this write's, or the one already stored, since
-/// a state write MERGES.
+/// Validate a `set_panel` write against the vocabularies and the node it binds, BEFORE the layout
+/// is planned. `bound` is the node the panel ENDS UP bound to, since a state write merges.
 pub fn check_panel(
     g: &goofi_engine::Graph,
     ty: Option<&str>,
@@ -310,8 +264,7 @@ pub fn check_panel(
     if let (Some(slot), Some(uid)) = (key("slot"), bound) {
         check_slot(g, OP, uid, slot)?;
     }
-    // A bind is refused against the type this write LEAVES the panel with, which is this write's
-    // when it names one — a combined `{type, state}` is one act.
+    // Refused against the type this write LEAVES the panel with: a `{type, state}` pair is one act.
     if key("node").is_some() {
         if let Some(t) = ty.and_then(panel_type).filter(|t| !t.accepts_node) {
             return Err(format!("{OP}: a `{}` panel does not bind a node", t.id));

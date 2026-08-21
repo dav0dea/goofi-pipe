@@ -1,19 +1,5 @@
-<!--
-  Dialog — a centered modal overlay (spec §2.4). A SEPARATE primitive from `Popover` (audit Q12:
-  a centered/focus-trapped modal does not fit the anchored self-dismissing model). Built on the
-  native `<dialog>` element via `showModal()`, which gives the three modal contracts for free and
-  correctly: it promotes the dialog to the top layer (escaping every ancestor transform/clip with
-  no portal), renders the `::backdrop`, TRAPS Tab focus within the dialog and moves focus into it
-  on open, and routes Escape through the `cancel` event.
-
-  The parent owns `open` (the SSOT): an `$effect` syncs the element's modal state to it, and every
-  user dismissal — Escape (`cancel`) or a backdrop click — routes to `onClose` so the parent flips
-  `open` (never the element behind its back, which would desync). A backdrop click is one that
-  targets the dialog element itself (a click on content targets a child) AND lands outside its border
-  box — the coordinate half matters because the dialog's own scrollbar is targeted exactly like the
-  backdrop is. Surface chrome is F tokens via `var(--dialog-*, <token>)` hooks. `class` merged,
-  `data-testid` (and any other attribute) forwarded via `...rest`.
--->
+<!-- Dialog — a centered modal on the native `<dialog>`; the parent owns `open`, and every
+     dismissal routes to `onClose` rather than closing the element behind the parent's back. -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
@@ -32,8 +18,7 @@
 
 	let dialogEl = $state<HTMLDialogElement | null>(null);
 
-	// Sync the native modal state to the parent-owned `open`. showModal() throws if already open and
-	// close() is a no-op when closed, so both transitions are guarded on the element's own `.open`.
+	// Both transitions are guarded on `.open`: showModal() throws when the dialog is already open.
 	$effect(() => {
 		const d = dialogEl;
 		if (!d) return;
@@ -42,16 +27,12 @@
 	});
 
 	function onCancel(e: Event): void {
-		// Escape fires `cancel`; keep the element open and route through the parent instead, so `open`
-		// stays the single source of truth (the effect then closes the element).
+		// Keep the element open and route through the parent, which owns `open`.
 		e.preventDefault();
 		onClose();
 	}
 	function onDialogClick(e: MouseEvent): void {
-		// A click whose target is the dialog element itself (not the body/content) is a CANDIDATE
-		// backdrop click — but the dialog's own scrollbar is targeted the same way (it belongs to the
-		// scroller, not to a child), so target alone would dismiss on a scrollbar grab. Confirm with
-		// the coordinates: only a click landing outside the border box is really the backdrop.
+		// The dialog's own scrollbar is targeted like the backdrop, so the coordinates decide.
 		if (e.target !== dialogEl || !dialogEl) return;
 		const r = dialogEl.getBoundingClientRect();
 		const inside =
@@ -74,8 +55,7 @@
 
 <style>
 	.ui-dialog {
-		/* No padding so a backdrop click (target === the dialog) is unambiguous — the body owns the
-		   inner padding. Centered by the UA's modal margin:auto. */
+		/* No padding, so a backdrop click is unambiguous; the body owns the inner padding. */
 		padding: 0;
 		border: var(--dialog-border, 1px solid var(--border-strong));
 		border-radius: var(--dialog-radius, var(--radius-md));

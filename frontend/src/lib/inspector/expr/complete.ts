@@ -1,22 +1,5 @@
-/**
- * goofi-aware completion for the param expression editor — registered as PYTHON LANGUAGE DATA, which
- * is the whole point of the sub-project.
- *
- *   pythonLanguage.data.of({ autocomplete: source })
- *
- * `autocompletion()` does not take one completion function: it collects every source registered as
- * language data at the cursor and merges the results into ONE ranked popup. So `nd()` / `globals.` /
- * `np.` completions are not bolted onto Python's — they ARE Python's, arriving through the library's
- * designed extension point, ranked beside `globalCompletion` and `localCompletionSource`. Nothing
- * here uses `override`, which is the switch that would replace those sources instead of joining them.
- *
- * Context comes from the LEZER TREE, never a regex, and that is a correctness decision rather than a
- * stylistic one: `max(nd('a` , `x + nd('` and `nd('a', '` are three different answers that a regex
- * over the raw text reads as one. `complete.test.ts` drives exactly those cases.
- *
- * The scope this completes is small and fully knowable — `backend/goofi-python/src/inproc/expr.rs` evaluates with
- * `{nd, t, np, globals}` and nothing else.
- */
+/** goofi-aware completion for the expression editor, registered as Python language data so CodeMirror
+ *  ranks it into the same popup as its own sources. */
 import { syntaxTree } from '@codemirror/language';
 import { pythonLanguage } from '@codemirror/lang-python';
 import type { Completion, CompletionContext, CompletionSource } from '@codemirror/autocomplete';
@@ -26,10 +9,8 @@ import type { SyntaxNode } from '@lezer/common';
 import { CURATED_NUMPY } from './numpy';
 import type { CatalogueNode, ExprCatalogue } from './catalogue';
 
-/**
- * What a cursor position MEANS, and the range a completion there replaces. `null` (no context) is the
- * common case and the important one: it is what leaves the stock Python sources to answer alone.
- */
+/** What a cursor position means, and the range a completion there replaces; `null` leaves the stock
+ *  Python sources to answer alone. */
 export type ExprContext =
 	| {
 			kind: 'node';
@@ -37,10 +18,7 @@ export type ExprContext =
 			to: number;
 			/** The quote the literal opened with — reused to close it on accept. */
 			quote: string;
-			/** Whether the literal already has its closing quote. */
 			terminated: boolean;
-			/** Whether the `nd(` call already has its closing paren. Tracked apart from `terminated`
-			 *  because accepting may only add the characters that are NOT written yet. */
 			callClosed: boolean;
 	  }
 	| { kind: 'slot'; node: string; from: number; to: number }
@@ -51,7 +29,6 @@ export type ExprContext =
 const text = (state: EditorState, node: SyntaxNode): string =>
 	state.doc.sliceString(node.from, node.to);
 
-/** Is this node a call to `nd`? */
 function isNdCall(state: EditorState, call: SyntaxNode | null): boolean {
 	if (!call || call.name !== 'CallExpression') return false;
 	const callee = call.firstChild;
@@ -66,8 +43,7 @@ function firstArg(argList: SyntaxNode | null): SyntaxNode | null {
 	return null;
 }
 
-/** The string a `nd('…')` call names its node with, or null when it is not a plain literal we can
- *  read (a variable, an f-string, a concatenation — the completer says nothing rather than guessing). */
+/** The string a `nd('…')` call names its node with, or null when it is not a plain literal. */
 function ndArgName(state: EditorState, call: SyntaxNode): string | null {
 	const arg = firstArg(call.getChild('ArgList'));
 	if (!arg || arg.name !== 'String') return null;
@@ -87,15 +63,14 @@ function stringContext(state: EditorState, str: SyntaxNode, pos: number): ExprCo
 	const quote = raw[0];
 	if (quote !== "'" && quote !== '"') return null;
 	const terminated = raw.length > 1 && raw.endsWith(quote);
-	// The literal's CONTENT — accepting replaces all of it, so a caret parked mid-name does not
-	// leave the tail of the old one behind.
+	// The literal's CONTENT: accepting replaces all of it, tail of the old name included.
 	const from = str.from + 1;
 	const to = terminated ? str.to - 1 : str.to;
 	if (pos < from || pos > to) return null;
 	return { kind: 'node', from, to, quote, terminated, callClosed: !!argList.getChild(')') };
 }
 
-/** The cursor is at `<something>.` or `<something>.parti…` — whose attribute do we know? */
+/** The cursor is at `<something>.` — whose attribute do we know? */
 function memberContext(state: EditorState, node: SyntaxNode, pos: number): ExprContext | null {
 	let from = pos;
 	let to = pos;
@@ -113,8 +88,7 @@ function memberContext(state: EditorState, node: SyntaxNode, pos: number): ExprC
 		if (name === 'np') return { kind: 'numpy', from, to };
 		return null;
 	}
-	// `nd('x').` — the node name is right there in the tree, so the slots are THAT node's. One level
-	// further out (`nd('x').out.`) is a slot's own attribute and none of our business.
+	// `nd('x').` only — one level further out is a slot's own attribute and none of our business.
 	if (isNdCall(state, obj)) {
 		const name = ndArgName(state, obj);
 		return name === null ? null : { kind: 'slot', node: name, from, to };
@@ -122,21 +96,19 @@ function memberContext(state: EditorState, node: SyntaxNode, pos: number): ExprC
 	return null;
 }
 
-/** Classify a cursor position. Pure over `(parsed document, offset)` — the unit-test seam (spec §3). */
+/** Classify a cursor position. */
 export function exprContext(state: EditorState, pos: number): ExprContext | null {
 	const node = syntaxTree(state).resolveInner(pos, -1);
 	if (node.name === 'Comment') return null;
 	if (node.name === 'String') return stringContext(state, node, pos);
 	const member = memberContext(state, node, pos);
 	if (member) return member;
-	// A partially-typed bare name: the four injected symbols are the entire scope and nothing else in
-	// the app tells the user they exist. Deliberately narrow to a real `VariableName` — after a dot the
-	// name is a PropertyName (handled above) and must not see the scope.
+	// A real `VariableName` only — after a dot the name is a PropertyName and must not see the scope.
 	if (node.name === 'VariableName') return { kind: 'scope', from: node.from, to: node.to };
 	return null;
 }
 
-/** The evaluator's injected scope (`expr.rs`'s `eval` globals), in the order it is worth learning. */
+/** The evaluator's injected scope (`expr.rs`'s `eval` globals). */
 const SCOPE: Completion[] = [
 	{ label: 'nd', type: 'function', detail: "node reference — nd('name')", boost: 1 },
 	{ label: 't', type: 'variable', detail: 'seconds since start', boost: 1 },
@@ -144,12 +116,7 @@ const SCOPE: Completion[] = [
 	{ label: 'globals', type: 'namespace', detail: 'patch globals — globals.key', boost: 1 }
 ];
 
-/**
- * One node-name entry. D-X10: `_NdProxy._bare()` raises *"is ambiguous: it has multiple outputs"* for
- * a multi-output node, and the completer already knows the arity — so it says so in the detail AND
- * steers there, closing the call and leaving the caret on the dot so the slot list opens next. A
- * single-output node needs none of that; it is usable bare.
- */
+/** One node-name entry; a multi-output node steers to a `.slot`, since bare use of one raises. */
 function nodeEntry(node: CatalogueNode, ctx: Extract<ExprContext, { kind: 'node' }>): Completion {
 	const n = node.slots.length;
 	const multi = n > 1;
@@ -158,9 +125,8 @@ function nodeEntry(node: CatalogueNode, ctx: Extract<ExprContext, { kind: 'node'
 		: n === 1
 			? '1 output — usable bare'
 			: 'no outputs';
-	// Finish exactly what is not written yet. The steering dot rides on the closing paren: when the
-	// call is already closed, that paren sits PAST the caret and a dot inserted here would land inside
-	// it — so a finished call gets the plain name and the user types the dot.
+	// Finish only what is not written yet: an already-closed call's paren sits past the caret, so a
+	// dot inserted here would land inside it.
 	const tail = `${ctx.terminated ? '' : ctx.quote}${ctx.callClosed ? '' : `)${multi ? '.' : ''}`}`;
 	return {
 		label: node.name,
@@ -170,7 +136,7 @@ function nodeEntry(node: CatalogueNode, ctx: Extract<ExprContext, { kind: 'node'
 	};
 }
 
-/** What the popup is offered at a classified position. Pure — the other half of the §3 seam. */
+/** What the popup is offered at a classified position. */
 export function entriesFor(ctx: ExprContext, cat: ExprCatalogue): Completion[] {
 	switch (ctx.kind) {
 		case 'node':
@@ -192,7 +158,6 @@ export function entriesFor(ctx: ExprContext, cat: ExprCatalogue): Completion[] {
 	}
 }
 
-/** The `CompletionSource` the two pure halves add up to. */
 function goofiCompletionSource(catalogue: () => ExprCatalogue): CompletionSource {
 	return (ctx: CompletionContext) => {
 		const where = exprContext(ctx.state, ctx.pos);
@@ -202,8 +167,6 @@ function goofiCompletionSource(catalogue: () => ExprCatalogue): CompletionSource
 	};
 }
 
-/** THE seam (sketch §3): our source, registered as Python language data — so CodeMirror collects it
- *  alongside Python's own and ranks them into a single popup. */
 export function goofiLanguageData(catalogue: () => ExprCatalogue): Extension {
 	return pythonLanguage.data.of({ autocomplete: goofiCompletionSource(catalogue) });
 }

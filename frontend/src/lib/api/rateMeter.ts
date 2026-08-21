@@ -1,9 +1,5 @@
-/**
- * A tiny windowed rate counter for the perf HUD (backlog #12). Callers bump
- * `delivered()` / `dropped()` as events happen and call `tick(now)` on a timer;
- * once the window (>= 500ms) elapses the per-second rates are recomputed and the
- * counters reset, so `fps` / `dps` always reflect only the most recent window.
- */
+/** A windowed rate counter: bump `delivered()`/`dropped()`, call `tick(now)` on a timer, and
+ * `fps`/`dps` report the most recent window. */
 export class RateMeter {
 	fps = 0;
 	dps = 0;

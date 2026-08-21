@@ -1,10 +1,4 @@
-/**
- * Transient "this just changed" highlight (backlog #19). After an undo/redo
- * reorients to and selects the affected nodes, we also `pulse()` them so the
- * canvas briefly flashes a ring — the eye-catch the bare selection ring lacks.
- * Each pulse auto-clears after its window; re-pulsing a node restarts its clock,
- * so a node re-created by a slow backend echo still gets a full-length flash.
- */
+/** Transient "this just changed" highlight ring on a set of nodes. */
 export class Flash {
 	private _active = $state(new Set<string>());
 	private timers = new Map<string, ReturnType<typeof setTimeout>>();

@@ -1,9 +1,4 @@
-<!--
-  Inspector body for a selected sub-patch (virtual) node. Stands in for the param
-  groups in ParamForm. A sub-patch is a purely organizational facade now (no
-  sharing), so this shows its name + member count and the one structural action:
-  Expand (dissolve back into plain nodes).
--->
+<!-- Inspector body for a selected sub-patch node, standing in for ParamForm's param groups. -->
 <script lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -14,8 +9,7 @@
 	const g = graph();
 
 	const instId = $derived(node.subpatch?.instId ?? node.name);
-	// Read live instance state so the panel reflects changes immediately (the synth
-	// node is rebuilt on the next selection recompute).
+	// Live instance state: the synthetic node is only rebuilt on the next selection recompute.
 	const inst = $derived(g.instances[instId] ?? null);
 	const memberCount = $derived(Object.keys(inst?.members ?? {}).length);
 

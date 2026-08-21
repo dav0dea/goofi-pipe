@@ -1,8 +1,4 @@
-<!--
-  One node of the recursive TABLE tree (backlog #13). A leaf renders key → summary;
-  a nested TABLE renders an expand/collapse toggle and recurses via <svelte:self>.
-  Top level is expanded; deeper levels start collapsed so big tables stay scannable.
--->
+<!-- One node of the recursive TABLE tree; a nested TABLE recurses via <svelte:self>. -->
 <script lang="ts">
 	import type { DataFrame } from '$lib/codec/decode';
 	import { leafSummary, tableChildren } from './tableTree';

@@ -1,8 +1,5 @@
-//! The shared Rust↔`goofi.Node` call marshalling, used by BOTH in-process tiers:
-//! goofi-python's `inproc::PyNode` (engine-tick-driven) and — in M3 — `goofi.serve`
-//! (iceoryx2-driven). Writing it once is the point: the two tiers can't drift.
-//! It operates on `goofi_core::Data`, so it is transport-agnostic; the caller owns
-//! the cast-to-f32 warning dedup set.
+//! The shared Rust↔`goofi.Node` call marshalling both Python tiers run. It operates on
+//! `goofi_core::Data`, so it is transport-agnostic; the caller owns the cast-warn dedup set.
 
 use std::collections::HashSet;
 
@@ -14,9 +11,8 @@ use pyo3::IntoPyObjectExt;
 
 use crate::data::{array_to_f32, dict_to_meta, Data};
 
-/// `group -> name -> Param`. Structurally identical to `goofi_node::ParamGroups` (a type
-/// alias over the same `indexmap`/`goofi_core::Param`), so a caller passes its
-/// `ParamGroups` directly — no pymod→goofi-node dependency.
+/// `group -> name -> Param` — the same shape as `goofi_node::ParamGroups`, so a caller passes
+/// its own directly and pymod needs no dependency on goofi-node.
 pub type Groups = IndexMap<String, IndexMap<String, Param>>;
 
 /// Apply the live params, then call `node.setup()`.
@@ -26,14 +22,8 @@ pub fn run_setup(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -
     Ok(())
 }
 
-/// Re-enumerate a refreshable string param's options by calling the node's
-/// `refresh_{group}_{name}()` method — the Python side of the UI's ⟳ button, and the analogue
-/// of the Rust `Node::on_param_refreshed` hook. Method naming (rather than a declared callback)
-/// keeps the introspection probe carrying a plain `refresh: bool`.
-///
-/// `None` for every non-answer — no such method, a raise, or a return that isn't a list of
-/// strings. A picker that can't enumerate right now (no soundcard, no LSL stream) is an ordinary
-/// state, not a node failure: the param simply keeps the options it had.
+/// Re-enumerate a refreshable string param's options via the node's `refresh_{group}_{name}()`.
+/// `None` for every non-answer: the param keeps the options it had.
 pub fn run_refresh(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -42,9 +32,8 @@ pub fn run_refresh(
     name: &str,
 ) -> Option<Vec<String>> {
     let method = instance.getattr(format!("refresh_{group}_{name}").as_str()).ok()?;
-    // Enumerate against the node's CURRENT settings, exactly as `process` would see them — a
-    // node whose input is unwired never ticks, so without this its `self.params` would be frozen
-    // at construction time forever.
+    // Against the node's CURRENT settings: an unwired node never ticks, so its `self.params`
+    // would otherwise stay frozen at construction time.
     if let Err(e) = apply_params(py, instance, params) {
         eprintln!("refresh_{group}_{name}: could not apply params: {e}");
         return None;
@@ -58,31 +47,15 @@ pub fn run_refresh(
             }
         },
         Err(e) => {
-            // No UI warn channel exists for this (the ⟳ button reports only "no new options"),
-            // so surface the traceback on stderr rather than swallowing it whole.
             eprintln!("refresh_{group}_{name}() raised: {e}");
             None
         }
     }
 }
 
-/// Apply the live params, call `node.process(**inputs)`, and marshal the return into
-/// per-slot `Data`. `inputs` is `(slot, frame)` for every DECLARED input slot in declaration
-/// order — one keyword argument each, a `goofi.Data` when the slot holds a frame and `None`
-/// when it does not, so `def process(self, a, b)` is callable however few of its slots are
-/// wired and the node decides for itself what an absent input means. A REQUIRED slot never
-/// arrives empty; the engine refuses the tick upstream. `out_slots` are the node's declared
-/// output slot names (used when the node returns a bare value instead of a `{slot: value}`
-/// dict). `warned` is the caller's per-node dedup set for the cast-to-f32 warning.
-///
-/// Return coercion, per slot value:
-///
-/// - a `goofi.Data`    → its (already-f32) core, verbatim;
-/// - a `(array, meta)` → `array` cast to f32 (+ warn) with the explicit meta dict;
-/// - a bare array-like → cast to f32 (+ warn); meta carried from the first present
-///   input iff the output shape matches it, else empty.
-///
-/// A `None` return emits nothing.
+/// Apply the live params, call `node.process(**inputs)`, and marshal the return into per-slot
+/// `Data`. `inputs` names every DECLARED slot in order, `None` where no frame arrived;
+/// `out_slots` names the slot a bare (non-dict) return goes to.
 pub fn run_process(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
@@ -127,8 +100,7 @@ pub fn run_process(
     }
 }
 
-/// Build `types.SimpleNamespace(group=SimpleNamespace(name=value, …), …)` from the live
-/// params and set it as `instance.params`, so a node reads `self.params.<group>.<name>`.
+/// Set `instance.params` to nested `SimpleNamespace`, so a node reads `self.params.<group>.<name>`.
 fn apply_params(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -> PyResult<()> {
     let types = py.import("types")?;
     let simple_ns = types.getattr("SimpleNamespace")?;
@@ -154,8 +126,7 @@ fn param_to_py<'py>(py: Python<'py>, p: &Param) -> PyResult<Bound<'py, PyAny>> {
     })
 }
 
-/// Coerce one returned slot value (a `goofi.Data`, a `(array, meta)` tuple, or a bare
-/// array-like) into a core `Data`. `slot` names it in the cast warning.
+/// Coerce one returned slot value into a core `Data`. `slot` names it in the cast warning.
 fn value_to_core(
     py: Python<'_>,
     v: &Bound<'_, PyAny>,
@@ -180,7 +151,6 @@ fn value_to_core(
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
     }
-    // Bare array-like: carry the primary input's meta iff the output shape matches it.
     let (shape, bytes) = array_f32_bytes(py, v, slot, warned)?;
     let meta = match primary {
         Some(p) if primary_shape(p) == Some(shape.as_slice()) => p.meta().clone(),
@@ -190,10 +160,7 @@ fn value_to_core(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
-/// `np.ascontiguousarray(arr)` → `(shape, f32 bytes)` via the shared [`array_to_f32`]
-/// funnel, adding the deduped cast warning (Rust-owned, so both tiers share the one
-/// guard — replaces the retired `WRAP_SRC`). The `Data::new` path uses the same funnel
-/// but elides the warn.
+/// [`array_to_f32`] plus the deduped cast warning, which the `Data::new` path elides.
 fn array_f32_bytes(
     py: Python<'_>,
     arr: &Bound<'_, PyAny>,
