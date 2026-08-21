@@ -427,6 +427,21 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     assert!(t0.elapsed() < Duration::from_secs(5),
             "the exit took {:?} — it JOINED the busy node instead of waiting to a ceiling", t0.elapsed());
     let _ = other;
+
+    // The other half of the same property: with nothing busy, the exit does not wait AT ALL. An
+    // idle node — no trigger pending, autotrigger off — parks on its doorbell with no timeout, so
+    // the one thing that makes it notice its halt is `signal_stop` ringing that doorbell. A ring
+    // lost to the park racing it would not fail an assertion phrased against the ceiling: it would
+    // quietly cost `SHUTDOWN_WAIT` on every exit, which is why the bound here is milliseconds.
+    let idle = Goofi::new();
+    for _ in 0..8 {
+        idle.ready(idle.add("Buffer")); // unwired, so it parks rather than running
+    }
+    let t0 = Instant::now();
+    idle.state.graph.lock().unwrap().shutdown();
+    assert!(t0.elapsed() < Duration::from_millis(500),
+            "an exit with nothing but parked nodes took {:?} — a doorbell was lost and it waited \
+             out the ceiling", t0.elapsed());
 }
 
 #[test]
