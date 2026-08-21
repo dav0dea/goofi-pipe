@@ -10,6 +10,7 @@ import {
 	addNode,
 	canUndo,
 	nodeParams,
+	redo,
 	selectNode,
 	undo,
 	updateParam,
@@ -28,80 +29,193 @@ import {
 	type Grabber
 } from '../lib/inspector';
 
-test.describe('editing parameters', () => {
-	// Characterization e2e for the rebuilt inspector (spec §7, N-Task 5): drive the REAL rendered
-	// InspectorOverlay — the slide-in ParamForm — against a live Oscillator node, complementing the
-	// store-level graph.spec.ts. Each case commits through a rendered control and reads the round-trip
-	// back through the doc (`nodeParams` / `query.node`), so it pins the newly-wired ParamForm, not a
-	// synthetic fixture. Runs under the `default` (fine-pointer) project.
+test.describe('a node’s parameters', () => {
+	/**
+	 * THREE describes used to live here — "editing parameters", "every parameter kind" and "the fx
+	 * binding" — and all three opened every one of their 23 tests with the same six lines: boot, add
+	 * an Oscillator, wait for it, click it, assert the pane slid in. Measured, that preamble was 76%
+	 * of a test and the assertion it existed for was the other 24%.
+	 *
+	 * What replaces them is a SESSION. One boot, one node, and an ordered walk through the things a
+	 * user does to it, probing after each — which is also the only way to reach the states that need
+	 * a history: a rename after an edit, a group switch after a scrub, an fx toggle over a value that
+	 * was typed rather than seeded. Twenty-three fresh boots could not observe any of those.
+	 *
+	 * The steps are `test.step`s so a failure still names the stage rather than a line number, and
+	 * the split between `expect` and `expect.soft` is deliberate: a GATE the next step depends on is
+	 * hard, and an OBSERVATION at this point in the arc — geometry, computed style, ink — is soft, so
+	 * one wrong padding cannot hide the twelve behaviours after it.
+	 *
+	 * The oracle throughout is the DOCUMENT, never a callback the test wired: these claims used to be
+	 * made against `/dev/inspector` with synthetic descriptors beside hand-written callbacks that
+	 * wrote "the flags the way the store would", which proved the control and never the wiring.
+	 *
+	 * Two param kinds are deliberately absent: `trigger` and a REFRESHABLE select. No product node
+	 * declares either — both belong to a device node that does not exist yet — and their round trip
+	 * is proved in `goofi-tests` against `_TestPicker`. What is missing is the rendering, and it
+	 * lands with the node that needs it rather than with a fixture invented to have one.
+	 */
+	const panel = (page: Page) => page.getByTestId('auto-side-panel');
+	const field = (page: Page, name: string) => panel(page).getByTestId(`param-field-${name}`);
+	const value = (page: Page, uid: string, group: string, name: string) =>
+		nodeParams(page, uid).then((p) => p?.[group]?.[name]?.value);
+	const binding = (page: Page, uid: string) => nodeParams(page, uid).then((p) => p?.oscillator?.amplitude);
+	const amp = (page: Page) => field(page, 'amplitude');
+	const nodeName = (page: Page, uid: string) =>
+		page.evaluate((u) => (window as any).goofi.query.node(u)?.name, uid);
+	/** The first family in a computed stack, which is the one that actually renders. */
+	const face = (loc: Locator) =>
+		loc.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, ''));
 
-	/** The single-selection slide-in inspector. */
-	function panel(page: Page) {
-		return page.getByTestId('auto-side-panel');
+	/** Boot, add `type`, click it, and answer its uid — the entry every SESSION pays once. */
+	async function inspect(page: Page, type: string, at: [number, number] = [40, 40]): Promise<string> {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addNode(page, type, 'inputs', at);
+		await waitForNode(page, uid);
+		await selectNode(page, uid);
+		await expect(panel(page), 'a single selection opens the inspector').toHaveClass(/open/);
+		return uid;
 	}
 
 	// The shared-backend half of the hermeticity contract (`expectPristineWorkspace`): every node on
-	// the backend at teardown is THIS file's creation — the guard proved the graph empty at entry — so
-	// one remove-all here beats nine per-test `finally` blocks, and it still runs when a test fails.
+	// the backend at teardown is this file's creation — the guard proved the graph empty at entry — so
+	// one remove-all here beats a `finally` per scenario, and it still runs when one fails.
 	test.afterEach(async ({ page }) => {
 		const uids: string[] = await page.evaluate(() =>
 			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
 		);
 		if (uids.length === 0) return;
 		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
-		await expect
-			.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length))
-			.toBe(0);
+		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
 	});
 
-	/** A node's live name via the read façade. */
-	function nodeName(page: Page, uid: string): Promise<string | undefined> {
-		return page.evaluate((u) => (window as any).goofi.query.node(u)?.name, uid);
-	}
+	test('every control commits through the document, and the form survives the switch to another node', async ({
+		page
+	}) => {
+		const uid = await inspect(page, 'Oscillator');
 
-	/** Boot, add an Oscillator, select it so the per-editor inspector slides in, and return its uid. */
-	async function addAndSelect(page: Page): Promise<string> {
-		await page.goto('/');
-		await waitForApp(page);
-		const uid = await addNode(page, 'Oscillator', 'inputs');
-		await waitForNode(page, uid);
-		// Selecting exactly one node opens the editor's inspector overlay (enabled by default).
-		await selectNode(page, uid);
-		await expect(panel(page), 'the inspector slides in for a single selection').toHaveClass(/open/);
-		// The backend persists across specs, so the auto-assigned display name is not fixed; assert the
-		// header reflects THIS node's actual name (proving the overlay is bound to the selection).
-		const name = await nodeName(page, uid);
-		await expect(panel(page).getByTestId('node-name')).toHaveText(name!);
-		return uid;
-	}
+		await test.step('the header binds to THIS node’s name', async () => {
+			// The backend persists across specs, so the auto-assigned name is not fixed — reading it
+			// back is what proves the overlay is BOUND rather than merely mounted.
+			await expect(panel(page).getByTestId('node-name')).toHaveText((await nodeName(page, uid))!);
+		});
 
-	test.describe('Inspector (real node)', () => {
-		test('commits a param through the rendered control and it round-trips through the doc', async ({
-			page
-		}) => {
-			const uid = await addAndSelect(page);
-			// amplitude lives in the default (`oscillator`) group — edit its NumberInput and commit on Enter.
-			const number = panel(page).getByTestId('param-field-amplitude').getByTestId('param-number');
-			await number.fill('0.42');
+		await test.step('a float commits UNCLAMPED past its soft bounds, and the track follows', async () => {
+			// vmin/vmax are SOFT: the engine does not clamp on set, so the NumberInput must not either.
+			const range = field(page, 'frequency').getByTestId('param-slider').locator('input[type=range]');
+			await expect(range, 'seeded at its soft upper bound').toHaveAttribute('max', '100');
+			const number = field(page, 'frequency').getByTestId('param-number');
+			await number.fill('500');
 			await number.press('Enter');
 			await expect
-				.poll(async () => (await nodeParams(page, uid))?.oscillator?.amplitude?.value)
-				.toBeCloseTo(0.42, 5);
+				.poll(() => value(page, uid, 'oscillator', 'frequency'), {
+					message: 'the out-of-bounds value reached the manager unclamped'
+				})
+				.toBe(500);
+			await expect(range, 'the slider max auto-extends to span the live value').toHaveAttribute('max', '500');
 		});
 
-		test('toggles fx on a param and expression_enabled flips', async ({ page }) => {
-			const uid = await addAndSelect(page);
+		await test.step('…and a drag-scrub commits too, over the value the typing left', async () => {
+			// The ParamField→NumberInput `scrub` pass-through, which every fill()+Enter case leaves
+			// unexercised. It runs HERE, on 500, so it also proves the scrub reads the live value
+			// rather than the descriptor's default.
+			const number = field(page, 'frequency').getByTestId('param-number');
+			// SETTLED, not merely visible: the pane slides in, and a box read mid-flight puts the field
+			// past the right edge of a 1280px viewport — where the press lands on nothing at all.
+			const box = await settledBox(number);
+			const [cx, cy] = [box.x + box.width / 2, box.y + box.height / 2];
+			await page.mouse.move(cx, cy);
+			await page.mouse.down();
+			await page.mouse.move(cx + 40, cy, { steps: 8 }); // past the 3px threshold → the value climbs
+			await page.mouse.up();
 			await expect
-				.poll(async () => (await nodeParams(page, uid))?.oscillator?.amplitude?.expression_enabled)
-				.toBe(false);
-			await panel(page).getByTestId('param-field-amplitude').getByTestId('param-fx-toggle').click();
-			await expect
-				.poll(async () => (await nodeParams(page, uid))?.oscillator?.amplitude?.expression_enabled)
-				.toBe(true);
+				.poll(() => value(page, uid, 'oscillator', 'frequency'), { message: 'the scrub committed a higher value' })
+				.toBeGreaterThan(500);
 		});
 
-		test('inline-renames the node from the header', async ({ page }) => {
-			const uid = await addAndSelect(page);
+		await test.step('a select commits its option, and a non-refreshable one wears no ⟳', async () => {
+			// The ⟳ is gated on the descriptor's `refreshable`, not on `onRefresh` being wired — which
+			// `ParamForm` does unconditionally, so before the gate every select wore one the engine
+			// would refuse by contract.
+			await field(page, 'waveform').getByTestId('param-select').locator('select').selectOption('square');
+			await expect.poll(() => value(page, uid, 'oscillator', 'waveform')).toBe('square');
+			await expect(field(page, 'waveform').getByTestId('param-refresh'), 'no ⟳ on a non-refreshable param').toHaveCount(0);
+		});
+
+		await test.step('a VALUE renders mono while its LABEL renders sans (D-T3)', async () => {
+			// The two-face taxonomy where it is hardest to see: a value is data and reads mono, the
+			// label naming it is chrome and reads sans — one row apart inside one field. The controls
+			// declare no family of their own (`font: inherit`), so nothing in a unit suite can see this
+			// and a body-level flip would silently take the values with it.
+			expect.soft(await face(field(page, 'frequency').getByTestId('param-number')), 'the numeric value').toBe('JetBrains Mono');
+			expect.soft(await face(field(page, 'frequency').locator('label.ui-field-label')), 'the label naming it').toBe('Inter');
+		});
+
+		await test.step('the active group tab drops to the body surface, and switching swaps the rows', async () => {
+			// The connected look: the active tab paints the SAME surface as the rows flush beneath it,
+			// so the two read as one panel. `.ui-tab` transitions its background, so the active colour
+			// is animated and a one-shot read can land mid-flight — hence the retrying matcher.
+			const tabs = panel(page).getByTestId('param-tabs');
+			const active = tabs.getByRole('tab', { selected: true });
+			await expect(active, 'the node’s own group leads, ahead of common').toHaveText('oscillator');
+			const rowsBg = await panel(page).getByTestId('param-rows').evaluate((el) => getComputedStyle(el).backgroundColor);
+			await expect.soft(active, 'active tab background equals the body surface (merged)').toHaveCSS('background-color', rowsBg);
+			const inactiveBg = await tabs.getByRole('tab', { selected: false }).first()
+				.evaluate((el) => getComputedStyle(el).backgroundColor);
+			expect.soft(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(rowsBg);
+
+			await expect(field(page, 'autotrigger'), 'the other group is not rendered').toHaveCount(0);
+			await tabs.getByRole('tab', { name: 'common' }).click();
+			await expect(field(page, 'autotrigger'), 'switching renders the other group').toBeVisible();
+			await expect(field(page, 'frequency'), 'and drops this one').toHaveCount(0);
+		});
+
+		await test.step('a toggle in that group commits a boolean', async () => {
+			// Read the resting state rather than naming it: `common.autotrigger` DEFAULTS to the
+			// manifest's `producer`, so it rests true on an Oscillator and false on a Buffer. Asserting
+			// the flip is the claim a bool round-trips; asserting `false` here restated a backend
+			// default this file has no business owning, and was simply wrong for a source node.
+			const rest = await value(page, uid, 'common', 'autotrigger');
+			expect(rest, 'a producer rests autotriggering').toBe(true);
+			await field(page, 'autotrigger').getByTestId('param-toggle').click();
+			await expect.poll(() => value(page, uid, 'common', 'autotrigger')).toBe(!rest);
+			await panel(page).getByTestId('param-tabs').getByRole('tab', { name: 'oscillator' }).click();
+			await expect(field(page, 'frequency'), 'and the node’s own group comes back').toBeVisible();
+		});
+
+		await test.step('the docstring hides behind a Disclosure, whose label is centered on the caret by its INK', async () => {
+			// The caret and the label BOXES were both flex-centered to the hundredth of a pixel and the
+			// label still read high: "docs" has no descenders, so its ink stops AT the baseline while
+			// the line box reserves descent below it. So this pins the INK — the visible glyph run's
+			// centre, measured with canvas TextMetrics against the rendered font — not the box.
+			await expect(panel(page).getByTestId('docstring'), 'the docstring starts collapsed').toHaveCount(0);
+			await panel(page).getByTestId('docs-toggle').click();
+			await expect(panel(page).getByTestId('docstring'), 'the disclosure reveals it').toContainText('oscillator');
+			const d = await page.evaluate(() => {
+				const toggle = document.querySelector('[data-testid="docs-toggle"]') as HTMLElement;
+				const summary = toggle.closest('.ui-disclosure-summary') as HTMLElement;
+				const cr = (summary.querySelector('.ui-disclosure-caret svg') as SVGElement).getBoundingClientRect();
+				const range = document.createRange();
+				range.selectNodeContents(toggle);
+				const tr = range.getBoundingClientRect();
+				const cs = getComputedStyle(toggle);
+				const cv = document.createElement('canvas').getContext('2d')!;
+				cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+				const m = cv.measureText(toggle.textContent ?? '');
+				// The Range rect is the font box (ascent+descent); the canvas font metrics locate the
+				// baseline inside it, and the actual* metrics locate the ink around that baseline.
+				const baseline = tr.top + m.fontBoundingBoxAscent;
+				const inkCenter = baseline - (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+				return { delta: inkCenter - (cr.top + cr.height / 2), fontBoxCheck: m.fontBoundingBoxAscent + m.fontBoundingBoxDescent - tr.height };
+			});
+			expect.soft(Math.abs(d.fontBoxCheck), 'canvas font metrics agree with the layout font box, so the baseline estimate is sound').toBeLessThanOrEqual(1);
+			expect.soft(Math.abs(d.delta), `ink centre sits ${d.delta.toFixed(2)}px from the caret centre`).toBeLessThanOrEqual(0.6);
+			await panel(page).getByTestId('docs-toggle').click();
+			await expect(panel(page).getByTestId('docstring'), 'toggling again collapses it').toHaveCount(0);
+		});
+
+		await test.step('an inline rename from the header reaches the store', async () => {
 			await panel(page).getByTestId('node-name').click();
 			const input = panel(page).getByTestId('node-name-input');
 			await input.fill('my_osc');
@@ -109,221 +223,291 @@ test.describe('editing parameters', () => {
 			await expect.poll(() => nodeName(page, uid)).toBe('my_osc');
 		});
 
-		// The commit/cancel dance against the REAL store (the node's name IS store-bound, unlike the
-		// gallery's offline sample): Escape must NOT commit. cancelRename nulls the captured uid so the
-		// unmount-blur it triggers is a no-op — if commitRename lost that guard, the blur would wrongly
-		// rename the node to the discarded draft.
-		test('Escape during a header rename cancels — the store name stays unchanged', async ({ page }) => {
-			const uid = await addAndSelect(page);
-			const original = await nodeName(page, uid);
+		await test.step('…and Escape on the NEXT rename cancels, leaving the one just committed', async () => {
+			// The commit/cancel dance against the real store, run over a name the previous step
+			// committed rather than an auto-assigned one — so a cancel that wrongly commits is visible
+			// as `my_osc` being replaced, not merely as some name changing. `cancelRename` nulls the
+			// captured uid so the unmount-blur it triggers is a no-op; without that guard the blur
+			// renames the node to the discarded draft.
 			await panel(page).getByTestId('node-name').click();
 			const input = panel(page).getByTestId('node-name-input');
-			await input.fill('DRAFT_DISCARD_ME'); // a draft DISTINCT from the current name
+			await input.fill('DRAFT_DISCARD_ME');
 			await input.press('Escape');
-			// The editor closes and the store name is unchanged — the unmount-blur committed nothing.
 			await expect(panel(page).getByTestId('node-name-input'), 'Escape closes the editor').toHaveCount(0);
-			await expect
-				.poll(() => nodeName(page, uid), { message: 'a cancel must never commit the draft' })
-				.toBe(original);
+			await expect.poll(() => nodeName(page, uid), { message: 'a cancel must never commit the draft' }).toBe('my_osc');
 		});
 
-		test('opens the docs disclosure to reveal the node docstring', async ({ page }) => {
-			await addAndSelect(page);
-			// The Disclosure keeps its body out of the DOM until opened.
-			await expect(panel(page).getByTestId('docstring')).toHaveCount(0);
-			await panel(page).getByTestId('docs-toggle').click();
-			await expect(panel(page).getByTestId('docstring')).toBeVisible();
+		await test.step('a second node of ANOTHER type re-forms the panel around its own params', async () => {
+			// The int kind lives on a Buffer, and reaching it through a real selection SWITCH is worth
+			// more than a second boot would be: `ParamForm`'s rows are keyed by node identity, and this
+			// is the seam where a row that outlived its node used to show up.
+			const buf = await addNode(page, 'Buffer', 'signal', [320, 40]);
+			await waitForNode(page, buf);
+			await selectNode(page, buf);
+			await expect(field(page, 'frequency'), 'the Oscillator’s own params are gone').toHaveCount(0);
+			const number = field(page, 'size').getByTestId('param-number');
+			await number.fill('64');
+			await number.press('Enter');
+			await expect.poll(() => value(page, buf, 'buffer', 'size'), { message: 'an int commits a whole number' }).toBe(64);
+			await expect.poll(() => value(page, uid, 'oscillator', 'waveform'), {
+				message: 'and the node behind it kept everything committed to it'
+			}).toBe('square');
+		});
+	});
+
+	test('binding an expression to a parameter, from the chip to the editor’s own doors', async ({ page }) => {
+		const uid = await inspect(page, 'Oscillator');
+
+		await test.step('fx OFF wears no trig chip, and rests unpressed', async () => {
+			// Both adornments are two-state toggles, so both must SAY so. An earlier rewrite passed
+			// tone/onclick/title/testid and dropped `aria-pressed`, which left `trig`'s state living in
+			// its tone alone — which is to say in colour alone.
+			await expect(amp(page).getByTestId('param-expr-triggers-process'), 'no trig chip while fx is off').toHaveCount(0);
+			await expect(amp(page).getByTestId('param-fx-toggle'), 'fx rests unpressed').toHaveAttribute('aria-pressed', 'false');
+			expect((await binding(page, uid))?.expression, 'no source yet').toBeFalsy();
 		});
 
-		// --- state-coupling seam (audit findings #1/#2/#11) ------------------------------------------
-		// The ParamForm rows must be keyed by node identity, and the fx editor's global standdown must be
-		// ref-counted + released when a field leaves expression mode. These two cases drive the REAL two-node
-		// switch that the per-instance ParamField state used to survive.
+		await test.step('fx ON seeds the live value as a literal', async () => {
+			await amp(page).getByTestId('param-fx-toggle').click();
+			await expect.poll(async () => (await binding(page, uid))?.expression_enabled, { message: 'fx-on enables the expression' }).toBe(true);
+			expect((await binding(page, uid))?.expression, 'OFF→ON seeds the live value as a literal').toBe('1');
+			await expect(amp(page).getByTestId('param-expr-input'), 'the expr input takes the control region').toBeVisible();
+			await expect(amp(page).getByTestId('param-fx-toggle'), 'fx reports itself pressed once active').toHaveAttribute('aria-pressed', 'true');
+		});
 
-		const modalOpen = (page: Page): Promise<boolean> =>
-			page.evaluate(() => (window as any).goofi.query.modalOpen());
-		const historyLen = (page: Page): Promise<number> =>
-			page.evaluate(() => (window as any).goofi.query.historyLength());
+		await test.step('the trig chip appears with it, and commits process-on-change', async () => {
+			const trig = amp(page).getByTestId('param-expr-triggers-process');
+			await expect(trig, 'trig appears once fx is active').toBeVisible();
+			await expect(trig, 'trig rests unpressed').toHaveAttribute('aria-pressed', 'false');
+			await trig.click();
+			await expect(trig, 'trig reports itself pressed').toHaveAttribute('aria-pressed', 'true');
+			await expect.poll(async () => (await binding(page, uid))?.expression_triggers_process, {
+				message: 'and the manager holds process-on-change'
+			}).toBe(true);
+		});
 
-		test('a node switch tears down an open fx editor and frees global undo/redo', async ({ page }) => {
-			await page.goto('/');
-			await waitForApp(page);
-			// Two oscillators: A gets an open fx editor; B keeps fx OFF on the same-named param.
-			const a = await addNode(page, 'Oscillator', 'inputs');
-			await waitForNode(page, a);
-			const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
-			await waitForNode(page, b);
+		await test.step('expand grows the editor IN PLACE — never a modal', async () => {
+			await amp(page).getByTestId('param-expr-expand').click();
+			await expect(amp(page).getByTestId('param-expr-multiline'), 'the editor grows in place — no modal').toBeVisible();
+			await expect(amp(page).getByTestId('param-expr-input'), 'the single line is replaced while expanded').toHaveCount(0);
+		});
 
-			await selectNode(page, a);
-			await expect(panel(page)).toHaveClass(/open/);
+		await test.step('Escape closes the completion FIRST, then reverts and collapses', async () => {
+			// Layered, because a completion popup and an editor both answer Escape and only one should
+			// answer any given press. `ME` leaves a popup open — the only match is Python's own
+			// `MemoryError`, the stock language sources answering inside our editor, worth asserting.
+			const ta = amp(page).getByTestId('param-expr-multiline');
+			await ta.click();
+			await page.keyboard.press('Control+a');
+			await page.keyboard.type('DISCARD ME', { delay: 10 });
+			const popup = page.locator('.cm-tooltip-autocomplete');
+			await expect(popup, 'Python’s own builtins answer for `ME`').toBeVisible();
+			await page.keyboard.press('Escape');
+			await expect(popup, 'the first Escape belongs to the popup').toHaveCount(0);
+			await expect(ta, 'and the editor is still open').toHaveCount(1);
+			await page.keyboard.press('Escape');
+			await expect(ta, 'the next Escape collapses the editor').toHaveCount(0);
+			expect((await binding(page, uid))?.expression, 'Escape reverts — the source is unchanged').toBe('1');
+		});
 
-			// Enable fx on amplitude and grow the in-panel multi-line editor — it owns the keyboard, so the
-			// global undo/redo stands down.
-			const ampA = panel(page).getByTestId('param-field-amplitude');
-			await ampA.getByTestId('param-fx-toggle').click();
-			await ampA.getByTestId('param-expr-expand').click();
-			await expect(ampA.getByTestId('param-expr-multiline')).toBeVisible();
-			await expect.poll(() => modalOpen(page)).toBe(true);
+		await test.step('Ctrl+Enter applies the editor’s document and collapses it', async () => {
+			await amp(page).getByTestId('param-expr-expand').click();
+			const ta = amp(page).getByTestId('param-expr-multiline');
+			await ta.click();
+			await page.keyboard.press('Control+a');
+			await page.keyboard.type('0.25');
+			await page.keyboard.press('Control+Enter');
+			await expect(ta, 'apply collapses the multi-line editor').toHaveCount(0);
+			await expect.poll(async () => (await binding(page, uid))?.expression, { message: 'apply commits the source' }).toBe('0.25');
+			expect((await binding(page, uid))?.expression_enabled, 'apply PRESERVES the flags').toBe(true);
+			await expect(amp(page).getByTestId('param-expr-input'), 'the single-line input returns').toBeVisible();
+		});
 
-			// Switch selection to B (fx OFF on its amplitude). The field must tear down: no lingering editor,
-			// and the standdown must lift (before the fix `modalOpen` stayed stuck true → undo went dead).
+		await test.step('…and the apply Chip does the same, which touch has no chord for', async () => {
+			// The Chip is the door a coarse pointer has to ⌃⏎, and it takes a different route: the
+			// editor OWNS its document (a CodeMirror document is not a bindable string), so the Chip
+			// asks it to commit through the `bindCommit` seam rather than reading a mirrored buffer.
+			await amp(page).getByTestId('param-expr-expand').click();
+			const ta = amp(page).getByTestId('param-expr-multiline');
+			await ta.click();
+			await page.keyboard.press('Control+a');
+			await page.keyboard.type('0.75');
+			await amp(page).getByTestId('param-expr-apply').click();
+			await expect(ta, 'apply collapses the editor').toHaveCount(0);
+			await expect.poll(async () => (await binding(page, uid))?.expression, {
+				message: 'the Chip committed the editor’s document'
+			}).toBe('0.75');
+		});
+
+		await test.step('fx OFF stashes the source rather than dropping it', async () => {
+			// The stash is what makes the chip a toggle instead of a destructive switch: flipping off
+			// disables the engine and KEEPS the source, so flipping back on does not ask the user to
+			// retype what they just wrote. Run over `0.75` — a source the user AUTHORED — which is the
+			// case that matters and which a freshly-seeded `1` cannot distinguish.
+			await amp(page).getByTestId('param-fx-toggle').click();
+			await expect.poll(async () => (await binding(page, uid))?.expression_enabled, { message: 'fx-off disables the engine' }).toBe(false);
+			expect((await binding(page, uid))?.expression, 'ON→OFF stashes the authored source').toBe('0.75');
+		});
+	});
+});
+
+test.describe('the fx editor’s hold on the app', () => {
+	/**
+	 * The state-coupling seam, and it needs a session more than anything else in this file: every
+	 * defect here is a SECOND registrant, a SWITCH away, or a dismissal — none of which a test that
+	 * boots, does one thing and exits can reach at all.
+	 *
+	 * `ParamForm` rows must be keyed by node identity, and the fx editor's global standdown must be
+	 * ref-counted and released when a field leaves expression mode.
+	 */
+	const panel = (page: Page) => page.getByTestId('auto-side-panel');
+	const amp = (page: Page) => panel(page).getByTestId('param-field-amplitude');
+	const modalOpen = (page: Page) => page.evaluate(() => (window as any).goofi.query.modalOpen());
+	const historyLen = (page: Page) => page.evaluate(() => (window as any).goofi.query.historyLength());
+
+	test.afterEach(async ({ page }) => {
+		const uids: string[] = await page.evaluate(() =>
+			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
+		);
+		if (uids.length === 0) return;
+		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
+		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
+	});
+
+	test('two editors, a modal over them and a node switch all leave the reactive graph alive', async ({
+		page
+	}) => {
+		// A page error ANYWHERE in this arc is a failure of the arc, so the listener is armed once at
+		// the top rather than per case: `effect_update_depth_exceeded` kills the batch, and everything
+		// after the throw silently stops applying — which is precisely a whole-session symptom.
+		const pageErrors: string[] = [];
+		page.on('pageerror', (e) => pageErrors.push(e.message));
+
+		await page.goto('/');
+		await waitForApp(page);
+		const a = await addNode(page, 'Oscillator', 'inputs');
+		await waitForNode(page, a);
+		const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
+		await waitForNode(page, b);
+		await selectNode(page, a);
+		await expect(panel(page)).toHaveClass(/open/);
+
+		await test.step('TWO concurrently open fx editors on one node', async () => {
+			// M-audit CRITICAL. `openEditor`/`closeEditor` READ the `$state` Set they reassign, so every
+			// caller's `$effect` depends on what it writes; Svelte runs teardown before body on re-run,
+			// so each re-run writes twice. Harmless with ONE registrant (the `has(id)` guard
+			// short-circuits) — with TWO they invalidate each other until the flush guard throws and the
+			// batch is dead. Two ordinary clicks reach it, and every earlier e2e opened one.
+			for (const name of ['amplitude', 'frequency']) {
+				const f = panel(page).getByTestId(`param-field-${name}`);
+				await f.getByTestId('param-fx-toggle').click();
+				await f.getByTestId('param-expr-expand').click();
+				await expect(f.getByTestId('param-expr-multiline')).toBeVisible();
+			}
+			expect(pageErrors, 'two registrants must not throw').toEqual([]);
+		});
+
+		await test.step('…and the standdown is REF-COUNTED, so it lifts only on the last one', async () => {
+			// The real proof is that state still FLOWS: with the batch dead these polls never observe
+			// another change.
+			await panel(page).getByTestId('param-field-amplitude').getByTestId('param-expr-collapse').click();
+			await expect.poll(() => modalOpen(page), { message: 'one editor left still holds it' }).toBe(true);
+			await panel(page).getByTestId('param-field-frequency').getByTestId('param-expr-collapse').click();
+			await expect.poll(() => modalOpen(page), { message: 'the last one releases it' }).toBe(false);
+			expect(pageErrors).toEqual([]);
+		});
+
+		await test.step('the file browser opens OVER an editor without collapsing it', async () => {
+			// The second reachable pairing: an open fx editor plus the file browser, which registers the
+			// same standdown. The TopBar buttons are NOT gated on modalOpen (only the Ctrl+S/Ctrl+O
+			// chords are), so the Parameters panel and its live effect stay mounted underneath.
+			await amp(page).getByTestId('param-expr-expand').click();
+			await expect(amp(page).getByTestId('param-expr-multiline')).toBeVisible();
+			await page.getByTestId('topbar-load').click();
+			// Genuinely MODAL, not merely visible: `Dialog` calls `showModal()` from an `$effect`, so for
+			// one frame the element is in the DOM while focus is still in the fx textarea — where Escape
+			// hits ParamField's handler and collapses the editor instead. `dialog[open]` is set by
+			// `showModal()` itself, so it is the exact signal that focus has moved in.
+			await expect(page.locator('dialog[open]')).toHaveCount(1);
+			await expect(amp(page).getByTestId('param-expr-multiline'), 'opening a modal must not collapse the editor under it').toBeVisible();
+			expect(pageErrors).toEqual([]);
+		});
+
+		await test.step('…and dismissing it hands the standdown back to the editor', async () => {
+			// By the ✕, deliberately NOT by Escape. Escape is ambiguous while both surfaces are up:
+			// `Dialog` restores focus to the fx textarea on close, whose own keydown handler treats
+			// Escape as "collapse the editor". That made this flake ~1/20 on a state it does not exist
+			// to check; Escape-dismissal of the browser is covered in `patch.spec.ts`.
+			await page.getByTestId('fs-browser').getByRole('button', { name: 'Close' }).click();
+			await expect(page.getByTestId('fs-browser')).toHaveCount(0);
+			await expect.poll(() => modalOpen(page), { message: 'the editor underneath still holds it' }).toBe(true);
+			expect(pageErrors).toEqual([]);
+		});
+
+		await test.step('a node switch tears the editor down and frees global undo/redo', async () => {
+			// Before the fix `modalOpen` stayed stuck true after the switch → undo went dead.
 			await selectNode(page, b);
 			await expect(panel(page).getByTestId('param-expr-multiline')).toHaveCount(0);
 			await expect.poll(() => modalOpen(page)).toBe(false);
-
-			// End-to-end proof the standdown lifted: a real Ctrl-Z now performs an undo through the app's
-			// keybinding path (AppShell → undoKeyAction(ui().modalOpen)), which was dead while modalOpen stuck.
+			// End-to-end proof the standdown lifted: a real Ctrl-Z now performs an undo through the
+			// app's keybinding path (AppShell → undoKeyAction(ui().modalOpen)), dead while it stuck.
 			const before = await historyLen(page);
 			await page.keyboard.press('Control+z');
 			await expect.poll(() => historyLen(page)).toBeLessThan(before);
-		});
-
-		// M-audit CRITICAL. `openEditor`/`closeEditor` READ the `$state` Set they then reassign, so every
-		// caller's `$effect` becomes a dependency of what it writes. Svelte runs an effect's teardown BEFORE
-		// its body on re-run, so each re-run writes twice — harmless while there is ONE registrant (the
-		// `has(id)` guard short-circuits), but with TWO the effects invalidate each other forever until the
-		// flush guard throws `effect_update_depth_exceeded` and leaves the batch dead: every later state
-		// change silently stops applying. Two ordinary clicks reach it. The suite never caught it because
-		// `ui.svelte.test.ts` calls the mutators outside any effect and every e2e opened only one editor.
-		test('two concurrently open fx editors do not kill the reactive graph', async ({ page }) => {
-			const pageErrors: string[] = [];
-			page.on('pageerror', (e) => pageErrors.push(e.message));
-
-			await page.goto('/');
-			await waitForApp(page);
-			const uid = await addNode(page, 'Oscillator', 'inputs');
-			await waitForNode(page, uid);
-			await selectNode(page, uid);
-			await expect(panel(page)).toHaveClass(/open/);
-
-			// Two registrants at once — one multi-line fx editor on each of two params of the SAME node.
-			// ParamForm renders one ParamField per param with no single-open coordination, and each mints a
-			// globally unique `$props.id()`, so the idempotence guard cannot absorb the second.
-			for (const name of ['amplitude', 'frequency']) {
-				const field = panel(page).getByTestId(`param-field-${name}`);
-				await field.getByTestId('param-fx-toggle').click();
-				await field.getByTestId('param-expr-expand').click();
-				await expect(field.getByTestId('param-expr-multiline')).toBeVisible();
-			}
-			expect(pageErrors).toEqual([]);
-
-			// The real proof is that state still FLOWS. Collapse one editor: the other still holds the
-			// standdown, so modalOpen must stay true — and it can only stay/settle correctly if the batch is
-			// alive. With the batch dead these polls never observe another change.
-			await panel(page)
-				.getByTestId('param-field-amplitude')
-				.getByTestId('param-expr-collapse')
-				.click();
-			await expect.poll(() => modalOpen(page)).toBe(true);
-
-			await panel(page)
-				.getByTestId('param-field-frequency')
-				.getByTestId('param-expr-collapse')
-				.click();
-			await expect.poll(() => modalOpen(page)).toBe(false);
+			// …and REDO it, which is not decoration: in a session the undo is a real mutation, and the
+			// steps after this one read the state it just rolled back. Putting the arc back is what
+			// keeps this step a probe rather than a hidden edit — and it proves redo reaches the graph
+			// through the same lifted standdown, which the undo alone does not say.
+			await redo(page);
+			await expect.poll(() => historyLen(page), { message: 'redo restores the arc it rolled back' }).toBe(before);
 			expect(pageErrors).toEqual([]);
 		});
 
-		// The second reachable pairing: an open fx editor plus the file browser, which registers the same
-		// standdown. The TopBar buttons are NOT gated on modalOpen (only the Ctrl+S/Ctrl+O chords are), so
-		// the Parameters panel and its live effect stay mounted underneath.
-		test('opening the file browser over an fx editor does not kill the reactive graph', async ({
-			page
-		}) => {
-			const pageErrors: string[] = [];
-			page.on('pageerror', (e) => pageErrors.push(e.message));
-
-			await page.goto('/');
-			await waitForApp(page);
-			const uid = await addNode(page, 'Oscillator', 'inputs');
-			await waitForNode(page, uid);
-			await selectNode(page, uid);
-			await expect(panel(page)).toHaveClass(/open/);
-
-			const amp = panel(page).getByTestId('param-field-amplitude');
-			await amp.getByTestId('param-fx-toggle').click();
-			await amp.getByTestId('param-expr-expand').click();
-			await expect(amp.getByTestId('param-expr-multiline')).toBeVisible();
-
-			await page.getByTestId('topbar-load').click();
-			await expect(page.getByTestId('fs-browser')).toBeVisible();
-			expect(pageErrors).toEqual([]);
-
-			// Dismiss the browser; the fx editor still holds the standdown, which requires a live batch.
-			// Wait for the dialog to be genuinely MODAL, not merely visible: `Dialog` calls `showModal()`
-			// from an `$effect`, so for one frame the element is in the DOM (and `toBeVisible` passes) while
-			// focus is still in the fx textarea — where Escape hits ParamField's own handler and collapses
-			// the editor instead of closing the browser. `dialog[open]` is set by `showModal()` itself, so
-			// it is the exact signal that focus has moved in.
-			await expect(page.locator('dialog[open]')).toHaveCount(1);
-			// Opening a modal must not collapse the editor underneath it — pinned here so a failure below
-			// is attributable to the dismissal rather than to the open.
-			await expect(amp.getByTestId('param-expr-multiline')).toBeVisible();
-
-			// Dismiss by the ✕, deliberately NOT by Escape. Escape is ambiguous while both surfaces are up:
-			// `Dialog` calls `showModal()` from an `$effect`, and on close it restores focus to the fx
-			// textarea, whose own keydown handler treats Escape as "collapse the editor". That made this
-			// test flake ~1/20 on a state it does not exist to check. Escape-dismissal of the browser is
-			// already covered by `fs-browser.spec.ts`; this test is about the standdown ref-count.
-			await page.getByTestId('fs-browser').getByRole('button', { name: 'Close' }).click();
-			await expect(page.getByTestId('fs-browser')).toHaveCount(0);
-			await expect.poll(() => modalOpen(page)).toBe(true);
-			expect(pageErrors).toEqual([]);
-		});
-
-		test('a node switch does not leak an open fx buffer onto another node’s param', async ({ page }) => {
-			await page.goto('/');
-			await waitForApp(page);
-			const a = await addNode(page, 'Oscillator', 'inputs');
-			await waitForNode(page, a);
-			const b = await addNode(page, 'Oscillator', 'inputs', [280, 0]);
-			await waitForNode(page, b);
-
-			// Give B its OWN fx expression on amplitude, so B's row also renders the expression control.
+		await test.step('and no buffer leaks from one node’s param onto another’s', async () => {
+			// B's amplitude gets its OWN committed expression; A's gets a DISTINCTIVE unapplied buffer.
+			// Before the fix the SAME field survived the switch, keeping A's buffer in an open textarea
+			// now wired to B — one apply-click from silently corrupting B.
+			// The undo above put the selection back on A — an undo restores the selection its command
+			// was made under — so this step names the node it needs instead of inheriting one. Reaching
+			// that at all is the session's doing: the old test ended at the Ctrl+Z, so nothing after it
+			// ever observed where the selection had gone.
 			await selectNode(page, b);
-			await panel(page).getByTestId('param-field-amplitude').getByTestId('param-fx-toggle').click();
-			await expect
-				.poll(async () => (await nodeParams(page, b))?.oscillator?.amplitude?.expression_enabled)
-				.toBe(true);
+			await expect(panel(page).getByTestId('node-name')).toHaveText(
+				(await page.evaluate((u) => (window as any).goofi.query.node(u)?.name, b))!
+			);
+			await amp(page).getByTestId('param-fx-toggle').click();
+			await expect.poll(async () => (await nodeParams(page, b))?.oscillator?.amplitude?.expression_enabled).toBe(true);
 			const bExpr: string = (await nodeParams(page, b))?.oscillator?.amplitude?.expression ?? '';
 
-			// On A: enable fx, open the multi-line editor, type a DISTINCTIVE expression — but do NOT apply.
 			await selectNode(page, a);
-			const ampA = panel(page).getByTestId('param-field-amplitude');
-			await ampA.getByTestId('param-fx-toggle').click();
-			await ampA.getByTestId('param-expr-expand').click();
-			await ampA.getByTestId('param-expr-multiline').fill('nd("LEAK_FROM_A").out.data');
+			await amp(page).getByTestId('param-expr-expand').click();
+			await amp(page).getByTestId('param-expr-multiline').fill('nd("LEAK_FROM_A").out.data');
 
-			// Switch to B (whose amplitude also has fx on). Before the fix the SAME field survived, keeping A's
-			// buffer in an open textarea now wired to B — one apply-click from silently corrupting B.
 			await selectNode(page, b);
-			const ampB = panel(page).getByTestId('param-field-amplitude');
-			// The field remounted for B: no editor carries A's buffer; B shows its own inline expression.
-			await expect(ampB.getByTestId('param-expr-multiline')).toHaveCount(0);
-			// `toHaveText`, not `toHaveValue`: since X the field is a CodeMirror document, not an <input>.
-			await expect(ampB.getByTestId('param-expr-input')).toHaveText(bExpr);
-			// And B's committed expression was never overwritten with A's.
-			expect((await nodeParams(page, b))?.oscillator?.amplitude?.expression).not.toContain('LEAK_FROM_A');
+			await expect(amp(page).getByTestId('param-expr-multiline'), 'the field remounted for B').toHaveCount(0);
+			// `toHaveText`, not `toHaveValue`: the field is a CodeMirror document, not an <input>.
+			await expect(amp(page).getByTestId('param-expr-input'), 'B shows its own inline expression').toHaveText(bExpr);
+			expect((await nodeParams(page, b))?.oscillator?.amplitude?.expression, 'B’s source was never overwritten with A’s').not.toContain('LEAK_FROM_A');
+			expect(pageErrors).toEqual([]);
 		});
+	});
 
-		// A node's traceback is machine output — the same text the ErrorPanel shows in mono — so the
-		// inspector's copy reads in mono too (spec D-T3). It is a bare <pre>, i.e. an element whose only
-		// family came from app.css's `code, pre, kbd { font: inherit }` reset over a mono body: the
-		// two-face flip turned that inheritance sans without touching this file, which is exactly the
-		// class of regression this pins. The error is a real per-tick one: a ticking node whose required
-		// input slot is empty (see `addErroringNode` for the whole mechanism).
-		test('a node error renders its traceback in mono (D-T3)', async ({ page }) => {
-			await page.goto('/');
-			await waitForApp(page);
-			const uid = await addErroringNode(page);
-			await selectNode(page, uid);
-			const pre = panel(page).getByTestId('inspector-error').locator('pre');
-			await expect(pre, 'the real per-tick error reached the inspector').toBeVisible();
-			expect(
-				await pre.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '')),
-				'the traceback'
-			).toBe('JetBrains Mono');
-		});
+	// A node's traceback is machine output — the same text the ErrorPanel shows in mono — so the
+	// inspector's copy reads mono too (spec D-T3). It is a bare <pre>, i.e. an element whose only
+	// family came from app.css's `code, pre, kbd { font: inherit }` reset over a mono body: the
+	// two-face flip turned that inheritance sans without touching this file. Its own scenario because
+	// its node is a DIFFERENT one — a ticking node whose required input slot is empty.
+	test('a node error renders its traceback in mono (D-T3)', async ({ page }) => {
+		await page.goto('/');
+		await waitForApp(page);
+		const uid = await addErroringNode(page);
+		await selectNode(page, uid);
+		const pre = panel(page).getByTestId('inspector-error').locator('pre');
+		await expect(pre, 'the real per-tick error reached the inspector').toBeVisible();
+		expect(
+			await pre.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '')),
+			'the traceback'
+		).toBe('JetBrains Mono');
 	});
 });
 
@@ -1308,340 +1492,5 @@ test.describe('the metadata panel', () => {
 		} finally {
 			await drop(page, uid);
 		}
-	});
-});
-
-test.describe('every parameter kind, in the real inspector', () => {
-	/**
-	 * The inspector renders a control per parameter kind, and a scenario can only drive the control a
-	 * real node declares. That is why these claims used to be made against a `/dev/inspector` route
-	 * holding synthetic descriptors beside hand-written callbacks that wrote "the flags the way the
-	 * store would" — which proved the control and never the wiring behind it.
-	 *
-	 * They are made here through the doors a user has, against the nodes the SHIPPED binary carries:
-	 * an Oscillator for float, select and bool across two groups, a Buffer for int. The gain is not
-	 * the route — it is the oracle. A read-out the test itself wired can only say the control called
-	 * back; the document says the value reached the manager.
-	 *
-	 * Two kinds are not here, and deliberately: `trigger` and a REFRESHABLE select. No product node
-	 * declares either, because both belong to a device node — a picker with a ⟳ that re-enumerates —
-	 * and none exists yet. Their round trip is proved end-to-end in `goofi-tests` against
-	 * `_TestPicker`; what is missing is the rendering, and it lands with the node that needs it
-	 * rather than with a fixture invented to have one.
-	 */
-	const panel = (page: Page) => page.getByTestId('auto-side-panel');
-	const field = (page: Page, name: string) => panel(page).getByTestId(`param-field-${name}`);
-
-	/** Open the app, add `type`, click it, and answer its uid. */
-	async function inspect(page: Page, type: string): Promise<string> {
-		await page.goto('/');
-		await waitForApp(page);
-		const uid = await addNode(page, type, 'inputs', [40, 40]);
-		await waitForNode(page, uid);
-		await selectNode(page, uid);
-		await expect(panel(page)).toHaveClass(/open/);
-		return uid;
-	}
-
-	const value = (page: Page, uid: string, group: string, name: string) =>
-		nodeParams(page, uid).then((p) => p?.[group]?.[name]?.value);
-
-	test.afterEach(async ({ page }) => {
-		const uids: string[] = await page.evaluate(() =>
-			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
-		);
-		if (uids.length === 0) return;
-		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
-		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
-	});
-
-	test('a float commits UNCLAMPED past its soft bounds, and the slider track follows', async ({ page }) => {
-		// vmin/vmax are SOFT: the engine does not clamp on set, so the NumberInput must not either.
-		// Typing 5 into a [0,1] float commits 5, and the track auto-extends to span it.
-		const uid = await inspect(page, 'Oscillator');
-		const number = field(page, 'frequency').getByTestId('param-number');
-		const range = field(page, 'frequency').getByTestId('param-slider').locator('input[type=range]');
-		await expect(range, 'seeded at its soft upper bound').toHaveAttribute('max', '100');
-		await number.fill('500');
-		await number.press('Enter');
-		await expect
-			.poll(() => value(page, uid, 'oscillator', 'frequency'), {
-				message: 'the out-of-bounds value reached the manager unclamped'
-			})
-			.toBe(500);
-		await expect(range, 'the slider max auto-extends to span the live value').toHaveAttribute('max', '500');
-	});
-
-	test('a float takes a drag-scrub, not only a typed value', async ({ page }) => {
-		// The ParamField→NumberInput `scrub` pass-through. Every other numeric case commits by
-		// fill()+Enter, which leaves the drag forwarding unexercised.
-		const uid = await inspect(page, 'Oscillator');
-		const number = field(page, 'frequency').getByTestId('param-number');
-		// SETTLED, not merely visible: the pane slides in, and a box read mid-flight puts the field
-		// past the right edge of a 1280px viewport — where the press lands on nothing at all and the
-		// test reads as "the scrub does not work".
-		const box = await settledBox(number);
-		const [cx, cy] = [box.x + box.width / 2, box.y + box.height / 2];
-		await page.mouse.move(cx, cy);
-		await page.mouse.down();
-		await page.mouse.move(cx + 40, cy, { steps: 8 }); // rightward past the 3px threshold → the value climbs
-		await page.mouse.up();
-		await expect
-			.poll(() => value(page, uid, 'oscillator', 'frequency'), { message: 'the scrub committed a higher value' })
-			.toBeGreaterThan(1);
-	});
-
-	test('an int commits a whole number, and a toggle commits a boolean', async ({ page }) => {
-		// Two kinds in one pass: each is one control and one round trip, and splitting them would buy
-		// a second node add to assert one more line.
-		const uid = await inspect(page, 'Buffer');
-		const number = field(page, 'size').getByTestId('param-number');
-		await number.fill('64');
-		await number.press('Enter');
-		await expect.poll(() => value(page, uid, 'buffer', 'size')).toBe(64);
-
-		await panel(page).getByTestId('param-tabs').getByRole('tab', { name: 'common' }).click();
-		expect(await value(page, uid, 'common', 'autotrigger')).toBe(false);
-		await field(page, 'autotrigger').getByTestId('param-toggle').click();
-		await expect.poll(() => value(page, uid, 'common', 'autotrigger')).toBe(true);
-	});
-
-	test('a select commits its option, and a non-refreshable one wears no ⟳', async ({ page }) => {
-		// The gate: `ParamForm` wires `onRefresh` unconditionally, so the ⟳ is gated on the
-		// descriptor's `refreshable` and not on the callback being present. Before the gate every
-		// select showed a ⟳ that the engine would refuse by contract.
-		const uid = await inspect(page, 'Oscillator');
-		await field(page, 'waveform').getByTestId('param-select').locator('select').selectOption('square');
-		await expect.poll(() => value(page, uid, 'oscillator', 'waveform')).toBe('square');
-		await expect(field(page, 'waveform').getByTestId('param-refresh'), 'no ⟳ on a non-refreshable param').toHaveCount(0);
-	});
-
-	test('a param VALUE renders mono while its LABEL renders sans (D-T3)', async ({ page }) => {
-		// The two-face taxonomy where it is hardest to see: a value is data and reads in mono, the
-		// label naming it is chrome and reads in sans — one row apart inside one field. The controls
-		// declare no family of their own (`font: inherit`), which is why this is pinned in the
-		// rendered app: nothing in a unit suite can see an inherited face, and a body-level flip
-		// would silently take the values with it.
-		await inspect(page, 'Oscillator');
-		const face = (loc: Locator) =>
-			loc.evaluate((el) => getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, ''));
-		expect(await face(field(page, 'frequency').getByTestId('param-number')), 'the numeric value').toBe('JetBrains Mono');
-		expect(await face(field(page, 'frequency').locator('label.ui-field-label')), 'the label naming it').toBe('Inter');
-	});
-
-	test('the group tabs switch groups, and the active one drops to the body surface', async ({ page }) => {
-		// The connected look: the active tab paints the SAME surface as the rows flush beneath it, so
-		// the two read as one panel, while an inactive tab stays at the header surface. `.ui-tab`
-		// transitions its background, so the active colour is animated and a one-shot read can land
-		// mid-flight — hence the retrying matcher against the rows' own static background.
-		await inspect(page, 'Oscillator');
-		const form = panel(page);
-		const tabs = form.getByTestId('param-tabs');
-		const active = tabs.getByRole('tab', { selected: true });
-		await expect(active, 'the node’s own group leads, ahead of common').toHaveText('oscillator');
-		const rowsBg = await form.getByTestId('param-rows').evaluate((el) => getComputedStyle(el).backgroundColor);
-		await expect(active, 'active tab background equals the body surface (merged)').toHaveCSS('background-color', rowsBg);
-		const inactiveBg = await tabs
-			.getByRole('tab', { selected: false })
-			.first()
-			.evaluate((el) => getComputedStyle(el).backgroundColor);
-		expect(inactiveBg, 'an inactive tab sits at the header surface, not the body').not.toBe(rowsBg);
-
-		await expect(field(page, 'frequency')).toBeVisible();
-		await expect(field(page, 'autotrigger'), 'the other group is not rendered').toHaveCount(0);
-		await tabs.getByRole('tab', { name: 'common' }).click();
-		await expect(field(page, 'autotrigger'), 'switching renders the other group').toBeVisible();
-		await expect(field(page, 'frequency'), 'and drops this one').toHaveCount(0);
-	});
-
-	test('the docstring hides behind a Disclosure, whose label is centered on the caret by its INK', async ({
-		page
-	}) => {
-		// Two claims about one control, because the second needs the first to have opened it.
-		//
-		// The caret and the label BOXES were both flex-centered to the hundredth of a pixel, and the
-		// label still read as sitting high: "docs" has no descenders, so its ink stops AT the baseline
-		// while the line box reserves descent space below it, and the glyphs ride above the box centre
-		// by half that reserve. So this pins the INK — the visible glyph run's centre, measured with
-		// canvas TextMetrics against the rendered font — not the box.
-		await inspect(page, 'Oscillator');
-		const form = panel(page);
-		await expect(form.getByTestId('docstring'), 'the docstring starts collapsed').toHaveCount(0);
-		await form.getByTestId('docs-toggle').click();
-		await expect(form.getByTestId('docstring'), 'the disclosure reveals it').toContainText('oscillator');
-
-		const d = await page.evaluate(() => {
-			const toggle = document.querySelector('[data-testid="docs-toggle"]') as HTMLElement;
-			const summary = toggle.closest('.ui-disclosure-summary') as HTMLElement;
-			const cr = (summary.querySelector('.ui-disclosure-caret svg') as SVGElement).getBoundingClientRect();
-			const range = document.createRange();
-			range.selectNodeContents(toggle);
-			const tr = range.getBoundingClientRect();
-			const cs = getComputedStyle(toggle);
-			const cv = document.createElement('canvas').getContext('2d')!;
-			cv.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-			const m = cv.measureText(toggle.textContent ?? '');
-			// The Range rect is the font box (ascent+descent); the canvas font metrics locate the
-			// baseline inside it, and the actual* metrics locate the ink around that baseline.
-			const baseline = tr.top + m.fontBoundingBoxAscent;
-			const inkCenter = baseline - (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
-			return {
-				delta: inkCenter - (cr.top + cr.height / 2),
-				fontBoxCheck: m.fontBoundingBoxAscent + m.fontBoundingBoxDescent - tr.height
-			};
-		});
-		expect(
-			Math.abs(d.fontBoxCheck),
-			'canvas font metrics agree with the layout font box, so the baseline estimate is sound'
-		).toBeLessThanOrEqual(1);
-		expect(Math.abs(d.delta), `ink centre sits ${d.delta.toFixed(2)}px from the caret centre`).toBeLessThanOrEqual(0.6);
-
-		await form.getByTestId('docs-toggle').click();
-		await expect(form.getByTestId('docstring'), 'toggling again collapses it').toHaveCount(0);
-	});
-});
-
-test.describe('the fx binding, in the real inspector', () => {
-	/**
-	 * The chips and the editor's own doors — expand, apply, Escape — driven against a live node.
-	 *
-	 * These were proved against `/dev/inspector`, whose fx callbacks wrote "the flags the way the
-	 * store would". That made every enabled-semantic a claim about the fixture: the chip called back
-	 * and the fixture set the flag it was told to. Here the flags are read out of the document, so
-	 * the claim is that the semantic reached the manager.
-	 */
-	const panel = (page: Page) => page.getByTestId('auto-side-panel');
-	const amp = (page: Page) => panel(page).getByTestId('param-field-amplitude');
-
-	/** Boot, add an Oscillator, click it, and answer its uid. */
-	async function inspectOsc(page: Page): Promise<string> {
-		await page.goto('/');
-		await waitForApp(page);
-		const uid = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
-		await waitForNode(page, uid);
-		await selectNode(page, uid);
-		await expect(panel(page)).toHaveClass(/open/);
-		return uid;
-	}
-
-	/** The `amplitude` binding as the document holds it. */
-	const binding = (page: Page, uid: string) =>
-		nodeParams(page, uid).then((p) => p?.oscillator?.amplitude);
-
-	test.afterEach(async ({ page }) => {
-		const uids: string[] = await page.evaluate(() =>
-			(window as any).goofi.query.graph().nodes.map((n: { uid: string }) => n.uid)
-		);
-		if (uids.length === 0) return;
-		await page.evaluate((us) => (window as any).goofi.commands.removeNodes(us), uids);
-		await expect.poll(() => page.evaluate(() => (window as any).goofi.query.graph().nodes.length)).toBe(0);
-	});
-
-	test('fx ON seeds the value as a literal, and OFF stashes the source rather than dropping it', async ({
-		page
-	}) => {
-		// The stash is what makes the chip a toggle instead of a destructive switch: flipping off
-		// disables the engine and KEEPS the source, so flipping back on does not ask the user to
-		// retype what they just wrote.
-		const uid = await inspectOsc(page);
-		expect((await binding(page, uid))?.expression, 'no source yet').toBeFalsy();
-		await amp(page).getByTestId('param-fx-toggle').click();
-		await expect.poll(async () => (await binding(page, uid))?.expression_enabled, {
-			message: 'fx-on enables the expression'
-		}).toBe(true);
-		expect((await binding(page, uid))?.expression, 'OFF→ON seeds the live value as a literal').toBe('1');
-		await expect(amp(page).getByTestId('param-expr-input'), 'the expr input takes the control region').toBeVisible();
-
-		await amp(page).getByTestId('param-fx-toggle').click();
-		await expect.poll(async () => (await binding(page, uid))?.expression_enabled, {
-			message: 'fx-off disables the engine'
-		}).toBe(false);
-		expect((await binding(page, uid))?.expression, 'ON→OFF stashes the source').toBe('1');
-	});
-
-	test('the trig chip is fx-gated, toggles process-on-change, and both chips say they are pressed', async ({
-		page
-	}) => {
-		// Both adornments are two-state toggles, so both must SAY so. An earlier rewrite passed
-		// tone/onclick/title/testid and dropped `aria-pressed`, which left `trig`'s state living in
-		// its tone alone — which is to say in colour alone.
-		const uid = await inspectOsc(page);
-		await expect(amp(page).getByTestId('param-expr-triggers-process'), 'no trig chip while fx is off').toHaveCount(0);
-
-		const fx = amp(page).getByTestId('param-fx-toggle');
-		await expect(fx, 'fx rests unpressed').toHaveAttribute('aria-pressed', 'false');
-		await fx.click();
-		await expect(fx, 'fx reports itself pressed once active').toHaveAttribute('aria-pressed', 'true');
-
-		const trig = amp(page).getByTestId('param-expr-triggers-process');
-		await expect(trig, 'trig appears once fx is active').toBeVisible();
-		await expect(trig, 'trig rests unpressed').toHaveAttribute('aria-pressed', 'false');
-		await trig.click();
-		await expect(trig, 'trig reports itself pressed').toHaveAttribute('aria-pressed', 'true');
-		await expect.poll(async () => (await binding(page, uid))?.expression_triggers_process, {
-			message: 'and the manager holds process-on-change'
-		}).toBe(true);
-	});
-
-	test('expand grows the editor in place, and Ctrl+Enter applies it and collapses', async ({ page }) => {
-		// In-panel, never a modal: the multi-line editor replaces the single line where it stands, so
-		// the parameter it belongs to stays on screen beside it.
-		const uid = await inspectOsc(page);
-		await amp(page).getByTestId('param-fx-toggle').click();
-		await amp(page).getByTestId('param-expr-expand').click();
-		const ta = amp(page).getByTestId('param-expr-multiline');
-		await expect(ta, 'the editor grows in place — no modal').toBeVisible();
-		await expect(amp(page).getByTestId('param-expr-input'), 'the single line is replaced while expanded').toHaveCount(0);
-
-		await ta.click();
-		await page.keyboard.press('Control+a');
-		await page.keyboard.type('0.25');
-		await page.keyboard.press('Control+Enter');
-		await expect(ta, 'apply collapses the multi-line editor').toHaveCount(0);
-		await expect.poll(async () => (await binding(page, uid))?.expression, {
-			message: 'apply commits the source'
-		}).toBe('0.25');
-		expect((await binding(page, uid))?.expression_enabled, 'apply PRESERVES the flags').toBe(true);
-		await expect(amp(page).getByTestId('param-expr-input'), 'the single-line input returns').toBeVisible();
-	});
-
-	test('the apply Chip commits the editor’s own document, which touch has no chord for', async ({ page }) => {
-		// The Chip is the door a coarse pointer has to ⌃⏎, and it takes a different route: the editor
-		// OWNS its document (a CodeMirror document is not a bindable string), so the Chip asks it to
-		// commit through the `bindCommit` seam rather than reading a mirrored buffer.
-		const uid = await inspectOsc(page);
-		await amp(page).getByTestId('param-fx-toggle').click();
-		await amp(page).getByTestId('param-expr-expand').click();
-		const ta = amp(page).getByTestId('param-expr-multiline');
-		await ta.click();
-		await page.keyboard.press('Control+a');
-		await page.keyboard.type('0.75');
-		await amp(page).getByTestId('param-expr-apply').click();
-		await expect(ta, 'apply collapses the editor').toHaveCount(0);
-		await expect.poll(async () => (await binding(page, uid))?.expression, {
-			message: 'the Chip committed the editor’s document'
-		}).toBe('0.75');
-	});
-
-	test('Escape closes the completion first, then reverts and collapses the editor', async ({ page }) => {
-		// Layered, because a completion popup and an editor both answer Escape and only one of them
-		// should answer any given press. Typing `ME` leaves a popup open — the only thing matching it
-		// is Python's own `MemoryError`, which is the stock language sources answering inside our
-		// editor, worth asserting for its own sake.
-		const uid = await inspectOsc(page);
-		await amp(page).getByTestId('param-fx-toggle').click();
-		await amp(page).getByTestId('param-expr-expand').click();
-		const ta = amp(page).getByTestId('param-expr-multiline');
-		await ta.click();
-		await page.keyboard.press('Control+a');
-		await page.keyboard.type('DISCARD ME', { delay: 10 });
-		const popup = page.locator('.cm-tooltip-autocomplete');
-		await expect(popup, 'Python’s own builtins answer for `ME`').toBeVisible();
-		await page.keyboard.press('Escape');
-		await expect(popup, 'the first Escape belongs to the popup').toHaveCount(0);
-		await expect(ta, 'and the editor is still open').toHaveCount(1);
-		await page.keyboard.press('Escape');
-		await expect(ta, 'the next Escape collapses the editor').toHaveCount(0);
-		expect((await binding(page, uid))?.expression, 'Escape reverts — the source is unchanged').toBe('1');
 	});
 });
