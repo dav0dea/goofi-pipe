@@ -119,23 +119,36 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
     g.link(src, "out", buf, "data");
 
-    // All four wired BEFORE any of them is judged: each is its own interpreter importing antropy,
-    // and waiting one out before starting the next spends that import four times over.
-    let nodes: Vec<_> = [
-        ("lempel_ziv.py", "complexity"),
-        ("permutation_entropy.py", "entropy"),
-        ("spectral_entropy.py", "entropy"),
-        ("detrended_fluctuation.py", "exponent"),
-    ]
-    .map(|(file, slot)| {
-        let ty = install_shipped(&g, &py.py, file);
-        let node = g.add(&ty);
-        let probe = g.probe(node, slot);
-        g.link(buf, "out", node, "data");
-        (ty, node, probe)
-    })
-    .into_iter()
-    .collect();
+    // All four PROBED AND WIRED AT ONCE, one interpreter per file — which is what `register_routed`
+    // does for a real scan, and for the same reason: a probe is a whole interpreter importing a
+    // whole module, and antropy pulls numba. Measured on four cores, which is what CI has: 29.6 s
+    // serially against 7.8 s at once.
+    //
+    // What that buys is not speed, it is MARGIN. Probing one at a time spent the whole budget
+    // before the first `until` was reached, so the ceiling was left covering the probes AND the
+    // node boots; two runs of one commit timed out on a runner three times slower than the one
+    // that had passed the same code the day before. The ceiling now covers the boots alone.
+    let (g, py) = (&g, &py.py);
+    let nodes: Vec<_> = std::thread::scope(|s| {
+        [
+            ("lempel_ziv.py", "complexity"),
+            ("permutation_entropy.py", "entropy"),
+            ("spectral_entropy.py", "entropy"),
+            ("detrended_fluctuation.py", "exponent"),
+        ]
+        .map(|(file, slot)| {
+            s.spawn(move || {
+                let ty = install_shipped(g, py, file);
+                let node = g.add(&ty);
+                let probe = g.probe(node, slot);
+                g.link(buf, "out", node, "data");
+                (ty, node, probe)
+            })
+        })
+        .into_iter()
+        .map(|h| h.join().expect("a probe thread panicked"))
+        .collect()
+    });
 
     for (ty, node, probe) in nodes {
         // [3, 256] in, [3] out: the measure consumes time and hands back one value per channel.
