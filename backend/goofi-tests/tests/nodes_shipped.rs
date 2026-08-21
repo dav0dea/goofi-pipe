@@ -151,8 +151,23 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     });
 
     for (ty, node, probe) in nodes {
+        // A node that never STARTED and a node that started and failed both present as a probe
+        // that stays empty, so a bare wait can only ever report a silence — which is all two CI
+        // failures reported. The birth barrier splits the two, and the error channel is read WHILE
+        // waiting rather than after it, so a node that says why fails with its own words.
+        g.until(&format!("{ty} to start"), |g| {
+            if let Some(e) = g.error(node) {
+                panic!("{ty} failed to start: {e}");
+            }
+            (g.stage(node) == "ready").then_some(())
+        });
         // [3, 256] in, [3] out: the measure consumes time and hands back one value per channel.
-        let d = g.until(&format!("{ty} to answer"), |_| probe.latest().filter(|d| shape(d) == vec![3]));
+        let d = g.until(&format!("{ty} to answer once it is ready"), |g| {
+            if let Some(e) = g.error(node) {
+                panic!("{ty} failed instead of answering: {e}");
+            }
+            probe.latest().filter(|d| shape(d) == vec![3])
+        });
         let v = f32s(&d);
         assert!(v.iter().all(|x| x.is_finite()), "{ty} answered {v:?}");
         // The three rows are the same signal at three offsets, and every one of these measures
