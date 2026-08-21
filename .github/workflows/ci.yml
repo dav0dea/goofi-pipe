@@ -15,13 +15,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
 
-    - uses: astral-sh/setup-uv@v5
+    # `enable-cache` OFF, not merely unkeyed. Its default glob is `uv.lock`/`requirements*.txt`,
+    # and this repo has neither — so the key never changes and the cache never invalidates, which
+    # GitHub warns about and is right to. What uv downloads here is two interpreters and the wheels
+    # the goofi package pulls, a few seconds of a ten-minute run; the provisioning step re-decides
+    # every run on purpose, and a cache nothing can invalidate is the one way that stops being true.
+    - uses: astral-sh/setup-uv@v10
+      with:
+        enable-cache: false
 
     # No toolchain action on purpose: `rust-toolchain.toml` names the version, rustup honours it,
     # and one owner is the whole point — an action pinning `stable` here is how CI came to run a
@@ -77,7 +84,7 @@ jobs:
 
     # The report and the backends' own logs — a failure here is read from both: the assertion says
     # which spec, the log says what the server did.
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       if: failure()
       with:
         name: e2e-report
