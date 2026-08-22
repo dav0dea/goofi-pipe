@@ -194,6 +194,7 @@ pub fn catalog_types(g: &Graph) -> Value {
             }),
         )
     }));
+    items.extend(crate::vocab::boundary_catalog());
     items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }

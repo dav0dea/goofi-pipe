@@ -96,37 +96,12 @@ export interface SubPatchPort {
 	name?: string;
 }
 
-/** The six virtual In/Out node types — one per data type per direction. */
-export interface BoundarySpec {
-	dir: 'in' | 'out';
-	dtype: string;
-}
-const BOUNDARY_DTYPES = ['Array', 'String', 'Table'] as const;
-export const BOUNDARY_TYPES: NodeTypeInfo[] = (['In', 'Out'] as const).flatMap((side) =>
-	BOUNDARY_DTYPES.map((dt): NodeTypeInfo => {
-		const slot: Record<string, string> = { value: dt.toUpperCase() };
-		return {
-			type: `${side}${dt}`,
-			category: 'boundary',
-			doc: `Sub-patch ${side === 'In' ? 'input' : 'output'} (${dt.toLowerCase()})`,
-			// An In node FEEDS a member (so it carries an output); an Out node drains one.
-			input_slots: side === 'Out' ? slot : {},
-			output_slots: side === 'In' ? slot : {},
-			params: {},
-			// Virtual types have no implementation module — always addable.
-			available: true,
-			source: 'builtin',
-			missing_deps: []
-		};
-	})
-);
+/** The category the six virtual In/Out types wear in the backend's palette. They are node types
+ * like any other — `add_node` creates one, and `inst_id` says which sub-patch it is a port OF. */
+export const BOUNDARY_CATEGORY = 'boundary';
 
-/** Parse a boundary pseudo-type name (e.g. "InArray") to its dir + dtype, or null. */
-export function boundarySpec(type: string): BoundarySpec | null {
-	const m = /^(In|Out)(Array|String|Table)$/.exec(type);
-	if (!m) return null;
-	return { dir: m[1] === 'In' ? 'in' : 'out', dtype: m[2].toUpperCase() };
-}
+/** The one slot a boundary port carries. MUST match the bridge's `vocab::BOUNDARY_SLOT`. */
+export const BOUNDARY_SLOT = 'value';
 
 /** A sub-patch instance the editor renders as a group node — mirrored from the bridge's
  * `describe_instance`, never re-derived here. */

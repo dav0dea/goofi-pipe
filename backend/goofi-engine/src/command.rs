@@ -1,6 +1,6 @@
 //! Patch commands with exact inverses — the manager's undo/redo unit.
 
-use crate::subpatch::{self, Dir, Stub, StubId};
+use crate::subpatch::{self, Dir, Stub};
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
@@ -12,10 +12,8 @@ use indexmap::IndexMap;
 pub enum Outcome {
     /// A plain success (`{ ok: true }` on the wire).
     Ok,
-    /// A minted/affected uid — `add_node`/`group` return the node/scope uid.
+    /// A minted/affected uid — `add_node`/`group`/a boundary add return the node/scope/stub uid.
     Uid(Uid),
-    /// A minted/restored stub id — `add_stub` returns the stub's id (`in0`/`out0`).
-    StubId(StubId),
     /// Nodes the command touched that need a runtime echo — a rename's rewritten referrers, so
     /// the bridge re-broadcasts their params.
     Nodes(Vec<Uid>),
@@ -36,7 +34,7 @@ pub struct ExprState {
 pub struct ScopeRestore {
     pub scope_id: Uid,
     pub name: String,
-    pub stubs: IndexMap<StubId, Stub>,
+    pub stubs: IndexMap<Uid, Stub>,
     /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
     /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
     pub parent: Option<Uid>,
@@ -172,24 +170,25 @@ pub enum Command {
         scope: Uid,
     },
     /// Add a boundary stub to a scope. `restore` is `None` for a user add (mints an unwired stub);
-    /// `Some((id, stub))` recreates an exact captured stub (the inverse of `RemoveStub`).
+    /// `Some((uid, stub))` recreates an exact captured stub (the inverse of `RemoveStub`).
     AddStub {
         scope: Uid,
         dir: Dir,
         dtype: goofi_core::SlotType,
         pos: [f64; 2],
-        restore: Option<(StubId, Stub)>,
+        name: Option<String>,
+        restore: Option<(Uid, Stub)>,
     },
     /// Remove a stub. Inverse = `AddStub` restoring the captured stub.
     RemoveStub {
         scope: Uid,
-        stub_id: StubId,
+        stub: Uid,
     },
     /// Wire (`Some`) or unwire (`None`) a stub's inner target. `dtype` is `None` on a user wire;
     /// the inverse carries the old dtype, so unwire restores the pre-wire advertised type.
     WireStub {
         scope: Uid,
-        stub_id: StubId,
+        stub: Uid,
         inner: subpatch::StubInner,
         dtype: Option<goofi_core::SlotType>,
     },
@@ -197,7 +196,7 @@ pub enum Command {
     /// restores whichever were set.
     EditStub {
         scope: Uid,
-        stub_id: StubId,
+        stub: Uid,
         name: Option<String>,
         pos: Option<[f64; 2]>,
     },
@@ -208,23 +207,23 @@ impl Command {
     /// its tolerance. `Compound` is absent: its later children need a graph its earlier ones have
     /// not built yet.
     fn precondition(&self, g: &Graph) -> Result<(), String> {
-        let stub = |scope: Uid, id: &str| -> Result<(), String> {
+        let stub = |scope: Uid, id: Uid| -> Result<(), String> {
             let s = g.scope(scope).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))?;
             s.stubs
-                .contains_key(id)
+                .contains_key(&id)
                 .then_some(())
-                .ok_or_else(|| format!("sub-patch {} has no boundary `{id}`", scope.to_hex()))
+                .ok_or_else(|| format!("sub-patch {} has no boundary {}", scope.to_hex(), id.to_hex()))
         };
         match self {
-            Command::WireStub { scope, stub_id, inner, .. } => {
-                stub(*scope, stub_id)?;
+            Command::WireStub { scope, stub: id, inner, .. } => {
+                stub(*scope, *id)?;
                 match inner {
-                    Some(target) => g.stub_wire_dtype(*scope, stub_id, target).map(|_| ()),
+                    Some(target) => g.stub_wire_dtype(*scope, *id, target).map(|_| ()),
                     None => Ok(()), // an unwire always applies once the stub is known to exist
                 }
             }
-            Command::RemoveStub { scope, stub_id } | Command::EditStub { scope, stub_id, .. } => {
-                stub(*scope, stub_id)
+            Command::RemoveStub { scope, stub: id } | Command::EditStub { scope, stub: id, .. } => {
+                stub(*scope, *id)
             }
             Command::Expand { scope } => {
                 g.scope(*scope).map(|_| ()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
@@ -569,7 +568,7 @@ impl Command {
             Command::Group { members, pos, restore } => {
                 // `minted` collects any stub `group_nodes` must add to a PRE-EXISTING nested member
                 // — a side effect on a scope OUTSIDE the new one, which Expand alone would not undo.
-                let mut minted: Vec<(Uid, StubId)> = Vec::new();
+                let mut minted: Vec<(Uid, Uid)> = Vec::new();
                 let scope = match restore {
                     None => g.group_nodes_capturing(&members, pos, &mut minted)?,
                     Some(r) => {
@@ -583,7 +582,7 @@ impl Command {
                         // The exact reversal of `expand_instance`, written with NO validation: this
                         // restores a known-good captured state, which may name a nested scope.
                         for (p, sid, inner) in r.parent_stubs {
-                            if let Some(st) = g.stub_mut(p, &sid) {
+                            if let Some(st) = g.stub_mut(p, sid) {
                                 st.inner = inner;
                             }
                         }
@@ -597,7 +596,7 @@ impl Command {
                 } else {
                     let mut cmds = vec![Command::Expand { scope }];
                     cmds.extend(
-                        minted.into_iter().map(|(mscope, id)| Command::RemoveStub { scope: mscope, stub_id: id }),
+                        minted.into_iter().map(|(mscope, id)| Command::RemoveStub { scope: mscope, stub: id }),
                     );
                     Command::Compound(cmds)
                 };
@@ -628,38 +627,41 @@ impl Command {
                 ))
             }
 
-            Command::AddStub { scope, dir, dtype, pos, restore } => {
+            Command::AddStub { scope, dir, dtype, pos, name, restore } => {
                 let id = match restore {
-                    None => g.add_boundary(scope, dir, dtype, pos)?,
+                    None => g.add_stub(scope, dir, dtype, pos, name)?,
                     // Idempotent: the scope was dissolved by a concurrent expand, so the restore is
-                    // moot. A user add to a missing scope still errors via `add_boundary` above.
+                    // moot. A user add to a missing scope still errors via `add_stub` above.
                     Some(_) if g.scope(scope).is_none() => {
                         return Ok((Outcome::Ok, Command::Compound(vec![])));
                     }
                     Some((id, stub)) => {
                         if let Some(stubs) = g.stubs_mut(scope) {
-                            stubs.insert(id.clone(), stub);
+                            stubs.insert(id, stub);
                         }
                         id
                     }
                 };
-                Ok((Outcome::StubId(id.clone()), Command::RemoveStub { scope, stub_id: id }))
+                Ok((Outcome::Uid(id), Command::RemoveStub { scope, stub: id }))
             }
 
-            Command::RemoveStub { scope, stub_id } => {
-                let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id).cloned()) else {
+            Command::RemoveStub { scope, stub: id } => {
+                let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&id).cloned()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
                 };
                 // External flat links stay valid leaf->leaf links — they never referenced the stub
                 // at runtime — so they are left in place.
                 if let Some(stubs) = g.stubs_mut(scope) {
-                    stubs.shift_remove(&stub_id);
+                    stubs.shift_remove(&id);
                 }
                 let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
-                Ok((Outcome::Ok, Command::AddStub { scope, dir, dtype, pos, restore: Some((stub_id, stub)) }))
+                Ok((
+                    Outcome::Ok,
+                    Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some((id, stub)) },
+                ))
             }
 
-            Command::WireStub { scope, stub_id, inner, dtype } => {
+            Command::WireStub { scope, stub: stub_id, inner, dtype } => {
                 let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
                 };
@@ -671,32 +673,32 @@ impl Command {
                     // A wire can stop being applicable under a peer edit. `set_stub_inner` validates
                     // before mutating, so a refused attempt leaves the stub untouched.
                     Some(target) => {
-                        if g.set_stub_inner(scope, &stub_id, Some(target)).is_err() {
+                        if g.set_stub_inner(scope, stub_id, Some(target)).is_err() {
                             return Ok((Outcome::Ok, Command::Compound(vec![])));
                         }
                     }
                     // An unwire always applies (the stub exists — checked above).
-                    None => g.set_stub_inner(scope, &stub_id, None)?,
+                    None => g.set_stub_inner(scope, stub_id, None)?,
                 }
                 // The inverse path forces the captured dtype back: wiring resolves a stub's dtype
                 // from the inner slot, so an unwired pill would else keep the wired slot's type.
                 if let Some(dt) = dtype {
-                    if let Some(st) = g.stub_mut(scope, &stub_id) {
+                    if let Some(st) = g.stub_mut(scope, stub_id) {
                         st.dtype = dt;
                     }
                 }
-                Ok((Outcome::Ok, Command::WireStub { scope, stub_id, inner: old_inner, dtype: Some(old_dtype) }))
+                Ok((Outcome::Ok, Command::WireStub { scope, stub: stub_id, inner: old_inner, dtype: Some(old_dtype) }))
             }
 
-            Command::EditStub { scope, stub_id, name, pos } => {
+            Command::EditStub { scope, stub: stub_id, name, pos } => {
                 let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
                 };
                 let old_name = name.as_ref().map(|_| st.name.clone());
                 let old_pos = pos.map(|_| st.pos);
-                // One handle for the read above and both writes. The `StubId` never changes, so a
+                // One handle for the read above and both writes. The stub's uid never changes, so a
                 // rename leaves every external wire intact.
-                if let Some(st) = g.stub_mut(scope, &stub_id) {
+                if let Some(st) = g.stub_mut(scope, stub_id) {
                     if let Some(n) = &name {
                         st.name = n.clone();
                     }
@@ -704,7 +706,7 @@ impl Command {
                         st.pos = p;
                     }
                 }
-                Ok((Outcome::Ok, Command::EditStub { scope, stub_id, name: old_name, pos: old_pos }))
+                Ok((Outcome::Ok, Command::EditStub { scope, stub: stub_id, name: old_name, pos: old_pos }))
             }
         }
     }
@@ -898,7 +900,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
                         dir: st.dir,
                         dtype: st.dtype,
                         pos: st.pos,
-                        restore: Some((id.clone(), st.clone())),
+                        name: None,
+                        restore: Some((*id, st.clone())),
                     });
                 }
             }

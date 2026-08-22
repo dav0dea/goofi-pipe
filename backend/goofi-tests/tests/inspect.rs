@@ -36,10 +36,10 @@ fn fixture() -> (Goofi, String) {
     let buf = g.add("Buffer");
     let scope = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();
-    let bnd = g.call("add_boundary", j!({ "inst_id": scope, "dir": "in", "dtype": "ARRAY",
-                                         "pos": [0.0, 0.0] }))["bnd_id"].as_str().unwrap().to_string();
-    g.call("edit_boundary", j!({ "inst_id": scope, "bnd_id": bnd,
-                                "inner_node": hex(buf), "inner_slot": "data" }));
+    let bnd = g.call("add_node", j!({ "type": "InArray", "inst_id": scope,
+                                     "pos": [0.0, 0.0] }))["uid"].as_str().unwrap().to_string();
+    g.call("add_link", j!({ "node_out": bnd, "slot_out": "value",
+                           "node_in": hex(buf), "slot_in": "data" }));
     g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                            "node_in": scope, "slot_in": bnd }));
     // The fault is a REPORT — the graph does not hold it until the node has run and said so.
@@ -66,7 +66,7 @@ flowchart LR
   n000000000001 -- out→data --> n000000000004
 ```
 
-uids: a node's uid is its mermaid id without the leading `n`; a boundary port's id is its mermaid id verbatim.
+uids: a uid is its mermaid id without the leading `n`.
 
 errors (whole patch):
   ⚠ _testfail0 (000000000002): the sensor is unplugged — for <age>
@@ -75,7 +75,7 @@ errors (whole patch):
 }
 
 #[test]
-fn inspect_patch_draws_a_sub_patchs_boundary_ports_by_their_own_ids() {
+fn inspect_patch_draws_a_sub_patchs_boundary_ports_as_the_nodes_they_are() {
     let (g, scope) = fixture();
     assert_eq!(
         text(&g, "inspect_patch", j!({ "scope": scope })),
@@ -87,12 +87,12 @@ scope: subpatch4 (000000000004)
 
 ```mermaid
 flowchart LR
-  in0([\"in0 · in ARRAY\"])
+  n000000000005([\"in0: InArray<br/>000000000005\"])
   n000000000003[\"buffer0: Buffer<br/>000000000003\"]
-  in0 -- data --> n000000000003
+  n000000000005 -- data --> n000000000003
 ```
 
-uids: a node's uid is its mermaid id without the leading `n`; a boundary port's id is its mermaid id verbatim.
+uids: a uid is its mermaid id without the leading `n`.
 
 errors (whole patch):
   ⚠ _testfail0 (000000000002): the sensor is unplugged — for <age>

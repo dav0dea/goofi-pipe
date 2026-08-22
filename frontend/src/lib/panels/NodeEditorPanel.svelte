@@ -39,8 +39,7 @@
 	import { portal } from 'panelty';
 	import {
 		linkKey,
-		BOUNDARY_TYPES,
-		boundarySpec,
+		BOUNDARY_CATEGORY,
 		type InstanceInfo,
 		type LinkInfo,
 		type NodeInstanceInfo,
@@ -459,7 +458,9 @@
 			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;
 			const local = memberIndex.get(memberId)?.local;
 			if (!local) return; // the other end must be a member of this sub-patch
-			void g.wireBoundary(entered, bnd, local, memberSlot).catch((e) => {
+			const link = g.boundaryLink(entered, bnd, local, memberSlot);
+			if (!link) return;
+			void g.addLink(link).catch((e) => {
 				console.warn('wire boundary failed', e);
 				reconcileTick++; // drop the optimistic ghost edge SvelteFlow drew before this RPC
 			});
@@ -710,7 +711,7 @@
 					const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
 					const bnd = parseBoundary(n.id);
 					if (bnd && entered) {
-						await g.setBoundaryPos(entered, bnd, pos).catch(() => {});
+						await g.setBoundaryPos(bnd, pos).catch(() => {});
 					} else {
 						await g.setNodePos(n.id, pos);
 					}
@@ -895,7 +896,7 @@
 		const nodeIds: string[] = [];
 		for (const n of nodes) {
 			const bnd = parseBoundary(n.id);
-			if (bnd && entered) await g.removeBoundary(entered, bnd).catch(() => {});
+			if (bnd && entered) await g.removeBoundary(bnd).catch(() => {});
 			else nodeIds.push(n.id);
 		}
 		const deleted = new Set(nodeIds);
@@ -904,7 +905,11 @@
 			// Deleting a boundary edge unwires it; the pill survives.
 			const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
 			if (bnd && entered) {
-				await g.wireBoundary(entered, bnd, null, null).catch(() => {});
+				const member = parseBoundary(e.source) ? e.target : e.source;
+				const slot = parseBoundary(e.source) ? e.targetHandle : e.sourceHandle;
+				const local = memberIndex.get(member)?.local;
+				const link = local && slot ? g.boundaryLink(entered, bnd, local, slot) : null;
+				if (link) await g.removeLink(link).catch(() => {});
 				continue;
 			}
 			// A link touching a batch-deleted node went with it; don't double-record its removal.
@@ -1027,17 +1032,16 @@
 		const placement = pendingPlacement;
 		if (!placement) return;
 		pendingPlacement = null;
-		// An In/Out pseudo-type adds a virtual boundary rather than spawning a real node.
-		const bspec = boundarySpec(placement.typeInfo.type);
-		if (bspec && placement.typeInfo.category === 'boundary') {
+		// A boundary type adds a PORT of the entered sub-patch rather than a node with a thread.
+		if (placement.typeInfo.category === BOUNDARY_CATEGORY) {
 			if (!entered) return;
 			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
 				try {
-					const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
-					// The seed's node is the member uid; `edit_boundary` wants its local template key.
+					const bndId = await g.addBoundary(entered, placement.typeInfo.type, pos);
 					if (bndId && placement.seed) {
 						const local = memberIndex.get(placement.seed.node)?.local;
-						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);
+						const link = local ? g.boundaryLink(entered, bndId, local, placement.seed.slot) : null;
+						if (link) await g.addLink(link);
 					}
 				} catch (e) {
 					console.warn('add boundary failed', e);
@@ -1252,7 +1256,7 @@
 			>
 				<AddNodeMenu
 					seed={menuSeed}
-					extraTypes={entered ? BOUNDARY_TYPES : []}
+					boundary={entered !== null}
 					onPick={(typeInfo) => {
 						const seed = menuSeed;
 						menuOpen = false;

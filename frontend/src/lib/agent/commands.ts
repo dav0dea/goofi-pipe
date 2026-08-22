@@ -49,21 +49,18 @@ export const commands = {
 	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
-	addBoundary: (
-		instId: string,
-		dir: 'in' | 'out',
-		dtype: string,
-		pos: [number, number] = [0, 0]
-	): Promise<string> => graph().addBoundary(instId, dir, dtype, pos),
-	wireBoundary: (
+	// A port is a node: `type` is one of the six boundary types, and `instId` is the sub-patch it is
+	// a port OF. Wiring one is `addLink` over `boundaryLink` — the same door every other wire uses.
+	addBoundary: (instId: string, type: string, pos: [number, number] = [0, 0]): Promise<string> =>
+		graph().addBoundary(instId, type, pos),
+	boundaryLink: (
 		instId: string,
 		bndId: string,
-		innerNode: string | null,
-		innerSlot: string | null
-	): Promise<void> => graph().wireBoundary(instId, bndId, innerNode, innerSlot),
-	removeBoundary: (instId: string, bndId: string): Promise<void> =>
-		graph().removeBoundary(instId, bndId),
-	// Relabels the portal without re-keying it: the exposed slot is still addressed by `bndId`.
+		innerNode: string,
+		innerSlot: string
+	): LinkInfo | null => graph().boundaryLink(instId, bndId, innerNode, innerSlot),
+	removeBoundary: (bndId: string): Promise<void> => graph().removeBoundary(bndId),
+	// Relabels the portal without re-keying it: the exposed slot is still addressed by its uid.
 	renameBoundary: (instId: string, bndId: string, name: string): Promise<void> =>
 		graph().renameBoundary(instId, bndId, name),
 

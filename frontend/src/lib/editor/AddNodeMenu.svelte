@@ -5,7 +5,7 @@
 	import { rankNodeTypes } from './nodeSearch';
 	import { nodeTypeTitle } from './nodeTypeTitle';
 	import { nodeTypeSource } from './nodeTypeSource';
-	import type { NodeTypeInfo } from '$lib/api/control';
+	import { BOUNDARY_CATEGORY, type NodeTypeInfo } from '$lib/api/control';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
 	import { EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
@@ -15,9 +15,11 @@
 		onClose: () => void;
 		seed?: SlotClickSeed | null;
 		/** Synthetic types prepended to the list: the In/Out boundaries, inside a sub-patch only. */
-		extraTypes?: NodeTypeInfo[];
+		/** Offer the sub-patch boundary types — they are a port OF a sub-patch, so they exist only
+		 * inside one. */
+		boundary?: boolean;
 	};
-	const { onPick, onClose, seed = null, extraTypes = [] }: Props = $props();
+	const { onPick, onClose, seed = null, boundary = false }: Props = $props();
 
 	const g = graph();
 	let query = $state('');
@@ -35,7 +37,9 @@
 	}
 
 	const filtered = $derived.by(() => {
-		const types = [...extraTypes, ...(g.nodeTypes ?? [])].filter(matchesSeed);
+		const types = (g.nodeTypes ?? [])
+			.filter((t) => boundary || t.category !== BOUNDARY_CATEGORY)
+			.filter(matchesSeed);
 		return rankNodeTypes(types, query);
 	});
 

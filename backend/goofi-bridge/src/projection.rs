@@ -83,7 +83,7 @@ pub fn of(g: &Graph) -> Value {
                 sm.insert("inner_node".into(), json!(u.to_hex()));
                 sm.insert("inner_slot".into(), json!(s));
             }
-            stubs.insert(id.clone(), Value::Object(sm));
+            stubs.insert(id.to_hex(), Value::Object(sm));
         }
         srec.insert("stubs".into(), Value::Object(stubs));
         instances.insert(uid.to_hex(), Value::Object(srec));

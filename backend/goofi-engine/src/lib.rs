@@ -1120,15 +1120,15 @@ impl Graph {
         }
     }
 
-    /// The stub id on nested scope `scope` whose chain-to-leaf resolution is exactly `(leaf, slot)`
+    /// The stub on nested scope `scope` whose chain-to-leaf resolution is exactly `(leaf, slot)`
     /// in direction `dir` — the interior endpoint of a link crossing into a nested member.
-    fn stub_exposing(&self, scope: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> Option<subpatch::StubId> {
+    fn stub_exposing(&self, scope: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> Option<Uid> {
         let s = self.scopes.get(&scope)?;
         s.stubs
             .iter()
             .filter(|(_, st)| st.dir == dir)
-            .find(|(id, _)| self.resolve_stub(scope, id).is_some_and(|(u, sl)| u == leaf && sl == slot))
-            .map(|(id, _)| id.clone())
+            .find(|(id, _)| self.resolve_stub(scope, &id.to_hex()).is_some_and(|(u, sl)| u == leaf && sl == slot))
+            .map(|(id, _)| *id)
     }
 
     /// The direct member of `scope` on the path from `leaf` up the `scope_of` tree, or `leaf` itself
@@ -1144,16 +1144,14 @@ impl Graph {
         }
     }
 
-    /// Lowest `in{n}`/`out{n}` stub id not already used on `scope`.
-    fn fresh_stub_id(&self, scope: Uid, dir: subpatch::Dir) -> subpatch::StubId {
+    /// Lowest `in{n}`/`out{n}` label not already worn by a stub on `scope`. A default only: a
+    /// rename is free to collide, because a label addresses nothing.
+    fn fresh_stub_name(&self, scope: Uid, dir: subpatch::Dir) -> String {
         let stubs = self.scopes.get(&scope).map(|s| &s.stubs);
-        for n in 0.. {
-            let cand = format!("{}{n}", dir.name());
-            if stubs.map(|st| !st.contains_key(&cand)).unwrap_or(true) {
-                return cand;
-            }
-        }
-        unreachable!()
+        (0..)
+            .map(|n| format!("{}{n}", dir.name()))
+            .find(|cand| stubs.map(|st| st.values().all(|s| &s.name != cand)).unwrap_or(true))
+            .expect("unbounded")
     }
 
     /// The inner-slot key a group boundary stub should reference for a crossing link: the real slot,
@@ -1164,13 +1162,13 @@ impl Graph {
         leaf: Uid,
         slot: &str,
         dir: subpatch::Dir,
-        minted: &mut Vec<(Uid, subpatch::StubId)>,
-    ) -> subpatch::StubId {
+        minted: &mut Vec<(Uid, Uid)>,
+    ) -> String {
         if member == leaf {
             return slot.to_string();
         }
         if let Some(id) = self.stub_exposing(member, leaf, slot, dir) {
-            return id;
+            return id.to_hex();
         }
         // No port exposes the leaf — mint one. Its inner is the leaf directly when the leaf is a
         // direct member, else the (recursively ensured) port on the intermediate nested scope.
@@ -1186,18 +1184,18 @@ impl Graph {
             subpatch::Dir::In => self.input_slot_type(leaf, slot),
         }
         .unwrap_or(goofi_core::SlotType::Array);
-        let id = self.fresh_stub_id(member, dir);
+        let name = self.fresh_stub_name(member, dir);
+        let id = self.mint();
         let base = self.pos(member).unwrap_or([0.0, 0.0]);
         let pos = match dir {
             subpatch::Dir::Out => [base[0] + 220.0, base[1]],
             subpatch::Dir::In => [base[0] - 40.0, base[1]],
         };
         if let Some(s) = self.scopes.get_mut(&member) {
-            s.stubs
-                .insert(id.clone(), subpatch::Stub { dir, dtype, inner: Some(inner), pos, name: id.clone() });
-            minted.push((member, id.clone()));
+            s.stubs.insert(id, subpatch::Stub { dir, dtype, inner: Some(inner), pos, name });
+            minted.push((member, id));
         }
-        id
+        id.to_hex()
     }
 
     /// The single common parent scope of `members`, or an error if the set is empty or spans several
@@ -1233,7 +1231,7 @@ impl Graph {
         &mut self,
         members: &[Uid],
         pos: [f64; 2],
-        minted: &mut Vec<(Uid, subpatch::StubId)>,
+        minted: &mut Vec<(Uid, Uid)>,
     ) -> Result<Uid, String> {
         use subpatch::{Dir, Scope, Stub};
         // 1. Validate BEFORE any mutation: each exists, and all share one parent scope.
@@ -1243,7 +1241,7 @@ impl Graph {
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
         //    naming the DIRECT member; both or neither leaves the link verbatim.
-        let mut stubs: IndexMap<subpatch::StubId, Stub> = IndexMap::new();
+        let mut stubs: IndexMap<Uid, Stub> = IndexMap::new();
         let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
         // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub and needs
@@ -1259,15 +1257,14 @@ impl Graph {
                     }
                     let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out, minted);
-                    let id = format!("out{out_n}");
                     stubs.insert(
-                        id.clone(),
+                        self.mint(),
                         Stub {
                             dir: Dir::Out,
                             dtype,
                             inner: Some((om, inner_slot)),
                             pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
-                            name: id,
+                            name: format!("out{out_n}"),
                         },
                     );
                     out_n += 1;
@@ -1278,15 +1275,14 @@ impl Graph {
                     }
                     let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In, minted);
-                    let id = format!("in{in_n}");
                     stubs.insert(
-                        id.clone(),
+                        self.mint(),
                         Stub {
                             dir: Dir::In,
                             dtype,
                             inner: Some((im, inner_slot)),
                             pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
-                            name: id,
+                            name: format!("in{in_n}"),
                         },
                     );
                     in_n += 1;
@@ -1313,7 +1309,7 @@ impl Graph {
         name: String,
         pos: [f64; 2],
         members: &[Uid],
-        stubs: IndexMap<subpatch::StubId, subpatch::Stub>,
+        stubs: IndexMap<Uid, subpatch::Stub>,
         parent: Option<Uid>,
     ) -> Result<Uid, String> {
         if self.scopes.contains_key(&scope_id) {
@@ -1333,7 +1329,7 @@ impl Graph {
         Ok(scope_id)
     }
 
-    /// The parent-scope stubs that currently expose `scope`, as `(parent, stub_id, inner)`. `Expand`
+    /// The parent-scope stubs that currently expose `scope`, as `(parent, stub, inner)`. `Expand`
     /// captures these BEFORE dissolving so its `Group` inverse can re-point them back exactly.
     pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<subpatch::ParentStub> {
         let Some(p) = self.scope_of(scope) else {
@@ -1345,7 +1341,7 @@ impl Graph {
                 ps.stubs
                     .iter()
                     .filter(|(_, st)| st.inner.as_ref().map(|(u, _)| *u == scope).unwrap_or(false))
-                    .map(|(id, st)| (p, id.clone(), st.inner.clone()))
+                    .map(|(id, st)| (p, *id, st.inner.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -1353,13 +1349,13 @@ impl Graph {
 
     /// One stub of a scope, mutable. Answers `None` rather than an error string: every `Command`
     /// that edits a boundary already guards on the stub existing.
-    pub fn stub_mut(&mut self, scope: Uid, stub: &str) -> Option<&mut subpatch::Stub> {
-        self.scopes.get_mut(&scope)?.stubs.get_mut(stub)
+    pub fn stub_mut(&mut self, scope: Uid, stub: Uid) -> Option<&mut subpatch::Stub> {
+        self.scopes.get_mut(&scope)?.stubs.get_mut(&stub)
     }
 
     /// A scope's whole stub map. Deliberately NOT `&mut Scope`, which would hand out `name` and
     /// `pos` as well and let a caller bypass the validated rename path.
-    pub fn stubs_mut(&mut self, scope: Uid) -> Option<&mut IndexMap<subpatch::StubId, subpatch::Stub>> {
+    pub fn stubs_mut(&mut self, scope: Uid) -> Option<&mut IndexMap<Uid, subpatch::Stub>> {
         self.scopes.get_mut(&scope).map(|s| &mut s.stubs)
     }
 
@@ -1374,14 +1370,14 @@ impl Graph {
         // The scope dissolves but its members survive, so a parent stub that exposed one of its
         // ports must FOLLOW to the leaf rather than dangle.
         if let Some(p) = parent {
-            let targets: Vec<(subpatch::StubId, String)> = self
+            let targets: Vec<(Uid, String)> = self
                 .scopes
                 .get(&p)
                 .map(|ps| {
                     ps.stubs
                         .iter()
                         .filter_map(|(id, st)| {
-                            st.inner.as_ref().and_then(|(u, cid)| (*u == scope).then(|| (id.clone(), cid.clone())))
+                            st.inner.as_ref().and_then(|(u, cid)| (*u == scope).then(|| (*id, cid.clone())))
                         })
                         .collect()
                 })
@@ -1389,7 +1385,9 @@ impl Graph {
             for (id, cid) in targets {
                 // Re-point to the child stub's OWN inner, ONE level down: the fully-resolved leaf
                 // would be wrong when it is buried in a nested scope that only moves up one level.
-                let child_inner = self.scopes.get(&scope).and_then(|s| s.stubs.get(&cid)).and_then(|st| st.inner.clone());
+                let child_inner = Uid::from_hex(&cid)
+                    .and_then(|c| self.scopes.get(&scope).and_then(|s| s.stubs.get(&c)))
+                    .and_then(|st| st.inner.clone());
                 if let Some(st) = self.scopes.get_mut(&p).and_then(|ps| ps.stubs.get_mut(&id)) {
                     st.inner = child_inner;
                 }
@@ -1446,23 +1444,23 @@ impl Graph {
         self.scope_of(uid) == Some(scope)
     }
 
-    /// Add an UNWIRED stub to a scope; returns its stable `StubId` (`in{n}`/`out{n}`). `dtype` is
-    /// the caller's provisional type until the port is wired.
-    pub fn add_boundary(
+    /// Add an UNWIRED stub to a scope; returns its uid. `dtype` is the caller's provisional type
+    /// until the port is wired, and an unnamed port takes the next free `in{n}`/`out{n}` label.
+    pub fn add_stub(
         &mut self,
         scope: Uid,
         dir: subpatch::Dir,
         dtype: goofi_core::SlotType,
         pos: [f64; 2],
-    ) -> Result<subpatch::StubId, String> {
+        name: Option<String>,
+    ) -> Result<Uid, String> {
         if !self.scopes.contains_key(&scope) {
-            return Err(format!("add_boundary: no such scope {scope}"));
+            return Err(format!("add_stub: no such scope {scope}"));
         }
-        // StubIds are persisted into the `.gfi`, so the two minting sites must agree forever —
-        // hence the shared `fresh_stub_id` rather than a second inline scan.
-        let id = self.fresh_stub_id(scope, dir);
+        let name = name.unwrap_or_else(|| self.fresh_stub_name(scope, dir));
+        let id = self.mint();
         let s = self.scopes.get_mut(&scope).expect("checked above");
-        s.stubs.insert(id.clone(), subpatch::Stub { dir, dtype, inner: None, pos, name: id.clone() });
+        s.stubs.insert(id, subpatch::Stub { dir, dtype, inner: None, pos, name });
         Ok(id)
     }
 
@@ -1471,7 +1469,7 @@ impl Graph {
     pub fn stub_wire_dtype(
         &self,
         scope: Uid,
-        stub: &str,
+        stub: Uid,
         inner: &(Uid, String),
     ) -> Result<goofi_core::SlotType, String> {
         let (inner_node, inner_slot) = inner;
@@ -1481,13 +1479,16 @@ impl Graph {
         let dir = self
             .scopes
             .get(&scope)
-            .and_then(|s| s.stubs.get(stub))
+            .and_then(|s| s.stubs.get(&stub))
             .map(|st| st.dir)
             .ok_or("set_stub_inner: no such stub")?;
         // A member may itself be a sub-patch, whose ports are that scope's own stubs rather than
         // slot decls. `is_member_of` proved a DIRECT child, so chaining cannot close a cycle.
         let dtype = match self.scopes.get(inner_node) {
-            Some(nested) => nested.stubs.get(inner_slot.as_str()).filter(|st| st.dir == dir).map(|st| st.dtype),
+            Some(nested) => Uid::from_hex(inner_slot)
+                .and_then(|s| nested.stubs.get(&s))
+                .filter(|st| st.dir == dir)
+                .map(|st| st.dtype),
             None => match dir {
                 subpatch::Dir::In => self.input_slot_type(*inner_node, inner_slot),
                 subpatch::Dir::Out => self.output_slot_type(*inner_node, inner_slot),
@@ -1495,7 +1496,7 @@ impl Graph {
         }
         .ok_or("set_stub_inner: no such inner slot")?;
         let s = self.scopes.get(&scope).ok_or("set_stub_inner: no such scope")?;
-        if s.stubs.iter().any(|(id, st)| id != stub && st.inner.as_ref() == Some(inner)) {
+        if s.stubs.iter().any(|(id, st)| *id != stub && st.inner.as_ref() == Some(inner)) {
             return Err("set_stub_inner: that inner slot is already exposed by another stub".into());
         }
         Ok(dtype)
@@ -1503,14 +1504,14 @@ impl Graph {
 
     /// Set or clear a stub's inner target — the canonical wire/unwire. Check-then-mutate, so a
     /// refused attempt leaves the stub untouched.
-    pub fn set_stub_inner(&mut self, scope: Uid, stub: &str, inner: subpatch::StubInner) -> Result<(), String> {
+    pub fn set_stub_inner(&mut self, scope: Uid, stub: Uid, inner: subpatch::StubInner) -> Result<(), String> {
         match inner {
             Some(target) => {
                 let dtype = self.stub_wire_dtype(scope, stub, &target)?;
                 let st = self
                     .scopes
                     .get_mut(&scope)
-                    .and_then(|s| s.stubs.get_mut(stub))
+                    .and_then(|s| s.stubs.get_mut(&stub))
                     .ok_or("set_stub_inner: no such stub")?;
                 st.inner = Some(target);
                 st.dtype = dtype;
@@ -1520,7 +1521,7 @@ impl Graph {
                 let st = self
                     .scopes
                     .get_mut(&scope)
-                    .and_then(|s| s.stubs.get_mut(stub))
+                    .and_then(|s| s.stubs.get_mut(&stub))
                     .ok_or("set_stub_inner: no such stub")?;
                 st.inner = None;
                 Ok(())
@@ -2476,7 +2477,7 @@ impl Graph {
             let mut stubs = Map::new();
             for (id, st) in &scope.stubs {
                 stubs.insert(
-                    id.clone(),
+                    id.to_hex(),
                     json!({
                         "dir": st.dir.name(),
                         "dtype": st.dtype.name(),
@@ -2681,6 +2682,18 @@ impl Graph {
         }
         let resolve_uid = |s: &str| idmap.get(s).copied().or_else(|| scopemap.get(s).copied());
 
+        // Stub uids get the same pre-pass, keyed by (owning scope, record key): a stub's inner can
+        // name a stub on a scope this loop has not reached yet, and a pre-uid patch's `in0` keys
+        // are unique only inside their own scope.
+        let mut stubmap: HashMap<(&str, &str), Uid> = HashMap::new();
+        for (sk, rec) in scopes {
+            for k in rec.get("stubs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.keys()) {
+                let uid = self.restore_uid(k, claimed);
+                claimed.insert(uid);
+                stubmap.insert((sk.as_str(), k.as_str()), uid);
+            }
+        }
+
         for (old, rec) in scopes {
             let uid = scopemap[old];
             let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2697,7 +2710,7 @@ impl Graph {
                     }
                 }
             }
-            let mut stubs: IndexMap<subpatch::StubId, Stub> = IndexMap::new();
+            let mut stubs: IndexMap<Uid, Stub> = IndexMap::new();
             if let Some(sm) = rec.get("stubs").and_then(|v| v.as_object()) {
                 for (id, st) in sm {
                     let dir = if st.get("dir").and_then(|v| v.as_str()) == Some("in") { Dir::In } else { Dir::Out };
@@ -2709,10 +2722,14 @@ impl Graph {
                         .and_then(goofi_core::SlotType::from_name)
                         .unwrap_or(goofi_core::SlotType::Array);
                     let inner = match (
-                        st.get("inner_uid").and_then(|v| v.as_str()).and_then(resolve_uid),
+                        st.get("inner_uid").and_then(|v| v.as_str()),
                         st.get("inner_slot").and_then(|v| v.as_str()),
                     ) {
-                        (Some(u), Some(s)) => Some((u, s.to_string())),
+                        (Some(iu), Some(is)) => resolve_uid(iu).map(|u| {
+                            // A nested-scope inner names that scope's own stub, re-minted above.
+                            let slot = stubmap.get(&(iu, is)).map_or_else(|| is.to_string(), |s| s.to_hex());
+                            (u, slot)
+                        }),
                         _ => None,
                     };
                     let pos = st
@@ -2721,7 +2738,7 @@ impl Graph {
                         .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
                         .unwrap_or([0.0, 0.0]);
                     let sname = st.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string();
-                    stubs.insert(id.clone(), Stub { dir, dtype, inner, pos, name: sname });
+                    stubs.insert(stubmap[&(old.as_str(), id.as_str())], Stub { dir, dtype, inner, pos, name: sname });
                 }
             }
             self.scope_of.insert(uid, parent);

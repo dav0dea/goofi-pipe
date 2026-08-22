@@ -719,16 +719,6 @@ fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
     payload.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))
 }
 
-/// A boundary wire's inner target: both halves named is a wire, both absent is an UNWIRE. Parsed
-/// as ONE value, so the half-specified third state is unconstructible.
-fn parse_inner(payload: &Value) -> Result<goofi_engine::subpatch::StubInner, String> {
-    let named = |k: &str| payload.get(k).is_some_and(|v| !v.is_null());
-    if !named("inner_node") && !named("inner_slot") {
-        return Ok(None);
-    }
-    Ok(Some((parse_uid(payload, "inner_node")?, parse_str(payload, "inner_slot")?.to_string())))
-}
-
 fn parse_pos(v: &Value) -> Option<[f64; 2]> {
     let a = v.as_array()?;
     if a.len() != 2 {
@@ -866,6 +856,54 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
+/// The scope a boundary port belongs to, and the port — how an op that names a uid tells a port
+/// from a node. Ports are few and scopes fewer, so this scans rather than keeping a second index.
+fn stub_at(g: &Graph, uid: Uid) -> Option<(Uid, goofi_engine::subpatch::Stub)> {
+    g.scope_uids()
+        .into_iter()
+        .find_map(|s| g.scope(s).and_then(|sc| sc.stubs.get(&uid)).map(|st| (s, st.clone())))
+}
+
+/// A boundary port's inner wire: which port, in which sub-patch, onto which member slot.
+struct InnerWire {
+    scope: Uid,
+    port: Uid,
+    inner: (Uid, String),
+}
+
+/// A link with one end on a boundary PORT — the port's own inner wire, not a graph link, because a
+/// port never runs or carries a frame. `None` when both ends are ordinary. The two link acts stay
+/// distinct by construction: this one is INSIDE a sub-patch, and a link to the facade is a link in
+/// the scope ABOVE it, which `resolve_link_endpoint` handles.
+fn stub_wire(
+    g: &Graph,
+    op: &str,
+    a: Uid,
+    so: &str,
+    b: Uid,
+    si: &str,
+) -> Result<Option<InnerWire>, String> {
+    use goofi_engine::subpatch::Dir;
+    let slot = |s: &str| match s == vocab::BOUNDARY_SLOT {
+        true => Ok(()),
+        false => Err(format!("{op}: a boundary port's only slot is `{}`", vocab::BOUNDARY_SLOT)),
+    };
+    match (stub_at(g, a), stub_at(g, b)) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            Err(format!("{op}: two boundary ports cannot wire to each other — put a node between them"))
+        }
+        (Some((scope, st)), None) => match st.dir {
+            Dir::In => slot(so).map(|_| Some(InnerWire { scope, port: a, inner: (b, si.to_string()) })),
+            Dir::Out => Err(format!("{op}: `node_out` names an output port, which drains the sub-patch — wire a node INTO it")),
+        },
+        (None, Some((scope, st))) => match st.dir {
+            Dir::Out => slot(si).map(|_| Some(InnerWire { scope, port: b, inner: (a, so.to_string()) })),
+            Dir::In => Err(format!("{op}: `node_in` names an input port, which feeds the sub-patch — wire it INTO a node")),
+        },
+    }
+}
+
 /// Translate a link endpoint that names a sub-patch boundary port into the flat inner leaf it
 /// resolves to, so every runtime and persisted link is leaf→leaf.
 fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
@@ -887,7 +925,7 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
     if g.scope(uid).is_some() {
         return Err(format!(
             "add_link: `{which}` names sub-patch {} port `{slot}`, which exposes no inner slot — \
-             edit_boundary it onto a member's slot first",
+             add_link it to a member inside the sub-patch first",
             uid.to_hex()
         ));
     }
@@ -1035,6 +1073,44 @@ impl AppState {
                         }
                         None => None,
                     };
+                    // A boundary type is a PORT of a sub-patch rather than a node with a thread,
+                    // so the command differs — but the op, the args and the reply do not.
+                    if let Some((dir, dtype)) = vocab::boundary_type(&ty) {
+                        let scope = scope.ok_or(
+                            "add_node: a boundary port needs `inst_id` — it is a port OF a sub-patch",
+                        )?;
+                        if restore.is_some() {
+                            return Err("add_node: a boundary port cannot take a chosen uid".into());
+                        }
+                        let uid = match state.history.lock().unwrap().apply(
+                            &mut g,
+                            &session,
+                            goofi_engine::Command::AddStub {
+                                scope,
+                                dir,
+                                dtype,
+                                pos,
+                                name: (!name.is_empty()).then_some(name),
+                                restore: None,
+                            },
+                        )? {
+                            goofi_engine::Outcome::Uid(u) => u,
+                            _ => return Err("add_node: no uid returned".into()),
+                        };
+                        events.push(event("node_added", json!({ "uid": uid.to_hex() })));
+                        let slot = json!({ vocab::BOUNDARY_SLOT: dtype.name() });
+                        let (inputs, outputs) = match dir {
+                            goofi_engine::subpatch::Dir::In => (json!({}), slot),
+                            goofi_engine::subpatch::Dir::Out => (slot, json!({})),
+                        };
+                        return Ok(json!({
+                            "uid": uid.to_hex(),
+                            "name": stub_at(&g, uid).map(|(_, s)| s.name).unwrap_or_default(),
+                            "input_slots": inputs,
+                            "output_slots": outputs,
+                            "params": {},
+                        }));
+                    }
                     // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node,
                     // so an undo→redo restores them without threading them through the command.
                     let cmd = goofi_engine::Command::AddNode {
@@ -1077,12 +1153,13 @@ impl AppState {
                     let uid = parse_uid(&payload, "node")?;
                     // The command is idempotent, so a uid naming nothing succeeds; the reply says
                     // which of the two happened.
-                    let existed = bindable_node(&g, &uid.to_hex());
-                    state
-                        .history
-                        .lock()
-                        .unwrap()
-                        .apply(&mut g, &session, goofi_engine::Command::RemoveNode { uid })?;
+                    let port = stub_at(&g, uid);
+                    let existed = port.is_some() || bindable_node(&g, &uid.to_hex());
+                    let cmd = match port {
+                        Some((scope, _)) => goofi_engine::Command::RemoveStub { scope, stub: uid },
+                        None => goofi_engine::Command::RemoveNode { uid },
+                    };
+                    state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
                     Ok(json!({ "removed": existed }))
                 }
                 // Recovery, not an edit, so it is NOT routed through the command history: the client
@@ -1096,6 +1173,38 @@ impl AppState {
                 }
                 "add_link" => {
                     let (a, so, b, si) = parse_link(&payload)?;
+                    if let Some(w) = stub_wire(&g, "add_link", a, &so, b, &si)? {
+                        let (_, port) = stub_at(&g, w.port).ok_or("add_link: no such boundary port")?;
+                        if port.inner.is_some() {
+                            return Err("add_link: that boundary port already has an inner wire — \
+                                        remove it before making another".into());
+                        }
+                        // Strict here and tolerant on replay: the port's dtype comes from its TYPE
+                        // now, so a mismatched wire is a caller error rather than a retype.
+                        let dtype = g.stub_wire_dtype(w.scope, w.port, &w.inner)?;
+                        if dtype != port.dtype {
+                            return Err(format!(
+                                "cannot link a {} boundary port to a {} slot: the slots carry different data types",
+                                port.dtype.name(),
+                                dtype.name()
+                            ));
+                        }
+                        state.history.lock().unwrap().apply(
+                            &mut g,
+                            &session,
+                            goofi_engine::Command::WireStub {
+                                scope: w.scope,
+                                stub: w.port,
+                                inner: Some(w.inner),
+                                dtype: None,
+                            },
+                        )?;
+                        return Ok(json!({
+                            "node_out": a.to_hex(), "slot_out": so,
+                            "node_in": b.to_hex(), "slot_in": si,
+                            "dtype": dtype.name(),
+                        }));
+                    }
                     let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
                     let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
                     state.history.lock().unwrap().apply(
@@ -1122,6 +1231,22 @@ impl AppState {
                 }
                 "remove_link" => {
                     let (a, so, b, si) = parse_link(&payload)?;
+                    if let Some(w) = stub_wire(&g, "remove_link", a, &so, b, &si)? {
+                        let existed = stub_at(&g, w.port).is_some_and(|(_, p)| p.inner.as_ref() == Some(&w.inner));
+                        if existed {
+                            state.history.lock().unwrap().apply(
+                                &mut g,
+                                &session,
+                                goofi_engine::Command::WireStub {
+                                    scope: w.scope,
+                                    stub: w.port,
+                                    inner: None,
+                                    dtype: None,
+                                },
+                            )?;
+                        }
+                        return Ok(json!({ "removed": existed }));
+                    }
                     let (a, so) = resolve_link_endpoint(&g, a, &so);
                     let (b, si) = resolve_link_endpoint(&g, b, &si);
                     // Idempotent for the same reason `remove_node` is, and answered the same way.
@@ -1145,6 +1270,25 @@ impl AppState {
                 "edit_node" => {
                     let uid = parse_uid(&payload, "node")?;
                     let name = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                    // A boundary port wears a name and a pos and nothing else: it has no thread to
+                    // parameterise and no output to view. Its label addresses nothing, so unlike a
+                    // node's it may collide.
+                    if let Some((scope, _)) = stub_at(&g, uid) {
+                        let pos = payload
+                            .get("pos")
+                            .filter(|v| !v.is_null())
+                            .map(|v| parse_pos(v).ok_or("edit_node: pos is [x, y]"))
+                            .transpose()?;
+                        if name.is_none() && pos.is_none() {
+                            return Err("edit_node: a boundary port takes a name or a pos".into());
+                        }
+                        state.history.lock().unwrap().apply(
+                            &mut g,
+                            &session,
+                            goofi_engine::Command::EditStub { scope, stub: uid, name, pos },
+                        )?;
+                        return Ok(json!({ "ok": true }));
+                    }
                     // The rename command tolerates a collision as a no-op so a stale replay
                     // converges; the user-facing error therefore belongs here, at the forward RPC.
                     if let Some(n) = &name {
@@ -1459,81 +1603,6 @@ impl AppState {
                         .lock()
                         .unwrap()
                         .apply(&mut g, &session, goofi_engine::Command::Expand { scope: inst })?;
-                    Ok(json!({ "ok": true }))
-                }
-                "add_boundary" => {
-                    let inst = parse_uid(&payload, "inst_id")?;
-                    let dir = match payload.get("dir").and_then(|v| v.as_str()) {
-                        Some("in") => goofi_engine::subpatch::Dir::In,
-                        Some("out") => goofi_engine::subpatch::Dir::Out,
-                        _ => return Err("add_boundary: dir must be \"in\" or \"out\"".into()),
-                    };
-                    let dtype = goofi_core::SlotType::from_name(
-                        payload.get("dtype").and_then(|v| v.as_str()).unwrap_or("ARRAY"),
-                    )
-                    .ok_or("add_boundary: bad dtype")?;
-                    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
-                    let out = state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::AddStub { scope: inst, dir, dtype, pos, restore: None },
-                    )?;
-                    let bnd = match out {
-                        goofi_engine::Outcome::StubId(id) => id,
-                        _ => return Err("add_boundary: no stub id returned".into()),
-                    };
-                    Ok(json!({ "bnd_id": bnd }))
-                }
-                // One boundary port's FIELDS: what it is called, where its pill sits, and which
-                // inner slot it points at. Any mix is one call and one undo step.
-                "edit_boundary" => {
-                    let inst = parse_uid(&payload, "inst_id")?;
-                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                    let name = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
-                    let pos = payload
-                        .get("pos")
-                        .filter(|v| !v.is_null())
-                        .map(|v| parse_pos(v).ok_or("edit_boundary: pos is [x, y]"))
-                        .transpose()?;
-                    // A wire is only ASKED FOR when a half is named: `parse_inner` reads the pair as
-                    // one value, so "both absent" means UNWIRE and cannot be said by accident.
-                    let wire = payload.get("inner_node").is_some() || payload.get("inner_slot").is_some();
-                    if name.is_none() && pos.is_none() && !wire {
-                        return Err("edit_boundary: give a name, a pos, or an inner slot".into());
-                    }
-                    let mut cmds: Vec<goofi_engine::Command> = Vec::new();
-                    if name.is_some() || pos.is_some() {
-                        cmds.push(goofi_engine::Command::EditStub {
-                            scope: inst,
-                            stub_id: bnd.clone(),
-                            name,
-                            pos,
-                        });
-                    }
-                    if wire {
-                        cmds.push(goofi_engine::Command::WireStub {
-                            scope: inst,
-                            stub_id: bnd,
-                            inner: parse_inner(&payload)?,
-                            dtype: None,
-                        });
-                    }
-                    let cmd = if cmds.len() == 1 {
-                        cmds.pop().expect("length checked")
-                    } else {
-                        goofi_engine::Command::Compound(cmds)
-                    };
-                    state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
-                    Ok(json!({ "ok": true }))
-                }
-                "remove_boundary" => {
-                    let inst = parse_uid(&payload, "inst_id")?;
-                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::RemoveStub { scope: inst, stub_id: bnd },
-                    )?;
                     Ok(json!({ "ok": true }))
                 }
                 "inspect_patch" => {

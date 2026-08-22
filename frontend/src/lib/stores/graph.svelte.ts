@@ -1,6 +1,7 @@
 /** Central reactive graph state, backed by the control WS. The store owns the only writes, so a
  * component just reads its `$state` fields. */
 import {
+	BOUNDARY_SLOT,
 	getControl,
 	paramValues,
 	type Control,
@@ -529,56 +530,46 @@ export class GraphStore {
 		this._recordGraphCmd('Ungroup');
 	}
 
-	/** Add a virtual In/Out boundary node to a sub-patch (unwired). Returns its id. */
-	async addBoundary(
-		instId: string,
-		dir: 'in' | 'out',
-		dtype: string,
-		pos: [number, number]
-	): Promise<string> {
-		const r = await this.ctl.call<{ bnd_id: string }>('add_boundary', {
-			inst_id: instId,
-			dir,
-			dtype,
-			pos
-		});
-		if (r?.bnd_id) this._recordGraphCmd('Add boundary');
-		return r.bnd_id;
+	/** Add a boundary port to a sub-patch (unwired). Returns its uid. */
+	async addBoundary(instId: string, type: string, pos: [number, number]): Promise<string> {
+		const r = await this.ctl.call<{ uid: string }>('add_node', { type, inst_id: instId, pos });
+		if (r?.uid) this._recordGraphCmd('Add boundary');
+		return r.uid;
 	}
 
-	/** Set (inner_node/slot) or clear (nulls) a boundary's single inner target. */
-	async wireBoundary(
+	/** A boundary port's inner wire, as the link INSIDE the sub-patch that it is: an in port feeds a
+	 * member, an out port drains one, so the port's direction says which end of the link it sits on.
+	 * `null` when the uid names no port of `instId`. */
+	boundaryLink(
 		instId: string,
 		bndId: string,
-		innerNode: string | null,
-		innerSlot: string | null
-	): Promise<void> {
-		await this.ctl.call('edit_boundary', {
-			inst_id: instId,
-			bnd_id: bndId,
-			inner_node: innerNode,
-			inner_slot: innerSlot
-		});
-		this._recordGraphCmd('Wire boundary');
+		innerNode: string,
+		innerSlot: string
+	): LinkInfo | null {
+		const dir = this.instances[instId]?.interface?.[bndId]?.dir;
+		if (!dir) return null;
+		return dir === 'in'
+			? { node_out: bndId, slot_out: BOUNDARY_SLOT, node_in: innerNode, slot_in: innerSlot }
+			: { node_out: innerNode, slot_out: innerSlot, node_in: bndId, slot_in: BOUNDARY_SLOT };
 	}
 
-	/** Delete an In/Out boundary node (tears down its external wires). */
-	async removeBoundary(instId: string, bndId: string): Promise<void> {
-		await this.ctl.call('remove_boundary', { inst_id: instId, bnd_id: bndId });
+	/** Delete a boundary port (tears down its external wires). */
+	async removeBoundary(bndId: string): Promise<void> {
+		await this.ctl.call('remove_node', { node: bndId });
 		this._recordGraphCmd('Remove boundary');
 	}
 
-	/** Rename an In/Out portal; the routing key (bndId) is unchanged, so external wires survive. */
+	/** Rename a boundary port; its uid is unchanged, so external wires survive. */
 	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
 		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
 		if (name === oldName) return;
-		await this.ctl.call('edit_boundary', { inst_id: instId, bnd_id: bndId, name });
+		await this.ctl.call('edit_node', { node: bndId, name });
 		this._recordGraphCmd('Rename boundary');
 	}
 
-	/** Move an In/Out pill inside the entered view. */
-	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
-		await this.ctl.call('edit_boundary', { inst_id: instId, bnd_id: bndId, pos });
+	/** Move a boundary pill inside the entered view. */
+	async setBoundaryPos(bndId: string, pos: [number, number]): Promise<void> {
+		await this.ctl.call('edit_node', { node: bndId, pos });
 		this._recordGraphCmd('Move boundary');
 	}
 
