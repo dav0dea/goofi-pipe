@@ -274,6 +274,7 @@ mod inproc {
     use std::time::Duration;
 
     use super::*;
+    use goofi_tests::hex;
     use goofi_core::{Meta, Param, Value};
     use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
     use goofi_python::inproc::PyNode;
