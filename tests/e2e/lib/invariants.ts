@@ -65,11 +65,7 @@ export async function sweep(page: Page, slack = 1.5): Promise<Violation[]> {
 			);
 			const coarse = window.matchMedia('(pointer: coarse)').matches;
 			const INTERACTIVE = 'button, a[href], input, select, textarea, [role="button"], [role="tab"], [role="checkbox"], [role="menuitem"]';
-			// Controls that fail a rule TODAY, each a filed defect with an owner rather than a silenced
-			// rule. This list shrinks; nothing joins it that this tree can fix.
-			//   .ui-tab-close — 16px wide against a 44px coarse floor. It is panelty's own
-			//   (dav0dea/panelty), so the fix is a release of that package, never a patch here.
-			const KNOWN = '.ui-tab-close';
+
 
 			for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
 				const cs = getComputedStyle(el);
@@ -102,7 +98,7 @@ export async function sweep(page: Page, slack = 1.5): Promise<Violation[]> {
 				// inside the zoomable canvas a control's rendered size is a function of the zoom the
 				// user drives, not of the design, so a fixed floor says nothing about it. Chrome is
 				// judged; the canvas is pinched.
-				if (el.closest('.canvas-wrap') || el.matches(KNOWN)) continue;
+				if (el.closest('.canvas-wrap')) continue;
 				// An interactive control the pointer cannot reach is a dead control. Judged against
 				// whatever CLIPS it rather than against the viewport: a control inside a scroller is
 				// reachable by scrolling to it, and one in a parked pane is legitimately off screen.
@@ -129,6 +125,9 @@ export async function sweep(page: Page, slack = 1.5): Promise<Violation[]> {
 						`outside ${Math.round(box.left)},${Math.round(box.top)} ${Math.round(box.width)}x${Math.round(box.height)}` +
 						(clipper ? ` (${describe(clipper)})` : ' (viewport)'));
 				}
+				// NOTE: this gates on `(pointer: coarse)` while panelty gates its own floor on
+				// `(hover: none) and (pointer: coarse)`. A hover-capable coarse device — a touchscreen
+				// laptop — would be asked for 44px where panelty deliberately does not apply it.
 				// The app's OWN floor, read from the token, so a retuned `--hit` moves this with it —
 				// and only where the app says the floor applies. `--hit` carries a documentary value
 				// on a fine pointer and becomes a floor under `(pointer: coarse)`; asserting it on a
