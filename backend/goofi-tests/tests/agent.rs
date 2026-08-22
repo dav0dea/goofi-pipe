@@ -71,7 +71,7 @@ async fn the_served_tools_are_exactly_the_registrys_agent_surface_and_each_state
     assert_eq!(names, want);
 
     // Each exclusion replaces the patch the agent is working inside, undo history included.
-    for off in ["load", "load_text", "new", "save", "serialize", "list_dir", "set_viewpoint"] {
+    for off in ["load", "new", "save", "serialize", "list_dir", "set_viewpoint"] {
         assert!(REGISTRY.iter().any(|o| o.name == off && o.surface == Surface::ControlOnly),
                 "`{off}` is no longer a control-only row");
         assert!(!names.iter().any(|t| t == off), "`{off}` reached the agent surface");

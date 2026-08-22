@@ -245,26 +245,29 @@ fn stage_load(
     op: &str,
     payload: &Value,
 ) -> Result<(String, Option<String>), String> {
-    let (content, from_path) = if op == "new" {
+    let from_file = payload.get("path").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
+    let inline = payload.get("content").and_then(|v| v.as_str());
+    let (content, from_path, unpacked) = if op == "new" {
         // A New patch IS a load, of an empty patch from nowhere, so the two cannot drift.
-        (Graph::new().serialize(), None)
-    } else if op == "load" {
+        (Graph::new().serialize(), None, false)
+    } else if let Some(p) = from_file {
+        if inline.is_some() {
+            return Err("load: a `path` to an archive or a `content` manifest, never both".into());
+        }
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
-        let path =
-            fsbrowse::resolve(payload.get("path").and_then(|v| v.as_str()).ok_or("load: missing path")?);
+        let path = fsbrowse::resolve(p);
         let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
             .map_err(|e| format!("load failed: {e}"))?;
         // Whether this file becomes the patch's home — the target a later silent Save overwrites.
         let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
-        (manifest, adopt.then_some(path))
+        (manifest, adopt.then_some(path), true)
     } else {
-        let content =
-            payload.get("content").and_then(|v| v.as_str()).ok_or("load_text: missing content")?;
-        (content.to_string(), None)
+        let content = inline.ok_or("load: give a `path` to a .gfi, or a `content` manifest")?;
+        (content.to_string(), None, false)
     };
-    // Only a workspace goofi minted empty is seeded: a `load` has just unpacked the patch's OWN
+    // Only a workspace goofi minted empty is seeded: an archive has just unpacked the patch's OWN
     // workspace into `mount`, and goofi does not write into someone's patch.
-    if op != "load" {
+    if !unpacked {
         term::seed_orientation(mount);
     }
     Ok((content, from_path))
@@ -884,7 +887,7 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
     if g.scope(uid).is_some() {
         return Err(format!(
             "add_link: `{which}` names sub-patch {} port `{slot}`, which exposes no inner slot — \
-             wire_boundary it to a member's slot first",
+             edit_boundary it onto a member's slot first",
             uid.to_hex()
         ));
     }
@@ -967,7 +970,7 @@ impl AppState {
                 for (i, step) in steps.iter().enumerate() {
                     let name = step.get("op").and_then(|v| v.as_str());
                     let ok = name.and_then(ops::find).is_some_and(|o| {
-                        o.writes && !matches!(o.name, "compound" | "undo" | "redo" | "load" | "load_text" | "new")
+                        o.writes && !matches!(o.name, "compound" | "undo" | "redo" | "load" | "new")
                     });
                     if !ok {
                         return Err(format!(
@@ -1481,15 +1484,46 @@ impl AppState {
                     };
                     Ok(json!({ "bnd_id": bnd }))
                 }
-                "wire_boundary" => {
+                // One boundary port's FIELDS: what it is called, where its pill sits, and which
+                // inner slot it points at. Any mix is one call and one undo step.
+                "edit_boundary" => {
                     let inst = parse_uid(&payload, "inst_id")?;
                     let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                    let inner = parse_inner(&payload)?;
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::WireStub { scope: inst, stub_id: bnd, inner, dtype: None },
-                    )?;
+                    let name = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                    let pos = payload
+                        .get("pos")
+                        .filter(|v| !v.is_null())
+                        .map(|v| parse_pos(v).ok_or("edit_boundary: pos is [x, y]"))
+                        .transpose()?;
+                    // A wire is only ASKED FOR when a half is named: `parse_inner` reads the pair as
+                    // one value, so "both absent" means UNWIRE and cannot be said by accident.
+                    let wire = payload.get("inner_node").is_some() || payload.get("inner_slot").is_some();
+                    if name.is_none() && pos.is_none() && !wire {
+                        return Err("edit_boundary: give a name, a pos, or an inner slot".into());
+                    }
+                    let mut cmds: Vec<goofi_engine::Command> = Vec::new();
+                    if name.is_some() || pos.is_some() {
+                        cmds.push(goofi_engine::Command::EditStub {
+                            scope: inst,
+                            stub_id: bnd.clone(),
+                            name,
+                            pos,
+                        });
+                    }
+                    if wire {
+                        cmds.push(goofi_engine::Command::WireStub {
+                            scope: inst,
+                            stub_id: bnd,
+                            inner: parse_inner(&payload)?,
+                            dtype: None,
+                        });
+                    }
+                    let cmd = if cmds.len() == 1 {
+                        cmds.pop().expect("length checked")
+                    } else {
+                        goofi_engine::Command::Compound(cmds)
+                    };
+                    state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
                     Ok(json!({ "ok": true }))
                 }
                 "remove_boundary" => {
@@ -1499,28 +1533,6 @@ impl AppState {
                         &mut g,
                         &session,
                         goofi_engine::Command::RemoveStub { scope: inst, stub_id: bnd },
-                    )?;
-                    Ok(json!({ "ok": true }))
-                }
-                "rename_boundary" => {
-                    let inst = parse_uid(&payload, "inst_id")?;
-                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                    let name = parse_str(&payload, "name")?.to_string();
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: Some(name), pos: None },
-                    )?;
-                    Ok(json!({ "ok": true }))
-                }
-                "set_boundary_pos" => {
-                    let inst = parse_uid(&payload, "inst_id")?;
-                    let bnd = parse_str(&payload, "bnd_id")?.to_string();
-                    let pos = payload.get("pos").and_then(parse_pos).ok_or("set_boundary_pos: missing pos")?;
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditStub { scope: inst, stub_id: bnd, name: None, pos: Some(pos) },
                     )?;
                     Ok(json!({ "ok": true }))
                 }
@@ -1556,7 +1568,6 @@ impl AppState {
                 "serialize" => Ok(json!({ "yaml": g.serialize() })),
                 // The mount is a per-run temp directory under a random name, so asking is the only
                 // way a client or a harness can find it.
-                "open_workspace" => Ok(json!({ "path": goofi_core::path::to_slash(&state.mount()) })),
                 "save" => {
                     // Expand `~` exactly as the browser does — the two must agree on what a path
                     // means. A save writes a file or it is malformed.
@@ -1582,7 +1593,7 @@ impl AppState {
                     Ok(json!({ "path": path }))
                 }
                 // One arm for every source, so nothing after the read can drift between them.
-                "load_text" | "load" | "new" => {
+                "load" | "new" => {
                     // Every source mounts FRESH, and the live mount is swapped only once the manifest
                     // has parsed, so a refused load leaves the open patch untouched on both planes.
                     let fresh = new_mount();
@@ -1610,7 +1621,7 @@ impl AppState {
                     // A load fully resets the session: there is nothing to undo across it.
                     state.history.lock().unwrap().clear();
                     events.extend(state.set_dirty(false));
-                    // NONE for `load_text` and `new`, neither of which has a file behind it: an
+                    // NONE for an inline load and for `new`, neither with a file behind it: an
                     // inherited path would aim the next silent Save at an unrelated `.gfi`.
                     *state.save_path.lock().unwrap() = from_path.clone();
                     events.push(event(
@@ -1649,7 +1660,7 @@ impl AppState {
             // These need the re-mirror but are not EDITS, so they must not raise the unsaved dot:
             // a load clears the flag in its own arm, and the other three are recovery or runtime.
             match op.as_str() {
-                "load" | "load_text" | "new" => events.extend(state.set_dirty(false)),
+                "load" | "new" => events.extend(state.set_dirty(false)),
                 "set_viewpoint" => {}
                 "restart_node" | "refresh_param" | "rescan_nodes" => {}
                 _ => events.extend(state.set_dirty(true)),

@@ -58,7 +58,7 @@ fn strip(g: &Goofi) -> Vec<String> {
 /// The manager's own loader, asked to open what the manager just saved.
 fn reload_warning(g: &Goofi) -> Value {
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
-    g.call("load_text", j!({ "content": yaml }))["layout_warning"].clone()
+    g.call("load", j!({ "content": yaml }))["layout_warning"].clone()
 }
 
 fn split(g: &Goofi, panel: &str) -> String {
@@ -346,7 +346,7 @@ fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
-    g.call("load_text", j!({ "content": yaml })); // the patch now matches "disk"
+    g.call("load", j!({ "content": yaml })); // the patch now matches "disk"
     assert_eq!(g.call("get_patch", j!({}))["dirty"], false);
 
     let uid = g.nodes()[0].clone();

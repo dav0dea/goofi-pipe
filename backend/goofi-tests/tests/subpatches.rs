@@ -94,7 +94,7 @@ fn a_cable_onto_a_boundary_resolves_to_the_inner_leaf() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]); // no links yet, so no auto boundaries
     let bnd = boundary(&g, &inst, "in");
-    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+    g.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                 "inner_node": hex(buf), "inner_slot": "data" }));
 
     g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
@@ -115,16 +115,23 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     g.link(osc, "out", buf, "data");
     let inst = group(&g, &[hex(buf)]);
 
+    // The wire, the label and the pill in ONE call — and therefore one undo step.
     let bnd = boundary(&g, &inst, "out");
-    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
-                                "inner_node": hex(buf), "inner_slot": "out" }));
-    g.call("rename_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "name": "wave" }));
+    g.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "name": "wave",
+                                 "pos": [12.0, 34.0],
+                                 "inner_node": hex(buf), "inner_slot": "out" }));
 
     let port = g.doc()["instances"][&inst]["stubs"][&bnd].clone();
     assert_eq!(port["dir"], "out");
     assert_eq!(port["inner_node"], hex(buf));
     assert_eq!(port["inner_slot"], "out");
     assert_eq!(port["name"], "wave", "renamed, and the stub id is unchanged");
+    assert_eq!(port["pos"], j!({ "x": 12.0, "y": 34.0 }));
+
+    assert_eq!(g.call("undo", j!({}))["changed"], true);
+    let back = g.doc()["instances"][&inst]["stubs"][&bnd].clone();
+    assert!(back["name"] != "wave" && back["inner_node"].is_null(),
+            "one ctrl-Z took the whole edit back: {back}");
 }
 
 #[test]
@@ -136,10 +143,10 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     let outer = group(&g, std::slice::from_ref(&inner));
 
     let ib = boundary(&g, &inner, "out");
-    g.call("wire_boundary", j!({ "inst_id": inner, "bnd_id": ib,
+    g.call("edit_boundary", j!({ "inst_id": inner, "bnd_id": ib,
                                 "inner_node": hex(buf), "inner_slot": "out" }));
     let ob = boundary(&g, &outer, "out");
-    g.call("wire_boundary", j!({ "inst_id": outer, "bnd_id": ob,
+    g.call("edit_boundary", j!({ "inst_id": outer, "bnd_id": ob,
                                 "inner_node": inner, "inner_slot": ib }));
 
     let port = g.doc()["instances"][&outer]["stubs"][&ob].clone();
@@ -154,11 +161,11 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
     let bnd = boundary(&g, &inst, "in");
-    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+    g.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                 "inner_node": hex(buf), "inner_slot": "data" }));
 
     // The frontend sends nulls for BOTH halves to clear the target.
-    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+    g.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                 "inner_node": null, "inner_slot": null }));
     let port = g.doc()["instances"][&inst]["stubs"][&bnd].clone();
     assert_eq!(port["inner_node"], Value::Null, "the leaf is pruned, not left stale");
@@ -166,7 +173,7 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
     assert_eq!(port["dir"], "in", "the pill itself survives the unwire");
 
     // Naming ONE half is the third state the pair must not admit: neither a wire nor an unwire.
-    g.refuse("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "inner_node": hex(buf) }));
+    g.refuse("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "inner_node": hex(buf) }));
 }
 
 #[test]
@@ -176,27 +183,29 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
 
-    // Every op that names a port refuses one that is not there.
+    // Every SHAPE that names a port refuses one that is not there — the merged op carries three.
     for (op, payload) in [
-        ("wire_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "inner_node": hex(buf), "inner_slot": "data" })),
+        ("edit_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "inner_node": hex(buf), "inner_slot": "data" })),
+        ("edit_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "name": "left" })),
+        ("edit_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "pos": [1.0, 2.0] })),
         ("remove_boundary", j!({ "inst_id": inst, "bnd_id": "in9" })),
-        ("rename_boundary", j!({ "inst_id": inst, "bnd_id": "in9", "name": "left" })),
-        ("set_boundary_pos", j!({ "inst_id": inst, "bnd_id": "in9", "pos": [1.0, 2.0] })),
     ] {
         g.refuse(op, payload);
     }
+    // …and one that names none of the three is a caller error, not a silent no-op.
+    g.refuse("edit_boundary", j!({ "inst_id": inst, "bnd_id": boundary(&g, &inst, "in") }));
 
     // A port that DOES exist, aimed at an inner target that cannot take the wire.
     let bnd = boundary(&g, &inst, "in");
-    g.refuse("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+    g.refuse("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                    "inner_node": hex(buf), "inner_slot": "nope" }));
 
     // …and a cable onto a real but UNWIRED port names the op that fills the port.
     let why = g.refuse("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                                         "node_in": inst, "slot_in": bnd }));
-    assert!(why.contains("wire_boundary"), "an unwired port names the op that fills it: {why}");
+    assert!(why.contains("edit_boundary"), "an unwired port names the op that fills it: {why}");
     // Once the port IS wired the same call lands, so the refusal gates the impossible.
-    g.call("wire_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
+    g.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd,
                                  "inner_node": hex(buf), "inner_slot": "data" }));
     let made = g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                                        "node_in": inst, "slot_in": bnd }));
@@ -210,7 +219,7 @@ fn a_stale_boundary_toggle_still_flips_after_a_peer_removed_the_port() {
     let buf = one.add("Buffer");
     let inst = group(&one, &[hex(buf)]);
     let bnd = boundary(&one, &inst, "in");
-    one.call("rename_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "name": "left" }));
+    one.call("edit_boundary", j!({ "inst_id": inst, "bnd_id": bnd, "name": "left" }));
     two.call("remove_boundary", j!({ "inst_id": inst, "bnd_id": bnd }));
 
     assert_eq!(one.call("undo", j!({}))["changed"], true);

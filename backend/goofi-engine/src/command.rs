@@ -785,7 +785,7 @@ impl CommandHistory {
     }
 
     /// Drop the entire history (every session's entries). Loading a patch fully resets the
-    /// session — there is nothing to undo across a `load_text` — so the manager clears here.
+    /// session — there is nothing to undo across a load — so the manager clears here.
     pub fn clear(&mut self) {
         self.entries.clear();
     }

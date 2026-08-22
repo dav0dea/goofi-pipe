@@ -131,7 +131,11 @@ fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     let broken = yaml.replace("id: panel-2", "id: tab-1");
     assert_ne!(broken, yaml, "the fixture actually corrupted something");
 
-    let r = g.call("load_text", j!({ "content": broken }));
+    // The two doors are one op, and never both at once: a manifest inline, or an archive at a path.
+    let why = g.refuse("load", j!({ "content": yaml.clone(), "path": "/tmp/nope.gfi" }));
+    assert!(why.contains("never both"), "{why}");
+
+    let r = g.call("load", j!({ "content": broken }));
     assert_eq!(r["ok"], true, "the patch still opens: {r}");
     assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("appears twice")),
             "…and says why the arrangement was dropped: {r}");
@@ -181,7 +185,7 @@ fn only_a_patch_with_a_file_behind_it_keeps_a_name_and_every_tab_is_told_which()
 
     // An upload carries no file, so inheriting the previous path would save a different patch over it.
     let content = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
-    g.call("load_text", j!({ "content": content }));
+    g.call("load", j!({ "content": content }));
     assert_eq!(save_path(&g), None, "an uploaded patch has no home");
 }
 

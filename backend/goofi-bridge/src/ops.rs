@@ -137,36 +137,25 @@ pub static REGISTRY: &[Op] = &[
          args: "inst_id:uid! dir:string! dtype:string pos:float2",
          doc: "Add a boundary port to a sub-patch. `dir` is \"in\" or \"out\"; `dtype` one of ARRAY/STRING/TABLE.",
          result: "{bnd_id: string}" },
-    Op { name: "wire_boundary", surface: Mcp, writes: true,
-         args: "inst_id:uid! bnd_id:string! inner_node:uid inner_slot:string",
-         doc: "Point a boundary port at an inner member's slot. Naming neither inner half unwires it.",
+    Op { name: "edit_boundary", surface: Mcp, writes: true,
+         args: "inst_id:uid! bnd_id:string! name:string pos:float2 inner_node:uid inner_slot:string",
+         doc: "Edit a boundary port: relabel it, move its pill inside the entered sub-patch, or point it at an inner member's slot — any of them, in one step and one undo. Its id is stable through all of it, so external wires survive. Naming NEITHER inner half unwires it; naming one is refused, because half a wire is not a thing.",
          result: "{ok: true}" },
     Op { name: "remove_boundary", surface: Mcp, writes: true, args: "inst_id:uid! bnd_id:string!",
          doc: "Remove a sub-patch boundary port.",
          result: "{ok: true}" },
-    Op { name: "rename_boundary", surface: Mcp, writes: true, args: "inst_id:uid! bnd_id:string! name:string!",
-         doc: "Relabel a boundary port. Its id is stable, so external wires survive.",
-         result: "{ok: true}" },
-    Op { name: "set_boundary_pos", surface: Mcp, writes: true, args: "inst_id:uid! bnd_id:string! pos:float2!",
-         doc: "Move a boundary port's pill inside the entered sub-patch.",
-         result: "{ok: true}" },
     Op { name: "serialize", surface: ControlOnly, writes: false, args: "",
          doc: "The patch manifest as YAML — a debug read, not a save path.",
          result: "{yaml: string}" },
-    Op { name: "open_workspace", surface: Mcp, writes: false, args: "",
-         doc: "Where this patch's workspace files live right now. The mount is a per-run temp directory, so asking is the only way to find it.",
-         result: "{path: string}" },
     Op { name: "save", surface: ControlOnly, writes: false, args: "path:string!",
          doc: "Pack the patch and its workspace to a `.gfi` at `path`, and remember it as the patch's home.",
          result: "{path: string}" },
-    Op { name: "load_text", surface: ControlOnly, writes: true, args: "content:string!",
-         doc: "Replace the open patch from an inline YAML manifest. Carries no workspace.",
-         result: "{ok: true}" },
-    Op { name: "load", surface: ControlOnly, writes: true, args: "path:string! adopt:bool",
-         doc: "Replace the open patch with the `.gfi` at `path`, workspace and all. `adopt` \
-               (default true) decides whether the patch takes that path as its home, which is what \
-               a later silent Save overwrites; `/patch.gfi` passes false, because the file a \
-               browser upload came from lives on the user's machine and the staged copy this \
+    Op { name: "load", surface: ControlOnly, writes: true, args: "path:string content:string adopt:bool",
+         doc: "Replace the open patch. `path` names a `.gfi` and brings its workspace with it; \
+               `content` is an inline YAML manifest and carries no workspace. Exactly one of the \
+               two. `adopt` (default true) decides whether a loaded FILE becomes the patch's home, \
+               which is what a later silent Save overwrites; `/patch.gfi` passes false, because the \
+               file a browser upload came from lives on the user's machine and the staged copy this \
                reads is deleted immediately.",
          result: "{ok: true}" },
     Op { name: "new", surface: ControlOnly, writes: true, args: "",

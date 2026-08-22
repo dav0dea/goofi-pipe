@@ -317,10 +317,11 @@ export class GraphStore {
 		return this.ctl.call<ScanDiff>('rescan_nodes', {});
 	}
 
-	/** Where this patch's workspace files live — a per-run temp directory under a random name. */
+	/** Where this patch's workspace files live — a per-run temp directory under a random name. It
+	 * rides `get_patch` beside the save path, because both answer "where does this patch live". */
 	async openWorkspace(): Promise<string> {
-		const r = await this.ctl.call<{ path: string }>('open_workspace', {});
-		return r.path;
+		const r = await this.ctl.call<{ workspace: string }>('get_patch', {});
+		return r.workspace;
 	}
 
 	/** Push an action onto the history (unless a replay is in progress). */
@@ -552,7 +553,7 @@ export class GraphStore {
 		innerNode: string | null,
 		innerSlot: string | null
 	): Promise<void> {
-		await this.ctl.call('wire_boundary', {
+		await this.ctl.call('edit_boundary', {
 			inst_id: instId,
 			bnd_id: bndId,
 			inner_node: innerNode,
@@ -571,13 +572,13 @@ export class GraphStore {
 	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
 		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
 		if (name === oldName) return;
-		await this.ctl.call('rename_boundary', { inst_id: instId, bnd_id: bndId, name });
+		await this.ctl.call('edit_boundary', { inst_id: instId, bnd_id: bndId, name });
 		this._recordGraphCmd('Rename boundary');
 	}
 
 	/** Move an In/Out pill inside the entered view. */
 	async setBoundaryPos(instId: string, bndId: string, pos: [number, number]): Promise<void> {
-		await this.ctl.call('set_boundary_pos', { inst_id: instId, bnd_id: bndId, pos });
+		await this.ctl.call('edit_boundary', { inst_id: instId, bnd_id: bndId, pos });
 		this._recordGraphCmd('Move boundary');
 	}
 

@@ -1034,7 +1034,7 @@
 			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
 				try {
 					const bndId = await g.addBoundary(entered, bspec.dir, bspec.dtype, pos);
-					// The seed's node is the member uid; `wire_boundary` wants its local template key.
+					// The seed's node is the member uid; `edit_boundary` wants its local template key.
 					if (bndId && placement.seed) {
 						const local = memberIndex.get(placement.seed.node)?.local;
 						if (local) await g.wireBoundary(entered, bndId, local, placement.seed.slot);

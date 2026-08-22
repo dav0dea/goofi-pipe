@@ -119,14 +119,14 @@ shipped Python node to copy from (a native Rust type has no source text).
 
 Your working directory **is** the patch's workspace, and it rides inside the `.gfi` when the human
 saves — so anything you leave there returns with the patch, including this file, which is yours to
-edit as you learn what this patch is for. `open_workspace` says where it is (a per-run temp
+edit as you learn what this patch is for. `get_patch` says where it is (a per-run temp
 directory, so ask rather than assume). `.goofiignore` says what is *not* packaged (`__pycache__/`,
 `*.pyc`, …); its header documents its own syntax, and the same list decides whether the workspace
 counts as changed, so a scratch file that should not travel belongs in it.
 
 ## Not yours
 
-`load`, `load_text` and `new` replace the patch you work inside, and `new` clears the undo history
+`load` and `new` replace the patch you work inside, and `new` clears the undo history
 so it could not be taken back. `save` and `list_dir` are the human's file browser, `set_viewpoint`
 belongs to a client with a screen, and the harness ops could stop the process you speak through.
 None are on your tool list; if the human wants one, ask them to do it in the UI.

@@ -38,7 +38,7 @@ fn fixture() -> (Goofi, String) {
         .as_str().unwrap().to_string();
     let bnd = g.call("add_boundary", j!({ "inst_id": scope, "dir": "in", "dtype": "ARRAY",
                                          "pos": [0.0, 0.0] }))["bnd_id"].as_str().unwrap().to_string();
-    g.call("wire_boundary", j!({ "inst_id": scope, "bnd_id": bnd,
+    g.call("edit_boundary", j!({ "inst_id": scope, "bnd_id": bnd,
                                 "inner_node": hex(buf), "inner_slot": "data" }));
     g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                            "node_in": scope, "slot_in": bnd }));
