@@ -28,7 +28,7 @@ import {
 	docParams,
 	viewersJson,
 	globalViews,
-	arrangementTabs,
+	arrangementRoot,
 	type Doc,
 	type GlobalView,
 	type GlobalType
@@ -117,7 +117,7 @@ export class GraphStore {
 		this.links = linkViews(doc);
 		this.globals = globalViews(doc);
 		// The workspace store rebuilds its tree from this; the client holds no second copy.
-		workspace().syncFromDoc(arrangementTabs(doc));
+		workspace().syncFromDoc(arrangementRoot(doc));
 		// Both reconcilers no-op until the catalog lands, then rebuild from the doc.
 		this._reconcileNodesFromDoc();
 		this._reconcileInstancesFromDoc();
@@ -159,7 +159,7 @@ export class GraphStore {
 		this.globals = [];
 		// `_snapshotRuntime` is NOT cleared: `_replaceSnapshot` ran first, so it already holds the
 		// INCOMING session's overlay. The arrangement store is a separate singleton, so it is here.
-		workspace().syncFromDoc([]);
+		workspace().syncFromDoc(null);
 	}
 
 	private _onWholesaleLoad(): void {

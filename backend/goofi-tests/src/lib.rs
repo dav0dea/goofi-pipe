@@ -411,7 +411,7 @@ pub fn arrangement_node<'a>(arrangement: &'a Value, id: &str) -> Option<&'a Valu
         }
         n["children"].as_array()?.iter().find_map(|k| down(k, id))
     }
-    arrangement["tabs"].as_array()?.iter().find_map(|t| down(&t["root"], id))
+    down(&arrangement["root"], id)
 }
 
 /// Every panel id in an arrangement JSON, depth-first.
@@ -425,9 +425,7 @@ pub fn panel_ids(arrangement: &Value) -> Vec<String> {
         }
     }
     let mut out = Vec::new();
-    for t in arrangement["tabs"].as_array().into_iter().flatten() {
-        down(&t["root"], &mut out);
-    }
+    down(&arrangement["root"], &mut out);
     out
 }
 

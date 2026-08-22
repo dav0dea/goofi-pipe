@@ -3,7 +3,7 @@
  * Every reader is total: an absent or wrongly-typed leaf answers a default rather than throwing.
  */
 import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
-import type { LayoutNode, Workspace } from 'panelty';
+import type { LayoutNode, StackNode } from 'panelty';
 
 export type Doc = Record<string, unknown>;
 
@@ -259,7 +259,7 @@ function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: numb
 	const n = obj(raw);
 	const id = optStr(n, 'id');
 	if (!id) return null;
-	// A root fills its tab and carries no share on the wire.
+	// A root fills the window and carries no share on the wire.
 	const size = root ? 1 : typeof n.size === 'number' ? n.size : 0;
 	if (n.kind === 'panel') {
 		return {
@@ -267,7 +267,7 @@ function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: numb
 			size
 		};
 	}
-	if (n.kind !== 'split' || !Array.isArray(n.children)) return null;
+	if ((n.kind !== 'split' && n.kind !== 'stack') || !Array.isArray(n.children)) return null;
 	const children: LayoutNode[] = [];
 	const sizes: number[] = [];
 	for (const c of n.children) {
@@ -277,6 +277,7 @@ function layoutNode(raw: unknown, root: boolean): { node: LayoutNode; size: numb
 		sizes.push(parsed.size);
 	}
 	if (children.length === 0) return null;
+	if (n.kind === 'stack') return { node: { kind: 'stack', id, children }, size };
 	return {
 		node: { kind: 'split', id, direction: n.axis === 'column' ? 'column' : 'row', children, sizes },
 		size
@@ -294,19 +295,11 @@ function panelState(raw: unknown): unknown {
 	}
 }
 
-/** The tab strip as the panel system draws it; a tab whose root will not parse is dropped. */
-export function arrangementTabs(doc: Doc): Workspace[] {
-	const raw = obj(doc.arrangement).tabs;
-	if (!Array.isArray(raw)) return [];
-	const out: Workspace[] = [];
-	for (const t of raw) {
-		const tab = obj(t);
-		const id = optStr(tab, 'id');
-		const parsed = layoutNode(tab.root, true);
-		if (!id || !parsed) continue;
-		out.push({ id, name: optStr(tab, 'name') ?? '', root: parsed.node });
-	}
-	return out;
+/** The arrangement as the panel system draws it: one tree, whose root is the page strip. Null when
+ * the document carries nothing renderable — which is a generation boundary, not an empty workspace. */
+export function arrangementRoot(doc: Doc): StackNode | null {
+	const parsed = layoutNode(obj(doc.arrangement).root, true);
+	return parsed?.node.kind === 'stack' ? parsed.node : null;
 }
 
 /** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`. */

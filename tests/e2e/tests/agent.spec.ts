@@ -121,7 +121,7 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await page.locator('.context-menu .item').first().click();
 		await expect(page.getByTestId('agent-close-dialog')).toBeVisible();
 		expect(await unsaved(page), 'asking about an agent dirtied the patch').toBe(false);
-		await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(1);
+		await expect(page.getByTestId('workspace-tabs').locator('.pt-chip')).toHaveCount(1);
 		await page.keyboard.press('Escape');
 		await expect(page.getByTestId('agent-close-dialog')).toBeHidden();
 

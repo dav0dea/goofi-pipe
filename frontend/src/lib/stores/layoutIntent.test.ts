@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { workspace, type Workspace } from 'panelty';
+import { workspace, type StackNode } from 'panelty';
 import { FakeControl } from '$lib/test/fakeControl';
 import { goofiLayoutHost } from './layoutHost';
 import { history } from './history.svelte';
@@ -18,23 +18,12 @@ import { history } from './history.svelte';
  * `dirty-taxonomy.spec.ts` pins the same rule end to end, against the real dot.
  */
 
-const LAYOUT_OPS = [
-	'split_panel',
-	'remove_panel',
-	'set_panel',
-	'move_panel',
-	'insert_at_panel',
-	'resize_split',
-	'add_tab',
-	'remove_tab',
-	'rename_tab',
-	'reorder_tab'
-];
+const LAYOUT_OPS = ['add_panel', 'edit_panel', 'move_panel', 'remove_panel'];
 
-function defaultTabs(): Workspace[] {
-	return [
-		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: 'node-editor' } }
-	];
+const panel = (id: string, panelType: string) => ({ kind: 'panel' as const, id, panelType });
+
+function defaultPages(...extra: Array<ReturnType<typeof panel>>): StackNode {
+	return { kind: 'stack', id: 'stack-1', children: [panel('panel-2', 'node-editor'), ...extra] };
 }
 
 let fc: FakeControl;
@@ -44,12 +33,12 @@ function dirtied(): boolean {
 	return fc.recordedCalls().some((c) => LAYOUT_OPS.includes(c.op));
 }
 
-function boot(tabs: Workspace[] = defaultTabs()): ReturnType<typeof workspace> {
+function boot(root: StackNode = defaultPages()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
-	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
+	ws.configureHost(goofiLayoutHost({ control: () => fc }));
 	ws.commitResize('#none');
-	ws.syncFromDoc(tabs);
+	ws.syncFromDoc(root);
 	return ws;
 }
 
@@ -94,23 +83,21 @@ describe('layout write intent', () => {
 		);
 	});
 
-	// D-R11: switching layout tabs changes which arrangement is in front, not what any panel
-	// holds — the same "looking elsewhere" as entering a sub-patch, and the move `navContext`
-	// makes to re-orient an undo.
-	it('keeps switching layout tabs off the arrangement', async () => {
-		const ws = boot([
-			...defaultTabs(),
-			{ id: 'tab-7', name: 'Second', root: { kind: 'panel', id: 'panel-8', panelType: 'console' } }
-		]);
-		ws.selectTab('tab-7');
+	// D-R11: showing another tab changes which arrangement is in front, not what any panel holds —
+	// the same "looking elsewhere" as entering a sub-patch, and the move `navContext` makes to
+	// re-orient an undo. It is the same rule for the page strip and for a group inside a panel,
+	// because they are the same thing.
+	it('keeps showing another tab off the arrangement', async () => {
+		const ws = boot(defaultPages(panel('panel-8', 'console')));
+		ws.show('stack-1', 'panel-8');
 		await Promise.resolve();
 		expect(dirtied()).toBe(false);
-		expect(ws.state.activeWorkspaceId, 'the tab did switch').toBe('tab-7');
+		expect(ws.page, 'the page did switch').toBe('panel-8');
 	});
 
 	it('makes creating a tab authoring, and only the SELECTION a look', async () => {
 		const ws = boot();
-		ws.addTab();
+		ws.add('stack-1');
 		await Promise.resolve();
 		expect(dirtied(), 'creating a tab really does change the patch').toBe(true);
 	});

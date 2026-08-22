@@ -10,6 +10,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { closeAddedTab, closeSplit, splitRight, waitForApp } from '../lib/app';
+import { rawCall } from '../lib/raw';
 import { expectIntact } from '../lib/invariants';
 import { addNode, selectNode, waitForNode } from '../lib/goofi';
 
@@ -122,11 +123,37 @@ test('a patch under construction holds together at every stage', async ({ page }
 				await expectIntact(page, 'a split workspace');
 				await closeSplit(page);
 			});
+
+			await test.step('…and then tabbed together, under one header', async () => {
+				// The shape a stack adds: several members, one shown, one shared header. The door onto
+				// it is a drag, and the op that drag raises is what builds it here — the sweep is about
+				// the SHAPE, and driving a mouse across the header proves nothing extra about it.
+				await splitRight(page);
+				const ids = await page.evaluate(() =>
+					(window as any).goofi.query.panels().map((p: { panelId: string }) => p.panelId)
+				);
+				await rawCall(page, 'move_panel', { panel: ids[1], to: ids[0] });
+				const chips = page.getByTestId('panel-header').first().locator('.pt-chip');
+				await expect(chips).toHaveCount(2);
+				await expectIntact(page, 'a tab group');
+				// …and with the group's other member in front, which is a different tree drawn.
+				await chips.first().click();
+				await expectIntact(page, 'a tab group, on its other member');
+				await page
+					.getByTestId('panel-header')
+					.first()
+					.getByRole('button', { name: 'Close tab' })
+					.first()
+					.click();
+				await expect(page.locator('.panel'), 'the group of one promoted its survivor').toHaveCount(
+					1
+				);
+			});
 		}
 
 		await test.step('a second workspace tab', async () => {
 			await page.evaluate(() => (window as any).goofi.commands.addTab());
-			await expect(page.getByTestId('workspace-tabs').locator('.ui-tab')).toHaveCount(2);
+			await expect(page.getByTestId('workspace-tabs').locator('.pt-chip')).toHaveCount(2);
 			await expectIntact(page, 'a second tab');
 			await closeAddedTab(page);
 		});

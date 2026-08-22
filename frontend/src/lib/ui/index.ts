@@ -17,8 +17,8 @@ export { MODE_ATTRS } from './inputMode';
 export { default as Trigger } from './Trigger.svelte';
 export { default as Toggle } from './Toggle.svelte';
 
-export { TabStrip as Tabs } from 'panelty';
-export { type TabItem } from 'panelty';
+export { default as Tabs } from './Tabs.svelte';
+export { type TabItem } from './tabsState';
 export { default as Disclosure } from './Disclosure.svelte';
 
 export { default as Popover } from './Popover.svelte';

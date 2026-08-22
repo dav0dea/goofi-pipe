@@ -111,7 +111,7 @@ export const commands = {
 
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),
 	setPanelType: (panelId: string, type: string): void => workspace().setType(panelId, type),
-	addTab: (panelType?: string): void => workspace().addTab(panelType),
+	addTab: (panelType?: string): void => workspace().add(workspace().root.id, { panelType }),
 
 	undo: (): Promise<void> => history().undo(),
 	redo: (): Promise<void> => history().redo()
