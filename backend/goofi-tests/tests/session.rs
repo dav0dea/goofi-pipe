@@ -21,12 +21,12 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
     g.call("rename_node", j!({ "node": hex(osc), "name": "carrier" }));
-    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 128 }));
+    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 128 }));
     g.link(osc, "out", buf, "data");
     g.link(buf, "out", sink, "data");
 
     g.call("add_global", j!({ "name": "gain", "value": 2.0, "type": "float" }));
-    g.call("set_expression", j!({ "node": hex(sink), "group": "buffer", "name": "size",
+    g.call("set_param", j!({ "node": hex(sink), "group": "buffer", "name": "size",
                                  "expression": "globals.gain * 64", "enabled": true }));
 
     let scope = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]

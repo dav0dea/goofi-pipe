@@ -84,16 +84,14 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "refresh_param", surface: Mcp, writes: true, args: "node:uid! group:string! name:string!",
          doc: "Ask a node to re-enumerate a refreshable string param's options (a device or stream picker). The scan runs on the node's own thread, so this reply only says the request was dispatched — read the fresh options back with inspect_node.",
          result: "{ok: true} — the options land on the node; inspect_node reports them" },
-    Op { name: "update_param", surface: Mcp, writes: true,
-         args: "node:uid! group:string! name:string! value:json!",
-         doc: "Set one param's literal value, coerced to the param's declared type: a fraction into an int rounds, a value of the wrong kind falls back to that type's zero. The declared min/max are the editor's range, NOT a clamp.",
-         result: "{value} — the value as stored, which is what to read back rather than the one sent." },
-    Op { name: "set_expression", surface: Mcp, writes: true,
-         args: "node:uid! group:string! name:string! expression:string enabled:bool triggers:bool",
-         doc: "Bind a param to an expression — `nd('name').sfreq`, `globals.x`, `t`. An empty expression clears the binding.\n\n\
-               `enabled` defaults false, so pass `enabled: true` or the binding is stored dormant and the param keeps its literal.\n\n\
+    Op { name: "set_param", surface: Mcp, writes: true,
+         args: "node:uid! group:string! name:string! value:json expression:string enabled:bool triggers:bool",
+         doc: "Set one param: its literal `value`, its expression binding, or both in one step. An omitted field is left alone.\n\n\
+               `value` is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero. The declared min/max are the editor's range, NOT a clamp.\n\n\
+               `expression` binds the param — `nd('name').sfreq`, `globals.x`, `t`. An empty expression clears the binding.\n\n\
+               `enabled` defaults false, so pass `enabled: true` with an expression or the binding is stored dormant and the param keeps its literal.\n\n\
                `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.",
-         result: "{error: string | null} — the compile/binding error, or null when it took" },
+         result: "{value, error} — the value as stored, which is what to read back rather than the one sent; and the binding's compile error, or null when it took." },
     Op { name: "set_node_pos", surface: Mcp, writes: true, args: "node:uid! pos:float2!",
          doc: "Move a node on the canvas.",
          result: "{ok: true}" },

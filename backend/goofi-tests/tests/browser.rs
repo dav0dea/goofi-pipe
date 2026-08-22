@@ -108,7 +108,7 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     let osc = g.add("Oscillator");
     let flood = std::thread::spawn(move || {
         for _ in 0..1200 {
-            g.call("set_expression", j!({ "node": hex(osc), "group": "common",
+            g.call("set_param", j!({ "node": hex(osc), "group": "common",
                                          "name": "max_frequency", "expression": "7",
                                          "enabled": true, "triggers": false }));
         }
@@ -309,7 +309,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
             let uid = a.call("add_node", j!({ "type": "Oscillator" })).await["uid"]
                 .as_str().unwrap().to_string();
             a.call("rename_node", j!({ "node": uid, "name": format!("osc{i}") })).await;
-            a.call("update_param", j!({ "node": uid, "group": "oscillator", "name": "amplitude",
+            a.call("set_param", j!({ "node": uid, "group": "oscillator", "name": "amplitude",
                                         "value": 0.1 * i as f64 })).await;
         }
         a

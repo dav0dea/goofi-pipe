@@ -987,16 +987,35 @@ impl AppState {
                     g.refresh_param(uid, &group, &name)?;
                     Ok(json!({ "ok": true }))
                 }
-                "update_param" => {
+                "set_param" => {
                     let uid = parse_uid(&payload, "node")?;
                     let group = parse_str(&payload, "group")?.to_string();
                     let name = parse_str(&payload, "name")?.to_string();
-                    let vjson = payload.get("value").ok_or("missing value")?;
-                    let existing = g
-                        .params(uid)
-                        .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                        .ok_or("no such param")?;
-                    let newp = goofi_engine::param_from_json(&existing, vjson, true);
+                    // One command carries both halves and always did: an absent field stays `None`,
+                    // which `EditParam` leaves untouched and its inverse restores.
+                    let value = match payload.get("value") {
+                        Some(v) if !v.is_null() => {
+                            let existing = g
+                                .params(uid)
+                                .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                                .ok_or("no such param")?;
+                            Some(goofi_engine::param_from_json(&existing, v, true))
+                        }
+                        _ => None,
+                    };
+                    // An empty `expression` CLEARS the binding, so its presence is what decides —
+                    // not its emptiness.
+                    let expr = payload.get("expression").and_then(|v| v.as_str()).map(|source| {
+                        goofi_engine::ExprState {
+                            source: source.to_string(),
+                            enabled: payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                            triggers: payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }
+                    });
+                    if value.is_none() && expr.is_none() {
+                        return Err("set_param: give a value, an expression, or both".into());
+                    }
+                    let touched_expr = expr.is_some();
                     state.history.lock().unwrap().apply(
                         &mut g,
                         &session,
@@ -1004,43 +1023,24 @@ impl AppState {
                             uid,
                             group: group.clone(),
                             name: name.clone(),
-                            value: Some(newp),
-                            expr: None,
-                        },
-                    )?;
-                    // The value AS STORED, which is not always the one asked for: a literal is
-                    // coerced to the param's declared type.
-                    Ok(json!({
-                        "value": g
-                            .params(uid)
-                            .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                            .map(|p| goofi_engine::param_value_json(&p, true))
-                    }))
-                }
-                "set_expression" => {
-                    let uid = parse_uid(&payload, "node")?;
-                    let group = parse_str(&payload, "group")?.to_string();
-                    let name = parse_str(&payload, "name")?.to_string();
-                    // An absent/null/empty `expression` clears the binding (revert to the literal);
-                    // `enabled`/`triggers` default false.
-                    let source = payload.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let triggers = payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false);
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditParam {
-                            uid,
-                            group: group.clone(),
-                            name: name.clone(),
-                            value: None,
-                            expr: Some(goofi_engine::ExprState { source, enabled, triggers }),
+                            value,
+                            expr,
                         },
                     )?;
                     // The runtime `expression_error` is doc-invisible, so echo the descriptor.
-                    events.push(param_state_update(&g, uid));
-                    // A binding that does not compile is STORED, so the reply carries the error.
-                    Ok(json!({ "error": g.param_expression(uid, &group, &name).and_then(|e| e.error) }))
+                    if touched_expr {
+                        events.push(param_state_update(&g, uid));
+                    }
+                    Ok(json!({
+                        // The value AS STORED, which is not always the one asked for: a literal is
+                        // coerced to the param's declared type.
+                        "value": g
+                            .params(uid)
+                            .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                            .map(|p| goofi_engine::param_value_json(&p, true)),
+                        // A binding that does not compile is STORED, so the reply carries the error.
+                        "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
+                    }))
                 }
                 "set_node_pos" => {
                     let uid = parse_uid(&payload, "node")?;

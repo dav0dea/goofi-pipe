@@ -377,8 +377,8 @@ export class GraphStore {
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
 		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
-		if (!param) throw new Error(`update_param: no param ${group}.${name} on node ${node}`);
-		await this.ctl.call('update_param', { node, group, name, value });
+		if (!param) throw new Error(`set_param: no param ${group}.${name} on node ${node}`);
+		await this.ctl.call('set_param', { node, group, name, value });
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
@@ -449,8 +449,9 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
-		if (!d) throw new Error(`set_expression: no param ${group}.${name} on node ${node}`);
-		await this.ctl.call('set_expression', {
+		if (!d) throw new Error(`set_param: no param ${group}.${name} on node ${node}`);
+		// `expression` is sent even when null: its PRESENCE is what clears a binding.
+		await this.ctl.call('set_param', {
 			node,
 			group,
 			name,

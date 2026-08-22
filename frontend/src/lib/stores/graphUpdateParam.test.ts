@@ -75,7 +75,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		// A missing group/name (agent typo, or a pre-hydration race) must not record a
 		// poisoned undo entry whose inverse would send value:undefined → backend KeyError.
 		await expect(g.updateParam('uidA', 'nope', 'missing', 5)).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'update_param')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'set_param')).toBe(false);
 		expect(history().canUndo).toBe(false);
 	});
 
@@ -90,7 +90,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		// The guard keys on the param's EXISTENCE, not the truthiness of its value, so editing a
 		// param whose current value is 0/false/'' still issues the command (a missing param throws).
 		await g.updateParam('uidA', 'common', 'frequency', 5);
-		const call = fc.recordedCalls().find((c) => c.op === 'update_param');
+		const call = fc.recordedCalls().find((c) => c.op === 'set_param');
 		expect(call?.payload).toEqual({ node: 'uidA', group: 'common', name: 'frequency', value: 5 });
 		expect(history().canUndo).toBe(true);
 	});

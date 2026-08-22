@@ -107,9 +107,9 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
         assert!(doc.contains(word), "`{word}` is not offered by set_node_viewers's doc: {doc}");
     }
     // The description is the ONLY text an agent reads, so it has to name both booleans.
-    let doc = find("set_expression").expect("registered").doc();
+    let doc = find("set_param").expect("registered").doc();
     for phrase in ["`enabled` defaults false", "`triggers` defaults false", "enabled: true"] {
-        assert!(doc.contains(phrase), "set_expression's doc does not say {phrase:?}: {doc}");
+        assert!(doc.contains(phrase), "set_param's doc does not say {phrase:?}: {doc}");
     }
 
     // The generator emits TS string literals with NO escaping, so a quote or newline breaks the file.
@@ -231,7 +231,7 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     let a = g.add("Oscillator");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
-    g.call("set_expression", j!({ "node": hex(a), "group": "common", "name": "max_frequency",
+    g.call("set_param", j!({ "node": hex(a), "group": "common", "name": "max_frequency",
                                  "expression": "@@@ not an expression @@@", "enabled": true }));
     g.ready(b);
 
@@ -341,8 +341,8 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    g.call("set_expression", j!({ "node": hex(osc), "group": "oscillator", "name": "frequency",
-                                 "source": "globals.default_ufreq", "enabled": true }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "frequency",
+                                 "expression": "globals.default_ufreq", "enabled": true }));
     g.call("add_global", j!({ "name": "subject", "value": "P07", "type": "string" }));
     let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();

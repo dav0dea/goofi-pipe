@@ -76,7 +76,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 512 }));
+    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 512 }));
     g.call("rename_node", j!({ "node": hex(osc), "name": "carrier" }));
     g.call("add_global", j!({ "name": "subj", "value": "P01", "type": "string" }));
     g.call("rename_global", j!({ "old": "subj", "new": "participant" }));
@@ -325,7 +325,7 @@ fn a_reply_says_what_the_write_actually_did() {
 
     // A literal is COERCED to the param's declared type, so the value stored may differ.
     let buf = g.add("Buffer");
-    let coerced = g.call("update_param", j!({ "node": hex(buf), "group": "buffer",
+    let coerced = g.call("set_param", j!({ "node": hex(buf), "group": "buffer",
                                              "name": "size", "value": 512.6 }));
     assert_eq!(coerced["value"], 513, "an int param rounds: {coerced}");
 
@@ -362,7 +362,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         ("expand_instance", j!({ "inst_id": GHOST })),
         ("set_node_pos", j!({ "node": GHOST, "pos": [1.0, 2.0] })),
         ("rename_node", j!({ "node": GHOST, "name": "renamed" })),
-        ("set_expression", j!({ "node": GHOST, "group": "buffer", "name": "size",
+        ("set_param", j!({ "node": GHOST, "group": "buffer", "name": "size",
                                 "expression": "1", "enabled": true })),
     ] {
         g.refuse(op, payload);
@@ -386,7 +386,7 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
     g.call("rename_node", j!({ "node": hex(producer), "name": "src" }));
 
     // A binding that cannot compile is STORED, so the refusal has to travel in the reply.
-    let set = |expr: &str| g.call("set_expression", j!({ "node": hex(consumer), "group": "common",
+    let set = |expr: &str| g.call("set_param", j!({ "node": hex(consumer), "group": "common",
                                                         "name": "max_frequency", "expression": expr,
                                                         "enabled": true, "triggers": false }));
     assert!(set("@@ not an expression @@")["error"].as_str().is_some_and(|e| !e.is_empty()),
@@ -488,7 +488,7 @@ fn eight_writers_all_land_and_none_deadlock() {
             let client = g.client(&format!("s{i}"));
             s.spawn(move || {
                 for r in 1..=ROUNDS {
-                    client.call("update_param", j!({ "node": hex(*u), "group": "common",
+                    client.call("set_param", j!({ "node": hex(*u), "group": "common",
                                                      "name": "max_frequency", "value": r as f64 }));
                     client.call("set_node_pos", j!({ "node": hex(*u), "pos": [r as f64, r as f64] }));
                 }

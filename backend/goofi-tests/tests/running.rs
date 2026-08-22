@@ -16,8 +16,8 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
-    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 64 }));
-    g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 64.0 }));
+    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 64 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 64.0 }));
     let probe = g.probe(buf, "out"); // opened BEFORE the wire: the data services keep no history
     g.link(osc, "out", buf, "data");
 
@@ -27,7 +27,7 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     assert!(full.iter().all(|v| v.is_finite() && v.abs() <= 1.0), "a unit sine: {:?}", &full[..4]);
     assert_eq!(probe.latest().unwrap().meta().sfreq(), Some(64.0), "sfreq rides the frame");
 
-    g.call("update_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 16 }));
+    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 16 }));
     g.until("the window to shrink under the running node", |_| {
         probe.latest().filter(|d| f32s(d).len() == 16).map(|_| ())
     });
@@ -46,7 +46,7 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let probe = g.probe(osc, "out");
-    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 5.0 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 5.0 }));
     g.ready(osc);
 
     // Read from the index STAMP: a data wire is one deep, so a poll loop counts its own rate.
@@ -64,13 +64,13 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     let slow = runs(Duration::from_millis(800));
     assert!(slow <= 8, "5 Hz produced {slow} frames in 0.8 s — the cap is not honoured");
 
-    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 60.0 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 60.0 }));
     g.until("the re-paced producer", |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
 
     // The delivered rate sits just UNDER the cap, never over — and a low cap hides that, so the
     // window that judges it is a fast one.
-    g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 1000.0 }));
-    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 200.0 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 1000.0 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 200.0 }));
     runs(Duration::from_millis(300)); // let the new cap take hold before the window that judges it
     let fast = runs(Duration::from_millis(1000));
     assert!((185..=201).contains(&fast), "a 200 Hz cap delivered {fast} frames in a second");
@@ -109,8 +109,8 @@ fn a_required_input_refuses_to_run_on_a_hole_and_says_so() {
     let need = g.add("_TestRequired");
     let probe = g.probe(need, "out");
     // The gate is on PRESENCE, never on wiring.
-    g.call("update_param", j!({ "node": hex(need), "group": "common", "name": "autotrigger", "value": true }));
-    g.call("update_param", j!({ "node": hex(need), "group": "common", "name": "max_frequency", "value": 20.0 }));
+    g.call("set_param", j!({ "node": hex(need), "group": "common", "name": "autotrigger", "value": true }));
+    g.call("set_param", j!({ "node": hex(need), "group": "common", "name": "max_frequency", "value": 20.0 }));
     let why = g.until("the refusal", |g| g.error(need));
     assert!(why.contains("in"), "the refusal names the slot that is empty: {why}");
     assert!(g.stays(|_| probe.latest().is_none()), "and nothing ran");
@@ -164,7 +164,7 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
     let base = g.serve().await;
     let uid = g.add("_TestFlaky");
     // Paced, so the run count steps in ones: an uncapped producer laps its own viewer.
-    g.call("update_param", j!({ "node": hex(uid), "group": "common", "name": "max_frequency", "value": 10.0 }));
+    g.call("set_param", j!({ "node": hex(uid), "group": "common", "name": "max_frequency", "value": 10.0 }));
 
     let why = tokio::task::block_in_place(|| g.until("the first instance to fail", |g| g.error(uid)));
     assert!(why.contains("the device did not open"), "{why}");
@@ -190,7 +190,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     let base = g.serve().await;
     let osc = g.add("Oscillator");
     // Far more samples per frame than any viewer asks for, so there is a reduction to fold at all.
-    g.call("update_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 20000.0 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 20000.0 }));
     let key = (osc, "out".to_string());
 
     let spec = |max: usize| j!([{ "dtype": "array", "ndim": [["le", 2]], "dims": [],
@@ -225,7 +225,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 1).await);
 
     // One emit per hundred seconds, so every frame below can only be the one the reducer holds.
-    g.call("update_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 0.01 }));
+    g.call("set_param", j!({ "node": hex(osc), "group": "common", "name": "max_frequency", "value": 0.01 }));
     tokio::time::sleep(Duration::from_millis(250)).await; // the last emit in flight lands
 
     drop(wide);

@@ -69,8 +69,8 @@ fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
 
 /// Set a consumer to free-run, so it produces with nothing wired upstream.
 fn free_run(g: &Goofi, uid: Uid, hz: f64) {
-    g.call("update_param", j!({ "node": hex(uid), "group": "common", "name": "autotrigger", "value": true }));
-    g.call("update_param", j!({ "node": hex(uid), "group": "common", "name": "max_frequency", "value": hz }));
+    g.call("set_param", j!({ "node": hex(uid), "group": "common", "name": "autotrigger", "value": true }));
+    g.call("set_param", j!({ "node": hex(uid), "group": "common", "name": "max_frequency", "value": hz }));
 }
 
 const AFFINE: &str = r#"
@@ -99,16 +99,16 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
     assert_eq!(row["params"]["gain"]["factor"]["value"], 1, "{row}");
 
     let src = g.add("_TestConst");
-    g.call("update_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": 1.0 }));
+    g.call("set_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": 1.0 }));
     let node = g.add("Affine");
     let probe = g.probe(node, "out");
-    g.call("update_param", j!({ "node": hex(node), "group": "gain", "name": "factor", "value": 3 }));
+    g.call("set_param", j!({ "node": hex(node), "group": "gain", "name": "factor", "value": 3 }));
     g.link(src, "out", node, "data");
 
     // 1*3 + 10 = 13: the 10 proves `setup` ran in the child, the 3 that a live param crossed.
     g.until("the affine node's frame", |_| probe.latest().filter(|d| f32s(d)[0] == 13.0));
 
-    g.call("update_param", j!({ "node": hex(node), "group": "gain", "name": "factor", "value": 0 }));
+    g.call("set_param", j!({ "node": hex(node), "group": "gain", "name": "factor", "value": 0 }));
     g.until("the re-parameterized node", |_| {
         probe.latest().filter(|d| f32s(d)[0] == 10.0).map(|_| ())
     });
@@ -137,14 +137,14 @@ class Boom(goofi.Node):
     let src = g.add("_TestConst");
     let node = g.add("Boom");
     let probe = g.probe(node, "out");
-    g.call("update_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": -1.0 }));
+    g.call("set_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": -1.0 }));
     g.link(src, "out", node, "data");
 
     let why = g.until("the raise to surface", |g| g.error(node));
     assert!(why.contains("the sensor read negative"), "the Python exception text rides back: {why}");
 
     // A count above 1 proves the child never died — a respawn would reset `_runs`.
-    g.call("update_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": 1.0 }));
+    g.call("set_param", j!({ "node": hex(src), "group": "constant", "name": "value", "value": 1.0 }));
     let d = g.until("the recovered node", |_| probe.latest().filter(|d| f32s(d)[0] > 1.0));
     assert!(f32s(&d)[0] > 1.0, "the child survived the raise with its state: {:?}", f32s(&d));
     g.until("the error to clear", |g| g.error(node).is_none().then_some(()));
