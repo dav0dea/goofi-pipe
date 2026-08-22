@@ -25,8 +25,8 @@ function catalog(): NodeTypeInfo[] {
 	];
 }
 
-/** One node in the replica, plus the manager's half of the loop: `echo()` writes back whatever
- * `set_node_viewers` was last asked for, which is the only way a viewer edit becomes visible. */
+/** One node in the replica, plus the manager's half of the loop: `echo()` merges every viewer
+ * patch `edit_node` was asked for, which is the only way a viewer edit becomes visible. */
 function fixture() {
 	const fc = new FakeControl();
 	const g = new GraphStore(fc);
@@ -36,8 +36,13 @@ function fixture() {
 		view: (slot: string) => slotView(g.nodeById('osc0'), slot),
 		deps: { control: {} as never, graph: g },
 		echo: () => {
-			const last = [...fc.recordedCalls()].reverse().find((c) => c.op === 'set_node_viewers');
-			d.patch({ nodes: { [last!.payload.node as string]: { viewers: JSON.stringify(last!.payload.viewers) } } });
+			const sent = fc.recordedCalls().filter((c) => c.op === 'edit_node' && c.payload.viewers);
+			const whole: Record<string, object> = {};
+			for (const c of sent)
+				for (const [slot, v] of Object.entries(c.payload.viewers as Record<string, object>))
+					whole[slot] = { ...whole[slot], ...v };
+			const node = sent[sent.length - 1]!.payload.node as string;
+			d.patch({ nodes: { [node]: { viewers: JSON.stringify(whole) } } });
 		}
 	};
 }

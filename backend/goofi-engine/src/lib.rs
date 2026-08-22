@@ -2057,7 +2057,7 @@ impl Graph {
             }
         }
         // Every param channel spoken on for `uid`, bound or not: `add_node` answers before the
-        // barrier lifts, so the ordinary `add_node(); update_param()` pair falls inside the window.
+        // barrier lifts, so the ordinary `add_node(); edit_node()` pair falls inside the window.
         for (at, (owner, _)) in self.bind_keys.iter().enumerate() {
             let key = (*owner, runtime::plan::Slot::Bind(at));
             if *owner == uid && !slots.contains(&key) {

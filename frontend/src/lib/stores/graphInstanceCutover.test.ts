@@ -199,9 +199,9 @@ describe('a collapsed scope’s inline viewer, whose blob only the instance reco
 		g.setSlotView('i9', 'out0', { kind: 'image', collapsed: true });
 		expect(slotView(g.nodeById('i9'), 'out0').kind).toBe('image');
 		expect(isSlotExpanded(g.nodeById('i9'), 'out0')).toBe(false);
-		// A scope uid is not a node: the engine's `set_node_viewers` refuses one, so the record is the
-		// whole of the state and nothing is sent. (This is also why it does not survive a reload.)
-		expect(fc.recordedCalls().some((c) => c.op === 'set_node_viewers')).toBe(false);
+		// A scope uid is not a node: the engine refuses one, so the record is the whole of the state
+		// and nothing is sent. (This is also why it does not survive a reload.)
+		expect(fc.recordedCalls().some((c) => c.op === 'edit_node')).toBe(false);
 
 		// An unrelated doc write re-assembles every scope from the doc, which carries no viewer blob.
 		d.patch({ nodes: { m9: { name: 'buffer9b' } } });

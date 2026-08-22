@@ -4,7 +4,7 @@
 //! DIMENSIONALITY is the property that spans the set, so the source emits a grid, not a vector.
 
 use goofi_core::{Data, Value};
-use goofi_tests::{hex, j, Goofi};
+use goofi_tests::{j, Goofi};
 
 fn shape(d: &Data) -> Vec<usize> {
     let Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
@@ -33,7 +33,7 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     let buf = g.add("Buffer");
     let psd = g.add("Psd");
     let set = |n, group: &str, name: &str, v: serde_json::Value| {
-        g.call("set_param", j!({ "node": hex(n), "group": group, "name": name, "value": v }));
+        g.set_param(n, group, name, v);
     };
     set(osc, "oscillator", "sfreq", j!(256.0));
     set(osc, "oscillator", "frequency", j!(10.0));
@@ -75,7 +75,7 @@ fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
     let chans = g.add("Buffer");
     let one = g.add("Buffer");
     let set = |n, name: &str, v: serde_json::Value| {
-        g.call("set_param", j!({ "node": hex(n), "group": "buffer", "name": name, "value": v }));
+        g.set_param(n, "buffer", name, v);
     };
     set(time, "size", j!(8));
     set(chans, "size", j!(2));

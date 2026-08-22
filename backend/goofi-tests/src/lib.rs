@@ -83,6 +83,15 @@ impl Goofi {
         Uid::from_hex(hex).unwrap_or_else(|| panic!("add_node answered a malformed uid {hex}"))
     }
 
+    /// Set one param's literal value, answering it AS STORED — a literal is coerced to the
+    /// param's declared type.
+    #[track_caller]
+    pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
+        let r = self
+            .call("edit_node", json!({ "node": hex(uid), "params": { group: { name: value.into() } } }));
+        r["params"][group][name].clone()
+    }
+
     /// Wire an output slot to an input slot.
     #[track_caller]
     pub fn link(&self, from: Uid, out: &str, to: Uid, into: &str) {

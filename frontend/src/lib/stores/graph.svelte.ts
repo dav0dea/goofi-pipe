@@ -176,22 +176,25 @@ export class GraphStore {
 	setSlotView(uid: string, slot: string, view: SlotView): void {
 		const node = this.nodeById(uid);
 		if (!node?.output_slots[slot]) return;
-		// From the node's CURRENT output slots, never the blob's keys: a blob saved before a node
-		// file changed its slots carries a name the manager refuses the WHOLE write for.
-		const viewers: NodeInstanceInfo['viewers'] = {};
-		for (const s of Object.keys(node.output_slots)) {
-			const stored = node.viewers?.[s];
-			if (s === slot) viewers[s] = { ...stored, ...view };
-			else if (stored) viewers[s] = { ...stored };
-		}
 		const inst = this.instances[uid];
 		if (inst) {
+			// From the node's CURRENT output slots, never the blob's keys: a blob saved before a
+			// node file changed its slots carries a name that is no longer a slot.
+			const viewers: NodeInstanceInfo['viewers'] = {};
+			for (const s of Object.keys(node.output_slots)) {
+				const stored = node.viewers?.[s];
+				if (s === slot) viewers[s] = { ...stored, ...view };
+				else if (stored) viewers[s] = { ...stored };
+			}
 			inst.viewers = viewers;
 			return;
 		}
-		void this.ctl.call('set_node_viewers', { node: uid, viewers }).catch(() => {
-			/* soft view state — the next edit re-sends the whole blob */
-		});
+		void this.ctl
+			.call('edit_node', { node: uid, viewers: { [slot]: view } })
+			.then(() => this._recordGraphCmd(`Set ${slot} view`))
+			.catch(() => {
+				/* soft view state — the next edit re-sends it */
+			});
 	}
 
 	private _handle(ev: ControlEvent): void {
@@ -377,14 +380,15 @@ export class GraphStore {
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
 		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
-		if (!param) throw new Error(`set_param: no param ${group}.${name} on node ${node}`);
-		await this.ctl.call('set_param', { node, group, name, value });
+		if (!param) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
+		await this.ctl.call('edit_node', { node, params: { [group]: { [name]: value } } });
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
-	/** Add a NEW user global; a distinct op from `set_global`, so an add cannot overwrite. */
+	/** Add a NEW user global. The name is guarded HERE — `set_global` overwrites by design. */
 	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
-		await this.ctl.call('add_global', { name, value, type });
+		if (this.globals.some((g) => g.name === name)) throw new Error(`global ${name} already exists`);
+		await this.ctl.call('set_global', { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
 	}
 
@@ -398,13 +402,21 @@ export class GraphStore {
 
 	/** Remove a user global (a system global is refused by the server). */
 	async removeGlobal(name: string): Promise<void> {
-		await this.ctl.call('remove_global', { name });
+		await this.ctl.call('set_global', { name });
 		this._recordGraphCmd(`Remove global ${name}`);
 	}
 
-	/** Rename a user global; refs are NOT rewritten, so a stale `globals.<old>` throws at eval time. */
+	/** Rename a user global; refs are NOT rewritten, so a stale `globals.<old>` throws at eval time.
+	 * A set of the new name compounded with a delete of the old, so it is one undo step. */
 	async renameGlobal(oldName: string, newName: string): Promise<void> {
-		await this.ctl.call('rename_global', { old: oldName, new: newName });
+		const held = this.globals.find((g) => g.name === oldName);
+		if (!held) throw new Error(`no global ${oldName}`);
+		await this.ctl.call('compound', {
+			ops: [
+				{ op: 'set_global', payload: { name: newName, value: held.value, type: held.type } },
+				{ op: 'set_global', payload: { name: oldName } }
+			]
+		});
 		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
 	}
 
@@ -449,22 +461,26 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
-		if (!d) throw new Error(`set_param: no param ${group}.${name} on node ${node}`);
+		if (!d) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
 		// `expression` is sent even when null: its PRESENCE is what clears a binding.
-		await this.ctl.call('set_param', {
+		await this.ctl.call('edit_node', {
 			node,
-			group,
-			name,
-			expression,
-			enabled: opts.enabled ?? false,
-			triggers: opts.triggers_process ?? false
+			params: {
+				[group]: {
+					[name]: {
+						expression: expression ?? '',
+						mode: opts.enabled ? 'expression' : 'constant',
+						triggers: opts.triggers_process ?? false
+					}
+				}
+			}
 		});
 		this._recordGraphCmd(`Set ${name} expression`);
 	}
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
 		// Committed on drag-stop only; a live drag stays local to Svelte Flow.
-		await this.ctl.call('set_node_pos', { node: uid, pos });
+		await this.ctl.call('edit_node', { node: uid, pos });
 		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
 	}
 
@@ -472,7 +488,7 @@ export class GraphStore {
 	async renameNode(uid: string, name: string): Promise<void> {
 		const oldName = this.nodeById(uid)?.name ?? '';
 		if (oldName === name) return;
-		await this.ctl.call('rename_node', { node: uid, name });
+		await this.ctl.call('edit_node', { node: uid, name });
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
 	}
 

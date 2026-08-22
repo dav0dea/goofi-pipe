@@ -70,22 +70,42 @@ fn first_panel(g: &Goofi) -> String {
     panels(g).first().cloned().expect("the default tab's one panel")
 }
 
+/// A uid that names nothing, which every refusal path is asked about.
+const GHOST: &str = "ffffffffffff";
+
 #[test]
 fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 512 }));
-    g.call("rename_node", j!({ "node": hex(osc), "name": "carrier" }));
-    g.call("add_global", j!({ "name": "subj", "value": "P01", "type": "string" }));
-    g.call("rename_global", j!({ "old": "subj", "new": "participant" }));
-    g.call("set_node_pos", j!({ "node": hex(osc), "pos": [40.0, 60.0] }));
+    g.set_param(buf, "buffer", "size", 512);
+    // ONE step, whatever it carries: a rename, a move and a param in a single edit_node.
+    g.call("edit_node", j!({ "node": hex(osc), "name": "carrier", "pos": [40.0, 60.0],
+                             "params": { "oscillator": { "sfreq": 128.0 } } }));
+    g.call("set_global", j!({ "name": "subj", "value": "P01", "type": "string" }));
+    // A rename is a compound: set the new name, delete the old, ONE undo step.
+    g.call("compound", j!({ "ops": [
+        { "op": "set_global", "payload": { "name": "participant", "value": "P01", "type": "string" } },
+        { "op": "set_global", "payload": { "name": "subj" } },
+    ] }));
+    // …and a compound is a UNIT: a refused step takes back the one that landed, and records nothing,
+    // which is what the step count below would catch.
+    let why = g.refuse("compound", j!({ "ops": [
+        { "op": "set_global", "payload": { "name": "tmp", "value": 1.0, "type": "float" } },
+        { "op": "edit_node", "payload": { "node": GHOST, "name": "renamed" } },
+    ] }));
+    assert!(why.contains("step 1"), "the refusal names the step that failed: {why}");
+    assert!(g.doc()["globals"]["tmp"].is_null(), "the step that landed was taken back: {why}");
+    // A step is one undoable WRITE, so a read, a nesting and the stack ops themselves are refused.
+    for bad in ["undo", "compound", "inspect_patch", "load"] {
+        g.refuse("compound", j!({ "ops": [{ "op": bad }] }));
+    }
     let scope = g.call("group_nodes", j!({ "members": [hex(osc), hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let built = g.doc();
 
-    // A rename_global is ONE step though it is an add plus a remove composed.
+    // A compound is ONE step though it is an add plus a remove composed.
     let mut steps = 0;
     while g.call("undo", j!({}))["changed"] == true {
         steps += 1;
@@ -93,7 +113,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["participant"].is_null() && g.doc()["globals"]["subj"].is_null());
-    assert_eq!(steps, 9, "one step per command — a rename_global is an add plus a remove, but ONE step");
+    assert_eq!(steps, 8, "one step per command — a compound and a three-field edit_node are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
@@ -311,7 +331,6 @@ fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
 }
 
 /// A canonical 12-hex uid that names nothing.
-const GHOST: &str = "ffffffffffff";
 
 #[test]
 fn a_reply_says_what_the_write_actually_did() {
@@ -325,8 +344,7 @@ fn a_reply_says_what_the_write_actually_did() {
 
     // A literal is COERCED to the param's declared type, so the value stored may differ.
     let buf = g.add("Buffer");
-    let coerced = g.call("set_param", j!({ "node": hex(buf), "group": "buffer",
-                                             "name": "size", "value": 512.6 }));
+    let coerced = g.set_param(buf, "buffer", "size", 512.6);
     assert_eq!(coerced["value"], 513, "an int param rounds: {coerced}");
 
     let wired = g.call("add_link", j!({ "node_out": osc, "slot_out": "out",
@@ -360,22 +378,24 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
 
     for (op, payload) in [
         ("expand_instance", j!({ "inst_id": GHOST })),
-        ("set_node_pos", j!({ "node": GHOST, "pos": [1.0, 2.0] })),
-        ("rename_node", j!({ "node": GHOST, "name": "renamed" })),
-        ("set_param", j!({ "node": GHOST, "group": "buffer", "name": "size",
-                                "expression": "1", "enabled": true })),
+        ("edit_node", j!({ "node": GHOST, "pos": [1.0, 2.0] })),
+        ("edit_node", j!({ "node": GHOST, "name": "renamed" })),
+        ("edit_node", j!({ "node": GHOST,
+                           "params": { "buffer": { "size": { "expression": "1" } } } })),
     ] {
         g.refuse(op, payload);
     }
 
     // A rename splices into expression SOURCE, so a quote yields invalid Python the referrer carries.
     for bad in ["a'b", "a\\b", "a\"b"] {
-        g.refuse("rename_node", j!({ "node": hex(osc), "name": bad }));
+        g.refuse("edit_node", j!({ "node": hex(osc), "name": bad }));
     }
-    g.call("rename_node", j!({ "node": hex(osc), "name": "a b-2" }));
+    g.call("edit_node", j!({ "node": hex(osc), "name": "a b-2" }));
     // The command tolerates a collision so replay converges; the RPC boundary raises the user error.
     g.add("Buffer");
-    g.refuse("rename_node", j!({ "node": hex(osc), "name": "buffer0" }));
+    g.refuse("edit_node", j!({ "node": hex(osc), "name": "buffer0" }));
+    // Nothing at all is a caller error: an op that means "edit" must be told what to edit.
+    g.refuse("edit_node", j!({ "node": hex(osc) }));
 }
 
 #[test]
@@ -383,12 +403,14 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
     let g = Goofi::new();
     let producer = g.add("Oscillator");
     let consumer = g.add("Oscillator");
-    g.call("rename_node", j!({ "node": hex(producer), "name": "src" }));
+    g.call("edit_node", j!({ "node": hex(producer), "name": "src" }));
 
     // A binding that cannot compile is STORED, so the refusal has to travel in the reply.
-    let set = |expr: &str| g.call("set_param", j!({ "node": hex(consumer), "group": "common",
-                                                        "name": "max_frequency", "expression": expr,
-                                                        "enabled": true, "triggers": false }));
+    // An expression given with no `mode` binds: that is what writing one means.
+    let set = |expr: &str| g.call("edit_node", j!({ "node": hex(consumer),
+                                                    "params": { "common": { "max_frequency":
+                                                        { "expression": expr } } } }))
+        ["params"]["common"]["max_frequency"].clone();
     assert!(set("@@ not an expression @@")["error"].as_str().is_some_and(|e| !e.is_empty()),
             "the compile error must ride the reply");
     assert!(set("")["error"].is_null(), "an empty expression clears the binding");
@@ -405,7 +427,7 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
     assert!(d["expression_error"].is_string(), "got {:?}", d["expression_error"]);
     assert!(d.get("expression_autoeval").is_none(), "auto-eval is always on, so it is not on the wire");
 
-    g.call("rename_node", j!({ "node": hex(producer), "name": "signal" }));
+    g.call("edit_node", j!({ "node": hex(producer), "name": "signal" }));
     let expr = g.until("the referrer's echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(consumer))
@@ -452,26 +474,38 @@ fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     let osc = g.add("Oscillator");
     assert!(g.doc()["nodes"][hex(osc)].get("viewers").is_none(), "no viewers leaf when empty");
 
-    let why = g.refuse("set_node_viewers", j!({ "node": hex(osc),
-                                                "viewers": { "out": { "kind": "waveform" } } }));
+    let why = g.refuse("edit_node", j!({ "node": hex(osc),
+                                         "viewers": { "out": { "kind": "waveform" } } }));
     assert!(why.contains("waveform") && why.contains("line") && why.contains("topomap"), "{why}");
-    let why = g.refuse("set_node_viewers", j!({ "node": hex(osc),
-                                                "viewers": { "psd": { "kind": "line" } } }));
+    let why = g.refuse("edit_node", j!({ "node": hex(osc),
+                                         "viewers": { "psd": { "kind": "line" } } }));
     assert!(why.contains("psd") && why.contains("out"), "an unknown slot names the real ones: {why}");
-    let why = g.refuse("set_node_viewers", j!({ "node": GHOST,
-                                                "viewers": { "out": { "kind": "line" } } }));
+    let why = g.refuse("edit_node", j!({ "node": GHOST,
+                                         "viewers": { "out": { "kind": "line" } } }));
     assert!(why.contains("no such node"), "{why}");
-    let why = g.refuse("set_node_viewers", j!({ "node": hex(osc), "viewers": 7 }));
+    let why = g.refuse("edit_node", j!({ "node": hex(osc), "viewers": 7 }));
     assert!(why.contains("map"), "a bag that is not a map says what one looks like: {why}");
 
-    g.call("set_node_viewers", j!({ "node": hex(osc),
-                                    "viewers": { "out": { "collapsed": false, "kind": "line",
-                                                          "settings": { "yScale": 2 } } } }));
+    g.call("edit_node", j!({ "node": hex(osc),
+                             "viewers": { "out": { "collapsed": false, "kind": "line",
+                                                   "settings": { "yScale": 2 } } } }));
     assert!(!g.doc()["nodes"][hex(osc)]["viewers"].is_null(), "…and the leaf appears once set");
+    // A patch MERGES, key by key: naming one setting leaves the kind and the others where they were.
+    g.call("edit_node", j!({ "node": hex(osc), "viewers": { "out": { "settings": { "xScale": 3 } } } }));
+    let view = |g: &Goofi| g.doc()["nodes"][hex(osc)]["viewers"].as_str().unwrap_or("").to_string();
+    let merged = view(&g);
+    for kept in ["\"kind\":\"line\"", "\"yScale\":2", "\"xScale\":3"] {
+        assert!(merged.contains(kept), "the patch merged rather than replaced: {merged}");
+    }
+    // …and it is UNDOABLE, which is what makes it an op rather than a side write.
+    g.call("undo", j!({}));
+    assert!(!view(&g).contains("xScale"), "the undo took the merge back off: {}", view(&g));
+    g.call("redo", j!({}));
+    assert!(view(&g).contains("xScale"), "…and the redo put it back: {}", view(&g));
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
     assert!(yaml.contains("yScale"), "the view state persists: {yaml}");
 
-    g.call("add_global", j!({ "name": "subject", "value": "P01", "type": "string" }));
+    g.call("set_global", j!({ "name": "subject", "value": "P01", "type": "string" }));
     assert_eq!(g.doc()["globals"]["default_ufreq"]["system"], true);
     assert_eq!(g.doc()["globals"]["subject"]["system"], false);
 }
@@ -488,9 +522,8 @@ fn eight_writers_all_land_and_none_deadlock() {
             let client = g.client(&format!("s{i}"));
             s.spawn(move || {
                 for r in 1..=ROUNDS {
-                    client.call("set_param", j!({ "node": hex(*u), "group": "common",
-                                                     "name": "max_frequency", "value": r as f64 }));
-                    client.call("set_node_pos", j!({ "node": hex(*u), "pos": [r as f64, r as f64] }));
+                    client.set_param(*u, "common", "max_frequency", r as f64);
+                    client.call("edit_node", j!({ "node": hex(*u), "pos": [r as f64, r as f64] }));
                 }
             });
         }

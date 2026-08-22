@@ -168,8 +168,7 @@ pub fn patch(
     Ok(out)
 }
 
-/// One param in the inline form an agent feeds straight back into `update_param` or
-/// `set_expression`.
+/// One param in the inline form an agent feeds straight back into `edit_node`.
 fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> String {
     use goofi_core::Param as P;
     let (value, ty) = match p {

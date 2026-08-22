@@ -734,6 +734,111 @@ fn parse_pos(v: &Value) -> Option<[f64; 2]> {
     Some([a[0].as_f64()?, a[1].as_f64()?])
 }
 
+/// The `params` bag `add_node` and `edit_node` share — `{group: {param: value | {value,
+/// expression, mode, triggers}}}` — as one `EditParam` per entry.
+fn parse_params_bag(g: &Graph, uid: Uid, params: &Value) -> Result<Vec<goofi_engine::Command>, String> {
+    let groups = params.as_object().ok_or("params is {group: {param: …}}")?;
+    let mut cmds = Vec::new();
+    for (group, entries) in groups {
+        let entries =
+            entries.as_object().ok_or_else(|| format!("params.{group} is {{param: …}}"))?;
+        for (name, spec) in entries {
+            let existing = g
+                .params(uid)
+                .and_then(|p| goofi_node::param(&p, group, name).cloned())
+                .ok_or_else(|| format!("no param {group}.{name}"))?;
+            let cur = g.param_expression(uid, group, name);
+            let (value, expr) = parse_param_entry(&existing, cur, spec)
+                .map_err(|e| format!("params.{group}.{name}: {e}"))?;
+            if value.is_none() && expr.is_none() {
+                return Err(format!("params.{group}.{name} sets neither a value nor an expression"));
+            }
+            cmds.push(goofi_engine::Command::EditParam {
+                uid,
+                group: group.clone(),
+                name: name.clone(),
+                value,
+                expr,
+            });
+        }
+    }
+    Ok(cmds)
+}
+
+/// A JSON merge patch applied in place: objects merge key by key, `null` deletes, anything else
+/// replaces.
+fn merge_json(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(t), Value::Object(p)) => {
+            for (k, v) in p {
+                if v.is_null() {
+                    t.remove(k);
+                } else {
+                    merge_json(t.entry(k.clone()).or_insert(Value::Null), v);
+                }
+            }
+        }
+        (t, p) => *t = p.clone(),
+    }
+}
+
+/// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, mode, triggers}`.
+/// No param type is an object, so the two forms cannot be confused. An expression given without a
+/// mode turns the binding on, and a mode or trigger given alone edits the binding already there.
+fn parse_param_entry(
+    existing: &goofi_core::Param,
+    cur: Option<goofi_engine::ExprInfo>,
+    spec: &Value,
+) -> Result<(Option<goofi_core::Param>, Option<goofi_engine::ExprState>), String> {
+    let Some(o) = spec.as_object() else {
+        return Ok((Some(goofi_engine::param_from_json(existing, spec, true)), None));
+    };
+    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "value" | "expression" | "mode" | "triggers")) {
+        return Err(format!("unknown field `{k}` — value, expression, mode, triggers"));
+    }
+    let value = o
+        .get("value")
+        .filter(|v| !v.is_null())
+        .map(|v| goofi_engine::param_from_json(existing, v, true));
+    let mode = match o.get("mode").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => match v.as_str() {
+            Some("expression") => Some(true),
+            Some("constant") => Some(false),
+            _ => return Err(format!("mode is `constant` or `expression`, not {v}")),
+        },
+    };
+    let source = o.get("expression").filter(|v| !v.is_null()).map(|v| {
+        v.as_str().map(str::to_string).ok_or_else(|| format!("expression is a string, not {v}"))
+    });
+    let triggers = match o.get("triggers").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| format!("triggers is a bool, not {v}"))?),
+    };
+    let expr = match (source, mode, triggers) {
+        (None, None, None) => None,
+        (source, mode, triggers) => {
+            // An expression given is an expression MEANT, so it binds without being told to; a mode
+            // or a trigger alone edits whatever binding is already there.
+            let default_enabled = match &source {
+                Some(_) => true,
+                None => cur.as_ref().is_some_and(|c| c.enabled),
+            };
+            let source = match source {
+                Some(s) => s?,
+                None => cur.as_ref().map(|c| c.source.clone()).unwrap_or_default(),
+            };
+            Some(goofi_engine::ExprState {
+                // An empty source is an UNBIND, so it cannot end up enabled.
+                enabled: mode.unwrap_or(default_enabled) && !source.is_empty(),
+                triggers: triggers.unwrap_or_else(|| cur.as_ref().is_some_and(|c| c.triggers_process)),
+                source,
+            })
+        }
+    };
+    Ok((value, expr))
+}
+
 fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     let node_out = parse_uid(p, "node_out")?;
     let node_in = parse_uid(p, "node_in")?;
@@ -843,6 +948,51 @@ impl AppState {
                 events.push(event("harness_changed", state.harnesses.roster()));
                 return Ok(json!({ "ok": true }));
             }
+            // Several writes as ONE undo step. Taken before the graph lock, because each step is a
+            // whole call: it locks, mirrors the document and broadcasts exactly as it would alone.
+            if op == "compound" {
+                let steps = payload
+                    .get("ops")
+                    .and_then(|v| v.as_array())
+                    .ok_or("compound: `ops` is a list of {op, payload}")?
+                    .clone();
+                for (i, step) in steps.iter().enumerate() {
+                    let name = step.get("op").and_then(|v| v.as_str());
+                    let ok = name.and_then(ops::find).is_some_and(|o| {
+                        o.writes && !matches!(o.name, "compound" | "undo" | "redo" | "load" | "load_text" | "new")
+                    });
+                    if !ok {
+                        return Err(format!(
+                            "compound: step {i} `{}` is not a step — a step is one undoable write",
+                            name.unwrap_or("")
+                        ));
+                    }
+                }
+                // The redo run is cleared UP FRONT so no step's own clearing can shift the mark.
+                let from = {
+                    let mut h = state.history.lock().unwrap();
+                    h.clear_redo(&session);
+                    h.len()
+                };
+                let mut results = Vec::with_capacity(steps.len());
+                for (i, step) in steps.iter().enumerate() {
+                    let name = step["op"].as_str().unwrap_or_default().to_string();
+                    let arg = step.get("payload").cloned().unwrap_or_else(|| json!({}));
+                    match state.call(&name, arg, &session) {
+                        Ok(r) => results.push(r),
+                        Err(e) => {
+                            // A compound is a UNIT, so a refused step takes back the ones that landed.
+                            let mut g = state.graph.lock().unwrap();
+                            state.history.lock().unwrap().rollback(&mut g, &session, from);
+                            drop(g);
+                            resync_and_broadcast(state);
+                            return Err(format!("compound: step {i} `{name}` was refused: {e}"));
+                        }
+                    }
+                }
+                state.history.lock().unwrap().coalesce(&session, from);
+                return Ok(json!({ "results": results }));
+            }
             // `inspect_patch`'s header carries the same walk, so it is taken before the lock too.
             let dirty = op == "inspect_patch" && state.is_dirty();
             let mut g = state.graph.lock().unwrap();
@@ -892,17 +1042,11 @@ impl AppState {
                     };
                     // Applied UNDER THE GRAPH LOCK, so the node is born configured before the
                     // resync mirrors it into the doc.
-                    if let Some(groups) = payload.get("params").and_then(|v| v.as_object()) {
-                        for (group, names) in groups {
-                            let Some(names) = names.as_object() else { continue };
-                            for (name, vjson) in names {
-                                if let Some(existing) =
-                                    g.params(uid).and_then(|p| goofi_node::param(&p, group, name).cloned())
-                                {
-                                    let newp = goofi_engine::param_from_json(&existing, vjson, true);
-                                    let _ = g.update_param(uid, group, name, newp);
-                                }
-                            }
+                    if let Some(params) = payload.get("params").filter(|v| !v.is_null()) {
+                        for cmd in
+                            parse_params_bag(&g, uid, params).map_err(|e| format!("add_node: {e}"))?
+                        {
+                            cmd.execute(&mut g).map_err(|e| format!("add_node: {e}"))?;
                         }
                     }
                     // A bare uid: the node itself arrives via the doc mirror.
@@ -987,70 +1131,94 @@ impl AppState {
                     g.refresh_param(uid, &group, &name)?;
                     Ok(json!({ "ok": true }))
                 }
-                "set_param" => {
+                "edit_node" => {
                     let uid = parse_uid(&payload, "node")?;
-                    let group = parse_str(&payload, "group")?.to_string();
-                    let name = parse_str(&payload, "name")?.to_string();
-                    // One command carries both halves and always did: an absent field stays `None`,
-                    // which `EditParam` leaves untouched and its inverse restores.
-                    let value = match payload.get("value") {
-                        Some(v) if !v.is_null() => {
-                            let existing = g
-                                .params(uid)
-                                .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                                .ok_or("no such param")?;
-                            Some(goofi_engine::param_from_json(&existing, v, true))
+                    let name = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                    // The rename command tolerates a collision as a no-op so a stale replay
+                    // converges; the user-facing error therefore belongs here, at the forward RPC.
+                    if let Some(n) = &name {
+                        if g.name_taken(n, uid) {
+                            return Err(format!("edit_node: the name `{n}` is taken"));
                         }
-                        _ => None,
-                    };
-                    // An empty `expression` CLEARS the binding, so its presence is what decides —
-                    // not its emptiness.
-                    let expr = payload.get("expression").and_then(|v| v.as_str()).map(|source| {
-                        goofi_engine::ExprState {
-                            source: source.to_string(),
-                            enabled: payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                            triggers: payload.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false),
-                        }
-                    });
-                    if value.is_none() && expr.is_none() {
-                        return Err("set_param: give a value, an expression, or both".into());
                     }
-                    let touched_expr = expr.is_some();
-                    state.history.lock().unwrap().apply(
+                    // A display name is spliced into expression SOURCE, so a quote or backslash
+                    // would yield invalid Python in every referring node.
+                    if name.as_deref().is_some_and(|n| n.contains(['\'', '"', '\\'])) {
+                        return Err("edit_node: a name cannot contain a quote or backslash — it is \
+                                    spliced into nd() expression source"
+                            .into());
+                    }
+                    let pos = payload
+                        .get("pos")
+                        .filter(|v| !v.is_null())
+                        .map(|v| parse_pos(v).ok_or("edit_node: pos is [x, y]"))
+                        .transpose()?;
+                    // Viewers MERGE key by key, so only the slots named move; the command then sets
+                    // the whole blob, which is what makes its inverse exact. The PATCH is what is
+                    // checked — a stale slot already stored is inert, and refusing it would block
+                    // every later edit on a node whose file changed its slots.
+                    let viewers = match payload.get("viewers").filter(|v| !v.is_null()) {
+                        Some(patch) => {
+                            vocab::check_viewers(&g, uid, patch)?;
+                            let mut whole =
+                                g.viewers(uid).cloned().ok_or("edit_node: no such node")?;
+                            merge_json(&mut whole, patch);
+                            Some(whole)
+                        }
+                        None => None,
+                    };
+                    let params = payload.get("params").filter(|v| !v.is_null());
+                    if name.is_none() && pos.is_none() && viewers.is_none() && params.is_none() {
+                        return Err("edit_node: give a name, pos, params or viewers".into());
+                    }
+
+                    // ONE command, so one undo step covers whatever the call carried: the node's own
+                    // fields, then a param edit each.
+                    let mut cmds = Vec::new();
+                    if name.is_some() || pos.is_some() || viewers.is_some() {
+                        cmds.push(goofi_engine::Command::EditNode { uid, name, pos, viewers });
+                    }
+                    let mut touched: Vec<(String, String)> = Vec::new();
+                    if let Some(params) = params {
+                        for cmd in parse_params_bag(&g, uid, params)
+                            .map_err(|e| format!("edit_node: {e}"))?
+                        {
+                            if let goofi_engine::Command::EditParam { group, name, .. } = &cmd {
+                                touched.push((group.clone(), name.clone()));
+                            }
+                            cmds.push(cmd);
+                        }
+                    }
+                    let out = state.history.lock().unwrap().apply(
                         &mut g,
                         &session,
-                        goofi_engine::Command::EditParam {
-                            uid,
-                            group: group.clone(),
-                            name: name.clone(),
-                            value,
-                            expr,
-                        },
+                        if cmds.len() == 1 { cmds.pop().unwrap() } else { goofi_engine::Command::Compound(cmds) },
                     )?;
-                    // The runtime `expression_error` is doc-invisible, so echo the descriptor.
-                    if touched_expr {
+                    // The runtime `expression_error` is doc-invisible, so echo the descriptors —
+                    // for this node, and for every referrer a rename rewrote.
+                    if !touched.is_empty() {
                         events.push(param_state_update(&g, uid));
                     }
-                    Ok(json!({
-                        // The value AS STORED, which is not always the one asked for: a literal is
-                        // coerced to the param's declared type.
-                        "value": g
-                            .params(uid)
-                            .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                            .map(|p| goofi_engine::param_value_json(&p, true)),
-                        // A binding that does not compile is STORED, so the reply carries the error.
-                        "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
-                    }))
-                }
-                "set_node_pos" => {
-                    let uid = parse_uid(&payload, "node")?;
-                    let pos = payload.get("pos").and_then(parse_pos).ok_or("set_node_pos: missing pos")?;
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditNode { uid, name: None, pos: Some(pos) },
-                    )?;
-                    Ok(json!({ "ok": true }))
+                    if let goofi_engine::Outcome::Nodes(referrers) = out {
+                        for r in referrers {
+                            events.push(param_state_update(&g, r));
+                        }
+                    }
+                    // Every param touched AS STORED: a literal is coerced to its declared type, and a
+                    // binding that does not compile is stored WITH its error.
+                    let mut out = serde_json::Map::new();
+                    for (group, name) in touched {
+                        let entry = json!({
+                            "value": g.params(uid)
+                                .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+                                .map(|p| goofi_engine::param_value_json(&p, true)),
+                            "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
+                        });
+                        out.entry(group).or_insert_with(|| json!({}))
+                            .as_object_mut().unwrap()
+                            .insert(name, entry);
+                    }
+                    Ok(json!({ "params": Value::Object(out) }))
                 }
                 // Where THIS client is looking: not a doc root, so it neither drags a peer nor raises
                 // the unsaved dot, but it still rides the `.gfi` and `hello`.
@@ -1198,75 +1366,37 @@ impl AppState {
                     g.arrangement().remove_subtree(&panel)?;
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: panel })
                 }
-                "set_node_viewers" => {
-                    // Soft per-slot view-state, persisted but NOT a command, so it is not undoable.
-                    let uid = parse_uid(&payload, "node")?;
-                    let viewers = payload.get("viewers").cloned().ok_or("set_node_viewers: missing viewers")?;
-                    // Opaque to the ENGINE, so the words inside it are checked here.
-                    vocab::check_viewers(&g, uid, &viewers)?;
-                    g.set_node_viewers(uid, viewers)?;
-                    Ok(json!({ "ok": true }))
-                }
-                "rename_node" => {
-                    let uid = parse_uid(&payload, "node")?;
-                    let name = parse_str(&payload, "name")?.to_string();
-                    // The command tolerates a collision as a no-op, so a stale replay converges; the
-                    // user-facing error therefore belongs here, at the forward RPC boundary.
-                    if g.name_taken(&name, uid) {
-                        return Err(format!("rename_node: display name `{name}` already in use"));
-                    }
-                    // A display name is spliced into expression SOURCE, so a quote or backslash would
-                    // yield invalid Python in every referring node.
-                    if name.contains(['\'', '"', '\\']) {
-                        return Err(format!(
-                            "rename_node: `{name}` cannot contain a quote or backslash — a display \
-                             name is spliced into nd() expression source"
-                        ));
-                    }
-                    let out = state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditNode { uid, name: Some(name), pos: None },
-                    )?;
-                    // Each rewritten referrer needs its descriptor re-pushed: the source is in the
-                    // doc, the runtime error is not.
-                    if let goofi_engine::Outcome::Nodes(referrers) = out {
-                        for r in referrers {
-                            events.push(param_state_update(&g, r));
-                        }
-                    }
-                    Ok(json!({ "ok": true }))
-                }
-                "add_global" => {
-                    let name = parse_str(&payload, "name")?.to_string();
-                    let val = payload.get("value").ok_or("add_global: missing value")?;
-                    let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("add_global: missing type")?;
-                    if g.globals().contains(&name) {
-                        return Err(format!("add_global: global `{name}` already exists"));
-                    }
-                    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
-                        .ok_or("add_global: malformed value")?;
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditGlobal { name, value: Some(value), at: None },
-                    )?;
-                    Ok(json!({ "ok": true }))
-                }
                 "set_global" => {
                     let name = parse_str(&payload, "name")?.to_string();
-                    let val = payload.get("value").ok_or("set_global: missing value")?;
-                    let ty = payload.get("type").and_then(|v| v.as_str()).ok_or("set_global: missing type")?;
-                    let Some(held) = g.globals().get(&name).map(goofi_engine::global_to_json) else {
-                        return Err(format!("set_global: no such global `{name}`"));
+                    let held = g.globals().get(&name).map(goofi_engine::global_to_json);
+                    // NO value is a delete, so removing a global is the absence of one rather than
+                    // an op of its own.
+                    let Some(val) = payload.get("value").filter(|v| !v.is_null()) else {
+                        if held.is_none() {
+                            return Err(format!("set_global: no such global `{name}`"));
+                        }
+                        state.history.lock().unwrap().apply(
+                            &mut g,
+                            &session,
+                            goofi_engine::Command::EditGlobal { name, value: None, at: None },
+                        )?;
+                        return Ok(json!({ "removed": true }));
                     };
-                    // Every expression reading a global depends on its TYPE, so re-typing one through
-                    // a value edit would break the reference rather than the call.
-                    let held_ty = held["type"].as_str().unwrap_or_default();
-                    if held_ty != ty {
-                        return Err(format!("set_global: `{name}` is a {held_ty} — set_global edits a \
-                                            global's value, not its type"));
-                    }
+                    // Every expression reading a global depends on its TYPE, so re-typing one
+                    // through a value edit would break the reference rather than the call.
+                    let held_ty = held.as_ref().map(|h| h["type"].as_str().unwrap_or_default().to_string());
+                    let ty = match (payload.get("type").and_then(|v| v.as_str()), &held_ty) {
+                        (Some(t), Some(h)) if t != h => {
+                            return Err(format!(
+                                "set_global: `{name}` is a {h} — remove it and set it again to re-type it"
+                            ))
+                        }
+                        (Some(t), _) => t.to_string(),
+                        (None, Some(h)) => h.clone(),
+                        (None, None) => {
+                            return Err(format!("set_global: `{name}` is new — give its `type`"))
+                        }
+                    };
                     let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
                         .ok_or_else(|| format!("set_global: `{val}` is not a {ty}"))?;
                     state.history.lock().unwrap().apply(
@@ -1276,40 +1406,6 @@ impl AppState {
                     )?;
                     // As STORED: the conversion is type-directed, so a fraction into an int rounds.
                     Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
-                }
-                "remove_global" => {
-                    let name = parse_str(&payload, "name")?.to_string();
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::EditGlobal { name, value: None, at: None },
-                    )?;
-                    Ok(json!({ "ok": true }))
-                }
-                "rename_global" => {
-                    let old = parse_str(&payload, "old")?.to_string();
-                    let new = parse_str(&payload, "new")?.to_string();
-                    // Validated WHOLE up front, because the Compound is not atomic: a mid-sequence
-                    // failure would leave the add-new applied as a phantom.
-                    let value = g.globals().get(&old).cloned().ok_or("rename_global: no such global")?;
-                    if g.globals().is_system(&old) {
-                        return Err(format!("rename_global: cannot rename system global `{old}`"));
-                    }
-                    if g.globals().contains(&new) {
-                        return Err(format!("rename_global: `{new}` already exists"));
-                    }
-                    if !goofi_core::globals::is_valid_global_name(&new) {
-                        return Err(format!("rename_global: invalid name `{new}`"));
-                    }
-                    state.history.lock().unwrap().apply(
-                        &mut g,
-                        &session,
-                        goofi_engine::Command::Compound(vec![
-                            goofi_engine::Command::EditGlobal { name: new, value: Some(value), at: None },
-                            goofi_engine::Command::EditGlobal { name: old, value: None, at: None },
-                        ]),
-                    )?;
-                    Ok(json!({ "ok": true }))
                 }
                 "group_nodes" => {
                     let members = payload

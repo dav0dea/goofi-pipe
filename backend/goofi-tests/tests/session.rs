@@ -20,14 +20,14 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
-    g.call("rename_node", j!({ "node": hex(osc), "name": "carrier" }));
-    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 128 }));
+    g.call("edit_node", j!({ "node": hex(osc), "name": "carrier" }));
+    g.set_param(buf, "buffer", "size", 128);
     g.link(osc, "out", buf, "data");
     g.link(buf, "out", sink, "data");
 
-    g.call("add_global", j!({ "name": "gain", "value": 2.0, "type": "float" }));
-    g.call("set_param", j!({ "node": hex(sink), "group": "buffer", "name": "size",
-                                 "expression": "globals.gain * 64", "enabled": true }));
+    g.call("set_global", j!({ "name": "gain", "value": 2.0, "type": "float" }));
+    g.call("edit_node", j!({ "node": hex(sink),
+                             "params": { "buffer": { "size": { "expression": "globals.gain * 64" } } } }));
 
     let scope = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();

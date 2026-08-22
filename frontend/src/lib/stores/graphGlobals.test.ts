@@ -18,13 +18,22 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 	beforeEach(() => history().reset());
 	const found = (fc: FakeControl, op: string) => fc.recordedCalls().find((c) => c.op === op)?.payload;
 
-	it('addGlobal issues add_global{name,value,type} (distinct from edit) and records an undoable step', async () => {
+	it('addGlobal issues set_global{name,value,type} and records an undoable step', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await g.addGlobal('gain', 2.5, 'float');
-		expect(found(fc, 'add_global')).toEqual({ name: 'gain', value: 2.5, type: 'float' });
+		expect(found(fc, 'set_global')).toEqual({ name: 'gain', value: 2.5, type: 'float' });
 		expect(history().canUndo).toBe(true);
+	});
+
+	it('addGlobal refuses a name already taken — set_global would overwrite it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		d.global('gain', { value: 1, type: 'float', system: false });
+		await expect(g.addGlobal('gain', 2.5, 'float')).rejects.toThrow();
+		expect(fc.recordedCalls().some((c) => c.op === 'set_global')).toBe(false);
 	});
 
 	it('setGlobalValue looks up the declared type and issues set_global', async () => {
@@ -44,26 +53,32 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		expect(fc.recordedCalls().some((c) => c.op === 'set_global')).toBe(false);
 	});
 
-	it('removeGlobal issues remove_global{name}', async () => {
+	it('removeGlobal issues set_global{name} — no value is the delete', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await g.removeGlobal('subject');
-		expect(found(fc, 'remove_global')).toEqual({ name: 'subject' });
+		expect(found(fc, 'set_global')).toEqual({ name: 'subject' });
 	});
 
-	it('renameGlobal issues rename_global{old,new} as one undoable step', async () => {
+	it('renameGlobal compounds the set and the delete into one undoable step', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
+		d.global('gain', { value: 2.5, type: 'float', system: false });
 		await g.renameGlobal('gain', 'gain_a');
-		expect(found(fc, 'rename_global')).toEqual({ old: 'gain', new: 'gain_a' });
+		expect(found(fc, 'compound')).toEqual({
+			ops: [
+				{ op: 'set_global', payload: { name: 'gain_a', value: 2.5, type: 'float' } },
+				{ op: 'set_global', payload: { name: 'gain' } }
+			]
+		});
 		expect(history().canUndo).toBe(true);
 	});
 
 	it('a server rejection propagates (name/collision/system are validated server-side)', async () => {
 		const fc = new FakeControl();
-		fc.failNext('add_global');
+		fc.failNext('set_global');
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await expect(g.addGlobal('1bad', 0, 'int')).rejects.toThrow();

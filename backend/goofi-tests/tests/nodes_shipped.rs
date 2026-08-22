@@ -5,7 +5,7 @@
 use std::process::{Command, Stdio};
 
 use goofi_core::Data;
-use goofi_tests::{hex, j, Goofi};
+use goofi_tests::Goofi;
 
 fn f32s(d: &Data) -> Vec<f32> {
     let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
@@ -87,7 +87,7 @@ fn the_entropy_nodes_goofi_ships_reduce_the_time_axis_and_leave_the_channels_alo
     let g = Goofi::new();
     let src = g.add("_TestGrid");
     let buf = g.add("Buffer");
-    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
+    g.set_param(buf, "buffer", "size", 256);
     g.link(src, "out", buf, "data");
 
     // All four PROBED AND WIRED AT ONCE, one interpreter per file, as a real scan does — so the
@@ -147,8 +147,8 @@ fn a_shipped_entropy_node_reads_a_real_signal_rather_than_answering_a_constant()
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
-    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "sfreq", "value": 256.0 }));
-    g.call("set_param", j!({ "node": hex(buf), "group": "buffer", "name": "size", "value": 256 }));
+    g.set_param(osc, "oscillator", "sfreq", 256.0);
+    g.set_param(buf, "buffer", "size", 256);
     let node = g.add(&install_shipped(&g, &py.py, "permutation_entropy.py"));
     let probe = g.probe(node, "entropy");
     g.link(osc, "out", buf, "data");

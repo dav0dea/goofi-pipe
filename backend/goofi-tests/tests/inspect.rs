@@ -161,8 +161,8 @@ impl ExprEvaluator for Flaky {
 fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
-    g.call("set_param", j!({ "node": hex(osc), "group": "oscillator", "name": "amplitude",
-                                 "expression": "globals.default_ufreq / 30", "enabled": true }));
+    g.call("edit_node", j!({ "node": hex(osc), "params": { "oscillator": {
+                                 "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
     // A rate is MEASURED, so it needs two emits and a report across the status service.
     g.until("the oscillator's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
@@ -171,11 +171,11 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let out = text(&g, "inspect_node", j!({ "node": hex(osc) }));
     assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, in-process, stage ready)", hex(osc))),
             "{out}");
-    // The goldened inline param format, round-trippable into set_param…
+    // The goldened inline param format, round-trippable into edit_node…
     assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
-    // …and into set_param’s expression half. This binding cannot compile (no evaluator here), shown inline.
+    // …and into edit_node’s expression half. This binding cannot compile (no evaluator here), shown inline.
     assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 (on) [error: "),
             "{out}");
     // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.
@@ -205,8 +205,8 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
     let bound = g.add("Oscillator");
-    g.call("set_param", j!({ "node": hex(bound), "group": "oscillator", "name": "amplitude",
-                                 "expression": "globals.default_ufreq / 30", "enabled": true }));
+    g.call("edit_node", j!({ "node": hex(bound), "params": { "oscillator": {
+                                 "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
     let live = g.until("the node's own evaluation error", |g| {
         Some(text(g, "inspect_node", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
     });

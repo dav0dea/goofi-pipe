@@ -5,7 +5,7 @@ draws the graph and lists every standing error with how long it has stood. Every
 with what it did, so read the reply instead of following it with another call. Never guess a name
 — node types, panel types and viewer kinds are enumerated by the tool that takes them.
 
-`list_nodes` is the palette; `add_node`, `add_link` and `update_param` build; `rescan_nodes` loads
+`list_nodes` is the palette; `add_node`, `add_link` and `edit_node` build; `rescan_nodes` loads
 a Python node you wrote into `nodes/` beside you. `undo`/`redo` are yours alone and never reach the
 human's edits. You cannot open, save or replace the patch. Below is detail: read what a step needs.
 
@@ -49,7 +49,7 @@ default. Pass `params`/`meta`/`error` false to drop a section, `slot` to narrow 
 The `out:` line is the value-health line — shape, how many elements are real numbers, and the scale
 of the ones that are. `finite=511/512` is a NaN leaking in, `range=[0,0]` is silence; reading it
 never dumps data. A param bound to an expression prints as `expr: <source> → <value> (on)`, which
-is what `set_expression` takes back.
+is what `edit_node` takes back.
 
 `inspect_layout` names the pages and panel ids the page ops address; `get_patch` says where the
 patch is saved and whether it differs from disk; `list_globals` says what an expression can read.
@@ -64,13 +64,15 @@ patch is saved and whether it differs from disk; `list_globals` says what an exp
     add_link {"node_out": "000000000001", "slot_out": "out",
               "node_in": "000000000002", "slot_in": "data"}   → {…, "dtype": "ARRAY"}
 
-    update_param {"node": "000000000001", "group": "oscillator",
-                  "name": "frequency", "value": 7.5}          → {"value": 7.5}
+    edit_node {"node": "000000000001",
+               "params": {"oscillator": {"frequency": 7.5}}}
+    → {"params": {"oscillator": {"frequency": {"value": 7.5, "error": null}}}}
 
-`name` is what `nd()` addresses a node by; `uid` is what every tool takes. `update_param` answers
-the value **as stored** — coerced to the param's declared type, so a fraction into an int comes back
-rounded, and a declared min/max is the editor's range, not a clamp. `set_expression` binds a param
-to `nd('other_node').sfreq`, `globals.x` or `t` instead of a literal.
+`name` is what `nd()` addresses a node by; `uid` is what every tool takes. `edit_node` answers each
+param **as stored** — coerced to the param's declared type, so a fraction into an int comes back
+rounded, and a declared min/max is the editor's range, not a clamp. It is also the rename, the move
+and the viewer write, and any mix of them is one call and one undo. A param entry may be
+`{"expression": "nd('other_node').sfreq"}` — or `globals.x`, or `t` — instead of a literal.
 
 `add_link` refuses a dtype mismatch and names both ends, and a wrong slot name is refused by naming
 the slots that exist — but a uid naming nothing is *not* refused: it answers as though it wired and

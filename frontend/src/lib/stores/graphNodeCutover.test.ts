@@ -320,18 +320,20 @@ describe('inline viewer state — the document is the one holder, so it follows 
 		const d = seed(fc);
 		g.nodeTypes = [{ ...catalog()[0], output_slots: { out: 'ARRAY', sig: 'ARRAY' } }];
 		// `gone` is a slot the saved blob names and the node no longer has — a node file that lost an
-		// output since the patch was written. The manager refuses the whole write over one such name.
+		// output since the patch was written. It must not block an edit to a slot that does exist.
 		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { kind: 'image' }, sig: { collapsed: true }, gone: { collapsed: true } }));
 
 		g.setSlotView('n1', 'sig', { collapsed: false });
-		const call = fc.recordedCalls().find((c) => c.op === 'set_node_viewers');
-		expect(call!.payload, 'the sibling rides along untouched, `sig` gains no kind, `gone` is pruned').toEqual({
+		const call = fc.recordedCalls().find((c) => c.op === 'edit_node');
+		expect(call!.payload, 'only the slot edited travels — the manager merges the rest').toEqual({
 			node: 'n1',
-			viewers: { out: { kind: 'image' }, sig: { collapsed: false } }
+			viewers: { sig: { collapsed: false } }
 		});
 		// Nothing changed until the manager answers — the document is the holder, not this store.
 		expect(isSlotExpanded(g.nodeById('n1'), 'sig')).toBe(false);
-		d.patch({ nodes: { n1: blob(call!.payload.viewers as Record<string, unknown>) } });
+		d.patch({
+			nodes: { n1: blob({ out: { kind: 'image' }, sig: { collapsed: false }, gone: { collapsed: true } }) }
+		});
 		expect(isSlotExpanded(g.nodeById('n1'), 'sig')).toBe(true);
 	});
 });

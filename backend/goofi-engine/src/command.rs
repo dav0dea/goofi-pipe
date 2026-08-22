@@ -87,6 +87,9 @@ pub enum Command {
         uid: Uid,
         name: Option<String>,
         pos: Option<[f64; 2]>,
+        /// The node's per-slot viewer state, WHOLE. The caller merges; this sets, so the inverse is
+        /// the blob it replaced and a replay cannot half-apply.
+        viewers: Option<serde_json::Value>,
     },
     /// Edit a param — its literal `value` and/or its expression binding. A `None` field is left
     /// untouched; the inverse restores whichever were set.
@@ -246,10 +249,16 @@ impl Command {
             Command::Compound(cmds) => {
                 let mut inverses = Vec::with_capacity(cmds.len());
                 let mut last = Outcome::Ok;
+                // Nodes ACCUMULATE where the other outcomes overwrite: they are a list of runtime
+                // echoes owed, and a later child returning nothing does not cancel an earlier one.
+                let mut echoes: Vec<Uid> = Vec::new();
                 for c in cmds {
                     match c.execute(g) {
                         Ok((res, inv)) => {
-                            last = res;
+                            match res {
+                                Outcome::Nodes(ns) => echoes.extend(ns),
+                                other => last = other,
+                            }
                             inverses.push(inv);
                         }
                         // A Compound is a restoration UNIT, so abandoning one half-applied leaves
@@ -265,7 +274,8 @@ impl Command {
                     }
                 }
                 inverses.reverse(); // undo the children back-to-front
-                Ok((last, Command::Compound(inverses)))
+                let out = if echoes.is_empty() { last } else { Outcome::Nodes(echoes) };
+                Ok((out, Command::Compound(inverses)))
             }
 
             Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
@@ -373,7 +383,7 @@ impl Command {
                 Ok((Outcome::Ok, Command::AddLink { node_out, slot_out, node_in, slot_in }))
             }
 
-            Command::EditNode { uid, name, pos } => {
+            Command::EditNode { uid, name, pos, viewers } => {
                 // A node OR a scope facade is editable here; only a vanished uid is the no-op.
                 if !g.contains(uid) && g.scope(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node/scope gone
@@ -400,8 +410,16 @@ impl Command {
                 if let Some(p) = pos {
                     g.set_node_pos(uid, p)?;
                 }
+                // A scope facade has no viewer state, so only a real node's is captured and set.
+                let old_viewers = match &viewers {
+                    Some(_) => g.viewers(uid).cloned(),
+                    None => None,
+                };
+                if let Some(v) = viewers {
+                    g.set_node_viewers(uid, v)?;
+                }
                 let out = if referrers.is_empty() { Outcome::Ok } else { Outcome::Nodes(referrers) };
-                Ok((out, Command::EditNode { uid, name: inv_name, pos: old_pos }))
+                Ok((out, Command::EditNode { uid, name: inv_name, pos: old_pos, viewers: old_viewers }))
             }
 
             Command::EditParam { uid, group, name, value, expr } => {
@@ -723,6 +741,47 @@ impl CommandHistory {
         self.entries.retain(|e| !(e.session == session && e.undone));
         self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
         Ok(outcome)
+    }
+
+    /// Where this session's next entry will land — the mark a [`coalesce`](Self::coalesce) or a
+    /// [`rollback`](Self::rollback) measures from.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Drop this session's redo run, as an `apply` would. A compound clears it once up front, so
+    /// no step of its own can move the mark under it.
+    pub fn clear_redo(&mut self, session: &str) {
+        self.entries.retain(|e| !(e.session == session && e.undone));
+    }
+
+    /// Fold everything this session has added since `from` into ONE entry, so a compound RPC is a
+    /// single undo step. A peer's entry that landed in between is left exactly where it is.
+    pub fn coalesce(&mut self, session: &str, from: usize) {
+        let mine: Vec<usize> =
+            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].session == session).collect();
+        if mine.len() < 2 {
+            return;
+        }
+        // Newest first: each toggle is an inverse, and a Compound applies its children in order.
+        let toggle =
+            Command::Compound(mine.iter().rev().map(|&i| self.entries.remove(i).toggle).collect());
+        self.entries.push(HistoryEntry { toggle, session: session.to_string(), undone: false });
+    }
+
+    /// Undo and DISCARD everything this session has added since `from` — what a compound does when
+    /// a later step is refused, so a failed call leaves no redo run either.
+    pub fn rollback(&mut self, g: &mut Graph, session: &str, from: usize) {
+        let mine: Vec<usize> =
+            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].session == session).collect();
+        for &i in mine.iter().rev() {
+            // Best-effort by necessity, exactly as `Compound`'s own unwind is.
+            let _ = self.entries.remove(i).toggle.execute(g);
+        }
     }
 
     /// Drop the entire history (every session's entries). Loading a patch fully resets the
