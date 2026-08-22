@@ -14,7 +14,7 @@ mod origin;
 mod patchfile;
 mod proc;
 pub mod reducer;
-mod schemas;
+pub mod schemas;
 pub mod term;
 pub mod vocab;
 

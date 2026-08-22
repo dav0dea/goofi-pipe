@@ -74,6 +74,25 @@ fn the_ops_kept_off_the_agent_surface_are_a_decision_and_are_named_here() {
 fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
     regenerated("frontend/src/lib/api/ops.ts", typescript());
     regenerated("frontend/src/lib/api/vocab.ts", vocab::typescript());
+
+    // `PROTOCOL_VERSION` is the one number both halves declare by hand, and each comments that the
+    // other must be bumped with it — which is the definition of a pair that drifts. A client one
+    // version behind still connects and then half-works, so neither side's suite can catch it.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../frontend/src/lib/api/control.ts");
+    let src = std::fs::read_to_string(&path).expect("the control client");
+    let declared: i64 = src
+        .split("export const PROTOCOL_VERSION")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|rest| rest.trim_start_matches([' ', '=', ':']).trim().parse().ok())
+        .unwrap_or_else(|| panic!("no PROTOCOL_VERSION in {}", path.display()));
+    assert_eq!(
+        declared,
+        goofi_bridge::schemas::PROTOCOL_VERSION,
+        "the client declares protocol {declared} and this manager speaks {} — bump both together",
+        goofi_bridge::schemas::PROTOCOL_VERSION
+    );
 }
 
 #[test]

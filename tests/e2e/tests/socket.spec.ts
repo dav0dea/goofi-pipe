@@ -9,7 +9,7 @@
 // backend holds would ask the accused to testify.
 
 import { test, expect, type Browser, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { closeSplit, splitRight, waitForApp } from '../lib/app';
 import {
 	armSocketControl,
 	backendDoc,
@@ -315,6 +315,39 @@ test.describe('the control socket', () => {
 		}
 	});
 
+	test('a client the manager cannot speak to is told, not left half-working', async ({ page }) => {
+		// The one failure mode where BOTH halves' own suites stay green: `PROTOCOL_VERSION` is declared
+		// by hand on each side, each comments that the other must be bumped with it, and a client one
+		// version behind still connects. `contracts.rs` pins that the two numbers agree; this pins what
+		// the client does when they do not.
+		//
+		// The socket is PROXIED to the real server, not faked — only the hello frame's version is
+		// rewritten on the way through, so everything else is the manager's own traffic.
+		await page.routeWebSocket(/\/control$/, (ws) => {
+			const server = ws.connectToServer();
+			server.onMessage((m) => {
+				if (typeof m !== 'string') return ws.send(m);
+				try {
+					const framed = JSON.parse(m);
+					const payload = framed?.payload ?? framed?.result;
+					if (payload && typeof payload === 'object' && 'protocol_version' in payload) {
+						payload.protocol_version = 999;
+						return ws.send(JSON.stringify(framed));
+					}
+				} catch {
+					/* not a JSON frame; pass it through untouched */
+				}
+				ws.send(m);
+			});
+			ws.onMessage((m) => server.send(m));
+		});
+		await page.goto('/');
+		await expect(
+			page.getByRole('alert'),
+			'a tab that cannot speak the manager’s protocol says so instead of half-working'
+		).toContainText(/out of date/i);
+	});
+
 	test('a data stream reaches the tab as bytes and decodes to the frame the node emitted', async ({
 		page
 	}) => {
@@ -338,6 +371,44 @@ test.describe('the control socket', () => {
 					.not.toBeNull();
 			});
 			const summary = await read();
+
+			await test.step('a SECOND viewer on the same slot is served, and closing it leaves the first', async () => {
+				// "One data stream per (node, slot), whatever the viewer count" is the architecture's
+				// load-bearing claim about viewers; `running.rs` proves the manager's half, folding six
+				// subscribers to one and then to none. What only a browser can say is that a second
+				// viewer does not disturb the first — a detach and re-attach inside one render tick is
+				// exactly the batch that used to pass through zero and tear the stream down under every
+				// other viewer of that slot.
+				//
+				// A SPLIT, not a second tab: switching tabs unmounts the first viewer, so the two would
+				// never be live at once and the question would not be asked at all.
+				const index = () =>
+					page.evaluate((u) => (window as any).goofi.query.frameSummary(u, 'out'), osc);
+				await expect.poll(index, { message: 'the canvas viewer is served' }).not.toBeNull();
+
+				await splitRight(page);
+				const fresh = await page.evaluate(() => {
+					const g = (window as any).goofi;
+					const panels = g.query.panels();
+					const p = panels[panels.length - 1].panelId;
+					g.commands.setPanelType(p, 'viewer');
+					g.commands.bindNodeToPanel(p, g.query.graph().nodes[0].uid);
+					return p;
+				});
+				expect(fresh, 'the split gave us a second panel to bind').toBeTruthy();
+				await expect
+					.poll(index, { message: 'both viewers live, and the slot still answers' })
+					.not.toBeNull();
+
+				await closeSplit(page);
+				await page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
+				await expect
+					.poll(
+						async () => (await index())?.numeric?.max ?? null,
+						{ message: 'the surviving viewer is STILL served after the other went', timeout: 20_000 }
+					)
+					.not.toBeNull();
+			});
 
 			await test.step('…and it decodes to a real signal, not to zeroes', async () => {
 				expect(summary.dtype, 'the wire dtype survived — numpy spelling, little-endian f32').toBe('<f4');
