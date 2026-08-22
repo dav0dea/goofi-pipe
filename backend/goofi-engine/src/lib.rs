@@ -478,6 +478,20 @@ impl Graph {
         Ok(())
     }
 
+    /// Re-resolve every expression that names a boundary PORT. A node's stream is fixed by its
+    /// manifest, but a port's IS the wire behind it — so anything that moves a wire moves what
+    /// `nd('port')` reads, and the binding has to follow. Free when the patch has no ports.
+    fn rebind_ports(&mut self) {
+        let ports: Vec<String> = self
+            .scopes
+            .values()
+            .flat_map(|s| s.stubs.values().map(|st| st.name.clone()))
+            .collect();
+        for name in ports {
+            self.rebind_naming(&name);
+        }
+    }
+
     /// Re-resolve and re-send every expression binding that reads global `name`, so its new value
     /// reaches the nodes reading it (only those bindings pay). Shared by the global mutators.
     fn invalidate_bindings_reading(&mut self, name: &str) {
@@ -871,17 +885,25 @@ impl Graph {
         }
     }
 
-    /// Whether a display name is taken by any live leaf node OR sub-patch scope facade — the two
-    /// share one display-name namespace, so uniqueness must span both.
-    fn name_in_use(&self, name: &str) -> bool {
-        self.nodes.values().any(|e| e.name == name) || self.scopes.values().any(|s| s.name == name)
+    /// Every display name in the patch with the uid wearing it — leaves, sub-patch facades and
+    /// boundary ports share ONE namespace, because `nd('name')` addresses any of them.
+    fn named(&self) -> impl Iterator<Item = (Uid, &str)> {
+        self.nodes
+            .iter()
+            .map(|(u, e)| (*u, e.name.as_str()))
+            .chain(self.scopes.iter().map(|(u, s)| (*u, s.name.as_str())))
+            .chain(self.scopes.values().flat_map(|s| s.stubs.iter().map(|(u, st)| (*u, st.name.as_str()))))
     }
 
-    /// Is `name` already a display name of a node OR scope facade OTHER than `except`? `EditNode`
-    /// tolerates a collision as a no-op, so the user-facing error is raised at the RPC boundary.
-    pub fn name_taken(&self, name: &str, except: Uid) -> bool {
-        self.nodes.iter().any(|(u, e)| *u != except && e.name == name)
-            || self.scopes.iter().any(|(u, s)| *u != except && s.name == name)
+    fn name_in_use(&self, name: &str) -> bool {
+        self.named().any(|(_, n)| n == name)
+    }
+
+    /// Is `name` already worn by something other than `except` — `None` when nothing is exempt, as
+    /// for a node not yet born? `AddNode` and `EditNode` both tolerate a collision as a no-op, so
+    /// the user-facing error is raised at the RPC boundary.
+    pub fn name_taken(&self, name: &str, except: Option<Uid>) -> bool {
+        self.named().any(|(u, n)| Some(u) != except && n == name)
     }
 
     /// Lowest `{base}{N}` display name not already in use (globally unique).
@@ -906,21 +928,49 @@ impl Graph {
         }
     }
 
-    /// Display name of a node OR a scope facade (a collapsed sub-patch instance). Uniform so
-    /// `EditNode` reads either through one seam.
+    /// Display name of anything a uid can name: a node, a sub-patch facade, or a boundary port.
+    /// Uniform so `EditNode` reads all three through one seam.
     pub fn name(&self, uid: Uid) -> Option<&str> {
         self.nodes
             .get(&uid)
             .map(|e| e.name.as_str())
             .or_else(|| self.scopes.get(&uid).map(|s| s.name.as_str()))
+            .or_else(|| self.stub(uid).map(|(_, s)| s.name.as_str()))
     }
 
-    /// Position of a node OR a scope facade (whose pos lives in `scopes[uid].pos`, not a live node).
+    /// Position of a node, a facade (whose pos lives in `scopes[uid].pos`) or a boundary port.
     pub fn pos(&self, uid: Uid) -> Option<[f64; 2]> {
         self.nodes
             .get(&uid)
             .map(|e| e.pos)
             .or_else(|| self.scopes.get(&uid).map(|s| s.pos))
+            .or_else(|| self.stub(uid).map(|(_, s)| s.pos))
+    }
+
+    /// The boundary port a uid names, with the scope holding it. Ports are few and scopes fewer, so
+    /// this scans rather than keeping a second index beside `scopes`.
+    pub fn stub(&self, uid: Uid) -> Option<(Uid, &subpatch::Stub)> {
+        self.scopes.iter().find_map(|(s, sc)| sc.stubs.get(&uid).map(|st| (*s, st)))
+    }
+
+    /// The physical `(node, slot)` a boundary port's data really lives on. A port never runs, so it
+    /// never holds a frame: an OUT port exposes the inner leaf it drains, and an IN port exposes
+    /// whatever is wired to it from outside the sub-patch. `None` until both sides are wired.
+    pub fn stub_stream(&self, port: Uid) -> Option<(Uid, &'static str)> {
+        let (scope, st) = self.stub(port)?;
+        let dir = st.dir;
+        let (leaf, slot) = self.resolve_stub(scope, &port.to_hex())?;
+        match dir {
+            subpatch::Dir::Out => Some((leaf, self.resolve_output(leaf, &slot)?)),
+            // The port resolves to an INPUT slot, so the stream is the wire feeding that slot.
+            subpatch::Dir::In => {
+                let slot = self.resolve_input(leaf, &slot)?;
+                self.links
+                    .iter()
+                    .find(|l| l.node_in == leaf && l.slot_in == slot)
+                    .map(|l| (l.node_out, l.slot_out))
+            }
+        }
     }
 
     /// A node's params as of now. An owned snapshot rather than a borrow: cloning the `Arc` is
@@ -944,19 +994,30 @@ impl Graph {
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
         }
-        // A scope facade (collapsed sub-patch instance) carries its own display name; `nd()`
-        // expressions only reference leaf-node names, so a scope rename rewrites nothing.
+        // A scope facade carries its own display name, but exposes no single stream, so no `nd()`
+        // reference can be following it.
         if let Some(s) = self.scopes.get_mut(&uid) {
             s.name = name.to_string();
             return Ok(vec![]);
         }
-        let old_name = self
-            .nodes
-            .get(&uid)
-            .ok_or_else(|| format!("no such node {uid}"))?
-            .name
-            .clone();
-        self.nodes.get_mut(&uid).unwrap().name = name.to_string();
+        // A boundary port DOES expose a stream, so its rename follows into expressions exactly as a
+        // leaf's does — the rewrite below is shared.
+        let old_name = match self.stub(uid).map(|(s, st)| (s, st.name.clone())) {
+            Some((scope, old)) => {
+                self.stub_mut(scope, uid).expect("just found").name = name.to_string();
+                old
+            }
+            None => {
+                let old = self
+                    .nodes
+                    .get(&uid)
+                    .ok_or_else(|| format!("no such node {uid}"))?
+                    .name
+                    .clone();
+                self.nodes.get_mut(&uid).unwrap().name = name.to_string();
+                old
+            }
+        };
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
         let touched = self.rewrite_nd_refs_for_rename(&old_name, name);
@@ -994,6 +1055,10 @@ impl Graph {
     }
 
     pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
+        if let Some(scope) = self.stub(uid).map(|(s, _)| s) {
+            self.stub_mut(scope, uid).expect("just found").pos = pos;
+            return Ok(());
+        }
         // A scope facade's pos lives in `scopes[uid].pos` (it is not a live node) — move it there.
         if let Some(s) = self.scopes.get_mut(&uid) {
             s.pos = pos;
@@ -1010,17 +1075,21 @@ impl Graph {
     /// Replace a node's opaque viewer view-state blob (persisted to `.gfi`, echoed in node
     /// info). The backend never interprets it — it is the editor's per-slot kind/settings.
     pub fn set_node_viewers(&mut self, uid: Uid, viewers: serde_json::Value) -> Result<(), String> {
-        let e = self
-            .nodes
-            .get_mut(&uid)
-            .ok_or_else(|| format!("no such node {uid}"))?;
-        e.viewers = viewers;
+        if let Some(e) = self.nodes.get_mut(&uid) {
+            e.viewers = viewers;
+            return Ok(());
+        }
+        let scope = self.stub(uid).map(|(s, _)| s).ok_or_else(|| format!("no such node {uid}"))?;
+        self.stub_mut(scope, uid).expect("just found").viewers = viewers;
         Ok(())
     }
 
-    /// A node's viewer view-state blob (empty object if never set).
+    /// A node's or a boundary port's viewer view-state blob (empty object if never set).
     pub fn viewers(&self, uid: Uid) -> Option<&serde_json::Value> {
-        self.nodes.get(&uid).map(|e| &e.viewers)
+        self.nodes
+            .get(&uid)
+            .map(|e| &e.viewers)
+            .or_else(|| self.stub(uid).map(|(_, s)| &s.viewers))
     }
 
     // Grouping never touches the flat runtime — the members stay the exact live nodes they were,
@@ -1145,16 +1214,6 @@ impl Graph {
         }
     }
 
-    /// Lowest `in{n}`/`out{n}` label not already worn by a stub on `scope`. A default only: a
-    /// rename is free to collide, because a label addresses nothing.
-    fn fresh_stub_name(&self, scope: Uid, dir: subpatch::Dir) -> String {
-        let stubs = self.scopes.get(&scope).map(|s| &s.stubs);
-        (0..)
-            .map(|n| format!("{}{n}", dir.name()))
-            .find(|cand| stubs.map(|st| st.values().all(|s| &s.name != cand)).unwrap_or(true))
-            .expect("unbounded")
-    }
-
     /// The inner-slot key a group boundary stub should reference for a crossing link: the real slot,
     /// a nested scope's existing stub, or a freshly MINTED chain of ports, each recorded in `minted`.
     fn expose_in_nested_member(
@@ -1185,7 +1244,7 @@ impl Graph {
             subpatch::Dir::In => self.input_slot_type(leaf, slot),
         }
         .unwrap_or(goofi_core::SlotType::Array);
-        let name = self.fresh_stub_name(member, dir);
+        let name = self.fresh_name(dir.name());
         let id = self.mint();
         let base = self.pos(member).unwrap_or([0.0, 0.0]);
         let pos = match dir {
@@ -1193,7 +1252,9 @@ impl Graph {
             subpatch::Dir::In => [base[0] - 40.0, base[1]],
         };
         if let Some(s) = self.scopes.get_mut(&member) {
-            s.stubs.insert(id, subpatch::Stub { dir, dtype, inner: Some(inner), pos, name });
+            let mut st = subpatch::Stub::new(dir, dtype, pos, name);
+            st.inner = Some(inner);
+            s.stubs.insert(id, st);
             minted.push((member, id));
         }
         id.to_hex()
@@ -1258,16 +1319,9 @@ impl Graph {
                     }
                     let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out, minted);
-                    stubs.insert(
-                        self.mint(),
-                        Stub {
-                            dir: Dir::Out,
-                            dtype,
-                            inner: Some((om, inner_slot)),
-                            pos: [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
-                            name: format!("out{out_n}"),
-                        },
-                    );
+                    let mut st = Stub::new(Dir::Out, dtype, [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64], self.fresh_name("out"));
+                    st.inner = Some((om, inner_slot));
+                    stubs.insert(self.mint(), st);
                     out_n += 1;
                 }
                 (None, Some(im)) => {
@@ -1276,16 +1330,9 @@ impl Graph {
                     }
                     let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In, minted);
-                    stubs.insert(
-                        self.mint(),
-                        Stub {
-                            dir: Dir::In,
-                            dtype,
-                            inner: Some((im, inner_slot)),
-                            pos: [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
-                            name: format!("in{in_n}"),
-                        },
-                    );
+                    let mut st = Stub::new(Dir::In, dtype, [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64], self.fresh_name("in"));
+                    st.inner = Some((im, inner_slot));
+                    stubs.insert(self.mint(), st);
                     in_n += 1;
                 }
                 _ => {}
@@ -1354,10 +1401,13 @@ impl Graph {
         self.scopes.get_mut(&scope)?.stubs.get_mut(&stub)
     }
 
-    /// A scope's whole stub map. Deliberately NOT `&mut Scope`, which would hand out `name` and
-    /// `pos` as well and let a caller bypass the validated rename path.
-    pub fn stubs_mut(&mut self, scope: Uid) -> Option<&mut IndexMap<Uid, subpatch::Stub>> {
-        self.scopes.get_mut(&scope).map(|s| &mut s.stubs)
+    /// Put a captured port back exactly as it was — the inverse of [`Self::remove_stub`].
+    pub fn restore_stub(&mut self, scope: Uid, port: Uid, stub: subpatch::Stub) {
+        let name = stub.name.clone();
+        if let Some(s) = self.scopes.get_mut(&scope) {
+            s.stubs.insert(port, stub);
+            self.rebind_naming(&name);
+        }
     }
 
     /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
@@ -1458,11 +1508,21 @@ impl Graph {
         if !self.scopes.contains_key(&scope) {
             return Err(format!("add_stub: no such scope {scope}"));
         }
-        let name = name.unwrap_or_else(|| self.fresh_stub_name(scope, dir));
+        let name = name.unwrap_or_else(|| self.fresh_name(dir.name()));
         let id = self.mint();
         let s = self.scopes.get_mut(&scope).expect("checked above");
-        s.stubs.insert(id, subpatch::Stub { dir, dtype, inner: None, pos, name });
+        s.stubs.insert(id, subpatch::Stub::new(dir, dtype, pos, name.clone()));
+        // A binding already written against this name becomes resolvable the moment the port exists.
+        self.rebind_naming(&name);
         Ok(id)
+    }
+
+    /// Take a boundary port off a scope, answering the port it removed. Every `nd()` naming it goes
+    /// unresolvable here rather than at the next edit that happens to touch it.
+    pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<subpatch::Stub> {
+        let st = self.scopes.get_mut(&scope)?.stubs.shift_remove(&port)?;
+        self.rebind_naming(&st.name);
+        Some(st)
     }
 
     /// Validate a candidate stub wire and resolve the port dtype it would take, without mutating.
@@ -1516,6 +1576,7 @@ impl Graph {
                     .ok_or("set_stub_inner: no such stub")?;
                 st.inner = Some(target);
                 st.dtype = dtype;
+                self.rebind_ports();
                 Ok(())
             }
             None => {
@@ -1525,6 +1586,7 @@ impl Graph {
                     .and_then(|s| s.stubs.get_mut(&stub))
                     .ok_or("set_stub_inner: no such stub")?;
                 st.inner = None;
+                self.rebind_ports();
                 Ok(())
             }
         }
@@ -1583,6 +1645,7 @@ impl Graph {
         for l in dropped.iter().filter(|l| l.node_in != uid) {
             self.replan_slot(l.node_in, l.slot_in);
         }
+        self.rebind_ports();
         Ok(())
     }
 
@@ -1862,7 +1925,22 @@ impl Graph {
     /// multi-output node is refused HERE — the graph is what knows how many outputs a node has.
     fn resolve_stream(&self, name: &str, slot: Option<&str>) -> Result<(Uid, &'static str), String> {
         let uid = self.uid_by_name(name).ok_or_else(|| format!("no node named `{name}`"))?;
-        let outputs = self.nodes[&uid].manifest.outputs;
+        // A boundary port is a naming indirection over a real slot, so a reference to one binds to
+        // the stream BEHIND it — which is what makes `nd()` work across a sub-patch wall.
+        if let Some((_, st)) = self.stub(uid) {
+            if st.dir == subpatch::Dir::Out {
+                return Err(format!("`{name}` is a sub-patch output port, which carries no stream to read"));
+            }
+            if slot.is_some_and(|s| s != subpatch::BOUNDARY_SLOT) {
+                return Err(format!("port `{name}` has one slot, `{}`", subpatch::BOUNDARY_SLOT));
+            }
+            return self
+                .stub_stream(uid)
+                .ok_or_else(|| format!("port `{name}` has nothing wired to it yet"));
+        }
+        let outputs = self.nodes.get(&uid).map(|e| e.manifest.outputs).ok_or_else(|| {
+            format!("`{name}` is a sub-patch, which carries no stream to read")
+        })?;
         match slot {
             Some(slot) => outputs
                 .iter()
@@ -1923,7 +2001,7 @@ impl Graph {
 
     /// Resolve a node display name to its uid (for `nd('name')` references).
     fn uid_by_name(&self, name: &str) -> Option<Uid> {
-        self.nodes.iter().find(|(_, e)| e.name == name).map(|(u, _)| *u)
+        self.named().find(|(_, n)| *n == name).map(|(u, _)| u)
     }
 
     /// Resolve an output slot name to its `&'static` manifest name.
@@ -2012,6 +2090,7 @@ impl Graph {
         }
         self.links.push(new);
         self.replan_slot(node_in, slot_in);
+        self.rebind_ports();
         Ok(())
     }
 
@@ -2035,6 +2114,7 @@ impl Graph {
         if let Some(slot_in) = self.resolve_input(node_in, slot_in) {
             self.replan_slot(node_in, slot_in);
         }
+        self.rebind_ports();
         Ok(())
     }
 
@@ -2474,16 +2554,17 @@ impl Graph {
                 json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name, "pos": scope.pos, "params": {} }),
             );
             for (id, st) in &scope.stubs {
-                nodes.insert(
-                    id.to_hex(),
-                    json!({
-                        "type": subpatch::boundary_type_name(st.dir, st.dtype),
-                        "name": st.name,
-                        "pos": st.pos,
-                        "params": {},
-                        "scope": uid.to_hex(),
-                    }),
-                );
+                let mut rec = json!({
+                    "type": subpatch::boundary_type_name(st.dir, st.dtype),
+                    "name": st.name,
+                    "pos": st.pos,
+                    "params": {},
+                    "scope": uid.to_hex(),
+                });
+                if st.viewers.as_object().is_some_and(|m| !m.is_empty()) {
+                    rec["viewers"] = st.viewers.clone();
+                }
+                nodes.insert(id.to_hex(), rec);
             }
         }
         for (uid, parent) in self.scopes.keys().filter_map(|u| self.scope_of(*u).map(|p| (*u, p))) {
@@ -2671,7 +2752,10 @@ impl Graph {
             let uid = idmap[old];
             let Some(scope) = self.scope_of(uid) else { continue };
             let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let stub = subpatch::Stub { dir, dtype, inner: None, pos: read_pos(rec), name };
+            let mut stub = subpatch::Stub::new(dir, dtype, read_pos(rec), name);
+            if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
+                stub.viewers = v.clone();
+            }
             if let Some(s) = self.scopes.get_mut(&scope) {
                 s.stubs.insert(uid, stub);
                 port_of.insert(uid, scope);

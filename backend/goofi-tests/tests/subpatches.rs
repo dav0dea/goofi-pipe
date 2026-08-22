@@ -4,9 +4,27 @@
 //! node to every op that can name one, and the two link acts that look like one crossing are two
 //! ordinary links in two scopes: node→facade above, port→member inside.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
+use goofi_core::Param;
+use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
 use goofi_tests::{hex, j, Goofi};
+
+/// Compiles anything and hands the target value back. With one installed, a binding error in the
+/// reply is the GRAPH's own resolution talking rather than "no evaluator here".
+struct Always;
+
+impl ExprEvaluator for Always {
+    fn compile(&self, _source: &str) -> Result<Compiled, ExprError> {
+        Ok(Compiled { id: 1 })
+    }
+    fn eval(&self, _id: BindingId, ctx: &EvalCtx<'_>) -> Result<Param, ExprError> {
+        Ok(ctx.target.clone())
+    }
+    fn release(&self, _id: BindingId) {}
+}
 
 fn group(g: &Goofi, members: &[String]) -> String {
     g.call("group_nodes", j!({ "members": members, "pos": [0.0, 0.0] }))["inst_id"]
@@ -237,4 +255,97 @@ fn a_stale_boundary_toggle_still_flips_after_a_peer_removed_the_port() {
 
     assert_eq!(one.call("undo", j!({}))["changed"], true);
     assert_eq!(one.call("redo", j!({}))["changed"], true);
+}
+
+#[test]
+fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
+    // A port carries no frame of its own, so `nd('port')` binds to the stream BEHIND it — and
+    // unlike a node's, that stream MOVES when somebody wires the sub-patch, so the binding has to
+    // be re-resolved by the graph rather than re-written by the user.
+    let g = Goofi::new();
+    g.state.graph.lock().unwrap().set_evaluator(Arc::new(Always));
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    let inst = group(&g, &[hex(buf)]);
+
+    let inp = boundary(&g, &inst, "in");
+    wire(&g, &inp, "in", &hex(buf), "data");
+    g.call("edit_node", j!({ "node": inp, "name": "wall" }));
+
+    // A member reads its own sub-patch's input port. Nothing feeds it yet, so the refusal names it.
+    let bind = |expr: &str| {
+        g.call("edit_node", j!({ "node": hex(buf), "params": { "common": { "max_frequency":
+                                     { "expression": expr } } } }))
+            ["params"]["common"]["max_frequency"]["error"].clone()
+    };
+    let why = bind("nd('wall')");
+    assert!(why.as_str().is_some_and(|e| e.contains("wall") && e.contains("wired")),
+            "an unwired port says so, and says which: {why}");
+
+    // Wiring the OUTSIDE resolves the same binding — nobody re-writes the expression.
+    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                           "node_in": inst, "slot_in": inp }));
+    let bound = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(bound.contains("common.max_frequency = expr: nd('wall')"), "{bound}");
+    assert!(!bound.contains("[error:"), "the wire behind the port made it resolvable: {bound}");
+
+    // …and cutting that wire takes it back, through the same door.
+    g.call("remove_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                              "node_in": inst, "slot_in": inp }));
+    let cut = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(cut.contains("[error:") && cut.contains("wired"),
+            "the binding follows the wire away again: {cut}");
+
+    // A rename follows into the expression, exactly as a node's does.
+    g.call("edit_node", j!({ "node": inp, "name": "left" }));
+    let renamed = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(renamed.contains("nd('left')"), "the reference followed the port's rename: {renamed}");
+
+    // An OUT port drains the sub-patch, so there is nothing to read from it.
+    let outp = boundary(&g, &inst, "out");
+    g.call("edit_node", j!({ "node": outp, "name": "sink" }));
+    let refused = bind("nd('sink')");
+    assert!(refused.as_str().is_some_and(|e| e.contains("no stream")), "{refused}");
+
+    // A port's label lives in the ONE display-name namespace `nd()` reads, so it cannot shadow a
+    // node's — a second `left` would make the reference above ambiguous.
+    g.call("edit_node", j!({ "node": hex(osc), "name": "source" }));
+    g.refuse("edit_node", j!({ "node": inp, "name": "source" }));
+    g.refuse("add_node", j!({ "type": "Buffer", "name": "left" }));
+}
+
+#[test]
+fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
+    // A port never runs, so a viewer on one has to reach the stream BEHIND it — the same reducer
+    // the source's own viewer uses, because there is one stream per (node, slot) whatever the
+    // viewer count.
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    let inst = group(&g, &[hex(buf)]);
+    let inp = boundary(&g, &inst, "in");
+    wire(&g, &inp, "in", &hex(buf), "data");
+    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                           "node_in": inst, "slot_in": inp }));
+
+    // An IN port wears an output slot, so it takes a viewer exactly as a node does.
+    g.call("edit_node", j!({ "node": inp, "viewers": { "value": { "kind": "line" } } }));
+    let doc = g.doc();
+    let stored = doc["nodes"][&inp]["viewers"].as_str().expect("a viewer blob rides as a string");
+    assert!(stored.contains("line"), "the port kept the view state: {stored}");
+
+    // …and it is refused on a slot the port does not have, rather than stored and never drawn.
+    g.refuse("edit_node", j!({ "node": inp, "viewers": { "out": { "kind": "line" } } }));
+
+    // An OUT port drains the sub-patch: no output, so no viewer.
+    let outp = boundary(&g, &inst, "out");
+    g.refuse("edit_node", j!({ "node": outp, "viewers": { "value": { "kind": "line" } } }));
+
+    // The blob survives a save and a load, as a node's does.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ports.gfi");
+    g.call("save", j!({ "path": path.to_string_lossy() }));
+    let other = Goofi::new();
+    other.call("load", j!({ "path": path.to_string_lossy() }));
+    assert_eq!(other.doc()["nodes"][&inp]["viewers"], g.doc()["nodes"][&inp]["viewers"]);
 }

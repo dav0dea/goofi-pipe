@@ -245,16 +245,22 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
         .collect()
 }
 
-/// A node's OUTPUT slots — a leaf's declared outputs, or a collapsed sub-patch's outward boundary
-/// ports.
+/// A node's OUTPUT slots — a leaf's declared outputs, a collapsed sub-patch's outward boundary
+/// ports, or the single slot an IN port wears (an OUT port drains, so it has none).
 pub fn output_slots(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Vec<(String, &'static str)> {
     if let Some(scope) = g.scope(uid) {
         return scope
             .stubs
             .iter()
-            .filter(|(_, s)| s.dir == goofi_engine::subpatch::Dir::Out)
+            .filter(|(_, s)| s.dir == Dir::Out)
             .map(|(id, s)| (id.to_hex(), s.dtype.name()))
             .collect();
+    }
+    if let Some((_, st)) = g.stub(uid) {
+        return match st.dir {
+            Dir::In => vec![(BOUNDARY_SLOT.to_string(), st.dtype.name())],
+            Dir::Out => vec![],
+        };
     }
     g.manifest(uid)
         .map(|m| m.outputs.iter().map(|o| (o.name.to_string(), o.kind.name())).collect())
@@ -291,7 +297,7 @@ pub fn check_viewers(
     let bag = viewers
         .as_object()
         .ok_or_else(|| format!("{OP}: viewers is a {{slot: {{kind, settings, collapsed}}}} map"))?;
-    if g.manifest(uid).is_none() {
+    if g.manifest(uid).is_none() && g.stub(uid).is_none() {
         return Ok(());
     }
     for (slot, view) in bag {

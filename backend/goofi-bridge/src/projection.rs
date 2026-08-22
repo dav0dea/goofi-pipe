@@ -53,11 +53,15 @@ pub fn of(g: &Graph) -> Value {
                     "params": {} }),
         );
         for (id, st) in scope.stubs.iter() {
-            nodes.insert(
-                id.to_hex(),
-                json!({ "type": subpatch::boundary_type_name(st.dir, st.dtype), "name": st.name,
-                        "pos": pos_json(st.pos), "params": {}, "scope": uid.to_hex() }),
-            );
+            let mut rec = json!({ "type": subpatch::boundary_type_name(st.dir, st.dtype),
+                                  "name": st.name, "pos": pos_json(st.pos), "params": {},
+                                  "scope": uid.to_hex() });
+            // The same `json_string` shape a node's viewers ride in: a merge patch spends `null`
+            // on a key delete, so a viewer blob must not reach the document as a tree of leaves.
+            if st.viewers.as_object().is_some_and(|m| !m.is_empty()) {
+                rec["viewers"] = json!(st.viewers.to_string());
+            }
+            nodes.insert(id.to_hex(), rec);
         }
     }
     // Membership rides the member. Absent means ROOT — never a null, which a merge patch spends on

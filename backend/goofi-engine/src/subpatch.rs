@@ -72,6 +72,15 @@ pub struct Stub {
     pub inner: StubInner,
     pub pos: [f64; 2],
     pub name: String,
+    /// Per-slot viewer view-state, as a node carries it. An IN port wears an output, so it is the
+    /// one a viewer can attach to; an OUT port's stays empty.
+    pub viewers: serde_json::Value,
+}
+
+impl Stub {
+    pub fn new(dir: Dir, dtype: SlotType, pos: [f64; 2], name: String) -> Self {
+        Stub { dir, dtype, inner: None, pos, name, viewers: serde_json::json!({}) }
+    }
 }
 
 /// A sub-patch scope: its display name, facade position and boundary stubs. Membership lives in

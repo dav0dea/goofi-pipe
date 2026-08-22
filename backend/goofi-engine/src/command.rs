@@ -192,14 +192,6 @@ pub enum Command {
         inner: subpatch::StubInner,
         dtype: Option<goofi_core::SlotType>,
     },
-    /// Edit a stub's display name and/or pill pos. A `None` field is left untouched; the inverse
-    /// restores whichever were set.
-    EditStub {
-        scope: Uid,
-        stub: Uid,
-        name: Option<String>,
-        pos: Option<[f64; 2]>,
-    },
 }
 
 impl Command {
@@ -222,16 +214,16 @@ impl Command {
                     None => Ok(()), // an unwire always applies once the stub is known to exist
                 }
             }
-            Command::RemoveStub { scope, stub: id } | Command::EditStub { scope, stub: id, .. } => {
-                stub(*scope, *id)
-            }
+            Command::RemoveStub { scope, stub: id } => stub(*scope, *id),
             Command::Expand { scope } => {
                 g.scope(*scope).map(|_| ()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
             }
             // A collapsed sub-patch facade is editable here (name/pos), so either kind counts.
-            Command::EditNode { uid, .. } => (g.contains(*uid) || g.scope(*uid).is_some())
-                .then_some(())
-                .ok_or_else(|| format!("no node or sub-patch {}", uid.to_hex())),
+            Command::EditNode { uid, .. } => {
+                (g.contains(*uid) || g.scope(*uid).is_some() || g.stub(*uid).is_some())
+                    .then_some(())
+                    .ok_or_else(|| format!("no node, sub-patch or port {}", uid.to_hex()))
+            }
             // Stricter than `EditNode`: a scope facade has no params to edit.
             Command::EditParam { uid, .. } => {
                 g.contains(*uid).then_some(()).ok_or_else(|| format!("no node {}", uid.to_hex()))
@@ -383,9 +375,9 @@ impl Command {
             }
 
             Command::EditNode { uid, name, pos, viewers } => {
-                // A node OR a scope facade is editable here; only a vanished uid is the no-op.
-                if !g.contains(uid) && g.scope(uid).is_none() {
-                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node/scope gone
+                // A node, a scope facade or a boundary port; only a vanished uid is the no-op.
+                if !g.contains(uid) && g.scope(uid).is_none() && g.stub(uid).is_none() {
+                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: it is gone
                 }
                 let old_pos = pos.map(|_| g.pos(uid).unwrap_or([0.0, 0.0]));
                 // A rename rewrites `nd('old')` → `nd('new')` in referring expressions; report the
@@ -409,7 +401,7 @@ impl Command {
                 if let Some(p) = pos {
                     g.set_node_pos(uid, p)?;
                 }
-                // A scope facade has no viewer state, so only a real node's is captured and set.
+                // A scope facade has no viewer state; a node and a port both do.
                 let old_viewers = match &viewers {
                     Some(_) => g.viewers(uid).cloned(),
                     None => None,
@@ -636,9 +628,7 @@ impl Command {
                         return Ok((Outcome::Ok, Command::Compound(vec![])));
                     }
                     Some((id, stub)) => {
-                        if let Some(stubs) = g.stubs_mut(scope) {
-                            stubs.insert(id, stub);
-                        }
+                        g.restore_stub(scope, id, stub);
                         id
                     }
                 };
@@ -651,9 +641,7 @@ impl Command {
                 };
                 // External flat links stay valid leaf->leaf links — they never referenced the stub
                 // at runtime — so they are left in place.
-                if let Some(stubs) = g.stubs_mut(scope) {
-                    stubs.shift_remove(&id);
-                }
+                g.remove_stub(scope, id);
                 let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
                 Ok((
                     Outcome::Ok,
@@ -690,24 +678,6 @@ impl Command {
                 Ok((Outcome::Ok, Command::WireStub { scope, stub: stub_id, inner: old_inner, dtype: Some(old_dtype) }))
             }
 
-            Command::EditStub { scope, stub: stub_id, name, pos } => {
-                let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
-                    return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
-                };
-                let old_name = name.as_ref().map(|_| st.name.clone());
-                let old_pos = pos.map(|_| st.pos);
-                // One handle for the read above and both writes. The stub's uid never changes, so a
-                // rename leaves every external wire intact.
-                if let Some(st) = g.stub_mut(scope, stub_id) {
-                    if let Some(n) = &name {
-                        st.name = n.clone();
-                    }
-                    if let Some(p) = pos {
-                        st.pos = p;
-                    }
-                }
-                Ok((Outcome::Ok, Command::EditStub { scope, stub: stub_id, name: old_name, pos: old_pos }))
-            }
         }
     }
 }

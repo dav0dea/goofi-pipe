@@ -215,6 +215,25 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     assert_eq!(g.state.reducers.active_slots(), 1, "six viewers, one reducer");
     assert_eq!(g.state.reducers.subscribers(&key), 6);
 
+    // A sub-patch boundary port is a NAMING indirection over this same stream — it never runs and
+    // never holds a frame — so a viewer on one has to land on the reducer already here rather than
+    // opening a second on a slot that produces nothing.
+    let buf = g.add("Buffer");
+    g.link(osc, "out", buf, "data");
+    let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
+        .as_str().unwrap().to_string();
+    // The group minted the port itself: the cable it cut is what a boundary port IS.
+    let port = g.ports(&inst).first().cloned().expect("the cut is exposed as a port");
+    let mut through = Viewer::open(&base, &port, "value").await;
+    through.view(spec(32)).await;
+    assert!(!f32s(&through.until(|d| !f32s(d).is_empty()).await).is_empty(),
+            "the port draws the stream behind it");
+    assert_eq!(g.state.reducers.active_slots(), 1, "…on the reducer that was already open");
+    assert_eq!(g.state.reducers.subscribers(&key), 7);
+    drop(through);
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 6).await);
+    g.call("remove_node", j!({ "node": inst }));
+
     let passes = g.state.reducers.reductions(&key);
     tokio::time::sleep(Duration::from_millis(400)).await;
     let grew = g.state.reducers.reductions(&key) - passes;
