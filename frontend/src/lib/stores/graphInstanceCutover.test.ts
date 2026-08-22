@@ -100,7 +100,11 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		expect(i1.name).toBe('subpatch0');
 		expect(i1.pos).toEqual([5, 6]);
 		expect(i1.slots).toEqual({ input: {}, output: { p0: 'ARRAY' } });
-		expect(i1.members).toEqual({ m1: { uid: 'm1', is_instance: false } });
+		// A port is a member like any other node — it is what the canvas draws inside the scope.
+		expect(i1.members).toEqual({
+			m1: { uid: 'm1', is_instance: false },
+			p0: { uid: 'p0', is_instance: false }
+		});
 
 		// The synth node the canvas renders for the collapsed sub-patch reflects the wired slot.
 		const synth = g.nodeById('i1');

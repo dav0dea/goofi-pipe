@@ -13,7 +13,6 @@
 		type Node
 	} from '@xyflow/svelte';
 	import GoofiNode from '$lib/editor/GoofiNode.svelte';
-	import BoundaryNode from '$lib/editor/BoundaryNode.svelte';
 	import AddNodeMenu from '$lib/editor/AddNodeMenu.svelte';
 	import PlacementPreview from '$lib/editor/PlacementPreview.svelte';
 	import FitToGraph from '$lib/editor/FitToGraph.svelte';
@@ -44,14 +43,14 @@
 		type NodeInstanceInfo,
 		type NodeTypeInfo
 	} from '$lib/api/control';
-	import { BOUNDARY_SLOT, boundaryType } from '$lib/api/vocab';
+	import { boundaryType } from '$lib/api/vocab';
 	import {
 		ROOT_ID,
 		buildMemberIndex,
 		childrenOfScope,
 		drawEndpoint as sceneDrawEndpoint
 	} from '$lib/editor/subpatchScene';
-	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
+	import { nodeSurfaceSize, inputUnits } from '$lib/editor/nodeMetrics';
 	import { isSlotExpanded } from '$lib/viewers/inlineView';
 	import {
 		inputAnchors,
@@ -330,30 +329,11 @@
 				selected: sel.nodes(panelId).has(uid)
 			});
 		}
-		const inst = entered ? g.instances[entered] : null;
-		if (inst && entered) {
-			for (const [bid, port] of Object.entries(inst.interface)) {
-				next.push({
-					// A port's flow id IS its uid, so every editor path addresses it as it does a node.
-					id: bid,
-					type: 'boundary',
-					position: { x: port.pos[0], y: port.pos[1] },
-					data: {
-						name: port.name ?? bid,
-						dir: port.dir,
-						dtype: port.dtype ?? 'ARRAY',
-						wired: port.inner_node !== null,
-						rename: (newName: string) => g.renameNode(bid, newName)
-					},
-					selected: sel.nodes(panelId).has(bid)
-				});
-			}
-		}
 		flowNodes = next;
 	});
 
-	// Every link, rerouted to the nearest VISIBLE boundary in the entered scope, plus that
-	// instance's own wired boundary-pill edges.
+	// Every link, rerouted to the nearest VISIBLE boundary port in the entered scope. A port's own
+	// inner wire is one of them: it is a link like any other, drawn where its port is drawn.
 	$effect(() => {
 		reconcileTick; // re-derive on demand to drop an optimistic ghost edge after a rejected wire
 		const next: Edge[] = [];
@@ -372,37 +352,6 @@
 				selected: sel.edges(panelId).has(id),
 				animated: false
 			});
-		}
-		const inst = entered ? g.instances[entered] : null;
-		if (inst && entered) {
-			for (const [name, port] of Object.entries(inst.interface)) {
-				if (port.inner_node == null) continue;
-				const disp = g.memberUid(entered, port.inner_node);
-				if (!disp) continue;
-				if (port.dir === 'in') {
-					const id = `${name}->${disp}.${port.inner_slot}`;
-					next.push({
-						id,
-						source: name,
-						sourceHandle: BOUNDARY_SLOT,
-						target: disp,
-						targetHandle: port.inner_slot,
-						selected: sel.edges(panelId).has(id),
-						animated: false
-					});
-				} else {
-					const id = `${disp}.${port.inner_slot}->${name}`;
-					next.push({
-						id,
-						source: disp,
-						sourceHandle: port.inner_slot,
-						target: name,
-						targetHandle: BOUNDARY_SLOT,
-						selected: sel.edges(panelId).has(id),
-						animated: false
-					});
-				}
-			}
 		}
 		flowEdges = next;
 	});
@@ -535,9 +484,8 @@
 		publishCableNear(new Set());
 	}
 
-	/** A node's snap footprint when Svelte Flow has not measured it yet, per node KIND. */
+	/** A node's snap footprint when Svelte Flow has not measured it yet. */
 	function nodeFallbackSize(flowNode: Node | undefined): { width: number; height: number } {
-		if (flowNode?.type === 'boundary') return { width: BOUNDARY.width, height: BOUNDARY.height };
 		const node = flowNode?.data?.node as NodeInstanceInfo | undefined;
 		if (node) {
 			const inputs = Object.keys(node.input_slots ?? {});
@@ -658,9 +606,7 @@
 		event: MouseEvent | TouchEvent;
 	}): void {
 		const dragged = new Set(args.nodes.map((n) => n.id));
-		// A boundary pill is not a real node: it repositions but cannot be linked into a panel.
-		const draggingBoundary = args.nodes.some((n) => !!g.portScope(n.id));
-		const target = draggingBoundary ? null : linkTargetAt(args.event);
+		const target = linkTargetAt(args.event);
 		if (target) {
 			revertDragged(dragged);
 			const name = args.nodes[0]?.id;
@@ -799,7 +745,7 @@
 		lastClickInst = here;
 	}
 
-	const nodeTypes = { goofi: GoofiNode, boundary: BoundaryNode };
+	const nodeTypes = { goofi: GoofiNode };
 
 	/** Framing for every programmatic fit. */
 	const FIT_OPTIONS = { maxZoom: 1, padding: 0.18 } satisfies FitViewOptions;
@@ -988,26 +934,9 @@
 		const placement = pendingPlacement;
 		if (!placement) return;
 		pendingPlacement = null;
-		// A boundary type adds a PORT of the entered sub-patch rather than a node with a thread.
-		const port = boundaryType(placement.typeInfo.type);
-		if (port) {
-			if (!entered) return;
-			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
-				try {
-					const bndId = await g.addBoundary(entered, placement.typeInfo.type, pos);
-					if (!bndId || !placement.seed) return;
-					const { node, slot } = placement.seed;
-					await g.addLink(
-						port.dir === 'in'
-							? { node_out: bndId, slot_out: BOUNDARY_SLOT, node_in: node, slot_in: slot }
-							: { node_out: node, slot_out: slot, node_in: bndId, slot_in: BOUNDARY_SLOT }
-					);
-				} catch (e) {
-					console.warn('add boundary failed', e);
-				}
-			});
-			return;
-		}
+		// A boundary type takes this same path: `add_node` with `inst_id` is what makes a PORT of the
+		// entered sub-patch, and the catalog gives it the slots `autoLink` matches against.
+		if (boundaryType(placement.typeInfo.type) && !entered) return;
 		const label = placement.seed
 			? `Add ${placement.typeInfo.type} + connect`
 			: `Add ${placement.typeInfo.type}`;

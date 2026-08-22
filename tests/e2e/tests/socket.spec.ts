@@ -164,8 +164,10 @@ test.describe('the control socket', () => {
 					(us) => (window as any).goofi.commands.groupNodes(us, [0, 0]),
 					[osc, buf]
 				);
+				// A port is born through `addNode` like anything else — `inst_id` is what makes it a
+				// port OF that sub-patch rather than a node beside it.
 				const port = await page.evaluate(
-					(s) => (window as any).goofi.commands.addBoundary(s, 'InArray', [0, 40]),
+					(s) => (window as any).goofi.commands.addNode('InArray', 'boundary', [0, 40], s),
 					scope
 				);
 				await expect
@@ -202,6 +204,22 @@ test.describe('the control socket', () => {
 						)
 					)
 					.toBe(true);
+
+				// …and it DRAWS as a node: entered, the port is a full node surface with a header and
+				// a slot, not a chrome of its own. A pill had neither, and nothing else here would
+				// notice a component going back to being one.
+				await page.locator(`.svelte-flow__node[data-id="${scope}"]`).dblclick();
+				await expect(page.getByTestId('subpatch-breadcrumb')).toBeVisible();
+				const drawn = page.locator(`.svelte-flow__node[data-id="${port}"]`);
+				await expect(drawn.locator('.header')).toBeVisible();
+				await expect(
+					drawn.locator('.svelte-flow__handle'),
+					'an in port wears the one output slot its type declares'
+				).toHaveCount(1);
+				await page
+					.getByTestId('subpatch-breadcrumb')
+					.getByRole('button', { name: 'Patch', exact: true })
+					.click();
 
 				// Rename and move go through the ORDINARY node ops, not doors of their own.
 				await page.evaluate((p) => (window as any).goofi.commands.renameNode(p, 'left'), port);

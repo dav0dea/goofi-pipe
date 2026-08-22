@@ -50,11 +50,6 @@ export const commands = {
 	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
-	// A port is a node: `type` is one of the six boundary types, `instId` is the sub-patch it is a
-	// port OF, and everything after birth — wire, rename, move, delete — is addLink/removeLink,
-	// renameNode, setNodePos and removeNodes, the same doors every other node uses.
-	addBoundary: (instId: string, type: string, pos: [number, number] = [0, 0]): Promise<string> =>
-		graph().addBoundary(instId, type, pos),
 
 	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): Promise<void> =>
 		graph().addGlobal(name, value, type),

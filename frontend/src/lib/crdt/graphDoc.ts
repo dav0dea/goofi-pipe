@@ -96,11 +96,12 @@ export function nodeView(doc: Doc, uid: string): NodeView | null {
 	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n) };
 }
 
-/** Every LEAF node — the ones with a thread behind them. A facade and a port are node records in
- * the same map, and each has its own reader below. */
+/** Every node the canvas draws — leaves and boundary ports alike. A port has no thread behind it,
+ * but it is a node in every way the editor addresses one, so it is not a second kind here. A
+ * FACADE is left out: it is a scope, and `instanceView` reads it. */
 export function nodeViews(doc: Doc): NodeView[] {
 	const out: NodeView[] = [];
-	for (const [uid] of records(doc, (t) => t !== SCOPE_TYPE && !boundaryType(t))) {
+	for (const [uid] of records(doc, (t) => t !== SCOPE_TYPE)) {
 		const v = nodeView(doc, uid);
 		if (v) out.push(v);
 	}
@@ -194,9 +195,7 @@ export function instanceView(doc: Doc, uid: string): InstanceView | null {
 	if (!inst || str(inst, 'type') !== SCOPE_TYPE) return null;
 	const members: Record<string, boolean> = {};
 	for (const [muid, m] of Object.entries(nodesMap(doc))) {
-		if (scopeOf(m) === uid && !boundaryType(str(m, 'type'))) {
-			members[muid] = str(m, 'type') === SCOPE_TYPE;
-		}
+		if (scopeOf(m) === uid) members[muid] = str(m, 'type') === SCOPE_TYPE;
 	}
 	// A port's inner wire is a link, so it is read where every other cable is read.
 	const wires = linkViews(doc);

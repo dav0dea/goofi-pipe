@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NODE, BOUNDARY, nodeSurfaceSize, inputPorts, inputUnits } from './nodeMetrics';
+import { NODE, nodeSurfaceSize, inputPorts, inputUnits } from './nodeMetrics';
 
 describe('nodeSurfaceSize', () => {
 	it('a node with one collapsed output slot is header + one unit tall, node-width wide', () => {
@@ -29,11 +29,6 @@ describe('nodeSurfaceSize', () => {
 		expect(s.height).toBe(NODE.header + 2 * NODE.unit);
 	});
 
-	it('exposes a boundary-pill size distinct from a node (for snap of In/Out pills)', () => {
-		expect(BOUNDARY.width).toBeGreaterThan(0);
-		expect(BOUNDARY.height).toBeGreaterThan(0);
-		expect(BOUNDARY.height).toBeLessThan(NODE.header); // a pill is short, not node-sized
-	});
 });
 
 describe('inputUnits (multi slots are 2× tall)', () => {

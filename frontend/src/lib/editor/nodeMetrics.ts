@@ -8,12 +8,6 @@ export const NODE = {
 	border: 1
 } as const;
 
-/** An In/Out boundary pill's footprint, mirroring BoundaryNode.svelte's min-width and padding. */
-export const BOUNDARY = {
-	width: 96,
-	height: 26
-} as const;
-
 /** A slot's height in units: a multi (list) slot is 2× tall. */
 const slotUnits = (multi: boolean): number => (multi ? 2 : 1);
 

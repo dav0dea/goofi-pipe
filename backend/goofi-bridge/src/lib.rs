@@ -925,9 +925,9 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
 }
 
 /// Is `node` something a panel could bind to? A UID, and only a uid: a display name stops resolving
-/// the moment somebody renames the node.
+/// the moment somebody renames the node. A boundary port counts — it exposes a real stream.
 fn bindable_node(g: &Graph, node: &str) -> bool {
-    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some())
+    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some() || g.stub(u).is_some())
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step, and

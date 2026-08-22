@@ -13,6 +13,7 @@ import {
 	type NodeTypeInfo,
 	type ScanDiff
 } from '$lib/api/control';
+import { boundaryType } from '$lib/api/vocab';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from 'panelty';
@@ -482,22 +483,15 @@ export class GraphStore {
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
 		// Committed on drag-stop only; a live drag stays local to Svelte Flow.
 		await this.ctl.call('edit_node', { node: uid, pos });
-		this._recordGraphCmd(`Move ${this._label(uid)}`);
+		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
 	}
 
 	/** Set a node's mutable display name (uid identity is unchanged). */
 	async renameNode(uid: string, name: string): Promise<void> {
-		const oldName = this._label(uid);
+		const oldName = this.nodeById(uid)?.name ?? '';
 		if (oldName === name) return;
 		await this.ctl.call('edit_node', { node: uid, name });
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
-	}
-
-	/** What a uid is called, for a history label: a leaf node, or a boundary port. */
-	private _label(uid: string): string {
-		if (this.nodeById(uid)) return this.nodeById(uid)!.name;
-		const scope = this.portScope(uid);
-		return (scope && this.instances[scope].interface[uid].name) || uid;
 	}
 
 	/** Store where THIS client is looking. Persisted in the `.gfi`, but never converged and never
@@ -534,13 +528,6 @@ export class GraphStore {
 	async expandInstance(instId: string): Promise<void> {
 		await this.ctl.call('expand_instance', { inst_id: instId });
 		this._recordGraphCmd('Ungroup');
-	}
-
-	/** Add a boundary port to a sub-patch (unwired). Returns its uid. */
-	async addBoundary(instId: string, type: string, pos: [number, number]): Promise<string> {
-		const r = await this.ctl.call<{ uid: string }>('add_node', { type, inst_id: instId, pos });
-		if (r?.uid) this._recordGraphCmd('Add boundary');
-		return r.uid;
 	}
 
 	/** The sub-patch a boundary port belongs to, or null when the uid names no port. A port is not a
@@ -681,6 +668,9 @@ export class GraphStore {
 			const existing = this._realNode(nv.uid);
 			const catalog = byType.get(nv.type);
 			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : this._seedRuntime(nv.uid);
+			// A boundary port has no thread, so no `node_stage` will ever arrive for it — seeded
+			// `creating` it would sit booting for the life of the patch.
+			if (boundaryType(nv.type)) runtime.stage = 'ready';
 			runtime.membership = this._membershipFromDoc(nv.uid, membership);
 			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);

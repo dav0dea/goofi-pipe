@@ -81,15 +81,15 @@ describe('graphDoc readers', () => {
 			]
 		};
 
-		// A facade and a port are NOT leaf nodes: the reader that feeds the canvas leaves them out.
-		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b', 'm1']);
+		// A port IS a node the canvas draws; a FACADE is a scope, and `instanceView` reads it.
+		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b', 'm1', 'p1']);
 		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
 		expect(instanceView(doc, 'i1')).toEqual({
 			uid: 'i1',
 			name: 'subpatch0',
 			parent: '__root__',
 			pos: [5, 6],
-			members: { m1: false },
+			members: { m1: false, p1: false },
 			interface: [
 				{
 					bnd_id: 'p1',
