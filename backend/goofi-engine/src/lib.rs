@@ -1295,15 +1295,19 @@ impl Graph {
         pos: [f64; 2],
         minted: &mut Vec<(Uid, Uid)>,
     ) -> Result<Uid, String> {
-        use subpatch::{Dir, Scope, Stub};
+        use subpatch::{Dir, Scope};
         // 1. Validate BEFORE any mutation: each exists, and all share one parent scope.
         let parent = self.common_parent(members)?;
         let member_set: std::collections::HashSet<Uid> = members.iter().copied().collect();
         let scope_uid = self.mint();
+        // Registered BEFORE its ports are minted. A port's label comes from the patch's ONE display
+        // namespace, so a batch that names every port out of the state it started in hands each of
+        // them the same label — and `nd()` then cannot tell two ports apart.
+        let disp = self.mint_subpatch_name(scope_uid);
+        self.scopes.insert(scope_uid, Scope { name: disp, pos, stubs: IndexMap::new() });
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
         //    naming the DIRECT member; both or neither leaves the link verbatim.
-        let mut stubs: IndexMap<Uid, Stub> = IndexMap::new();
         let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
         // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub and needs
@@ -1319,9 +1323,11 @@ impl Graph {
                     }
                     let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out, minted);
-                    let mut st = Stub::new(Dir::Out, dtype, [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64], self.fresh_name("out"));
-                    st.inner = Some((om, inner_slot));
-                    stubs.insert(self.mint(), st);
+                    let at = [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64];
+                    let id = self.add_stub(scope_uid, Dir::Out, dtype, at, None)?;
+                    if let Some(st) = self.stub_mut(scope_uid, id) {
+                        st.inner = Some((om, inner_slot));
+                    }
                     out_n += 1;
                 }
                 (None, Some(im)) => {
@@ -1330,18 +1336,18 @@ impl Graph {
                     }
                     let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
                     let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In, minted);
-                    let mut st = Stub::new(Dir::In, dtype, [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64], self.fresh_name("in"));
-                    st.inner = Some((im, inner_slot));
-                    stubs.insert(self.mint(), st);
+                    let at = [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64];
+                    let id = self.add_stub(scope_uid, Dir::In, dtype, at, None)?;
+                    if let Some(st) = self.stub_mut(scope_uid, id) {
+                        st.inner = Some((im, inner_slot));
+                    }
                     in_n += 1;
                 }
                 _ => {}
             }
         }
 
-        // 3. Register the scope + re-tag membership. Members stay live; only `scope_of` changes.
-        let disp = self.mint_subpatch_name(scope_uid);
-        self.scopes.insert(scope_uid, Scope { name: disp, pos, stubs });
+        // 3. Re-tag membership. Members stay live; only `scope_of` changes.
         for &m in members {
             self.set_member_scope(m, Some(scope_uid));
         }
@@ -1410,12 +1416,23 @@ impl Graph {
         }
     }
 
+    /// The display names of a scope's ports, captured before a removal that drops them — a `nd()`
+    /// binding on a name nothing wears can never be re-resolved by a later edit, so the invalidation
+    /// has to happen at the removal.
+    fn stub_names(&self, scope: Uid) -> Vec<String> {
+        self.scopes
+            .get(&scope)
+            .map(|s| s.stubs.values().map(|st| st.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
     /// The crossing flat links already point leaf→leaf, so they survive verbatim. Uid-stable.
     pub fn expand_instance(&mut self, scope: Uid) -> Result<Vec<Uid>, String> {
         if !self.scopes.contains_key(&scope) {
             return Err(format!("expand_instance: no such scope {scope}"));
         }
+        let dropped = self.stub_names(scope);
         let restored = self.scope_members(scope);
         let parent = self.scope_of(scope); // the grandparent scope members fall back to
         // The scope dissolves but its members survive, so a parent stub that exposed one of its
@@ -1449,6 +1466,9 @@ impl Graph {
         }
         self.scopes.shift_remove(&scope);
         self.scope_of.remove(&scope);
+        for name in dropped {
+            self.rebind_naming(&name);
+        }
         Ok(restored)
     }
 
@@ -1458,6 +1478,7 @@ impl Graph {
         if !self.scopes.contains_key(&scope) {
             return Err(format!("remove_instance: no such scope {scope}"));
         }
+        let dropped = self.stub_names(scope);
         for m in self.scope_members(scope) {
             if self.scopes.contains_key(&m) {
                 self.remove_instance(m)?; // nested scope subtree
@@ -1467,6 +1488,9 @@ impl Graph {
         }
         self.scopes.shift_remove(&scope);
         self.scope_of.remove(&scope);
+        for name in dropped {
+            self.rebind_naming(&name);
+        }
         Ok(())
     }
 
@@ -1481,8 +1505,19 @@ impl Graph {
         } else {
             let _ = self.remove_node(member);
         }
-        if let Some(s) = self.scopes.get_mut(&scope) {
-            s.stubs.retain(|_, st| st.inner.as_ref().map(|(u, _)| *u != member).unwrap_or(true));
+        let exposing: Vec<Uid> = self
+            .scopes
+            .get(&scope)
+            .map(|s| {
+                s.stubs
+                    .iter()
+                    .filter(|(_, st)| st.inner.as_ref().is_some_and(|(u, _)| *u == member))
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for id in exposing {
+            self.remove_stub(scope, id);
         }
         Ok(())
     }
@@ -1517,11 +1552,38 @@ impl Graph {
         Ok(id)
     }
 
+    /// The ports ABOVE `(scope, port)` that expose it, innermost-first. Read through `inner`, so it
+    /// answers the same before and after the port itself is gone.
+    pub fn stubs_exposing(&self, scope: Uid, port: Uid) -> Vec<(Uid, Uid, subpatch::Stub)> {
+        let mut out = Vec::new();
+        let (mut scope, mut slot) = (scope, port.to_hex());
+        while let Some(parent) = self.scope_of(scope) {
+            let found = self.scopes.get(&parent).and_then(|ps| {
+                ps.stubs
+                    .iter()
+                    .find(|(_, st)| st.inner.as_ref().is_some_and(|(u, s)| *u == scope && *s == slot))
+                    .map(|(id, st)| (*id, st.clone()))
+            });
+            let Some((id, st)) = found else { break };
+            out.push((parent, id, st));
+            (scope, slot) = (parent, id.to_hex());
+        }
+        out
+    }
+
     /// Take a boundary port off a scope, answering the port it removed. Every `nd()` naming it goes
-    /// unresolvable here rather than at the next edit that happens to touch it.
+    /// unresolvable here rather than at the next edit that happens to touch it, and the ports above
+    /// it follow it out: one whose inner names a slot nothing has resolves to nothing AND still
+    /// reads as wired, so it can be neither used nor re-wired.
     pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<subpatch::Stub> {
         let st = self.scopes.get_mut(&scope)?.stubs.shift_remove(&port)?;
         self.rebind_naming(&st.name);
+        for (psc, id, dead) in self.stubs_exposing(scope, port) {
+            if let Some(s) = self.scopes.get_mut(&psc) {
+                s.stubs.shift_remove(&id);
+            }
+            self.rebind_naming(&dead.name);
+        }
         Some(st)
     }
 

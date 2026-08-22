@@ -202,9 +202,26 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     g.call("edit_panel", j!({ "panel": panel, "type": "viewer",
                               "state": { "node": hex(a) } }));
 
+    // A panel can name a boundary PORT — it exposes a real stream — so a removed port has to take
+    // its binding with it exactly as a removed node does, or the panel renders empty for good and
+    // refuses even a change of viewer kind, because the dead uid has no slots to check against.
+    let port = g.call("add_node", j!({ "type": "InArray", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().expect("a port uid").to_string();
+    let second = split(&g, &panel);
+    g.call("edit_panel", j!({ "panel": second, "type": "viewer",
+                              "state": { "node": port, "slot": "value" } }));
+    g.call("remove_node", j!({ "node": port }));
+    let unbound = |p: &str| entries(&g)[p]["state"].as_str().unwrap_or("").contains("\"node\":null");
+    assert!(unbound(&second), "the port took its panel binding: {}", entries(&g)[&second]["state"]);
+    g.call("undo", j!({}));
+    assert!(entries(&g)[&second]["state"].as_str().is_some_and(|s| s.contains(&port)),
+            "and one undo gives the port and the binding back together");
+
     g.call("remove_node", j!({ "node": inst }));
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "the subtree went with the scope");
     assert_eq!(entries(&g)[&panel]["state"], "{\"node\":null}", "and the binding with it");
+    assert!(unbound(&second),
+            "…including a panel that named one of its PORTS, which the subtree sweep must reach");
 
     g.call("undo", j!({}));
     assert_eq!(g.instances(), vec![inst], "the scope is back at the same uid");

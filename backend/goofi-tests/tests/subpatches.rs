@@ -112,6 +112,21 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     assert!(g.members(&both).contains(&hex(osc)), "both leaves are in the scope");
     assert!(g.members(&both).contains(&hex(buf)));
 
+    // Two cables of the SAME direction cross at once. Each port is named from the patch's one
+    // display-name namespace, so the second has to see the first — a batch that names every port
+    // from the state it started in mints two `out0`s, which `nd()` cannot tell apart.
+    let far = g.add("Buffer");
+    g.link(osc, "out", far, "data");
+    let pair = group(&g, &[hex(buf), hex(osc)]);
+    let doc = g.doc();
+    let mut minted: Vec<&str> =
+        g.ports(&pair).iter().map(|p| doc["nodes"][p]["name"].as_str().unwrap_or("?")).collect();
+    minted.sort();
+    minted.dedup();
+    assert_eq!(minted.len(), g.ports(&pair).len(), "every minted port has its own name: {minted:?}");
+    g.call("expand_instance", j!({ "inst_id": pair }));
+    g.call("remove_node", j!({ "node": hex(far) }));
+
     // Group that sub-patch in turn. The cable still crosses, but the scope it crosses out of ALREADY
     // exposes it, so the outer port lands on the inner one's port rather than minting a rival for
     // the same stream — the reuse is what keeps one leaf slot behind exactly one chain of ports.
@@ -244,6 +259,19 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
 
     assert_eq!(g.inner(&ob), Some((inner.clone(), ib.clone())),
                "wired to the nested scope's facade at its own port, not dropped");
+
+    // Removing the nested port takes the outer one with it. A port whose inner names a slot that no
+    // longer exists resolves to nothing AND still reads as wired, so it can be neither used nor
+    // re-wired — the same prune a removed MEMBER already gets from the scope that exposed it.
+    g.call("remove_node", j!({ "node": ib }));
+    assert!(g.ports(&outer).is_empty(), "the outer port followed the one it exposed: {:?}", g.ports(&outer));
+    let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
+    assert!(links.iter().all(|l| l["node_in"] != ob && l["node_out"] != ob),
+            "and its inner wire went with it, rather than naming a slot nothing has: {links:?}");
+
+    // …and one undo puts the pair back, innermost first, so the chain is whole again.
+    assert_eq!(g.call("undo", j!({}))["changed"], true);
+    assert_eq!(g.inner(&ob), Some((inner, ib)), "the outer port names the inner one again");
 }
 
 #[test]
@@ -376,6 +404,18 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     g.call("edit_node", j!({ "node": hex(osc), "name": "source" }));
     g.refuse("edit_node", j!({ "node": inp, "name": "source" }));
     g.refuse("add_node", j!({ "type": "Buffer", "name": "left" }));
+
+    // Dissolving the sub-patch deletes its ports, and a binding that named one has to go
+    // unresolvable HERE. `remove_node` on a port does that; expanding took the same ports out by
+    // another door, and a name nothing wears can never be re-resolved by a later edit.
+    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                           "node_in": inst, "slot_in": inp }));
+    bind("nd('left')");
+    let live = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(!live.contains("[error:"), "the binding is live going in: {live}");
+    g.call("expand_instance", j!({ "inst_id": inst }));
+    let gone = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(gone.contains("[error:"), "the port is gone, so the binding that named it is: {gone}");
 }
 
 #[test]

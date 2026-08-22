@@ -639,14 +639,37 @@ impl Command {
                 let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&id).cloned()) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
                 };
+                // The ports ABOVE this one go with it, so the inverse puts the whole chain back —
+                // innermost first, because each one's inner names the one below.
+                let above = g.stubs_exposing(scope, id);
+                // A panel bound to any of them renders empty, so the binding goes with the port —
+                // HERE, inside the one command, exactly as `RemoveNode` does it.
+                let gone: std::collections::HashSet<Uid> =
+                    std::iter::once(id).chain(above.iter().map(|(_, i, _)| *i)).collect();
+                let unbind = g.arrangement().unbind(&gone);
                 // External flat links stay valid leaf->leaf links — they never referenced the stub
                 // at runtime — so they are left in place.
                 g.remove_stub(scope, id);
                 let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
-                Ok((
-                    Outcome::Ok,
-                    Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some((id, stub)) },
-                ))
+                let mut inverse =
+                    vec![Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some((id, stub)) }];
+                inverse.extend(above.into_iter().map(|(psc, pid, pst)| Command::AddStub {
+                    scope: psc,
+                    dir: pst.dir,
+                    dtype: pst.dtype,
+                    pos: pst.pos,
+                    name: None,
+                    restore: Some((pid, pst)),
+                }));
+                if !unbind.is_empty() {
+                    // Re-binding runs AFTER the ports are back, which `Compound` replays in order.
+                    let (_, rebind) = Command::LayoutContents { writes: unbind }.execute(g)?;
+                    inverse.push(rebind);
+                }
+                match inverse.len() {
+                    1 => Ok((Outcome::Ok, inverse.remove(0))),
+                    _ => Ok((Outcome::Ok, Command::Compound(inverse))),
+                }
             }
 
             Command::WireStub { scope, stub: stub_id, inner, dtype } => {
@@ -860,27 +883,40 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         cmds.push(Command::SetScope { uid: root, scope: orig_parent });
     }
 
-    // 4. Re-add any enclosing-scope stub the removal will prune (a stub whose inner named `root`).
+    // 4. Re-add any enclosing-scope stub the removal will prune — a stub whose inner named `root`,
+    //    AND the chain above it, since removing one port takes every port that exposed it.
+    let mut pruned: Vec<(Uid, Uid, Stub)> = Vec::new();
     if let Some(parent) = orig_parent {
         if let Some(psc) = g.scope(parent) {
             for (id, st) in &psc.stubs {
                 if st.inner.as_ref().map(|(u, _)| *u == root).unwrap_or(false) {
-                    cmds.push(Command::AddStub {
-                        scope: parent,
-                        dir: st.dir,
-                        dtype: st.dtype,
-                        pos: st.pos,
-                        name: None,
-                        restore: Some((*id, st.clone())),
-                    });
+                    pruned.push((parent, *id, st.clone()));
+                    pruned.extend(g.stubs_exposing(parent, *id));
                 }
             }
         }
     }
+    for (scope, id, st) in &pruned {
+        cmds.push(Command::AddStub {
+            scope: *scope,
+            dir: st.dir,
+            dtype: st.dtype,
+            pos: st.pos,
+            name: None,
+            restore: Some((*id, st.clone())),
+        });
+    }
 
     // 5. Recreate every link touching the subtree, after all endpoints exist. The set is handed
-    //    back too: it is what a panel bound to one of these uids has to stop naming.
-    let subtree: std::collections::HashSet<Uid> = leaves.iter().chain(scopes.iter()).copied().collect();
+    //    back too: it is what a panel bound to one of these uids has to stop naming — and a PORT is
+    //    such a uid, so the scopes' own ports are in it beside their members.
+    let subtree: std::collections::HashSet<Uid> = leaves
+        .iter()
+        .chain(scopes.iter())
+        .copied()
+        .chain(scopes.iter().flat_map(|s| g.scope(*s).into_iter().flat_map(|sc| sc.stubs.keys().copied())))
+        .chain(pruned.iter().map(|(_, id, _)| *id))
+        .collect();
     for l in g.links_view() {
         if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {
             cmds.push(Command::AddLink {
