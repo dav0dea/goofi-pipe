@@ -107,6 +107,12 @@ pub enum Command {
         value: Option<GlobalValue>,
         at: Option<usize>,
     },
+    /// Move a tab to a position in the strip. Its CONTENT is a position, so it cannot ride
+    /// [`Command::LayoutContents`]; it inverts as another reorder, aimed at where the tab is now.
+    LayoutReorderTab {
+        tab: crate::layout::Id,
+        to_index: usize,
+    },
     /// Set a split's children's shares. A GEOMETRY rather than a thing an entry holds, so it
     /// inverts as itself, against the shares the split carries at flip time.
     LayoutResizeSplit {
@@ -127,9 +133,9 @@ pub enum Command {
     /// The inverse of [`Command::LayoutClose`]. It puts the closed subtree's own entries back and
     /// RE-PLANS where its root belongs, never restoring the slots the close's promote rewrote.
     LayoutRevive {
-        dead: crate::layout::Node,
+        dead: crate::layout::Dead,
         born: crate::layout::Id,
-        /// Where `born` sat before the close — the one thing a revive cannot re-derive.
+        /// Where `born` sat before the close. `None` for a tab, which is put back by strip index.
         home: Option<crate::layout::Home>,
     },
     /// A layout op that MOVES a subtree. Its inverse is RE-PLANNED like a birth's: another move,
@@ -463,14 +469,31 @@ impl Command {
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
             }
 
+            Command::LayoutReorderTab { tab, to_index } => {
+                // Read BEFORE the move, so the inverse names where the tab is standing right now —
+                // and degrade when a peer has closed it, as every other layout inverse does.
+                let Some(from) = g.arrangement().tab_index(&tab) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                let Ok(writes) = g.arrangement().reorder_tab(&tab, to_index) else {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
+                };
+                g.arrangement_mut().apply(writes);
+                Ok((Outcome::Ok, Command::LayoutReorderTab { tab, to_index: from }))
+            }
+
             Command::LayoutBirth { plan, born } => {
                 g.arrangement_mut().apply(plan);
                 Ok((Outcome::Ok, Command::LayoutClose { born }))
             }
 
             Command::LayoutClose { born } => {
-                // The SAME planner the forward op calls, so there is one algebra rather than two.
-                let plan = g.arrangement().remove_subtree(&born);
+                // A tab is closed whole; anything else is closed with promote — the SAME planners
+                // the forward ops call, so there is one algebra rather than two.
+                let plan = match g.arrangement().tab_index(&born) {
+                    Some(_) => g.arrangement().remove_tab(&born),
+                    None => g.arrangement().remove_subtree(&born),
+                };
                 // The subtree itself and where its root sat — the two things its revive needs,
                 // captured before anything moves. The slots the promote rewrote are NOT among them.
                 let (Ok(next), Some(dead)) = (plan, g.arrangement().dead_subtree(&born)) else {

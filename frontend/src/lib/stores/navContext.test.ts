@@ -1,25 +1,23 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { workspace, type StackNode } from 'panelty';
+import { workspace, type Workspace } from 'panelty';
 import { FakeControl } from '$lib/test/fakeControl';
 import { goofiLayoutHost } from './layoutHost';
 import { selection } from './selection.svelte';
 import { captureNavContext, restoreNavContext } from './navContext';
 
 /** The manager's default arrangement, mirrored into the replica. */
-function defaultPages(panelId = 'panel-2'): StackNode {
-	return {
-		kind: 'stack',
-		id: 'stack-1',
-		children: [{ kind: 'panel', id: panelId, panelType: 'node-editor' }]
-	};
+function defaultTabs(): Workspace[] {
+	return [
+		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: 'node-editor' } }
+	];
 }
 
 describe('NavContext capture/restore', () => {
 	beforeEach(() => {
 		const ws = workspace();
 		const fc = new FakeControl();
-		ws.configureHost(goofiLayoutHost({ control: () => fc }));
-		ws.syncFromDoc(defaultPages());
+		ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
+		ws.syncFromDoc(defaultTabs());
 		selection().forgetAll();
 	});
 
@@ -28,7 +26,7 @@ describe('NavContext capture/restore', () => {
 		const panelId = ws.activePanelId!;
 		selection().selectNodes(panelId, ['osc0', 'buffer0']);
 		const ctx = captureNavContext();
-		expect(ctx.activeWorkspaceId).toBe(ws.page);
+		expect(ctx.activeWorkspaceId).toBe(ws.state.activeWorkspaceId);
 		expect(ctx.activePanelId).toBe(panelId);
 		expect(ctx.selection[panelId].nodes.sort()).toEqual(['buffer0', 'osc0']);
 	});
@@ -52,7 +50,9 @@ describe('NavContext capture/restore', () => {
 		const ctx = captureNavContext();
 		// The change being undone closed the recorded panel: the manager's arrangement now holds a
 		// different one, and the replica follows.
-		ws.syncFromDoc(defaultPages('panel-9'));
+		ws.syncFromDoc([
+			{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-9', panelType: 'node-editor' } }
+		]);
 		const newPanel = ws.activePanelId!;
 		expect(newPanel).not.toBe(oldPanel);
 		await restoreNavContext(ctx);
@@ -69,8 +69,8 @@ describe('NavContext capture/restore', () => {
 		expect(ctx.enteredPath[panelId]).toEqual(['subpatch0']);
 		ws.setPanelState(panelId, { subpatchPath: '/' }, 'navigation'); // navigate out
 		await restoreNavContext(ctx);
-		const shown = ws.root.children[0];
-		const state = shown.kind === 'panel' ? (shown.state as { subpatchPath?: string }) : {};
+		const root = ws.active.root;
+		const state = root.kind === 'panel' ? (root.state as { subpatchPath?: string }) : {};
 		expect(state.subpatchPath).toBe('/subpatch0');
 	});
 });

@@ -329,12 +329,6 @@ fn layout_line(n: &Node, depth: usize, out: &mut String) {
                 layout_line(c, depth + 1, out);
             }
         }
-        Node::Stack { id, size, children } => {
-            out.push_str(&format!("{pad}tabs {size:.2}  [{id}]\n"));
-            for c in children {
-                layout_line(c, depth + 1, out);
-            }
-        }
         Node::Panel { id, size, panel_type, state } => {
             let bound = state.get("node").and_then(|v| v.as_str()).map(|b| format!(" → {b}"));
             out.push_str(&format!("{pad}{panel_type}{} {size:.2}  [{id}]\n", bound.unwrap_or_default()))
@@ -342,18 +336,21 @@ fn layout_line(n: &Node, depth: usize, out: &mut String) {
     }
 }
 
-/// The arrangement as a tree. `from` narrows it to one subtree; no argument draws the whole of it,
-/// starting at the root stack — whose children are the workspace's pages.
-pub fn layout_tree(l: &Layout, from: Option<&str>) -> String {
+pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
     let mut out = String::from(
-        "The editor arrangement. Every entry — tab group, split and panel — is addressed by the id \
-         in []. A `tabs` entry shows ONE child at a time and draws the rest as tabs; its topmost one \
-         is the workspace's page strip. The number on each entry is its share of its parent — what \
-         edit_panel's `fractions` sets.\n\n",
+        "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
+         The number on each entry is its share of its parent — what resize_split sets.\n\n",
     );
-    match from.and_then(|id| l.node(id)) {
-        Some(n) => layout_line(n, 0, &mut out),
-        None => layout_line(l.node(l.root_id()).expect("the root stands"), 0, &mut out),
+    let tabs = match tab {
+        Some(t) => vec![t.to_string()],
+        None => l.tabs(),
+    };
+    for t in tabs {
+        let Some(name) = l.name_of(&t) else { continue };
+        out.push_str(&format!("tab `{name}`  [{t}]\n"));
+        if let Some(root) = l.root_of(&t).and_then(|r| l.node(&r).cloned()) {
+            layout_line(&root, 1, &mut out);
+        }
     }
     out
 }

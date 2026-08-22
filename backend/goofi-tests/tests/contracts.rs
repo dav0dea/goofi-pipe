@@ -98,9 +98,9 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
 #[test]
 fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for() {
     // Each op that takes a vocabulary word enumerates the set in its own description, by expansion.
-    let doc = find("edit_panel").expect("registered").doc();
+    let doc = find("set_panel").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
-        assert!(doc.contains(word), "`{word}` is not offered by edit_panel's doc: {doc}");
+        assert!(doc.contains(word), "`{word}` is not offered by set_panel's doc: {doc}");
     }
     // The description is the ONLY text an agent reads, so edit_node's has to carry the viewer
     // vocabulary AND the two words that decide what an expression does.
@@ -347,7 +347,8 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let stubs = g.doc()["instances"][&inst]["stubs"].clone();
     assert!(stubs.as_object().is_some_and(|m| m.values().any(|s| s.get("inner_node").is_some())),
             "the group left no wired stub, so this test would not reach the optional leaves: {stubs}");
-    g.call("add_panel", j!({ "at": panel_id(&g), "direction": "row", "ratio": 0.5 }));
+    g.call("split_panel", j!({ "panel": panel_id(&g), "direction": "row",
+                                    "ratio": 0.5 }));
 
     let doc = g.doc();
     for root in ["nodes", "links", "instances", "globals", "arrangement"] {

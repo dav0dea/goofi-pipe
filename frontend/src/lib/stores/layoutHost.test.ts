@@ -7,37 +7,70 @@
  * is an op, so what a gesture SENDS is the behaviour worth pinning.
  */
 import { describe, expect, it, beforeEach } from 'vitest';
-import { workspace, type LayoutHost, type LayoutNode, type StackNode } from 'panelty';
+import { workspace, type LayoutHost, type Workspace } from 'panelty';
 import { FakeControl } from '$lib/test/fakeControl';
 import { goofiLayoutHost } from './layoutHost';
 import { history } from './history.svelte';
 
-const panel = (id: string, panelType: string, state?: unknown): LayoutNode => ({
-	kind: 'panel',
-	id,
-	panelType,
-	...(state === undefined ? {} : { state })
-});
-const strip = (...children: LayoutNode[]): StackNode => ({ kind: 'stack', id: 'stack-1', children });
-
 /** The manager's default arrangement, plus a row split on demand — as the replica reads it off the
  * document, which is the shape the panel system draws. */
-const onePage = (): StackNode => strip(panel('panel-2', 'node-editor'));
+function oneTab(): Workspace[] {
+	return [
+		{
+			id: 'tab-1',
+			name: 'Tab 1',
+			root: { kind: 'panel', id: 'panel-2', panelType: 'node-editor' }
+		}
+	];
+}
+function split(): Workspace[] {
+	return [
+		{
+			id: 'tab-1',
+			name: 'Tab 1',
+			root: {
+				kind: 'split',
+				id: 'split-4',
+				direction: 'row',
+				sizes: [0.6, 0.4],
+				children: [
+					{ kind: 'panel', id: 'panel-2', panelType: 'node-editor' },
+					{ kind: 'panel', id: 'panel-3', panelType: 'console' }
+				]
+			}
+		}
+	];
+}
 
-function split(a = 0.6, b = 0.4, state?: unknown): StackNode {
-	return strip({
-		kind: 'split',
-		id: 'split-4',
-		direction: 'row',
-		sizes: [a, b],
-		children: [panel('panel-2', 'node-editor'), panel('panel-3', 'console', state)]
-	});
+/** One tab holding one panel — the shape every extra tab in these scenarios takes. */
+function tab(id: string, name: string, panelId: string, panelType: string): Workspace {
+	return { id, name, root: { kind: 'panel', id: panelId, panelType } };
+}
+
+/** `split()` with `panel-3`'s bag already set, which is what a rebind is asserted against. */
+function bound(state: unknown): Workspace[] {
+	const tabs = split();
+	const root = tabs[0].root;
+	if (root.kind === 'split') root.children[1] = { ...root.children[1], state } as typeof root.children[1];
+	return tabs;
+}
+
+/** `split()` with the seam moved, as the manager's answer to a resize lands it. */
+function resized(a: number, b: number): Workspace[] {
+	const tabs = split();
+	const root = tabs[0].root;
+	if (root.kind === 'split') root.sizes = [a, b];
+	return tabs;
 }
 
 /** A host that answers every gesture with "no" — every member of the port, so a consumer that
  * wires nothing up still gets a workspace it can look at. */
 const REFUSING_HOST: LayoutHost = {
-	addPanel: async () => null,
+	addTab: async () => null,
+	removeTab: async () => false,
+	renameTab: async () => false,
+	reorderTab: async () => false,
+	splitPanel: async () => null,
 	removePanel: async () => false,
 	resizeSplit: async () => false,
 	setPanel: async () => false,
@@ -46,19 +79,20 @@ const REFUSING_HOST: LayoutHost = {
 
 let fc: FakeControl;
 
-function boot(root: StackNode | null = onePage()): ReturnType<typeof workspace> {
+function boot(tabs: Workspace[] = oneTab()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
 	// The store's own seam is the HOST, and goofi's host is what turns a gesture into an op — so
 	// these scenarios drive the real one and still assert what reaches the wire.
-	ws.configureHost(goofiLayoutHost({ control: () => fc }));
+	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
 	// The store is a module singleton, so a drag a previous test armed would still be drawing:
 	// committing a split that is not the drag's discards it, which is what an abandoned one does.
 	ws.commitResize('#none');
 	// Through the generation boundary first, the way a real session starts (`_replaceSnapshot`:
-	// reset, then the manager's document).
-	ws.syncFromDoc(null);
-	ws.syncFromDoc(root);
+	// reset, then the manager's document). Without it the store carries the previous test's name
+	// claims into this one, and the next claimed tab name depends on which tests ran before.
+	ws.syncFromDoc([]);
+	ws.syncFromDoc(tabs);
 	return ws;
 }
 
@@ -70,63 +104,51 @@ function sent(): Array<[string, Record<string, unknown>]> {
 	return fc.recordedCalls().map((c) => [c.op, c.payload]);
 }
 
-/** The split the fixtures build, for the tests that read its shares back. */
-function seam(ws: ReturnType<typeof workspace>): number[] {
-	const n = ws.root.children[0];
-	if (n.kind !== 'split') throw new Error('expected a split');
-	return n.sizes;
-}
-
 beforeEach(() => history().reset());
 
 describe('a frozen gesture is a layout command', () => {
 	it('rebuilds the tree the manager holds, and holds none of its own', () => {
 		const ws = boot(split());
-		expect(ws.root.children).toHaveLength(1);
-		const root = ws.root.children[0];
+		expect(ws.state.workspaces).toHaveLength(1);
+		const root = ws.active.root;
 		expect(root.kind).toBe('split');
 		if (root.kind !== 'split') return;
 		expect(root.children.map((c) => c.id)).toEqual(['panel-2', 'panel-3']);
 	});
 
-	it('splits through add_panel, carrying the side the drag went', async () => {
+	it('splits through split_panel, carrying the side the drag went', async () => {
 		const ws = boot();
 		ws.split('panel-2', 'column', true, 0.25);
 		await Promise.resolve();
 		expect(sent()).toEqual([
 			[
-				'add_panel',
-				{ at: 'panel-2', direction: 'column', place_before: true, ratio: 0.25, index: undefined }
+				'split_panel',
+				{ panel: 'panel-2', direction: 'column', place_before: true, ratio: 0.25 }
 			]
 		]);
 	});
 
-	it('adds a TAB through the same op, with no direction to split along', async () => {
-		const ws = boot();
-		ws.add(ws.root.id, { index: 1 });
-		await Promise.resolve();
-		expect(sent()).toEqual([
-			[
-				'add_panel',
-				{ at: 'stack-1', direction: undefined, place_before: undefined, ratio: undefined, index: 1 }
-			]
-		]);
-	});
-
-	it('closes, retypes and re-binds through the panel ops', async () => {
+	it('closes, retypes and re-binds through the page ops', async () => {
 		const ws = boot(split());
 		ws.close('panel-3');
 		ws.setType('panel-3', 'viewer');
 		ws.linkNodeToPanel('panel-3', 'a1b2');
 		await Promise.resolve();
-		expect(sent().map(([op]) => op)).toEqual(['remove_panel', 'edit_panel', 'edit_panel']);
-		expect(sent()[2][1]).toEqual({ panel: 'panel-3', state: { node: 'a1b2', slot: null } });
+		expect(sent().map(([op]) => op)).toEqual([
+			'remove_panel',
+			'set_panel',
+			'set_panel'
+		]);
+		expect(sent()[2][1]).toEqual({
+			panel: 'panel-3',
+			state: { node: 'a1b2', slot: null }
+		});
 	});
 
 	it('settles the slot as it binds, so a picked node is never shown through the old node’s slot', async () => {
 		// One write, so it is one undo step — and the SAME write for both doors onto the binding (a
 		// node dragged in, a node picked from the bar's dropdown), which is what keeps them honest.
-		const ws = boot(split(0.6, 0.4, { node: 'a1b2', slot: 'spectrum' }));
+		const ws = boot(bound({ node: 'a1b2', slot: 'spectrum' }));
 		ws.linkNodeToPanel('panel-3', 'c3d4');
 		await Promise.resolve();
 		expect(sent()[0][1].state).toEqual({ node: 'c3d4', slot: null });
@@ -134,8 +156,8 @@ describe('a frozen gesture is a layout command', () => {
 
 	it('names only the key a panel write changes, never the bag it read', async () => {
 		// A read-modify-write of the whole bag loses whatever a write still in flight put there:
-		// `edit_panel` merges, so the client sends the DELTA and the two orders cannot fight.
-		const ws = boot(split(0.6, 0.4, { node: 'a1b2', kind: 'line' }));
+		// `set_panel` merges, so the client sends the DELTA and the two orders cannot fight.
+		const ws = boot(bound({ node: 'a1b2', kind: 'line' }));
 		ws.setPanelSlot('panel-3', 'out');
 		ws.unlinkNodeFromPanel('panel-3');
 		await Promise.resolve();
@@ -145,115 +167,130 @@ describe('a frozen gesture is a layout command', () => {
 	it('writes a panel that lives on a page in the background', async () => {
 		// The replica is page-agnostic, and the façade an agent drives addresses any panel. Scoping
 		// the lookup to the page in FRONT made a write to any other one silently do nothing.
-		const ws = boot(strip(split().children[0], panel('panel-8', 'viewer')));
+		const ws = boot([...split(), tab('tab-7', 'Second', 'panel-8', 'viewer')]);
 		ws.linkNodeToPanel('panel-8', 'a1b2');
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['edit_panel', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
+			['set_panel', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
 		]);
 	});
 
 	it('leaves the focus on the panel it dropped, not on the page’s first', async () => {
-		// The focus moves when the move is DRAWN, not when the op is answered: until the delta
-		// lands the panel is still where it was, and following it there would be following nothing.
 		const ws = boot(split());
 		ws.setActive('panel-2');
-		ws.dragging = { node: 'panel-3' };
-		ws.dropOn({ beside: 'panel-2', direction: 'column', placeBefore: false });
+		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
+		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await settle();
-		ws.syncFromDoc(
-			strip({
-				kind: 'split',
-				id: 'split-9',
-				direction: 'column',
-				sizes: [0.5, 0.5],
-				children: [panel('panel-2', 'node-editor'), panel('panel-3', 'console')]
-			})
-		);
 		expect(ws.activePanelId, 'the panel the user just moved is the one they are in').toBe('panel-3');
 	});
 
-	it('brings a fresh page forward off the id the manager minted, once it arrives', async () => {
+	it('brings a fresh tab forward off the ids the manager minted, once they arrive', async () => {
 		const ws = boot();
-		fc.setCallResult('add_panel', 'panel-4');
-		ws.add(ws.root.id);
+		fc.setCallResult('add_tab', { tab: 'tab-3', panel: 'panel-4' });
+		ws.addTab();
 		await settle();
-		expect(ws.page, 'not before the page exists to draw').toBe('panel-2');
-		ws.syncFromDoc(strip(panel('panel-2', 'node-editor'), panel('panel-4', 'node-editor')));
-		expect(ws.page).toBe('panel-4');
+		expect(ws.state.activeWorkspaceId, 'not before the tab exists to draw').toBe('tab-1');
+		ws.syncFromDoc([...oneTab(), tab('tab-3', 'Tab 2', 'panel-4', 'node-editor')]);
+		expect(ws.state.activeWorkspaceId).toBe('tab-3');
 		expect(ws.activePanelId).toBe('panel-4');
 	});
 
 	it('…and forward all the same when the delta BEATS the answer', async () => {
-		// The two race, and an add that also types its panel is two round trips wide — long enough
-		// that the page is usually drawn before the id comes back. Waiting for a later sync that
-		// nothing is going to send left the new page sitting behind the one it was added from.
+		// The two race, and an `add_tab` that also types its panel is two round trips wide — long
+		// enough that the tab is usually drawn before the ids come back. Waiting for a later sync that
+		// nothing is going to send left the new tab sitting behind the one it was added from.
 		const ws = boot();
-		fc.setCallResult('add_panel', 'panel-4');
-		ws.add(ws.root.id, { panelType: 'globals' });
-		ws.syncFromDoc(strip(panel('panel-2', 'node-editor'), panel('panel-4', 'globals')));
-		expect(ws.page, 'not off a delta alone — the id is still in flight').toBe('panel-2');
+		fc.setCallResult('add_tab', { tab: 'tab-3', panel: 'panel-4' });
+		ws.addTab('globals');
+		ws.syncFromDoc([...oneTab(), tab('tab-3', 'Tab 2', 'panel-4', 'globals')]);
+		expect(ws.state.activeWorkspaceId, 'not off a delta alone — the ids are still in flight').toBe(
+			'tab-1'
+		);
 		await settle();
-		expect(ws.page).toBe('panel-4');
+		expect(ws.state.activeWorkspaceId).toBe('tab-3');
 		expect(ws.activePanelId).toBe('panel-4');
 	});
 
 	it('moves a dragged panel with ONE op, so the drop is one undo step', async () => {
 		const ws = boot(split());
-		ws.dragging = { node: 'panel-3' };
-		ws.dropOn({ beside: 'panel-2', direction: 'column', placeBefore: false });
+		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
+		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['move_panel', { panel: 'panel-3', to: 'panel-2', direction: 'column', place_before: false }]
+			[
+				'insert_at_panel',
+				{ subtree: 'panel-3', target: 'panel-2', direction: 'column', place_before: false }
+			]
 		]);
 		expect(ws.dragging, 'the drag is spent either way').toBeNull();
 	});
 
-	it('drops onto a header as the SAME op, with a place in the strip instead of an axis', async () => {
-		// The gesture the tab/panel split used to need a second op for. A drop on a lone panel's
-		// header names that panel, and the manager wraps the two in a group.
+	it('carries a whole tab’s subtree when the tab itself is dragged', async () => {
 		const ws = boot(split());
-		ws.dragging = { node: 'panel-3' };
-		ws.dropOn({ stack: 'panel-2', index: 0 });
+		ws.dragging = { kind: 'tab', workspaceId: 'tab-1' };
+		ws.dropOn({ panel: 'panel-2', direction: 'row', placeBefore: false });
 		await Promise.resolve();
-		expect(sent()).toEqual([['move_panel', { panel: 'panel-3', to: 'panel-2', index: 0 }]]);
-	});
-
-	it('tears a panel onto the page strip — the same op again, landing on the ROOT group', async () => {
-		const ws = boot(split());
-		ws.dragging = { node: 'panel-3' };
-		ws.dropOn({ stack: 'stack-1', index: 0 });
-		await settle();
-		expect(sent()).toEqual([['move_panel', { panel: 'panel-3', to: 'stack-1', index: 0 }]]);
-		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
-		// the panel is still on the page it is LEAVING, and settling for that page would leave the
-		// torn-off one behind the old one for good.
-		ws.syncFromDoc(split());
-		expect(ws.activePanelId, 'nothing has moved yet, so nothing is followed').toBe('panel-2');
-		ws.syncFromDoc(strip(panel('panel-3', 'console'), panel('panel-2', 'node-editor')));
-		expect(ws.page, 'and the page it built comes forward').toBe('panel-3');
-		expect(ws.activePanelId).toBe('panel-3');
-	});
-
-	it('carries a whole subtree when a split or a group is the thing dragged', async () => {
-		const ws = boot(split());
-		ws.dragging = { node: 'split-4' };
-		ws.dropOn({ stack: 'stack-1', index: 0 });
-		await Promise.resolve();
-		expect(sent()[0][1], 'a subtree drag names the subtree, not a panel').toMatchObject({
-			panel: 'split-4'
+		expect(sent()[0][1], 'a tab drag names the page’s root, not a panel').toMatchObject({
+			subtree: 'split-4'
 		});
 	});
 
-	it('closing the page in front moves to its NEIGHBOUR, not to the strip’s first', async () => {
-		const ws = boot(
-			strip(panel('panel-2', 'node-editor'), panel('panel-4', 'console'), panel('panel-6', 'console'))
-		);
-		ws.show('stack-1', 'panel-6');
-		ws.close('panel-6');
-		expect(ws.page, 'the neighbour, before the delta even lands').toBe('panel-4');
+	it('tears a panel onto the tab bar as one page built around it', async () => {
+		// The same MOVE as a drop onto a panel — the landing is a place that does not exist yet, which
+		// is the only thing that makes it a second op rather than a second method.
+		const ws = boot(split());
+		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
+		ws.dropOn({ newTab: 0 });
+		await settle();
+		expect(sent()).toEqual([['add_tab', { name: 'Tab 2', index: 0, subtree: 'panel-3' }]]);
+		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
+		// the panel is still drawn on the tab it is LEAVING, and settling for that tab would leave the
+		// torn-off one behind the old one for good.
+		ws.syncFromDoc(split());
+		expect(ws.activePanelId, 'nothing has moved yet, so nothing is followed').toBe('panel-2');
+		ws.syncFromDoc([tab('tab-9', 'Tab 2', 'panel-3', 'console'), ...oneTab()]);
+		expect(ws.state.activeWorkspaceId, 'and the tab it built comes forward').toBe('tab-9');
+		expect(ws.activePanelId).toBe('panel-3');
+	});
+
+	it('refuses to build a tab around a TAB dropped on the bar — that is a reorder', async () => {
+		// The strip commits a tab drop itself. Taking it as a tear-off would rebuild the tab it already
+		// is, under a fresh id and a fresh name, and every viewpoint keyed by the old id would drop.
+		const ws = boot(split());
+		ws.dragging = { kind: 'tab', workspaceId: 'tab-1' };
+		ws.dropOn({ newTab: 0 });
+		await settle();
+		expect(sent()).toEqual([]);
+		expect(ws.dragging, 'the drag is spent either way').toBeNull();
+	});
+
+	it('closing the tab in front moves to its NEIGHBOUR, not to the strip’s first', async () => {
+		const ws = boot([
+			...oneTab(),
+			tab('tab-3', 'Two', 'panel-4', 'console'),
+			tab('tab-5', 'Three', 'panel-6', 'console')
+		]);
+		ws.selectTab('tab-5');
+		ws.closeTab('tab-5');
+		expect(ws.state.activeWorkspaceId, 'the neighbour, before the delta even lands').toBe('tab-3');
 		await Promise.resolve();
-		expect(sent()).toEqual([['remove_panel', { panel: 'panel-6' }]]);
+		expect(sent()).toEqual([['remove_tab', { tab: 'tab-5' }]]);
+	});
+
+	it('claims a fresh page name per tap, so a repeated gesture is not five refusals', async () => {
+		const ws = boot();
+		ws.addTab();
+		ws.addTab();
+		ws.addTab();
+		await Promise.resolve();
+		await Promise.resolve();
+		const names = sent().map(([, p]) => p.name as string);
+		expect(names, 'three taps, three requests').toHaveLength(3);
+		expect(
+			new Set(names).size,
+			'each asks for a name the last one did not — the replica cannot have caught up between taps'
+		).toBe(3);
+		expect(names, 'and none of them is the name the tab already has').not.toContain('Tab 1');
 	});
 
 	it('draws and refuses when nothing has installed a host', async () => {
@@ -267,10 +304,26 @@ describe('a frozen gesture is a layout command', () => {
 		ws.split('panel-2', 'row');
 		ws.close('panel-3');
 		ws.setType('panel-2', 'console');
-		ws.add(ws.root.id);
+		ws.addTab();
+		ws.renameTab('tab-1', 'Signals');
 		await settle();
 		expect(sent(), 'nothing left the client').toEqual([]);
-		expect(ws.root.children, 'and the tree it was handed is still drawn').toHaveLength(1);
+		expect(ws.state.workspaces, 'and the tree it was handed is still drawn').toHaveLength(1);
+	});
+
+	it('addresses a tab by its ID, never by the label it happens to wear', async () => {
+		// A label is what a tab HOLDS. Addressing by it meant every op re-derived a name from the id
+		// it already had, and a rename landing between the two made the next op miss.
+		const ws = boot(split());
+		ws.renameTab('tab-1', 'Signals');
+		ws.closeTab('tab-1');
+		ws.reorderTab(0, 0);
+		await Promise.resolve();
+		expect(sent()).toEqual([
+			['rename_tab', { tab: 'tab-1', name: 'Signals' }],
+			['remove_tab', { tab: 'tab-1' }],
+			['reorder_tab', { tab: 'tab-1', to_index: 0 }]
+		]);
 	});
 });
 
@@ -281,14 +334,17 @@ describe('a resize drag draws locally and commits once', () => {
 		ws.resize('split-4', 0, 0.05);
 		await Promise.resolve();
 		expect(sent(), 'a command per pointermove is exactly what this replaces').toEqual([]);
-		expect(seam(ws)[0], 'but the seam moved on screen').toBeCloseTo(0.75, 6);
+
+		const root = ws.active.root;
+		if (root.kind !== 'split') throw new Error('expected a split');
+		expect(root.sizes[0], 'but the seam moved on screen').toBeCloseTo(0.75, 6);
 
 		ws.commitResize('split-4');
 		await Promise.resolve();
 		expect(sent()).toHaveLength(1);
 		const [op, payload] = sent()[0];
-		expect(op).toBe('edit_panel');
-		expect(payload).toMatchObject({ panel: 'split-4' });
+		expect(op).toBe('resize_split');
+		expect(payload).toMatchObject({ split: 'split-4' });
 		const fractions = payload.fractions as number[];
 		expect(fractions[0]).toBeCloseTo(0.75, 6);
 		expect(fractions[1]).toBeCloseTo(0.25, 6);
@@ -299,10 +355,15 @@ describe('a resize drag draws locally and commits once', () => {
 		ws.resize('split-4', 0, 0.1);
 		ws.commitResize('split-4');
 		await Promise.resolve();
-		expect(seam(ws)[0], 'no snap-back between the reply and the delta').toBeCloseTo(0.7, 6);
+		const mid = ws.active.root;
+		if (mid.kind !== 'split') throw new Error('expected a split');
+		expect(mid.sizes[0], 'no snap-back between the reply and the delta').toBeCloseTo(0.7, 6);
 
-		ws.syncFromDoc(split(0.7, 0.3));
-		expect(seam(ws)).toEqual([0.7, 0.3]);
+		const answered = resized(0.7, 0.3);
+		ws.syncFromDoc(answered);
+		const after = ws.active.root;
+		if (after.kind !== 'split') throw new Error('expected a split');
+		expect(after.sizes).toEqual([0.7, 0.3]);
 	});
 
 	it('commits nothing when the drag drew nothing', async () => {
@@ -317,7 +378,8 @@ describe('a resize drag draws locally and commits once', () => {
 		// the replica — the replica is the arrangement from before the previous commit, so a drag
 		// returning the split to those shares looks like a no-op and is dropped on the floor. Halves
 		// and quarters, because floating-point inexactness is what hides this in a fixture.
-		const ws = boot(split(0.5, 0.5));
+		const even = resized(0.5, 0.5);
+		const ws = boot(even);
 		ws.resize('split-4', 0, 0.25);
 		ws.commitResize('split-4');
 		await Promise.resolve();
@@ -335,8 +397,11 @@ describe('a resize drag draws locally and commits once', () => {
 		ws.resize('split-4', 0, 0.1);
 		ws.commitResize('split-4');
 		ws.resize('split-4', 0, 0.05);
-		ws.syncFromDoc(split(0.7, 0.3));
-		expect(seam(ws)[0], 'the seam stays where the finger put it').toBeCloseTo(0.75, 6);
+		const answered = resized(0.7, 0.3);
+		ws.syncFromDoc(answered);
+		const root = ws.active.root;
+		if (root.kind !== 'split') throw new Error('expected a split');
+		expect(root.sizes[0], 'the seam stays where the finger put it').toBeCloseTo(0.75, 6);
 	});
 });
 
@@ -347,8 +412,8 @@ describe('viewpoint stays here', () => {
 		await Promise.resolve();
 		expect(sent(), 'entering a sub-patch is a look, not an edit').toEqual([]);
 		expect(ws.viewpoint().paths).toEqual({ 'panel-2': '/inst0' });
-		const shown = ws.root.children[0];
-		expect(shown.kind === 'panel' && shown.state).toEqual({ subpatchPath: '/inst0' });
+		const root = ws.active.root;
+		expect(root.kind === 'panel' && root.state).toEqual({ subpatchPath: '/inst0' });
 	});
 
 	it('keeps the sub-patch path out of a write that IS shared', async () => {
@@ -362,38 +427,32 @@ describe('viewpoint stays here', () => {
 		});
 	});
 
-	it('shows a page and maximizes without sending anything, and each page keeps its own', async () => {
-		const ws = boot(strip(split().children[0], panel('panel-8', 'console')));
-		ws.show('stack-1', 'panel-8');
+	it('selects a tab and maximizes without sending anything, and each page keeps its own', async () => {
+		const two = [...split(), tab('tab-7', 'Second', 'panel-8', 'console')];
+		const ws = boot(two);
+		ws.selectTab('tab-7');
 		ws.toggleMaximize('panel-8');
 		await Promise.resolve();
 		expect(sent()).toEqual([]);
-		expect(ws.page).toBe('panel-8');
-		expect(ws.viewpoint().showing).toEqual({ 'stack-1': 'panel-8' });
+		expect(ws.state.activeWorkspaceId).toBe('tab-7');
+		expect(ws.viewpoint().tab).toBe('tab-7');
 
-		// A maximize belongs to the PAGE it happened on. Looking at another page used to end it —
+		// A maximize belongs to the PAGE it happened on. Looking at another tab used to end it —
 		// switching focused that page's first panel, and focusing cleared the one maximize the whole
 		// client had — so a user came back to a layout they had already put away.
-		ws.show('stack-1', 'split-4');
-		expect(ws.maximizedId, 'the other page is showing its layout').toBeNull();
+		ws.selectTab('tab-1');
+		expect(ws.maximizedPanelId, 'the other page is showing its layout').toBeNull();
 		ws.toggleMaximize('panel-3');
-		expect(ws.maximizedId).toBe('panel-3');
-		ws.show('stack-1', 'panel-8');
-		expect(ws.maximizedId, 'and that page is as it was left').toBe('panel-8');
-		ws.show('stack-1', 'split-4');
-		expect(ws.maximizedId, 'so is the other').toBe('panel-3');
+		expect(ws.maximizedPanelId).toBe('panel-3');
+		ws.selectTab('tab-7');
+		expect(ws.maximizedPanelId, 'and page 7 is as it was left').toBe('panel-8');
+		ws.selectTab('tab-1');
+		expect(ws.maximizedPanelId, 'so is page 1').toBe('panel-3');
 
 		// Still this client's alone: two pages maximized, and not one byte of it on the wire or in
 		// the viewpoint the manager stores and rides into the `.gfi`.
 		expect(sent()).toEqual([]);
-		expect(Object.keys(ws.viewpoint()).sort()).toEqual(['panel', 'paths', 'showing']);
-	});
-
-	it('maximizes a whole GROUP, which is what a stack makes possible', () => {
-		const ws = boot(split());
-		ws.toggleMaximize('split-4');
-		expect(ws.maximizedId, 'a subtree, not only a leaf').toBe('split-4');
-		expect(sent()).toEqual([]);
+		expect(Object.keys(ws.viewpoint()).sort()).toEqual(['panel', 'paths', 'tab']);
 	});
 
 	it('keeps a restored viewpoint through the boundary a fresh session resets across', () => {
@@ -402,28 +461,45 @@ describe('viewpoint stays here', () => {
 		// manager's real document lands only after both. Pruning the viewpoint against that empty
 		// middle threw away everything the restore had just put back — and the debounced
 		// `set_viewpoint` pushed the loss to the manager.
-		const two = strip(split().children[0], panel('panel-8', 'node-editor'));
-		const ws = boot(null);
-		ws.restoreViewpoint({
-			showing: { 'stack-1': 'panel-8' },
-			panel: 'panel-8',
-			paths: { 'panel-8': '/inst0' }
-		});
-		ws.syncFromDoc(null);
+		const two = [...split(), tab('tab-7', 'Second', 'panel-8', 'node-editor')];
+		const ws = boot([]);
+		ws.restoreViewpoint({ tab: 'tab-7', panel: 'panel-8', paths: { 'panel-8': '/inst0' } });
+		ws.syncFromDoc([]);
 		ws.syncFromDoc(two);
 		expect(ws.viewpoint(), 'a reload lands where it left off').toEqual({
-			showing: { 'stack-1': 'panel-8' },
+			tab: 'tab-7',
 			panel: 'panel-8',
 			paths: { 'panel-8': '/inst0' }
 		});
+	});
+
+	it('a name claimed for a tab the load took away is free again', async () => {
+		// A claim reserves a tab name until the replica shows it, so six taps on ＋ do not ask for the
+		// same free name six times. It is the one thing the generation boundary genuinely ends: the
+		// name was reserved against the OUTGOING strip, and a patch loaded out from under it means
+		// the page it was claimed for is never coming. Left standing, `_claimName` skipped that name
+		// for the rest of the session.
+		const ws = boot();
+		ws.addTab();
+		await settle();
+		expect(sent()).toEqual([['add_tab', { name: 'Tab 2' }]]);
+
+		ws.syncFromDoc([]);
+		ws.syncFromDoc(oneTab());
+		ws.addTab();
+		await settle();
+		expect(sent()[1], 'the new session offers the name again').toEqual([
+			'add_tab',
+			{ name: 'Tab 2' }
+		]);
 	});
 
 	it('drops a maximize and a focus a peer’s close took away', () => {
 		const ws = boot(split());
 		ws.setActive('panel-3');
 		ws.toggleMaximize('panel-3');
-		ws.syncFromDoc(onePage());
-		expect(ws.maximizedId).toBeNull();
+		ws.syncFromDoc(oneTab());
+		expect(ws.maximizedPanelId).toBeNull();
 		expect(ws.activePanelId).toBe('panel-2');
 	});
 });

@@ -1,34 +1,35 @@
-//! The editor's panel arrangement, held as ONE tree: a stack shows one child and draws the rest as
-//! tabs, a split divides its slot between its children, a panel is a leaf. A workspace tab is a
-//! child of the ROOT stack and nothing else, so there is no second kind of thing in here.
+//! The editor's panel arrangement, held as a TREE: an ordered strip of tabs, each holding one root
+//! node, each split holding its children in order.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// A stable stack/split/panel id. Minted here, never by a client.
+/// A stable tab/split/panel id. Minted here, never by a client.
 pub type Id = String;
 
 /// What one entry HOLDS, addressed by id — the unit a CONTENTS command lands and inverts. It says
 /// nothing about where the entry sits, which makes an inverse safe against an arrangement a peer
-/// has moved under it. Only a panel holds anything: nothing in the tree carries a name, because a
-/// stack derives every member's label from what that member IS.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Contents {
-    pub panel_type: String,
-    pub state: Value,
-}
-
-/// See [`Contents`].
+/// has moved under it.
 pub type Write = (Id, Contents);
+
+/// See [`Write`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Contents {
+    Tab { name: String },
+    Panel { panel_type: String, state: Value },
+}
 
 /// The panel type a fresh tab starts with, and the placeholder a split births (which is what keeps
 /// a split from assuming content). Both mirror `model.ts`.
 pub const DEFAULT_PANEL_TYPE: &str = "node-editor";
 pub const EMPTY_PANEL_TYPE: &str = "empty";
+/// The first tab's name. Numbered from 1, like every one the client claims after it.
+const DEFAULT_TAB_NAME: &str = "Tab 1";
 
 /// Smallest share a split may hand a child, so a panel can always be grabbed again (`MIN_FRACTION`).
 const MIN_FRACTION: f64 = 0.05;
+
 
 /// A newcomer's share of the slot it is taking over, clamped so neither side becomes ungrabbable —
 /// `insertNodeAtPanel`'s `Math.max(0.05, Math.min(0.95, fraction))`.
@@ -77,14 +78,21 @@ impl Axis {
     }
 }
 
-/// A node of the arrangement. `size` is its share of its PARENT split; a stack's children each take
-/// the whole slot, and the root's is not read — it is carried anyway so a lifted subtree can name
-/// the share it asks for on the way back in.
+/// One tab: a labelled root of the arrangement. Its POSITION in [`Layout::tabs`] is its position in
+/// the strip — there is no `order` field to keep in step with it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tab {
+    pub id: Id,
+    pub name: String,
+    pub root: Node,
+}
+
+/// A node of one tab's tree. `size` is its share of its PARENT; a root's is not read, and is
+/// carried anyway so a lifted subtree can name the share it asks for on the way back in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Node {
     Split { id: Id, #[serde(default = "whole")] size: f64, axis: Axis, children: Vec<Node> },
-    Stack { id: Id, #[serde(default = "whole")] size: f64, children: Vec<Node> },
     Panel {
         id: Id,
         #[serde(default = "whole")]
@@ -95,7 +103,7 @@ pub enum Node {
     },
 }
 
-/// A root's share of the window it fills. Also what a hand-written entry that omits one means.
+/// A root's share of a tab it fills. Also what a hand-written entry that omits one means.
 fn whole() -> f64 {
     1.0
 }
@@ -121,36 +129,29 @@ mod json_string {
 impl Node {
     pub fn id(&self) -> &str {
         match self {
-            Node::Split { id, .. } | Node::Stack { id, .. } | Node::Panel { id, .. } => id,
+            Node::Split { id, .. } | Node::Panel { id, .. } => id,
         }
     }
     fn size(&self) -> f64 {
         match self {
-            Node::Split { size, .. } | Node::Stack { size, .. } | Node::Panel { size, .. } => *size,
+            Node::Split { size, .. } | Node::Panel { size, .. } => *size,
         }
     }
     fn set_size(&mut self, v: f64) {
         match self {
-            Node::Split { size, .. } | Node::Stack { size, .. } | Node::Panel { size, .. } => *size = v,
+            Node::Split { size, .. } | Node::Panel { size, .. } => *size = v,
         }
     }
     pub fn kind(&self) -> &'static str {
         match self {
             Node::Split { .. } => "split",
-            Node::Stack { .. } => "tab group",
             Node::Panel { .. } => "panel",
         }
     }
     fn children(&self) -> &[Node] {
         match self {
-            Node::Split { children, .. } | Node::Stack { children, .. } => children,
+            Node::Split { children, .. } => children,
             Node::Panel { .. } => &[],
-        }
-    }
-    fn children_mut(&mut self) -> Option<&mut Vec<Node>> {
-        match self {
-            Node::Split { children, .. } | Node::Stack { children, .. } => Some(children),
-            Node::Panel { .. } => None,
         }
     }
     /// This node and every descendant, parents before children.
@@ -161,21 +162,14 @@ impl Node {
         }
         out
     }
-    fn panels(&self) -> usize {
-        match self {
-            Node::Panel { .. } => 1,
-            _ => self.children().iter().map(Node::panels).sum(),
-        }
-    }
 }
 
-/// How a subtree sits under its parent — the half of a [`Home`] that decides how to put it back.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Place {
-    /// Beside its sibling, splitting along this axis.
-    Beside(Axis),
-    /// As a tab of the stack its sibling is in.
-    Tab,
+/// What a close carried away, for its own inverse to put back. A tab is re-born by NAME into the
+/// strip; a subtree is re-homed beside a surviving sibling.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Dead {
+    Tab(Tab),
+    Node(Node),
 }
 
 /// Where a subtree sat before it moved — what [`Layout::re_home`] needs to plan a move BACK without
@@ -187,13 +181,15 @@ pub struct Home {
     /// Every entry's share at capture time — what gives the arrangement its geometry back. A move
     /// disturbs more slices than one level of siblings can name.
     shares: BTreeMap<Id, f64>,
-    /// The old parent's id, handed back only to a wrapper that has to be minted anyway, and only
-    /// while it is free — restoring its SLOT would strand a peer's work.
+    /// The old parent's id and axis. The id is handed back only to a wrapper that has to be minted
+    /// anyway, and only while it is free — restoring its SLOT would strand a peer's work.
     parent: Id,
-    place: Place,
+    axis: Axis,
     /// It sat before its nearest sibling, and held this share of its parent.
     before: bool,
     size: f64,
+    /// Its tab's name and strip index — the last resort, when the tab went with its last panel.
+    tab: (String, usize),
 }
 
 impl Home {
@@ -203,15 +199,14 @@ impl Home {
     }
 }
 
-/// A route to one node: a child index at each level down from the root. Empty = the root itself.
-type Path = Vec<usize>;
+/// A route to one node: the tab's index in the strip, then a child index at each level down. Empty
+/// tail = the tab's own root.
+type Path = (usize, Vec<usize>);
 
 /// The whole arrangement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Layout {
-    /// Always a stack: its children are the workspace's pages, and it is the one node that never
-    /// collapses, so the strip it draws cannot vanish under its last tab.
-    root: Node,
+    tabs: Vec<Tab>,
     /// The id counter, monotone: nothing ever lowers it, so a closed panel's id is never handed out
     /// again. Recycling would give a fresh panel a dead one's client-side state.
     #[serde(rename = "#seq", default)]
@@ -221,27 +216,27 @@ pub struct Layout {
 /// Two arrangements are the same when they DRAW the same; the id counter is bookkeeping.
 impl PartialEq for Layout {
     fn eq(&self, other: &Layout) -> bool {
-        self.root == other.root
+        self.tabs == other.tabs
     }
 }
 
 impl Default for Layout {
-    /// The arrangement a fresh patch opens with: one page holding one node-editor panel. Also the
+    /// The arrangement a fresh patch opens with: one tab holding one node-editor panel. Also the
     /// fallback a corrupt stored arrangement lands on.
     fn default() -> Layout {
-        let mut l = Layout { root: Node::Stack { id: String::new(), size: 1.0, children: vec![] }, seq: 0 };
-        let root = l.mint("stack");
+        let mut l = Layout { tabs: Vec::new(), seq: 0 };
+        let tab = l.mint("tab");
         let panel = l.mint("panel");
-        l.root = Node::Stack {
-            id: root,
-            size: 1.0,
-            children: vec![Node::Panel {
+        l.tabs.push(Tab {
+            id: tab,
+            name: DEFAULT_TAB_NAME.into(),
+            root: Node::Panel {
                 id: panel,
                 size: 1.0,
                 panel_type: DEFAULT_PANEL_TYPE.into(),
                 state: Value::Null,
-            }],
-        };
+            },
+        });
         l
     }
 }
@@ -262,14 +257,23 @@ impl Layout {
         }
     }
 
-    /// The root stack's id — what a drop on the workspace strip names.
-    pub fn root_id(&self) -> &str {
-        self.root.id()
+    /// The tabs, in strip order.
+    pub fn tabs(&self) -> Vec<Id> {
+        self.tabs.iter().map(|t| t.id.clone()).collect()
     }
 
-    /// The root stack's children, in strip order: the workspace's pages.
-    pub fn pages(&self) -> Vec<Id> {
-        self.root.children().iter().map(|n| n.id().to_string()).collect()
+    /// Where `tab` sits in the strip — what a reorder's inverse aims at, read at flip time so a
+    /// peer's added tab has already been counted.
+    pub fn tab_index(&self, tab: &str) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == tab)
+    }
+
+    fn tab_named(&self, name: &str) -> Option<Id> {
+        self.tabs.iter().find(|t| t.name == name).map(|t| t.id.clone())
+    }
+
+    pub fn name_of(&self, tab: &str) -> Option<&str> {
+        self.tabs.iter().find(|t| t.id == tab).map(|t| t.name.as_str())
     }
 
     /// The route to `id`, or `None` when nothing in the arrangement carries it.
@@ -287,27 +291,36 @@ impl Layout {
             }
             false
         }
-        let mut at = Vec::new();
-        down(&self.root, id, &mut at).then_some(at)
+        for (i, t) in self.tabs.iter().enumerate() {
+            if t.id == id {
+                return None; // a tab is not a node; `tab_index` answers for it
+            }
+            let mut at = Vec::new();
+            if down(&t.root, id, &mut at) {
+                return Some((i, at));
+            }
+        }
+        None
     }
 
     fn at(&self, p: &Path) -> &Node {
-        let mut n = &self.root;
-        for i in p {
+        let mut n = &self.tabs[p.0].root;
+        for i in &p.1 {
             n = &n.children()[*i];
         }
         n
     }
 
     fn at_mut(&mut self, p: &Path) -> &mut Node {
-        let mut n = &mut self.root;
-        for i in p {
-            n = &mut n.children_mut().expect("a path only descends containers")[*i];
+        let mut n = &mut self.tabs[p.0].root;
+        for i in &p.1 {
+            let Node::Split { children, .. } = n else { unreachable!("a path only descends splits") };
+            n = &mut children[*i];
         }
         n
     }
 
-    /// The node carrying `id`, or `None`.
+    /// The node carrying `id`, or `None` — a tab is not one.
     pub fn node(&self, id: &str) -> Option<&Node> {
         fn down<'a>(n: &'a Node, id: &str) -> Option<&'a Node> {
             if n.id() == id {
@@ -315,7 +328,7 @@ impl Layout {
             }
             n.children().iter().find_map(|c| down(c, id))
         }
-        down(&self.root, id)
+        self.tabs.iter().find_map(|t| down(&t.root, id))
     }
 
     /// The same, mutably.
@@ -324,16 +337,27 @@ impl Layout {
             if n.id() == id {
                 return Some(n);
             }
-            n.children_mut()?.iter_mut().find_map(|c| down(c, id))
+            match n {
+                Node::Split { children, .. } => children.iter_mut().find_map(|c| down(c, id)),
+                Node::Panel { .. } => None,
+            }
         }
-        down(&mut self.root, id)
+        self.tabs.iter_mut().find_map(|t| down(&mut t.root, id))
+    }
+
+    /// The id of a tab's root — what a caller gives content to after adding one.
+    pub fn root_of(&self, tab: &str) -> Option<Id> {
+        self.tabs.iter().find(|t| t.id == tab).map(|t| t.root.id().to_string())
     }
 
     /// What `id` holds right now — what a contents inverse captures before it lands.
     pub fn contents(&self, id: &str) -> Option<Contents> {
+        if let Some(t) = self.tabs.iter().find(|t| t.id == id) {
+            return Some(Contents::Tab { name: t.name.clone() });
+        }
         match self.node(id) {
             Some(Node::Panel { panel_type, state, .. }) => {
-                Some(Contents { panel_type: panel_type.clone(), state: state.clone() })
+                Some(Contents::Panel { panel_type: panel_type.clone(), state: state.clone() })
             }
             _ => None,
         }
@@ -347,21 +371,32 @@ impl Layout {
         }
     }
 
-    /// Every node in the arrangement, parents before children.
+    /// Every node in the arrangement, tab by tab, parents before children.
     fn nodes(&self) -> impl Iterator<Item = &Node> {
-        self.root.walk().into_iter()
+        self.tabs.iter().flat_map(|t| t.root.walk())
     }
 
-    /// Every id the arrangement holds.
+    /// Every id the arrangement holds, its tabs' included.
     fn ids(&self) -> Vec<Id> {
-        self.nodes().map(|n| n.id().to_string()).collect()
+        self.tabs
+            .iter()
+            .map(|t| t.id.clone())
+            .chain(self.nodes().map(|n| n.id().to_string()))
+            .collect()
     }
 
-    /// `root` and every descendant.
+    /// `root` and every descendant. `root` may name a tab, in which case the tab's id leads and its
+    /// tree follows.
     fn subtree(&self, root: &str) -> Vec<Id> {
-        self.node(root)
-            .map(|n| n.walk().into_iter().map(|x| x.id().to_string()).collect())
-            .unwrap_or_default()
+        match self.tabs.iter().find(|t| t.id == root) {
+            Some(t) => std::iter::once(t.id.clone())
+                .chain(t.root.walk().into_iter().map(|n| n.id().to_string()))
+                .collect(),
+            None => self
+                .node(root)
+                .map(|n| n.walk().into_iter().map(|x| x.id().to_string()).collect())
+                .unwrap_or_default(),
+        }
     }
 
     /// Adopt a planned arrangement. A structural plan is the whole next tree, so there is nothing
@@ -372,74 +407,8 @@ impl Layout {
         self.seq = seq;
     }
 
-    // --- normalisation -------------------------------------------------------------------------
-
-    /// The rules every plan's output goes through, applied ONCE here rather than remembered at each
-    /// planner: an empty container is gone, a container of ONE **is** that child, and a split inside
-    /// a split along the same axis is one split. The ROOT is exempt from the second, which is what
-    /// keeps the strip drawable under its last page.
-    ///
-    /// A stack inside a stack is deliberately left alone: it is a tab group that is one tab of an
-    /// outer group, and folding it up would scatter the members of a group built inside one page.
-    fn normalized(node: Node, is_root: bool) -> Option<Node> {
-        let Node::Panel { .. } = &node else {
-            let size = node.size();
-            let axis = match &node {
-                Node::Split { axis, .. } => Some(*axis),
-                _ => None,
-            };
-            let (id, kids) = match node {
-                Node::Split { id, children, .. } | Node::Stack { id, children, .. } => (id, children),
-                Node::Panel { .. } => unreachable!("matched above"),
-            };
-            let mut out: Vec<Node> = Vec::with_capacity(kids.len());
-            for child in kids {
-                let Some(child) = Layout::normalized(child, false) else { continue };
-                // Flatten a same-axis split into its parent, its children taking their parent's slice.
-                match (axis, &child) {
-                    (Some(a), Node::Split { axis: b, .. }) if a == *b => {
-                        let share = child.size();
-                        let Node::Split { children, .. } = child else { unreachable!() };
-                        let total: f64 = children.iter().map(Node::size).sum();
-                        let total = if total > 0.0 { total } else { 1.0 };
-                        for mut c in children {
-                            let s = c.size();
-                            c.set_size(share * s / total);
-                            out.push(c);
-                        }
-                    }
-                    _ => out.push(child),
-                }
-            }
-            if out.is_empty() {
-                return is_root.then(|| Node::Stack { id, size, children: vec![] });
-            }
-            if out.len() == 1 && !is_root {
-                let mut only = out.pop().expect("length checked");
-                only.set_size(size);
-                return Some(only);
-            }
-            let mut next = match axis {
-                Some(axis) => Node::Split { id, size, axis, children: out },
-                None => {
-                    // A stack's children each take the WHOLE slot, so a share is meaningless on
-                    // them — held at 1 rather than left to drift as members come and go.
-                    let mut kids = out;
-                    for c in kids.iter_mut() {
-                        c.set_size(1.0);
-                    }
-                    Node::Stack { id, size, children: kids }
-                }
-            };
-            Layout::rescale(&mut next);
-            return Some(next);
-        };
-        Some(node)
-    }
-
-    /// Scale a split's children so their sizes sum to 1. A stack's children each take the whole
-    /// slot, so there is nothing to scale.
-    fn rescale(n: &mut Node) {
+    /// Scale a split's children so their sizes sum to 1.
+    fn normalize(n: &mut Node) {
         let Node::Split { children, .. } = n else { return };
         let total: f64 = children.iter().map(Node::size).sum();
         let total = if total > 0.0 { total } else { 1.0 };
@@ -449,78 +418,69 @@ impl Layout {
         }
     }
 
-    fn normalize(&mut self) {
-        let root = std::mem::replace(&mut self.root, Node::Stack { id: String::new(), size: 1.0, children: vec![] });
-        let id = root.id().to_string();
-        self.root = Layout::normalized(root, true)
-            .unwrap_or(Node::Stack { id, size: 1.0, children: vec![] });
-    }
-
-    // --- the shared halves ---------------------------------------------------------------------
-
     /// Lift `id` out of its parent and hand it back — the shared half of a close and a move. The
-    /// freed slice goes to the siblings in proportion, and the rules do the rest.
+    /// freed slice goes to the siblings in proportion, and a split left with ONE child is replaced
+    /// by that child, so the tree never keeps a one-armed wrapper.
     fn detach(&mut self, id: &str) -> Result<Node, String> {
-        let Some(at) = self.path_of(id) else {
-            return Err(format!("no such layout entry `{id}`"));
+        let Some((tab, at)) = self.path_of(id) else {
+            return Err(format!("no such panel `{id}`"));
         };
         let Some((&mine, up)) = at.split_last() else {
-            return Err("the root of the arrangement cannot be moved or closed".into());
+            return Err(format!(
+                "`{id}` is tab `{}`'s only root — a tab always keeps one",
+                self.tabs[tab].name
+            ));
         };
-        if self.root.panels() <= self.at(&at).panels() {
-            return Err(format!("`{id}` holds every panel there is — it has nowhere to go"));
-        }
-        let parent = self.at_mut(&up.to_vec());
-        let split = matches!(parent, Node::Split { .. });
-        let children = parent.children_mut().expect("a path only descends containers");
+        let parent_path: Path = (tab, up.to_vec());
+        let parent = self.at_mut(&parent_path);
+        let Node::Split { children, .. } = parent else { unreachable!("a path only descends splits") };
         let gone = children.remove(mine);
-        // The freed slice goes to the siblings in proportion — in a SPLIT. A stack hands every
-        // member the whole slot, so there is nothing to hand on.
-        if split {
-            let total: f64 = children.iter().map(Node::size).sum();
-            let total = if total > 0.0 { total } else { 1.0 };
-            for c in children.iter_mut() {
-                let v = c.size();
-                c.set_size(v + gone.size() * v / total);
-            }
+        let total: f64 = children.iter().map(Node::size).sum();
+        let total = if total > 0.0 { total } else { 1.0 };
+        for c in children.iter_mut() {
+            let v = c.size();
+            c.set_size(v + gone.size() * v / total);
         }
-        Layout::rescale(parent);
-        self.normalize();
+        Layout::normalize(parent);
+        let lone = matches!(parent, Node::Split { children, .. } if children.len() == 1);
+        if lone {
+            let slot = parent.size();
+            let Node::Split { children, .. } = parent else { unreachable!() };
+            let mut survivor = children.remove(0);
+            survivor.set_size(slot);
+            *parent = survivor;
+        }
         Ok(gone)
     }
 
-    /// The stack `id` names, WRAPPING it in a fresh one when it is not one. Dropping on a lone
-    /// panel's header groups the two; dropping on a group's joins the group already there.
-    fn as_stack(&mut self, id: &str, wrap: Option<&str>) -> Result<Id, String> {
-        match self.node(id) {
-            Some(Node::Stack { .. }) => return Ok(id.to_string()),
-            Some(_) => {}
-            None => return Err(format!("no such layout entry `{id}`")),
-        }
-        let free = wrap.filter(|w| self.node(w).is_none());
-        let stack_id = match free {
-            Some(w) => w.to_string(),
-            None => self.mint("stack"),
+    /// Put `node` under the split at `parent` at `index`. The newcomer takes an EQUAL share (the
+    /// average of what is there) and the siblings keep their relative proportions.
+    fn attach(&mut self, mut node: Node, parent: &str, index: usize) -> Result<(), String> {
+        let Some(target) = self.node_mut(parent) else {
+            return Err(format!("no such layout entry `{parent}`"));
         };
-        let p = self.path_of(id).expect("looked up above");
-        let held = std::mem::replace(self.at_mut(&p), Node::Stack { id: String::new(), size: 0.0, children: vec![] });
-        let slot = held.size();
-        let mut inner = held;
-        inner.set_size(1.0);
-        *self.at_mut(&p) = Node::Stack { id: stack_id.clone(), size: slot, children: vec![inner] };
-        Ok(stack_id)
+        let Node::Split { children, .. } = target else {
+            return Err(format!(
+                "`{parent}` is a {} — a subtree moves into a split (split a panel first)",
+                target.kind()
+            ));
+        };
+        node.set_size(if children.is_empty() { 1.0 } else { 1.0 / children.len() as f64 });
+        children.insert(index.min(children.len()), node);
+        Layout::normalize(target);
+        Ok(())
     }
 
     /// Put `node` beside `target` along `axis` — the ONE place split-or-wrap lives. `node`'s `size`
     /// is READ as the share it asks for; `wrap` names the id a minted wrapper takes if still free.
-    fn insert_beside(&mut self, mut node: Node, target: &str, axis: Axis, before: bool, wrap: Option<&str>) {
-        let Some(at) = self.path_of(target) else { return };
+    fn insert_at(&mut self, mut node: Node, target: &str, axis: Axis, before: bool, wrap: Option<&str>) {
+        let Some((tab, at)) = self.path_of(target) else { return };
         let f = node.size();
         if let Some((&mine, up)) = at.split_last() {
-            let parent_path: Path = up.to_vec();
+            let parent_path: Path = (tab, up.to_vec());
             if matches!(self.at(&parent_path), Node::Split { axis: a, .. } if *a == axis) {
                 let parent = self.at_mut(&parent_path);
-                let children = parent.children_mut().expect("a split holds children");
+                let Node::Split { children, .. } = parent else { unreachable!() };
                 let slot = children[mine].size();
                 children[mine].set_size(slot - slot * f);
                 node.set_size(slot * f);
@@ -528,172 +488,131 @@ impl Layout {
                 return;
             }
         }
-        let free = wrap.filter(|w| self.node(w).is_none());
+        let free = wrap.filter(|w| self.node(w).is_none() && self.tab_index(w).is_none());
         let id = match free {
             Some(w) => w.to_string(),
             None => self.mint("split"),
         };
-        let slot = self.at(&at).size();
+        let p = (tab, at);
+        let slot = self.at(&p).size();
         let held = std::mem::replace(
-            self.at_mut(&at),
+            self.at_mut(&p),
             Node::Panel { id: String::new(), size: 0.0, panel_type: String::new(), state: Value::Null },
         );
         let mut kept = held;
         kept.set_size(1.0 - f);
         node.set_size(f);
         let children = if before { vec![node, kept] } else { vec![kept, node] };
-        *self.at_mut(&at) = Node::Split { id, size: slot, axis, children };
+        *self.at_mut(&p) = Node::Split { id, size: slot, axis, children };
     }
 
-    /// Put `node` into the stack `target` names, at `index`.
-    fn insert_tab(&mut self, mut node: Node, target: &str, index: Option<usize>, wrap: Option<&str>) -> Result<(), String> {
-        let stack = self.as_stack(target, wrap)?;
-        let host = self.node_mut(&stack).expect("just resolved");
-        let children = host.children_mut().expect("a stack holds children");
-        node.set_size(1.0);
-        let at = index.unwrap_or(children.len()).min(children.len());
-        children.insert(at, node);
-        Ok(())
-    }
-
-    /// Put `node` NEXT TO `sibling` in the stack that already holds it — the tab half of
-    /// [`Self::insert_beside`], and the same rule: join the parent when it is the right kind, and
-    /// wrap otherwise. Only an inverse asks for this; a drop names the stack it landed on.
-    fn insert_tab_beside(&mut self, mut node: Node, sibling: &str, before: bool, wrap: Option<&str>) -> Result<(), String> {
-        if let Some(at) = self.path_of(sibling) {
-            if let Some((&mine, up)) = at.split_last() {
-                let parent_path: Path = up.to_vec();
-                if matches!(self.at(&parent_path), Node::Stack { .. }) {
-                    let parent = self.at_mut(&parent_path);
-                    let children = parent.children_mut().expect("a stack holds children");
-                    node.set_size(1.0);
-                    children.insert(if before { mine } else { mine + 1 }, node);
-                    return Ok(());
-                }
-            }
+    /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its tab's
+    /// ONLY root the TAB goes with it. The last tab never goes.
+    fn take(&mut self, root: &str) -> Result<Node, String> {
+        if self.tab_index(root).is_some() {
+            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
         }
-        self.insert_tab(node, sibling, None, wrap)
+        let Some((tab, at)) = self.path_of(root) else {
+            return Err(format!("no such panel `{root}`"));
+        };
+        if !at.is_empty() {
+            return self.detach(root);
+        }
+        if self.tabs.len() <= 1 {
+            return Err(format!("`{root}` is the only panel on the only tab — it has nowhere to go"));
+        }
+        Ok(self.tabs.remove(tab).root)
     }
 
-    // --- the planners --------------------------------------------------------------------------
-
-    /// Add a panel and return its id. With an `axis` it splits `at`, taking `ratio` of its slot and
-    /// starting EMPTY — content is a choice, not an inheritance. Without one it joins the stack `at`
-    /// names, starting as the default type, which is what a fresh page is.
-    pub fn add_panel(
+    /// Add a tab and return its id. It holds one fresh node-editor panel unless `subtree` names an
+    /// existing one, in which case the tab is built AROUND it. `index` places it in the strip.
+    pub fn add_tab(
         &self,
-        at: &str,
-        axis: Option<Axis>,
-        before: bool,
-        ratio: f64,
+        name: &str,
         index: Option<usize>,
+        subtree: Option<&str>,
     ) -> Result<(Layout, Id), String> {
-        if self.node(at).is_none() {
-            return Err(format!("no such layout entry `{at}`"));
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a tab needs a name".into());
+        }
+        if self.tab_named(name).is_some() {
+            return Err(format!("a tab named `{name}` already exists"));
         }
         let mut next = self.clone();
-        let fresh = next.mint("panel");
-        match axis {
-            Some(axis) => {
-                let f = fraction(ratio)?;
-                let born = Node::Panel {
-                    id: fresh.clone(),
-                    size: f,
-                    panel_type: EMPTY_PANEL_TYPE.into(),
-                    state: Value::Null,
-                };
-                next.insert_beside(born, at, axis, before, None);
+        // Lifted FIRST, because taking a tab's last panel takes the tab — which is what the new
+        // tab's own position is counted against.
+        let adopted = match subtree {
+            Some(s) => Some(next.take(s)?),
+            None => None,
+        };
+        let id = next.mint("tab");
+        let mut root = adopted.unwrap_or_else(|| {
+            let panel = next.mint("panel");
+            Node::Panel {
+                id: panel,
+                size: 1.0,
+                panel_type: DEFAULT_PANEL_TYPE.into(),
+                state: Value::Null,
             }
-            None => {
-                let born = Node::Panel {
-                    id: fresh.clone(),
-                    size: 1.0,
-                    panel_type: DEFAULT_PANEL_TYPE.into(),
-                    state: Value::Null,
-                };
-                next.insert_tab(born, at, index, None)?;
-            }
-        }
-        next.normalize();
-        Ok((next, fresh))
+        });
+        root.set_size(1.0);
+        let at = index.unwrap_or(next.tabs.len()).min(next.tabs.len());
+        next.tabs.insert(at, Tab { id: id.clone(), name: name.to_string(), root });
+        Ok((next, id))
     }
 
-    /// Move the subtree rooted at `root` to `to` — beside it along `axis`, or into it as a tab. One
-    /// drag as ONE plan, or the user pays three ctrl-Z for it and every peer sees two arrangements.
-    pub fn move_subtree(
+    /// Re-home the subtree rooted at `subtree` beside `target`, splitting along `axis` — one drag as
+    /// ONE plan, or the user pays three ctrl-Z for it and every peer sees two arrangements.
+    pub fn insert_at_panel(
         &self,
-        root: &str,
-        to: &str,
-        axis: Option<Axis>,
+        subtree: &str,
+        target: &str,
+        axis: Axis,
         before: bool,
         ratio: f64,
-        index: Option<usize>,
     ) -> Result<Layout, String> {
-        if self.node(root).is_none() {
-            return Err(format!("no such layout entry `{root}`"));
+        // A PANEL target is what the gesture means AND what makes the plan safe: lifting the source
+        // can promote a split away, but never a panel, so the target still stands afterwards.
+        match self.node(target) {
+            Some(Node::Panel { .. }) => {}
+            Some(n) => return Err(format!("`{target}` is a {} — a drop lands on a panel", n.kind())),
+            None => return Err(format!("no such panel `{target}`")),
         }
-        if self.node(to).is_none() {
-            return Err(format!("no such layout entry `{to}`"));
+        if subtree == target {
+            return Err(format!("`{subtree}` cannot be dropped onto itself"));
         }
-        if root == to {
-            return Err(format!("`{root}` cannot be dropped onto itself"));
+        if self.subtree(subtree).iter().any(|d| d == target) {
+            return Err(format!("`{target}` is inside `{subtree}` — that would make a cycle"));
         }
-        if self.subtree(root).iter().any(|d| d == to) {
-            return Err(format!("`{to}` is inside `{root}` — that would make a cycle"));
-        }
+        let f = fraction(ratio)?;
         let mut next = self.clone();
-        // A reorder INSIDE one stack is not a lift: taking the node first can collapse the very
-        // stack the move is aimed at, and the order is the only thing that changes.
-        if axis.is_none() {
-            if let (Some(at), Some(Node::Stack { .. })) = (next.path_of(root), next.node(to)) {
-                let inside = at.split_last().map(|(_, up)| next.at(&up.to_vec()).id() == to);
-                if inside == Some(true) {
-                    let (from, _) = at.split_last().expect("checked above");
-                    let host = next.node_mut(to).expect("checked above");
-                    let children = host.children_mut().expect("a stack holds children");
-                    let moved = children.remove(*from);
-                    let target = index.unwrap_or(children.len()).min(children.len());
-                    children.insert(target, moved);
-                    return Ok(next);
-                }
-            }
-        }
-        // Lifted first: closing up behind the source can promote a sibling into the very slot the
-        // newcomer is about to share.
-        let mut moved = next.detach(root)?;
-        match axis {
-            Some(axis) => {
-                let f = fraction(ratio)?;
-                moved.set_size(f);
-                // The lift may have collapsed the target away — a split of one promotes its child.
-                if next.node(to).is_none() {
-                    return Err(format!("`{to}` did not survive the move"));
-                }
-                next.insert_beside(moved, to, axis, before, None);
-            }
-            None => {
-                if next.node(to).is_none() {
-                    return Err(format!("`{to}` did not survive the move"));
-                }
-                next.insert_tab(moved, to, index, None)?;
-            }
-        }
-        next.normalize();
+        // Lifted first, exactly as `_takeNode` runs before `insertNodeAtPanel`: closing up behind
+        // the source can promote a sibling into the slot the newcomer is about to share.
+        let mut moved = next.take(subtree)?;
+        moved.set_size(f);
+        next.insert_at(moved, target, axis, before, None);
         Ok(next)
     }
 
-    /// Remove the subtree rooted at `root`, promoting and renormalizing what is left.
-    pub fn remove_subtree(&self, root: &str) -> Result<Layout, String> {
-        let mut next = self.clone();
-        next.detach(root)?;
-        Ok(next)
-    }
-
-    /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back.
+    /// Where `root` sits now, in the terms [`Self::re_home`] needs to put it back. `None` for a tab,
+    /// which is reordered rather than moved.
     pub fn home_of(&self, root: &str) -> Option<Home> {
-        let at = self.path_of(root)?;
-        let (&mine, up) = at.split_last()?;
-        let parent = self.at(&up.to_vec());
+        let (tab, at) = self.path_of(root)?;
+        let Some((&mine, up)) = at.split_last() else {
+            // A tab's ROOT has no split above it, and its home is the tab. Without this branch a
+            // torn-off panel's undo captures no home at all and degrades to a no-op.
+            return Some(Home {
+                siblings: Vec::new(),
+                shares: self.shares(),
+                parent: self.tabs[tab].id.clone(),
+                axis: Axis::Row,
+                before: true,
+                size: self.tabs[tab].root.size(),
+                tab: (self.tabs[tab].name.clone(), tab),
+            });
+        };
+        let parent = self.at(&(tab, up.to_vec()));
         let kids = parent.children();
         // Nearest first: the neighbour that shared an edge with `root` is the one whose survival
         // reconstructs the old pairing exactly.
@@ -708,12 +627,13 @@ impl Layout {
             siblings: sibs.into_iter().map(|(_, k)| k).collect(),
             shares: self.shares(),
             parent: parent.id().to_string(),
-            place: match parent {
-                Node::Split { axis, .. } => Place::Beside(*axis),
-                _ => Place::Tab,
+            axis: match parent {
+                Node::Split { axis, .. } => *axis,
+                _ => Axis::Row,
             },
             before: mine == 0,
-            size: self.at(&at).size(),
+            size: self.at(&(tab, at.clone())).size(),
+            tab: (self.tabs[tab].name.clone(), tab),
         })
     }
 
@@ -728,22 +648,24 @@ impl Layout {
     pub fn re_home(&self, root: &str, home: &Home) -> Result<Layout, String> {
         let mut next = self.clone();
         // Lifted FIRST, so the landing is chosen among what survives closing up behind it.
-        let mut e = next.detach(root)?;
+        let e = next.take(root)?;
         let inside = self.subtree(root);
         let landing = home
             .siblings
             .iter()
             .find(|s| next.node(s).is_some() && !inside.contains(s))
             .cloned()
-            // Even its siblings are gone: the root stack always stands, so the page strip is where
-            // anything homeless belongs.
-            .unwrap_or_else(|| next.root.id().to_string());
+            .or_else(|| next.tab_named(&home.tab.0).and_then(|t| next.root_of(&t)));
+        let Some(landing) = landing else {
+            // Even the tab went with it — re-born AROUND the subtree, through `add_tab`'s own adopt
+            // branch rather than a raw restore.
+            let (mut born, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
+            born.give_back_shares(self, home);
+            return Ok(born);
+        };
+        let mut e = e;
         e.set_size(home.size);
-        match home.place {
-            Place::Beside(axis) => next.insert_beside(e, &landing, axis, home.before, Some(&home.parent)),
-            Place::Tab => next.insert_tab_beside(e, &landing, home.before, Some(&home.parent))?,
-        }
-        next.normalize();
+        next.insert_at(e, &landing, home.axis, home.before, Some(&home.parent));
         next.give_back_shares(self, home);
         Ok(next)
     }
@@ -762,46 +684,80 @@ impl Layout {
             .collect();
         for p in disturbed {
             let Some(split) = self.node_mut(&p) else { continue };
-            let Some(children) = split.children_mut() else { continue };
+            let Node::Split { children, .. } = split else { continue };
             for c in children.iter_mut() {
                 if let Some(s) = home.share(c.id()) {
                     c.set_size(s);
                 }
             }
-            Layout::rescale(split);
+            Layout::normalize(split);
         }
     }
 
     /// What a close carries into its own inverse. The ids are dead the moment the close lands and
     /// nothing ever mints one again, so putting them back strands nobody.
-    pub fn dead_subtree(&self, root: &str) -> Option<Node> {
-        self.node(root).cloned()
+    pub fn dead_subtree(&self, root: &str) -> Option<Dead> {
+        if let Some(t) = self.tabs.iter().find(|t| t.id == root) {
+            return Some(Dead::Tab(t.clone()));
+        }
+        self.node(root).cloned().map(Dead::Node)
     }
 
     /// Plan the inverse of a close: put `dead` back, then RE-PLAN where it belongs. What it never
     /// does is pin the root into the slot it held, which the close promoted away.
-    pub fn revive(&self, dead: &Node, home: Option<&Home>) -> Result<Layout, String> {
-        let Some(h) = home else {
-            return Err(format!("`{}` is not something a close can give back", dead.id()));
-        };
+    pub fn revive(&self, dead: &Dead, home: Option<&Home>) -> Result<Layout, String> {
         let mut back = self.clone();
-        for d in dead.walk() {
-            back.spend(d.id());
+        match dead {
+            // A tab hangs off nothing, so only its place in the strip needs re-planning — a peer's
+            // new tab has taken an index since, and restoring the old one collides with it.
+            Dead::Tab(t) => {
+                if back.tab_named(&t.name).is_some() {
+                    return Err(format!("a tab named `{}` already exists", t.name));
+                }
+                for n in t.root.walk() {
+                    back.spend(n.id());
+                }
+                back.spend(&t.id);
+                let at = home.map(|h| h.tab.1).unwrap_or(back.tabs.len()).min(back.tabs.len());
+                back.tabs.insert(at, t.clone());
+                Ok(back)
+            }
+            Dead::Node(n) => {
+                let Some(h) = home else {
+                    return Err(format!("`{}` is not something a close can give back", n.id()));
+                };
+                // Parked on the first tab's root so `re_home` can LIFT it back out — the same path
+                // every other landing takes, rather than a second way in.
+                for d in n.walk() {
+                    back.spend(d.id());
+                }
+                let anchor = back.tabs[0].root.id().to_string();
+                back.insert_at(n.clone(), &anchor, h.axis, h.before, None);
+                back.re_home(n.id(), h)
+            }
         }
-        // Parked as a page so `re_home` can LIFT it back out — the same path every other landing
-        // takes, rather than a second way in.
-        let root = back.root.id().to_string();
-        back.insert_tab(dead.clone(), &root, None, None)?;
-        back.re_home(dead.id(), h)
     }
 
     /// Land `writes` as CONTENTS edits. WHERE each entry sits is never touched, and an id that has
     /// since gone is skipped, so a stale replay degrades instead of resurrecting it.
     pub fn set_contents(&mut self, writes: &[Write]) {
         for (id, c) in writes {
-            let Some(Node::Panel { panel_type, state, .. }) = self.node_mut(id) else { continue };
-            *panel_type = c.panel_type.clone();
-            *state = c.state.clone();
+            match c {
+                // A tab's contents is its LABEL; its position in the strip is where it sits, and a
+                // reorder is the op for that.
+                Contents::Tab { name } => {
+                    if let Some(i) = self.tab_index(id) {
+                        self.tabs[i].name = name.clone();
+                    }
+                }
+                Contents::Panel { panel_type, state } => {
+                    let Some(n) = self.node_mut(id) else { continue };
+                    if let Node::Panel { panel_type: pt, state: st, .. } = n {
+                        *pt = panel_type.clone();
+                        *st = state.clone();
+                    }
+                }
+            }
         }
     }
 
@@ -834,13 +790,83 @@ impl Layout {
         }
         let mut next = self.clone();
         let target = next.node_mut(split).expect("looked up above");
-        if let Some(children) = target.children_mut() {
+        if let Node::Split { children, .. } = target {
             for (c, f) in children.iter_mut().zip(fractions) {
                 c.set_size(f.max(MIN_FRACTION));
             }
         }
-        Layout::rescale(target);
+        Layout::normalize(target);
         Ok(next)
+    }
+
+    /// Refuse an id that is not a tab. Every tab op addresses BY ID — a name is what the tab holds,
+    /// not how it is found, so renaming one cannot make a caller's next op miss.
+    fn is_tab(&self, tab: &str) -> Result<usize, String> {
+        match self.tab_index(tab) {
+            Some(i) => Ok(i),
+            None if self.node(tab).is_some() => Err(format!("`{tab}` is not a tab")),
+            None => Err(format!("no such tab `{tab}`")),
+        }
+    }
+
+    pub fn remove_tab(&self, tab: &str) -> Result<Layout, String> {
+        let i = self.is_tab(tab)?;
+        if self.tabs.len() <= 1 {
+            return Err("the last tab cannot be removed".into());
+        }
+        let mut next = self.clone();
+        next.tabs.remove(i);
+        Ok(next)
+    }
+
+    /// Relabel a tab. Contents, not structure: the id — and therefore every panel on it — stands,
+    /// and the strip index is untouched.
+    pub fn rename_tab(&self, tab: &str, to: &str) -> Result<Vec<Write>, String> {
+        self.is_tab(tab)?;
+        let to = to.trim();
+        if to.is_empty() {
+            return Err("a tab needs a name".into());
+        }
+        if self.tab_named(to).is_some_and(|other| other != tab) {
+            return Err(format!("a tab named `{to}` already exists"));
+        }
+        Ok(vec![(tab.to_string(), Contents::Tab { name: to.to_string() })])
+    }
+
+    pub fn reorder_tab(&self, tab: &str, to_index: usize) -> Result<Layout, String> {
+        let i = self.is_tab(tab)?;
+        let mut next = self.clone();
+        let t = next.tabs.remove(i);
+        let at = to_index.min(next.tabs.len());
+        next.tabs.insert(at, t);
+        Ok(next)
+    }
+
+    /// Split `panel` along `axis`, birthing an EMPTY panel that takes `ratio` of its slot — the same
+    /// [`Self::insert_at`] a drop uses, handed a brand-new panel instead of a lifted subtree.
+    pub fn split_panel(
+        &self,
+        panel: &str,
+        axis: Axis,
+        place_before: bool,
+        ratio: f64,
+    ) -> Result<(Layout, Id), String> {
+        match self.node(panel) {
+            Some(Node::Panel { .. }) => {}
+            Some(n) => return Err(format!("`{panel}` is a {} — only a panel splits", n.kind())),
+            None => return Err(format!("no such panel `{panel}`")),
+        }
+        let f = fraction(ratio)?;
+        let mut next = self.clone();
+        let fresh = next.mint("panel");
+        let born = Node::Panel {
+            id: fresh.clone(),
+            size: f,
+            panel_type: EMPTY_PANEL_TYPE.into(),
+            state: Value::Null,
+        };
+        next.insert_at(born, panel, axis, place_before, None);
+        Ok((next, fresh))
     }
 
     /// Clear the node binding of every panel naming a uid in `gone`. A panel's `state` is opaque
@@ -857,7 +883,7 @@ impl Layout {
             if let Some(o) = state.as_object_mut() {
                 o.insert("node".into(), Value::Null);
             }
-            writes.push((id.clone(), Contents { panel_type: panel_type.clone(), state }));
+            writes.push((id.clone(), Contents::Panel { panel_type: panel_type.clone(), state }));
         }
         writes
     }
@@ -873,8 +899,8 @@ impl Layout {
     ) -> Result<Vec<Write>, String> {
         let (mut pt, mut st) = match self.node(panel) {
             Some(Node::Panel { panel_type, state, .. }) => (panel_type.clone(), state.clone()),
-            Some(n) => {
-                return Err(format!("`{panel}` is a {} — only a panel carries a type and state", n.kind()))
+            Some(_) => {
+                return Err(format!("`{panel}` is a split — only a panel carries a type and state"))
             }
             None => return Err(format!("`{panel}` is not in the arrangement")),
         };
@@ -887,11 +913,69 @@ impl Layout {
             (Some(s), _) => st = s,
             (None, _) => {}
         }
-        Ok(vec![(panel.to_string(), Contents { panel_type: pt, state: st })])
+        Ok(vec![(panel.to_string(), Contents::Panel { panel_type: pt, state: st })])
+    }
+
+    /// Move the subtree rooted at `root` under `new_parent` at `order_index`. A panel is a subtree
+    /// of one, so this covers the tab-onto-panel merge too — every descendant preserved.
+    pub fn move_subtree(
+        &self,
+        root: &str,
+        new_parent: &str,
+        order_index: usize,
+    ) -> Result<Layout, String> {
+        if self.tab_index(root).is_some() {
+            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
+        }
+        if self.node(root).is_none() {
+            return Err(format!("no such panel `{root}`"));
+        }
+        match self.node(new_parent) {
+            Some(Node::Split { .. }) => {}
+            Some(d) => {
+                return Err(format!(
+                    "`{new_parent}` is a {} — a subtree moves into a split (split a panel first)",
+                    d.kind()
+                ))
+            }
+            None => return Err(format!("no such layout entry `{new_parent}`")),
+        }
+        if self.subtree(root).iter().any(|d| d == new_parent) {
+            return Err(format!("`{new_parent}` is inside `{root}` — that would make a cycle"));
+        }
+        let mut next = self.clone();
+        let same_parent = {
+            let (tab, at) = next.path_of(root).expect("checked above");
+            !at.is_empty() && next.at(&(tab, at[..at.len() - 1].to_vec())).id() == new_parent
+        };
+        if same_parent {
+            // A pure reorder inside one split: detaching would renormalize twice and could promote
+            // away the very split being reordered, so only the order changes.
+            let split = next.node_mut(new_parent).expect("checked above");
+            let Node::Split { children, .. } = split else { unreachable!() };
+            let from = children.iter().position(|c| c.id() == root).expect("checked above");
+            let moved = children.remove(from);
+            children.insert(order_index.min(children.len()), moved);
+        } else {
+            let moved = next.detach(root)?;
+            next.attach(moved, new_parent, order_index)?;
+        }
+        Ok(next)
+    }
+
+    /// Remove the subtree rooted at `root`, promoting and renormalizing what is left.
+    pub fn remove_subtree(&self, root: &str) -> Result<Layout, String> {
+        if self.tab_index(root).is_some() {
+            return Err("a tab is removed with remove_tab".into());
+        }
+        let mut next = self.clone();
+        next.detach(root)?;
+        Ok(next)
     }
 
     /// The arrangement as plain JSON — the types' own `Serialize`, so there is no second
-    /// description of the wire.
+    /// description of the wire. `tabs` is an ARRAY whose order IS the strip order, so a merge-patch
+    /// delta re-sends every tab.
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| Value::Object(Default::default()))
     }
@@ -899,8 +983,7 @@ impl Layout {
     /// Parse a stored arrangement. The caller falls back to the default rather than refusing the
     /// patch — the graph is the value, the arrangement is chrome.
     pub fn from_json(v: &Value) -> Result<Layout, String> {
-        let v = migrate_tabs(v);
-        let mut l: Layout = serde_json::from_value(v).map_err(|e| format!("arrangement: {e}"))?;
+        let mut l: Layout = serde_json::from_value(v.clone()).map_err(|e| format!("arrangement: {e}"))?;
         l.validate()?;
         // Every id a stored arrangement carries is SPENT, so a reopened patch never mints one twice.
         for id in l.ids() {
@@ -910,35 +993,35 @@ impl Layout {
     }
 
     /// What a TREE can still get wrong. A duplicate id is the one class a tree admits and a keyed
-    /// map could not; the shapes the rules forbid have no spelling here at all.
+    /// map could not; the shapes flattening allowed have no spelling here at all.
     fn validate(&self) -> Result<(), String> {
-        if !matches!(self.root, Node::Stack { .. }) {
-            return Err("arrangement: the root is a tab group".into());
-        }
-        if self.root.children().is_empty() {
-            return Err("arrangement: no pages".into());
+        if self.tabs.is_empty() {
+            return Err("arrangement: no tabs".into());
         }
         let mut ids = std::collections::HashSet::new();
-        for n in self.nodes() {
-            if n.children().is_empty() && !matches!(n, Node::Panel { .. }) {
-                return Err(format!("arrangement: {} `{}` holds nothing", n.kind(), n.id()));
+        let mut names = std::collections::HashSet::new();
+        for t in &self.tabs {
+            if !names.insert(&t.name) {
+                return Err(format!("arrangement: two tabs are both named `{}`", t.name));
             }
-            if !ids.insert(n.id()) {
-                return Err(format!("arrangement: `{}` appears twice", n.id()));
+            for n in t.root.walk() {
+                if let Node::Split { children, .. } = n {
+                    if children.is_empty() {
+                        return Err(format!("arrangement: split `{}` divides nothing", n.id()));
+                    }
+                }
+                let s = n.size();
+                if !s.is_finite() || s <= 0.0 || s > 1.0 {
+                    return Err(format!("arrangement: `{}` has size {s}, outside (0, 1]", n.id()));
+                }
+                if !ids.insert(n.id().to_string()) {
+                    return Err(format!("arrangement: `{}` appears twice", n.id()));
+                }
+            }
+            if !ids.insert(t.id.clone()) {
+                return Err(format!("arrangement: `{}` appears twice", t.id));
             }
         }
         Ok(())
     }
-}
-
-/// Read an arrangement written before the root became a stack: its `tabs` array is exactly the root
-/// stack's children, and each tab's label is dropped — a stack derives every member's.
-fn migrate_tabs(v: &Value) -> Value {
-    let Some(tabs) = v.get("tabs").and_then(|t| t.as_array()) else { return v.clone() };
-    let children: Vec<Value> = tabs.iter().filter_map(|t| t.get("root").cloned()).collect();
-    let seq = v.get("#seq").cloned().unwrap_or(Value::from(0));
-    serde_json::json!({
-        "root": { "kind": "stack", "id": "stack-0", "size": 1.0, "children": children },
-        "#seq": seq,
-    })
 }

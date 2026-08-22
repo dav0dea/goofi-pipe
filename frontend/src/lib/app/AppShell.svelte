@@ -29,11 +29,9 @@
 	// Before any panel renders; the pre-sync frame is the manager's own first-mint spelling, so the
 	// editor mounts once.
 	registerAppPanels();
-	workspace().configureHost(layoutHost(), {
-		kind: 'stack',
-		id: 'stack-1',
-		children: [{ kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE }]
-	});
+	workspace().configureHost(layoutHost(), [
+		{ id: 'tab-1', name: 'Tab 1', root: { kind: 'panel', id: 'panel-2', panelType: DEFAULT_PANEL_TYPE } }
+	]);
 	exposeAgentApi();
 
 	const g = graph();

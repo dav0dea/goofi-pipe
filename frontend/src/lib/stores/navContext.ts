@@ -1,5 +1,4 @@
-/** Capture and restore where an undo/redo happened: the page in front, the panel, sub-patch depth,
- * selection. */
+/** Capture and restore where an undo/redo happened: active tab, panel, sub-patch depth, selection. */
 import { workspace } from 'panelty';
 import { selection } from './selection.svelte';
 import { collectPanels, findPanel } from 'panelty';
@@ -10,7 +9,7 @@ export function captureNavContext(): NavContext {
 	const ws = workspace();
 	const enteredPath: Record<string, string[]> = {};
 	const sel: Record<string, { nodes: string[]; edges: string[] }> = {};
-	for (const p of collectPanels(ws.root)) {
+	for (const p of collectPanels(ws.active.root)) {
 		const path = pathToArray(asStateObject(p.state).subpatchPath);
 		if (path.length) enteredPath[p.id] = path;
 		const nodes = [...selection().nodes(p.id)];
@@ -18,7 +17,7 @@ export function captureNavContext(): NavContext {
 		if (nodes.length || edges.length) sel[p.id] = { nodes, edges };
 	}
 	return {
-		activeWorkspaceId: ws.page,
+		activeWorkspaceId: ws.state.activeWorkspaceId,
 		activePanelId: ws.activePanelId,
 		enteredPath,
 		selection: sel
@@ -27,10 +26,10 @@ export function captureNavContext(): NavContext {
 
 export async function restoreNavContext(ctx: NavContext): Promise<void> {
 	const ws = workspace();
-	if (ctx.activeWorkspaceId && ctx.activeWorkspaceId !== ws.page) {
-		ws.show(ws.root.id, ctx.activeWorkspaceId);
+	if (ctx.activeWorkspaceId && ctx.activeWorkspaceId !== ws.state.activeWorkspaceId) {
+		ws.selectTab(ctx.activeWorkspaceId);
 	}
-	const root = ws.root;
+	const root = ws.active.root;
 	for (const [panelId, path] of Object.entries(ctx.enteredPath)) {
 		const p = findPanel(root, panelId);
 		if (!p) continue;

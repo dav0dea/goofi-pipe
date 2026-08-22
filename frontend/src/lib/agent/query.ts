@@ -93,7 +93,7 @@ export const query = {
 	frameSummary: (node: string, slot: string): FrameSummary | null =>
 		summarize(latestFrame(node, slot)),
 	panels: (): PanelView[] =>
-		collectPanels(workspace().root).map((p) => {
+		collectPanels(workspace().active.root).map((p) => {
 			const s = asStateObject(p.state);
 			return {
 				panelId: p.id,

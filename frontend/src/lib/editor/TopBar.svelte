@@ -205,7 +205,7 @@
 		void g.unsavedChanges;
 		void hudActive;
 		void hs.running;
-		void ws.root;
+		void ws.state.workspaces;
 		widthCache.invalidate();
 		void tick().then(replan);
 	});

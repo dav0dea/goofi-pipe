@@ -258,27 +258,7 @@ motion token lives in one `:root`; a component states its own layout, never anot
 primitive library is a LEAF layer and must not import a store — doing so reshuffles the CSS chunk
 graph and gave the app a first-paint flash.
 
-**The arrangement is ONE tree, and a tab is not a kind of thing.** A `stack` gives its whole slot to
-one child and draws the rest as tabs; a `split` divides its slot; a `panel` is a leaf. A workspace
-tab is a child of the ROOT stack and nothing else — so dropping a panel on another panel's header
-and dropping one on the page strip are the same op with a different stack named, and a tab can hold
-a split because a stack's children are subtrees. It was two structures, a `Workspace` array beside
-the tree, and everything paid for that twice: two host contracts, two removal paths, two `Contents`
-variants, and a tab that could hold a split while a tab group could not.
-
-Nothing in the tree carries a NAME. A stack derives each member's label from what that member is — a
-panel is its content's title, anything else is its place in the strip — because a label that cannot
-be authored cannot go stale, and a rename is not addressing: every op names an id.
-
-**The shape rules are one function, applied after every plan.** An empty container is gone, a
-container of one IS its child, a split inside a split on the same axis is one split. The ROOT is
-exempt from the second, which is what keeps the page strip drawable under its last page — the one
-special case, and it buys the deletion of the whole duality. A stack inside a stack is left alone: it
-is a group that is one tab of an outer group, and folding it up would scatter its members across the
-page strip. WHICH child a stack shows is the viewer's, never the document's — it is viewpoint, so two
-clients on one patch look at different tabs and switching one dirties nothing.
-
-**The panel system is a dependency, not a subsystem.** Splits, stacks, maximize and the drag-and-drop
+**The panel system is a dependency, not a subsystem.** Tabs, splits, maximize and the drag-and-drop
 are `panelty` — an npm package with a repo of its own (`dav0dea/panelty`), which goofi consumes like
 any other dependency. It holds NO tree: it raises an intent, and goofi's `LayoutHost` turns each one
 into a single manager op, so the document stays the only owner of the layout. Its styling is a
@@ -311,8 +291,7 @@ of the package, never a patch in this tree.
 - **The workspace/panel system and the cable-drag feel are frozen UX.** Restyle them, do not
   redesign them — and the panel system is `panelty`, so restyling it means the token contract, not
   its source. There is no phone-only layout mode: a phone renders the same panel tree, and panel
-  maximize is the small-screen mechanism. A panel and a tab group draw the same header, because they
-  are the same thing: a stack of one member, or of several.
+  maximize is the small-screen mechanism.
 - **Navigation must not dirty the patch, on either platform.** Entering a sub-patch is navigation;
   changing a viewer's type is a real view setting. Persistence and dirtiness are separate axes,
   and an unclassified write counts as authoring — so forgetting to classify costs a spurious dot,

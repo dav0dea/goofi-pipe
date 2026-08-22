@@ -19,33 +19,16 @@ fn entries(g: &Goofi) -> Map<String, Value> {
         out.insert(id, Value::Object(e));
     }
     let mut out = Map::new();
-    down(&g.doc()["arrangement"]["root"], "", &mut out);
+    let arrangement = g.doc()["arrangement"].clone();
+    for (i, t) in arrangement["tabs"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+        let id = t["id"].as_str().unwrap().to_string();
+        out.insert(
+            id.clone(),
+            j!({ "kind": "tab", "name": t["name"].clone(), "order": i }),
+        );
+        down(&t["root"], &id, &mut out);
+    }
     out
-}
-
-/// The root tab group — what a drop on the page strip names, and what every page hangs off.
-fn root(g: &Goofi) -> String {
-    g.doc()["arrangement"]["root"]["id"].as_str().unwrap().to_string()
-}
-
-/// The pages, in the order the strip draws them.
-fn pages(g: &Goofi) -> Vec<String> {
-    g.doc()["arrangement"]["root"]["children"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|c| c["id"].as_str().unwrap().to_string())
-        .collect()
-}
-
-/// Add a page: a panel tabbed into the root group, which is all a page is.
-fn add_page(g: &Goofi, index: Option<usize>) -> String {
-    let payload = match index {
-        Some(i) => j!({ "at": root(g), "index": i }),
-        None => j!({ "at": root(g) }),
-    };
-    g.call("add_panel", payload).as_str().expect("a new panel's id").to_string()
 }
 
 fn panels(g: &Goofi) -> Vec<String> {
@@ -55,6 +38,23 @@ fn panels(g: &Goofi) -> Vec<String> {
     v
 }
 
+/// The id of the tab LABELLED `name`, resolved as the UI does.
+fn tab_id(g: &Goofi, name: &str) -> String {
+    entries(g).iter().find(|(_, e)| e["name"] == name).map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("no tab labelled `{name}`"))
+}
+
+/// The tab strip, in the order it draws.
+fn strip(g: &Goofi) -> Vec<String> {
+    g.doc()["arrangement"]["tabs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// The manager's own loader, asked to open what the manager just saved.
 fn reload_warning(g: &Goofi) -> Value {
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
@@ -62,12 +62,12 @@ fn reload_warning(g: &Goofi) -> Value {
 }
 
 fn split(g: &Goofi, panel: &str) -> String {
-    g.call("add_panel", j!({ "at": panel, "direction": "row" }))
+    g.call("split_panel", j!({ "panel": panel, "direction": "row" }))
         .as_str().expect("a split answers the new panel's id").to_string()
 }
 
 fn first_panel(g: &Goofi) -> String {
-    panels(g).first().cloned().expect("the default page's one panel")
+    panels(g).first().cloned().expect("the default tab's one panel")
 }
 
 /// A uid that names nothing, which every refusal path is asked about.
@@ -119,23 +119,23 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
     let _ = scope;
 
-    // A REORDER inside the page strip can silently invert to a no-op: it moves nothing but an
-    // index, and the strip is a tab group like any other.
+    // A REORDER can silently invert to a no-op: its content IS a position.
     let g = Goofi::new();
-    add_page(&g, None);
-    let three = add_page(&g, None);
-    let settled = pages(&g);
-    assert_eq!(settled.len(), 3);
+    g.call("add_tab", j!({ "name": "Two" }));
+    g.call("add_tab", j!({ "name": "Three" }));
+    let settled = strip(&g);
+    assert_eq!(settled, ["Tab 1", "Two", "Three"]);
 
-    g.call("move_panel", j!({ "panel": three, "to": root(&g), "index": 0 }));
-    assert_eq!(pages(&g)[0], three, "the page moved to the head of the strip");
+    let three = tab_id(&g, "Three");
+    g.call("reorder_tab", j!({ "tab": three, "to_index": 0 }));
+    assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "the tab moved to the head of the strip");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
-    assert_eq!(pages(&g), settled, "a reorder's undo puts the page back where it came from");
+    assert_eq!(strip(&g), settled, "a reorder's undo puts the tab back where it came from");
     assert_eq!(g.call("redo", j!({}))["changed"], true);
-    assert_eq!(pages(&g)[0], three, "and the redo moves it again");
+    assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "and the redo moves it again");
 
     while g.call("undo", j!({}))["changed"] == true {}
-    assert_eq!(pages(&g).len(), 1, "back to the arrangement a fresh patch opens with");
+    assert_eq!(strip(&g), ["Tab 1"], "back to the arrangement a fresh patch opens with");
 }
 
 #[test]
@@ -186,8 +186,8 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     let inst = g.call("group_nodes", j!({ "members": [hex(a), hex(b)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let panel = first_panel(&g);
-    g.call("edit_panel", j!({ "panel": panel, "type": "viewer",
-                              "state": { "node": hex(a) } }));
+    g.call("set_panel", j!({ "panel": panel, "type": "viewer",
+                                 "state": { "node": hex(a) } }));
 
     g.call("remove_node", j!({ "node": inst }));
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "the subtree went with the scope");
@@ -205,10 +205,13 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
 #[test]
 fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
     let ops: Vec<&str> = goofi_bridge::ops::REGISTRY.iter()
-        .filter(|o| o.writes && o.name.ends_with("_panel"))
+        .filter(|o| {
+            o.writes
+                && (o.name.ends_with("_tab") || o.name.ends_with("_panel") || o.name.ends_with("_split"))
+        })
         .map(|o| o.name)
         .collect();
-    assert!(ops.contains(&"remove_panel") && ops.contains(&"add_panel"),
+    assert!(ops.contains(&"remove_panel") && ops.contains(&"remove_tab"),
             "the registry filter still finds the layout write ops: {ops:?}");
 
     let mut stranded = Vec::new();
@@ -217,20 +220,33 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         let two = one.client("s2");
         let a = first_panel(&one);
         let b = split(&one, &a);
-        let c = add_page(&one, None);
+        one.call("add_tab", j!({ "name": "Two" }));
+        let c = panels(&one).into_iter().find(|p| *p != a && *p != b).expect("the tab's panel");
         let e = split(&one, &c);
         let far = entries(&one)[&e]["parent"].as_str().unwrap().to_string();
+        let near = entries(&one)[&b]["parent"].as_str().unwrap().to_string();
 
+        let two_id = tab_id(&one, "Two");
         one.call(op, match *op {
-            "add_panel" => j!({ "at": a, "direction": "row" }),
-            "edit_panel" => j!({ "panel": b, "type": "console" }),
-            "move_panel" => j!({ "panel": b, "to": far, "index": 0 }),
+            "add_tab" => j!({ "name": "Fresh" }),
+            "remove_tab" => j!({ "tab": two_id }),
+            "rename_tab" => j!({ "tab": two_id, "name": "Deux" }),
+            "reorder_tab" => j!({ "tab": two_id, "to_index": 0 }),
+            "split_panel" => j!({ "panel": a }),
+            "set_panel" => j!({ "panel": b, "type": "console" }),
+            "move_panel" => j!({ "panel": b, "new_parent": far, "order_index": 0 }),
+            "insert_at_panel" => j!({ "subtree": b, "target": c }),
+            "resize_split" => j!({ "split": near, "fractions": [0.3, 0.7] }),
             "remove_panel" => j!({ "panel": b }),
             new => panic!("`{new}` is a layout write op with no case here — drive it through this \
                            guard, and say why if its inverse may restore a slot"),
         });
         // The peer builds exactly where a slot-restore inverse would want to write.
-        two.call("add_panel", j!({ "at": a, "direction": "row" }));
+        if op.ends_with("_tab") {
+            two.call("add_tab", j!({ "name": "Peer" }));
+        } else {
+            two.call("split_panel", j!({ "panel": a }));
+        }
         assert_eq!(one.call("undo", j!({}))["changed"], true, "{op}: the undo flipped nothing");
 
         if reload_warning(&one) != Value::Null {
@@ -257,10 +273,13 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
     assert_eq!(one.call("redo", j!({}))["changed"], true);
     assert!(panels(&one).contains(&peer2), "the peer's panel survived a foreign redo");
 
-    let over = add_page(&one, None);
+    one.call("add_tab", j!({ "name": "Signals" }));
+    let over = panels(&one).into_iter()
+        .find(|p| ![&a, &mine, &theirs, &peer2].contains(&p)).expect("the new tab's panel");
     let far = split(&one, &over);
     let dest = entries(&one)[&far]["parent"].as_str().unwrap().to_string();
-    one.call("move_panel", j!({ "panel": mine, "to": dest, "index": 0 }));
+    one.call("move_panel", j!({ "panel": mine,
+                                    "new_parent": dest, "order_index": 0 }));
     let peer3 = split(&two, &a);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
     assert!(panels(&one).contains(&peer3), "the peer's panel survived a foreign undo");
@@ -268,58 +287,26 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
 }
 
 #[test]
-fn each_frozen_drag_gesture_is_one_op_and_one_undo_and_leaves_a_shape_that_draws() {
+fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     // The drag feel is FROZEN UX; as primitive ops one drop would cost three to five commands.
     let g = Goofi::new();
     let first = first_panel(&g);
     let mine = split(&g, &first);
-    let target = add_page(&g, Some(0));
+    g.call("add_tab", j!({ "name": "Signals", "index": 0 }));
+    let target = panels(&g).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
     let before = entries(&g);
 
-    // A drop on a panel's EDGE: beside it, splitting that panel.
-    g.call("move_panel", j!({ "panel": mine, "to": target,
-                              "direction": "column", "place_before": true, "ratio": 0.3 }));
+    g.call("insert_at_panel", j!({ "subtree": mine, "target": target,
+                                       "direction": "column", "place_before": true, "ratio": 0.3 }));
     assert_ne!(entries(&g), before, "the drop moved something");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(entries(&g), before, "ONE ctrl-Z put the whole drag back");
 
-    // A drop on the page STRIP: the same op, landing in the root tab group.
-    g.call("move_panel", j!({ "panel": mine, "to": root(&g), "index": 0 }));
-    assert_eq!(pages(&g)[0], mine, "the dragged panel is a page of its own");
+    g.call("add_tab", j!({ "name": "Torn off", "index": 0, "subtree": mine }));
+    assert_eq!(g.doc()["arrangement"]["tabs"][0]["root"]["id"], mine.as_str(),
+               "the dragged panel is the new tab's whole root");
     g.call("undo", j!({}));
     assert_eq!(entries(&g), before, "and one ctrl-Z put that back too");
-
-    // A drop on a panel's HEADER: the two become a group, with no split between them.
-    g.call("move_panel", j!({ "panel": mine, "to": target }));
-    let group = entries(&g)[&mine]["parent"].as_str().unwrap().to_string();
-    assert_eq!(entries(&g)[&group]["kind"], "stack", "a drop on a header groups the two");
-    assert_eq!(entries(&g)[&target]["parent"].as_str().unwrap(), group);
-    g.call("undo", j!({}));
-    assert_eq!(entries(&g), before, "…and that is one ctrl-Z as well");
-
-    // …and every shape a drag can leave is closed up on the way out. A container of one is not a
-    // container: it IS its child, so nothing keeps a one-armed wrapper anybody can see.
-    g.call("move_panel", j!({ "panel": mine, "to": target }));
-    let group = entries(&g)[&mine]["parent"].as_str().unwrap().to_string();
-    g.call("remove_panel", j!({ "panel": mine }));
-    assert!(!entries(&g).contains_key(&group), "a group of one promoted its survivor");
-    assert_eq!(entries(&g)[&target]["parent"].as_str().unwrap(), root(&g));
-
-    let sibling = split(&g, &target);
-    let split_id = entries(&g)[&target]["parent"].as_str().unwrap().to_string();
-    assert_eq!(entries(&g)[&split_id]["kind"], "split");
-    g.call("remove_panel", j!({ "panel": sibling }));
-    assert!(!entries(&g).contains_key(&split_id), "a split of one promoted its survivor too");
-
-    // The ROOT is the one exception, and it has to be: the page strip is its header, so a workspace
-    // down to its last page would otherwise have nothing to draw.
-    let last = pages(&g);
-    assert_eq!(last.len(), 2);
-    g.call("remove_panel", j!({ "panel": last[1] }));
-    assert_eq!(entries(&g)[&root(&g)]["kind"], "stack", "the root stands on its last page");
-    assert_eq!(pages(&g).len(), 1);
-    let why = g.refuse("remove_panel", j!({ "panel": pages(&g)[0] }));
-    assert!(why.contains("nowhere to go"), "and the last panel there is cannot be closed: {why}");
 }
 
 #[test]

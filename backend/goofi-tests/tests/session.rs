@@ -34,7 +34,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let stubs = g.doc()["instances"][&scope]["stubs"].as_object().cloned().unwrap_or_default();
     assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
 
-    g.call("edit_panel", j!({ "panel": panel(&g), "type": "viewer",
+    g.call("set_panel", j!({ "panel": panel(&g), "type": "viewer",
                                  "state": { "node": hex(osc), "slot": "out" } }));
 
     let before = g.doc();
@@ -98,8 +98,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("patch.gfi");
     g.add("Oscillator");
-    let strip = g.doc()["arrangement"]["root"]["id"].as_str().unwrap().to_string();
-    g.call("add_panel", j!({ "at": strip }));
+    g.call("add_tab", j!({ "name": "Second" }));
     g.call("save", j!({ "path": path.to_string_lossy() }));
     let old_mount = g.state.mount();
     std::fs::write(old_mount.join("notes.md"), b"the previous patch's").unwrap();
@@ -107,8 +106,8 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     g.call("new", j!({}));
 
     assert!(g.nodes().is_empty(), "no nodes");
-    assert_eq!(g.doc()["arrangement"]["root"]["children"].as_array().map(Vec::len), Some(1),
-               "no pages of the previous patch");
+    assert_eq!(g.call("inspect_layout", j!({}))["text"].as_str().unwrap().matches("tab `").count(), 1,
+               "no tabs of the previous patch");
     assert_eq!(g.call("get_patch", j!({}))["save_path"], Value::Null, "no file behind it");
     assert_eq!(g.call("get_patch", j!({}))["dirty"], false, "and nothing to save");
     assert_eq!(g.call("undo", j!({}))["changed"], false, "the history went with the patch");
@@ -129,7 +128,7 @@ fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     g.add("Oscillator");
     let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
     // A DUPLICATE id is the one corruption the tree admits and a flat map could not.
-    let broken = yaml.replace("id: panel-2", "id: stack-1");
+    let broken = yaml.replace("id: panel-2", "id: tab-1");
     assert_ne!(broken, yaml, "the fixture actually corrupted something");
 
     let r = g.call("load_text", j!({ "content": broken }));
@@ -137,40 +136,6 @@ fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     assert!(r["layout_warning"].as_str().is_some_and(|w| w.contains("appears twice")),
             "…and says why the arrangement was dropped: {r}");
     assert_eq!(g.nodes().len(), 1, "with the graph intact");
-
-    // A patch saved before the root became a tab group: its `tabs` array IS the root's children,
-    // and the labels it carried are dropped, because a group now derives every member's.
-    let rest = &yaml[yaml.find("\nglobals:").expect("the rest of the patch")..];
-    let older = format!(
-        "arrangement:
-  '#seq': 7
-  tabs:
-  - id: tab-1
-    name: Tab 1
-    root:
-      kind: panel
-      id: panel-2
-      size: 1.0
-      panel_type: node-editor
-      state: 'null'
-  - id: tab-6
-    name: Signals
-    root:
-      kind: panel
-      id: panel-7
-      size: 1.0
-      panel_type: console
-      state: 'null'{rest}"
-    );
-    let r = g.call("load_text", j!({ "content": older }));
-    assert_eq!(r["layout_warning"], Value::Null, "an older arrangement opens without a complaint: {r}");
-    let root = g.doc()["arrangement"]["root"].clone();
-    assert_eq!(root["kind"], "stack", "the strip became the root group");
-    let pages: Vec<&str> =
-        root["children"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
-    assert_eq!(pages, ["panel-2", "panel-7"], "each tab's root is a page, at the same ids");
-    assert_eq!(g.doc()["arrangement"]["root"]["children"][1]["panel_type"], "console",
-               "and every panel came with it");
 }
 
 fn save_path(g: &Goofi) -> Option<String> {

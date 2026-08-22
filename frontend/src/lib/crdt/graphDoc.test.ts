@@ -10,7 +10,7 @@ import {
 	docParams,
 	globalViews,
 	isValidGlobalName,
-	arrangementRoot,
+	arrangementTabs,
 	type Doc
 } from './graphDoc';
 
@@ -203,19 +203,18 @@ describe('graphDoc globals', () => {
 	/* The arrangement parser. It reads a tree straight into the shape the panel system draws, so it
 	   is the one place a malformed document could put a hole on screen — and it is fed by the wire,
 	   which means anything it cannot make sense of has to be DROPPED rather than half-drawn. */
-	it('reads the arrangement into the tree the panel system draws', () => {
+	it('reads the tab strip into the tree the panel system draws', () => {
 		const doc = {
 			arrangement: {
 				'#seq': 4,
-				root: {
-					kind: 'stack',
-					id: 'stack-1',
-					children: [
-						{
+				tabs: [
+					{
+						id: 'tab-1',
+						name: 'Tab 1',
+						root: {
 							kind: 'split',
 							id: 'split-4',
 							axis: 'column',
-							size: 1.0,
 							children: [
 								{ kind: 'panel', id: 'panel-2', size: 0.6, panel_type: 'node-editor', state: 'null' },
 								{
@@ -226,17 +225,16 @@ describe('graphDoc globals', () => {
 									state: '{"node":"a1b2","kind":"line"}'
 								}
 							]
-						},
-						{ kind: 'panel', id: 'panel-7', size: 1.0, panel_type: 'console', state: 'null' }
-					]
-				}
+						}
+					}
+				]
 			}
 		};
-		expect(arrangementRoot(doc)).toEqual({
-			kind: 'stack',
-			id: 'stack-1',
-			children: [
-				{
+		expect(arrangementTabs(doc)).toEqual([
+			{
+				id: 'tab-1',
+				name: 'Tab 1',
+				root: {
 					kind: 'split',
 					id: 'split-4',
 					direction: 'column',
@@ -247,41 +245,34 @@ describe('graphDoc globals', () => {
 						{ kind: 'panel', id: 'panel-2', panelType: 'node-editor', state: undefined },
 						{ kind: 'panel', id: 'panel-3', panelType: 'viewer', state: { node: 'a1b2', kind: 'line' } }
 					]
-				},
-				{ kind: 'panel', id: 'panel-7', panelType: 'console', state: undefined }
-			]
-		});
+				}
+			}
+		]);
 	});
 
 	it('drops what it cannot draw instead of drawing a hole', () => {
-		// A root that will not parse, a container with no children, a node with no id, and a state
+		// A tab whose root will not parse, a split with no children, a node with no id, and a state
 		// leaf that is not the JSON STRING the wire promises — each is a shape the manager never
-		// writes, and each would otherwise reach the renderer as a gap. A root that is not a tab
-		// GROUP is dropped too: the page strip is what it draws.
-		expect(arrangementRoot({ arrangement: {} })).toBeNull();
-		expect(arrangementRoot({ arrangement: { root: 'nope' } })).toBeNull();
-		expect(arrangementRoot({ arrangement: { root: { kind: 'stack', children: [] } } })).toBeNull();
+		// writes, and each would otherwise reach the renderer as a gap.
+		const tab = (root: unknown): unknown => ({ id: 't', name: 'T', root });
+		expect(arrangementTabs({ arrangement: {} })).toEqual([]);
+		expect(arrangementTabs({ arrangement: { tabs: 'nope' } })).toEqual([]);
+		expect(arrangementTabs({ arrangement: { tabs: [tab({ kind: 'panel' })] } })).toEqual([]);
 		expect(
-			arrangementRoot({ arrangement: { root: { kind: 'stack', id: 's', children: [] } } })
-		).toBeNull();
+			arrangementTabs({ arrangement: { tabs: [tab({ kind: 'split', id: 's', children: [] })] } })
+		).toEqual([]);
 		expect(
-			arrangementRoot({ arrangement: { root: { kind: 'panel', id: 'p', panel_type: 'console' } } }),
-			'a lone panel is not a page strip'
-		).toBeNull();
-		expect(
-			arrangementRoot({
-				arrangement: {
-					root: {
-						kind: 'stack',
-						id: 's',
-						children: [{ kind: 'panel', id: 'p', state: { node: 'x' } }, { kind: 'split', id: 'x', children: [] }]
-					}
-				}
-			})
-		).toEqual({
-			kind: 'stack',
-			id: 's',
-			children: [{ kind: 'panel', id: 'p', panelType: 'empty', state: undefined }]
+			arrangementTabs({ arrangement: { tabs: [tab({ kind: 'panel', id: 'p', state: { node: 'x' } })] } })
+		).toEqual([
+			{ id: 't', name: 'T', root: { kind: 'panel', id: 'p', panelType: 'empty', state: undefined } }
+		]);
+	});
+
+	it('gives a root the whole tab, whatever the wire says about its share', () => {
+		// A root carries no share on the wire — it fills its tab — so the parser must not read one.
+		const [ws] = arrangementTabs({
+			arrangement: { tabs: [{ id: 't', name: 'T', root: { kind: 'panel', id: 'p', panel_type: 'console' } }] }
 		});
+		expect(ws.root).toEqual({ kind: 'panel', id: 'p', panelType: 'console', state: undefined });
 	});
 });

@@ -49,7 +49,7 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 	// cheap to report instead of paying the 10s default on every spec after the one that leaked.
 	const settled = { timeout: 2_000 };
 	await expect(
-		page.getByTestId('workspace-tabs').locator('.pt-chip'),
+		page.getByTestId('workspace-tabs').locator('.ui-tab'),
 		'a previous spec left an extra workspace tab behind — hand it back in a `finally`'
 	).toHaveCount(1, settled);
 	await expect(
@@ -111,7 +111,7 @@ export async function resetPatch(page: Page): Promise<void> {
 export async function closeAddedTab(page: Page): Promise<void> {
 	const tabs = page.getByTestId('workspace-tabs');
 	await tabs.getByRole('button', { name: 'Close tab' }).last().click();
-	await expect(tabs.locator('.pt-chip'), 'the workspace is back to one tab').toHaveCount(1);
+	await expect(tabs.locator('.ui-tab'), 'the workspace is back to one tab').toHaveCount(1);
 }
 
 /** Split the sole default panel to the right, through the real header context menu. Two specs need
