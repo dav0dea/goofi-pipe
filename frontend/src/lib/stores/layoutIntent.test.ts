@@ -19,16 +19,11 @@ import { history } from './history.svelte';
  */
 
 const LAYOUT_OPS = [
-	'split_panel',
-	'remove_panel',
-	'set_panel',
-	'move_panel',
-	'insert_at_panel',
-	'resize_split',
 	'add_tab',
-	'remove_tab',
-	'rename_tab',
-	'reorder_tab'
+	'split_panel',
+	'edit_panel',
+	'move_panel',
+	'remove_panel'
 ];
 
 function defaultTabs(): Workspace[] {
@@ -47,7 +42,7 @@ function dirtied(): boolean {
 function boot(tabs: Workspace[] = defaultTabs()): ReturnType<typeof workspace> {
 	fc = new FakeControl();
 	const ws = workspace();
-	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
+	ws.configureHost(goofiLayoutHost({ control: () => fc }));
 	ws.commitResize('#none');
 	ws.syncFromDoc(tabs);
 	return ws;

@@ -13,7 +13,7 @@ pub struct PanelType {
     pub icon: &'static str,
     /// Whether a node can be BOUND to this panel (`state.node`).
     pub accepts_node: bool,
-    /// What the panel shows. Short: these ride in `set_panel`'s tool description, which a model
+    /// What the panel shows. Short: these ride in `edit_panel`'s tool description, which a model
     /// provider truncates at 2 KB.
     pub doc: &'static str,
 }
@@ -245,7 +245,7 @@ pub fn check_viewers(
     Ok(())
 }
 
-/// Validate a `set_panel` write against the vocabularies and the node it binds, BEFORE the layout
+/// Validate an `edit_panel` write against the vocabularies and the node it binds, BEFORE the layout
 /// is planned. `bound` is the node the panel ENDS UP bound to, since a state write merges.
 pub fn check_panel(
     g: &goofi_engine::Graph,
@@ -253,7 +253,7 @@ pub fn check_panel(
     state: Option<&Value>,
     bound: Option<goofi_engine::Uid>,
 ) -> Result<(), String> {
-    const OP: &str = "set_panel";
+    const OP: &str = "edit_panel";
     if let Some(t) = ty {
         check(OP, "panel type", t, panel_type_ids())?;
     }

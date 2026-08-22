@@ -153,7 +153,7 @@ describe('the harness roster', () => {
 		h.mount('panel-1');
 		h.show('panel-1', 'b');
 		h.unmount('panel-1');
-		// Not "no set_panel" — NOTHING. A choice that reached the manager at all would ride the
+		// Not "no edit_panel" — NOTHING. A choice that reached the manager at all would ride the
 		// `.gfi`, converge to peers and enter undo, which is what makes this a taxonomy question
 		// (CLAUDE.md: navigation must not dirty) rather than a preference.
 		expect(ctl.recordedCalls()).toEqual([]);

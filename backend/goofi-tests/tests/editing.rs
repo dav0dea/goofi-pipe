@@ -62,7 +62,7 @@ fn reload_warning(g: &Goofi) -> Value {
 }
 
 fn split(g: &Goofi, panel: &str) -> String {
-    g.call("split_panel", j!({ "panel": panel, "direction": "row" }))
+    g.call("split_panel", j!({ "panel": panel, "direction": "right" }))
         .as_str().expect("a split answers the new panel's id").to_string()
 }
 
@@ -119,6 +119,19 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
     let _ = scope;
 
+    // The NAME is the arrangement's to mint: a caller that asks for none gets the first free
+    // `Tab n`, so nobody has to reserve one against a strip they cannot see settle.
+    let g = Goofi::new();
+    g.call("add_tab", j!({}));
+    assert_eq!(strip(&g), ["Tab 1", "Tab 2"], "minted, not asked for");
+    // …and a label is NOT unique. It addresses nothing — every op names an id — and uniqueness was
+    // enforceable only on the way in: a rename's inverse must not refuse, so a peer taking the
+    // freed name left an arrangement the loader would not open.
+    g.call("edit_panel", j!({ "panel": tab_id(&g, "Tab 2"), "name": "Tab 1" }));
+    assert_eq!(strip(&g), ["Tab 1", "Tab 1"]);
+    assert_eq!(reload_warning(&g), Value::Null, "and it still opens");
+    while g.call("undo", j!({}))["changed"] == true {}
+
     // A REORDER can silently invert to a no-op: its content IS a position.
     let g = Goofi::new();
     g.call("add_tab", j!({ "name": "Two" }));
@@ -127,7 +140,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(settled, ["Tab 1", "Two", "Three"]);
 
     let three = tab_id(&g, "Three");
-    g.call("reorder_tab", j!({ "tab": three, "to_index": 0 }));
+    g.call("move_panel", j!({ "panel": three, "index": 0 }));
     assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "the tab moved to the head of the strip");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(strip(&g), settled, "a reorder's undo puts the tab back where it came from");
@@ -186,8 +199,8 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     let inst = g.call("group_nodes", j!({ "members": [hex(a), hex(b)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let panel = first_panel(&g);
-    g.call("set_panel", j!({ "panel": panel, "type": "viewer",
-                                 "state": { "node": hex(a) } }));
+    g.call("edit_panel", j!({ "panel": panel, "type": "viewer",
+                              "state": { "node": hex(a) } }));
 
     g.call("remove_node", j!({ "node": inst }));
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "the subtree went with the scope");
@@ -200,57 +213,74 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
                "and the panel names its node again");
 }
 
-/// Every layout write op driven through the one interleaving that shows a raw-state restore: a
-/// peer edits between the op and its undo. The op list comes from the REGISTRY, with no catch-all.
+/// Every SHAPE a layout write comes in, driven through the one interleaving that shows a raw-state
+/// restore: a peer edits between the op and its undo. The merged ops each carry several — a tab's
+/// name and a split's shares are both `edit_panel` — so the rows are shapes, and the op list from
+/// the REGISTRY is what proves no op slipped past without one.
 #[test]
 fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
     let ops: Vec<&str> = goofi_bridge::ops::REGISTRY.iter()
-        .filter(|o| {
-            o.writes
-                && (o.name.ends_with("_tab") || o.name.ends_with("_panel") || o.name.ends_with("_split"))
-        })
+        .filter(|o| o.writes && (o.name.ends_with("_tab") || o.name.ends_with("_panel")))
         .map(|o| o.name)
         .collect();
-    assert!(ops.contains(&"remove_panel") && ops.contains(&"remove_tab"),
+    assert!(ops.contains(&"remove_panel") && ops.contains(&"add_tab"),
             "the registry filter still finds the layout write ops: {ops:?}");
 
-    let mut stranded = Vec::new();
+    // (shape, the op it goes out as). One row per way a caller can spell a layout write.
+    const SHAPES: &[(&str, &str)] = &[
+        ("a fresh tab", "add_tab"),
+        ("a tab built around a subtree", "add_tab"),
+        ("a split", "split_panel"),
+        ("a tab's name", "edit_panel"),
+        ("a panel's type", "edit_panel"),
+        ("a split's shares", "edit_panel"),
+        ("a move into a split", "move_panel"),
+        ("a move beside a panel", "move_panel"),
+        ("a move within the strip", "move_panel"),
+        ("a closed panel", "remove_panel"),
+        ("a closed tab", "remove_panel"),
+    ];
     for op in &ops {
+        assert!(SHAPES.iter().any(|(_, o)| o == op),
+                "`{op}` is a layout write op with no shape here — drive it through this guard, and \
+                 say why if its inverse may restore a slot");
+    }
+
+    let mut stranded = Vec::new();
+    for (shape, op) in SHAPES {
         let one = Goofi::new();
         let two = one.client("s2");
         let a = first_panel(&one);
         let b = split(&one, &a);
-        one.call("add_tab", j!({ "name": "Two" }));
+        one.call("add_tab", j!({}));
         let c = panels(&one).into_iter().find(|p| *p != a && *p != b).expect("the tab's panel");
         let e = split(&one, &c);
         let far = entries(&one)[&e]["parent"].as_str().unwrap().to_string();
         let near = entries(&one)[&b]["parent"].as_str().unwrap().to_string();
+        let two_id = tab_id(&one, "Tab 2");
 
-        let two_id = tab_id(&one, "Two");
-        one.call(op, match *op {
-            "add_tab" => j!({ "name": "Fresh" }),
-            "remove_tab" => j!({ "tab": two_id }),
-            "rename_tab" => j!({ "tab": two_id, "name": "Deux" }),
-            "reorder_tab" => j!({ "tab": two_id, "to_index": 0 }),
-            "split_panel" => j!({ "panel": a }),
-            "set_panel" => j!({ "panel": b, "type": "console" }),
-            "move_panel" => j!({ "panel": b, "new_parent": far, "order_index": 0 }),
-            "insert_at_panel" => j!({ "subtree": b, "target": c }),
-            "resize_split" => j!({ "split": near, "fractions": [0.3, 0.7] }),
-            "remove_panel" => j!({ "panel": b }),
-            new => panic!("`{new}` is a layout write op with no case here — drive it through this \
-                           guard, and say why if its inverse may restore a slot"),
+        one.call(op, match *shape {
+            "a fresh tab" => j!({}),
+            "a tab built around a subtree" => j!({ "subtree": b }),
+            "a split" => j!({ "panel": a }),
+            "a tab's name" => j!({ "panel": two_id, "name": "Deux" }),
+            "a panel's type" => j!({ "panel": b, "type": "console" }),
+            "a split's shares" => j!({ "panel": near, "fractions": [0.3, 0.7] }),
+            "a move into a split" => j!({ "panel": b, "to": far, "index": 0 }),
+            "a move beside a panel" => j!({ "panel": b, "to": c, "direction": "bottom" }),
+            "a move within the strip" => j!({ "panel": two_id, "index": 0 }),
+            "a closed panel" => j!({ "panel": b }),
+            "a closed tab" => j!({ "panel": two_id }),
+            new => panic!("`{new}` is a shape with no payload here"),
         });
-        // The peer builds exactly where a slot-restore inverse would want to write.
-        if op.ends_with("_tab") {
-            two.call("add_tab", j!({ "name": "Peer" }));
-        } else {
-            two.call("split_panel", j!({ "panel": a }));
-        }
-        assert_eq!(one.call("undo", j!({}))["changed"], true, "{op}: the undo flipped nothing");
+        // The peer builds exactly where a slot-restore inverse would want to write — both places,
+        // because a merged op's shapes do not all reach for the same one.
+        two.call("add_tab", j!({}));
+        two.call("split_panel", j!({ "panel": a }));
+        assert_eq!(one.call("undo", j!({}))["changed"], true, "{shape}: the undo flipped nothing");
 
         if reload_warning(&one) != Value::Null {
-            stranded.push(*op);
+            stranded.push(*shape);
         }
     }
     let empty: [&str; 0] = [];
@@ -278,8 +308,7 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
         .find(|p| ![&a, &mine, &theirs, &peer2].contains(&p)).expect("the new tab's panel");
     let far = split(&one, &over);
     let dest = entries(&one)[&far]["parent"].as_str().unwrap().to_string();
-    one.call("move_panel", j!({ "panel": mine,
-                                    "new_parent": dest, "order_index": 0 }));
+    one.call("move_panel", j!({ "panel": mine, "to": dest, "index": 0 }));
     let peer3 = split(&two, &a);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
     assert!(panels(&one).contains(&peer3), "the peer's panel survived a foreign undo");
@@ -296,8 +325,8 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     let target = panels(&g).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
     let before = entries(&g);
 
-    g.call("insert_at_panel", j!({ "subtree": mine, "target": target,
-                                       "direction": "column", "place_before": true, "ratio": 0.3 }));
+    g.call("move_panel", j!({ "panel": mine, "to": target,
+                              "direction": "top", "ratio": 0.3 }));
     assert_ne!(entries(&g), before, "the drop moved something");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(entries(&g), before, "ONE ctrl-Z put the whole drag back");

@@ -78,6 +78,40 @@ impl Axis {
     }
 }
 
+/// Which SIDE of a target a newcomer lands on — the op vocabulary, and the one place it becomes an
+/// axis and a half of the seam. An axis says which way a split runs, never which of its two halves
+/// the newcomer takes, so naming both took two arguments that could disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl Side {
+    pub fn parse(s: &str) -> Option<Side> {
+        match s {
+            "left" => Some(Side::Left),
+            "right" => Some(Side::Right),
+            "top" => Some(Side::Top),
+            "bottom" => Some(Side::Bottom),
+            _ => None,
+        }
+    }
+    /// The axis a split along this side runs on.
+    pub fn axis(self) -> Axis {
+        match self {
+            Side::Left | Side::Right => Axis::Row,
+            Side::Top | Side::Bottom => Axis::Column,
+        }
+    }
+    /// Whether the newcomer takes the half BEFORE the target on that axis.
+    pub fn before(self) -> bool {
+        matches!(self, Side::Left | Side::Top)
+    }
+}
+
 /// One tab: a labelled root of the arrangement. Its POSITION in [`Layout::tabs`] is its position in
 /// the strip — there is no `order` field to keep in step with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -268,6 +302,15 @@ impl Layout {
         self.tabs.iter().position(|t| t.id == tab)
     }
 
+    /// The first `Tab n` no tab is wearing. A LABEL is not unique — this only keeps a fresh tab
+    /// from arriving under a name already on screen.
+    fn free_name(&self) -> String {
+        (1..).map(|n| format!("Tab {n}")).find(|n| self.tab_named(n).is_none()).expect("unbounded")
+    }
+
+    /// The FIRST tab wearing this label. Two may: a name is not addressing, and the uniqueness it
+    /// used to carry was enforceable only on the way in — a rename's inverse must not refuse, so a
+    /// peer taking the freed name left an arrangement the loader would not open.
     fn tab_named(&self, name: &str) -> Option<Id> {
         self.tabs.iter().find(|t| t.name == name).map(|t| t.id.clone())
     }
@@ -510,7 +553,7 @@ impl Layout {
     /// ONLY root the TAB goes with it. The last tab never goes.
     fn take(&mut self, root: &str) -> Result<Node, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
+            return Err("a tab is not a subtree — move it in the strip with move_panel's `index` alone".into());
         }
         let Some((tab, at)) = self.path_of(root) else {
             return Err(format!("no such panel `{root}`"));
@@ -528,17 +571,15 @@ impl Layout {
     /// existing one, in which case the tab is built AROUND it. `index` places it in the strip.
     pub fn add_tab(
         &self,
-        name: &str,
+        name: Option<&str>,
         index: Option<usize>,
         subtree: Option<&str>,
     ) -> Result<(Layout, Id), String> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err("a tab needs a name".into());
-        }
-        if self.tab_named(name).is_some() {
-            return Err(format!("a tab named `{name}` already exists"));
-        }
+        // Unnamed is the ordinary case: the strip's ＋ has no name to offer, and only the
+        // arrangement can see which `Tab n` is free — under the same lock the add itself runs on,
+        // so no caller has to reserve one against a strip it cannot see settle.
+        let minted = self.free_name();
+        let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&minted);
         let mut next = self.clone();
         // Lifted FIRST, because taking a tab's last panel takes the tab — which is what the new
         // tab's own position is counted against.
@@ -568,8 +609,7 @@ impl Layout {
         &self,
         subtree: &str,
         target: &str,
-        axis: Axis,
-        before: bool,
+        side: Side,
         ratio: f64,
     ) -> Result<Layout, String> {
         // A PANEL target is what the gesture means AND what makes the plan safe: lifting the source
@@ -591,7 +631,7 @@ impl Layout {
         // the source can promote a sibling into the slot the newcomer is about to share.
         let mut moved = next.take(subtree)?;
         moved.set_size(f);
-        next.insert_at(moved, target, axis, before, None);
+        next.insert_at(moved, target, side.axis(), side.before(), None);
         Ok(next)
     }
 
@@ -659,7 +699,7 @@ impl Layout {
         let Some(landing) = landing else {
             // Even the tab went with it — re-born AROUND the subtree, through `add_tab`'s own adopt
             // branch rather than a raw restore.
-            let (mut born, _) = self.add_tab(&home.tab.0, Some(home.tab.1), Some(root))?;
+            let (mut born, _) = self.add_tab(Some(&home.tab.0), Some(home.tab.1), Some(root))?;
             born.give_back_shares(self, home);
             return Ok(born);
         };
@@ -711,9 +751,6 @@ impl Layout {
             // A tab hangs off nothing, so only its place in the strip needs re-planning — a peer's
             // new tab has taken an index since, and restoring the old one collides with it.
             Dead::Tab(t) => {
-                if back.tab_named(&t.name).is_some() {
-                    return Err(format!("a tab named `{}` already exists", t.name));
-                }
                 for n in t.root.walk() {
                     back.spend(n.id());
                 }
@@ -827,9 +864,6 @@ impl Layout {
         if to.is_empty() {
             return Err("a tab needs a name".into());
         }
-        if self.tab_named(to).is_some_and(|other| other != tab) {
-            return Err(format!("a tab named `{to}` already exists"));
-        }
         Ok(vec![(tab.to_string(), Contents::Tab { name: to.to_string() })])
     }
 
@@ -847,8 +881,7 @@ impl Layout {
     pub fn split_panel(
         &self,
         panel: &str,
-        axis: Axis,
-        place_before: bool,
+        side: Side,
         ratio: f64,
     ) -> Result<(Layout, Id), String> {
         match self.node(panel) {
@@ -865,7 +898,7 @@ impl Layout {
             panel_type: EMPTY_PANEL_TYPE.into(),
             state: Value::Null,
         };
-        next.insert_at(born, panel, axis, place_before, None);
+        next.insert_at(born, panel, side.axis(), side.before(), None);
         Ok((next, fresh))
     }
 
@@ -925,7 +958,7 @@ impl Layout {
         order_index: usize,
     ) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — reorder it with reorder_tab".into());
+            return Err("a tab is not a subtree — move it in the strip with move_panel's `index` alone".into());
         }
         if self.node(root).is_none() {
             return Err(format!("no such panel `{root}`"));
@@ -966,7 +999,7 @@ impl Layout {
     /// Remove the subtree rooted at `root`, promoting and renormalizing what is left.
     pub fn remove_subtree(&self, root: &str) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is removed with remove_tab".into());
+            return Err("a tab is closed whole, never as a subtree".into());
         }
         let mut next = self.clone();
         next.detach(root)?;
@@ -999,11 +1032,7 @@ impl Layout {
             return Err("arrangement: no tabs".into());
         }
         let mut ids = std::collections::HashSet::new();
-        let mut names = std::collections::HashSet::new();
         for t in &self.tabs {
-            if !names.insert(&t.name) {
-                return Err(format!("arrangement: two tabs are both named `{}`", t.name));
-            }
             for n in t.root.walk() {
                 if let Node::Split { children, .. } = n {
                     if children.is_empty() {

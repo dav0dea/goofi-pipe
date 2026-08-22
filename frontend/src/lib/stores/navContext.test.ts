@@ -16,7 +16,7 @@ describe('NavContext capture/restore', () => {
 	beforeEach(() => {
 		const ws = workspace();
 		const fc = new FakeControl();
-		ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
+		ws.configureHost(goofiLayoutHost({ control: () => fc }));
 		ws.syncFromDoc(defaultTabs());
 		selection().forgetAll();
 	});

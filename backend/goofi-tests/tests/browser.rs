@@ -69,7 +69,7 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
 
     let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
     let fresh = peer.call("split_panel", j!({ "panel": panel,
-                                                  "direction": "row", "ratio": 0.5 }))
+                                                  "direction": "right", "ratio": 0.5 }))
         .await.as_str().unwrap().to_string();
     c.until_doc(|d| panels(d).contains(&fresh)).await;
     let born = goofi_tests::arrangement_node(&c.doc().to_json()["arrangement"], &fresh).cloned();

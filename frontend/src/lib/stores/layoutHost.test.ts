@@ -84,7 +84,7 @@ function boot(tabs: Workspace[] = oneTab()): ReturnType<typeof workspace> {
 	const ws = workspace();
 	// The store's own seam is the HOST, and goofi's host is what turns a gesture into an op — so
 	// these scenarios drive the real one and still assert what reaches the wire.
-	ws.configureHost(goofiLayoutHost({ control: () => fc, tabs: () => ws.state.workspaces }));
+	ws.configureHost(goofiLayoutHost({ control: () => fc }));
 	// The store is a module singleton, so a drag a previous test armed would still be drawing:
 	// committing a split that is not the drag's discards it, which is what an abandoned one does.
 	ws.commitResize('#none');
@@ -116,16 +116,22 @@ describe('a frozen gesture is a layout command', () => {
 		expect(root.children.map((c) => c.id)).toEqual(['panel-2', 'panel-3']);
 	});
 
-	it('splits through split_panel, carrying the side the drag went', async () => {
+	it('splits through split_panel, carrying the SIDE the drag went', async () => {
+		// The panel system raises an axis and a half; the op takes one word for the pair, so the two
+		// cannot disagree on the way over.
 		const ws = boot();
 		ws.split('panel-2', 'column', true, 0.25);
 		await Promise.resolve();
-		expect(sent()).toEqual([
-			[
-				'split_panel',
-				{ panel: 'panel-2', direction: 'column', place_before: true, ratio: 0.25 }
-			]
-		]);
+		expect(sent()).toEqual([['split_panel', { panel: 'panel-2', direction: 'top', ratio: 0.25 }]]);
+	});
+
+	it('…and every other side maps to its own word', async () => {
+		const ws = boot();
+		ws.split('panel-2', 'column', false);
+		ws.split('panel-2', 'row', true);
+		ws.split('panel-2', 'row', false);
+		await Promise.resolve();
+		expect(sent().map(([, p]) => p.direction)).toEqual(['bottom', 'left', 'right']);
 	});
 
 	it('closes, retypes and re-binds through the page ops', async () => {
@@ -134,11 +140,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.setType('panel-3', 'viewer');
 		ws.linkNodeToPanel('panel-3', 'a1b2');
 		await Promise.resolve();
-		expect(sent().map(([op]) => op)).toEqual([
-			'remove_panel',
-			'set_panel',
-			'set_panel'
-		]);
+		expect(sent().map(([op]) => op)).toEqual(['remove_panel', 'edit_panel', 'edit_panel']);
 		expect(sent()[2][1]).toEqual({
 			panel: 'panel-3',
 			state: { node: 'a1b2', slot: null }
@@ -156,7 +158,7 @@ describe('a frozen gesture is a layout command', () => {
 
 	it('names only the key a panel write changes, never the bag it read', async () => {
 		// A read-modify-write of the whole bag loses whatever a write still in flight put there:
-		// `set_panel` merges, so the client sends the DELTA and the two orders cannot fight.
+		// `edit_panel` merges, so the client sends the DELTA and the two orders cannot fight.
 		const ws = boot(bound({ node: 'a1b2', kind: 'line' }));
 		ws.setPanelSlot('panel-3', 'out');
 		ws.unlinkNodeFromPanel('panel-3');
@@ -171,7 +173,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.linkNodeToPanel('panel-8', 'a1b2');
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['set_panel', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
+			['edit_panel', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
 		]);
 	});
 
@@ -217,10 +219,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			[
-				'insert_at_panel',
-				{ subtree: 'panel-3', target: 'panel-2', direction: 'column', place_before: false }
-			]
+			['move_panel', { panel: 'panel-3', to: 'panel-2', direction: 'bottom' }]
 		]);
 		expect(ws.dragging, 'the drag is spent either way').toBeNull();
 	});
@@ -231,7 +230,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropOn({ panel: 'panel-2', direction: 'row', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()[0][1], 'a tab drag names the page’s root, not a panel').toMatchObject({
-			subtree: 'split-4'
+			panel: 'split-4'
 		});
 	});
 
@@ -242,7 +241,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
 		ws.dropOn({ newTab: 0 });
 		await settle();
-		expect(sent()).toEqual([['add_tab', { name: 'Tab 2', index: 0, subtree: 'panel-3' }]]);
+		expect(sent()).toEqual([['add_tab', { index: 0, subtree: 'panel-3' }]]);
 		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
 		// the panel is still drawn on the tab it is LEAVING, and settling for that tab would leave the
 		// torn-off one behind the old one for good.
@@ -274,23 +273,28 @@ describe('a frozen gesture is a layout command', () => {
 		ws.closeTab('tab-5');
 		expect(ws.state.activeWorkspaceId, 'the neighbour, before the delta even lands').toBe('tab-3');
 		await Promise.resolve();
-		expect(sent()).toEqual([['remove_tab', { tab: 'tab-5' }]]);
+		expect(sent()).toEqual([['remove_panel', { panel: 'tab-5' }]]);
 	});
 
-	it('claims a fresh page name per tap, so a repeated gesture is not five refusals', async () => {
+	it('asks for NO tab name — the strip it would have to guess at is the manager’s', async () => {
+		// This used to claim `Tab n` here, with an in-flight reservation set, because three taps
+		// inside one round trip would otherwise all ask for the same free name. The manager sees the
+		// whole strip under the lock the add runs on, so the race has nowhere to happen.
 		const ws = boot();
 		ws.addTab();
 		ws.addTab();
 		ws.addTab();
 		await Promise.resolve();
 		await Promise.resolve();
-		const names = sent().map(([, p]) => p.name as string);
-		expect(names, 'three taps, three requests').toHaveLength(3);
+		expect(sent().map(([op]) => op), 'three taps, three requests').toEqual([
+			'add_tab',
+			'add_tab',
+			'add_tab'
+		]);
 		expect(
-			new Set(names).size,
-			'each asks for a name the last one did not — the replica cannot have caught up between taps'
-		).toBe(3);
-		expect(names, 'and none of them is the name the tab already has').not.toContain('Tab 1');
+			sent().some(([, p]) => 'name' in p),
+			'and not one of them names a tab'
+		).toBe(false);
 	});
 
 	it('draws and refuses when nothing has installed a host', async () => {
@@ -320,9 +324,9 @@ describe('a frozen gesture is a layout command', () => {
 		ws.reorderTab(0, 0);
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['rename_tab', { tab: 'tab-1', name: 'Signals' }],
-			['remove_tab', { tab: 'tab-1' }],
-			['reorder_tab', { tab: 'tab-1', to_index: 0 }]
+			['edit_panel', { panel: 'tab-1', name: 'Signals' }],
+			['remove_panel', { panel: 'tab-1' }],
+			['move_panel', { panel: 'tab-1', index: 0 }]
 		]);
 	});
 });
@@ -343,8 +347,8 @@ describe('a resize drag draws locally and commits once', () => {
 		await Promise.resolve();
 		expect(sent()).toHaveLength(1);
 		const [op, payload] = sent()[0];
-		expect(op).toBe('resize_split');
-		expect(payload).toMatchObject({ split: 'split-4' });
+		expect(op).toBe('edit_panel');
+		expect(payload).toMatchObject({ panel: 'split-4' });
 		const fractions = payload.fractions as number[];
 		expect(fractions[0]).toBeCloseTo(0.75, 6);
 		expect(fractions[1]).toBeCloseTo(0.25, 6);
@@ -471,27 +475,6 @@ describe('viewpoint stays here', () => {
 			panel: 'panel-8',
 			paths: { 'panel-8': '/inst0' }
 		});
-	});
-
-	it('a name claimed for a tab the load took away is free again', async () => {
-		// A claim reserves a tab name until the replica shows it, so six taps on ＋ do not ask for the
-		// same free name six times. It is the one thing the generation boundary genuinely ends: the
-		// name was reserved against the OUTGOING strip, and a patch loaded out from under it means
-		// the page it was claimed for is never coming. Left standing, `_claimName` skipped that name
-		// for the rest of the session.
-		const ws = boot();
-		ws.addTab();
-		await settle();
-		expect(sent()).toEqual([['add_tab', { name: 'Tab 2' }]]);
-
-		ws.syncFromDoc([]);
-		ws.syncFromDoc(oneTab());
-		ws.addTab();
-		await settle();
-		expect(sent()[1], 'the new session offers the name again').toEqual([
-			'add_tab',
-			{ name: 'Tab 2' }
-		]);
 	});
 
 	it('drops a maximize and a focus a peer’s close took away', () => {

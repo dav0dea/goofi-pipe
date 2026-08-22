@@ -339,7 +339,7 @@ fn layout_line(n: &Node, depth: usize, out: &mut String) {
 pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
     let mut out = String::from(
         "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
-         The number on each entry is its share of its parent — what resize_split sets.\n\n",
+         The number on each entry is its share of its parent — what edit_panel's `fractions` sets.\n\n",
     );
     let tabs = match tab {
         Some(t) => vec![t.to_string()],

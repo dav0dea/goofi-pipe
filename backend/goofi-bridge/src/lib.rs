@@ -839,6 +839,14 @@ fn parse_param_entry(
     Ok((value, expr))
 }
 
+/// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two
+/// halves of one answer and two arguments can disagree.
+fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String> {
+    let raw = p.get("direction").and_then(|v| v.as_str()).unwrap_or("right");
+    goofi_engine::layout::Side::parse(raw)
+        .ok_or_else(|| format!("{op}: direction is `left`, `right`, `top` or `bottom`, not `{raw}`"))
+}
+
 fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     let node_out = parse_uid(p, "node_out")?;
     let node_in = parse_uid(p, "node_in")?;
@@ -1232,10 +1240,12 @@ impl AppState {
                     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
                 }
                 "add_tab" => {
-                    let name = parse_str(&payload, "name")?.to_string();
+                    // The NAME is the arrangement's to mint: only it can see which `Tab n` is free,
+                    // and it decides under the lock the add itself runs on.
+                    let name = payload.get("name").and_then(|v| v.as_str());
                     let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                     let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
-                    let (plan, tab) = g.arrangement().add_tab(&name, index, subtree.as_deref())?;
+                    let (plan, tab) = g.arrangement().add_tab(name, index, subtree.as_deref())?;
                     // A tab built AROUND an existing subtree is a MOVE, so its undo puts the subtree
                     // back; one born with a fresh panel has nothing to give back and inverts by closing.
                     match subtree.as_deref() {
@@ -1253,117 +1263,128 @@ impl AppState {
                     let panel = g.arrangement().root_of(&tab).unwrap_or_default();
                     Ok(json!({ "tab": tab, "panel": panel }))
                 }
-                "remove_tab" => {
-                    let tab = parse_str(&payload, "tab")?.to_string();
-                    // Planned here only so a bad id answers teachably: `LayoutClose` re-plans it under
-                    // this same lock, and DEGRADES rather than errors.
-                    g.arrangement().remove_tab(&tab)?;
-                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: tab })
-                }
-                "rename_tab" => {
-                    let (tab, name) = (parse_str(&payload, "tab")?, parse_str(&payload, "name")?);
-                    let writes = g.arrangement().rename_tab(tab, name)?;
-                    // A name is CONTENTS: the strip index is the slot, and a peer may now hold it.
-                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
-                }
-                "reorder_tab" => {
-                    let tab = parse_str(&payload, "tab")?;
-                    let to = payload.get("to_index").and_then(|v| v.as_u64()).ok_or("missing to_index")?;
-                    // Planned here only so a bad id answers teachably; the command re-plans it under
-                    // this same lock.
-                    g.arrangement().reorder_tab(tab, to as usize)?;
-                    let cmd = goofi_engine::Command::LayoutReorderTab {
-                        tab: tab.to_string(),
-                        to_index: to as usize,
-                    };
-                    apply_layout(state, &mut g, &session, cmd)
-                }
                 "split_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
-                    let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
-                    let axis = goofi_engine::layout::Axis::parse(dir)
-                        .ok_or("split_panel: direction is `row` or `column`")?;
-                    let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let side = parse_side(&payload, "split_panel")?;
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let (plan, fresh) = g.arrangement().split_panel(&panel, axis, before, ratio)?;
+                    let (plan, fresh) = g.arrangement().split_panel(&panel, side, ratio)?;
                     let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
                     apply_layout(state, &mut g, &session, cmd)?;
                     // The uid, because a split births an EMPTY panel the caller must then fill.
                     Ok(json!(fresh))
                 }
-                "set_panel" => {
+                // One entry's FIELDS, whichever kind it is: a tab wears a name, a panel a type and a
+                // state, a split its shares. Several in one call is one Compound, so one undo step.
+                "edit_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
+                    let name = payload.get("name").and_then(|v| v.as_str());
                     let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
-                    let panel_state = payload.get("state").cloned();
-                    // A panel bound to a node that is not there renders empty and explains nothing.
-                    let named = panel_state
-                        .as_ref()
-                        .and_then(|s| s.get("node"))
-                        .and_then(|v| v.as_str())
-                        .filter(|n| !n.is_empty());
-                    if let Some(node) = named {
-                        if !bindable_node(&g, node) {
-                            return Err(format!("set_panel: no node `{node}` in this patch"));
-                        }
+                    let panel_state = payload.get("state").cloned().filter(|v| !v.is_null());
+                    let fractions = match payload.get("fractions").filter(|v| !v.is_null()) {
+                        // A non-numeric entry becomes NaN, which the planner refuses beside a zero or
+                        // a negative one — so "is this a fraction" is answered in one place.
+                        Some(v) => Some(
+                            v.as_array()
+                                .ok_or("edit_panel: fractions is a list of numbers")?
+                                .iter()
+                                .map(|x| x.as_f64().unwrap_or(f64::NAN))
+                                .collect::<Vec<f64>>(),
+                        ),
+                        None => None,
+                    };
+                    if name.is_none() && ty.is_none() && panel_state.is_none() && fractions.is_none() {
+                        return Err("edit_panel: give a name, type, state or fractions".into());
                     }
-                    // The slot is checked against the node this write LEAVES the panel bound to: its
-                    // own, or the one already stored, since a state write merges.
-                    let bound = named
-                        .or_else(|| {
-                            g.arrangement()
-                                .panel_state(&panel)
-                                .and_then(|s| s.get("node"))
-                                .and_then(|v| v.as_str())
-                        })
-                        .and_then(Uid::from_hex);
-                    vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
-                    let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
-                    apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutContents { writes })
-                }
-                "move_panel" => {
-                    let panel = parse_str(&payload, "panel")?.to_string();
-                    let dest = parse_str(&payload, "new_parent")?.to_string();
-                    let at = payload.get("order_index").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let plan = g.arrangement().move_subtree(&panel, &dest, at as usize)?;
-                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: panel.clone(), home: None };
+
+                    let mut writes: Vec<goofi_engine::layout::Write> = Vec::new();
+                    if let Some(n) = name {
+                        writes.extend(g.arrangement().rename_tab(&panel, n)?);
+                    }
+                    if ty.is_some() || panel_state.is_some() {
+                        // A panel bound to a node that is not there renders empty and explains nothing.
+                        let named = panel_state
+                            .as_ref()
+                            .and_then(|s| s.get("node"))
+                            .and_then(|v| v.as_str())
+                            .filter(|n| !n.is_empty());
+                        if let Some(node) = named {
+                            if !bindable_node(&g, node) {
+                                return Err(format!("edit_panel: no node `{node}` in this patch"));
+                            }
+                        }
+                        // The slot is checked against the node this write LEAVES the panel bound to:
+                        // its own, or the one already stored, since a state write merges.
+                        let bound = named
+                            .or_else(|| {
+                                g.arrangement()
+                                    .panel_state(&panel)
+                                    .and_then(|s| s.get("node"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .and_then(Uid::from_hex);
+                        vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
+                        writes.extend(g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?);
+                    }
+
+                    let mut cmds: Vec<goofi_engine::Command> = Vec::new();
+                    if !writes.is_empty() {
+                        cmds.push(goofi_engine::Command::LayoutContents { writes });
+                    }
+                    if let Some(fractions) = fractions {
+                        // Planned here only so a bad split or a wrong fraction count answers teachably;
+                        // the command re-plans it under this same lock.
+                        g.arrangement().resize_split(&panel, &fractions)?;
+                        cmds.push(goofi_engine::Command::LayoutResizeSplit { split: panel.clone(), fractions });
+                    }
+                    let cmd = if cmds.len() == 1 {
+                        cmds.pop().expect("length checked")
+                    } else {
+                        goofi_engine::Command::Compound(cmds)
+                    };
                     apply_layout(state, &mut g, &session, cmd)
                 }
                 // ONE op per drag gesture: a drop is one undo step, and peers never see an
                 // arrangement that was not on somebody's screen.
-                "insert_at_panel" => {
-                    let subtree = parse_str(&payload, "subtree")?.to_string();
-                    let target = parse_str(&payload, "target")?.to_string();
-                    let dir = payload.get("direction").and_then(|v| v.as_str()).unwrap_or("row");
-                    let axis = goofi_engine::layout::Axis::parse(dir)
-                        .ok_or("insert_at_panel: direction is `row` or `column`")?;
-                    let before = payload.get("place_before").and_then(|v| v.as_bool()).unwrap_or(false);
+                "move_panel" => {
+                    let panel = parse_str(&payload, "panel")?.to_string();
+                    let to = payload.get("to").and_then(|v| v.as_str()).map(str::to_string);
+                    let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
+                    let side = match payload.get("direction").filter(|v| !v.is_null()) {
+                        Some(_) => Some(parse_side(&payload, "move_panel")?),
+                        None => None,
+                    };
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let plan =
-                        g.arrangement().insert_at_panel(&subtree, &target, axis, before, ratio)?;
-                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: subtree.clone(), home: None };
-                    apply_layout(state, &mut g, &session, cmd)
-                }
-                "resize_split" => {
-                    let split = parse_str(&payload, "split")?.to_string();
-                    // A non-numeric entry becomes NaN, which the planner refuses beside a zero or a
-                    // negative one — so "is this a fraction" is answered in one place.
-                    let fractions: Vec<f64> = payload
-                        .get("fractions")
-                        .and_then(|v| v.as_array())
-                        .ok_or("resize_split: missing fractions")?
-                        .iter()
-                        .map(|v| v.as_f64().unwrap_or(f64::NAN))
-                        .collect();
-                    // Planned here only so a bad split or a wrong fraction count answers teachably;
-                    // the command re-plans it under this same lock.
-                    g.arrangement().resize_split(&split, &fractions)?;
-                    let cmd = goofi_engine::Command::LayoutResizeSplit { split, fractions };
+                    let plan = match (to.as_deref(), side) {
+                        // Beside a target, splitting it — the drop on a panel's edge.
+                        (Some(target), Some(side)) => {
+                            g.arrangement().insert_at_panel(&panel, target, side, ratio)?
+                        }
+                        // Inside a split, at an index — the drop into a container that already exists.
+                        (Some(parent), None) => {
+                            g.arrangement().move_subtree(&panel, parent, index.unwrap_or(0))?
+                        }
+                        // No destination: reposition where it already lives, which for a tab is the
+                        // strip. Planned here only so a bad id answers teachably; the command re-plans
+                        // it under this same lock.
+                        (None, _) => {
+                            let at = index.ok_or("move_panel: give a `to`, an `index`, or both")?;
+                            g.arrangement().reorder_tab(&panel, at)?;
+                            let cmd = goofi_engine::Command::LayoutReorderTab { tab: panel, to_index: at };
+                            return apply_layout(state, &mut g, &session, cmd);
+                        }
+                    };
+                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: panel.clone(), home: None };
                     apply_layout(state, &mut g, &session, cmd)
                 }
                 "remove_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();
-                    // Planned only for its teachable refusal — see `remove_tab` above.
-                    g.arrangement().remove_subtree(&panel)?;
+                    // A tab is closed whole; anything else is closed with promote. Planned here only
+                    // so a bad id answers teachably: `LayoutClose` re-plans it under this same lock,
+                    // and DEGRADES rather than errors.
+                    match g.arrangement().tab_index(&panel) {
+                        Some(_) => g.arrangement().remove_tab(&panel)?,
+                        None => g.arrangement().remove_subtree(&panel)?,
+                    };
                     apply_layout(state, &mut g, &session, goofi_engine::Command::LayoutClose { born: panel })
                 }
                 "set_global" => {

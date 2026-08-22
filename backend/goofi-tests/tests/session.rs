@@ -34,7 +34,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let stubs = g.doc()["instances"][&scope]["stubs"].as_object().cloned().unwrap_or_default();
     assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
 
-    g.call("set_panel", j!({ "panel": panel(&g), "type": "viewer",
+    g.call("edit_panel", j!({ "panel": panel(&g), "type": "viewer",
                                  "state": { "node": hex(osc), "slot": "out" } }));
 
     let before = g.doc();
