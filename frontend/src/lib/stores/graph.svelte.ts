@@ -127,7 +127,8 @@ export class GraphStore {
 	/** Apply a wholesale snapshot, returning whether it came from a NEW backend session — which is
 	 * what a same-session reconnect must not look like. */
 	private _replaceSnapshot(snap: GraphSnapshot, wholesale: boolean): boolean {
-		// Absent → an older backend; keep whatever the async fetch set.
+		// A `hello` always carries the palette; `graph_replaced` never does — the `node_types` event
+		// is what re-announces it there.
 		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
 		// The snapshot and the doc delta ride separate channels in no defined order, so the runtime
 		// overlay is both stashed for nodes still to materialize and applied to those already here.
@@ -212,8 +213,6 @@ export class GraphStore {
 					this._sync.reset();
 					this._onWholesaleLoad();
 				}
-				// The catalog usually rides on the hello snapshot; fetch it only if one omitted it.
-				if (!this.nodeTypes?.length) void this._refreshNodeTypes();
 				break;
 			}
 			case 'graph_replaced':
@@ -293,15 +292,6 @@ export class GraphStore {
 			case 'node_types':
 				this._applyNodeTypes(ev.payload.types);
 				break;
-		}
-	}
-
-	private async _refreshNodeTypes(): Promise<void> {
-		try {
-			const result = await this.ctl.call<{ types: NodeTypeInfo[] }>('list_nodes');
-			this._applyNodeTypes(result.types);
-		} catch (e) {
-			console.warn('list_nodes failed', e);
 		}
 	}
 

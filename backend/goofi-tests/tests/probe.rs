@@ -117,6 +117,24 @@ fn discovers_a_valid_node_with_declarations() {
 }
 
 #[test]
+fn a_python_input_slot_declares_required_and_trigger_independently() {
+    // A bare `DataType` is the pre-`InputSlot` behaviour and must stay it — triggering, not
+    // required — while `InputSlot` makes each authorable WITHOUT touching the other.
+    let py = test_python();
+    let Discovery::Found(d) =
+        discover_one(&fixtures().join("declared.py"), &py, "python", Isolation::Subprocess)
+    else {
+        panic!("declared.py discovers")
+    };
+    let slot = |name: &str| {
+        d.manifest.inputs.iter().find(|i| i.name == name).unwrap_or_else(|| panic!("slot {name}"))
+    };
+    assert!(!slot("bare").required && slot("bare").trigger_process, "a bare DataType declares nothing");
+    assert!(slot("needed").required && slot("needed").trigger_process, "required does not touch trigger");
+    assert!(!slot("passive").trigger_process && !slot("passive").required, "nor trigger required");
+}
+
+#[test]
 fn a_python_node_can_declare_itself_a_producer() {
     // `#[serde(default)]` on the schema is load-bearing: an older installed wheel emits no key, and
     // a hard parse failure greys out every node it discovers.
@@ -162,7 +180,16 @@ fn missing_dep_greys_out_instead_of_crashing() {
         }
         _ => panic!("a node whose dep is missing is Unavailable, not skipped"),
     }
-    // A file that is not a node at all is a different outcome entirely.
+    // A file that imports CLEANLY and simply declares no node is Unavailable too, and for a reason
+    // of its own — the palette must be able to say which of the two happened.
+    match discover_one(&fixtures().join("no_node.py"), &py, "python", Isolation::Subprocess) {
+        Discovery::Unavailable { type_name, reason } => {
+            assert_eq!(type_name, "NoNode");
+            assert!(!reason.is_empty(), "a file with no node says so rather than greying out blank");
+        }
+        _ => panic!("a file declaring no node is Unavailable, not Found and not skipped"),
+    }
+    // A file that is not OFFERED as a node at all is a different outcome entirely.
     assert!(matches!(
         discover_one(&fixtures().join("_hidden.py"), &py, "python", Isolation::Subprocess),
         Discovery::Skip

@@ -2,10 +2,9 @@ import sys
 
 import goofi
 
-# Stands in for the real cause: a node whose declaration-time import (see device_options.py in
-# goofi-pymod's fixtures) pulls in a C extension built without free-threading support, which flips
-# the GIL back on while the module is being imported. Flipping the very oracle the probe reads
-# keeps this deterministic and free of a wheel dependency.
+# Stands in for the real cause: a node whose declaration-time import pulls in a C extension built
+# without free-threading support, which flips the GIL back on while the module is being imported.
+# Flipping the very oracle the probe reads keeps this deterministic and free of a wheel dependency.
 sys._is_gil_enabled = lambda: True
 
 

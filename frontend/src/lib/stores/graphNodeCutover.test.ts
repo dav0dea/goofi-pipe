@@ -263,15 +263,6 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		expect(n.stage, 'the overlay applies in the delta-first order too').toBe('error');
 		expect(n.error).toBe('ImportError: no scipy');
 	});
-
-	it('an older backend (hello without node_types) still fetches list_nodes async', () => {
-		const fc = new FakeControl();
-		fc.setCallResult('list_nodes', { types: catalog() });
-		const g = new GraphStore(fc);
-		fc.emit({ event: 'hello', payload: helloSnap(undefined) });
-		// Backward-compat: the async fetch is the fallback when the snapshot omits the palette.
-		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(true);
-	});
 });
 
 describe('inline viewer state — the document is the one holder, so it follows the document', () => {

@@ -42,14 +42,3 @@ export async function settledBox(loc: Locator): Promise<Box> {
 		.toBe(true);
 	return prev;
 }
-
-/** How far `inner` falls outside `outer`, on any side, in px (0 = fully inside). */
-export function outside(inner: Box, outer: Box): number {
-	return Math.max(
-		0,
-		outer.x - inner.x,
-		outer.y - inner.y,
-		inner.x + inner.width - (outer.x + outer.width),
-		inner.y + inner.height - (outer.y + outer.height)
-	);
-}

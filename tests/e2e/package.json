@@ -5,8 +5,7 @@
 	"scripts": {
 		"build:backend": "npm --prefix ../../frontend run build && cargo build --manifest-path ../../Cargo.toml -p goofi-cli",
 		"e2e": "npm run build:backend && playwright test",
-		"test": "playwright test",
-		"gallery": "playwright test --project=gallery --project=gallery-touch"
+		"test": "playwright test"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.62.1"

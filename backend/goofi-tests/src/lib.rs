@@ -284,21 +284,6 @@ impl Events {
             }
         }
     }
-
-    /// Answers whether an event named `name` arrives inside the settle window.
-    pub fn quiet(&mut self, name: &str) -> bool {
-        let deadline = Instant::now() + SETTLE;
-        while Instant::now() < deadline {
-            if let Ok(raw) = self.rx.try_recv() {
-                let v: Value = serde_json::from_str(&raw).expect("an event is JSON");
-                if v["event"] == name {
-                    return false;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        true
-    }
 }
 
 /// A uid as the wire spells it.

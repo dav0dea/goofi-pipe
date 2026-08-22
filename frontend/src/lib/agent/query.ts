@@ -1,7 +1,6 @@
 /** Agent read/introspection surface — paired with `commands`. */
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
-import { ui } from '$lib/stores/ui.svelte';
 import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
 import { latestFrame } from '$lib/api/frames';
@@ -88,8 +87,6 @@ export const query = {
 		const sel = selection();
 		return { nodes: [...sel.nodes(panelId)], edges: [...sel.edges(panelId)] };
 	},
-	activeNode: (): NodeInstanceInfo | null => selection().activeSelectedNode,
-	latestFrame: (node: string, slot: string): DataFrame | null => latestFrame(node, slot),
 	frameSummary: (node: string, slot: string): FrameSummary | null =>
 		summarize(latestFrame(node, slot)),
 	panels: (): PanelView[] =>
@@ -104,13 +101,9 @@ export const query = {
 			};
 		}),
 
-	/** True while an in-panel editor holds the keyboard, so global undo/redo stands down. */
-	modalOpen: (): boolean => ui().modalOpen,
-
 	canUndo: (): boolean => history().canUndo,
 	canRedo: (): boolean => history().canRedo,
 	undoLabel: (): string | null => history().undoLabel,
-	redoLabel: (): string | null => history().redoLabel,
 	historyLength: (): number => history().length
 };
 
