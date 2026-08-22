@@ -47,25 +47,78 @@ fn wire(g: &Goofi, bnd: &str, dir: &str, node: &str, slot: &str) -> Value {
     g.call("add_link", p)
 }
 
+/// The port of `inst` whose type is `ty`, and its inner wire.
+fn port_of(g: &Goofi, inst: &str, ty: &str) -> (String, Option<(String, String)>) {
+    let doc = g.doc();
+    let id = g
+        .ports(inst)
+        .into_iter()
+        .find(|p| doc["nodes"][p]["type"] == ty)
+        .unwrap_or_else(|| panic!("no {ty} port on {inst}: {}", doc["nodes"]));
+    let inner = g.inner(&id);
+    (id, inner)
+}
+
 #[test]
-fn grouping_re_tags_the_members_and_expanding_gives_them_back() {
+fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
+    let sink = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    let inst = group(&g, &[hex(osc), hex(buf)]);
+    g.link(buf, "out", sink, "data");
 
+    // The SELECTION is what decides which side of the boundary a cable is on. Grouping the middle
+    // node alone leaves both its cables crossing, so grouping has to mint a port for each — the
+    // sub-patch would otherwise be born unreachable from the patch it was cut out of.
+    let inst = group(&g, &[hex(buf)]);
     let rec = g.doc()["nodes"][&inst].clone();
     // A facade is a node record; a TOP-LEVEL one simply names no scope, exactly as a root node does.
     assert_eq!(rec["type"], "SubPatch", "the facade is a node record: {rec}");
     assert!(rec.get("scope").is_none(), "a top-level scope names no parent: {rec}");
     assert!(rec.get("def_id").is_none(), "no sharing ⇒ no def_id");
-    assert_eq!(g.members(&inst).len(), 2, "both members in the scope");
-    assert!(g.members(&inst).contains(&hex(osc)));
 
+    let ports = g.ports(&inst);
+    assert_eq!(ports.len(), 2, "one port per crossing cable, and not one per cable: {ports:?}");
+    let (inp, in_inner) = port_of(&g, &inst, "InArray");
+    let (outp, out_inner) = port_of(&g, &inst, "OutArray");
+    assert_eq!(in_inner, Some((hex(buf), "data".into())), "the incoming cable's port feeds the member slot it crossed at");
+    assert_eq!(out_inner, Some((hex(buf), "out".into())), "and the outgoing one drains that one");
+    assert_eq!(g.members(&inst), {
+        let mut want = vec![hex(buf), inp.clone(), outp.clone()];
+        want.sort();
+        want
+    }, "the member and its two ports are what the scope holds");
+
+    // The crossing cables themselves are UNTOUCHED. A port is a naming indirection, so the runtime
+    // link stays flat leaf→leaf and no frame takes a detour through the boundary.
+    let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
+    let flat = |a: &str, b: &str| links.iter().any(|l| l["node_out"] == a && l["node_in"] == b);
+    assert!(flat(&hex(osc), &hex(buf)), "the cable in still names the leaf: {links:?}");
+    assert!(flat(&hex(buf), &hex(sink)), "and so does the cable out: {links:?}");
+    assert_eq!(links.len(), 4, "…plus the two ports' inner wires, and nothing else: {links:?}");
+
+    // Expanding is the exact inverse: the ports go, the members come back, the cables never moved.
     g.call("expand_instance", j!({ "inst_id": inst }));
     assert!(g.instances().is_empty(), "the instance dropped out of the forest");
-    assert_eq!(g.nodes().len(), 2, "and both leaves came back to root");
+    assert_eq!(g.nodes().len(), 3, "and every leaf came back to root");
+    let after = g.doc()["links"].as_array().cloned().unwrap_or_default();
+    assert_eq!(after.len(), 2, "the minted ports took their inner wires with them: {after:?}");
+
+    // Widen the selection and the cable between the two stops crossing, so nothing is minted for it.
+    let both = group(&g, &[hex(osc), hex(buf)]);
+    let (drain, _) = port_of(&g, &both, "OutArray");
+    assert_eq!(g.ports(&both), vec![drain.clone()], "only buf→sink still crosses");
+    assert!(g.members(&both).contains(&hex(osc)), "both leaves are in the scope");
+    assert!(g.members(&both).contains(&hex(buf)));
+
+    // Group that sub-patch in turn. The cable still crosses, but the scope it crosses out of ALREADY
+    // exposes it, so the outer port lands on the inner one's port rather than minting a rival for
+    // the same stream — the reuse is what keeps one leaf slot behind exactly one chain of ports.
+    let outer = group(&g, std::slice::from_ref(&both));
+    let (_, nested_inner) = port_of(&g, &outer, "OutArray");
+    assert_eq!(nested_inner, Some((both.clone(), drain)), "the outer port names the inner one");
+    assert_eq!(g.ports(&both).len(), 1, "and nothing new was minted inside");
 }
 
 #[test]
@@ -141,6 +194,17 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     let inst = group(&g, &[hex(buf)]);
+
+    // Authoring ALONE is what gives the sub-patch its slot: the record is complete the moment the
+    // port exists — the scope it is a port of, and a type naming both the direction and the dtype.
+    // That record IS the facade's slot on the parent canvas, so gating it on an inner wire hid an
+    // authored port from the scope above until somebody wired it.
+    let feed = boundary(&g, &inst, "in");
+    let fresh = g.doc()["nodes"][&feed].clone();
+    assert_eq!(fresh["scope"], inst, "a port names the sub-patch it is a port of: {fresh}");
+    assert_eq!(fresh["type"], "InArray", "…and its type says which way it faces, and at what dtype");
+    assert!(g.inner(&feed).is_none(), "…while the inner wire is a separate act it has not had yet");
+    assert!(g.members(&inst).contains(&feed), "an unwired port is a member like any other");
 
     // The wire, the label and the pill are three node ops — `compound` is what keeps them one
     // undo step now that the boundary has no op of its own.

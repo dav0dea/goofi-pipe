@@ -88,7 +88,8 @@ export interface LinkInfo {
 /** One boundary (In/Out node) of a sub-patch; `inner_node`/`inner_slot` are null when unwired. */
 export interface SubPatchPort {
 	dir: 'in' | 'out';
-	dtype?: string;
+	/** The port's advertised dtype — the type name IS the (dir, dtype) pair, so it is never absent. */
+	dtype: string;
 	inner_node: string | null;
 	inner_slot: string | null;
 	pos: [number, number];
@@ -111,8 +112,6 @@ export interface InstanceInfo {
 	pos: [number, number];
 	/** member uid -> whether that member is itself a nested scope. */
 	members: Record<string, { uid: string; is_instance: boolean }>;
-	/** External ports computed from WIRED stubs: stub id -> dtype. */
-	slots: { input: Record<string, string>; output: Record<string, string> };
 	/** First errored descendant across the whole subtree, or null. */
 	error: string | null;
 	/** Per-output-boundary view state persisted in the .gfi patch, keyed by boundary id. */

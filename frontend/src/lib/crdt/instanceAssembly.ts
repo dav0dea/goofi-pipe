@@ -22,15 +22,7 @@ export function assembleInstance(
 	error: string | null
 ): InstanceInfo {
 	const iface: Record<string, SubPatchPort> = {};
-	const input: Record<string, string> = {};
-	const output: Record<string, string> = {};
-	for (const b of view.interface) {
-		iface[b.bnd_id] = toPort(b);
-		if (b.inner_node != null) {
-			if (b.dir === 'in') input[b.bnd_id] = b.dtype;
-			else output[b.bnd_id] = b.dtype;
-		}
-	}
+	for (const b of view.interface) iface[b.bnd_id] = toPort(b);
 	const members: InstanceInfo['members'] = {};
 	for (const [uid, isInst] of Object.entries(view.members)) {
 		members[uid] = { uid, is_instance: isInst || instanceUids.has(uid) };
@@ -42,7 +34,6 @@ export function assembleInstance(
 		interface: iface,
 		pos: view.pos,
 		members,
-		slots: { input, output },
 		error,
 		viewers: {}
 	};
@@ -65,7 +56,6 @@ export function assembleRoot(
 		interface: {},
 		pos: [0, 0],
 		members,
-		slots: { input: {}, output: {} },
 		error: null,
 		viewers: {}
 	};

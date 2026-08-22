@@ -77,7 +77,10 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const sp = scope('i1', {
 			name: 'subpatch0',
 			pos: [5, 6],
-			ports: [{ uid: 'p0', type: 'OutArray', name: 'wave', inner: ['m1', 'out'] }]
+			ports: [
+				{ uid: 'p0', type: 'OutArray', name: 'wave', inner: ['m1', 'out'] },
+				{ uid: 'p1', type: 'InArray', name: 'feed' } // authored, not yet wired inside
+			]
 		});
 		seed(fc).patch({
 			nodes: {
@@ -99,16 +102,19 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const i1 = g.instances.i1;
 		expect(i1.name).toBe('subpatch0');
 		expect(i1.pos).toEqual([5, 6]);
-		expect(i1.slots).toEqual({ input: {}, output: { p0: 'ARRAY' } });
 		// A port is a member like any other node — it is what the canvas draws inside the scope.
 		expect(i1.members).toEqual({
 			m1: { uid: 'm1', is_instance: false },
-			p0: { uid: 'p0', is_instance: false }
+			p0: { uid: 'p0', is_instance: false },
+			p1: { uid: 'p1', is_instance: false }
 		});
 
-		// The synth node the canvas renders for the collapsed sub-patch reflects the wired slot.
+		// The collapsed sub-patch exposes ONE slot per port, by direction. The inner wire is a
+		// separate question: authoring `p1` is what gives the parent's facade its input.
 		const synth = g.nodeById('i1');
 		expect(synth?.output_slots).toEqual({ p0: 'ARRAY' });
+		expect(synth?.input_slots).toEqual({ p1: 'ARRAY' });
+		expect(synth?.slot_labels).toEqual({ p0: 'wave', p1: 'feed' });
 	});
 
 	it('a scope removed from the doc vanishes and its member returns to ROOT', () => {

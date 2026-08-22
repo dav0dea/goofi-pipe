@@ -187,6 +187,14 @@ test.describe('the control socket', () => {
 					)
 					.toBe(true);
 
+				// …and the parent's facade grows the matching slot THERE AND THEN. A port IS the
+				// sub-patch's slot; whether it is wired to a member yet is a separate question, and
+				// gating the slot on that inner wire made an authored port invisible from outside.
+				await expect(
+					page.locator(`.svelte-flow__node[data-id="${scope}"] [data-handleid="${port}"]`),
+					'the facade wears one handle per port, wired inside or not'
+				).toHaveCount(1);
+
 				await page.evaluate(
 					([p, b]) =>
 						(window as any).goofi.commands.addLink({

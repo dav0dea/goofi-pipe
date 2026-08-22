@@ -720,17 +720,17 @@ export class GraphStore {
 		}
 	}
 
-	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance: its WIRED
-	 * boundaries become real slots, so the canvas treats it exactly like a node. */
+	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance: its boundary
+	 * ports become real slots, so the canvas treats it exactly like a node. */
 	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
 		const error = inst.error ?? null;
 		const memberCount = Object.keys(inst.members).length;
 		// Everything the synth node RENDERS except position, which is applied in place below so a
 		// per-frame drag keeps one identity and never churns the viewer.
-		const labelSig = Object.entries(inst.interface)
-			.map(([bid, p]) => `${bid}=${p.name ?? ''}`)
+		const portSig = Object.entries(inst.interface)
+			.map(([bid, p]) => `${bid}=${p.dir}:${p.dtype}:${p.name ?? ''}`)
 			.join(',');
-		const sig = `${inst.name}|${error ?? ''}|${memberCount}|${JSON.stringify(inst.slots)}|${labelSig}`;
+		const sig = `${inst.name}|${error ?? ''}|${memberCount}|${portSig}`;
 
 		const cached = this._synthCache.get(instId);
 		if (cached && cached.sig === sig) {
@@ -739,13 +739,14 @@ export class GraphStore {
 			return cached.node;
 		}
 
-		// External ports ARE the server-computed slots (a pure passthrough).
-		const input_slots: Record<string, string> = { ...inst.slots.input };
-		const output_slots: Record<string, string> = { ...inst.slots.output };
-		// Keyed by the stable boundary id but labelled with the renameable portal NAME, so a rename
-		// relabels the collapsed port without re-keying the wire.
+		// A port IS a facade slot, wired inside or not: the scope's ports are the only owner of what
+		// the collapsed node exposes. Keyed by the stable boundary id but labelled with the
+		// renameable port NAME, so a rename relabels the slot without re-keying the wire.
+		const input_slots: Record<string, string> = {};
+		const output_slots: Record<string, string> = {};
 		const slot_labels: Record<string, string> = {};
 		for (const [bid, port] of Object.entries(inst.interface)) {
+			(port.dir === 'in' ? input_slots : output_slots)[bid] = port.dtype;
 			if (port.name) slot_labels[bid] = port.name;
 		}
 		const node: NodeInstanceInfo = {

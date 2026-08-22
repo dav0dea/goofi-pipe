@@ -50,15 +50,13 @@ describe('instanceAssembly — a scope from a doc view', () => {
 			pos: [1, 2],
 			name: 'wave'
 		});
-		// A WIRED output stub (inner_node != null) becomes an output slot.
-		expect(info.slots).toEqual({ input: {}, output: { out0: 'ARRAY' } });
 		// members keyed by uid → {uid, is_instance} (m1 is a plain node here).
 		expect(info.members).toEqual({ m1: { uid: 'm1', is_instance: false } });
 		expect(info.viewers).toEqual({});
 		expect(info.error).toBeNull();
 	});
 
-	it('an UNWIRED stub renders in the interface but is not a slot', () => {
+	it('an UNWIRED stub is a port like any other — the inner wire is a separate question', () => {
 		const view = inst({
 			uid: 'i1',
 			interface: [
@@ -67,19 +65,7 @@ describe('instanceAssembly — a scope from a doc view', () => {
 		});
 		const info = assembleInstance(view, new Set(['i1']), null);
 		expect(info.interface.in0.inner_node).toBeNull();
-		expect(info.slots).toEqual({ input: {}, output: {} }); // unwired → no slot
-	});
-
-	it('splits wired stubs into input vs output slots by dir', () => {
-		const view = inst({
-			uid: 'i1',
-			interface: [
-				{ bnd_id: 'in0', dir: 'in', dtype: 'ARRAY', name: 'x', pos: [0, 0], inner_node: 'm1', inner_slot: 'data' },
-				{ bnd_id: 'out0', dir: 'out', dtype: 'STRING', name: 'y', pos: [0, 0], inner_node: 'm1', inner_slot: 'out' }
-			]
-		});
-		const info = assembleInstance(view, new Set(['i1']), null);
-		expect(info.slots).toEqual({ input: { in0: 'ARRAY' }, output: { out0: 'STRING' } });
+		expect(info.interface.in0.dir).toBe('in');
 	});
 
 	it('a member that is itself a scope gets is_instance=true', () => {
