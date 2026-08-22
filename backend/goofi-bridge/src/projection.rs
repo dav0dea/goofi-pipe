@@ -1,13 +1,13 @@
 //! One JSON projection of the engine `Graph` — exactly the shape of the control-plane document.
 
-use goofi_engine::subpatch::Dir;
+use goofi_engine::subpatch;
 use goofi_engine::Graph;
 use serde_json::{json, Map, Value};
 
-use crate::schemas::ROOT_ID;
-
-/// `g`'s whole control-plane state: nodes with their params and viewers, links, the sub-patch
-/// forest, globals, and the panel arrangement.
+/// `g`'s whole control-plane state, in the shape a `.gfi` holds it: one node map carrying leaves,
+/// sub-patch facades and boundary ports alike, one link list, globals, and the panel arrangement.
+/// The sub-patch forest is not a block of its own — a member names its scope, and that is the only
+/// place membership lives.
 pub fn of(g: &Graph) -> Value {
     let pos_json = |p: [f64; 2]| json!({ "x": p[0], "y": p[1] });
 
@@ -43,8 +43,37 @@ pub fn of(g: &Graph) -> Value {
         }
         nodes.insert(uid.to_hex(), Value::Object(node));
     }
+    // A facade and a boundary port are node records too. Neither runs, so neither carries params or
+    // viewers — the key is simply absent, as it is on a node that has none.
+    for uid in g.scope_uids() {
+        let Some(scope) = g.scope(uid) else { continue };
+        nodes.insert(
+            uid.to_hex(),
+            json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name, "pos": pos_json(scope.pos),
+                    "params": {} }),
+        );
+        for (id, st) in scope.stubs.iter() {
+            nodes.insert(
+                id.to_hex(),
+                json!({ "type": subpatch::boundary_type_name(st.dir, st.dtype), "name": st.name,
+                        "pos": pos_json(st.pos), "params": {}, "scope": uid.to_hex() }),
+            );
+        }
+    }
+    // Membership rides the member. Absent means ROOT — never a null, which a merge patch spends on
+    // "delete this key" and could not tell from a move out of a scope.
+    for (uid, parent) in g
+        .node_uids()
+        .into_iter()
+        .chain(g.scope_uids())
+        .filter_map(|u| g.scope_of(u).map(|p| (u, p)))
+    {
+        if let Some(Value::Object(rec)) = nodes.get_mut(&uid.to_hex()) {
+            rec.insert("scope".into(), json!(parent.to_hex()));
+        }
+    }
 
-    let links: Vec<Value> = g
+    let mut links: Vec<Value> = g
         .links_view()
         .into_iter()
         .map(|l| {
@@ -54,39 +83,18 @@ pub fn of(g: &Graph) -> Value {
             })
         })
         .collect();
-
-    // Membership is a MAP keyed by member uid: the reconciler handles nested maps, not
-    // arrays-in-records.
-    let mut instances = Map::new();
-    for uid in g.scope_uids() {
-        let Some(scope) = g.scope(uid) else { continue };
-        let mut srec = Map::new();
-        srec.insert("name".into(), json!(scope.name));
-        let parent = g.scope_of(uid).map(|p| p.to_hex()).unwrap_or_else(|| ROOT_ID.to_string());
-        srec.insert("parent".into(), json!(parent));
-        srec.insert("pos".into(), pos_json(scope.pos));
-        let mut members = Map::new();
-        for m in g.scope_members(uid) {
-            members.insert(m.to_hex(), json!({ "is_instance": g.scope(m).is_some() }));
-        }
-        srec.insert("members".into(), Value::Object(members));
-        let mut stubs = Map::new();
+    // A port's inner wire is a link, so the cable drawn inside a sub-patch is read the same way as
+    // every other cable rather than reconstructed from the port's own record.
+    for scope in g.scope_uids().into_iter().filter_map(|u| g.scope(u)) {
         for (id, st) in scope.stubs.iter() {
-            let mut sm = Map::new();
-            sm.insert("dir".into(), json!(match st.dir { Dir::In => "in", Dir::Out => "out" }));
-            sm.insert("dtype".into(), json!(st.dtype.name()));
-            sm.insert("name".into(), json!(st.name));
-            sm.insert("pos".into(), pos_json(st.pos));
-            // The stub's DIRECT inner, not the chain-resolved deep leaf: the editor's per-level
-            // reroute matches each stub against its direct child.
-            if let Some((u, s)) = st.inner.as_ref() {
-                sm.insert("inner_node".into(), json!(u.to_hex()));
-                sm.insert("inner_slot".into(), json!(s));
-            }
-            stubs.insert(id.to_hex(), Value::Object(sm));
+            let Some((inner, slot)) = &st.inner else { continue };
+            let (a, so, b, si) = match st.dir {
+                subpatch::Dir::In => (id, subpatch::BOUNDARY_SLOT, inner, slot.as_str()),
+                subpatch::Dir::Out => (inner, slot.as_str(), id, subpatch::BOUNDARY_SLOT),
+            };
+            links.push(json!({ "node_out": a.to_hex(), "slot_out": so,
+                               "node_in": b.to_hex(), "slot_in": si }));
         }
-        srec.insert("stubs".into(), Value::Object(stubs));
-        instances.insert(uid.to_hex(), Value::Object(srec));
     }
 
     // Known limitation: this Map is a BTreeMap, so a full mirror shows globals alphabetized until
@@ -100,6 +108,6 @@ pub fn of(g: &Graph) -> Value {
         globals.insert(name.to_string(), entry);
     }
 
-    json!({ "nodes": nodes, "links": links, "instances": instances,
+    json!({ "nodes": nodes, "links": links,
         "globals": globals, "arrangement": g.arrangement().to_json() })
 }

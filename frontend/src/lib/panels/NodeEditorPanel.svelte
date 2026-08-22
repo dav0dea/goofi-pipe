@@ -39,20 +39,17 @@
 	import { portal } from 'panelty';
 	import {
 		linkKey,
-		BOUNDARY_CATEGORY,
 		type InstanceInfo,
 		type LinkInfo,
 		type NodeInstanceInfo,
 		type NodeTypeInfo
 	} from '$lib/api/control';
+	import { BOUNDARY_SLOT, boundaryType } from '$lib/api/vocab';
 	import {
 		ROOT_ID,
 		buildMemberIndex,
 		childrenOfScope,
-		drawEndpoint as sceneDrawEndpoint,
-		boundaryNodeId,
-		isBoundaryNodeId,
-		parseBoundaryNodeId
+		drawEndpoint as sceneDrawEndpoint
 	} from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits, BOUNDARY } from '$lib/editor/nodeMetrics';
 	import { isSlotExpanded } from '$lib/viewers/inlineView';
@@ -272,9 +269,6 @@
 		if (!samePath(persisted, untrack(() => enteredPath))) enteredPath = persisted;
 	});
 
-	const boundaryId = boundaryNodeId;
-	const isBoundaryId = isBoundaryNodeId;
-
 	/** Index every entity (node OR nested instance) by uid, for parent-scope and local lookups. */
 	const memberIndex = $derived(buildMemberIndex(g.instances));
 
@@ -340,8 +334,8 @@
 		if (inst && entered) {
 			for (const [bid, port] of Object.entries(inst.interface)) {
 				next.push({
-					// The flow id keys on the stable boundary id; the pill shows the renameable NAME.
-					id: boundaryId(entered, bid),
+					// A port's flow id IS its uid, so every editor path addresses it as it does a node.
+					id: bid,
 					type: 'boundary',
 					position: { x: port.pos[0], y: port.pos[1] },
 					data: {
@@ -349,9 +343,9 @@
 						dir: port.dir,
 						dtype: port.dtype ?? 'ARRAY',
 						wired: port.inner_node !== null,
-						rename: (newName: string) => g.renameBoundary(entered!, bid, newName)
+						rename: (newName: string) => g.renameNode(bid, newName)
 					},
-					selected: sel.nodes(panelId).has(boundaryId(entered, bid))
+					selected: sel.nodes(panelId).has(bid)
 				});
 			}
 		}
@@ -385,26 +379,25 @@
 				if (port.inner_node == null) continue;
 				const disp = g.memberUid(entered, port.inner_node);
 				if (!disp) continue;
-				const bId = boundaryId(entered, name);
 				if (port.dir === 'in') {
-					const id = `${bId}->${disp}.${port.inner_slot}`;
+					const id = `${name}->${disp}.${port.inner_slot}`;
 					next.push({
 						id,
-						source: bId,
-						sourceHandle: 'out',
+						source: name,
+						sourceHandle: BOUNDARY_SLOT,
 						target: disp,
 						targetHandle: port.inner_slot,
 						selected: sel.edges(panelId).has(id),
 						animated: false
 					});
 				} else {
-					const id = `${disp}.${port.inner_slot}->${bId}`;
+					const id = `${disp}.${port.inner_slot}->${name}`;
 					next.push({
 						id,
 						source: disp,
 						sourceHandle: port.inner_slot,
-						target: bId,
-						targetHandle: 'in',
+						target: name,
+						targetHandle: BOUNDARY_SLOT,
 						selected: sel.edges(panelId).has(id),
 						animated: false
 					});
@@ -419,7 +412,7 @@
 	function selectedNodeNames(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
-		return [...ids].filter((id) => !(id in g.instances) && !isBoundaryId(id));
+		return [...ids].filter((id) => !(id in g.instances) && !g.portScope(id));
 	}
 
 	async function groupSelection(): Promise<void> {
@@ -441,33 +434,15 @@
 		}
 	}
 
-	/** The interface key of a pill id belonging to the ENTERED scope, or null. */
-	function parseBoundary(id: string): string | null {
-		return parseBoundaryNodeId(id, entered);
+	/** Is this uid a boundary port of the ENTERED scope? */
+	function portHere(id: string): boolean {
+		return !!entered && !!g.instances[entered]?.interface[id];
 	}
 
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
-		// An edge touching an In/Out pill wires that boundary to the member slot on the other end.
-		const srcB = parseBoundary(c.source);
-		const dstB = parseBoundary(c.target);
-		if (srcB || dstB) {
-			if (!entered) return;
-			const bnd = srcB ?? dstB!;
-			const memberId = srcB ? c.target : c.source;
-			const memberSlot = srcB ? c.targetHandle : c.sourceHandle;
-			const local = memberIndex.get(memberId)?.local;
-			if (!local) return; // the other end must be a member of this sub-patch
-			const link = g.boundaryLink(entered, bnd, local, memberSlot);
-			if (!link) return;
-			void g.addLink(link).catch((e) => {
-				console.warn('wire boundary failed', e);
-				reconcileTick++; // drop the optimistic ghost edge SvelteFlow drew before this RPC
-			});
-			return;
-		}
-		// A top-level wire to a collapsed sub-patch port is sent as-is: the bridge splices it to the
-		// inner member's flat link.
+		// Every cable is one `add_link`, the pill's included: a port is a node to the op vocabulary,
+		// and a top-level wire to a collapsed facade is spliced to the inner leaf by the bridge.
 		void g
 			.addLink({
 				node_out: c.source,
@@ -485,10 +460,10 @@
 	 * single undo reverts the move; boundary edges are left to the explicit wire/unwire flow. */
 	function onReconnect(oldEdge: Edge, c: Connection): void {
 		if (
-			parseBoundary(oldEdge.source) ||
-			parseBoundary(oldEdge.target) ||
-			parseBoundary(c.source ?? '') ||
-			parseBoundary(c.target ?? '')
+			portHere(oldEdge.source) ||
+			portHere(oldEdge.target) ||
+			portHere(c.source ?? '') ||
+			portHere(c.target ?? '')
 		)
 			return;
 		const oldSo = oldEdge.sourceHandle;
@@ -684,7 +659,7 @@
 	}): void {
 		const dragged = new Set(args.nodes.map((n) => n.id));
 		// A boundary pill is not a real node: it repositions but cannot be linked into a panel.
-		const draggingBoundary = args.nodes.some((n) => isBoundaryId(n.id));
+		const draggingBoundary = args.nodes.some((n) => !!g.portScope(n.id));
 		const target = draggingBoundary ? null : linkTargetAt(args.event);
 		if (target) {
 			revertDragged(dragged);
@@ -709,12 +684,7 @@
 			void history().transaction(label, async () => {
 				for (const n of args.nodes) {
 					const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
-					const bnd = parseBoundary(n.id);
-					if (bnd && entered) {
-						await g.setBoundaryPos(bnd, pos).catch(() => {});
-					} else {
-						await g.setNodePos(n.id, pos);
-					}
+					await g.setNodePos(n.id, pos);
 				}
 			});
 		}
@@ -890,28 +860,14 @@
 		}
 	}
 
-	/** The single delete path, for SvelteFlow's `ondelete` and the app header's Delete row. Real
-	 * nodes go as ONE batch so undo restores them all BEFORE their links. */
+	/** The single delete path, for SvelteFlow's `ondelete` and the app header's Delete row. Nodes go
+	 * as ONE batch so undo restores them all BEFORE their links — and a boundary port is one of
+	 * them, because `remove_node` and `remove_link` both answer for a port. */
 	async function deleteElements({ nodes, edges }: { nodes: Node[]; edges: Edge[] }): Promise<void> {
-		const nodeIds: string[] = [];
-		for (const n of nodes) {
-			const bnd = parseBoundary(n.id);
-			if (bnd && entered) await g.removeBoundary(bnd).catch(() => {});
-			else nodeIds.push(n.id);
-		}
+		const nodeIds = nodes.map((n) => n.id);
 		const deleted = new Set(nodeIds);
 		await g.removeNodes(nodeIds).catch(() => {});
 		for (const e of edges) {
-			// Deleting a boundary edge unwires it; the pill survives.
-			const bnd = parseBoundary(e.source) ?? parseBoundary(e.target);
-			if (bnd && entered) {
-				const member = parseBoundary(e.source) ? e.target : e.source;
-				const slot = parseBoundary(e.source) ? e.targetHandle : e.sourceHandle;
-				const local = memberIndex.get(member)?.local;
-				const link = local && slot ? g.boundaryLink(entered, bnd, local, slot) : null;
-				if (link) await g.removeLink(link).catch(() => {});
-				continue;
-			}
 			// A link touching a batch-deleted node went with it; don't double-record its removal.
 			if (deleted.has(e.source) || deleted.has(e.target)) continue;
 			const so = e.sourceHandle;
@@ -1033,16 +989,19 @@
 		if (!placement) return;
 		pendingPlacement = null;
 		// A boundary type adds a PORT of the entered sub-patch rather than a node with a thread.
-		if (placement.typeInfo.category === BOUNDARY_CATEGORY) {
+		const port = boundaryType(placement.typeInfo.type);
+		if (port) {
 			if (!entered) return;
 			await history().transaction(`Add ${placement.typeInfo.type}`, async () => {
 				try {
 					const bndId = await g.addBoundary(entered, placement.typeInfo.type, pos);
-					if (bndId && placement.seed) {
-						const local = memberIndex.get(placement.seed.node)?.local;
-						const link = local ? g.boundaryLink(entered, bndId, local, placement.seed.slot) : null;
-						if (link) await g.addLink(link);
-					}
+					if (!bndId || !placement.seed) return;
+					const { node, slot } = placement.seed;
+					await g.addLink(
+						port.dir === 'in'
+							? { node_out: bndId, slot_out: BOUNDARY_SLOT, node_in: node, slot_in: slot }
+							: { node_out: node, slot_out: slot, node_in: bndId, slot_in: BOUNDARY_SLOT }
+					);
 				} catch (e) {
 					console.warn('add boundary failed', e);
 				}

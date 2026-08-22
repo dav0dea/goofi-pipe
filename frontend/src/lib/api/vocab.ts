@@ -70,3 +70,30 @@ export const VIEWER_KINDS: readonly ViewerKindInfo[] = [
 	{ id: 'string', dtype: 'STRING', draws: null, accepts: null, doc: 'the text of a STRING slot' },
 	{ id: 'table', dtype: 'TABLE', draws: null, accepts: null, doc: 'the rows of a TABLE slot' },
 ];
+
+/** The type a sub-patch facade wears in the document. It is not in the palette — grouping
+* is what makes one. */
+export const SCOPE_TYPE = 'SubPatch';
+
+/** The one slot a boundary port carries. */
+export const BOUNDARY_SLOT = 'value';
+
+export interface BoundaryTypeInfo {
+	readonly type: string;
+	/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */
+	readonly dir: 'in' | 'out';
+	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE';
+}
+
+/** The six boundary port types: a port's direction and dtype ARE its type. */
+export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [
+	{ type: 'InArray', dir: 'in', dtype: 'ARRAY' },
+	{ type: 'InString', dir: 'in', dtype: 'STRING' },
+	{ type: 'InTable', dir: 'in', dtype: 'TABLE' },
+	{ type: 'OutArray', dir: 'out', dtype: 'ARRAY' },
+	{ type: 'OutString', dir: 'out', dtype: 'STRING' },
+	{ type: 'OutTable', dir: 'out', dtype: 'TABLE' },
+];
+
+export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>
+	BOUNDARY_TYPES.find((b) => b.type === type);

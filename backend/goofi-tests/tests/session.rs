@@ -31,8 +31,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
 
     let scope = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();
-    let stubs = g.doc()["instances"][&scope]["stubs"].as_object().cloned().unwrap_or_default();
-    assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
+    assert_eq!(g.ports(&scope).len(), 2, "both cuts are exposed: {:?}", g.ports(&scope));
 
     // Nest it, and leave one port with nothing behind it. Between them these are every shape the
     // archive's one entity kind has to carry: a facade inside a facade, a port wired to another
@@ -71,9 +70,9 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     other.call("load", j!({ "path": path.to_string_lossy() }));
 
     let after = other.doc();
-    assert_eq!(after["nodes"], before["nodes"], "every node came back as it was, uid for uid");
-    assert_eq!(after["links"], before["links"], "and so did every wire");
-    assert_eq!(after["instances"], before["instances"], "and the scope with its boundary ports");
+    assert_eq!(after["nodes"], before["nodes"],
+               "every node came back as it was, uid for uid — facades and ports among them");
+    assert_eq!(after["links"], before["links"], "and so did every wire, inner ones included");
     assert_eq!(after["globals"], before["globals"]);
     assert_eq!(after["arrangement"], before["arrangement"],
                "…so the panel still names a node that exists");

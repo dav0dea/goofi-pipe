@@ -1,6 +1,7 @@
 /** Fill a store replica the way the manager does — by emitting `doc_state` / `doc_patch`, never by writing into it. */
 import { applyMerge } from '$lib/crdt/mergePatch';
 import { emptyDoc, type Doc } from '$lib/crdt/graphDoc';
+import { SCOPE_TYPE } from '$lib/api/vocab';
 import type { FakeControl } from './fakeControl';
 
 type Obj = Record<string, unknown>;
@@ -44,9 +45,15 @@ export class DocSeed {
 		return this.patch({ nodes: { [uid]: { type, name, pos: { x: pos[0], y: pos[1] }, ...extra } } });
 	}
 
-	/** One sub-patch scope. `members` is uid → is-itself-a-scope. */
-	instance(uid: string, rec: Obj): this {
-		return this.patch({ instances: { [uid]: rec } });
+	/** One sub-patch facade — a node record wearing the scope type. Membership is each MEMBER's own
+	 * `scope`, so seed the members with it rather than listing them here. */
+	instance(uid: string, name: string, pos: [number, number] = [0, 0], extra: Obj = {}): this {
+		return this.node(uid, SCOPE_TYPE, name, pos, extra);
+	}
+
+	/** One boundary port of `scope`. Its direction and dtype ARE its type; its inner wire is a link. */
+	port(uid: string, type: string, name: string, scope: string, pos: [number, number] = [0, 0]): this {
+		return this.node(uid, type, name, pos, { scope });
 	}
 
 	links(list: Obj[]): this {

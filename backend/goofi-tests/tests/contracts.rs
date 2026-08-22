@@ -343,14 +343,20 @@ fn the_control_plane_document_carries_no_null_leaf() {
     g.call("set_global", j!({ "name": "subject", "value": "P07", "type": "string" }));
     let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
-    // Grouping a node fed from outside mints a WIRED stub: the optional `inner_node`/`inner_slot` pair.
-    let stubs = g.doc()["instances"][&inst]["stubs"].clone();
-    assert!(stubs.as_object().is_some_and(|m| m.values().any(|s| s.get("inner_node").is_some())),
-            "the group left no wired stub, so this test would not reach the optional leaves: {stubs}");
+    // Grouping a node fed from outside mints a WIRED port, which is how this reaches the two
+    // optional leaves a scope has: a record's `scope` key, and the link that is its inner wire.
+    let doc = g.doc();
+    let ports: Vec<String> = doc["nodes"].as_object().unwrap().iter()
+        .filter(|(_, n)| n["scope"] == inst).map(|(u, _)| u.clone()).collect();
+    assert!(!ports.is_empty(), "the group left no port: {}", doc["nodes"]);
+    assert!(doc["links"].as_array().unwrap().iter().any(|l| {
+                ports.iter().any(|p| l["node_out"] == p.as_str() || l["node_in"] == p.as_str())
+            }),
+            "no port is wired, so this test would not reach the inner-wire link: {}", doc["links"]);
     g.call("split_panel", j!({ "panel": panel_id(&g), "direction": "right", "ratio": 0.5 }));
 
     let doc = g.doc();
-    for root in ["nodes", "links", "instances", "globals", "arrangement"] {
+    for root in ["nodes", "links", "globals", "arrangement"] {
         assert!(doc.get(root).is_some(), "the document is missing its `{root}` root: {doc}");
     }
     let mut nulls = Vec::new();

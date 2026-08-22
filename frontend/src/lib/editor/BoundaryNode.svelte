@@ -1,6 +1,7 @@
 <!-- An In/Out boundary node, drawn only INSIDE a sub-patch. -->
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
+	import { BOUNDARY_SLOT } from '$lib/api/vocab';
 	import { dtypeColor } from './categoryColor';
 	import { Icon, MODE_ATTRS } from '$lib/ui';
 
@@ -64,9 +65,9 @@
 	{/if}
 	<span class="dt">{dtype.toLowerCase()}</span>
 	{#if dir === 'in'}
-		<Handle id="out" type="source" position={Position.Right} />
+		<Handle id={BOUNDARY_SLOT} type="source" position={Position.Right} />
 	{:else}
-		<Handle id="in" type="target" position={Position.Left} />
+		<Handle id={BOUNDARY_SLOT} type="target" position={Position.Left} />
 	{/if}
 </div>
 

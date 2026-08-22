@@ -2,7 +2,7 @@
 //! source the frontend's module is generated from. The BEHAVIOUR keyed off a word stays client-side.
 
 use goofi_engine::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
-use goofi_engine::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES};
+use goofi_engine::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES, SCOPE_TYPE};
 use serde_json::{json, Value};
 
 /// One panel type — what a layout entry's `panel_type` may say.
@@ -142,6 +142,12 @@ pub fn typescript() -> String {
             )
         })
         .collect::<String>();
+    let boundaries = BOUNDARY_TYPES
+        .iter()
+        .map(|(name, dir, dtype)| {
+            format!("\t{{ type: '{name}', dir: '{}', dtype: '{}' }},\n", dir.name(), dtype.name())
+        })
+        .collect::<String>();
     format!(
         "// GENERATED from backend/goofi-bridge/src/vocab.rs — do not edit by hand.\n\
          // Panel types and viewer kinds are declared ONCE, in the manager: naming one that is not\n\
@@ -184,7 +190,27 @@ pub fn typescript() -> String {
          \n\
          export const PANEL_TYPES: readonly PanelTypeInfo[] = [\n{panels}];\n\
          \n\
-         export const VIEWER_KINDS: readonly ViewerKindInfo[] = [\n{kinds}];\n"
+         export const VIEWER_KINDS: readonly ViewerKindInfo[] = [\n{kinds}];\n\
+         \n\
+         /** The type a sub-patch facade wears in the document. It is not in the palette — grouping\n\
+          * is what makes one. */\n\
+         export const SCOPE_TYPE = '{SCOPE_TYPE}';\n\
+         \n\
+         /** The one slot a boundary port carries. */\n\
+         export const BOUNDARY_SLOT = '{BOUNDARY_SLOT}';\n\
+         \n\
+         export interface BoundaryTypeInfo {{\n\
+         \treadonly type: string;\n\
+         \t/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */\n\
+         \treadonly dir: 'in' | 'out';\n\
+         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE';\n\
+         }}\n\
+         \n\
+         /** The six boundary port types: a port's direction and dtype ARE its type. */\n\
+         export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [\n{boundaries}];\n\
+         \n\
+         export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>\n\
+         \tBOUNDARY_TYPES.find((b) => b.type === type);\n"
     )
 }
 

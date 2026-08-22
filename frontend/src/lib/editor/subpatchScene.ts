@@ -1,29 +1,8 @@
 /** Pure scene algebra for rendering one scope of a recursive sub-patch tree on the canvas. */
 
-/** The reserved id of the root scope. MUST match `goofi.manager.ROOT_ID`. */
+/** The id the render tree gives the root scope. The document does not name it — a record simply
+ * has no `scope` at the top level — so this is the frontend's own sentinel, not a wire contract. */
 export const ROOT_ID = '__root__';
-
-/** Boundary-pill node id codec: the one source of truth for `(instId, bnd)` <-> flow node id. */
-const BND_PREFIX = '__bnd__';
-const BND_SEP = '::';
-
-/** The flow-node id for instance `instId`'s boundary `bnd`. */
-export function boundaryNodeId(instId: string, bnd: string): string {
-	return `${BND_PREFIX}${instId}${BND_SEP}${bnd}`;
-}
-
-/** Whether `id` is ANY boundary-pill id, scope-agnostic. */
-export function isBoundaryNodeId(id: string): boolean {
-	return id.startsWith(BND_PREFIX);
-}
-
-/** The boundary key of a pill id belonging to the ENTERED scope, else null. Matching the full
- * scoped prefix is load-bearing: a cross-instance id would otherwise mis-slice into a garbage key. */
-export function parseBoundaryNodeId(id: string, entered: string | null): string | null {
-	if (!entered) return null;
-	const prefix = `${BND_PREFIX}${entered}${BND_SEP}`;
-	return id.startsWith(prefix) ? id.slice(prefix.length) : null;
-}
 
 export interface ScenePort {
 	dir: 'in' | 'out';
@@ -39,7 +18,6 @@ export interface SceneInstance {
 
 export interface MemberEntry {
 	instId: string; // the scope that directly contains this entity
-	local: string; // its key in that scope's members map
 	is_instance: boolean;
 }
 
@@ -47,8 +25,8 @@ export interface MemberEntry {
 export function buildMemberIndex(instances: Record<string, SceneInstance>): Map<string, MemberEntry> {
 	const idx = new Map<string, MemberEntry>();
 	for (const [instId, inst] of Object.entries(instances)) {
-		for (const [local, m] of Object.entries(inst.members)) {
-			idx.set(m.uid, { instId, local, is_instance: m.is_instance });
+		for (const m of Object.values(inst.members)) {
+			idx.set(m.uid, { instId, is_instance: m.is_instance });
 		}
 	}
 	return idx;
@@ -90,10 +68,9 @@ export function drawEndpoint(
 		seen.add(curUid);
 		const p = parentOf(curUid, index);
 		if (p === null) return null; // outside the entered subtree
-		const local = index.get(curUid)?.local;
 		const inst = instances[p];
 		const bnd = Object.entries(inst.interface).find(
-			([, port]) => port.dir === dir && port.inner_node === local && port.inner_slot === handle
+			([, port]) => port.dir === dir && port.inner_node === curUid && port.inner_slot === handle
 		);
 		if (!bnd) return null; // not exposed up the chain
 		handle = bnd[0];

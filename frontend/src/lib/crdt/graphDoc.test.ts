@@ -32,7 +32,6 @@ function seedDoc(): Doc {
 			b: { type: 'Buffer', name: 'buf0' }
 		},
 		links: [{ node_out: 'a', slot_out: 'out', node_in: 'b', slot_in: 'data' }],
-		instances: {},
 		globals: {},
 		arrangement: {}
 	};
@@ -64,30 +63,26 @@ describe('graphDoc readers', () => {
 		]);
 	});
 
-	it('reads the sub-patch forest (scopes, members, stubs)', () => {
-		// The flat shape the projection writes: members keyed by uid → {is_instance}, stubs by id.
+	it('reads the sub-patch forest out of the one node map it is written in', () => {
+		// The shape the projection writes: a facade and a port are node records, membership rides
+		// each record as `scope`, and a port's inner wire is a link like any other.
+		const base = seedDoc();
 		const doc: Doc = {
-			...seedDoc(),
-			instances: {
-				i1: {
-					name: 'subpatch0',
-					parent: '__root__',
-					pos: { x: 5, y: 6 },
-					members: { m1: { is_instance: false } },
-					stubs: {
-						out0: {
-							dir: 'out',
-							dtype: 'ARRAY',
-							name: 'wave',
-							pos: { x: 1, y: 2 },
-							inner_node: 'm1',
-							inner_slot: 'out'
-						}
-					}
-				}
-			}
+			...base,
+			nodes: {
+				...(base.nodes as Record<string, unknown>),
+				m1: { type: 'Buffer', name: 'm0', scope: 'i1' },
+				i1: { type: 'SubPatch', name: 'subpatch0', pos: { x: 5, y: 6 } },
+				p1: { type: 'OutArray', name: 'wave', pos: { x: 1, y: 2 }, scope: 'i1' }
+			},
+			links: [
+				...(base.links as unknown[]),
+				{ node_out: 'm1', slot_out: 'out', node_in: 'p1', slot_in: 'value' }
+			]
 		};
 
+		// A facade and a port are NOT leaf nodes: the reader that feeds the canvas leaves them out.
+		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b', 'm1']);
 		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
 		expect(instanceView(doc, 'i1')).toEqual({
 			uid: 'i1',
@@ -97,7 +92,7 @@ describe('graphDoc readers', () => {
 			members: { m1: false },
 			interface: [
 				{
-					bnd_id: 'out0',
+					bnd_id: 'p1',
 					dir: 'out',
 					dtype: 'ARRAY',
 					name: 'wave',
@@ -108,6 +103,8 @@ describe('graphDoc readers', () => {
 			]
 		});
 		expect(instanceView(doc, 'missing')).toBeNull();
+		// A uid that names a LEAF is not a scope, however much it looks like one from outside.
+		expect(instanceView(doc, 'a')).toBeNull();
 	});
 
 	it('reads a node param leaves (value + expression binding) via docParams', () => {
@@ -123,16 +120,17 @@ describe('graphDoc readers', () => {
 		expect(docParams(doc, 'b')).toEqual({});
 	});
 
-	it('an unwired stub omits its inner pair rather than carrying an empty one', () => {
-		// The projection PRUNES `inner_node`/`inner_slot` when a stub is unwired, and a merge patch
-		// deletes them with a null. A reader that answered `''` would draw a cable to nowhere.
+	it('an unwired port omits its inner pair rather than carrying an empty one', () => {
+		// An unwired port simply has no link naming it. A reader that answered `''` would draw a
+		// cable to nowhere.
 		const doc: Doc = {
 			...seedDoc(),
-			instances: { i1: { name: 's', parent: '__root__', stubs: { in0: { dir: 'in', dtype: 'ARRAY', name: 'a' } } } }
+			nodes: { i1: { type: 'SubPatch', name: 's' }, p1: { type: 'InArray', name: 'a', scope: 'i1' } },
+			links: []
 		};
-		const stub = instanceView(doc, 'i1')!.interface[0];
-		expect(stub.inner_node).toBeUndefined();
-		expect(stub.inner_slot).toBeUndefined();
+		const port = instanceView(doc, 'i1')!.interface[0];
+		expect(port.inner_node).toBeUndefined();
+		expect(port.inner_slot).toBeUndefined();
 	});
 
 	it('a wrongly-typed or absent root reads as empty rather than throwing', () => {
@@ -141,7 +139,7 @@ describe('graphDoc readers', () => {
 		expect(nodeViews({})).toEqual([]);
 		expect(linkViews({ links: 'not an array' })).toEqual([]);
 		expect(globalViews({ globals: null })).toEqual([]);
-		expect(instanceViews({ instances: 7 })).toEqual([]);
+		expect(instanceViews({ nodes: 7 })).toEqual([]);
 	});
 });
 

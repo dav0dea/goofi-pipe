@@ -1,7 +1,6 @@
 /** Central reactive graph state, backed by the control WS. The store owns the only writes, so a
  * component just reads its `$state` fields. */
 import {
-	BOUNDARY_SLOT,
 	getControl,
 	paramValues,
 	type Control,
@@ -483,15 +482,22 @@ export class GraphStore {
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
 		// Committed on drag-stop only; a live drag stays local to Svelte Flow.
 		await this.ctl.call('edit_node', { node: uid, pos });
-		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
+		this._recordGraphCmd(`Move ${this._label(uid)}`);
 	}
 
 	/** Set a node's mutable display name (uid identity is unchanged). */
 	async renameNode(uid: string, name: string): Promise<void> {
-		const oldName = this.nodeById(uid)?.name ?? '';
+		const oldName = this._label(uid);
 		if (oldName === name) return;
 		await this.ctl.call('edit_node', { node: uid, name });
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
+	}
+
+	/** What a uid is called, for a history label: a leaf node, or a boundary port. */
+	private _label(uid: string): string {
+		if (this.nodeById(uid)) return this.nodeById(uid)!.name;
+		const scope = this.portScope(uid);
+		return (scope && this.instances[scope].interface[uid].name) || uid;
 	}
 
 	/** Store where THIS client is looking. Persisted in the `.gfi`, but never converged and never
@@ -537,40 +543,13 @@ export class GraphStore {
 		return r.uid;
 	}
 
-	/** A boundary port's inner wire, as the link INSIDE the sub-patch that it is: an in port feeds a
-	 * member, an out port drains one, so the port's direction says which end of the link it sits on.
-	 * `null` when the uid names no port of `instId`. */
-	boundaryLink(
-		instId: string,
-		bndId: string,
-		innerNode: string,
-		innerSlot: string
-	): LinkInfo | null {
-		const dir = this.instances[instId]?.interface?.[bndId]?.dir;
-		if (!dir) return null;
-		return dir === 'in'
-			? { node_out: bndId, slot_out: BOUNDARY_SLOT, node_in: innerNode, slot_in: innerSlot }
-			: { node_out: innerNode, slot_out: innerSlot, node_in: bndId, slot_in: BOUNDARY_SLOT };
-	}
-
-	/** Delete a boundary port (tears down its external wires). */
-	async removeBoundary(bndId: string): Promise<void> {
-		await this.ctl.call('remove_node', { node: bndId });
-		this._recordGraphCmd('Remove boundary');
-	}
-
-	/** Rename a boundary port; its uid is unchanged, so external wires survive. */
-	async renameBoundary(instId: string, bndId: string, name: string): Promise<void> {
-		const oldName = this.instances[instId]?.interface?.[bndId]?.name ?? bndId;
-		if (name === oldName) return;
-		await this.ctl.call('edit_node', { node: bndId, name });
-		this._recordGraphCmd('Rename boundary');
-	}
-
-	/** Move a boundary pill inside the entered view. */
-	async setBoundaryPos(bndId: string, pos: [number, number]): Promise<void> {
-		await this.ctl.call('edit_node', { node: bndId, pos });
-		this._recordGraphCmd('Move boundary');
+	/** The sub-patch a boundary port belongs to, or null when the uid names no port. A port is not a
+	 * leaf node, so `nodeById` does not answer for one; everything else about it is a node op. */
+	portScope(uid: string): string | null {
+		for (const [scope, inst] of Object.entries(this.instances)) {
+			if (inst.interface[uid]) return scope;
+		}
+		return null;
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */

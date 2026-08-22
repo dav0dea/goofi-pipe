@@ -2,13 +2,14 @@
  * The browser replica of goofi's control-plane document, as `goofi_bridge::projection` builds it.
  * Every reader is total: an absent or wrongly-typed leaf answers a default rather than throwing.
  */
-import { EMPTY_PANEL_TYPE } from '$lib/api/vocab';
+import { EMPTY_PANEL_TYPE, SCOPE_TYPE, boundaryType } from '$lib/api/vocab';
+import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { LayoutNode, Workspace } from 'panelty';
 
 export type Doc = Record<string, unknown>;
 
 export function emptyDoc(): Doc {
-	return { nodes: {}, links: [], instances: {}, globals: {}, arrangement: {} };
+	return { nodes: {}, links: [], globals: {}, arrangement: {} };
 }
 
 export interface NodeView {
@@ -43,7 +44,7 @@ export interface InstanceView {
 	pos: [number, number];
 	/** member uid → whether the member is itself a nested scope. */
 	members: Record<string, boolean>;
-	/** The scope's boundary stubs (read from the doc's `stubs` map). */
+	/** The scope's boundary ports, in document order. */
 	interface: BoundaryView[];
 }
 
@@ -67,8 +68,16 @@ export function linksArray(doc: Doc): Obj[] {
 	return Array.isArray(doc.links) ? (doc.links as Obj[]) : [];
 }
 
-export function instancesMap(doc: Doc): Record<string, Obj> {
-	return obj(doc.instances) as Record<string, Obj>;
+/** The scope a record names, or `'__root__'`. The doc omits the key at the top level, because a
+ * merge patch spends `null` on "delete this key" and could not tell that from a move out. */
+function scopeOf(rec: Obj | undefined): string {
+	return optStr(rec, 'scope') ?? ROOT_ID;
+}
+
+/** Every record of one kind, keyed by uid. One map carries leaves, facades and ports alike, so
+ * which kind a record is is a question about its `type`. */
+function records(doc: Doc, want: (type: string) => boolean): [string, Obj][] {
+	return Object.entries(nodesMap(doc)).filter(([, n]) => want(str(n, 'type')));
 }
 
 export function globalsMap(doc: Doc): Record<string, Obj> {
@@ -87,9 +96,11 @@ export function nodeView(doc: Doc, uid: string): NodeView | null {
 	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n) };
 }
 
+/** Every LEAF node — the ones with a thread behind them. A facade and a port are node records in
+ * the same map, and each has its own reader below. */
 export function nodeViews(doc: Doc): NodeView[] {
 	const out: NodeView[] = [];
-	for (const uid of Object.keys(nodesMap(doc))) {
+	for (const [uid] of records(doc, (t) => t !== SCOPE_TYPE && !boundaryType(t))) {
 		const v = nodeView(doc, uid);
 		if (v) out.push(v);
 	}
@@ -179,29 +190,41 @@ export function viewersJson(doc: Doc, uid: string): unknown {
 }
 
 export function instanceView(doc: Doc, uid: string): InstanceView | null {
-	const inst = instancesMap(doc)[uid];
-	if (!inst) return null;
+	const inst = nodesMap(doc)[uid];
+	if (!inst || str(inst, 'type') !== SCOPE_TYPE) return null;
 	const members: Record<string, boolean> = {};
-	for (const [muid, m] of Object.entries(obj(inst.members))) {
-		members[muid] = obj(m).is_instance === true;
+	for (const [muid, m] of Object.entries(nodesMap(doc))) {
+		if (scopeOf(m) === uid && !boundaryType(str(m, 'type'))) {
+			members[muid] = str(m, 'type') === SCOPE_TYPE;
+		}
 	}
+	// A port's inner wire is a link, so it is read where every other cable is read.
+	const wires = linkViews(doc);
 	const iface: BoundaryView[] = [];
-	for (const [bnd, raw] of Object.entries(obj(inst.stubs))) {
-		const b = obj(raw);
+	for (const [bnd, b] of records(doc, (t) => !!boundaryType(t))) {
+		if (scopeOf(b) !== uid) continue;
+		const kind = boundaryType(str(b, 'type'))!;
+		const wire =
+			kind.dir === 'in'
+				? wires.find((l) => l.node_out === bnd)
+				: wires.find((l) => l.node_in === bnd);
+		const inner = kind.dir === 'in'
+			? wire && { node: wire.node_in, slot: wire.slot_in }
+			: wire && { node: wire.node_out, slot: wire.slot_out };
 		iface.push({
 			bnd_id: bnd,
-			dir: str(b, 'dir'),
-			dtype: str(b, 'dtype'),
+			dir: kind.dir,
+			dtype: kind.dtype,
 			name: str(b, 'name'),
 			pos: pos2(b),
-			inner_node: optStr(b, 'inner_node'),
-			inner_slot: optStr(b, 'inner_slot')
+			inner_node: inner?.node,
+			inner_slot: inner?.slot
 		});
 	}
 	return {
 		uid,
 		name: str(inst, 'name'),
-		parent: str(inst, 'parent'),
+		parent: scopeOf(inst),
 		pos: pos2(inst),
 		members,
 		interface: iface
@@ -210,7 +233,7 @@ export function instanceView(doc: Doc, uid: string): InstanceView | null {
 
 export function instanceViews(doc: Doc): InstanceView[] {
 	const out: InstanceView[] = [];
-	for (const uid of Object.keys(instancesMap(doc))) {
+	for (const [uid] of records(doc, (t) => t === SCOPE_TYPE)) {
 		const v = instanceView(doc, uid);
 		if (v) out.push(v);
 	}

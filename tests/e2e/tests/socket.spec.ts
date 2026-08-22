@@ -46,7 +46,12 @@ async function expectAgreement(page: Page, what: string): Promise<string[]> {
 async function clearGraph(page: Page): Promise<void> {
 	await page.evaluate(async () => {
 		const g = (window as any).goofi;
-		const uids = g.query.graph().nodes.map((n: { uid: string }) => n.uid);
+		// Facades too: `graph().nodes` is LEAVES, so a sub-patch left behind would outlive a sweep
+		// that only read that list — and take its members and ports with it.
+		const uids = [
+			...g.query.graph().nodes.map((n: { uid: string }) => n.uid),
+			...Object.keys(g.query.instances())
+		];
 		if (uids.length) await g.commands.removeNodes(uids);
 	});
 	await expect.poll(async () => (await backendNodes(page)).length).toBe(0);
@@ -149,6 +154,74 @@ test.describe('the control socket', () => {
 				await redo(page);
 				await expect.poll(async () => (await backendDoc(page)).globals.seam_probe?.value).toBe(7);
 				await expectAgreement(page, 'after redo');
+			});
+
+			await test.step('a sub-patch port is a node to every op, and to the manager', async () => {
+				// The replica draws a port from its own uid, and the manager holds it in the same node
+				// map as everything else — so a port has to answer to add_node, add_link, edit_node and
+				// remove_node exactly as a leaf does. Nothing else in this suite crosses that seam.
+				const scope = await page.evaluate(
+					(us) => (window as any).goofi.commands.groupNodes(us, [0, 0]),
+					[osc, buf]
+				);
+				const port = await page.evaluate(
+					(s) => (window as any).goofi.commands.addBoundary(s, 'InArray', [0, 40]),
+					scope
+				);
+				await expect
+					.poll(async () => (await backendDoc(page)).nodes[port]?.type, {
+						message: 'the port reached the manager as a node record'
+					})
+					.toBe('InArray');
+				expect((await backendDoc(page)).nodes[port].scope, 'and it names its sub-patch').toBe(scope);
+
+				// The replica draws the pill at that very uid, which is what makes the ops addressable.
+				await expect
+					.poll(() =>
+						page.evaluate(
+							([s, p]) => !!(window as any).goofi.query.instance(s)?.interface[p],
+							[scope, port]
+						)
+					)
+					.toBe(true);
+
+				await page.evaluate(
+					([p, b]) =>
+						(window as any).goofi.commands.addLink({
+							node_out: p,
+							slot_out: 'value',
+							node_in: b,
+							slot_in: 'data'
+						}),
+					[port, buf]
+				);
+				await expect
+					.poll(async () =>
+						(await backendDoc(page)).links.some(
+							(l: { node_out: string; node_in: string }) => l.node_out === port && l.node_in === buf
+						)
+					)
+					.toBe(true);
+
+				// Rename and move go through the ORDINARY node ops, not doors of their own.
+				await page.evaluate((p) => (window as any).goofi.commands.renameNode(p, 'left'), port);
+				await page.evaluate((p) => (window as any).goofi.commands.setNodePos(p, [7, 9]), port);
+				await expect.poll(async () => (await backendDoc(page)).nodes[port].name).toBe('left');
+				expect((await backendDoc(page)).nodes[port].pos).toEqual({ x: 7, y: 9 });
+
+				// …and so does the delete, which takes the port's inner wire with it.
+				await page.evaluate((p) => (window as any).goofi.commands.removeNodes([p]), port);
+				await expect.poll(async () => (await backendDoc(page)).nodes[port]).toBeUndefined();
+				await expect
+					.poll(async () =>
+						(await backendDoc(page)).links.some(
+							(l: { node_out: string }) => l.node_out === port
+						)
+					)
+					.toBe(false);
+
+				await page.evaluate((s) => (window as any).goofi.commands.expandInstance(s), scope);
+				await expect.poll(async () => (await backendDoc(page)).nodes[scope]).toBeUndefined();
 			});
 
 			await test.step('a removal leaves the two halves holding the same nothing', async () => {

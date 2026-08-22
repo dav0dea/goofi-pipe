@@ -5,7 +5,8 @@ import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import { workspace } from 'panelty';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
+import { nodesMap } from '$lib/crdt/graphDoc';
+import { SCOPE_TYPE } from '$lib/api/vocab';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
@@ -43,8 +44,10 @@ function withInstance(): { fc: FakeControl; g: GraphStore; d: DocSeed } {
 	g.nodeTypes = catalog();
 	// Seed as the manager sends it — the scope forest's single source.
 	const d = seed(fc).patch({
-		nodes: { m1: { type: 'Buffer', name: 'buffer0', pos: { x: 0, y: 0 } } },
-		instances: { sub: { name: 'subpatch0', parent: ROOT_ID, members: { m1: { is_instance: false } } } }
+		nodes: {
+			m1: { type: 'Buffer', name: 'buffer0', pos: { x: 0, y: 0 }, scope: 'sub' },
+			sub: { type: SCOPE_TYPE, name: 'subpatch0', pos: { x: 0, y: 0 } }
+		}
 	});
 	return { fc, g, d };
 }

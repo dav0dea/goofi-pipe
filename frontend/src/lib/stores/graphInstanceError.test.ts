@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
+import { nodesMap } from '$lib/crdt/graphDoc';
+import { SCOPE_TYPE } from '$lib/api/vocab';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 
 /**
@@ -59,14 +60,9 @@ function subpatchWithOneMember(): { g: GraphStore; fc: FakeControl } {
 	g.nodeTypes = catalog();
 	fc.emit({ event: 'hello', payload: snap('sess1') });
 	seed(fc).patch({
-		nodes: { n1: { type: 'Oscillator', name: 'osc0', pos: { x: 0, y: 0 } } },
-		instances: {
-			i1: {
-				name: 'sub0',
-				parent: 'ROOT',
-				members: { n1: { is_instance: false } },
-				pos: { x: 0, y: 0 }
-			}
+		nodes: {
+			n1: { type: 'Oscillator', name: 'osc0', pos: { x: 0, y: 0 }, scope: 'i1' },
+			i1: { type: SCOPE_TYPE, name: 'sub0', pos: { x: 0, y: 0 } }
 		}
 	});
 	return { g, fc };

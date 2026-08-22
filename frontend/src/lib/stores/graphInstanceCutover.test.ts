@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap, instancesMap } from '$lib/crdt/graphDoc';
+import { nodesMap } from '$lib/crdt/graphDoc';
+import { SCOPE_TYPE, BOUNDARY_SLOT, boundaryType } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
@@ -23,44 +24,49 @@ function catalog(): NodeTypeInfo[] {
 	return [mk('Oscillator'), mk('Buffer')];
 }
 
-/** A node, as the projection writes it. */
-const node = (type: string, name: string) => ({ type, name, pos: { x: 0, y: 0 } });
+/** A node, as the projection writes it. `scope` names the sub-patch it belongs to; a top-level
+ * record simply omits the key. */
+const node = (type: string, name: string, scope?: string) => ({
+	type,
+	name,
+	pos: { x: 0, y: 0 },
+	...(scope ? { scope } : {})
+});
 
-interface Bnd {
-	bnd_id: string;
-	dir: 'in' | 'out';
-	dtype: string;
+interface Port {
+	uid: string;
+	type: string;
 	name: string;
 	pos?: [number, number];
-	inner_node?: string;
-	inner_slot?: string;
+	/** `[member uid, slot]` the port's inner wire names, or nothing when it is unwired. */
+	inner?: [string, string];
 }
 
-/** A scope in the exact flat shape the projection writes it: `members` keyed by member uid →
- * {is_instance}, `stubs` keyed by stub id → {dir,dtype,name,pos,inner_node?,inner_slot?}. */
-function scope(o: {
-	name: string;
-	parent?: string;
-	pos?: [number, number];
-	members?: Record<string, boolean>;
-	stubs?: Bnd[];
-}): Record<string, unknown> {
+/** A scope in the exact shape the projection writes it: a facade record, one record per port, and
+ * one LINK per inner wire. Membership rides each member's own record, so seed those with
+ * `node(type, name, uid)`. */
+function scope(
+	uid: string,
+	o: { name: string; parent?: string; pos?: [number, number]; ports?: Port[] }
+): { nodes: Record<string, unknown>; links: unknown[] } {
 	const pos = o.pos ?? [0, 0];
-	const members: Record<string, unknown> = {};
-	for (const [muid, isInst] of Object.entries(o.members ?? {})) members[muid] = { is_instance: isInst };
-	const stubs: Record<string, unknown> = {};
-	for (const b of o.stubs ?? []) {
-		const bp = b.pos ?? [0, 0];
-		stubs[b.bnd_id] = {
-			dir: b.dir,
-			dtype: b.dtype,
-			name: b.name,
-			pos: { x: bp[0], y: bp[1] },
-			...(b.inner_node !== undefined ? { inner_node: b.inner_node } : {}),
-			...(b.inner_slot !== undefined ? { inner_slot: b.inner_slot } : {})
-		};
+	const nodes: Record<string, unknown> = {
+		[uid]: node(SCOPE_TYPE, o.name, o.parent === ROOT_ID ? undefined : o.parent)
+	};
+	(nodes[uid] as Record<string, unknown>).pos = { x: pos[0], y: pos[1] };
+	const links: unknown[] = [];
+	for (const p of o.ports ?? []) {
+		const pp = p.pos ?? [0, 0];
+		nodes[p.uid] = { type: p.type, name: p.name, pos: { x: pp[0], y: pp[1] }, scope: uid };
+		if (!p.inner) continue;
+		const [n, s] = p.inner;
+		links.push(
+			boundaryType(p.type)!.dir === 'in'
+				? { node_out: p.uid, slot_out: BOUNDARY_SLOT, node_in: n, slot_in: s }
+				: { node_out: n, slot_out: s, node_in: p.uid, slot_in: BOUNDARY_SLOT }
+		);
 	}
-	return { name: o.name, parent: o.parent ?? ROOT_ID, pos: { x: pos[0], y: pos[1] }, members, stubs };
+	return { nodes, links };
 }
 
 describe('scope-forest read cutover — scopes built from the doc when the catalog is present', () => {
@@ -68,19 +74,18 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
+		const sp = scope('i1', {
+			name: 'subpatch0',
+			pos: [5, 6],
+			ports: [{ uid: 'p0', type: 'OutArray', name: 'wave', inner: ['m1', 'out'] }]
+		});
 		seed(fc).patch({
 			nodes: {
 				n0: node('Oscillator', 'osc0'), // top-level node
-				m1: node('Buffer', 'buffer0') // member of i1
+				m1: node('Buffer', 'buffer0', 'i1'), // member of i1
+				...sp.nodes
 			},
-			instances: {
-				i1: scope({
-					name: 'subpatch0',
-					pos: [5, 6],
-					members: { m1: false },
-					stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm1', inner_slot: 'out' }]
-				})
-			}
+			links: sp.links
 		});
 
 		// ROOT synthesized: top-level node + the scope, keyed by uid; the member excluded.
@@ -94,12 +99,12 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const i1 = g.instances.i1;
 		expect(i1.name).toBe('subpatch0');
 		expect(i1.pos).toEqual([5, 6]);
-		expect(i1.slots).toEqual({ input: {}, output: { out0: 'ARRAY' } });
+		expect(i1.slots).toEqual({ input: {}, output: { p0: 'ARRAY' } });
 		expect(i1.members).toEqual({ m1: { uid: 'm1', is_instance: false } });
 
 		// The synth node the canvas renders for the collapsed sub-patch reflects the wired slot.
 		const synth = g.nodeById('i1');
-		expect(synth?.output_slots).toEqual({ out0: 'ARRAY' });
+		expect(synth?.output_slots).toEqual({ p0: 'ARRAY' });
 	});
 
 	it('a scope removed from the doc vanishes and its member returns to ROOT', () => {
@@ -107,14 +112,14 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		const d = seed(fc).patch({
-			nodes: { m1: node('Buffer', 'buffer0') },
-			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
+			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
 		});
 		expect(g.instances.i1).toBeDefined();
 		expect(g.instances[ROOT_ID].members.m1).toBeUndefined(); // owned by i1
 
-		// Expand: the scope leaves the document, and its member m1 becomes top-level.
-		d.remove('instances', 'i1');
+		// Expand: the facade leaves the document and its member loses the `scope` naming it — the
+		// exact delta the manager sends, both halves in one patch.
+		d.patch({ nodes: { i1: null, m1: { scope: null } } });
 		expect(g.instances.i1, 'scope dropped when removed from the doc').toBeUndefined();
 		expect(g.instances[ROOT_ID].members.m1).toEqual({ uid: 'm1', is_instance: false });
 	});
@@ -131,12 +136,12 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 
 		// Grouping m1 into i1 (mirror writes the scope → doc reconcile) must redden the collapsed
 		// sub-patch with its member's deep error, as describe_instance.error did pre-cutover.
-		d.instance('i1', scope({ name: 'sp0', members: { m1: false } }));
+		d.patch({ nodes: { ...scope('i1', { name: 'sp0' }).nodes, m1: { scope: 'i1' } } });
 		expect(g.instances.i1.error, 'collapsed scope reflects its member deep error').toBe('member boom');
 
 		// Clearing the member error and re-reconciling clears the scope error (no stale chip).
 		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
-		d.instance('i1', { name: 'sp0b' });
+		d.patch({ nodes: { i1: { name: 'sp0b' } } });
 		expect(g.instances.i1.error, 'cleared member error clears the derived scope error').toBeNull();
 	});
 
@@ -145,8 +150,7 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		seed(fc).patch({
-			nodes: { m1: node('Buffer', 'buffer0') },
-			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
+			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
 		});
 		expect(g.instances.i1.error).toBeNull();
 
@@ -168,8 +172,11 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		const d = seed(fc).patch({
-			nodes: { m1: node('Buffer', 'buffer0'), n0: node('Oscillator', 'osc0') },
-			instances: { i1: scope({ name: 'sp0', members: { m1: false } }) }
+			nodes: {
+				m1: node('Buffer', 'buffer0', 'i1'),
+				n0: node('Oscillator', 'osc0'),
+				...scope('i1', { name: 'sp0' }).nodes
+			}
 		});
 		const before = g.nodeById('i1');
 		// A change to an UNRELATED node must not churn the sub-patch synth node identity.
@@ -183,36 +190,31 @@ describe('a collapsed scope’s inline viewer, whose blob only the instance reco
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
-		const spec = {
-			nodes: { m9: node('Buffer', 'buffer9') },
-			instances: {
-				i9: scope({
-					name: 'sp9',
-					members: { m9: false },
-					stubs: [{ bnd_id: 'out0', dir: 'out', dtype: 'ARRAY', name: 'wave', inner_node: 'm9', inner_slot: 'out' }]
-				})
-			}
-		};
+		const sp9 = scope('i9', {
+			name: 'sp9',
+			ports: [{ uid: 'p9', type: 'OutArray', name: 'wave', inner: ['m9', 'out'] }]
+		});
+		const spec = { nodes: { m9: node('Buffer', 'buffer9', 'i9'), ...sp9.nodes }, links: sp9.links };
 		const d = seed(fc).patch(spec);
 
 		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
-		g.setSlotView('i9', 'out0', { kind: 'image', collapsed: true });
-		expect(slotView(g.nodeById('i9'), 'out0').kind).toBe('image');
-		expect(isSlotExpanded(g.nodeById('i9'), 'out0')).toBe(false);
+		g.setSlotView('i9', 'p9', { kind: 'image', collapsed: true });
+		expect(slotView(g.nodeById('i9'), 'p9').kind).toBe('image');
+		expect(isSlotExpanded(g.nodeById('i9'), 'p9')).toBe(false);
 		// A scope uid is not a node: the engine refuses one, so the record is the whole of the state
 		// and nothing is sent. (This is also why it does not survive a reload.)
 		expect(fc.recordedCalls().some((c) => c.op === 'edit_node')).toBe(false);
 
 		// An unrelated doc write re-assembles every scope from the doc, which carries no viewer blob.
 		d.patch({ nodes: { m9: { name: 'buffer9b' } } });
-		expect(slotView(g.nodeById('i9'), 'out0').kind, 'a survivor keeps its live view state').toBe('image');
+		expect(slotView(g.nodeById('i9'), 'p9').kind, 'a survivor keeps its live view state').toBe('image');
 
-		// Ungroup: the scope leaves the doc, taking its record — and its blob — with it. Its uid can be
+		// Ungroup: the facade and its port leave the doc, taking the blob with them. That uid can be
 		// re-minted by a later backend, and what comes back must start clean.
-		d.remove('instances', 'i9');
+		d.patch({ nodes: { i9: null, p9: null, m9: { scope: null } }, links: [] });
 		expect(g.instances.i9).toBeUndefined();
 		d.patch(spec);
-		expect(slotView(g.nodeById('i9'), 'out0').kind, 'the re-minted scope inherits no kind').toBeUndefined();
-		expect(isSlotExpanded(g.nodeById('i9'), 'out0'), 'nor a collapse').toBe(true);
+		expect(slotView(g.nodeById('i9'), 'p9').kind, 'the re-minted scope inherits no kind').toBeUndefined();
+		expect(isSlotExpanded(g.nodeById('i9'), 'p9'), 'nor a collapse').toBe(true);
 	});
 });

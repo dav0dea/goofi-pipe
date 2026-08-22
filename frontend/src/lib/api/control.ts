@@ -96,12 +96,7 @@ export interface SubPatchPort {
 	name?: string;
 }
 
-/** The category the six virtual In/Out types wear in the backend's palette. They are node types
- * like any other — `add_node` creates one, and `inst_id` says which sub-patch it is a port OF. */
-export const BOUNDARY_CATEGORY = 'boundary';
 
-/** The one slot a boundary port carries. MUST match the bridge's `vocab::BOUNDARY_SLOT`. */
-export const BOUNDARY_SLOT = 'value';
 
 /** A sub-patch instance the editor renders as a group node — mirrored from the bridge's
  * `describe_instance`, never re-derived here. */

@@ -143,14 +143,61 @@ impl Goofi {
         self.state.graph.lock().unwrap().register_dyn_type(manifest, factory);
     }
 
-    /// The uids in the replicated projection, sorted.
+    /// The LEAF node uids in the replicated projection, sorted. One map carries every entity, so
+    /// which kind a record is is a question about its type.
     pub fn nodes(&self) -> Vec<String> {
-        keys(&self.doc()["nodes"])
+        self.records(|ty| ty != goofi_engine::subpatch::SCOPE_TYPE
+            && goofi_engine::subpatch::boundary_type(ty).is_none())
     }
 
-    /// The live sub-patch scopes, sorted.
+    /// The live sub-patch facades, sorted.
     pub fn instances(&self) -> Vec<String> {
-        keys(&self.doc()["instances"])
+        self.records(|ty| ty == goofi_engine::subpatch::SCOPE_TYPE)
+    }
+
+    /// The boundary ports of one scope, in the order the doc carries them.
+    pub fn ports(&self, scope: &str) -> Vec<String> {
+        let doc = self.doc();
+        let Some(nodes) = doc["nodes"].as_object() else { return vec![] };
+        nodes
+            .iter()
+            .filter(|(_, n)| n["scope"] == scope && goofi_engine::subpatch::boundary_type(n["type"].as_str().unwrap_or("")).is_some())
+            .map(|(u, _)| u.clone())
+            .collect()
+    }
+
+    /// The direct members of a scope, sorted — every record naming it.
+    pub fn members(&self, scope: &str) -> Vec<String> {
+        let doc = self.doc();
+        let mut v: Vec<String> = doc["nodes"]
+            .as_object()
+            .map(|m| m.iter().filter(|(_, n)| n["scope"] == scope).map(|(u, _)| u.clone()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// The `(node, slot)` a port's inner wire names, read from `links` as any other cable is.
+    pub fn inner(&self, port: &str) -> Option<(String, String)> {
+        let doc = self.doc();
+        doc["links"].as_array()?.iter().find_map(|l| {
+            let (a, b) = (l["node_out"].as_str()?, l["node_in"].as_str()?);
+            match (a == port, b == port) {
+                (true, false) => Some((b.to_string(), l["slot_in"].as_str()?.to_string())),
+                (false, true) => Some((a.to_string(), l["slot_out"].as_str()?.to_string())),
+                _ => None,
+            }
+        })
+    }
+
+    fn records(&self, want: impl Fn(&str) -> bool) -> Vec<String> {
+        let doc = self.doc();
+        let mut v: Vec<String> = doc["nodes"]
+            .as_object()
+            .map(|m| m.iter().filter(|(_, n)| want(n["type"].as_str().unwrap_or(""))).map(|(u, _)| u.clone()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
     }
 
     /// Subscribe to the event broadcast — take it BEFORE the action, the channel keeps no history.
@@ -257,12 +304,6 @@ impl Events {
 /// A uid as the wire spells it.
 pub fn hex(u: Uid) -> String {
     u.to_string()
-}
-
-fn keys(v: &Value) -> Vec<String> {
-    let mut k: Vec<String> = v.as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
-    k.sort();
-    k
 }
 
 pub use goofi_bridge::doc::{GraphDoc, Patch};

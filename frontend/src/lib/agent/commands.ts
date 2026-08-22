@@ -43,26 +43,18 @@ export const commands = {
 		opts?: { enabled?: boolean; triggers_process?: boolean }
 	): Promise<void> => graph().setExpression(node, group, name, expression, opts),
 	setNodePos: (name: string, pos: [number, number]): Promise<void> => graph().setNodePos(name, pos),
+	renameNode: (uid: string, name: string): Promise<void> => graph().renameNode(uid, name),
 	cloneNodes: (names: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> =>
 		graph().cloneNodes(names, offset),
 
 	groupNodes: (names: string[], pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
-	// A port is a node: `type` is one of the six boundary types, and `instId` is the sub-patch it is
-	// a port OF. Wiring one is `addLink` over `boundaryLink` — the same door every other wire uses.
+	// A port is a node: `type` is one of the six boundary types, `instId` is the sub-patch it is a
+	// port OF, and everything after birth — wire, rename, move, delete — is addLink/removeLink,
+	// renameNode, setNodePos and removeNodes, the same doors every other node uses.
 	addBoundary: (instId: string, type: string, pos: [number, number] = [0, 0]): Promise<string> =>
 		graph().addBoundary(instId, type, pos),
-	boundaryLink: (
-		instId: string,
-		bndId: string,
-		innerNode: string,
-		innerSlot: string
-	): LinkInfo | null => graph().boundaryLink(instId, bndId, innerNode, innerSlot),
-	removeBoundary: (bndId: string): Promise<void> => graph().removeBoundary(bndId),
-	// Relabels the portal without re-keying it: the exposed slot is still addressed by its uid.
-	renameBoundary: (instId: string, bndId: string, name: string): Promise<void> =>
-		graph().renameBoundary(instId, bndId, name),
 
 	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): Promise<void> =>
 		graph().addGlobal(name, value, type),

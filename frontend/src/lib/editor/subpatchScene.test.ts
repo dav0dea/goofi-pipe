@@ -5,9 +5,6 @@ import {
 	parentOf,
 	childrenOfScope,
 	drawEndpoint,
-	boundaryNodeId,
-	isBoundaryNodeId,
-	parseBoundaryNodeId,
 	type SceneInstance
 } from './subpatchScene';
 
@@ -28,7 +25,7 @@ function fixture(): Record<string, SceneInstance> {
 		outer: {
 			parent: ROOT_ID,
 			members: {
-				nodeA: { uid: 'a', is_instance: false },
+				a: { uid: 'a', is_instance: false },
 				inner: { uid: 'inner', is_instance: true }
 			},
 			interface: {
@@ -115,33 +112,5 @@ describe('drawEndpoint', () => {
 		const idx = buildMemberIndex(insts);
 		// 'top' (a root node) viewed from inside 'inner' is outside that subtree
 		expect(drawEndpoint('top', 'out', 'out', 'inner', insts, idx)).toBe(null);
-	});
-});
-
-describe('boundary node id codec', () => {
-	it('round-trips an (instId, boundary) pair within the entered scope', () => {
-		const id = boundaryNodeId('outer', 'oout');
-		expect(isBoundaryNodeId(id)).toBe(true);
-		expect(parseBoundaryNodeId(id, 'outer')).toBe('oout');
-	});
-
-	it('isBoundaryNodeId is scope-agnostic (any boundary pill id)', () => {
-		expect(isBoundaryNodeId(boundaryNodeId('inner', 'iout'))).toBe(true);
-		expect(isBoundaryNodeId('plain-node-uid')).toBe(false);
-	});
-
-	it('parse returns null for a non-boundary id', () => {
-		expect(parseBoundaryNodeId('plain-node-uid', 'outer')).toBe(null);
-	});
-
-	it('parse returns null for a boundary id from ANOTHER instance (scope-checked)', () => {
-		// A pill belonging to `inner` must not be mis-parsed as one of `outer`'s — the
-		// old length-slice returned a garbage suffix instead of null.
-		const innerPill = boundaryNodeId('inner', 'iout');
-		expect(parseBoundaryNodeId(innerPill, 'outer')).toBe(null);
-	});
-
-	it('parse returns null when no scope is entered', () => {
-		expect(parseBoundaryNodeId(boundaryNodeId('outer', 'oout'), null)).toBe(null);
 	});
 });

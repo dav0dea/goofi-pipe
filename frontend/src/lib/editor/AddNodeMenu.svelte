@@ -5,7 +5,8 @@
 	import { rankNodeTypes } from './nodeSearch';
 	import { nodeTypeTitle } from './nodeTypeTitle';
 	import { nodeTypeSource } from './nodeTypeSource';
-	import { BOUNDARY_CATEGORY, type NodeTypeInfo } from '$lib/api/control';
+	import type { NodeTypeInfo } from '$lib/api/control';
+	import { boundaryType } from '$lib/api/vocab';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { onMount, tick } from 'svelte';
 	import { EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
@@ -38,7 +39,7 @@
 
 	const filtered = $derived.by(() => {
 		const types = (g.nodeTypes ?? [])
-			.filter((t) => boundary || t.category !== BOUNDARY_CATEGORY)
+			.filter((t) => boundary || !boundaryType(t.type))
 			.filter(matchesSeed);
 		return rankNodeTypes(types, query);
 	});

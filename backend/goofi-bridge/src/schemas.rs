@@ -6,7 +6,6 @@ use goofi_engine::{ExprInfo, Graph, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
-pub const ROOT_ID: &str = "__root__";
 pub const PROTOCOL_VERSION: i64 = 3;
 
 /// A single param descriptor, discriminated on `type`. `doc` is the type declaration's help text,
