@@ -1,9 +1,8 @@
 //! The panel-type and viewer-kind vocabularies — the one place each word is declared, and the
 //! source the frontend's module is generated from. The BEHAVIOUR keyed off a word stays client-side.
 
-use goofi_core::SlotType;
 use goofi_engine::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
-use goofi_engine::subpatch::Dir;
+use goofi_engine::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES};
 use serde_json::{json, Value};
 
 /// One panel type — what a layout entry's `panel_type` may say.
@@ -187,36 +186,6 @@ pub fn typescript() -> String {
          \n\
          export const VIEWER_KINDS: readonly ViewerKindInfo[] = [\n{kinds}];\n"
     )
-}
-
-/// The six virtual boundary types: a sub-patch port, one per direction per dtype. They never run,
-/// so the bridge owns them as a vocabulary rather than the engine as manifests — and this table is
-/// the only place the type name and the `(dir, dtype)` behind it are related.
-pub const BOUNDARY_TYPES: &[(&str, Dir, SlotType)] = &[
-    ("InArray", Dir::In, SlotType::Array),
-    ("InString", Dir::In, SlotType::String),
-    ("InTable", Dir::In, SlotType::Table),
-    ("OutArray", Dir::Out, SlotType::Array),
-    ("OutString", Dir::Out, SlotType::String),
-    ("OutTable", Dir::Out, SlotType::Table),
-];
-
-/// The one slot a boundary port carries. An In port FEEDS a member, so it wears an output; an Out
-/// port drains one.
-pub const BOUNDARY_SLOT: &str = "value";
-
-/// The `(dir, dtype)` a boundary type name stands for, or `None` for any other type.
-pub fn boundary_type(name: &str) -> Option<(Dir, SlotType)> {
-    BOUNDARY_TYPES.iter().find(|(n, _, _)| *n == name).map(|(_, d, t)| (*d, *t))
-}
-
-/// The boundary type name a live port wears — the inverse of [`boundary_type`].
-pub fn boundary_type_name(dir: Dir, dtype: SlotType) -> &'static str {
-    BOUNDARY_TYPES
-        .iter()
-        .find(|(_, d, t)| *d == dir && *t == dtype)
-        .map(|(n, _, _)| *n)
-        .expect("the table covers every dir/dtype pair")
 }
 
 /// The six as catalog entries, so a palette and `list_nodes` see one vocabulary of node types.

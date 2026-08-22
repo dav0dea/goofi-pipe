@@ -34,6 +34,25 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let stubs = g.doc()["instances"][&scope]["stubs"].as_object().cloned().unwrap_or_default();
     assert_eq!(stubs.len(), 2, "both cuts are exposed: {stubs:?}");
 
+    // Nest it, and leave one port with nothing behind it. Between them these are every shape the
+    // archive's one entity kind has to carry: a facade inside a facade, a port wired to another
+    // scope's port, and a port whose inner wire is simply absent.
+    let outer = g.call("group_nodes", j!({ "members": [&scope], "pos": [80.0, 10.0] }))["inst_id"]
+        .as_str().unwrap().to_string();
+    let spare = g.call("add_node", j!({ "type": "OutTable", "inst_id": outer, "pos": [5.0, 6.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    g.call("edit_node", j!({ "node": spare, "name": "spare" }));
+
+    // The file says it in ONE vocabulary: a facade and a port are node records like any other, and
+    // a port's inner wire is a link like any other.
+    let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
+    let saved: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    assert!(saved["root"].get("scopes").is_none(), "no block of its own for the structure");
+    let recs = saved["root"]["nodes"].as_object().unwrap();
+    assert_eq!(recs[&outer]["type"], "SubPatch", "the facade is a node record: {:?}", recs[&outer]);
+    assert_eq!(recs[&spare]["type"], "OutTable", "…and so is the port");
+    assert_eq!(recs[&scope]["scope"], outer, "membership rides the record it belongs to");
+
     g.call("edit_panel", j!({ "panel": panel(&g), "type": "viewer",
                                  "state": { "node": hex(osc), "slot": "out" } }));
 

@@ -34,7 +34,7 @@ use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use goofi_engine::{Graph, Uid};
+use goofi_engine::{subpatch, Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
@@ -884,9 +884,9 @@ fn stub_wire(
     si: &str,
 ) -> Result<Option<InnerWire>, String> {
     use goofi_engine::subpatch::Dir;
-    let slot = |s: &str| match s == vocab::BOUNDARY_SLOT {
+    let slot = |s: &str| match s == subpatch::BOUNDARY_SLOT {
         true => Ok(()),
-        false => Err(format!("{op}: a boundary port's only slot is `{}`", vocab::BOUNDARY_SLOT)),
+        false => Err(format!("{op}: a boundary port's only slot is `{}`", subpatch::BOUNDARY_SLOT)),
     };
     match (stub_at(g, a), stub_at(g, b)) {
         (None, None) => Ok(None),
@@ -1075,7 +1075,7 @@ impl AppState {
                     };
                     // A boundary type is a PORT of a sub-patch rather than a node with a thread,
                     // so the command differs — but the op, the args and the reply do not.
-                    if let Some((dir, dtype)) = vocab::boundary_type(&ty) {
+                    if let Some((dir, dtype)) = subpatch::boundary_type(&ty) {
                         let scope = scope.ok_or(
                             "add_node: a boundary port needs `inst_id` — it is a port OF a sub-patch",
                         )?;
@@ -1098,7 +1098,7 @@ impl AppState {
                             _ => return Err("add_node: no uid returned".into()),
                         };
                         events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                        let slot = json!({ vocab::BOUNDARY_SLOT: dtype.name() });
+                        let slot = json!({ subpatch::BOUNDARY_SLOT: dtype.name() });
                         let (inputs, outputs) = match dir {
                             goofi_engine::subpatch::Dir::In => (json!({}), slot),
                             goofi_engine::subpatch::Dir::Out => (slot, json!({})),

@@ -99,7 +99,7 @@ pub fn patch(
                 "  {}([\"{}: {}<br/>{}\"])\n",
                 mid(*id),
                 label(&stub.name),
-                crate::vocab::boundary_type_name(stub.dir, stub.dtype),
+                goofi_engine::subpatch::boundary_type_name(stub.dir, stub.dtype),
                 id.to_hex(),
             ));
         }

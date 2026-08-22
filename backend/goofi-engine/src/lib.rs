@@ -51,8 +51,9 @@ impl std::fmt::Display for Uid {
 }
 
 /// One literal for the writer, the reader and the refusal message, so a bump cannot leave the
-/// message lying about what this build reads.
-const MANIFEST_VERSION: i64 = 7;
+/// message lying about what this build reads. It moves when a format change has to reject an
+/// archive somebody actually holds — not once per change while the format is still moving.
+const MANIFEST_VERSION: i64 = 1;
 
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
 /// `add_node` answers and *addressable* only once it reports [`runtime::Status::Ready`].
@@ -2464,44 +2465,59 @@ impl Graph {
             }
             nodes.insert(uid.to_hex(), Value::Object(node_obj));
         }
-        let links: Vec<Value> = self
+        // A facade and a boundary port are node records too — one entity kind in the file, keyed by
+        // one uid space. Membership rides each record rather than a member list beside it, which
+        // would be a second holder of what `scope_of` already owns.
+        for (uid, scope) in &self.scopes {
+            nodes.insert(
+                uid.to_hex(),
+                json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name, "pos": scope.pos, "params": {} }),
+            );
+            for (id, st) in &scope.stubs {
+                nodes.insert(
+                    id.to_hex(),
+                    json!({
+                        "type": subpatch::boundary_type_name(st.dir, st.dtype),
+                        "name": st.name,
+                        "pos": st.pos,
+                        "params": {},
+                        "scope": uid.to_hex(),
+                    }),
+                );
+            }
+        }
+        for (uid, parent) in self.scopes.keys().filter_map(|u| self.scope_of(*u).map(|p| (*u, p))) {
+            if let Some(Value::Object(rec)) = nodes.get_mut(&uid.to_hex()) {
+                rec.insert("scope".into(), json!(parent.to_hex()));
+            }
+        }
+        for uid in self.node_uids() {
+            if let (Some(p), Some(Value::Object(rec))) = (self.scope_of(uid), nodes.get_mut(&uid.to_hex())) {
+                rec.insert("scope".into(), json!(p.to_hex()));
+            }
+        }
+        // A port's inner wire is a link like any other — the same one `add_link` writes — so the
+        // file has one relation kind as well as one entity kind.
+        let mut links: Vec<Value> = self
             .links
             .iter()
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
-
-        // Sub-patch scopes: each emits its metadata, its direct member uids and its stubs. The flat
-        // nodes/links above already hold the runtime, so this block is purely organizational.
-        let mut scope_map = Map::new();
-        for (uid, scope) in &self.scopes {
-            let mut stubs = Map::new();
+        for scope in self.scopes.values() {
             for (id, st) in &scope.stubs {
-                stubs.insert(
-                    id.to_hex(),
-                    json!({
-                        "dir": st.dir.name(),
-                        "dtype": st.dtype.name(),
-                        "inner_uid": st.inner.as_ref().map(|(u, _)| u.to_hex()),
-                        "inner_slot": st.inner.as_ref().map(|(_, s)| s.clone()),
-                        "pos": st.pos,
-                        "name": st.name,
-                    }),
-                );
+                let Some((inner, slot)) = &st.inner else { continue };
+                links.push(match st.dir {
+                    subpatch::Dir::In => {
+                        json!([id.to_hex(), subpatch::BOUNDARY_SLOT, inner.to_hex(), slot])
+                    }
+                    subpatch::Dir::Out => {
+                        json!([inner.to_hex(), slot, id.to_hex(), subpatch::BOUNDARY_SLOT])
+                    }
+                });
             }
-            let members: Vec<Value> = self.scope_members(*uid).iter().map(|m| json!(m.to_hex())).collect();
-            scope_map.insert(
-                uid.to_hex(),
-                json!({
-                    "name": scope.name,
-                    "parent": self.scope_of(*uid).map(|p| p.to_hex()),
-                    "pos": scope.pos,
-                    "nodes": members,
-                    "stubs": Value::Object(stubs),
-                }),
-            );
         }
 
-        let root = json!({ "nodes": Value::Object(nodes), "links": links, "scopes": Value::Object(scope_map) });
+        let root = json!({ "nodes": Value::Object(nodes), "links": links });
         // An ORDERED array, because the order is observable and a keyed map would alphabetize it
         // away. On load, `reassert_system` back-fills — so an older patch picks up a new default.
         let globals: Vec<Value> = self
@@ -2536,8 +2552,6 @@ impl Graph {
     pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
-            // v7 is the archive era. The bare-YAML v3-v6 files predate the zip container and are
-            // deliberately not read (spec Decision 3).
             Some(MANIFEST_VERSION) => {
                 let root = doc.get("root");
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
@@ -2551,6 +2565,11 @@ impl Graph {
         let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;
         for rec in nodes.values() {
             let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("node missing `type`")?;
+            // A facade and a boundary port are the model's own types, not the palette's: they have
+            // no module to be missing, so the availability gate is not theirs to pass.
+            if structural(ty) {
+                continue;
+            }
             if !self.known_type(ty) {
                 return Err(self.reject_type(ty));
             }
@@ -2572,7 +2591,25 @@ impl Graph {
         // on one uid when a hand-written file spells the same number two ways.
         let mut claimed: HashSet<Uid> = HashSet::new();
         let mut idmap: HashMap<String, Uid> = HashMap::new();
-        for (old, rec) in nodes {
+        // Every uid FIRST, so a record's `scope` and a link's endpoints resolve whatever the
+        // iteration order — one uid space, so one pass answers for all three entity kinds.
+        for old in nodes.keys() {
+            let uid = self.restore_uid(old, &claimed);
+            claimed.insert(uid);
+            idmap.insert(old.clone(), uid);
+        }
+        // Then the facades, before anything that can name one.
+        for (old, rec) in nodes.iter().filter(|(_, r)| r["type"] == subpatch::SCOPE_TYPE) {
+            self.scopes.insert(
+                idmap[old],
+                subpatch::Scope {
+                    name: rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    pos: read_pos(rec),
+                    stubs: IndexMap::new(),
+                },
+            );
+        }
+        for (old, rec) in nodes.iter().filter(|(_, r)| !structural(r["type"].as_str().unwrap_or(""))) {
             let ty = rec["type"].as_str().unwrap();
             // NON-seeding, because a load is a RESTORE: `add_node` would re-synthesize a binding
             // the user had unbound. Folded in BEFORE construction, since `insert_node` runs `setup()`.
@@ -2593,21 +2630,13 @@ impl Graph {
             let (manifest, params, build) = self.build_node(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
-            let uid = self.restore_uid(old, &claimed);
-            claimed.insert(uid);
+            let uid = idmap[old];
             let name = self.fresh_name(&manifest.type_name.to_lowercase());
             self.insert_node_at(uid, name, manifest, build, params);
-            idmap.insert(old.clone(), uid);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
             }
-            if let Some(p) = rec.get("pos").and_then(|v| v.as_array()) {
-                if p.len() == 2 {
-                    if let (Some(x), Some(y)) = (p[0].as_f64(), p[1].as_f64()) {
-                        let _ = self.set_node_pos(uid, [x, y]);
-                    }
-                }
-            }
+            let _ = self.set_node_pos(uid, read_pos(rec));
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(uid, v.clone());
             }
@@ -2624,28 +2653,57 @@ impl Graph {
                 }
             }
         }
+        // Membership, from each record's own `scope`. It is set before the ports so a port's
+        // scope is already a member of whatever holds IT.
+        for (old, rec) in nodes {
+            let parent = rec.get("scope").and_then(|v| v.as_str()).and_then(|s| idmap.get(s)).copied();
+            if parent.is_some() {
+                self.set_member_scope(idmap[old], parent);
+            }
+        }
+        // The ports. Each is a member record whose type carries its direction and dtype, so nothing
+        // about it is re-derived from the wire it will get below.
+        let mut port_of: HashMap<Uid, Uid> = HashMap::new();
+        for (old, rec) in nodes {
+            let Some((dir, dtype)) = subpatch::boundary_type(rec["type"].as_str().unwrap_or("")) else {
+                continue;
+            };
+            let uid = idmap[old];
+            let Some(scope) = self.scope_of(uid) else { continue };
+            let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let stub = subpatch::Stub { dir, dtype, inner: None, pos: read_pos(rec), name };
+            if let Some(s) = self.scopes.get_mut(&scope) {
+                s.stubs.insert(uid, stub);
+                port_of.insert(uid, scope);
+            }
+        }
         if let Some(links) = links_v.and_then(|v| v.as_array()) {
             for l in links {
-                if let Some(a) = l.as_array() {
-                    if a.len() == 4 {
-                        let no = a[0].as_str().and_then(|s| idmap.get(s)).copied();
-                        let ni = a[2].as_str().and_then(|s| idmap.get(s)).copied();
-                        if let (Some(no), Some(ni)) = (no, ni) {
-                            let _ = self.add_link(
-                                no,
-                                a[1].as_str().unwrap_or(""),
-                                ni,
-                                a[3].as_str().unwrap_or(""),
-                            );
+                let Some(a) = l.as_array().filter(|a| a.len() == 4) else { continue };
+                let no = a[0].as_str().and_then(|s| idmap.get(s)).copied();
+                let ni = a[2].as_str().and_then(|s| idmap.get(s)).copied();
+                let (Some(no), Some(ni)) = (no, ni) else { continue };
+                let (so, si) = (a[1].as_str().unwrap_or(""), a[3].as_str().unwrap_or(""));
+                // A link with one end on a port IS that port's inner wire — the same dispatch
+                // `add_link` makes, so the file and the op vocabulary say one thing.
+                match (port_of.get(&no).copied(), port_of.get(&ni).copied()) {
+                    (Some(scope), None) => {
+                        if let Some(st) = self.stub_mut(scope, no) {
+                            st.inner = Some((ni, si.to_string()));
                         }
                     }
+                    (None, Some(scope)) => {
+                        if let Some(st) = self.stub_mut(scope, ni) {
+                            st.inner = Some((no, so.to_string()));
+                        }
+                    }
+                    (None, None) => {
+                        let _ = self.add_link(no, so, ni, si);
+                    }
+                    _ => {} // two ports: not a wire the ops can make
                 }
             }
         }
-        // Reconstruct the flat sub-patch scopes: each scope's uid, its membership from the `nodes`
-        // list, and its stubs, resolving the stored inner uid.
-        let scopes_v = doc.get("root").and_then(|r| r.get("scopes")).and_then(|v| v.as_object());
-        self.reload_scopes(scopes_v, &idmap, &mut claimed);
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
         // A corrupt arrangement costs the CHROME, never the patch. The reason is kept for the load
         // reply; an ABSENT arrangement is not a corrupt one and warns about nothing.
@@ -2661,91 +2719,19 @@ impl Graph {
         Ok(())
     }
 
-    /// Rebuild the scope forest once the flat nodes and links are live. A scope uid restores from
-    /// its key as a node's does — an editor panel's `subpatchPath` names scopes.
-    fn reload_scopes(
-        &mut self,
-        scopes_v: Option<&serde_json::Map<String, serde_json::Value>>,
-        idmap: &HashMap<String, Uid>,
-        claimed: &mut HashSet<Uid>,
-    ) {
-        use subpatch::{Dir, Scope, Stub};
-        let Some(scopes) = scopes_v else { return };
+}
 
-        // Resolve every scope uid first, so parent refs + nested-member refs + stub inner refs
-        // resolve regardless of iteration order.
-        let mut scopemap: HashMap<String, Uid> = HashMap::new();
-        for old in scopes.keys() {
-            let uid = self.restore_uid(old, claimed);
-            claimed.insert(uid);
-            scopemap.insert(old.clone(), uid);
-        }
-        let resolve_uid = |s: &str| idmap.get(s).copied().or_else(|| scopemap.get(s).copied());
+/// Is this a type the MODEL owns rather than the palette — a sub-patch facade or a boundary port?
+fn structural(ty: &str) -> bool {
+    ty == subpatch::SCOPE_TYPE || subpatch::boundary_type(ty).is_some()
+}
 
-        // Stub uids get the same pre-pass, keyed by (owning scope, record key): a stub's inner can
-        // name a stub on a scope this loop has not reached yet, and a pre-uid patch's `in0` keys
-        // are unique only inside their own scope.
-        let mut stubmap: HashMap<(&str, &str), Uid> = HashMap::new();
-        for (sk, rec) in scopes {
-            for k in rec.get("stubs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.keys()) {
-                let uid = self.restore_uid(k, claimed);
-                claimed.insert(uid);
-                stubmap.insert((sk.as_str(), k.as_str()), uid);
-            }
-        }
-
-        for (old, rec) in scopes {
-            let uid = scopemap[old];
-            let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let parent = rec.get("parent").and_then(|v| v.as_str()).and_then(|s| scopemap.get(s)).copied();
-            let pos = rec
-                .get("pos")
-                .and_then(|v| v.as_array())
-                .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
-                .unwrap_or([0.0, 0.0]);
-            if let Some(members) = rec.get("nodes").and_then(|v| v.as_array()) {
-                for mv in members {
-                    if let Some(ru) = mv.as_str().and_then(resolve_uid) {
-                        self.scope_of.insert(ru, Some(uid));
-                    }
-                }
-            }
-            let mut stubs: IndexMap<Uid, Stub> = IndexMap::new();
-            if let Some(sm) = rec.get("stubs").and_then(|v| v.as_object()) {
-                for (id, st) in sm {
-                    let dir = if st.get("dir").and_then(|v| v.as_str()) == Some("in") { Dir::In } else { Dir::Out };
-                    // The save side writes `st.dtype.name()`; read it back with that function's own
-                    // inverse. An unknown/absent tag still degrades silently to Array, as before.
-                    let dtype = st
-                        .get("dtype")
-                        .and_then(|v| v.as_str())
-                        .and_then(goofi_core::SlotType::from_name)
-                        .unwrap_or(goofi_core::SlotType::Array);
-                    let inner = match (
-                        st.get("inner_uid").and_then(|v| v.as_str()),
-                        st.get("inner_slot").and_then(|v| v.as_str()),
-                    ) {
-                        (Some(iu), Some(is)) => resolve_uid(iu).map(|u| {
-                            // A nested-scope inner names that scope's own stub, re-minted above.
-                            let slot = stubmap.get(&(iu, is)).map_or_else(|| is.to_string(), |s| s.to_hex());
-                            (u, slot)
-                        }),
-                        _ => None,
-                    };
-                    let pos = st
-                        .get("pos")
-                        .and_then(|v| v.as_array())
-                        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
-                        .unwrap_or([0.0, 0.0]);
-                    let sname = st.get("name").and_then(|v| v.as_str()).unwrap_or(id).to_string();
-                    stubs.insert(stubmap[&(old.as_str(), id.as_str())], Stub { dir, dtype, inner, pos, name: sname });
-                }
-            }
-            self.scope_of.insert(uid, parent);
-            self.scopes.insert(uid, Scope { name, pos, stubs });
-        }
-    }
-
+/// A record's `pos`, or the origin when it is absent or malformed.
+fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
+    rec.get("pos")
+        .and_then(|v| v.as_array())
+        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+        .unwrap_or([0.0, 0.0])
 }
 
 /// One node's current error, derived fresh from the places one can arise. A free function so
