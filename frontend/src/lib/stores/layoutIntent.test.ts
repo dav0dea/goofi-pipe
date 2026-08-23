@@ -19,10 +19,8 @@ import { history } from './history.svelte';
  */
 
 const LAYOUT_OPS = [
-	'add_tab',
-	'split_panel',
+	'place_panel',
 	'edit_panel',
-	'move_panel',
 	'remove_panel'
 ];
 

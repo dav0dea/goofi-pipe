@@ -116,7 +116,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("patch.gfi");
     g.add("Oscillator");
-    g.call("add_tab", j!({ "name": "Second" }));
+    g.call("place_panel", j!({ "name": "Second" }));
     g.call("save", j!({ "path": path.to_string_lossy() }));
     let old_mount = g.state.mount();
     std::fs::write(old_mount.join("notes.md"), b"the previous patch's").unwrap();

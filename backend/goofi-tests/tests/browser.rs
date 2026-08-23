@@ -68,9 +68,9 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
                Some("Oscillator"), "the delta carried the node");
 
     let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
-    let fresh = peer.call("split_panel", j!({ "panel": panel,
-                                                  "direction": "right", "ratio": 0.5 }))
-        .await.as_str().unwrap().to_string();
+    let fresh = peer.call("place_panel", j!({ "to": panel,
+                                             "direction": "right", "ratio": 0.5 }))
+        .await["id"].as_str().unwrap().to_string();
     c.until_doc(|d| panels(d).contains(&fresh)).await;
     let born = goofi_tests::arrangement_node(&c.doc().to_json()["arrangement"], &fresh).cloned();
     assert_eq!(born.map(|n| n["panel_type"].clone()), Some(j!("empty")),

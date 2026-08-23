@@ -116,13 +116,13 @@ describe('a frozen gesture is a layout command', () => {
 		expect(root.children.map((c) => c.id)).toEqual(['panel-2', 'panel-3']);
 	});
 
-	it('splits through split_panel, carrying the SIDE the drag went', async () => {
+	it('splits through place_panel, carrying the SIDE the drag went', async () => {
 		// The panel system raises an axis and a half; the op takes one word for the pair, so the two
 		// cannot disagree on the way over.
 		const ws = boot();
 		ws.split('panel-2', 'column', true, 0.25);
 		await Promise.resolve();
-		expect(sent()).toEqual([['split_panel', { panel: 'panel-2', direction: 'top', ratio: 0.25 }]]);
+		expect(sent()).toEqual([['place_panel', { to: 'panel-2', direction: 'top', ratio: 0.25 }]]);
 	});
 
 	it('…and every other side maps to its own word', async () => {
@@ -188,7 +188,7 @@ describe('a frozen gesture is a layout command', () => {
 
 	it('brings a fresh tab forward off the ids the manager minted, once they arrive', async () => {
 		const ws = boot();
-		fc.setCallResult('add_tab', { tab: 'tab-3', panel: 'panel-4' });
+		fc.setCallResult('place_panel', { tab: 'tab-3', id: 'panel-4' });
 		ws.addTab();
 		await settle();
 		expect(ws.state.activeWorkspaceId, 'not before the tab exists to draw').toBe('tab-1');
@@ -198,11 +198,11 @@ describe('a frozen gesture is a layout command', () => {
 	});
 
 	it('…and forward all the same when the delta BEATS the answer', async () => {
-		// The two race, and an `add_tab` that also types its panel is two round trips wide — long
+		// The two race, and a `place_panel` that also types its panel is two round trips wide — long
 		// enough that the tab is usually drawn before the ids come back. Waiting for a later sync that
 		// nothing is going to send left the new tab sitting behind the one it was added from.
 		const ws = boot();
-		fc.setCallResult('add_tab', { tab: 'tab-3', panel: 'panel-4' });
+		fc.setCallResult('place_panel', { tab: 'tab-3', id: 'panel-4' });
 		ws.addTab('globals');
 		ws.syncFromDoc([...oneTab(), tab('tab-3', 'Tab 2', 'panel-4', 'globals')]);
 		expect(ws.state.activeWorkspaceId, 'not off a delta alone — the ids are still in flight').toBe(
@@ -219,7 +219,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['move_panel', { panel: 'panel-3', to: 'panel-2', direction: 'bottom' }]
+			['place_panel', { panel: 'panel-3', to: 'panel-2', direction: 'bottom' }]
 		]);
 		expect(ws.dragging, 'the drag is spent either way').toBeNull();
 	});
@@ -241,7 +241,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
 		ws.dropOn({ newTab: 0 });
 		await settle();
-		expect(sent()).toEqual([['add_tab', { index: 0, subtree: 'panel-3' }]]);
+		expect(sent()).toEqual([['place_panel', { panel: 'panel-3', index: 0 }]]);
 		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
 		// the panel is still drawn on the tab it is LEAVING, and settling for that tab would leave the
 		// torn-off one behind the old one for good.
@@ -287,9 +287,9 @@ describe('a frozen gesture is a layout command', () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(sent().map(([op]) => op), 'three taps, three requests').toEqual([
-			'add_tab',
-			'add_tab',
-			'add_tab'
+			'place_panel',
+			'place_panel',
+			'place_panel'
 		]);
 		expect(
 			sent().some(([, p]) => 'name' in p),
@@ -326,7 +326,7 @@ describe('a frozen gesture is a layout command', () => {
 		expect(sent()).toEqual([
 			['edit_panel', { panel: 'tab-1', name: 'Signals' }],
 			['remove_panel', { panel: 'tab-1' }],
-			['move_panel', { panel: 'tab-1', index: 0 }]
+			['place_panel', { panel: 'tab-1', index: 0 }]
 		]);
 	});
 });

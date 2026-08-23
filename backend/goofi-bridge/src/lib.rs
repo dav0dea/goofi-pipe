@@ -1365,40 +1365,6 @@ impl AppState {
                     let tab = payload.get("tab").and_then(|v| v.as_str()).map(str::to_string);
                     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
                 }
-                "add_tab" => {
-                    // The NAME is the arrangement's to mint: only it can see which `Tab n` is free,
-                    // and it decides under the lock the add itself runs on.
-                    let name = payload.get("name").and_then(|v| v.as_str());
-                    let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
-                    let subtree = payload.get("subtree").and_then(|v| v.as_str()).map(str::to_string);
-                    let (plan, tab) = g.arrangement().add_tab(name, index, subtree.as_deref())?;
-                    // A tab built AROUND an existing subtree is a MOVE, so its undo puts the subtree
-                    // back; one born with a fresh panel has nothing to give back and inverts by closing.
-                    match subtree.as_deref() {
-                        Some(s) => {
-                            let root = s.to_string();
-                            let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root, home: None };
-                            apply_layout(state, &mut g, &session, cmd)?
-                        }
-                        None => {
-                            let cmd = goofi_engine::Command::LayoutBirth { plan, born: tab.clone() };
-                            apply_layout(state, &mut g, &session, cmd)?
-                        }
-                    };
-                    // The root panel's id, which a caller cannot otherwise know.
-                    let panel = g.arrangement().root_of(&tab).unwrap_or_default();
-                    Ok(json!({ "tab": tab, "panel": panel }))
-                }
-                "split_panel" => {
-                    let panel = parse_str(&payload, "panel")?.to_string();
-                    let side = parse_side(&payload, "split_panel")?;
-                    let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let (plan, fresh) = g.arrangement().split_panel(&panel, side, ratio)?;
-                    let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
-                    apply_layout(state, &mut g, &session, cmd)?;
-                    // The uid, because a split births an EMPTY panel the caller must then fill.
-                    Ok(json!(fresh))
-                }
                 // One entry's FIELDS, whichever kind it is: a tab wears a name, a panel a type and a
                 // state, a split its shares. Several in one call is one Compound, so one undo step.
                 "edit_panel" => {
@@ -1471,36 +1437,74 @@ impl AppState {
                 }
                 // ONE op per drag gesture: a drop is one undo step, and peers never see an
                 // arrangement that was not on somebody's screen.
-                "move_panel" => {
-                    let panel = parse_str(&payload, "panel")?.to_string();
+                // Placement is ONE grammar: `panel` says what (an existing entry, or a fresh one
+                // when absent), the rest says where. Splitting it into a birth op and a move op
+                // spelled the "where" twice, and `add_tab {subtree}` was already both.
+                "place_panel" => {
+                    const OP: &str = "place_panel";
+                    let panel = payload.get("panel").and_then(|v| v.as_str()).map(str::to_string);
                     let to = payload.get("to").and_then(|v| v.as_str()).map(str::to_string);
                     let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
                     let side = match payload.get("direction").filter(|v| !v.is_null()) {
-                        Some(_) => Some(parse_side(&payload, "move_panel")?),
+                        Some(_) => Some(parse_side(&payload, OP)?),
                         None => None,
                     };
                     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-                    let plan = match (to.as_deref(), side) {
-                        // Beside a target, splitting it — the drop on a panel's edge.
-                        (Some(target), Some(side)) => {
-                            g.arrangement().insert_at_panel(&panel, target, side, ratio)?
+                    let name = payload.get("name").and_then(|v| v.as_str());
+                    // A tab already has a tab, so a `to`-less place is a reorder rather than a wrap.
+                    // The id says which — as it does for `edit_panel` and `remove_panel`.
+                    let is_tab = panel.as_deref().is_some_and(|p| g.arrangement().tab_index(p).is_some());
+                    let (plan, placed) = match (panel.as_deref(), to.as_deref(), side) {
+                        (Some(p), None, _) if is_tab => {
+                            let at = index.ok_or(format!("{OP}: give a `to`, an `index`, or both"))?;
+                            g.arrangement().reorder_tab(p, at)?;
+                            let cmd = goofi_engine::Command::LayoutReorderTab { tab: p.to_string(), to_index: at };
+                            let text = apply_layout(state, &mut g, &session, cmd)?;
+                            let tab = p.to_string();
+                            return Ok(json!({ "id": tab, "tab": tab, "text": text["text"] }));
                         }
-                        // Inside a split, at an index — the drop into a container that already exists.
-                        (Some(parent), None) => {
-                            g.arrangement().move_subtree(&panel, parent, index.unwrap_or(0))?
+                        // Onto a tab of its own — a fresh panel, or an existing subtree wrapped,
+                        // which is the drag onto the tab bar.
+                        (p, None, _) => {
+                            let (plan, tab) = g.arrangement().add_tab(name, index, p)?;
+                            // A tab built AROUND an existing subtree is a MOVE, so its undo gives the
+                            // subtree back; one born with a fresh panel inverts by closing.
+                            let cmd = match p {
+                                Some(root) => goofi_engine::Command::LayoutMove {
+                                    plan: Some(plan), root: root.to_string(), home: None },
+                                None => goofi_engine::Command::LayoutBirth { plan, born: tab.clone() },
+                            };
+                            let text = apply_layout(state, &mut g, &session, cmd)?;
+                            // The root panel's id, which a caller cannot otherwise know.
+                            let id = p.map(str::to_string)
+                                .unwrap_or_else(|| g.arrangement().root_of(&tab).unwrap_or_default());
+                            return Ok(json!({ "id": id, "tab": tab, "text": text["text"] }));
                         }
-                        // No destination: reposition where it already lives, which for a tab is the
-                        // strip. Planned here only so a bad id answers teachably; the command re-plans
-                        // it under this same lock.
-                        (None, _) => {
-                            let at = index.ok_or("move_panel: give a `to`, an `index`, or both")?;
-                            g.arrangement().reorder_tab(&panel, at)?;
-                            let cmd = goofi_engine::Command::LayoutReorderTab { tab: panel, to_index: at };
-                            return apply_layout(state, &mut g, &session, cmd);
+                        // Beside a target, dividing it — the drop on a panel's edge, or a split.
+                        (Some(p), Some(target), Some(side)) => {
+                            (g.arrangement().insert_at_panel(p, target, side, ratio)?, p.to_string())
+                        }
+                        // A fresh panel divides its target; `to` cannot mean "inside that split"
+                        // here, because there is nothing yet to put inside one. So the side simply
+                        // defaults, as `split_panel` always did.
+                        (None, Some(target), _) => {
+                            let side = side.unwrap_or(goofi_engine::layout::Side::Right);
+                            let (plan, fresh) = g.arrangement().split_panel(target, side, ratio)?;
+                            let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
+                            let text = apply_layout(state, &mut g, &session, cmd)?;
+                            let tab = g.arrangement().tab_of(&fresh).unwrap_or_default();
+                            return Ok(json!({ "id": fresh, "tab": tab, "text": text["text"] }));
+                        }
+                        // Inside a split, at an index — the drop into a container that exists. There
+                        // is nothing for a FRESH panel to take space from, so it needs a direction.
+                        (Some(p), Some(parent), None) => {
+                            (g.arrangement().move_subtree(p, parent, index.unwrap_or(0))?, p.to_string())
                         }
                     };
-                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: panel.clone(), home: None };
-                    apply_layout(state, &mut g, &session, cmd)
+                    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: placed.clone(), home: None };
+                    let text = apply_layout(state, &mut g, &session, cmd)?;
+                    let tab = g.arrangement().tab_of(&placed).unwrap_or_default();
+                    Ok(json!({ "id": placed, "tab": tab, "text": text["text"] }))
                 }
                 "remove_panel" => {
                     let panel = parse_str(&payload, "panel")?.to_string();

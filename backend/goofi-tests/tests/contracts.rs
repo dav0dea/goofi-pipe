@@ -353,7 +353,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
                 ports.iter().any(|p| l["node_out"] == p.as_str() || l["node_in"] == p.as_str())
             }),
             "no port is wired, so this test would not reach the inner-wire link: {}", doc["links"]);
-    g.call("split_panel", j!({ "panel": panel_id(&g), "direction": "right", "ratio": 0.5 }));
+    g.call("place_panel", j!({ "to": panel_id(&g), "direction": "right", "ratio": 0.5 }));
 
     let doc = g.doc();
     for root in ["nodes", "links", "globals", "arrangement"] {

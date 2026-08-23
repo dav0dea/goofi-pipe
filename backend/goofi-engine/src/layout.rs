@@ -388,6 +388,15 @@ impl Layout {
         self.tabs.iter_mut().find_map(|t| down(&mut t.root, id))
     }
 
+    /// The tab `id` sits on — what a placement answers with, so a caller knows where its panel
+    /// landed without walking the tree it was just handed.
+    pub fn tab_of(&self, id: &str) -> Option<Id> {
+        fn holds(n: &Node, id: &str) -> bool {
+            n.id() == id || n.children().iter().any(|c| holds(c, id))
+        }
+        self.tabs.iter().find(|t| t.id == id || holds(&t.root, id)).map(|t| t.id.clone())
+    }
+
     /// The id of a tab's root — what a caller gives content to after adding one.
     pub fn root_of(&self, tab: &str) -> Option<Id> {
         self.tabs.iter().find(|t| t.id == tab).map(|t| t.root.id().to_string())

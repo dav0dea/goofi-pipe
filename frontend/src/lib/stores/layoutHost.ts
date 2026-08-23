@@ -6,6 +6,12 @@ import { history } from './history.svelte';
 import { getControl, type Control } from '$lib/api/control';
 import type { OpName } from '$lib/api/ops';
 
+/** What `place_panel` answers: the entry it placed, and the tab it landed on. */
+interface Placed {
+	id: string;
+	tab: string;
+}
+
 /** How the host reaches the manager. */
 export interface HostDeps {
 	control: () => Control;
@@ -43,11 +49,11 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 		async addTab(opts): Promise<TabRef | null> {
 			// Grouped so a tab that arrives already showing its panel type is one ctrl-Z.
 			return await history().transaction('Add tab', async () => {
-				const born = await cmd<TabRef>('Add tab', 'add_tab', { index: opts?.index });
+				const born = await cmd<Placed>('Add tab', 'place_panel', { index: opts?.index });
 				if (born && opts?.panelType) {
-					await cmd('Change panel', 'edit_panel', { panel: born.panel, type: opts.panelType });
+					await cmd('Change panel', 'edit_panel', { panel: born.id, type: opts.panelType });
 				}
-				return born;
+				return born && { tab: born.tab, panel: born.id };
 			});
 		},
 
@@ -60,16 +66,17 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 		},
 
 		async reorderTab(tab, toIndex) {
-			return landed(await cmd('Reorder tabs', 'move_panel', { panel: tab, index: toIndex }));
+			return landed(await cmd('Reorder tabs', 'place_panel', { panel: tab, index: toIndex }));
 		},
 
+		// `to`, not `panel`: the fresh panel is what is placed, and it lands beside this one.
 		async splitPanel(panel, direction: Direction, placeBefore, ratio) {
-			const fresh = await cmd<string>('Split panel', 'split_panel', {
-				panel,
+			const fresh = await cmd<Placed>('Split panel', 'place_panel', {
+				to: panel,
 				direction: side(direction, placeBefore),
 				ratio
 			});
-			return typeof fresh === 'string' ? fresh : null;
+			return fresh?.id ?? null;
 		},
 
 		async removePanel(panel) {
@@ -84,15 +91,15 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 			return landed(await cmd(label, 'edit_panel', { panel, ...patch }));
 		},
 
-		// Two ops, because a fresh tab has no split for a move to land in.
+		// One op either way: a drop onto the tab bar names no target, a drop on an edge names one.
 		async movePanel(subtree, to) {
 			if ('newTab' in to) {
 				return landed(
-					await cmd('Move panel to new tab', 'add_tab', { index: to.newTab, subtree })
+					await cmd('Move panel to new tab', 'place_panel', { panel: subtree, index: to.newTab })
 				);
 			}
 			return landed(
-				await cmd('Move panel', 'move_panel', {
+				await cmd('Move panel', 'place_panel', {
 					panel: subtree,
 					to: to.panel,
 					direction: side(to.direction, to.placeBefore)

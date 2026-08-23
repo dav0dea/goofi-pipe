@@ -62,8 +62,8 @@ fn reload_warning(g: &Goofi) -> Value {
 }
 
 fn split(g: &Goofi, panel: &str) -> String {
-    g.call("split_panel", j!({ "panel": panel, "direction": "right" }))
-        .as_str().expect("a split answers the new panel's id").to_string()
+    g.call("place_panel", j!({ "to": panel, "direction": "right" }))["id"]
+        .as_str().expect("a placement answers what it placed").to_string()
 }
 
 fn first_panel(g: &Goofi) -> String {
@@ -122,7 +122,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     // The NAME is the arrangement's to mint: a caller that asks for none gets the first free
     // `Tab n`, so nobody has to reserve one against a strip they cannot see settle.
     let g = Goofi::new();
-    g.call("add_tab", j!({}));
+    g.call("place_panel", j!({}));
     assert_eq!(strip(&g), ["Tab 1", "Tab 2"], "minted, not asked for");
     // …and a label is NOT unique. It addresses nothing — every op names an id — and uniqueness was
     // enforceable only on the way in: a rename's inverse must not refuse, so a peer taking the
@@ -134,13 +134,13 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
 
     // A REORDER can silently invert to a no-op: its content IS a position.
     let g = Goofi::new();
-    g.call("add_tab", j!({ "name": "Two" }));
-    g.call("add_tab", j!({ "name": "Three" }));
+    g.call("place_panel", j!({ "name": "Two" }));
+    g.call("place_panel", j!({ "name": "Three" }));
     let settled = strip(&g);
     assert_eq!(settled, ["Tab 1", "Two", "Three"]);
 
     let three = tab_id(&g, "Three");
-    g.call("move_panel", j!({ "panel": three, "index": 0 }));
+    g.call("place_panel", j!({ "panel": three, "index": 0 }));
     assert_eq!(strip(&g), ["Three", "Tab 1", "Two"], "the tab moved to the head of the strip");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(strip(&g), settled, "a reorder's undo puts the tab back where it came from");
@@ -240,20 +240,22 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         .filter(|o| o.writes && (o.name.ends_with("_tab") || o.name.ends_with("_panel")))
         .map(|o| o.name)
         .collect();
-    assert!(ops.contains(&"remove_panel") && ops.contains(&"add_tab"),
+    assert!(ops.contains(&"remove_panel") && ops.contains(&"place_panel"),
             "the registry filter still finds the layout write ops: {ops:?}");
 
-    // (shape, the op it goes out as). One row per way a caller can spell a layout write.
+    // (shape, the op it goes out as). One row per way a caller can spell a layout write — the
+    // SHAPES are the truth here and the op names are not, which is why three of them collapsing
+    // into `place_panel` leaves every row standing.
     const SHAPES: &[(&str, &str)] = &[
-        ("a fresh tab", "add_tab"),
-        ("a tab built around a subtree", "add_tab"),
-        ("a split", "split_panel"),
+        ("a fresh tab", "place_panel"),
+        ("a tab built around a subtree", "place_panel"),
+        ("a split", "place_panel"),
         ("a tab's name", "edit_panel"),
         ("a panel's type", "edit_panel"),
         ("a split's shares", "edit_panel"),
-        ("a move into a split", "move_panel"),
-        ("a move beside a panel", "move_panel"),
-        ("a move within the strip", "move_panel"),
+        ("a move into a split", "place_panel"),
+        ("a move beside a panel", "place_panel"),
+        ("a move within the strip", "place_panel"),
         ("a closed panel", "remove_panel"),
         ("a closed tab", "remove_panel"),
     ];
@@ -269,7 +271,7 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         let two = one.client("s2");
         let a = first_panel(&one);
         let b = split(&one, &a);
-        one.call("add_tab", j!({}));
+        one.call("place_panel", j!({}));
         let c = panels(&one).into_iter().find(|p| *p != a && *p != b).expect("the tab's panel");
         let e = split(&one, &c);
         let far = entries(&one)[&e]["parent"].as_str().unwrap().to_string();
@@ -278,8 +280,8 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
 
         one.call(op, match *shape {
             "a fresh tab" => j!({}),
-            "a tab built around a subtree" => j!({ "subtree": b }),
-            "a split" => j!({ "panel": a }),
+            "a tab built around a subtree" => j!({ "panel": b }),
+            "a split" => j!({ "to": a }),
             "a tab's name" => j!({ "panel": two_id, "name": "Deux" }),
             "a panel's type" => j!({ "panel": b, "type": "console" }),
             "a split's shares" => j!({ "panel": near, "fractions": [0.3, 0.7] }),
@@ -292,8 +294,8 @@ fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
         });
         // The peer builds exactly where a slot-restore inverse would want to write — both places,
         // because a merged op's shapes do not all reach for the same one.
-        two.call("add_tab", j!({}));
-        two.call("split_panel", j!({ "panel": a }));
+        two.call("place_panel", j!({}));
+        two.call("place_panel", j!({ "to": a }));
         assert_eq!(one.call("undo", j!({}))["changed"], true, "{shape}: the undo flipped nothing");
 
         if reload_warning(&one) != Value::Null {
@@ -320,12 +322,12 @@ fn a_peers_panel_survives_every_shape_of_foreign_undo() {
     assert_eq!(one.call("redo", j!({}))["changed"], true);
     assert!(panels(&one).contains(&peer2), "the peer's panel survived a foreign redo");
 
-    one.call("add_tab", j!({ "name": "Signals" }));
+    one.call("place_panel", j!({ "name": "Signals" }));
     let over = panels(&one).into_iter()
         .find(|p| ![&a, &mine, &theirs, &peer2].contains(&p)).expect("the new tab's panel");
     let far = split(&one, &over);
     let dest = entries(&one)[&far]["parent"].as_str().unwrap().to_string();
-    one.call("move_panel", j!({ "panel": mine, "to": dest, "index": 0 }));
+    one.call("place_panel", j!({ "panel": mine, "to": dest, "index": 0 }));
     let peer3 = split(&two, &a);
     assert_eq!(one.call("undo", j!({}))["changed"], true);
     assert!(panels(&one).contains(&peer3), "the peer's panel survived a foreign undo");
@@ -338,17 +340,17 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     let g = Goofi::new();
     let first = first_panel(&g);
     let mine = split(&g, &first);
-    g.call("add_tab", j!({ "name": "Signals", "index": 0 }));
+    g.call("place_panel", j!({ "name": "Signals", "index": 0 }));
     let target = panels(&g).into_iter().find(|p| *p != first && *p != mine).expect("its panel");
     let before = entries(&g);
 
-    g.call("move_panel", j!({ "panel": mine, "to": target,
+    g.call("place_panel", j!({ "panel": mine, "to": target,
                               "direction": "top", "ratio": 0.3 }));
     assert_ne!(entries(&g), before, "the drop moved something");
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(entries(&g), before, "ONE ctrl-Z put the whole drag back");
 
-    g.call("add_tab", j!({ "name": "Torn off", "index": 0, "subtree": mine }));
+    g.call("place_panel", j!({ "name": "Torn off", "index": 0, "panel": mine }));
     assert_eq!(g.doc()["arrangement"]["tabs"][0]["root"]["id"], mine.as_str(),
                "the dragged panel is the new tab's whole root");
     g.call("undo", j!({}));

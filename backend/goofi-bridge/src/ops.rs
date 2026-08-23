@@ -100,12 +100,6 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "inspect_layout", surface: Mcp, writes: false, args: "tab:string",
          doc: "The arrangement as a tree: every tab, split and panel with its id, order and share of its parent. How a caller discovers the ids every layout op addresses. `tab` narrows it to one tab; no arg = all of them.",
          result: "{text: string}" },
-    Op { name: "add_tab", surface: Mcp, writes: true, args: "index:int subtree:string name:string",
-         doc: "Add a layout tab at `index` in the tab strip. It holds one node-editor panel — or, with `subtree`, is built AROUND an existing panel or split, which is the drag-onto-the-tab-bar gesture. `name` is a LABEL and is minted for you (`Tab 2`, `Tab 3`, …) unless you give one; every op addresses a tab by its id either way.",
-         result: "{tab, panel} — the new tab's id and its root panel's" },
-    Op { name: "split_panel", surface: Mcp, writes: true, args: "panel:uid! direction:string ratio:float",
-         doc: "Split a panel, birthing an EMPTY panel on the `left`/`right`/`top`/`bottom` of it (default right) that takes `ratio` of its space (default half). Give the new panel content with edit_panel.",
-         result: "the new panel's uid" },
     Op { name: "edit_panel", surface: Mcp, writes: true,
          args: "panel:uid! name:string type:panel_type state:json fractions:float[]",
          doc: "Edit ONE entry's fields — a tab, a split or a panel, whichever the id names. Any mix of them is one call and one undo, and an omitted field is left alone.\n\n\
@@ -113,13 +107,13 @@ pub static REGISTRY: &[Op] = &[
                `type` and `state` are a PANEL's. State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. `type` is one of: {panel_types}. A viewer panel's `state.kind` is one of: {viewer_kinds}; a STRING or TABLE slot ignores it and uses its own.\n\n\
                `fractions` sets the shares of ALL of a SPLIT's children at once, in child order — what a resize drag commits. Renormalized to fill the slot.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
-    Op { name: "move_panel", surface: Mcp, writes: true,
-         args: "panel:uid! to:uid index:int direction:string ratio:float",
-         doc: "Move a panel — or the whole subtree under a split id, or a tab — somewhere else. One op, so a drag is one undo step; taking a tab's last panel takes the tab with it.\n\n\
-               With `to` and `direction` it lands BESIDE that entry, on its `left`/`right`/`top`/`bottom`, taking `ratio` of its space (default half) — a drop on a panel's edge.\n\n\
-               With `to` and no direction it lands INSIDE that split, at `index` among its children.\n\n\
-               With no `to` at all it just moves to `index` where it already sits, which for a tab is its place in the strip.",
-         result: "{text} — the resulting arrangement, as inspect_layout draws it" },
+    Op { name: "place_panel", surface: Mcp, writes: true,
+         args: "panel:uid to:uid index:int direction:string ratio:float name:string",
+         doc: "Put a panel somewhere. WHAT is placed: with `panel`, that entry — a panel, a whole split's subtree, or a tab — moves; with no `panel`, a fresh empty one is born. WHERE it lands is the same grammar either way, so a drag and a birth are one op and one undo step; taking a tab's last panel takes the tab with it.\n\n\
+               With `to` and `direction` it lands BESIDE that panel, on its `left`/`right`/`top`/`bottom`, taking `ratio` of its space (default half) — a drop on a panel's edge, or a split.\n\n\
+               With `to` and no direction it lands INSIDE that split, at `index` among its children — a MOVE only, since a fresh panel has nothing to put inside one; born, it simply divides `to` on the default side.\n\n\
+               With no `to` it lands on a tab of its own at `index` in the strip — `name` labels it, and is minted (`Tab 2`, `Tab 3`, …) unless you give one. A `panel` that IS a tab just moves to `index` instead, because it already has one.",
+         result: "{id, tab, text} — what was placed, the tab it is on, and the arrangement as inspect_layout draws it" },
     Op { name: "remove_panel", surface: Mcp, writes: true, args: "panel:uid!",
          doc: "Close a panel, a whole split's subtree, or a tab and every panel on it. Its space goes to its siblings; a tab keeps its last panel, and the last tab stays.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
