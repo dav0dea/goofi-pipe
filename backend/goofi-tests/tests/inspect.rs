@@ -48,7 +48,7 @@ fn fixture() -> (Goofi, String) {
 }
 
 #[test]
-fn inspect_patch_draws_the_root_scope_and_the_whole_patchs_errors() {
+fn inspect_patch_draws_the_scope_asked_for_and_get_patch_says_what_is_broken() {
     let (g, _) = fixture();
     assert_eq!(
         text(&g, "inspect_patch", j!({})),
@@ -67,11 +67,18 @@ flowchart LR
 ```
 
 uids: a uid is its mermaid id without the leading `n`.
-
-errors (whole patch):
-  ⚠ _testfail0 (000000000002): the sensor is unplugged — for <age>
 "
     );
+
+    // What is BROKEN is the patch's business, not this scope's — one read, and the node's path
+    // says where it lives, so a scope view never has to carry a neighbour's fault.
+    let health = g.call("get_patch", j!({}));
+    let errs = health["errors"].as_array().cloned().unwrap_or_default();
+    assert_eq!(errs.len(), 1, "one standing error: {health}");
+    assert_eq!(errs[0]["node"], "000000000002");
+    assert_eq!(errs[0]["path"], "_testfail0");
+    assert_eq!(errs[0]["error"], "the sensor is unplugged");
+    assert!(errs[0]["standing"].as_f64().is_some(), "and how long it has stood: {health}");
 }
 
 #[test]
@@ -93,11 +100,11 @@ flowchart LR
 ```
 
 uids: a uid is its mermaid id without the leading `n`.
-
-errors (whole patch):
-  ⚠ _testfail0 (000000000002): the sensor is unplugged — for <age>
 "
     );
+    // The erroring node is in ROOT, and this is a sub-patch: asking about one scope used to report
+    // every fault in the patch, so the same list arrived again under each scope.
+    assert!(!text(&g, "inspect_patch", j!({ "scope": scope })).contains("_testfail0"));
 }
 
 #[test]
@@ -130,7 +137,7 @@ fn an_empty_scope_says_so_rather_than_drawing_an_empty_diagram() {
     let out = text(&g, "inspect_patch", j!({}));
     assert!(out.contains("(no nodes)"), "{out}");
     assert!(!out.contains("mermaid"), "no diagram for an empty scope: {out}");
-    assert!(out.contains("errors (whole patch):\n  none"), "{out}");
+    assert_eq!(g.call("get_patch", j!({}))["errors"], j!([]), "and nothing is broken");
 
     // A scope uid that names a LEAF is refused rather than drawn as empty.
     let n = g.add("Oscillator");
@@ -232,20 +239,28 @@ fn list_globals_names_the_system_globals_an_expression_can_read() {
 }
 
 #[test]
-fn read_node_source_says_a_native_type_has_no_file_to_edit() {
+fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     let g = Goofi::new();
-    let v = g.call("read_node_source", j!({ "type": "Oscillator" }));
+    // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
+    // with the wide one rather than be assembled a second way.
+    let all = g.call("list_nodes", j!({}))["types"].as_array().cloned().unwrap_or_default();
+    let listed = all.iter().find(|t| t["type"] == "Oscillator").expect("Oscillator is in the palette");
+
+    let v = g.call("list_nodes", j!({ "type": "Oscillator" }));
+    assert_eq!(v["type"], listed["type"]);
+    assert_eq!(v["doc"], listed["doc"], "one entry says what the catalog says");
+    assert_eq!(v["params"], listed["params"]);
     assert_eq!(v["language"], "rust");
     assert_eq!(v["tier"], "native");
     assert_eq!(v["source"], Value::Null);
     assert!(v["provenance"].as_str().unwrap().contains("copy a python node"), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
-    assert!(g.refuse("read_node_source", j!({ "type": "Nope" })).contains("no node type `Nope`"));
+    assert!(g.refuse("list_nodes", j!({ "type": "Nope" })).contains("no node type `Nope`"));
 }
 
 #[test]
-fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
+fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     // The path is RE-DERIVED from the type name rather than recorded, so this pins the derivation.
     static OUT: &[goofi_node::OutputDecl] =
         &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
@@ -258,7 +273,7 @@ fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
         params: &[],
         isolation: goofi_node::Isolation::InProcess,
         producer: true,
-        factory: || unreachable!("read_node_source never instantiates"),
+        factory: || unreachable!("a catalog read never instantiates"),
     };
 
     let g = Goofi::new();
@@ -268,7 +283,7 @@ fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
     std::fs::create_dir_all(&nodes).unwrap();
     std::fs::write(nodes.join("boom.py"), "class Boom:\n    pass\n").unwrap();
 
-    let v = g.call("read_node_source", j!({ "type": "Boom" }));
+    let v = g.call("list_nodes", j!({ "type": "Boom" }));
     assert_eq!(v["provenance"], "patch", "{v}");
     assert_eq!(v["path"], goofi_core::path::to_slash(&nodes.join("boom.py")), "{v}");
     assert_eq!(v["source"], "class Boom:\n    pass\n", "{v}");
@@ -276,7 +291,7 @@ fn read_node_source_finds_a_discovered_types_file_by_re_deriving_its_name() {
 
     // A tree holding no such file leaves the discovery half empty and SAYS so, rather than null.
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
-    let v = g.call("read_node_source", j!({ "type": "Boom" }));
+    let v = g.call("list_nodes", j!({ "type": "Boom" }));
     assert_eq!(v["source"], Value::Null);
     assert!(v["provenance"].as_str().unwrap().contains("compiled in"), "{v}");
 }

@@ -71,7 +71,7 @@ async fn the_served_tools_are_exactly_the_registrys_agent_surface_and_each_state
     assert_eq!(names, want);
 
     // Each exclusion replaces the patch the agent is working inside, undo history included.
-    for off in ["load", "new", "save", "serialize", "list_dir", "set_viewpoint"] {
+    for off in ["load", "save", "serialize", "list_dir", "set_viewpoint"] {
         assert!(REGISTRY.iter().any(|o| o.name == off && o.surface == Surface::ControlOnly),
                 "`{off}` is no longer a control-only row");
         assert!(!names.iter().any(|t| t == off), "`{off}` reached the agent surface");
@@ -439,7 +439,7 @@ async fn a_minted_address_serves_its_own_agent_and_dies_with_the_patch_that_spaw
     let (undone, _) = tool(&addr, "/mcp", 2, "undo", json!({})).await;
     assert!(undone.contains("\"changed\": false"), "the central session undid another's: {undone}");
 
-    call(&mut ctl, 3, "new", json!({})).await;
+    call(&mut ctl, 3, "load", json!({})).await;
     let roster = call(&mut ctl, 4, "list_harnesses", json!({})).await;
     assert_eq!(roster["instances"], json!([]), "the replaced patch's harnesses stayed: {roster}");
     let (refused, err) = tool(&addr, &path, 5, "add_node", json!({ "type": "Oscillator" })).await;

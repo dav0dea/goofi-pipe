@@ -158,7 +158,7 @@ fn a_later_shipped_directory_wins_the_name_without_dropping_the_earlier_tree() {
 }
 
 #[test]
-fn read_node_source_hands_back_the_file_that_is_actually_running() {
+fn a_named_type_hands_back_the_file_that_is_actually_running() {
     // `rescan` overwrites forwards, so this first-match-wins search has to walk the list backwards
     // to agree; dropping that `.rev()` passes every other test here.
     let mut g = scanning();
@@ -169,7 +169,7 @@ fn read_node_source_hands_back_the_file_that_is_actually_running() {
     g.state.system_nodes = vec![builtin.path().to_path_buf(), mine.path().to_path_buf()];
     rescan(&g);
 
-    let r = g.call("read_node_source", j!({ "type": "MyThing" }));
+    let r = g.call("list_nodes", j!({ "type": "MyThing" }));
     assert_eq!(r["source"], "5.0", "the file that RUNS is the file handed back: {r}");
     assert_eq!(r["provenance"], "shipped", "{r}");
     assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("my_thing.py")),
@@ -177,7 +177,7 @@ fn read_node_source_hands_back_the_file_that_is_actually_running() {
 
     write_node(&g.state.mount().join("nodes"), "my_thing.py", "9.0");
     rescan(&g);
-    let r = g.call("read_node_source", j!({ "type": "MyThing" }));
+    let r = g.call("list_nodes", j!({ "type": "MyThing" }));
     assert_eq!(r["provenance"], "patch", "{r}");
     assert_eq!(r["source"], "9.0", "{r}");
 }
@@ -201,6 +201,6 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
     emits(&opened, uid, 5.0); // the instance runs the patch's code
 
     // `new` swaps in an empty workspace, so a type the previous patch brought stops being addable.
-    opened.call("new", j!({}));
+    opened.call("load", j!({}));
     opened.refuse("add_node", j!({ "type": "MyThing" }));
 }

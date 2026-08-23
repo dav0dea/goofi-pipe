@@ -121,7 +121,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     let old_mount = g.state.mount();
     std::fs::write(old_mount.join("notes.md"), b"the previous patch's").unwrap();
 
-    g.call("new", j!({}));
+    g.call("load", j!({}));
 
     assert!(g.nodes().is_empty(), "no nodes");
     assert_eq!(g.call("inspect_layout", j!({}))["text"].as_str().unwrap().matches("tab `").count(), 1,

@@ -504,7 +504,7 @@ export class GraphStore {
 	/** Reset to an empty, unnamed patch. Nothing is written here: a New emits no
 	 * `save_path_changed`, so the `graph_replaced` snapshot is the sole carrier of the null path. */
 	async newPatch(): Promise<void> {
-		await this.ctl.call('new', {});
+		await this.ctl.call('load', {});
 	}
 
 	/** Group the named nodes into a sub-patch. Returns its instance id. */

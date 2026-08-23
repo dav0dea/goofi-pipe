@@ -66,7 +66,7 @@ fn the_ops_kept_off_the_agent_surface_are_a_decision_and_are_named_here() {
     // below replaces the patch an agent works inside, is the file browser's half, or is a harness op.
     let control_only: Vec<&str> =
         REGISTRY.iter().filter(|o| o.surface == Surface::ControlOnly).map(|o| o.name).collect();
-    assert_eq!(control_only, ["list_dir", "set_viewpoint", "serialize", "save", "load", "new",
+    assert_eq!(control_only, ["list_dir", "set_viewpoint", "serialize", "save", "load",
                               "list_harnesses", "spawn_harness", "stop_harness"]);
 }
 

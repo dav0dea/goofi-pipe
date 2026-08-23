@@ -67,8 +67,8 @@ fn age(g: &Graph, uid: Uid) -> String {
     }
 }
 
-/// `inspect_patch`: one scope drawn as a mermaid flowchart, under a header that identifies the
-/// patch, followed by every standing error in the WHOLE patch with the age of each.
+/// `inspect_patch`: ONE scope drawn as a mermaid flowchart, under a header that identifies the
+/// patch. Scope-wide and nothing more — the patch's standing errors are `get_patch`'s.
 pub fn patch(
     g: &Graph,
     scope: Option<Uid>,
@@ -150,21 +150,25 @@ pub fn patch(
         out.push_str("```\n\nuids: a uid is its mermaid id without the leading `n`.\n");
     }
 
-    let errored: Vec<Uid> = g.node_uids().into_iter().filter(|u| g.last_error(*u).is_some()).collect();
-    out.push_str("\nerrors (whole patch):\n");
-    if errored.is_empty() {
-        out.push_str("  none\n");
-    }
-    for uid in errored {
-        out.push_str(&format!(
-            "  ⚠ {} ({}): {}{}\n",
-            node_path(g, uid),
-            uid.to_hex(),
-            g.last_error(uid).unwrap_or(""),
-            age(g, uid),
-        ));
-    }
     Ok(out)
+}
+
+/// Every standing error in the patch, with the age of each — what `get_patch` answers, because a
+/// patch's health is the patch's, not a scope's. `inspect_patch` drew it under whichever scope was
+/// asked for, so the same list arrived again under each.
+pub fn errors(g: &Graph) -> Vec<Value> {
+    g.node_uids()
+        .into_iter()
+        .filter(|u| g.last_error(*u).is_some())
+        .map(|uid| {
+            serde_json::json!({
+                "node": uid.to_hex(),
+                "path": node_path(g, uid),
+                "error": g.last_error(uid).unwrap_or(""),
+                "standing": g.error_age(uid).map(|d| d.as_secs_f64()),
+            })
+        })
+        .collect()
 }
 
 /// One param in the inline form an agent feeds straight back into `edit_node`.

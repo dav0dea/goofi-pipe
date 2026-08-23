@@ -240,17 +240,10 @@ pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path:
 
 /// The front half of a load, against a mount that is not yet live. It stops AT the manifest,
 /// because the patch's own node types must be registered before `load_doc` resolves the graph.
-fn stage_load(
-    mount: &std::path::Path,
-    op: &str,
-    payload: &Value,
-) -> Result<(String, Option<String>), String> {
+fn stage_load(mount: &std::path::Path, payload: &Value) -> Result<(String, Option<String>), String> {
     let from_file = payload.get("path").and_then(|v| v.as_str()).filter(|p| !p.is_empty());
     let inline = payload.get("content").and_then(|v| v.as_str());
-    let (content, from_path, unpacked) = if op == "new" {
-        // A New patch IS a load, of an empty patch from nowhere, so the two cannot drift.
-        (Graph::new().serialize(), None, false)
-    } else if let Some(p) = from_file {
+    let (content, from_path, unpacked) = if let Some(p) = from_file {
         if inline.is_some() {
             return Err("load: a `path` to an archive or a `content` manifest, never both".into());
         }
@@ -261,9 +254,11 @@ fn stage_load(
         // Whether this file becomes the patch's home — the target a later silent Save overwrites.
         let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
         (manifest, adopt.then_some(path), true)
-    } else {
-        let content = inline.ok_or("load: give a `path` to a .gfi, or a `content` manifest")?;
+    } else if let Some(content) = inline {
         (content.to_string(), None, false)
+    } else {
+        // Naming no source IS the source: an empty patch, so New cannot drift from Load.
+        (Graph::new().serialize(), None, false)
     };
     // Only a workspace goofi minted empty is seeded: an archive has just unpacked the patch's OWN
     // workspace into `mount`, and goofi does not write into someone's patch.
@@ -962,13 +957,6 @@ impl AppState {
         if op == "get_state" {
             return Ok(state.doc.lock().unwrap().to_json());
         }
-        if op == "get_patch" {
-                return Ok(json!({
-                    "save_path": state.save_path(),
-                    "workspace": goofi_core::path::to_slash(&state.mount()),
-                    "dirty": state.is_dirty(),
-                }));
-            }
             // The harness ops touch no graph state either: they fork and signal children, and the
             // roster converges through `harness_changed` rather than by making a caller wait.
             if op == "list_harnesses" {
@@ -1000,7 +988,7 @@ impl AppState {
                 for (i, step) in steps.iter().enumerate() {
                     let name = step.get("op").and_then(|v| v.as_str());
                     let ok = name.and_then(ops::find).is_some_and(|o| {
-                        o.writes && !matches!(o.name, "compound" | "undo" | "redo" | "load" | "new")
+                        o.writes && !matches!(o.name, "compound" | "undo" | "redo" | "load")
                     });
                     if !ok {
                         return Err(format!(
@@ -1038,7 +1026,20 @@ impl AppState {
             let dirty = op == "inspect_patch" && state.is_dirty();
             let mut g = state.graph.lock().unwrap();
             match op.as_str() {
-                "list_nodes" => Ok(json!({ "types": schemas::catalog_types(&g) })),
+                // The catalog, or ONE entry of it in full. A type's source and provenance are the
+                // same entry with the file behind it read, so they are the same op narrowed.
+                "list_nodes" => match payload.get("type").and_then(|v| v.as_str()) {
+                    None => Ok(json!({ "types": schemas::catalog_types(&g) })),
+                    Some(ty) => {
+                        // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets
+                        // each directory overwrite the last, so a first-match search walks it backwards.
+                        let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
+                            .into_iter()
+                            .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
+                            .collect();
+                        inspect::node_source(&g, ty, &dirs)
+                    }
+                },
                 // Explicit, never watched: an agent calls it after writing a node file.
                 "rescan_nodes" => {
                     let (diff, _) = rescan(state, &mut g, &state.mount());
@@ -1608,15 +1609,14 @@ impl AppState {
                     Ok(json!({ "text": text }))
                 }
                 "list_globals" => Ok(inspect::globals(&g)),
-                "read_node_source" => {
-                    // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets each
-                    // directory overwrite the last, so a first-match search must walk it backwards.
-                    let dirs: Vec<(PathBuf, &str)> = [(state.mount().join("nodes"), "patch")]
-                        .into_iter()
-                        .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
-                        .collect();
-                    inspect::node_source(&g, parse_str(&payload, "type")?, &dirs)
-                }
+                // The open patch's identity AND its health. The error list was drawn under every
+                // `inspect_patch`, whichever scope was asked for, so it arrived again under each.
+                "get_patch" => Ok(json!({
+                    "save_path": state.save_path(),
+                    "workspace": goofi_core::path::to_slash(&state.mount()),
+                    "dirty": state.is_dirty(),
+                    "errors": inspect::errors(&g),
+                })),
                 "serialize" => Ok(json!({ "yaml": g.serialize() })),
                 // The mount is a per-run temp directory under a random name, so asking is the only
                 // way a client or a harness can find it.
@@ -1645,12 +1645,12 @@ impl AppState {
                     Ok(json!({ "path": path }))
                 }
                 // One arm for every source, so nothing after the read can drift between them.
-                "load" | "new" => {
+                "load" => {
                     // Every source mounts FRESH, and the live mount is swapped only once the manifest
                     // has parsed, so a refused load leaves the open patch untouched on both planes.
                     let fresh = new_mount();
                     let (content, from_path) =
-                        stage_load(&fresh, &op, &payload).inspect_err(|_| remove_mount(&fresh))?;
+                        stage_load(&fresh, &payload).inspect_err(|_| remove_mount(&fresh))?;
                     // ORDER is load-bearing: the types the patch SHIPS are registered before the
                     // manifest resolves, or the unknown-type gate fires on the nodes the archive brought.
                     rescan(state, &mut g, &fresh);

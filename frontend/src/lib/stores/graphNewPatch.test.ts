@@ -26,7 +26,7 @@ describe('GraphStore.newPatch — the reset door', () => {
 
 		// `list_nodes` is the boot catalog fetch a hello with no `node_types` triggers — not ours.
 		const mine = fc.recordedCalls().filter((c) => c.op !== 'list_nodes');
-		expect(mine).toEqual([{ op: 'new', payload: {} }]);
+		expect(mine).toEqual([{ op: 'load', payload: {} }]);
 		expect(history().canUndo, 'a New is not undoable — the manager dropped its history').toBe(
 			false
 		);

@@ -25,7 +25,6 @@ export type OpName =
 	| 'serialize'
 	| 'save'
 	| 'load'
-	| 'new'
 	| 'undo'
 	| 'redo'
 	| 'inspect_patch'
@@ -34,5 +33,4 @@ export type OpName =
 	| 'list_globals'
 	| 'list_harnesses'
 	| 'spawn_harness'
-	| 'stop_harness'
-	| 'read_node_source';
+	| 'stop_harness';

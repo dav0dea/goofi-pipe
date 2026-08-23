@@ -57,9 +57,10 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "list_dir", surface: ControlOnly, writes: false, args: "path:string",
          doc: "List a directory on the goofi host — the save/load browser's read.",
          result: "{path, parent, entries: [{name, dir}], roots}" },
-    Op { name: "list_nodes", surface: Mcp, writes: false, args: "",
-         doc: "The node palette: every registered type with its slots, params, docs and availability.",
-         result: "{types: [{type, category, doc, input_slots, output_slots, params, available}]}" },
+    Op { name: "list_nodes", surface: Mcp, writes: false, args: "type:string",
+         doc: "The node palette: every registered type with its slots, params, docs and availability.\n\n\
+               Name a `type` and you get that ONE entry instead, in full — the same fields plus where it came from and its source text. A native type has no source to read; copy a python node into the patch workspace to modify one.",
+         result: "{types: [{type, category, doc, input_slots, output_slots, params, available}]} — or, for one `type`, that entry plus {language, tier, provenance, path, source}." },
     Op { name: "rescan_nodes", surface: Mcp, writes: true, args: "",
          doc: "Re-read the shipped and patch node directories; live instances of a changed type restart onto the new code. Call after writing a node file.",
          result: "{added: [type], changed: [type], removed: [type]}" },
@@ -136,15 +137,13 @@ pub static REGISTRY: &[Op] = &[
          doc: "Pack the patch and its workspace to a `.gfi` at `path`, and remember it as the patch's home.",
          result: "{path: string}" },
     Op { name: "load", surface: ControlOnly, writes: true, args: "path:string content:string adopt:bool",
-         doc: "Replace the open patch. `path` names a `.gfi` and brings its workspace with it; \
-               `content` is an inline YAML manifest and carries no workspace. Exactly one of the \
-               two. `adopt` (default true) decides whether a loaded FILE becomes the patch's home, \
-               which is what a later silent Save overwrites; `/patch.gfi` passes false, because the \
-               file a browser upload came from lives on the user's machine and the staged copy this \
-               reads is deleted immediately.",
-         result: "{ok: true}" },
-    Op { name: "new", surface: ControlOnly, writes: true, args: "",
-         doc: "Replace the open patch with an empty one. Unsaved work is lost.",
+         doc: "Replace the open patch, losing unsaved work. `path` names a `.gfi` and brings its \
+               workspace with it; `content` is an inline YAML manifest and carries no workspace; \
+               NEITHER is an empty patch, which is a New. At most one of the two. `adopt` (default \
+               true) decides whether a loaded FILE becomes the patch's home, which is what a later \
+               silent Save overwrites; `/patch.gfi` passes false, because the file a browser upload \
+               came from lives on the user's machine and the staged copy this reads is deleted \
+               immediately.",
          result: "{ok: true}" },
     Op { name: "undo", surface: Mcp, writes: true, args: "",
          doc: "Undo this session's last graph command. Each caller's session has its own stack.",
@@ -153,7 +152,7 @@ pub static REGISTRY: &[Op] = &[
          doc: "Redo this session's last undone graph command.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
     Op { name: "inspect_patch", surface: Mcp, writes: false, args: "scope:uid",
-         doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires — plus the whole patch's standing errors and how long each has stood. No arg = the root scope.",
+         doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires. No arg = the root scope. Scope-wide and nothing more: what is broken is the whole patch's business, so get_patch answers that.",
          result: "{text: string}" },
     Op { name: "inspect_node", surface: Mcp, writes: false,
          args: "node:uid! slot:string params:bool error:bool",
@@ -163,8 +162,8 @@ pub static REGISTRY: &[Op] = &[
          doc: "The replicated control-plane projection — nodes, links, instances, globals, arrangement — as plain JSON. What every client mirrors, read without the sync protocol that carries it.",
          result: "{nodes, links, instances, globals, arrangement} — each an object keyed by id." },
     Op { name: "get_patch", surface: Mcp, writes: false, args: "",
-         doc: "Where the open patch lives, where its workspace is, and whether it differs from disk.",
-         result: "{save_path: string | null, workspace: string, dirty: bool}" },
+         doc: "The open patch itself: where it lives, where its workspace is, whether it differs from disk, and every standing error with how long it has stood. One read for `is my patch healthy, and have I saved it`.",
+         result: "{save_path: string | null, workspace: string, dirty: bool, errors: [{node, path, error, standing}]}" },
     Op { name: "list_globals", surface: Mcp, writes: false, args: "",
          doc: "Every patch global — what an expression can read and set_global can write.",
          result: "{globals: [{name, type, value, system: bool}]}" },
@@ -177,9 +176,6 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "stop_harness", surface: ControlOnly, writes: false, args: "instance:string!",
          doc: "Stop a running harness (SIGTERM, then SIGKILL), or dismiss one that already exited. Its MCP address drops immediately; the exit code arrives on harness_changed.",
          result: "{ok: true}" },
-    Op { name: "read_node_source", surface: Mcp, writes: false, args: "type:string!",
-         doc: "A node type's source and provenance. A native type has no source text — copy a Python node into the patch workspace to modify it.",
-         result: "{type, language, tier, source: string | null, path: string | null, provenance, doc, inputs, outputs}" },
 ];
 
 /// The row for `name`, if the op exists.
