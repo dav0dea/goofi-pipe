@@ -92,20 +92,26 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
         want
     }, "the member and its two ports are what the scope holds");
 
-    // The crossing cables themselves are UNTOUCHED. A port is a naming indirection, so the runtime
-    // link stays flat leaf→leaf and no frame takes a detour through the boundary.
+    // A crossing cable now STOPS at the port it crosses at, and the port carries it the rest of the
+    // way: one wire each side of the wall, both ordinary links. Where the frames really go is the
+    // graph's to resolve at plan time, not something the stored link has to spell out.
     let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
-    let flat = |a: &str, b: &str| links.iter().any(|l| l["node_out"] == a && l["node_in"] == b);
-    assert!(flat(&hex(osc), &hex(buf)), "the cable in still names the leaf: {links:?}");
-    assert!(flat(&hex(buf), &hex(sink)), "and so does the cable out: {links:?}");
-    assert_eq!(links.len(), 4, "…plus the two ports' inner wires, and nothing else: {links:?}");
+    let wire = |a: &str, b: &str| links.iter().any(|l| l["node_out"] == a && l["node_in"] == b);
+    assert!(wire(&hex(osc), &inp), "the cable in stops at the port: {links:?}");
+    assert!(wire(&inp, &hex(buf)), "…and the port carries it to the member: {links:?}");
+    assert!(wire(&hex(buf), &outp), "the cable out drains into its port: {links:?}");
+    assert!(wire(&outp, &hex(sink)), "…and the port carries it onward: {links:?}");
+    assert_eq!(links.len(), 4, "two cables, each in two halves, and nothing else: {links:?}");
 
     // Expanding is the exact inverse: the ports go, the members come back, the cables never moved.
     g.call("expand_instance", j!({ "inst_id": inst }));
     assert!(g.instances().is_empty(), "the instance dropped out of the forest");
     assert_eq!(g.nodes().len(), 3, "and every leaf came back to root");
     let after = g.doc()["links"].as_array().cloned().unwrap_or_default();
-    assert_eq!(after.len(), 2, "the minted ports took their inner wires with them: {after:?}");
+    assert_eq!(after.len(), 2, "each cable is whole again, spliced across the vanished ports: {after:?}");
+    let whole = |a: &str, b: &str| after.iter().any(|l| l["node_out"] == a && l["node_in"] == b);
+    assert!(whole(&hex(osc), &hex(buf)) && whole(&hex(buf), &hex(sink)),
+            "and each names the leaves it always ran between: {after:?}");
 
     // Widen the selection and the cable between the two stops crossing, so nothing is minted for it.
     let both = group(&g, &[hex(osc), hex(buf)]);
@@ -117,8 +123,10 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     // Two cables of the SAME direction cross at once. Each port is named from the patch's one
     // display-name namespace, so the second has to see the first — a batch that names every port
     // from the state it started in mints two `out0`s, which `nd()` cannot tell apart.
-    let far = g.add("Buffer");
-    g.link(osc, "out", far, "data");
+    let far = g.call("add_node", j!({ "type": "Buffer", "inst_id": both, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                            "node_in": far, "slot_in": "data" }));
     let pair = group(&g, &[hex(buf), hex(osc)]);
     let doc = g.doc();
     let mut minted: Vec<&str> =
@@ -127,14 +135,14 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     minted.dedup();
     assert_eq!(minted.len(), g.ports(&pair).len(), "every minted port has its own name: {minted:?}");
     g.call("expand_instance", j!({ "inst_id": pair }));
-    g.call("remove_node", j!({ "node": hex(far) }));
+    g.call("remove_node", j!({ "node": far }));
 
     // Group that sub-patch in turn. The cable still crosses, but the scope it crosses out of ALREADY
     // exposes it, so the outer port lands on the inner one's port rather than minting a rival for
     // the same stream — the reuse is what keeps one leaf slot behind exactly one chain of ports.
     let outer = group(&g, std::slice::from_ref(&both));
     let (_, nested_inner) = port_of(&g, &outer, "OutArray");
-    assert_eq!(nested_inner, Some((both.clone(), drain)), "the outer port names the inner one");
+    assert_eq!(nested_inner, Some((drain, "value".to_string())), "the outer port names the inner one");
     assert_eq!(g.ports(&both).len(), 1, "and nothing new was minted inside");
 
     // A selection that MIXES a sub-patch with plain nodes nests the sub-patch like any other
@@ -211,7 +219,7 @@ fn removing_a_grouped_member_leaves_no_dangling_entry() {
 }
 
 #[test]
-fn a_cable_onto_a_boundary_resolves_to_the_inner_leaf() {
+fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
@@ -222,14 +230,19 @@ fn a_cable_onto_a_boundary_resolves_to_the_inner_leaf() {
     g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                            "node_in": inst, "slot_in": bnd }));
 
-    // Two cables, one per scope: the port's inner wire, and the external one — which the runtime
-    // holds flat leaf→leaf, so the facade endpoint the caller NAMED is not what it stored.
+    // Two cables, one per scope, and BOTH end at the port: the facade address the caller named is
+    // folded onto its port, and the port carries it the rest of the way. What the frames really do
+    // is the graph's to resolve, so no stored link has to spell the far end out.
     let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
     assert_eq!(links.len(), 2, "the external cable and the port's inner one: {links:?}");
     assert_eq!(g.inner(&bnd), Some((hex(buf), "data".into())), "the inner one, inside the scope");
-    let flat = links.iter().find(|l| l["node_out"] == hex(osc)).expect("the external cable");
-    assert_eq!(flat["node_in"], hex(buf), "resolved to the inner leaf, not the instance");
-    assert_eq!(flat["slot_in"], "data");
+    let outer = links.iter().find(|l| l["node_out"] == hex(osc)).expect("the external cable");
+    assert_eq!(outer["node_in"], bnd, "the outer cable names the PORT, not the facade or the leaf");
+    assert_eq!(outer["slot_in"], "value");
+
+    // …and the STREAM behind it is the leaf, which is the question the runtime asks.
+    let read = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(read.contains("buffer0"), "the leaf is what the wire ends up feeding: {read}");
 }
 
 #[test]
@@ -287,8 +300,8 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     // The nested scope's facade is wired at ITS port, which is a slot name like any other.
     wire(&g, &ob, "out", &inner, &ib);
 
-    assert_eq!(g.inner(&ob), Some((inner.clone(), ib.clone())),
-               "wired to the nested scope's facade at its own port, not dropped");
+    assert_eq!(g.inner(&ob), Some((ib.clone(), "value".to_string())),
+               "a facade address IS its port, so that is what the wire names");
 
     // Removing the nested port UNWIRES the outer one and leaves it standing — the state a fresh
     // port is minted in, which is where a leaf lands when the node feeding it is deleted.
@@ -303,14 +316,14 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     let again = boundary(&g, &inner, "out");
     wire(&g, &again, "out", &hex(buf), "out");
     wire(&g, &ob, "out", &inner, &again);
-    assert_eq!(g.inner(&ob), Some((inner.clone(), again)), "the standing port took a new target");
+    assert_eq!(g.inner(&ob), Some((again, "value".to_string())), "the standing port took a new target");
 
     // …and undo walks all of it back, ending with the outer port naming the port it first exposed.
     for _ in 0..3 {
         g.call("undo", j!({}));
     }
     assert_eq!(g.call("undo", j!({}))["changed"], true);
-    assert_eq!(g.inner(&ob), Some((inner, ib)), "the outer port names the inner one again");
+    assert_eq!(g.inner(&ob), Some((ib, "value".to_string())), "the outer port names the inner one again");
 }
 
 #[test]
@@ -359,19 +372,19 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     // A port that DOES exist, aimed at an inner target that cannot take the wire.
     g.refuse("add_link", j!({ "node_out": bnd, "slot_out": "value",
                              "node_in": hex(buf), "slot_in": "nope" }));
-    // …and one aimed the wrong way round: an input port FEEDS the sub-patch.
-    g.refuse("add_link", j!({ "node_out": hex(buf), "slot_out": "out",
-                             "node_in": bnd, "slot_in": "value" }));
+    // …and one aimed the wrong way round: an input port FEEDS the sub-patch, so its consumer side
+    // faces OUTWARD and a member cannot reach it. One rule — the two ends must face one scope.
+    let why = g.refuse("add_link", j!({ "node_out": hex(buf), "slot_out": "out",
+                                        "node_in": bnd, "slot_in": "value" }));
+    assert!(why.contains("not in the same sub-patch"), "the face rule says which wall: {why}");
 
-    // …and a cable onto a real but UNWIRED port names the op that fills the port.
-    let why = g.refuse("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
-                                        "node_in": inst, "slot_in": bnd }));
-    assert!(why.contains("add_link it to a member"), "an unwired port names the op that fills it: {why}");
-    // Once the port IS wired the same call lands, so the refusal gates the impossible.
-    wire(&g, &bnd, "in", &hex(buf), "data");
+    // A cable onto an UNWIRED port LANDS: the port is a node, and a node with nothing behind it
+    // takes a wire exactly as an unconnected leaf does. The stream arrives when the inside is wired.
     let made = g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
                                        "node_in": inst, "slot_in": bnd }));
-    assert_eq!(made["node_in"], hex(buf), "the boundary resolves to its leaf: {made}");
+    assert_eq!(made["node_in"], bnd, "the outer cable names the port: {made}");
+    wire(&g, &bnd, "in", &hex(buf), "data");
+    assert_eq!(g.inner(&bnd), Some((hex(buf), "data".into())), "and the inside fills in after it");
 }
 
 #[test]

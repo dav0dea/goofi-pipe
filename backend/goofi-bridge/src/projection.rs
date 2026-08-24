@@ -79,7 +79,7 @@ pub fn of(g: &Graph) -> Value {
         }
     }
 
-    let mut links: Vec<Value> = g
+    let links: Vec<Value> = g
         .links_view()
         .into_iter()
         .map(|l| {
@@ -89,19 +89,6 @@ pub fn of(g: &Graph) -> Value {
             })
         })
         .collect();
-    // A port's inner wire is a link, so the cable drawn inside a sub-patch is read the same way as
-    // every other cable rather than reconstructed from the port's own record.
-    for scope in g.scope_uids().into_iter().filter_map(|u| g.scope(u)) {
-        for (id, st) in scope.stubs.iter() {
-            let Some((inner, slot)) = &st.inner else { continue };
-            let (a, so, b, si) = match st.dir {
-                subpatch::Dir::In => (id, subpatch::BOUNDARY_SLOT, inner, slot.as_str()),
-                subpatch::Dir::Out => (inner, slot.as_str(), id, subpatch::BOUNDARY_SLOT),
-            };
-            links.push(json!({ "node_out": a.to_hex(), "slot_out": so,
-                               "node_in": b.to_hex(), "slot_in": si }));
-        }
-    }
 
     // Known limitation: this Map is a BTreeMap, so a full mirror shows globals alphabetized until
     // the next live edit. A stable doc order needs an ordered globals shape.

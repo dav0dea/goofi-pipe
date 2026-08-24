@@ -63,7 +63,7 @@ flowchart LR
   n000000000001[\"oscillator0: Oscillator<br/>000000000001\"]
   n000000000002[\"⚠ _testfail0: _TestFail<br/>000000000002\"]
   n000000000004[[\"subpatch0<br/>000000000004\"]]
-  n000000000001 -- out→data --> n000000000004
+  n000000000001 -- out→value --> n000000000004
 ```
 
 uids: a uid is its mermaid id without the leading `n`.
@@ -96,7 +96,7 @@ scope: subpatch0 (000000000004)
 flowchart LR
   n000000000005([\"in0: InArray<br/>000000000005\"])
   n000000000003[\"buffer0: Buffer<br/>000000000003\"]
-  n000000000005 -- data --> n000000000003
+  n000000000005 -- value\u{2192}data --> n000000000003
 ```
 
 uids: a uid is its mermaid id without the leading `n`.

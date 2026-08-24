@@ -305,6 +305,15 @@ pub struct ExprInfo {
 }
 
 /// The authoritative graph + scheduler.
+/// One end of a wire, resolved once: the slot's `&'static` name, its dtype, and whether it takes
+/// many wires. A leaf reads it off its manifest; a port answers for itself.
+#[derive(Clone, Copy)]
+struct SlotFace {
+    name: &'static str,
+    kind: goofi_core::SlotType,
+    multi: bool,
+}
+
 /// What a source address really produces. A port relays rather than runs, so its stream is
 /// whatever is wired into it — and "nothing yet" is an answer, not a failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -683,6 +692,12 @@ impl Graph {
 
     pub fn contains(&self, uid: Uid) -> bool {
         self.nodes.contains_key(&uid)
+    }
+
+    /// Is `uid` a live endpoint a wire may name — a leaf or a boundary port? A facade is not: an
+    /// address naming one is folded onto its port before any link is stored.
+    pub fn wirable(&self, uid: Uid) -> bool {
+        self.nodes.contains_key(&uid) || self.stub(uid).is_some()
     }
 
     /// Node uids in insertion order.
@@ -1088,7 +1103,12 @@ impl Graph {
     /// The parent scope of a node/scope (`None` = ROOT). Absent ⇒ ROOT, so a plain flat graph
     /// needs no entries.
     pub fn scope_of(&self, uid: Uid) -> Option<Uid> {
-        self.scope_of.get(&uid).copied().flatten()
+        // A port's membership is the scope that HOLDS it — it is a member like any other, so every
+        // reader of membership answers for one without knowing it is a port.
+        match self.scope_of.get(&uid) {
+            Some(parent) => *parent,
+            None => self.stub(uid).map(|(scope, _)| scope),
+        }
     }
 
     /// All scope uids (each == its collapsed facade node's uid).
@@ -1116,7 +1136,21 @@ impl Graph {
     /// Chain-resolve a scope's stub port to the single physical inner leaf `(uid, slot)` it exposes,
     /// walking nested scopes; `None` if unwired.
     pub fn resolve_stub(&self, scope: Uid, stub: &str) -> subpatch::StubInner {
-        subpatch::resolve_stub(&self.scopes, scope, stub)
+        let port = Uid::from_hex(stub).filter(|p| self.stub(*p).is_some_and(|(s, _)| s == scope))?;
+        let mut at = port;
+        // A hand-edited `.gfi` can persist a cyclic chain; walking it must stop, not recurse.
+        let mut seen: Vec<Uid> = Vec::new();
+        loop {
+            if seen.contains(&at) {
+                return None;
+            }
+            seen.push(at);
+            let (node, slot) = self.port_inner(at)?;
+            match self.stub(node).is_some() {
+                true => at = node,
+                false => return Some((node, slot.to_string())),
+            }
+        }
     }
 
     /// The output slots of anything a uid names: `(key, label, dtype)`. A leaf's declarations; a
@@ -1186,41 +1220,102 @@ impl Graph {
                 return Some(Stream::Open(at));
             }
             seen.push(at);
-            let (scope, st) = self.stub(at)?;
-            let dir = st.dir;
-            let Some((next, next_slot)) = self.stub_feed(scope, at, dir) else {
+            self.stub(at)?;
+            let Some((next, next_slot)) = self.stub_feed(at) else {
                 return Some(Stream::Open(at));
             };
             (at, slot) = (next, next_slot);
         }
     }
 
-    /// One hop back from a port to whatever feeds it: for an OUT port the member it drains, for an
-    /// IN port the wire arriving from outside the sub-patch.
-    fn stub_feed(&self, scope: Uid, port: Uid, dir: subpatch::Dir) -> Option<(Uid, String)> {
-        let (inner, inner_slot) = self.resolve_stub(scope, &port.to_hex())?;
-        match dir {
-            subpatch::Dir::Out => Some((inner, inner_slot)),
+    /// The wire on a port's INSIDE — the member it feeds (an IN port) or drains (an OUT port). An
+    /// ordinary link, so this is a lookup rather than a field beside `links` to keep in step.
+    pub fn port_inner(&self, port: Uid) -> Option<(Uid, &'static str)> {
+        let (_, st) = self.stub(port)?;
+        match st.dir {
             subpatch::Dir::In => {
-                let slot = self.resolve_input(inner, &inner_slot)?;
-                self.links
-                    .iter()
-                    .find(|l| l.node_in == inner && l.slot_in == slot)
-                    .map(|l| (l.node_out, l.slot_out.to_string()))
+                self.links.iter().find(|l| l.node_out == port).map(|l| (l.node_in, l.slot_in))
+            }
+            subpatch::Dir::Out => {
+                self.links.iter().find(|l| l.node_in == port).map(|l| (l.node_out, l.slot_out))
             }
         }
     }
 
-    /// The output slot decl named `slot` on node `uid`, if any — the shared lookup behind
-    /// `output_slot_type` / `resolve_output`.
-    fn find_output(&self, uid: Uid, slot: &str) -> Option<&'static goofi_node::OutputDecl> {
-        self.nodes.get(&uid)?.manifest.outputs.iter().find(|o| o.name == slot)
+    /// Every real leaf INPUT an output address reaches, walking forward through any chain of ports.
+    /// A port relays, so what a producer really feeds is whatever sits past it — and it may fan out.
+    fn sinks(&self, node: Uid, slot: &'static str) -> Vec<(Uid, &'static str)> {
+        let (mut out, mut seen) = (Vec::new(), Vec::new());
+        let mut stack = vec![(node, slot)];
+        while let Some((n, s)) = stack.pop() {
+            for l in self.links.iter().filter(|l| l.node_out == n && l.slot_out == s) {
+                match self.stub(l.node_in).is_some() {
+                    // A hand-edited `.gfi` can persist a cyclic chain; walking it must stop.
+                    true if !seen.contains(&l.node_in) => {
+                        seen.push(l.node_in);
+                        stack.push((l.node_in, l.slot_in));
+                    }
+                    true => {}
+                    false => out.push((l.node_in, l.slot_in)),
+                }
+            }
+        }
+        out
     }
 
-    /// The input slot decl named `slot` on node `uid`, if any — the shared lookup behind
-    /// `input_slot_type` / `resolve_input` / `is_multi_input`.
-    fn find_input(&self, uid: Uid, slot: &str) -> Option<&'static goofi_node::SlotDecl> {
-        self.nodes.get(&uid)?.manifest.inputs.iter().find(|s| s.name == slot)
+    /// One hop back from a port to whatever feeds it — the wire arriving AT it, whichever side of
+    /// the wall that is. A port relays, so its direction decides which side is which but never what
+    /// the answer is: the stream is simply what is wired in.
+    fn stub_feed(&self, port: Uid) -> Option<(Uid, String)> {
+        self.links.iter().find(|l| l.node_in == port).map(|l| (l.node_out, l.slot_out.to_string()))
+    }
+
+    /// The scope an end of a wire FACES. A leaf faces the scope it lives in; a port relays across a
+    /// wall, so it faces its own scope on one side and the parent on the other. Two ends may be
+    /// linked exactly when their faces agree — which is one rule for a cable inside a sub-patch, a
+    /// cable outside it, and the refusal of an in-port wired the wrong way round.
+    fn face(&self, uid: Uid, producer: bool) -> Option<Option<Uid>> {
+        if let Some((scope, st)) = self.stub(uid) {
+            let inward = st.dir == subpatch::Dir::In;
+            return Some(match inward == producer {
+                true => Some(scope),
+                false => self.scope_of(scope),
+            });
+        }
+        (self.nodes.contains_key(&uid) || self.scopes.contains_key(&uid)).then(|| self.scope_of(uid))
+    }
+
+    /// One end of a wire: the `&'static` name a link is keyed by, the dtype the cross-dtype check
+    /// needs, and whether it takes many wires. Owned rather than a borrowed decl, because a PORT
+    /// has no manifest to borrow one from — its dtype is its own, fixed by its type at birth.
+    fn find_output(&self, uid: Uid, slot: &str) -> Option<SlotFace> {
+        if let Some((_, st)) = self.stub(uid) {
+            return (slot == subpatch::BOUNDARY_SLOT)
+                .then_some(SlotFace { name: subpatch::BOUNDARY_SLOT, kind: st.dtype, multi: false });
+        }
+        self.nodes
+            .get(&uid)?
+            .manifest
+            .outputs
+            .iter()
+            .find(|o| o.name == slot)
+            .map(|o| SlotFace { name: o.name, kind: o.kind, multi: false })
+    }
+
+    /// The consumer end, as [`Graph::find_output`] is the producer end. A port wears the one
+    /// `value` slot on both sides: it relays, so it is a consumer and a producer of the same wire.
+    fn find_input(&self, uid: Uid, slot: &str) -> Option<SlotFace> {
+        if let Some((_, st)) = self.stub(uid) {
+            return (slot == subpatch::BOUNDARY_SLOT)
+                .then_some(SlotFace { name: subpatch::BOUNDARY_SLOT, kind: st.dtype, multi: false });
+        }
+        self.nodes
+            .get(&uid)?
+            .manifest
+            .inputs
+            .iter()
+            .find(|s| s.name == slot)
+            .map(|s| SlotFace { name: s.name, kind: s.kind, multi: s.multi })
     }
 
     fn output_slot_type(&self, uid: Uid, slot: &str) -> Option<goofi_core::SlotType> {
@@ -1309,6 +1404,11 @@ impl Graph {
         if member == leaf {
             return slot.to_string();
         }
+        // The thing crossing is ALREADY a port of this member — one leaf slot sits behind exactly
+        // one chain of ports, so the outer port names this one rather than minting a rival.
+        if self.stub(leaf).is_some_and(|(s, _)| s == member) {
+            return leaf.to_hex();
+        }
         if let Some(id) = self.stub_exposing(member, leaf, slot, dir) {
             return id.to_hex();
         }
@@ -1334,11 +1434,14 @@ impl Graph {
             subpatch::Dir::In => [base[0] - 40.0, base[1]],
         };
         if let Some(s) = self.scopes.get_mut(&member) {
-            let mut st = subpatch::Stub::new(dir, dtype, pos, name);
-            st.inner = Some(inner);
-            s.stubs.insert(id, st);
+            s.stubs.insert(id, subpatch::Stub::new(dir, dtype, pos, name));
             minted.push((member, id));
         }
+        let (node, slot) = inner;
+        let _ = match dir {
+            subpatch::Dir::In => self.add_link(id, subpatch::BOUNDARY_SLOT, node, &slot),
+            subpatch::Dir::Out => self.add_link(node, &slot, id, subpatch::BOUNDARY_SLOT),
+        };
         id.to_hex()
     }
 
@@ -1388,9 +1491,14 @@ impl Graph {
         let disp = self.fresh_name("subpatch");
         self.scopes.insert(scope_uid, Scope::new(disp, pos, IndexMap::new()));
 
-        // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
-        //    naming the DIRECT member; both or neither leaves the link verbatim.
-        let mut seen: std::collections::HashSet<(Uid, &'static str, bool)> = std::collections::HashSet::new();
+        // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a
+        //    port for the slot it crosses at, and the cable is SPLIT in two around it — the outer
+        //    half ends at the port, the inner half carries it to the member. Both are ordinary
+        //    links; several cables leaving one slot share one port.
+        let mut ports: std::collections::HashMap<(Uid, &'static str, bool), Uid> =
+            std::collections::HashMap::new();
+        let mut wires: Vec<(Uid, String, Uid, String)> = Vec::new();
+        let mut cut: Vec<Link> = Vec::new();
         let (mut in_n, mut out_n) = (0usize, 0usize);
         // Snapshot the links: `expose_in_nested_member` may MINT an intermediate stub and needs
         // `&mut self`, so the classification cannot hold a borrow on `self.links`.
@@ -1398,42 +1506,74 @@ impl Graph {
         for l in &links {
             let out_m = self.containing_member(l.node_out, &member_set);
             let in_m = self.containing_member(l.node_in, &member_set);
-            match (out_m, in_m) {
-                (Some(om), None) => {
-                    if !seen.insert((l.node_out, l.slot_out, true)) {
-                        continue;
+            let (member, at_slot, outward) = match (out_m, in_m) {
+                (Some(om), None) => (om, l.slot_out, true),
+                (None, Some(im)) => (im, l.slot_in, false),
+                _ => continue,
+            };
+            let end = if outward { l.node_out } else { l.node_in };
+            let key = (end, at_slot, outward);
+            let port = match ports.get(&key) {
+                Some(id) => *id,
+                None => {
+                    let (dir, dtype, at) = match outward {
+                        true => (
+                            Dir::Out,
+                            self.output_slot_type(end, at_slot).unwrap_or(goofi_core::SlotType::Array),
+                            [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64],
+                        ),
+                        false => (
+                            Dir::In,
+                            self.input_slot_type(end, at_slot).unwrap_or(goofi_core::SlotType::Array),
+                            [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64],
+                        ),
+                    };
+                    let inner_slot = self.expose_in_nested_member(member, end, at_slot, dir, minted);
+                    let id = self.add_stub(scope_uid, dir, dtype, at, None)?;
+                    match outward {
+                        true => {
+                            wires.push((member, inner_slot, id, subpatch::BOUNDARY_SLOT.to_string()));
+                            out_n += 1;
+                        }
+                        false => {
+                            wires.push((id, subpatch::BOUNDARY_SLOT.to_string(), member, inner_slot));
+                            in_n += 1;
+                        }
                     }
-                    let dtype = self.output_slot_type(l.node_out, l.slot_out).unwrap_or(goofi_core::SlotType::Array);
-                    let inner_slot = self.expose_in_nested_member(om, l.node_out, l.slot_out, Dir::Out, minted);
-                    let at = [pos[0] + 220.0, pos[1] + 40.0 * out_n as f64];
-                    let id = self.add_stub(scope_uid, Dir::Out, dtype, at, None)?;
-                    if let Some(st) = self.stub_mut(scope_uid, id) {
-                        st.inner = Some((om, inner_slot));
-                    }
-                    out_n += 1;
+                    ports.insert(key, id);
+                    id
                 }
-                (None, Some(im)) => {
-                    if !seen.insert((l.node_in, l.slot_in, false)) {
-                        continue;
-                    }
-                    let dtype = self.input_slot_type(l.node_in, l.slot_in).unwrap_or(goofi_core::SlotType::Array);
-                    let inner_slot = self.expose_in_nested_member(im, l.node_in, l.slot_in, Dir::In, minted);
-                    let at = [pos[0] - 40.0, pos[1] + 40.0 * in_n as f64];
-                    let id = self.add_stub(scope_uid, Dir::In, dtype, at, None)?;
-                    if let Some(st) = self.stub_mut(scope_uid, id) {
-                        st.inner = Some((im, inner_slot));
-                    }
-                    in_n += 1;
-                }
-                _ => {}
-            }
+            };
+            cut.push(l.clone());
+            wires.push(match outward {
+                true => (
+                    port,
+                    subpatch::BOUNDARY_SLOT.to_string(),
+                    l.node_in,
+                    l.slot_in.to_string(),
+                ),
+                false => (
+                    l.node_out,
+                    l.slot_out.to_string(),
+                    port,
+                    subpatch::BOUNDARY_SLOT.to_string(),
+                ),
+            });
         }
+        // The whole cable goes, so the two halves replace it rather than racing its single-input
+        // eviction — a port wired to a member's input would otherwise evict the very cable it carries.
+        self.links.retain(|l| !cut.contains(l));
 
         // 3. Re-tag membership. Members stay live; only `scope_of` changes.
         for &m in members {
             self.set_member_scope(m, Some(scope_uid));
         }
         self.scope_of.insert(scope_uid, parent);
+        // 4. …and only NOW wire the minted ports: a cable's two ends must face the same scope, and
+        //    until the re-tag above there was no scope for them to face.
+        for (a, so, b, si) in wires {
+            self.add_link(a, &so, b, &si)?;
+        }
         Ok(scope_uid)
     }
 
@@ -1491,9 +1631,11 @@ impl Graph {
             .get(&p)
             .map(|ps| {
                 ps.stubs
-                    .iter()
-                    .filter(|(_, st)| st.inner.as_ref().map(|(u, _)| *u == scope).unwrap_or(false))
-                    .map(|(id, st)| (p, *id, st.inner.clone()))
+                    .keys()
+                    .filter_map(|id| {
+                        let inner = self.port_inner(*id)?;
+                        (inner.0 == scope).then(|| (p, *id, Some((inner.0, inner.1.to_string()))))
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -1538,37 +1680,33 @@ impl Graph {
         let dropped = self.stub_names(scope);
         let restored = self.scope_members(scope);
         let parent = self.scope_of(scope); // the grandparent scope members fall back to
-        // The scope dissolves but its members survive, so a parent stub that exposed one of its
-        // ports must FOLLOW to the leaf rather than dangle.
-        if let Some(p) = parent {
-            let targets: Vec<(Uid, String)> = self
-                .scopes
-                .get(&p)
-                .map(|ps| {
-                    ps.stubs
-                        .iter()
-                        .filter_map(|(id, st)| {
-                            st.inner.as_ref().and_then(|(u, cid)| (*u == scope).then(|| (*id, cid.clone())))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for (id, cid) in targets {
-                // Re-point to the child stub's OWN inner, ONE level down: the fully-resolved leaf
-                // would be wrong when it is buried in a nested scope that only moves up one level.
-                let child_inner = Uid::from_hex(&cid)
-                    .and_then(|c| self.scopes.get(&scope).and_then(|s| s.stubs.get(&c)))
-                    .and_then(|st| st.inner.clone());
-                if let Some(st) = self.scopes.get_mut(&p).and_then(|ps| ps.stubs.get_mut(&id)) {
-                    st.inner = child_inner;
-                }
+
+        // Every port is about to go, and each carried half a cable on either side of it. Capture the
+        // JOIN of those halves — the wall is what the two halves existed for, and the wall is going.
+        let ports: Vec<Uid> =
+            self.scopes.get(&scope).map(|s| s.stubs.keys().copied().collect()).unwrap_or_default();
+        let mut splices: Vec<(Uid, &'static str, Uid, &'static str)> = Vec::new();
+        for &port in &ports {
+            let Some(feed) = self.links.iter().find(|l| l.node_in == port).map(|l| (l.node_out, l.slot_out))
+            else {
+                continue;
+            };
+            for l in self.links.iter().filter(|l| l.node_out == port) {
+                splices.push((feed.0, feed.1, l.node_in, l.slot_in));
             }
         }
+        self.links.retain(|l| !ports.contains(&l.node_in) && !ports.contains(&l.node_out));
+
         for &m in &restored {
             self.set_member_scope(m, parent);
         }
         self.scopes.shift_remove(&scope);
         self.scope_of.remove(&scope);
+        // …and only now, with the members up one level and the wall gone, do the two halves of each
+        // cable become one link that both ends can face.
+        for (a, so, b, si) in splices {
+            let _ = self.add_link(a, so, b, si);
+        }
         for name in dropped {
             self.rebind_naming(&name);
         }
@@ -1613,9 +1751,9 @@ impl Graph {
             .get(&scope)
             .map(|s| {
                 s.stubs
-                    .iter()
-                    .filter(|(_, st)| st.inner.as_ref().is_some_and(|(u, _)| *u == member))
-                    .map(|(id, _)| *id)
+                    .keys()
+                    .filter(|id| self.port_inner(**id).is_some_and(|(u, _)| u == member))
+                    .copied()
                     .collect()
             })
             .unwrap_or_default();
@@ -1623,14 +1761,6 @@ impl Graph {
             self.set_stub_inner(scope, id, None)?;
         }
         Ok(())
-    }
-
-    // A stub is a naming indirection over an inner member slot. External wires stay flat leaf→leaf
-    // links that resolve through it; the stub itself stores only the inner side.
-
-    /// Is `uid` a direct member of `scope`?
-    fn is_member_of(&self, scope: Uid, uid: Uid) -> bool {
-        self.scope_of(uid) == Some(scope)
     }
 
     /// Add an UNWIRED stub to a scope; returns its uid. `dtype` is the caller's provisional type
@@ -1662,9 +1792,9 @@ impl Graph {
         let slot = port.to_hex();
         self.scopes.get(&parent).and_then(|ps| {
             ps.stubs
-                .iter()
-                .find(|(_, st)| st.inner.as_ref().is_some_and(|(u, s)| *u == scope && *s == slot))
-                .map(|(id, _)| (parent, *id))
+                .keys()
+                .find(|id| self.port_inner(**id).is_some_and(|(u, s)| u == scope && s == slot))
+                .map(|id| (parent, *id))
         })
     }
 
@@ -1673,6 +1803,9 @@ impl Graph {
     /// it — which named this one — goes UNWIRED, into the state `add_stub` mints.
     pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<subpatch::Stub> {
         let st = self.scopes.get_mut(&scope)?.stubs.shift_remove(&port)?;
+        // Its wires go with it, both halves: a link naming a port nothing holds is a cable drawn in
+        // no scope, which is the state a delete must never leave behind.
+        self.links.retain(|l| l.node_in != port && l.node_out != port);
         self.rebind_naming(&st.name);
         if let Some((psc, id)) = self.port_above(scope, port) {
             let _ = self.set_stub_inner(psc, id, None);
@@ -1680,71 +1813,36 @@ impl Graph {
         Some(st)
     }
 
-    /// Validate a candidate stub wire and resolve the port dtype it would take, without mutating.
-    /// Shared by the RPC precondition and the mutation, so there is ONE such algebra.
-    pub fn stub_wire_dtype(
-        &self,
-        scope: Uid,
-        stub: Uid,
-        inner: &(Uid, String),
-    ) -> Result<goofi_core::SlotType, String> {
-        let (inner_node, inner_slot) = inner;
-        if !self.is_member_of(scope, *inner_node) {
-            return Err("set_stub_inner: inner is not a member of this scope".into());
-        }
-        let dir = self
-            .scopes
-            .get(&scope)
-            .and_then(|s| s.stubs.get(&stub))
-            .map(|st| st.dir)
-            .ok_or("set_stub_inner: no such stub")?;
-        // A member may itself be a sub-patch, whose ports are that scope's own stubs rather than
-        // slot decls. `is_member_of` proved a DIRECT child, so chaining cannot close a cycle.
-        let dtype = match self.scopes.get(inner_node) {
-            Some(nested) => Uid::from_hex(inner_slot)
-                .and_then(|s| nested.stubs.get(&s))
-                .filter(|st| st.dir == dir)
-                .map(|st| st.dtype),
-            None => match dir {
-                subpatch::Dir::In => self.input_slot_type(*inner_node, inner_slot),
-                subpatch::Dir::Out => self.output_slot_type(*inner_node, inner_slot),
-            },
-        }
-        .ok_or("set_stub_inner: no such inner slot")?;
-        let s = self.scopes.get(&scope).ok_or("set_stub_inner: no such scope")?;
-        if s.stubs.iter().any(|(id, st)| *id != stub && st.inner.as_ref() == Some(inner)) {
-            return Err("set_stub_inner: that inner slot is already exposed by another stub".into());
-        }
-        Ok(dtype)
-    }
-
-    /// Set or clear a stub's inner target — the canonical wire/unwire. Check-then-mutate, so a
-    /// refused attempt leaves the stub untouched.
+    /// Set or clear a port's inner wire. The wire IS a link, so this is `add_link`/`remove_link`
+    /// with the port on whichever end its direction puts it — the same two ops a user calls.
     pub fn set_stub_inner(&mut self, scope: Uid, stub: Uid, inner: subpatch::StubInner) -> Result<(), String> {
-        match inner {
-            Some(target) => {
-                let dtype = self.stub_wire_dtype(scope, stub, &target)?;
-                let st = self
-                    .scopes
-                    .get_mut(&scope)
-                    .and_then(|s| s.stubs.get_mut(&stub))
-                    .ok_or("set_stub_inner: no such stub")?;
-                st.inner = Some(target);
-                st.dtype = dtype;
-                self.rebind_ports();
-                Ok(())
-            }
-            None => {
-                let st = self
-                    .scopes
-                    .get_mut(&scope)
-                    .and_then(|s| s.stubs.get_mut(&stub))
-                    .ok_or("set_stub_inner: no such stub")?;
-                st.inner = None;
-                self.rebind_ports();
-                Ok(())
-            }
+        let dir = self.stub(stub).filter(|(s, _)| *s == scope).map(|(_, st)| st.dir)
+            .ok_or("set_stub_inner: no such stub")?;
+        let held = self.port_inner(stub);
+        match dir {
+            subpatch::Dir::In => self.links.retain(|l| l.node_out != stub),
+            subpatch::Dir::Out => self.links.retain(|l| l.node_in != stub),
         }
+        let Some((member, slot)) = inner else {
+            self.rebind_ports();
+            return Ok(());
+        };
+        let made = match dir {
+            subpatch::Dir::In => self.add_link(stub, subpatch::BOUNDARY_SLOT, member, &slot),
+            subpatch::Dir::Out => self.add_link(member, &slot, stub, subpatch::BOUNDARY_SLOT),
+        };
+        // Check-then-mutate: a refused wire leaves the port exactly as it was, held wire included.
+        if let Err(e) = made {
+            if let Some((u, sl)) = held {
+                let _ = match dir {
+                    subpatch::Dir::In => self.add_link(stub, subpatch::BOUNDARY_SLOT, u, sl),
+                    subpatch::Dir::Out => self.add_link(u, sl, stub, subpatch::BOUNDARY_SLOT),
+                };
+            }
+            return Err(e);
+        }
+        self.rebind_ports();
+        Ok(())
     }
 
     /// All links as resolved views (snapshot projection).
@@ -2216,7 +2314,12 @@ impl Graph {
         node_in: Uid,
         slot_in: &str,
     ) -> Result<(), String> {
-        // Each slot's DECL, taken once: it carries both the `&'static` name a link is keyed by and
+        // A facade address IS its port, folded here so no stored link ever names a scope — one
+        // normalisation, at the one door every link authoring path goes through.
+        let (node_out, so) = self.normalise(node_out, slot_out);
+        let (node_in, si) = self.normalise(node_in, slot_in);
+        let (slot_out, slot_in) = (so.as_str(), si.as_str());
+        // Each slot's face, taken once: it carries both the `&'static` name a link is keyed by and
         // the dtype the check below needs, so there is no second lookup that could fail on its own.
         let out = self
             .find_output(node_out, slot_out)
@@ -2225,6 +2328,16 @@ impl Graph {
             .find_input(node_in, slot_in)
             .ok_or_else(|| format!("no input slot `{slot_in}` on {node_in}"))?;
         let (slot_out, slot_in) = (out.name, inp.name);
+        // Both ends must face the same scope, or the cable crosses a wall without a port to carry
+        // it — which is also what refuses an IN port wired from inside, its consumer side being out.
+        if self.face(node_out, true) != self.face(node_in, false) {
+            let label = |uid: Uid| self.name(uid).unwrap_or("?").to_string();
+            return Err(format!(
+                "cannot link {} to {}: they are not in the same sub-patch — wire it to a boundary port",
+                label(node_out),
+                label(node_in),
+            ));
+        }
         // A cross-dtype cable can never carry data — the consumer reads with the wrong accessor and
         // sits empty forever. Refused here, the one door every link authoring path goes through.
         if out.kind != inp.kind {
@@ -2256,9 +2369,21 @@ impl Graph {
                 .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
         }
         self.links.push(new);
-        self.replan_slot(node_in, slot_in);
+        self.replan_behind(node_in, slot_in);
         self.rebind_ports();
         Ok(())
+    }
+
+    /// Re-plan the real consumers a wire change reaches. For a leaf that is the slot itself; for a
+    /// PORT it is every leaf input past it, because a port carries no plan of its own.
+    fn replan_behind(&mut self, node_in: Uid, slot_in: &'static str) {
+        if self.nodes.contains_key(&node_in) {
+            self.replan_slot(node_in, slot_in);
+            return;
+        }
+        for (n, s) in self.sinks(node_in, subpatch::BOUNDARY_SLOT) {
+            self.replan_slot(n, s);
+        }
     }
 
     pub fn remove_link(
@@ -2279,7 +2404,7 @@ impl Graph {
             return Err("no such link".into());
         }
         if let Some(slot_in) = self.resolve_input(node_in, slot_in) {
-            self.replan_slot(node_in, slot_in);
+            self.replan_behind(node_in, slot_in);
         }
         self.rebind_ports();
         Ok(())
@@ -2300,9 +2425,11 @@ impl Graph {
     fn slots_touching(&self, uid: Uid) -> Vec<runtime::plan::SlotKey> {
         let mut slots: Vec<runtime::plan::SlotKey> = Vec::new();
         for link in self.links.iter().filter(|l| l.node_in == uid || l.node_out == uid) {
-            let key = (link.node_in, runtime::plan::Slot::In(link.slot_in));
-            if !slots.contains(&key) {
-                slots.push(key);
+            for (n, s) in self.sinks(link.node_out, link.slot_out) {
+                let key = (n, runtime::plan::Slot::In(s));
+                if !slots.contains(&key) {
+                    slots.push(key);
+                }
             }
         }
         // Every param channel spoken on for `uid`, bound or not: `add_node` answers before the
@@ -2579,7 +2706,11 @@ impl Graph {
                 self.links
                     .iter()
                     .filter(|l| l.node_in == key.0 && l.slot_in == slot)
-                    .map(|l| (l.node_out, l.slot_out))
+                    .filter_map(|l| match self.stream(l.node_out, l.slot_out)? {
+                        Stream::At(u, s) => Some((u, s)),
+                        // Nothing behind the port yet: no wire to plan, and no error either.
+                        Stream::Open(_) => None,
+                    })
                     .collect()
             }
             runtime::plan::Slot::Bind(id) => self
@@ -2602,13 +2733,12 @@ impl Graph {
         // The ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence has
         // not applied this wire is not a subscriber yet, which is what the phases prevent.
         let wired = self
-            .links
-            .iter()
-            .filter(|l| l.node_out == producer && l.slot_out == slot)
-            .filter(|l| {
-                !self.wire.unapplied((l.node_in, runtime::plan::Slot::In(l.slot_in)), (producer, slot))
-            })
-            .filter_map(|l| Some((self.door_of(l.node_in), self.input_event_id(l.node_in, l.slot_in)?)));
+            .sinks(producer, slot)
+            .into_iter()
+            .filter(|(n, s)| !self.wire.unapplied((*n, runtime::plan::Slot::In(s)), (producer, slot)))
+            .filter_map(|(n, s)| Some((self.door_of(n), self.input_event_id(n, s)?)))
+            .collect::<Vec<_>>()
+            .into_iter();
         let bound = self.nodes.iter().flat_map(|(consumer, entry)| {
             entry.bindings.values().filter(|b| b.live()).flat_map(move |b| {
                 b.vars
@@ -2753,24 +2883,11 @@ impl Graph {
         }
         // A port's inner wire is a link like any other — the same one `add_link` writes — so the
         // file has one relation kind as well as one entity kind.
-        let mut links: Vec<Value> = self
+        let links: Vec<Value> = self
             .links
             .iter()
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
-        for scope in self.scopes.values() {
-            for (id, st) in &scope.stubs {
-                let Some((inner, slot)) = &st.inner else { continue };
-                links.push(match st.dir {
-                    subpatch::Dir::In => {
-                        json!([id.to_hex(), subpatch::BOUNDARY_SLOT, inner.to_hex(), slot])
-                    }
-                    subpatch::Dir::Out => {
-                        json!([inner.to_hex(), slot, id.to_hex(), subpatch::BOUNDARY_SLOT])
-                    }
-                });
-            }
-        }
 
         let root = json!({ "nodes": Value::Object(nodes), "links": links });
         // An ORDERED array, because the order is observable and a keyed map would alphabetize it
@@ -2947,22 +3064,7 @@ impl Graph {
                 let (so, si) = (a[1].as_str().unwrap_or(""), a[3].as_str().unwrap_or(""));
                 // A link with one end on a port IS that port's inner wire — the same dispatch
                 // `add_link` makes, so the file and the op vocabulary say one thing.
-                match (port_of.get(&no).copied(), port_of.get(&ni).copied()) {
-                    (Some(scope), None) => {
-                        if let Some(st) = self.stub_mut(scope, no) {
-                            st.inner = Some((ni, si.to_string()));
-                        }
-                    }
-                    (None, Some(scope)) => {
-                        if let Some(st) = self.stub_mut(scope, ni) {
-                            st.inner = Some((no, so.to_string()));
-                        }
-                    }
-                    (None, None) => {
-                        let _ = self.add_link(no, so, ni, si);
-                    }
-                    _ => {} // two ports: not a wire the ops can make
-                }
+                let _ = self.add_link(no, so, ni, si);
             }
         }
         // A load writes scopes and ports straight into the maps, so it never pays the

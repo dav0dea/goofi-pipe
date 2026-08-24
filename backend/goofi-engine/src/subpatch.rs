@@ -68,8 +68,6 @@ pub struct Stub {
     pub dir: Dir,
     /// The port's advertised dtype — the wired inner slot's type (provisional until wired).
     pub dtype: SlotType,
-    /// `(inner member uid, inner slot)`; `None` = UNWIRED.
-    pub inner: StubInner,
     pub pos: [f64; 2],
     pub name: String,
     /// Per-slot viewer view-state, as a node carries it. An IN port wears an output, so it is the
@@ -79,7 +77,7 @@ pub struct Stub {
 
 impl Stub {
     pub fn new(dir: Dir, dtype: SlotType, pos: [f64; 2], name: String) -> Self {
-        Stub { dir, dtype, inner: None, pos, name, viewers: serde_json::json!({}) }
+        Stub { dir, dtype, pos, name, viewers: serde_json::json!({}) }
     }
 }
 
@@ -98,26 +96,5 @@ pub struct Scope {
 impl Scope {
     pub fn new(name: String, pos: [f64; 2], stubs: IndexMap<Uid, Stub>) -> Self {
         Scope { name, pos, stubs, viewers: serde_json::json!({}) }
-    }
-}
-
-/// Chain-to-leaf: resolve `(scope_uid, stub slot)` to the physical inner leaf it exposes.
-///
-/// The visited set is load-bearing: a hand-edited `.gfi` can persist a cyclic stub chain, and
-/// recursing on it aborts the process rather than raising.
-pub fn resolve_stub(scopes: &IndexMap<Uid, Scope>, scope_uid: Uid, stub_id: &str) -> StubInner {
-    let mut seen: Vec<(Uid, Uid)> = Vec::new();
-    let (mut scope_uid, mut stub) = (scope_uid, Uid::from_hex(stub_id)?);
-    loop {
-        if seen.contains(&(scope_uid, stub)) {
-            return None;
-        }
-        seen.push((scope_uid, stub));
-        let (inner_uid, inner_slot) = scopes.get(&scope_uid)?.stubs.get(&stub)?.inner.as_ref()?;
-        if !scopes.contains_key(inner_uid) {
-            return Some((*inner_uid, inner_slot.clone()));
-        }
-        scope_uid = *inner_uid;
-        stub = Uid::from_hex(inner_slot)?;
     }
 }

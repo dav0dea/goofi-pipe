@@ -207,13 +207,9 @@ impl Command {
                 .ok_or_else(|| format!("sub-patch {} has no boundary {}", scope.to_hex(), id.to_hex()))
         };
         match self {
-            Command::WireStub { scope, stub: id, inner, .. } => {
-                stub(*scope, *id)?;
-                match inner {
-                    Some(target) => g.stub_wire_dtype(*scope, *id, target).map(|_| ()),
-                    None => Ok(()), // an unwire always applies once the stub is known to exist
-                }
-            }
+            // The wire is a link, so `add_link` is what judges it; the precondition only asks
+            // whether there is still a port to wire.
+            Command::WireStub { scope, stub: id, .. } => stub(*scope, *id),
             Command::RemoveStub { scope, stub: id } => stub(*scope, *id),
             Command::Expand { scope } => {
                 g.scope(*scope).map(|_| ()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
@@ -335,7 +331,7 @@ impl Command {
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
                 // An endpoint is gone, so the wire cannot exist and restoring it is a no-op.
                 // Without this a concurrent delete would error through `flip`, wedging the session.
-                if !g.contains(node_out) || !g.contains(node_in) {
+                if !g.wirable(node_out) || !g.wirable(node_in) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 // Idempotent: the exact wire already exists, so its inverse must be one too — a
@@ -574,9 +570,7 @@ impl Command {
                         // The exact reversal of `expand_instance`, written with NO validation: this
                         // restores a known-good captured state, which may name a nested scope.
                         for (p, sid, inner) in r.parent_stubs {
-                            if let Some(st) = g.stub_mut(p, sid) {
-                                st.inner = inner;
-                            }
+                            let _ = g.set_stub_inner(p, sid, inner);
                         }
                         scope
                     }
@@ -642,22 +636,36 @@ impl Command {
                 // The port above this one named it, so it goes unwired rather than away; the inverse
                 // re-wires it, carrying the dtype that wiring resolved.
                 let above = g.port_above(scope, id).and_then(|(psc, pid)| {
-                    g.scope(psc).and_then(|s| s.stubs.get(&pid)).map(|st| (psc, pid, st.clone()))
+                    let dtype = g.scope(psc)?.stubs.get(&pid)?.dtype;
+                    let inner = g.port_inner(pid).map(|(u, sl)| (u, sl.to_string()));
+                    Some((psc, pid, inner, dtype))
                 });
                 // A panel bound to it renders empty, so the binding goes with the port — HERE,
                 // inside the one command, exactly as `RemoveNode` does it.
                 let unbind = g.arrangement().unbind(&std::iter::once(id).collect());
-                // External flat links stay valid leaf->leaf links — they never referenced the stub
-                // at runtime — so they are left in place.
+                // Both halves of every cable it carried go with it, so the inverse puts them back —
+                // the wire IS a link now, and a link naming a gone port would be drawn in no scope.
+                let cables: Vec<Command> = g
+                    .links_view()
+                    .into_iter()
+                    .filter(|l| l.node_in == id || l.node_out == id)
+                    .map(|l| Command::AddLink {
+                        node_out: l.node_out,
+                        slot_out: l.slot_out.to_string(),
+                        node_in: l.node_in,
+                        slot_in: l.slot_in.to_string(),
+                    })
+                    .collect();
                 g.remove_stub(scope, id);
                 let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
                 let mut inverse =
                     vec![Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some((id, stub)) }];
-                inverse.extend(above.map(|(psc, pid, pst)| Command::WireStub {
+                inverse.extend(cables);
+                inverse.extend(above.map(|(psc, pid, inner, dtype)| Command::WireStub {
                     scope: psc,
                     stub: pid,
-                    inner: pst.inner,
-                    dtype: Some(pst.dtype),
+                    inner,
+                    dtype: Some(dtype),
                 }));
                 if !unbind.is_empty() {
                     // Re-binding runs AFTER the ports are back, which `Compound` replays in order.
@@ -676,8 +684,8 @@ impl Command {
                 };
                 // Capture BOTH sides wiring mutates — inner and the resolved dtype — so the inverse
                 // restores the exact pre-wire state (unwire alone would leave the wired slot's dtype).
-                let old_inner = st.inner.clone();
                 let old_dtype = st.dtype;
+                let old_inner = g.port_inner(stub_id).map(|(u, sl)| (u, sl.to_string()));
                 match inner {
                     // A wire can stop being applicable under a peer edit. `set_stub_inner` validates
                     // before mutating, so a refused attempt leaves the stub untouched.
@@ -887,7 +895,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     if let Some(parent) = orig_parent {
         if let Some(psc) = g.scope(parent) {
             for (id, st) in &psc.stubs {
-                if st.inner.as_ref().map(|(u, _)| *u == root).unwrap_or(false) {
+                if g.port_inner(*id).is_some_and(|(u, _)| u == root) {
                     pruned.push((parent, *id, st.clone()));
                 }
             }
@@ -897,7 +905,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         cmds.push(Command::WireStub {
             scope: *scope,
             stub: *id,
-            inner: st.inner.clone(),
+            inner: g.port_inner(*id).map(|(u, sl)| (u, sl.to_string())),
             dtype: Some(st.dtype),
         });
     }
@@ -966,7 +974,6 @@ fn as_copy(
                         .into_iter()
                         .filter_map(|(id, mut st)| {
                             st.name = String::new();
-                            st.inner = st.inner.and_then(|(u, s)| mapped(u, map).map(|u| (u, s)));
                             mapped(id, map).map(|id| (id, st))
                         })
                         .collect(),

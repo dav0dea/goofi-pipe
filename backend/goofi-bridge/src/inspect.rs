@@ -137,15 +137,6 @@ pub fn patch(
                 edges.push(e);
             }
         }
-        // The stub's inner side is not a flat link, so it is not in the loop above.
-        for (id, stub) in stubs.into_iter().flatten() {
-            let Some((inner, slot)) = &stub.inner else { continue };
-            let Some(m) = member_in(g, scope, *inner) else { continue };
-            edges.push(match stub.dir {
-                goofi_engine::subpatch::Dir::In => format!("  {} -- {slot} --> {}\n", mid(*id), mid(m)),
-                goofi_engine::subpatch::Dir::Out => format!("  {} -- {slot} --> {}\n", mid(m), mid(*id)),
-            });
-        }
         out.extend(edges);
         out.push_str("```\n\nuids: a uid is its mermaid id without the leading `n`.\n");
     }

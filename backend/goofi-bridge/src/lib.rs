@@ -392,8 +392,8 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
             for (node, generation, stage) in stages {
-                if last_stages.insert(node.clone(), (generation, stage)) != Some((generation, stage))
-                {
+                let now = (generation, stage);
+                if last_stages.insert(node.clone(), now) != Some(now) {
                     let _ = events.send(event("node_stage", json!({ "node": node, "stage": stage })));
                 }
             }
@@ -854,70 +854,22 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
-/// A boundary port's inner wire: which port, in which sub-patch, onto which member slot.
-struct InnerWire {
-    scope: Uid,
-    port: Uid,
-    inner: (Uid, String),
-}
 
-/// A link with one end on a boundary PORT — the port's own inner wire, not a graph link, because a
-/// port never runs or carries a frame. `None` when both ends are ordinary. The two link acts stay
-/// distinct by construction: this one is INSIDE a sub-patch, and a link to the facade is a link in
-/// the scope ABOVE it, which `resolve_link_endpoint` handles.
-fn stub_wire(
-    g: &Graph,
-    op: &str,
-    a: Uid,
-    so: &str,
-    b: Uid,
-    si: &str,
-) -> Result<Option<InnerWire>, String> {
-    use goofi_engine::subpatch::Dir;
-    let slot = |s: &str| match s == subpatch::BOUNDARY_SLOT {
-        true => Ok(()),
-        false => Err(format!("{op}: a boundary port's only slot is `{}`", subpatch::BOUNDARY_SLOT)),
-    };
-    match (g.stub(a), g.stub(b)) {
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => {
-            Err(format!("{op}: two boundary ports cannot wire to each other — put a node between them"))
-        }
-        (Some((scope, st)), None) => match st.dir {
-            Dir::In => slot(so).map(|_| Some(InnerWire { scope, port: a, inner: (b, si.to_string()) })),
-            Dir::Out => Err(format!("{op}: `node_out` names an output port, which drains the sub-patch — wire a node INTO it")),
-        },
-        (None, Some((scope, st))) => match st.dir {
-            Dir::Out => slot(si).map(|_| Some(InnerWire { scope, port: b, inner: (a, so.to_string()) })),
-            Dir::In => Err(format!("{op}: `node_in` names an input port, which feeds the sub-patch — wire it INTO a node")),
-        },
-    }
-}
-
-/// Translate a link endpoint that names a sub-patch boundary port into the flat inner leaf it
-/// resolves to, so every runtime and persisted link is leaf→leaf.
+/// Translate a link endpoint that names a sub-patch FACADE into the port it names — a facade
+/// address IS its port. What is behind that port is the graph's own question, asked at plan time.
 fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
-    if g.scope(uid).is_some() {
-        if let Some(leaf) = g.resolve_stub(uid, slot) {
-            return leaf;
-        }
+    match g.scope(uid).is_some() && Uid::from_hex(slot).is_some_and(|p| g.stub(p).is_some()) {
+        true => (Uid::from_hex(slot).expect("checked"), subpatch::BOUNDARY_SLOT.to_string()),
+        false => (uid, slot.to_string()),
     }
-    (uid, slot.to_string())
 }
 
 /// Resolve a link endpoint AND refuse one that names nothing wirable — the check a caller-initiated
 /// `add_link` gets and a REPLAY does not, since a replay must converge rather than wedge the stack.
 fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
     let (node, slot) = resolve_link_endpoint(g, uid, slot);
-    if g.contains(node) {
+    if g.contains(node) || g.stub(node).is_some() {
         return Ok((node, slot));
-    }
-    if g.scope(uid).is_some() {
-        return Err(format!(
-            "add_link: `{which}` names sub-patch {} port `{slot}`, which exposes no inner slot — \
-             add_link it to a member inside the sub-patch first",
-            uid.to_hex()
-        ));
     }
     Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex()))
 }
@@ -1188,39 +1140,6 @@ impl AppState {
                 }
                 "add_link" => {
                     let (a, so, b, si) = parse_link(&payload)?;
-                    if let Some(w) = stub_wire(&g, "add_link", a, &so, b, &si)? {
-                        let (_, port) = g.stub(w.port).ok_or("add_link: no such boundary port")?;
-                        let port_dtype = port.dtype;
-                        if port.inner.is_some() {
-                            return Err("add_link: that boundary port already has an inner wire — \
-                                        remove it before making another".into());
-                        }
-                        // Strict here and tolerant on replay: the port's dtype comes from its TYPE
-                        // now, so a mismatched wire is a caller error rather than a retype.
-                        let dtype = g.stub_wire_dtype(w.scope, w.port, &w.inner)?;
-                        if dtype != port_dtype {
-                            return Err(format!(
-                                "cannot link a {} boundary port to a {} slot: the slots carry different data types",
-                                port_dtype.name(),
-                                dtype.name()
-                            ));
-                        }
-                        state.history.lock().unwrap().apply(
-                            &mut g,
-                            &session,
-                            goofi_engine::Command::WireStub {
-                                scope: w.scope,
-                                stub: w.port,
-                                inner: Some(w.inner),
-                                dtype: None,
-                            },
-                        )?;
-                        return Ok(json!({
-                            "node_out": a.to_hex(), "slot_out": so,
-                            "node_in": b.to_hex(), "slot_in": si,
-                            "dtype": dtype.name(),
-                        }));
-                    }
                     let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
                     let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
                     state.history.lock().unwrap().apply(
@@ -1247,22 +1166,6 @@ impl AppState {
                 }
                 "remove_link" => {
                     let (a, so, b, si) = parse_link(&payload)?;
-                    if let Some(w) = stub_wire(&g, "remove_link", a, &so, b, &si)? {
-                        let existed = g.stub(w.port).is_some_and(|(_, p)| p.inner.as_ref() == Some(&w.inner));
-                        if existed {
-                            state.history.lock().unwrap().apply(
-                                &mut g,
-                                &session,
-                                goofi_engine::Command::WireStub {
-                                    scope: w.scope,
-                                    stub: w.port,
-                                    inner: None,
-                                    dtype: None,
-                                },
-                            )?;
-                        }
-                        return Ok(json!({ "removed": existed }));
-                    }
                     let (a, so) = resolve_link_endpoint(&g, a, &so);
                     let (b, si) = resolve_link_endpoint(&g, b, &si);
                     // Idempotent for the same reason `remove_node` is, and answered the same way.
