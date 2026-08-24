@@ -2857,23 +2857,42 @@ impl Graph {
 
     /// The `patch.yaml` manifest inside the archive: `nodes`/`links` and a flat `scopes` block
     /// under `root`, `globals` at the top. A plain flat patch has an empty `scopes` block.
-    pub fn serialize(&self) -> String {
+    /// Every uid `roots` reaches: the roots, whatever their scopes hold to any depth, and those
+    /// scopes' ports. The subtree a copy, a delete and an export all mean by "these nodes".
+    pub fn subtree_of(&self, roots: &[Uid]) -> Vec<Uid> {
+        let mut out: Vec<Uid> = Vec::new();
+        let mut stack: Vec<Uid> = roots.iter().rev().copied().collect();
+        while let Some(u) = stack.pop() {
+            if !self.nodes.contains_key(&u) || out.contains(&u) {
+                continue;
+            }
+            out.push(u);
+            if self.is_facade(u) {
+                stack.extend(self.scope_members(u));
+            }
+        }
+        out
+    }
+
+    /// The `{nodes, links}` fragment for `uids` — the exact shape the `.gfi` root carries, so what
+    /// a clipboard holds and what a patch holds are ONE format. A link rides only when BOTH of its
+    /// ends are in the fragment; a cable reaching out of it was never the fragment's.
+    pub fn fragment(&self, uids: &[Uid]) -> serde_json::Value {
         use serde_json::{json, Map, Value};
+        let want: std::collections::HashSet<Uid> = uids.iter().copied().collect();
         let mut nodes = Map::new();
-        // ONE loop over ONE map: a leaf, a facade and a port are all node records in the file, and
-        // membership rides each record rather than a member list beside what `scope_of` owns.
-        for (uid, e) in self.nodes.iter() {
-            let mut node_obj = Map::new();
-            node_obj.insert("type".into(), json!(self.node_type(*uid).unwrap_or("")));
-            node_obj.insert("name".into(), json!(e.name));
-            node_obj.insert("pos".into(), json!(e.pos));
+        // ONE loop over ONE map: a leaf, a facade and a port are all node records, and membership
+        // rides each record rather than a member list beside what `scope_of` owns.
+        for (uid, e) in self.nodes.iter().filter(|(u, _)| want.contains(u)) {
+            let mut rec = Map::new();
+            rec.insert("type".into(), json!(self.node_type(*uid).unwrap_or("")));
+            rec.insert("name".into(), json!(e.name));
+            rec.insert("pos".into(), json!(e.pos));
             let mut params = Map::new();
             if let Some(leaf) = e.leaf() {
                 for (group, names) in &*leaf.params.clone() {
-                    let mut gmap = Map::new();
-                    for (name, p) in names {
-                        gmap.insert(name.clone(), param_value_json(p, false));
-                    }
+                    let gmap: Map<String, Value> =
+                        names.iter().map(|(n, p)| (n.clone(), param_value_json(p, false))).collect();
                     params.insert(group.clone(), Value::Object(gmap));
                 }
                 // Persist expression bindings (sorted for a stable diff) — else a save/load
@@ -2881,36 +2900,142 @@ impl Graph {
                 if !leaf.bindings.is_empty() {
                     let mut binds: Vec<(&ParamKey, &ExprBinding)> = leaf.bindings.iter().collect();
                     binds.sort_by(|a, b| a.0.cmp(b.0));
-                    let arr: Vec<Value> = binds
-                        .iter()
-                        .map(|(k, b)| {
-                            json!({ "group": k.group, "name": k.name, "source": b.source,
-                                    "enabled": b.enabled, "triggers_process": b.triggers_process })
-                        })
-                        .collect();
-                    node_obj.insert("expressions".into(), Value::Array(arr));
+                    rec.insert(
+                        "expressions".into(),
+                        Value::Array(
+                            binds
+                                .iter()
+                                .map(|(k, b)| {
+                                    json!({ "group": k.group, "name": k.name, "source": b.source,
+                                            "enabled": b.enabled, "triggers_process": b.triggers_process })
+                                })
+                                .collect(),
+                        ),
+                    );
                 }
             }
-            node_obj.insert("params".into(), Value::Object(params));
-            // Persist viewer view-state (per-slot kind/settings) when the editor has set
-            // any — an empty blob stays out of the file so a fresh patch has no noise.
+            rec.insert("params".into(), Value::Object(params));
+            // An empty viewer blob stays out, so a fresh patch has no noise.
             if e.viewers.as_object().is_some_and(|m| !m.is_empty()) {
-                node_obj.insert("viewers".into(), e.viewers.clone());
+                rec.insert("viewers".into(), e.viewers.clone());
             }
-            if let Some(p) = self.scope_of(*uid) {
-                node_obj.insert("scope".into(), json!(p.to_hex()));
+            if let Some(p) = self.scope_of(*uid).filter(|p| want.contains(p)) {
+                rec.insert("scope".into(), json!(p.to_hex()));
             }
-            nodes.insert(uid.to_hex(), Value::Object(node_obj));
+            nodes.insert(uid.to_hex(), Value::Object(rec));
         }
-        // A port's inner wire is a link like any other — the same one `add_link` writes — so the
-        // file has one relation kind as well as one entity kind.
+        // A port's inner wire is a link like any other — the same one `add_link` writes — so a
+        // fragment has one relation kind as well as one entity kind.
         let links: Vec<Value> = self
             .links
             .iter()
+            .filter(|l| want.contains(&l.node_out) && want.contains(&l.node_in))
             .map(|l| json!([l.node_out.to_hex(), l.slot_out, l.node_in.to_hex(), l.slot_in]))
             .collect();
+        json!({ "nodes": Value::Object(nodes), "links": links })
+    }
 
-        let root = json!({ "nodes": Value::Object(nodes), "links": links });
+    /// The params a record asks for, folded over the type's defaults. NON-seeding, because a
+    /// restore must not re-synthesize a binding the user had unbound.
+    fn record_params(&self, ty: &str, rec: &serde_json::Value) -> Result<ParamGroups, String> {
+        let mut params = self.default_params_of(ty)?;
+        let Some(groups) = rec.get("params").and_then(|v| v.as_object()) else { return Ok(params) };
+        for (group, names) in groups {
+            let (Some(nm), Some(g)) = (names.as_object(), params.get_mut(group)) else { continue };
+            for (name, val) in nm {
+                if let Some(existing) = g.get_mut(name) {
+                    // Never fire a trigger on a restore: a persisted or hand-edited value must not
+                    // trip the node's trigger as the patch opens.
+                    *existing = param_from_json(existing, val, false);
+                }
+            }
+        }
+        Ok(params)
+    }
+
+    /// Build `uid -> fresh uid` for every record of a fragment, so a link and a `scope` can be
+    /// remapped before anything is created.
+    fn remap_fragment(&mut self, nodes: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, Uid> {
+        nodes.keys().map(|old| (old.clone(), self.mint())).collect()
+    }
+
+    /// Add a `{nodes, links}` fragment under `scope`, shifted by `offset`, on FRESH uids. Answers
+    /// the ONE command that does it — so a paste is one undo step — beside what each record's uid
+    /// became, which is what a caller selects afterwards.
+    pub fn import_fragment(
+        &mut self,
+        doc: &serde_json::Value,
+        scope: Option<Uid>,
+        offset: [f64; 2],
+    ) -> Result<(command::Command, HashMap<String, String>), String> {
+        use command::Command;
+        let nodes = doc.get("nodes").and_then(|v| v.as_object()).ok_or("paste: missing `nodes`")?;
+        if let Some(s) = scope.filter(|s| !self.is_facade(*s)) {
+            return Err(format!("paste: no such scope {s}"));
+        }
+        for rec in nodes.values() {
+            let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("paste: a record has no `type`")?;
+            if !structural(ty) && !self.known_type(ty) {
+                return Err(self.reject_type(ty));
+            }
+        }
+        let idmap = self.remap_fragment(nodes);
+        let at = |p: [f64; 2]| [p[0] + offset[0], p[1] + offset[1]];
+        // A facade before the members that name it, and a port after every facade: a port is a
+        // port OF a scope, so it takes its scope at birth where everything else is placed below.
+        let kind_order = |ty: &str| match (ty == subpatch::SCOPE_TYPE, subpatch::boundary_type(ty)) {
+            (true, _) => 0,
+            (_, Some(_)) => 2,
+            _ => 1,
+        };
+        let mut order: Vec<&String> = nodes.keys().collect();
+        order.sort_by_key(|old| kind_order(nodes[*old]["type"].as_str().unwrap_or("")));
+        let mut cmds: Vec<Command> = Vec::new();
+        for old in &order {
+            let rec = &nodes[*old];
+            let ty = rec["type"].as_str().unwrap_or("");
+            let inner = rec.get("scope").and_then(|v| v.as_str()).and_then(|s| idmap.get(s)).copied();
+            cmds.push(Command::AddNode {
+                type_name: ty.to_string(),
+                pos: at(read_pos(rec)),
+                uid: Some(idmap[*old]),
+                // Minted fresh, so a paste beside the original cannot collide with it.
+                name: None,
+                params: (!structural(ty)).then(|| self.record_params(ty, rec)).transpose()?,
+                exprs: record_exprs(rec),
+                viewers: rec.get("viewers").filter(|v| v.is_object()).cloned(),
+                scope: subpatch::boundary_type(ty).and(inner),
+            });
+        }
+        for old in &order {
+            let rec = &nodes[*old];
+            let inner = rec.get("scope").and_then(|v| v.as_str()).and_then(|s| idmap.get(s)).copied();
+            // A record naming no scope INSIDE the fragment is a root of it, so it lands where the
+            // paste was aimed; one naming a scope in here keeps the shape it was copied with.
+            cmds.push(Command::SetScope { uid: idmap[*old], scope: inner.or(scope) });
+        }
+        for l in doc.get("links").and_then(|v| v.as_array()).into_iter().flatten() {
+            let Some(a) = l.as_array().filter(|a| a.len() == 4) else { continue };
+            let (Some(no), Some(ni)) = (
+                a[0].as_str().and_then(|s| idmap.get(s)).copied(),
+                a[2].as_str().and_then(|s| idmap.get(s)).copied(),
+            ) else {
+                continue;
+            };
+            cmds.push(Command::AddLink {
+                node_out: no,
+                slot_out: a[1].as_str().unwrap_or("").to_string(),
+                node_in: ni,
+                slot_in: a[3].as_str().unwrap_or("").to_string(),
+            });
+        }
+        let rename = idmap.into_iter().map(|(old, new)| (old, new.to_hex())).collect();
+        Ok((Command::Compound(cmds), rename))
+    }
+
+    pub fn serialize(&self) -> String {
+        use serde_json::{json, Value};
+        let root = self.fragment(&self.all_uids());
         // An ORDERED array, because the order is observable and a keyed map would alphabetize it
         // away. On load, `reassert_system` back-fills — so an older patch picks up a new default.
         let globals: Vec<Value> = self
@@ -3008,22 +3133,8 @@ impl Graph {
         }
         for (old, rec) in nodes.iter().filter(|(_, r)| !structural(r["type"].as_str().unwrap_or(""))) {
             let ty = rec["type"].as_str().unwrap();
-            // NON-seeding, because a load is a RESTORE: `add_node` would re-synthesize a binding
-            // the user had unbound. Folded in BEFORE construction, since `insert_node` runs `setup()`.
-            let mut params = self.default_params_of(ty)?;
-            if let Some(groups) = rec.get("params").and_then(|v| v.as_object()) {
-                for (group, names) in groups {
-                    let Some(nm) = names.as_object() else { continue };
-                    let Some(g) = params.get_mut(group) else { continue };
-                    for (name, val) in nm {
-                        if let Some(existing) = g.get_mut(name) {
-                            // Never fire a trigger on load: a persisted or hand-edited value must
-                            // not trip the node's trigger as the patch opens.
-                            *existing = param_from_json(existing, val, false);
-                        }
-                    }
-                }
-            }
+            // Folded in BEFORE construction, since `insert_node` runs `setup()`.
+            let params = self.record_params(ty, rec)?;
             let (manifest, params, build) = self.build_node(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
@@ -3037,17 +3148,8 @@ impl Graph {
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(uid, v.clone());
             }
-            if let Some(exprs) = rec.get("expressions").and_then(|v| v.as_array()) {
-                for ex in exprs {
-                    let g = ex.get("group").and_then(|v| v.as_str());
-                    let n = ex.get("name").and_then(|v| v.as_str());
-                    let src = ex.get("source").and_then(|v| v.as_str()).unwrap_or("");
-                    let en = ex.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let tp = ex.get("triggers_process").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if let (Some(g), Some(n)) = (g, n) {
-                        let _ = self.set_expression(uid, g, n, src, en, tp);
-                    }
-                }
+            for (group, name, e) in record_exprs(rec) {
+                let _ = self.set_expression(uid, &group, &name, &e.source, e.enabled, e.triggers);
             }
         }
         // Membership, from each record's own `scope`. It is set before the ports so a port's
@@ -3121,6 +3223,26 @@ fn structural(ty: &str) -> bool {
 }
 
 /// A record's `pos`, or the origin when it is absent or malformed.
+/// The expression bindings a record carries, in the shape [`command::Command::AddNode`] re-applies.
+fn record_exprs(rec: &serde_json::Value) -> Vec<(String, String, command::ExprState)> {
+    rec.get("expressions")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|ex| {
+            Some((
+                ex.get("group")?.as_str()?.to_string(),
+                ex.get("name")?.as_str()?.to_string(),
+                command::ExprState {
+                    source: ex.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    enabled: ex.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    triggers: ex.get("triggers_process").and_then(|v| v.as_bool()).unwrap_or(false),
+                },
+            ))
+        })
+        .collect()
+}
+
 fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
     rec.get("pos")
         .and_then(|v| v.as_array())

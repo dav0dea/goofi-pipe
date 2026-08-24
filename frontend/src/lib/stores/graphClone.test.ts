@@ -1,101 +1,58 @@
 import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
-import { seed, type DocSeed } from '$lib/test/docSeed';
+import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import type { LinkInfo, NodeTypeInfo } from '$lib/api/control';
-import { linksArray, nodesMap } from '$lib/crdt/graphDoc';
 
-/** Links are read from the document; seed one as the projection carries it. */
-function docAddLink(d: DocSeed, link: LinkInfo): void {
-	d.links([...linksArray(d.state), { ...link }]);
-}
-
-/** The catalog (list_nodes) the manager provides — `g.nodeTypes = catalog()` flips the store
- * doc-authoritative for node identity, so nodes are built from the doc + these descriptors. */
-function catalog(): NodeTypeInfo[] {
-	const floatParam = (value: number) => ({
-		type: 'float' as const,
-		value,
-		vmin: 0,
-		vmax: 1000,
-		doc: null,
-		refreshable: false,
-		expression: null,
-		expression_enabled: false,
-		expression_triggers_process: false,
-		expression_error: null
-	});
-	return [
-		{
-			type: 'Oscillator',
-			category: 'inputs',
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
-			input_slots: { in: 'ARRAY' },
-			output_slots: { out: 'ARRAY' },
-			// Default 30 — so a seeded 42 is a genuine non-default the clone must carry inline.
-			params: { common: { max_frequency: floatParam(30) } }
-		},
-		{
-			type: 'Buffer',
-			category: 'inputs',
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
-			input_slots: { in: 'ARRAY' },
-			output_slots: { out: 'ARRAY' },
-			params: {}
-		}
-	];
-}
-
-
-describe('cloneNodes — identity is the uid, not the display name', () => {
-	it('finds the selected nodes by uid and re-wires their internal links to the clones', async () => {
+/**
+ * Copy, paste and duplicate are ONE pair of manager ops. What the store owes them is the uids the
+ * user selected, the fragment verbatim, and the rename map back — never a re-derived spec, because
+ * a spec is a per-TYPE description and a sub-patch is not one type.
+ */
+describe('copy / paste / duplicate — the store carries the manager’s fragment, and nothing else', () => {
+	it('duplicates by copying and pasting, so a sub-patch goes through the leaf’s door', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		g.nodeTypes = catalog(); // catalog present → the doc is authoritative for node identity
-		// Display names are NOT the uids (the post-rekey reality).
 		d.node('uidA', 'Oscillator', 'oscillator0', [0, 0]);
-		d.node('uidB', 'Buffer', 'buffer0', [0, 0]);
-		const link: LinkInfo = { node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' };
-		docAddLink(d, link);
+		d.instance('i1', 'subpatch0', [10, 10]);
+		const doc = { nodes: { uidA: { pos: [0, 0] }, i1: { pos: [10, 10] } }, links: [] };
+		fc.setCallResult('copy_nodes', { doc });
+		fc.setCallResult('paste_nodes', { rename: { uidA: 'newA', i1: 'newI' } });
 
-		fc.setCallResult('add_node', { uid: 'NEW' }); // each clone resolves to this new uid
+		const rename = await g.cloneNodes(['uidA', 'i1']);
+		expect(rename).toEqual({ uidA: 'newA', i1: 'newI' });
 
-		// The only callers (NodeEditorPanel.selectedNodeNames / agent surface) pass UIDS.
-		const rename = await g.cloneNodes(['uidA', 'uidB']);
-
-		// The selection was found by uid (a name-keyed filter returns {} → no clone).
-		expect(Object.keys(rename).sort()).toEqual(['uidA', 'uidB']);
-
-		// The internal link is remapped onto the clones — not left pointing at the
-		// originals (which a name-keyed rename map would do, since endpoints are uids).
-		const addLink = fc.recordedCalls().find((c) => c.op === 'add_link');
-		expect(addLink, 'cloneNodes must re-create the internal link').toBeDefined();
-		expect(addLink!.payload).toMatchObject({ node_out: 'NEW', node_in: 'NEW' });
+		const copy = fc.recordedCalls().find((c) => c.op === 'copy_nodes');
+		expect(copy?.payload, 'the selection goes as uids — a facade among them').toEqual({
+			nodes: ['uidA', 'i1']
+		});
+		const paste = fc.recordedCalls().find((c) => c.op === 'paste_nodes');
+		expect(paste?.payload.doc, 'the fragment is handed back VERBATIM').toEqual(doc);
+		expect(paste?.payload.pos, 'a duplicate lands beside its original').toEqual([40, 40]);
 	});
 
-	it('carries cloned param values INLINE on add_node — no racy post-add leaf-write', async () => {
+	it('pastes into the entered sub-patch, at the shift the caller asked for', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		const d = seed(fc);
-		g.nodeTypes = catalog();
-		d.node('uidA', 'Oscillator', 'osc0', [0, 0]);
-		// A non-default param value the clone must carry (default is 30).
-		d.patch({ nodes: { uidA: { params: { common: { max_frequency: { value: 42 } } } } } });
-		fc.setCallResult('add_node', { uid: 'NEW' });
+		seed(fc);
+		fc.setCallResult('paste_nodes', { rename: {} });
 
-		await g.cloneNodes(['uidA']);
+		await g.pasteNodes({ nodes: { a: { pos: [0, 0] } } }, [7, 9], 'i1');
+		const paste = fc.recordedCalls().find((c) => c.op === 'paste_nodes');
+		expect(paste?.payload).toMatchObject({ pos: [7, 9], inst_id: 'i1' });
 
-		// The value rides inline on add_node (applied under the graph lock, node born configured) —
-		// NOT written via a post-add leaf-write that would no-op until the new node syncs into the
-		// replica (which it never does in this test, so a missed inline would drop the value).
-		const addCall = fc.recordedCalls().find((c) => c.op === 'add_node');
-		expect(addCall?.payload).toMatchObject({ type: 'Oscillator', params: { common: { max_frequency: 42 } } });
+		// …and at root, `inst_id` is explicitly null rather than absent: the manager reads a missing
+		// key and a null one the same way, and saying it is what keeps the two ends in step.
+		await g.pasteNodes({ nodes: {} });
+		const rooted = fc.recordedCalls().filter((c) => c.op === 'paste_nodes').at(-1);
+		expect(rooted?.payload.inst_id).toBeNull();
+	});
+
+	it('copies nothing when nothing is selected, rather than pasting an empty fragment', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		seed(fc);
+		expect(await g.cloneNodes([])).toEqual({});
+		expect(fc.recordedCalls().some((c) => c.op === 'copy_nodes' || c.op === 'paste_nodes')).toBe(false);
 	});
 });

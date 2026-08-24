@@ -1,42 +1,25 @@
-/** Copy/paste payload for a selection of nodes + the links among them. */
-import { paramValues, type LinkInfo, type NodeInstanceInfo } from '$lib/api/control';
-
+/** The clipboard payload: goofi's own graph fragment, and the version that says so.
+ * Putting it THERE is `$lib/clipboard`'s job; this module is only the shape. */
+/** Bumped when the payload shape changes, so an older tab's text is refused rather than half-read. */
 const CLIP_VERSION = 2;
 
-export interface ClipNode {
-	/** The source node's uid (its identity) — the spec key paste remaps links by. */
-	uid: string;
-	type: string;
-	category: string;
-	params: Record<string, Record<string, unknown>>;
-	/** Position relative to the selection's centroid. */
-	offset: [number, number];
-}
-
+/** What a copy puts on the clipboard: goofi's own graph fragment, in the shape a `.gfi` carries,
+ * so what the manager reads back is the format it already writes. */
 export interface Clipboard {
 	__goofi_clip__: number;
-	nodes: ClipNode[];
-	links: LinkInfo[];
+	doc: GraphFragment;
 }
 
-/** Build a clipboard payload from selected nodes and the links among them. */
-export function serializeClipboard(nodes: NodeInstanceInfo[], links: LinkInfo[]): Clipboard {
-	const cx = nodes.reduce((a, n) => a + n.pos[0], 0) / nodes.length;
-	const cy = nodes.reduce((a, n) => a + n.pos[1], 0) / nodes.length;
-	return {
-		__goofi_clip__: CLIP_VERSION,
-		nodes: nodes.map((n) => ({
-			uid: n.uid,
-			type: n.type,
-			category: n.category,
-			params: paramValues(n),
-			offset: [n.pos[0] - cx, n.pos[1] - cy]
-		})),
-		links
-	};
+export interface GraphFragment {
+	nodes: Record<string, { pos?: [number, number] }>;
+	links?: unknown[];
 }
 
-/** Parse clipboard text; null if it isn't a goofi clipboard payload. */
+export function serializeClipboard(doc: GraphFragment): Clipboard {
+	return { __goofi_clip__: CLIP_VERSION, doc };
+}
+
+/** Parse clipboard text; null if it isn't a goofi clipboard payload of this version. */
 export function parseClipboard(text: string): Clipboard | null {
 	let payload: unknown;
 	try {
@@ -44,34 +27,18 @@ export function parseClipboard(text: string): Clipboard | null {
 	} catch {
 		return null;
 	}
-	if (
-		typeof payload !== 'object' ||
-		payload === null ||
-		(payload as Clipboard).__goofi_clip__ !== CLIP_VERSION ||
-		!Array.isArray((payload as Clipboard).nodes)
-	) {
-		return null;
-	}
-	const clip = payload as Clipboard;
-	return { __goofi_clip__: CLIP_VERSION, nodes: clip.nodes, links: clip.links ?? [] };
+	const clip = payload as Clipboard | null;
+	if (typeof clip !== 'object' || clip === null || clip.__goofi_clip__ !== CLIP_VERSION) return null;
+	if (typeof clip.doc !== 'object' || clip.doc === null || typeof clip.doc.nodes !== 'object') return null;
+	return { __goofi_clip__: CLIP_VERSION, doc: clip.doc };
 }
 
-/** Map clipboard nodes to instantiation specs anchored at `at`, the paste base point. */
-export function clipToSpecs(
-	clip: Clipboard,
-	at: [number, number]
-): {
-	key: string;
-	type: string;
-	category: string;
-	pos: [number, number];
-	params: Record<string, Record<string, unknown>>;
-}[] {
-	return clip.nodes.map((n) => ({
-		key: n.uid,
-		type: n.type,
-		category: n.category,
-		pos: [Math.round(at[0] + n.offset[0]), Math.round(at[1] + n.offset[1])],
-		params: n.params
-	}));
+/** The centre of a fragment's records, which is what a paste anchors at a point. */
+export function fragmentCentre(doc: GraphFragment): [number, number] {
+	const at = Object.values(doc.nodes ?? {}).map((n) => n.pos ?? [0, 0]);
+	if (at.length === 0) return [0, 0];
+	return [
+		at.reduce((a, p) => a + (p[0] ?? 0), 0) / at.length,
+		at.reduce((a, p) => a + (p[1] ?? 0), 0) / at.length
+	];
 }

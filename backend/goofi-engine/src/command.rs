@@ -737,26 +737,29 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     // Where the restored top returns to: `None` = ROOT (a top-level instance / leaf).
     let orig_parent = g.scope_of(root);
 
-    let mut leaves: Vec<Uid> = Vec::new();
-    let mut scopes: Vec<Uid> = Vec::new(); // discovery order (root first)
+    // Discovery order, so a facade always precedes the members that name it. Ports are held apart
+    // only because a port is a port OF a scope: it takes its scope at birth, so it is created after
+    // every facade rather than before.
+    let mut members: Vec<Uid> = Vec::new();
     let mut ports: Vec<Uid> = Vec::new();
     let mut stack = vec![root];
     while let Some(u) = stack.pop() {
-        if g.is_facade(u) {
-            scopes.push(u);
-            stack.extend(g.scope_members(u));
-        } else if g.stub(u).is_some() {
+        if g.stub(u).is_some() {
             ports.push(u);
-        } else {
-            leaves.push(u);
+            continue;
+        }
+        members.push(u);
+        if g.is_facade(u) {
+            stack.extend(g.scope_members(u));
         }
     }
 
     let mut cmds: Vec<Command> = Vec::new();
 
-    // 1. Recreate every leaf (any depth) at ROOT, uid-stable, with its FULL persisted state —
-    //    params, expression bindings and viewer view-state.
-    for &u in &leaves {
+    // ONE loop: every member of any kind is recreated at ROOT, uid-stable, with the full persisted
+    // state its kind carries — a leaf's params and expression bindings, and everyone's viewers.
+    // Membership is restored by the `SetScope` children below, not here — see the field's doc.
+    for &u in members.iter().chain(&ports) {
         let exprs = g
             .param_bindings(u)
             .into_iter()
@@ -764,7 +767,6 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
                 (group, name, ExprState { source, enabled, triggers })
             })
             .collect();
-        let viewers = g.viewers(u).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).cloned();
         cmds.push(Command::AddNode {
             type_name: g.node_type(u).unwrap_or("").to_string(),
             pos: g.pos(u).unwrap_or([0.0, 0.0]),
@@ -772,53 +774,27 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
             name: g.name(u).map(str::to_string),
             params: g.params(u).map(|p| (*p).clone()),
             exprs,
-            viewers,
-            // Membership is restored by the SetScope child below, not here — see the field's doc.
-            scope: None,
-        });
-    }
-
-    // 2. Recreate every scope INNERMOST-FIRST — a nested scope must exist before its parent groups
-    //    it — each carrying its captured parent so it lands in place.
-    for &s in scopes.iter().rev() {
-        cmds.push(Command::Group {
-            members: g.scope_members(s),
-            pos: g.pos(s).unwrap_or([0.0, 0.0]),
-            restore: Some(ScopeRestore {
-                scope_id: s,
-                name: g.name(s).unwrap_or("").to_string(),
-                parent: g.scope_of(s),
-                parent_stubs: vec![], // a delete-undo prunes the enclosing ports, never re-points them
-            }),
-        });
-    }
-
-    // 3. Every port, AFTER the scopes: a port is a port OF one, so it takes its scope at birth.
-    for &u in &ports {
-        cmds.push(Command::AddNode {
-            type_name: g.node_type(u).unwrap_or("").to_string(),
-            pos: g.pos(u).unwrap_or([0.0, 0.0]),
-            uid: Some(u),
-            name: g.name(u).map(str::to_string),
-            params: None,
-            exprs: vec![],
-            viewers: g.viewers(u).cloned(),
+            viewers: g.viewers(u).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).cloned(),
             scope: g.stub(u).map(|(s, _)| s),
         });
     }
 
-    // 4. Move the restored top back INSIDE its enclosing scope (a member delete); a top-level
-    //    instance already lands at ROOT.
+    // Membership, once every uid exists. The root's own is last, so a member delete puts the top
+    // back INSIDE its enclosing scope; a top-level one already lands at ROOT.
+    for &u in members.iter().chain(&ports) {
+        if u == root {
+            continue;
+        }
+        cmds.push(Command::SetScope { uid: u, scope: g.scope_of(u) });
+    }
     if orig_parent.is_some() {
         cmds.push(Command::SetScope { uid: root, scope: orig_parent });
     }
 
-    // 5. Recreate every link touching the subtree, after all endpoints exist — an enclosing port's
-    //    wire included, since its other end is in here. The set is handed back too: it is what a
-    //    panel bound to one of these uids has to stop naming, so it holds ONLY what is going, and a
-    //    PORT is such a uid — the scopes' own ports are in it beside their members.
-    let subtree: std::collections::HashSet<Uid> =
-        leaves.iter().chain(&scopes).chain(&ports).copied().collect();
+    // Every link touching the subtree, after all endpoints exist — an enclosing port's wire
+    // included, since its other end is in here. The set is handed back too: it is what a panel
+    // bound to one of these uids has to stop naming, so it holds ONLY what is going.
+    let subtree: std::collections::HashSet<Uid> = members.iter().chain(&ports).copied().collect();
     for l in g.links_view() {
         if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {
             cmds.push(Command::AddLink {
@@ -831,79 +807,4 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     }
 
     (Command::Compound(cmds), subtree)
-}
-
-
-/// One uid through the copy map; a uid the map does not name lies OUTSIDE the subtree, so it stays
-/// as it is — which is what leaves a copy's outward cables behind.
-fn mapped(u: Uid, map: &std::collections::HashMap<Uid, Uid>) -> Option<Uid> {
-    map.get(&u).copied()
-}
-
-/// Rewrite a captured-subtree command onto fresh uids, clearing every minted name so the copy takes
-/// its own out of the one namespace. A command naming something outside the subtree is dropped:
-/// a copy arrives unconnected, exactly as a fresh node does.
-fn as_copy(
-    cmd: Command,
-    map: &std::collections::HashMap<Uid, Uid>,
-    offset: [f64; 2],
-) -> Option<Command> {
-    let at = |p: [f64; 2]| [p[0] + offset[0], p[1] + offset[1]];
-    Some(match cmd {
-        Command::AddNode { type_name, pos, uid, params, exprs, viewers, scope, .. } => Command::AddNode {
-            type_name,
-            pos: at(pos),
-            uid: Some(mapped(uid?, map)?),
-            name: None, // minted fresh, so the copy cannot collide with what it was copied from
-            params,
-            exprs,
-            viewers,
-            scope: scope.and_then(|s| mapped(s, map)),
-        },
-        Command::Group { members, pos, restore } => {
-            let r = restore?;
-            Command::Group {
-                members: members.iter().filter_map(|m| mapped(*m, map)).collect(),
-                pos: at(pos),
-                restore: Some(ScopeRestore {
-                    scope_id: mapped(r.scope_id, map)?,
-                    name: String::new(),
-                    parent: r.parent.and_then(|p| mapped(p, map)),
-                    parent_stubs: vec![],
-                }),
-            }
-        }
-        Command::SetScope { uid, scope } => Command::SetScope {
-            uid: mapped(uid, map)?,
-            scope: scope.and_then(|s| mapped(s, map)),
-        },
-        // BOTH ends must be inside, or the cable reached out of the subtree and is not the copy's.
-        Command::AddLink { node_out, slot_out, node_in, slot_in } => Command::AddLink {
-            node_out: mapped(node_out, map)?,
-            slot_out,
-            node_in: mapped(node_in, map)?,
-            slot_in,
-        },
-        other => other,
-    })
-}
-
-/// The commands that build a COPY of the subtree rooted at `root`, and the copy's own root uid.
-/// This is the capture a delete's inverse already builds, put through a uid remap — so duplication
-/// is one traversal in the codebase rather than a second one that can drift from it.
-pub fn copy_subtree(g: &mut Graph, root: Uid, offset: [f64; 2]) -> Result<(Command, Uid), String> {
-    if g.name(root).is_none() {
-        return Err(format!("copy_of: no node {root}"));
-    }
-    let (captured, subtree) = capture_subtree_restore(g, root);
-    let mut map = std::collections::HashMap::new();
-    for uid in subtree.iter().copied() {
-        map.insert(uid, g.mint());
-    }
-    let fresh_root = *map.get(&root).ok_or("copy_of: the subtree did not name its own root")?;
-    let Command::Compound(steps) = captured else {
-        return Err("copy_of: the subtree capture is a compound".into());
-    };
-    let copied: Vec<Command> = steps.into_iter().filter_map(|c| as_copy(c, &map, offset)).collect();
-    Ok((Command::Compound(copied), fresh_root))
 }

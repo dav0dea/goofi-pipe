@@ -35,6 +35,7 @@ import {
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import type { StringParam } from '$lib/api/types';
+import type { GraphFragment } from '$lib/editor/clipboard';
 
 /** Safety net: lift a ⟳ spinner after this long when a node never reports the refresh done.
  * Generous — an LSL resolve blocks the node's ctrl thread ~4s. */
@@ -627,64 +628,36 @@ export class GraphStore {
 		}
 	}
 
-	/** Create a batch of nodes and wire the given links onto the new uids, returning the original→new
-	 * map. A per-item failure is swallowed so one bad item does not abort the batch. */
-	async instantiateNodes(
-		specs: {
-			key: string;
-			type: string;
-			category: string;
-			pos: [number, number];
-			params: Record<string, Record<string, unknown>>;
-		}[],
-		links: LinkInfo[] = [],
-		instId?: string
-	): Promise<Record<string, string>> {
-		const rename: Record<string, string> = {};
-		for (const s of specs) {
-			try {
-				const newUid = await this.addNode(s.type, s.category, s.pos, instId, s.params);
-				rename[s.key] = newUid;
-			} catch (e) {
-				console.warn('instantiateNodes: add_node failed', e);
-			}
-		}
-		for (const l of links) {
-			try {
-				await this.addLink({
-					node_out: rename[l.node_out] ?? l.node_out,
-					node_in: rename[l.node_in] ?? l.node_in,
-					slot_out: l.slot_out,
-					slot_in: l.slot_in
-				});
-			} catch {
-				/* ignore a link that couldn't be remade */
-			}
-		}
-		return rename;
+	/** Read `uids` and everything they hold — members, ports and nested sub-patches, to any depth —
+	 * as a self-contained fragment in the shape a `.gfi` carries. */
+	async copyNodes(uids: string[]): Promise<GraphFragment> {
+		const r = await this.ctl.call<{ doc: GraphFragment }>('copy_nodes', { nodes: uids });
+		return r.doc;
 	}
 
-	/** Duplicate nodes by uid, offset from the originals, carrying their params and inner links. */
-	async cloneNodes(
-		uids: Iterable<string>,
-		offset: [number, number] = [40, 40],
+	/** Add a fragment on fresh uids, shifted by `offset` and rooted in `instId`. ONE command, so a
+	 * paste of any depth is one undo step; answers each record's uid mapped to what it became. */
+	async pasteNodes(
+		doc: GraphFragment,
+		offset: [number, number] = [0, 0],
 		instId?: string
 	): Promise<Record<string, string>> {
-		const set = new Set(uids);
-		// Link endpoints are uids, so the filter and the spec key must be uids too, or the rename
-		// map will not line up with the link remap.
-		const nodes = this.nodes.filter((n) => set.has(n.uid));
-		if (nodes.length === 0) return {};
-		const links = this.links.filter((l) => set.has(l.node_in) && set.has(l.node_out));
-		const specs = nodes.map((n) => ({
-			key: n.uid,
-			type: n.type,
-			category: n.category,
-			pos: [n.pos[0] + offset[0], n.pos[1] + offset[1]] as [number, number],
-			params: paramValues(n)
-		}));
-		return this.instantiateNodes(specs, links, instId);
+		const r = await this.ctl.call<{ rename: Record<string, string> }>('paste_nodes', {
+			doc,
+			pos: offset,
+			inst_id: instId ?? null
+		});
+		return r.rename ?? {};
 	}
+
+	/** Duplicate `uids` in place — a copy and a paste, which is what a duplicate IS, so a sub-patch
+	 * and a leaf go through the one door. */
+	async cloneNodes(uids: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> {
+		if (uids.length === 0) return {};
+		return this.pasteNodes(await this.copyNodes(uids), offset);
+	}
+
+
 
 	/** Delete several nodes as ONE undoable step. */
 	async removeNodes(uids: Iterable<string>): Promise<void> {

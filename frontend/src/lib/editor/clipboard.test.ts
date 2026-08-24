@@ -1,38 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { serializeClipboard, parseClipboard, clipToSpecs } from './clipboard';
-import type { LinkInfo, NodeInstanceInfo } from '$lib/api/control';
+import { serializeClipboard, parseClipboard, fragmentCentre, type GraphFragment } from './clipboard';
 
-function nodeInfo(uid: string, name: string, type = 'Oscillator'): NodeInstanceInfo {
+/** The shape `copy_nodes` answers with: the `.gfi`'s own `{nodes, links}`, keyed by uid. */
+function fragment(): GraphFragment {
 	return {
-		uid,
-		name,
-		type,
-		category: 'inputs',
-		doc: '',
-		input_slots: { in: 'ARRAY' },
-		output_slots: { out: 'ARRAY' },
-		params: {},
-		pos: [10, 20],
-		viewers: {},
-		scope: '__root__',
-		error: null
+		nodes: {
+			uidA: { pos: [0, 0] },
+			uidB: { pos: [100, 40] }
+		},
+		links: [{ node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' }]
 	};
 }
 
-describe('clipboard — node identity is the uid (links carry uid endpoints)', () => {
-	it('keys instantiation specs by uid so paste can remap uid link endpoints', () => {
-		// Display names deliberately differ from uids (the post-rekey reality).
-		const nodes = [nodeInfo('uidA', 'oscillator0'), nodeInfo('uidB', 'buffer0', 'Buffer')];
-		const links: LinkInfo[] = [
-			{ node_out: 'uidA', slot_out: 'out', node_in: 'uidB', slot_in: 'in' }
-		];
-		const clip = serializeClipboard(nodes, links);
-		const roundTripped = parseClipboard(JSON.stringify(clip));
-		expect(roundTripped).not.toBeNull();
+describe('clipboard — the payload is the manager’s own fragment, carried verbatim', () => {
+	it('round-trips a fragment and refuses anything that is not one', () => {
+		const clip = serializeClipboard(fragment());
+		const back = parseClipboard(JSON.stringify(clip));
+		// Verbatim: the frontend never re-shapes what it will hand straight back to `paste_nodes`,
+		// so a record it does not understand — a facade, a port — survives a copy and a paste.
+		expect(back?.doc).toEqual(fragment());
 
-		const specs = clipToSpecs(roundTripped!, [100, 100]);
-		// The spec key must be the uid — the same identity the link endpoints use —
-		// so instantiateNodes' rename map (key -> newUid) resolves the endpoints.
-		expect(specs.map((s) => s.key).sort()).toEqual(['uidA', 'uidB']);
+		expect(parseClipboard('not json')).toBeNull();
+		expect(parseClipboard(JSON.stringify({ nodes: {} })), 'no version marker').toBeNull();
+		expect(
+			parseClipboard(JSON.stringify({ __goofi_clip__: 1, doc: fragment() })),
+			'an older payload shape is refused rather than half-read'
+		).toBeNull();
+		expect(parseClipboard(JSON.stringify({ __goofi_clip__: 2, doc: {} })), 'no nodes map').toBeNull();
+	});
+
+	it('centres a fragment on its records, so a paste anchors where the user is looking', () => {
+		expect(fragmentCentre(fragment())).toEqual([50, 20]);
+		// A record with no position reads as the origin, and an empty fragment has no centre to find.
+		expect(fragmentCentre({ nodes: { a: {} } })).toEqual([0, 0]);
+		expect(fragmentCentre({ nodes: {} })).toEqual([0, 0]);
 	});
 });

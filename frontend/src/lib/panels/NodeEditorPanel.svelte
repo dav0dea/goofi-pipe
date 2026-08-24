@@ -56,7 +56,7 @@
 	import { createLongPress } from 'panelty';
 	import { createDoubleTapZoom, zoomStep, type FlowViewport } from '$lib/editor/doubleTapZoom';
 	import { eventPoint } from '$lib/editor/eventPoint';
-	import { serializeClipboard, parseClipboard, clipToSpecs } from '$lib/editor/clipboard';
+	import { serializeClipboard, parseClipboard, fragmentCentre } from '$lib/editor/clipboard';
 	import { copyText } from '$lib/clipboard';
 	import { registerEditor, unregisterEditor } from './editorCommands';
 	import InspectorOverlay from './InspectorOverlay.svelte';
@@ -354,12 +354,6 @@
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
 		return [...ids];
-	}
-
-	/** …minus the facades, which `cloneNodes` cannot copy: it instantiates by TYPE, and a scope's
-	 * copy is its members and their wiring. The backend's `add_node {copy_of}` is what lifts this. */
-	function clonableUids(): string[] {
-		return selectedUids().filter((id) => !isScope(id));
 	}
 
 	async function groupSelection(): Promise<void> {
@@ -844,19 +838,18 @@
 	}
 
 	async function copySelection(): Promise<void> {
-		const names = new Set(clonableUids());
-		const selNodes = g.nodes.filter((n) => names.has(n.uid));
-		if (selNodes.length === 0) return;
-		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
-		if (!(await copyText(JSON.stringify(serializeClipboard(selNodes, links))))) {
+		const uids = selectedUids();
+		if (uids.length === 0) return;
+		// The manager reads the subtree: a sub-patch's members, ports and nested scopes come with it,
+		// which is what makes the payload paste-able into a patch that never held those uids.
+		if (!(await copyText(JSON.stringify(serializeClipboard(await g.copyNodes(uids)))))) {
 			console.warn('clipboard write failed');
 		}
 	}
 
 	async function duplicateSelection(): Promise<void> {
-		// One transaction, so duplicating N nodes and their links is a single undo.
 		const rename = await history().transaction('Duplicate nodes', () =>
-			g.cloneNodes(clonableUids(), [40, 40], entered ?? undefined)
+			g.cloneNodes(selectedUids(), [40, 40])
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
@@ -872,16 +865,17 @@
 		}
 		const clip = parseClipboard(text);
 		if (!clip) return;
-		// Anchor the paste at the visible viewport centre, in FLOW space; `clipToSpecs` adds each
-		// node's relative offset on top of it.
+		// Anchor the paste at the visible viewport centre, in FLOW space. The fragment carries the
+		// positions it was copied at, so what goes to the manager is the SHIFT between the two.
 		const rect = rootEl?.getBoundingClientRect();
 		let at: [number, number] = [window.innerWidth / 4, window.innerHeight / 4];
 		if (rect && screenToFlow) {
 			const c = screenToFlow({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
 			at = [c.x, c.y];
 		}
+		const from = fragmentCentre(clip.doc);
 		const rename = await history().transaction('Paste nodes', () =>
-			g.instantiateNodes(clipToSpecs(clip, at), clip.links, entered ?? undefined)
+			g.pasteNodes(clip.doc, [Math.round(at[0] - from[0]), Math.round(at[1] - from[1])], entered ?? undefined)
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);

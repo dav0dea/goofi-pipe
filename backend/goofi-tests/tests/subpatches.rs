@@ -620,8 +620,9 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
 
 #[test]
 fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
-    // Duplicating a sub-patch is duplicating everything it contains, to any depth — members, nested
-    // scopes, ports and the wiring among them. `copy_of` is the same op for a leaf, so there is one
+    // Copying a sub-patch is copying everything it contains, to any depth — members, nested scopes,
+    // ports and the wiring among them. The fragment `copy_nodes` reads is the `.gfi`'s own shape, so
+    // it is the same pair of ops for a leaf, for a selection, and across two goofi processes: one
     // door rather than a clone path per node kind.
     let g = Goofi::new();
     let osc = g.add("Oscillator");
@@ -636,9 +637,16 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     assert_eq!(g.doc()["nodes"][&outer]["name"], "subpatch1", "the second sub-patch is subpatch1");
 
     let before_nodes = g.nodes().len();
-    let copy = g.call("add_node", j!({ "copy_of": outer, "pos": [400.0, 0.0] }))
-        ["uid"].as_str().expect("the copy's facade uid").to_string();
+    let fragment = g.call("copy_nodes", j!({ "nodes": [outer] }))["doc"].clone();
+    // A fragment is SELF-CONTAINED: it holds the whole subtree and no cable that reaches out of it.
+    let held = fragment["nodes"].as_object().expect("a nodes map").len();
+    assert_eq!(held, 7, "two facades, their four ports, and the one leaf inside: {fragment}");
+    assert!(fragment["links"].as_array().is_some_and(|l| !l.is_empty()), "…and its inner wiring: {fragment}");
+
+    let rename = g.call("paste_nodes", j!({ "doc": fragment, "pos": [400.0, 0.0] }))["rename"].clone();
+    let copy = rename[&outer].as_str().expect("the copy's facade uid").to_string();
     assert_ne!(copy, outer, "a copy is a new node, at a new uid");
+    assert_eq!(rename.as_object().map(|m| m.len()), Some(held), "every record was minted: {rename}");
 
     // The whole shape came with it: a nested scope inside, holding a Buffer, behind its own ports.
     let copied_inner = g.members(&copy).into_iter()
@@ -679,6 +687,22 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     assert_eq!(g.call("undo", j!({}))["changed"], true); // the whole copy
     assert!(!g.instances().contains(&copy), "undo took the copied subtree whole");
     assert_eq!(g.nodes().len(), before_nodes, "leaving exactly what was there before: {:?}", g.nodes());
+
+    // A fragment outlives the patch it was read from, which is what makes a paste into a SECOND
+    // goofi work — the clipboard carries the shape, never a uid the other side has to still hold.
+    let elsewhere = Goofi::new();
+    let landed = elsewhere.call("paste_nodes", j!({ "doc": g.call("copy_nodes", j!({ "nodes": [inner] }))["doc"] }))
+        ["rename"].clone();
+    let there = landed[&inner].as_str().expect("the sub-patch landed").to_string();
+    assert!(elsewhere.instances().contains(&there), "…as a sub-patch: {:?}", elsewhere.instances());
+    assert_eq!(elsewhere.members(&there).len(), g.members(&inner).len(), "with everything it held");
+
+    // …and it lands INSIDE a named sub-patch when one is asked for, which is what a paste while
+    // entered has to do — the roots go there, and what named a scope in the fragment keeps it.
+    let host = group(&elsewhere, &[elsewhere.add("Buffer")].map(hex));
+    let nested = elsewhere.call("paste_nodes", j!({ "doc": g.call("copy_nodes", j!({ "nodes": [inner] }))["doc"],
+                                                    "inst_id": host }))["rename"][&inner].as_str().unwrap().to_string();
+    assert!(elsewhere.members(&host).contains(&nested), "the pasted root went inside: {:?}", elsewhere.members(&host));
     let _ = (osc, sink);
 }
 

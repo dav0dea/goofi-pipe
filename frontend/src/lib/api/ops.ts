@@ -7,6 +7,8 @@ export type OpName =
 	| 'list_nodes'
 	| 'rescan_nodes'
 	| 'add_node'
+	| 'copy_nodes'
+	| 'paste_nodes'
 	| 'remove_node'
 	| 'restart_node'
 	| 'add_link'

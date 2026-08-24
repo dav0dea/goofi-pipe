@@ -712,6 +712,17 @@ fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
         .ok_or_else(|| format!("missing/invalid uid `{key}`"))
 }
 
+/// A required uid ARRAY, refused whole rather than silently short: a caller that named one bad
+/// uid asked for a batch that is not the one it would get.
+fn parse_uid_list(payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
+    let arr = payload.get(key).and_then(|v| v.as_array()).ok_or_else(|| format!("missing {key}"))?;
+    let uids: Vec<Uid> = arr.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
+    match uids.len() == arr.len() {
+        true => Ok(uids),
+        false => Err(format!("malformed uid in `{key}`")),
+    }
+}
+
 /// A required string field from an RPC payload.
 fn parse_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, String> {
     payload.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))
@@ -1002,21 +1013,25 @@ impl AppState {
                     events.push(node_types_event(&g));
                     Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
                 }
-                "add_node" => {
-                    // A COPY names no type: what to build is read off what is being copied, and for
-                    // a sub-patch that is its whole subtree. One op, so a leaf and a sub-patch are
-                    // duplicated through the same door.
-                    if let Some(src) = payload.get("copy_of").and_then(|v| v.as_str()) {
-                        let src = Uid::from_hex(src).ok_or("add_node: malformed copy_of")?;
-                        let offset = payload.get("pos").and_then(parse_pos).map_or([40.0, 40.0], |to| {
-                            let from = g.pos(src).unwrap_or([0.0, 0.0]);
-                            [to[0] - from[0], to[1] - from[1]]
-                        });
-                        let (cmd, uid) = goofi_engine::command::copy_subtree(&mut g, src, offset)?;
-                        state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
-                        events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                        return Ok(json!({ "uid": uid.to_hex(), "name": g.name(uid).unwrap_or("") }));
+                "copy_nodes" => {
+                    let uids = parse_uid_list(&payload, "nodes")?;
+                    Ok(json!({ "doc": g.fragment(&g.subtree_of(&uids)) }))
+                }
+                "paste_nodes" => {
+                    let doc = payload.get("doc").ok_or("paste_nodes: missing doc")?;
+                    let offset = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+                    let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
+                        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("paste_nodes: malformed inst_id")?),
+                        None => None,
+                    };
+                    let (cmd, rename) = g.import_fragment(doc, scope, offset)?;
+                    state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
+                    for uid in rename.values() {
+                        events.push(event("node_added", json!({ "uid": uid })));
                     }
+                    Ok(json!({ "rename": rename }))
+                }
+                "add_node" => {
                     let ty = payload
                         .get("type")
                         .and_then(|v| v.as_str())
@@ -1442,14 +1457,7 @@ impl AppState {
                     Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
                 }
                 "group_nodes" => {
-                    let members = payload
-                        .get("members")
-                        .and_then(|v| v.as_array())
-                        .ok_or("group_nodes: missing members")?;
-                    let uids: Vec<Uid> = members.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
-                    if uids.len() != members.len() {
-                        return Err("group_nodes: malformed member uid".into());
-                    }
+                    let uids = parse_uid_list(&payload, "members")?;
                     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                     let out = state.history.lock().unwrap().apply(
                         &mut g,
