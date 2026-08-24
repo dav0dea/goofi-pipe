@@ -1,6 +1,5 @@
 //! One JSON projection of the engine `Graph` — exactly the shape of the control-plane document.
 
-use goofi_engine::subpatch;
 use goofi_engine::Graph;
 use serde_json::{json, Map, Value};
 
@@ -12,9 +11,12 @@ pub fn of(g: &Graph) -> Value {
     let pos_json = |p: [f64; 2]| json!({ "x": p[0], "y": p[1] });
 
     let mut nodes = Map::new();
-    for uid in g.node_uids() {
+    // ONE loop over ONE namespace: a leaf, a facade and a boundary port are all node records, and
+    // what differs between them is only what they HAVE — a facade and a port run nothing, so the
+    // params key is simply empty, as it is on a node with none.
+    for uid in g.all_uids() {
         let mut node = Map::new();
-        node.insert("type".into(), json!(g.type_name(uid).unwrap_or("")));
+        node.insert("type".into(), json!(g.node_type(uid).unwrap_or("")));
         node.insert("name".into(), json!(g.name(uid).unwrap_or("")));
         node.insert("pos".into(), pos_json(g.pos(uid).unwrap_or([0.0, 0.0])));
         let mut params = Map::new();
@@ -36,44 +38,16 @@ pub fn of(g: &Graph) -> Value {
             }
         }
         node.insert("params".into(), Value::Object(params));
-        // `g.viewers` is Some for EVERY node, so the emptiness gate — not the Option — is what
-        // keeps a viewerless node's leaf out of the doc.
+        // The same `json_string` shape every kind's viewers ride in: a merge patch spends `null`
+        // on a key delete, so a viewer blob must not reach the document as a tree of leaves.
         if let Some(v) = g.viewers(uid).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())) {
             node.insert("viewers".into(), json!(v.to_string()));
         }
         nodes.insert(uid.to_hex(), Value::Object(node));
     }
-    // A facade and a boundary port are node records too. Neither runs, so neither carries params —
-    // the key is simply absent, as it is on a node that has none. Both DO wear viewers: a facade
-    // draws its out ports as slots, and an in port wears one of its own.
-    for uid in g.scope_uids() {
-        let Some(scope) = g.scope(uid) else { continue };
-        let mut facade = json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name,
-                                 "pos": pos_json(scope.pos), "params": {} });
-        if scope.viewers.as_object().is_some_and(|m| !m.is_empty()) {
-            facade["viewers"] = json!(scope.viewers.to_string());
-        }
-        nodes.insert(uid.to_hex(), facade);
-        for (id, st) in scope.stubs.iter() {
-            let mut rec = json!({ "type": subpatch::boundary_type_name(st.dir, st.dtype),
-                                  "name": st.name, "pos": pos_json(st.pos), "params": {},
-                                  "scope": uid.to_hex() });
-            // The same `json_string` shape a node's viewers ride in: a merge patch spends `null`
-            // on a key delete, so a viewer blob must not reach the document as a tree of leaves.
-            if st.viewers.as_object().is_some_and(|m| !m.is_empty()) {
-                rec["viewers"] = json!(st.viewers.to_string());
-            }
-            nodes.insert(id.to_hex(), rec);
-        }
-    }
     // Membership rides the member. Absent means ROOT — never a null, which a merge patch spends on
     // "delete this key" and could not tell from a move out of a scope.
-    for (uid, parent) in g
-        .node_uids()
-        .into_iter()
-        .chain(g.scope_uids())
-        .filter_map(|u| g.scope_of(u).map(|p| (u, p)))
-    {
+    for (uid, parent) in g.all_uids().into_iter().filter_map(|u| g.scope_of(u).map(|p| (u, p))) {
         if let Some(Value::Object(rec)) = nodes.get_mut(&uid.to_hex()) {
             rec.insert("scope".into(), json!(parent.to_hex()));
         }

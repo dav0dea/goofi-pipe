@@ -94,8 +94,8 @@ scope: subpatch0 (000000000004)
 
 ```mermaid
 flowchart LR
-  n000000000005([\"in0: InArray<br/>000000000005\"])
   n000000000003[\"buffer0: Buffer<br/>000000000003\"]
+  n000000000005([\"in0: InArray<br/>000000000005\"])
   n000000000005 -- value\u{2192}data --> n000000000003
 ```
 

@@ -1,7 +1,6 @@
-//! Flat sub-patch scopes — a purely organizational overlay over the flat node graph.
-//! Nodes live in one flat set; a scope references member uids and holds boundary stubs.
-
-use indexmap::IndexMap;
+//! What a sub-patch IS, stated in the few things its nature forces. A facade and a boundary port
+//! are ordinary node records in the graph's ONE map; membership is `scope_of`'s. What is left here
+//! is the vocabulary: which way a port faces, what a boundary type is called, and the one slot.
 
 use crate::Uid;
 use goofi_core::SlotType;
@@ -60,41 +59,22 @@ pub fn boundary_type_name(dir: Dir, dtype: SlotType) -> &'static str {
         .expect("the table covers every dir/dtype pair")
 }
 
-/// A boundary port on a scope: a naming indirection over an inner member slot, child side only.
-/// It is addressed by a `Uid` from the graph's one counter, so an op names it exactly as it names
-/// a node, and the facade slot it backs is spelled by that uid's hex.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Stub {
+/// A boundary port's own nature: which way it faces and what it carries. Everything else about it
+/// — its name, position, viewer state, membership — it wears as the node it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Port {
     pub dir: Dir,
-    /// The port's advertised dtype — the wired inner slot's type (provisional until wired).
+    /// The port's dtype, fixed by its type at birth: a port relays, so nothing re-types it.
     pub dtype: SlotType,
-    pub pos: [f64; 2],
-    pub name: String,
-    /// Per-slot viewer view-state, as a node carries it. An IN port wears an output, so it is the
-    /// one a viewer can attach to; an OUT port's stays empty.
-    pub viewers: serde_json::Value,
 }
 
-impl Stub {
-    pub fn new(dir: Dir, dtype: SlotType, pos: [f64; 2], name: String) -> Self {
-        Stub { dir, dtype, pos, name, viewers: serde_json::json!({}) }
-    }
-}
-
-/// A sub-patch scope: its display name, facade position, boundary stubs and the facade's own
-/// per-slot viewer state. Membership lives in the Graph's `scope_of` index.
+/// A captured port — what it IS, plus what it wears as the node it is. Enough to put one back
+/// exactly, which is what every boundary inverse restores.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Scope {
+pub struct PortRecord {
+    pub id: Uid,
+    pub port: Port,
     pub name: String,
     pub pos: [f64; 2],
-    pub stubs: IndexMap<Uid, Stub>,
-    /// Per-slot viewer view-state, as a node and a port carry it — the facade draws its OUT ports
-    /// as output slots, so each of them is a slot a viewer attaches to.
     pub viewers: serde_json::Value,
-}
-
-impl Scope {
-    pub fn new(name: String, pos: [f64; 2], stubs: IndexMap<Uid, Stub>) -> Self {
-        Scope { name, pos, stubs, viewers: serde_json::json!({}) }
-    }
 }

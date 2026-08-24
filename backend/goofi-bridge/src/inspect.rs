@@ -18,12 +18,7 @@ fn label(name: &str) -> String {
 fn members(g: &Graph, scope: Option<Uid>) -> Vec<Uid> {
     match scope {
         Some(s) => g.scope_members(s),
-        None => g
-            .node_uids()
-            .into_iter()
-            .chain(g.scope_uids())
-            .filter(|u| g.scope_of(*u).is_none())
-            .collect(),
+        None => g.all_uids().into_iter().filter(|u| g.scope_of(*u).is_none()).collect(),
     }
 }
 
@@ -40,10 +35,10 @@ fn member_in(g: &Graph, scope: Option<Uid>, uid: Uid) -> Option<Uid> {
 
 /// A scope's full path from the root, as display names.
 fn scope_path(g: &Graph, scope: Uid) -> String {
-    let mut parts = vec![g.scope(scope).map_or("?".into(), |s| s.name.clone())];
+    let mut parts = vec![g.name(scope).unwrap_or("?").to_string()];
     let mut at = scope;
     while let Some(parent) = g.scope_of(at) {
-        parts.push(g.scope(parent).map_or("?".into(), |s| s.name.clone()));
+        parts.push(g.name(parent).unwrap_or("?").to_string());
         at = parent;
     }
     parts.reverse();
@@ -77,7 +72,7 @@ pub fn patch(
     dirty: bool,
 ) -> Result<String, String> {
     if let Some(s) = scope {
-        if g.scope(s).is_none() {
+        if !g.is_facade(s) {
             return Err(format!("inspect_patch: no sub-patch `{}`", s.to_hex()));
         }
     }
@@ -89,33 +84,23 @@ pub fn patch(
     );
 
     let member = members(g, scope);
-    let stubs = scope.and_then(|s| g.scope(s)).map(|s| &s.stubs);
-    if member.is_empty() && stubs.is_none_or(|s| s.is_empty()) {
+    if member.is_empty() {
         out.push_str("\n(no nodes)\n");
     } else {
         out.push_str("\n```mermaid\nflowchart LR\n");
-        for (id, stub) in stubs.into_iter().flatten() {
-            out.push_str(&format!(
-                "  {}([\"{}: {}<br/>{}\"])\n",
-                mid(*id),
-                label(&stub.name),
-                goofi_engine::subpatch::boundary_type_name(stub.dir, stub.dtype),
-                id.to_hex(),
-            ));
-        }
+        // ONE loop: a port, a facade and a leaf are all members, and only the SHAPE they are drawn
+        // in differs — which is the one distinction a diagram is allowed to make.
         for &uid in &member {
             let hex = uid.to_hex();
-            match g.scope(uid) {
-                Some(s) => out.push_str(&format!("  {}[[\"{}<br/>{hex}\"]]\n", mid(uid), label(&s.name))),
-                None => {
-                    let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
-                    out.push_str(&format!(
-                        "  {}[\"{warn}{}: {}<br/>{hex}\"]\n",
-                        mid(uid),
-                        label(g.name(uid).unwrap_or("?")),
-                        g.type_name(uid).unwrap_or("?"),
-                    ));
-                }
+            let name = label(g.name(uid).unwrap_or("?"));
+            let ty = g.node_type(uid).unwrap_or("?");
+            if g.stub(uid).is_some() {
+                out.push_str(&format!("  {}([\"{name}: {ty}<br/>{hex}\"])\n", mid(uid)));
+            } else if g.is_facade(uid) {
+                out.push_str(&format!("  {}[[\"{name}<br/>{hex}\"]]\n", mid(uid)));
+            } else {
+                let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
+                out.push_str(&format!("  {}[\"{warn}{name}: {ty}<br/>{hex}\"]\n", mid(uid)));
             }
         }
         // Runtime links are flat leaf→leaf, so each end folds onto the member of THIS scope that

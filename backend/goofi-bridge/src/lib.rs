@@ -858,7 +858,7 @@ fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
 /// Translate a link endpoint that names a sub-patch FACADE into the port it names — a facade
 /// address IS its port. What is behind that port is the graph's own question, asked at plan time.
 fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
-    match g.scope(uid).is_some() && Uid::from_hex(slot).is_some_and(|p| g.stub(p).is_some()) {
+    match g.is_facade(uid) && Uid::from_hex(slot).is_some_and(|p| g.stub(p).is_some()) {
         true => (Uid::from_hex(slot).expect("checked"), subpatch::BOUNDARY_SLOT.to_string()),
         false => (uid, slot.to_string()),
     }
@@ -877,7 +877,7 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
 /// Is `node` something a panel could bind to? A UID, and only a uid: a display name stops resolving
 /// the moment somebody renames the node. A boundary port counts — it exposes a real stream.
 fn bindable_node(g: &Graph, node: &str) -> bool {
-    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.scope(u).is_some() || g.stub(u).is_some())
+    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.is_facade(u) || g.stub(u).is_some())
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step, and

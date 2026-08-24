@@ -1,11 +1,10 @@
 //! Patch commands with exact inverses — the manager's undo/redo unit.
 
-use crate::subpatch::{self, Dir, Stub};
+use crate::subpatch::{self, Dir};
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
 use goofi_node::{param, ParamGroups};
-use indexmap::IndexMap;
 
 /// What a command produced, for the caller. Kept serde-free so the engine needs no JSON dep.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,7 +33,7 @@ pub struct ExprState {
 pub struct ScopeRestore {
     pub scope_id: Uid,
     pub name: String,
-    pub stubs: IndexMap<Uid, Stub>,
+    pub stubs: Vec<subpatch::PortRecord>,
     /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
     /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
     pub parent: Option<Uid>,
@@ -177,7 +176,7 @@ pub enum Command {
         dtype: goofi_core::SlotType,
         pos: [f64; 2],
         name: Option<String>,
-        restore: Option<(Uid, Stub)>,
+        restore: Option<subpatch::PortRecord>,
     },
     /// Remove a stub. Inverse = `AddStub` restoring the captured stub.
     RemoveStub {
@@ -190,7 +189,6 @@ pub enum Command {
         scope: Uid,
         stub: Uid,
         inner: subpatch::StubInner,
-        dtype: Option<goofi_core::SlotType>,
     },
 }
 
@@ -200,10 +198,12 @@ impl Command {
     /// not built yet.
     fn precondition(&self, g: &Graph) -> Result<(), String> {
         let stub = |scope: Uid, id: Uid| -> Result<(), String> {
-            let s = g.scope(scope).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))?;
-            s.stubs
-                .contains_key(&id)
-                .then_some(())
+            if !g.is_facade(scope) {
+                return Err(format!("no sub-patch {}", scope.to_hex()));
+            }
+            g.stub(id)
+                .filter(|(s, _)| *s == scope)
+                .map(|_| ())
                 .ok_or_else(|| format!("sub-patch {} has no boundary {}", scope.to_hex(), id.to_hex()))
         };
         match self {
@@ -212,11 +212,11 @@ impl Command {
             Command::WireStub { scope, stub: id, .. } => stub(*scope, *id),
             Command::RemoveStub { scope, stub: id } => stub(*scope, *id),
             Command::Expand { scope } => {
-                g.scope(*scope).map(|_| ()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
+                g.is_facade(*scope).then_some(()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
             }
             // A collapsed sub-patch facade is editable here (name/pos), so either kind counts.
             Command::EditNode { uid, .. } => {
-                (g.contains(*uid) || g.scope(*uid).is_some() || g.stub(*uid).is_some())
+                (g.contains(*uid) || g.is_facade(*uid) || g.stub(*uid).is_some())
                     .then_some(())
                     .ok_or_else(|| format!("no node, sub-patch or port {}", uid.to_hex()))
             }
@@ -269,7 +269,7 @@ impl Command {
                 // Validate the destination BEFORE mutating anything: an add that cannot honour its
                 // scope must leave the graph exactly as it found it.
                 if let Some(s) = scope {
-                    if g.scope(s).is_none() {
+                    if !g.is_facade(s) {
                         return Err(format!("add_node: no such scope {s}"));
                     }
                 }
@@ -304,7 +304,7 @@ impl Command {
             Command::RemoveNode { uid } => {
                 // Handles a plain leaf, a sub-patch member (leaf or nested scope), OR a top-level
                 // instance — nothing live at this uid is the idempotent no-op.
-                if !g.contains(uid) && g.scope(uid).is_none() {
+                if !g.contains(uid) && !g.is_facade(uid) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 let (inverse, gone) = capture_subtree_restore(g, uid);
@@ -315,7 +315,7 @@ impl Command {
                 // top-level scope tears down its subtree; a plain leaf is a single-node removal.
                 if g.scope_of(uid).is_some() {
                     g.remove_member(uid)?;
-                } else if g.scope(uid).is_some() {
+                } else if g.is_facade(uid) {
                     g.remove_instance(uid)?;
                 } else {
                     g.remove_node(uid)?;
@@ -372,7 +372,7 @@ impl Command {
 
             Command::EditNode { uid, name, pos, viewers } => {
                 // A node, a scope facade or a boundary port; only a vanished uid is the no-op.
-                if !g.contains(uid) && g.scope(uid).is_none() && g.stub(uid).is_none() {
+                if !g.contains(uid) && !g.is_facade(uid) && g.stub(uid).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: it is gone
                 }
                 let old_pos = pos.map(|_| g.pos(uid).unwrap_or([0.0, 0.0]));
@@ -541,12 +541,12 @@ impl Command {
 
             Command::SetScope { uid, scope } => {
                 // Idempotent: the uid is gone (a redo racing a delete) → no-op.
-                if !g.contains(uid) && g.scope(uid).is_none() {
+                if !g.contains(uid) && !g.is_facade(uid) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 // The destination scope was dissolved. `SetScope` is never a user RPC, so this is
                 // always a stale replay and the restored member simply lands at ROOT.
-                if scope.is_some_and(|s| g.scope(s).is_none()) {
+                if scope.is_some_and(|s| !g.is_facade(s)) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 let old = g.reparent(uid, scope)?;
@@ -562,7 +562,7 @@ impl Command {
                     Some(r) => {
                         // Idempotent: the exact scope is already live (a redo racing another client) —
                         // reuse it; otherwise recreate it uid-stable.
-                        let scope = if g.scope(r.scope_id).is_some() {
+                        let scope = if g.is_facade(r.scope_id) {
                             r.scope_id
                         } else {
                             g.restore_scope(r.scope_id, r.name, pos, &members, r.stubs, r.parent)?
@@ -590,13 +590,26 @@ impl Command {
             }
 
             Command::Expand { scope } => {
-                let Some(s) = g.scope(scope) else {
+                if !g.is_facade(scope) {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already expanded/gone
-                };
+                }
                 // Capture the scope verbatim BEFORE dissolving, so the inverse re-groups it exactly.
-                let name = s.name.clone();
-                let spos = s.pos;
-                let stubs = s.stubs.clone();
+                let name = g.name(scope).unwrap_or("").to_string();
+                let spos = g.pos(scope).unwrap_or([0.0, 0.0]);
+                let stubs: Vec<subpatch::PortRecord> = g
+                    .ports_of(scope)
+                    .into_iter()
+                    .filter_map(|id| {
+                        let (_, port) = g.stub(id)?;
+                        Some(subpatch::PortRecord {
+                            id,
+                            port,
+                            name: g.name(id).unwrap_or("").to_string(),
+                            pos: g.pos(id).unwrap_or([0.0, 0.0]),
+                            viewers: g.viewers(id).cloned().unwrap_or_else(|| serde_json::json!({})),
+                        })
+                    })
+                    .collect();
                 let sparent = g.scope_of(scope); // the scope's parent, captured before it dissolves
                 // Parent stubs expand_instance is about to re-point — captured BEFORE, so the Group
                 // inverse re-points them back exactly.
@@ -618,11 +631,12 @@ impl Command {
                     None => g.add_stub(scope, dir, dtype, pos, name)?,
                     // Idempotent: the scope was dissolved by a concurrent expand, so the restore is
                     // moot. A user add to a missing scope still errors via `add_stub` above.
-                    Some(_) if g.scope(scope).is_none() => {
+                    Some(_) if !g.is_facade(scope) => {
                         return Ok((Outcome::Ok, Command::Compound(vec![])));
                     }
-                    Some((id, stub)) => {
-                        g.restore_stub(scope, id, stub);
+                    Some(r) => {
+                        let id = r.id;
+                        g.restore_stub(scope, id, r.port, r.name, r.pos);
                         id
                     }
                 };
@@ -630,15 +644,14 @@ impl Command {
             }
 
             Command::RemoveStub { scope, stub: id } => {
-                let Some(stub) = g.scope(scope).and_then(|s| s.stubs.get(&id).cloned()) else {
+                let Some((_, port)) = g.stub(id).filter(|(s, _)| *s == scope) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: already gone
                 };
                 // The port above this one named it, so it goes unwired rather than away; the inverse
                 // re-wires it, carrying the dtype that wiring resolved.
-                let above = g.port_above(scope, id).and_then(|(psc, pid)| {
-                    let dtype = g.scope(psc)?.stubs.get(&pid)?.dtype;
+                let above = g.port_above(scope, id).map(|(psc, pid)| {
                     let inner = g.port_inner(pid).map(|(u, sl)| (u, sl.to_string()));
-                    Some((psc, pid, inner, dtype))
+                    (psc, pid, inner)
                 });
                 // A panel bound to it renders empty, so the binding goes with the port — HERE,
                 // inside the one command, exactly as `RemoveNode` does it.
@@ -657,15 +670,22 @@ impl Command {
                     })
                     .collect();
                 g.remove_stub(scope, id);
-                let (dir, dtype, pos) = (stub.dir, stub.dtype, stub.pos);
+                let (dir, dtype) = (port.dir, port.dtype);
+                let record = subpatch::PortRecord {
+                    id,
+                    port,
+                    name: g.name(id).unwrap_or("").to_string(),
+                    pos: g.pos(id).unwrap_or([0.0, 0.0]),
+                    viewers: g.viewers(id).cloned().unwrap_or_else(|| serde_json::json!({})),
+                };
+                let pos = record.pos;
                 let mut inverse =
-                    vec![Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some((id, stub)) }];
+                    vec![Command::AddStub { scope, dir, dtype, pos, name: None, restore: Some(record) }];
                 inverse.extend(cables);
-                inverse.extend(above.map(|(psc, pid, inner, dtype)| Command::WireStub {
+                inverse.extend(above.map(|(psc, pid, inner)| Command::WireStub {
                     scope: psc,
                     stub: pid,
                     inner,
-                    dtype: Some(dtype),
                 }));
                 if !unbind.is_empty() {
                     // Re-binding runs AFTER the ports are back, which `Compound` replays in order.
@@ -678,13 +698,11 @@ impl Command {
                 }
             }
 
-            Command::WireStub { scope, stub: stub_id, inner, dtype } => {
-                let Some(st) = g.scope(scope).and_then(|s| s.stubs.get(&stub_id)) else {
+            Command::WireStub { scope, stub: stub_id, inner } => {
+                if g.stub(stub_id).is_none() {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: stub gone
-                };
-                // Capture BOTH sides wiring mutates — inner and the resolved dtype — so the inverse
-                // restores the exact pre-wire state (unwire alone would leave the wired slot's dtype).
-                let old_dtype = st.dtype;
+                }
+                // A port's dtype is its TYPE's, fixed at birth, so only the wire is captured.
                 let old_inner = g.port_inner(stub_id).map(|(u, sl)| (u, sl.to_string()));
                 match inner {
                     // A wire can stop being applicable under a peer edit. `set_stub_inner` validates
@@ -697,14 +715,7 @@ impl Command {
                     // An unwire always applies (the stub exists — checked above).
                     None => g.set_stub_inner(scope, stub_id, None)?,
                 }
-                // The inverse path forces the captured dtype back: wiring resolves a stub's dtype
-                // from the inner slot, so an unwired pill would else keep the wired slot's type.
-                if let Some(dt) = dtype {
-                    if let Some(st) = g.stub_mut(scope, stub_id) {
-                        st.dtype = dt;
-                    }
-                }
-                Ok((Outcome::Ok, Command::WireStub { scope, stub: stub_id, inner: old_inner, dtype: Some(old_dtype) }))
+                Ok((Outcome::Ok, Command::WireStub { scope, stub: stub_id, inner: old_inner }))
             }
 
         }
@@ -833,10 +844,12 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     let mut scopes: Vec<Uid> = Vec::new(); // discovery order (root first)
     let mut stack = vec![root];
     while let Some(u) = stack.pop() {
-        if g.scope(u).is_some() {
+        if g.is_facade(u) {
             scopes.push(u);
             stack.extend(g.scope_members(u));
-        } else {
+        } else if g.stub(u).is_none() {
+            // A port is a member like any other, but its scope's capture already carries it — so
+            // it must not ALSO be rebuilt here, as a node with a type nothing can construct.
             leaves.push(u);
         }
     }
@@ -876,7 +889,20 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
             restore: Some(ScopeRestore {
                 scope_id: s,
                 name: g.name(s).unwrap_or("").to_string(),
-                stubs: g.scope(s).map(|sc| sc.stubs.clone()).unwrap_or_default(),
+                stubs: g
+                    .ports_of(s)
+                    .into_iter()
+                    .filter_map(|id| {
+                        let (_, port) = g.stub(id)?;
+                        Some(subpatch::PortRecord {
+                            id,
+                            port,
+                            name: g.name(id).unwrap_or("").to_string(),
+                            pos: g.pos(id).unwrap_or([0.0, 0.0]),
+                            viewers: g.viewers(id).cloned().unwrap_or_else(|| serde_json::json!({})),
+                        })
+                    })
+                    .collect(),
                 parent: g.scope_of(s),
                 parent_stubs: vec![], // a delete-undo prunes enclosing stubs (AddStub, below), never re-points
             }),
@@ -891,22 +917,19 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
 
     // 4. Re-wire any enclosing-scope port the removal will unwire — one whose inner named `root`.
     //    The port itself never left, so this restores its target and the dtype that target gave it.
-    let mut pruned: Vec<(Uid, Uid, Stub)> = Vec::new();
+    let mut pruned: Vec<(Uid, Uid)> = Vec::new();
     if let Some(parent) = orig_parent {
-        if let Some(psc) = g.scope(parent) {
-            for (id, st) in &psc.stubs {
-                if g.port_inner(*id).is_some_and(|(u, _)| u == root) {
-                    pruned.push((parent, *id, st.clone()));
-                }
+        for id in g.ports_of(parent) {
+            if g.port_inner(id).is_some_and(|(u, _)| u == root) {
+                pruned.push((parent, id));
             }
         }
     }
-    for (scope, id, st) in &pruned {
+    for (scope, id) in &pruned {
         cmds.push(Command::WireStub {
             scope: *scope,
             stub: *id,
             inner: g.port_inner(*id).map(|(u, sl)| (u, sl.to_string())),
-            dtype: Some(st.dtype),
         });
     }
 
@@ -917,8 +940,8 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         .iter()
         .chain(scopes.iter())
         .copied()
-        .chain(scopes.iter().flat_map(|s| g.scope(*s).into_iter().flat_map(|sc| sc.stubs.keys().copied())))
-        .chain(pruned.iter().map(|(_, id, _)| *id))
+        .chain(scopes.iter().flat_map(|s| g.ports_of(*s)))
+        .chain(pruned.iter().map(|(_, id)| *id))
         .collect();
     for l in g.links_view() {
         if subtree.contains(&l.node_out) || subtree.contains(&l.node_in) {
@@ -972,9 +995,10 @@ fn as_copy(
                     stubs: r
                         .stubs
                         .into_iter()
-                        .filter_map(|(id, mut st)| {
-                            st.name = String::new();
-                            mapped(id, map).map(|id| (id, st))
+                        .filter_map(|mut r| {
+                            r.name = String::new();
+                            r.id = mapped(r.id, map)?;
+                            Some(r)
                         })
                         .collect(),
                     parent: r.parent.and_then(|p| mapped(p, map)),

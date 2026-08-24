@@ -83,7 +83,19 @@ impl Drop for NodeHost {
     }
 }
 
-struct NodeEntry {
+/// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
+/// so it carries a thread and params; a facade and a port do not, so they carry neither.
+enum Kind {
+    /// Boxed: a leaf's runtime state dwarfs the other two, and one map holds all three.
+    Leaf(Box<Leaf>),
+    /// A sub-patch facade. Its members are whatever `scope_of` places inside it.
+    Facade,
+    /// A boundary port. It relays rather than produces, so its dtype is fixed by its type at birth.
+    Port(subpatch::Port),
+}
+
+/// The state only a RUNNING node has.
+struct Leaf {
     manifest: &'static NodeManifest,
     host: NodeHost,
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
@@ -108,10 +120,31 @@ struct NodeEntry {
     stage: &'static str,
     /// The same number the node stamps as `meta["ufreq"]`. `None` until it has emitted twice.
     ufreq: Option<f64>,
+}
+
+/// One entry in the ONE node map: a leaf, a sub-patch facade or a boundary port. Everything an op
+/// can address about a node — its name, where it sits, what it shows — is here for all three.
+struct NodeEntry {
+    kind: Kind,
     name: String,
     pos: [f64; 2],
     /// Opaque: persisted and round-tripped, never interpreted.
     viewers: serde_json::Value,
+}
+
+impl NodeEntry {
+    fn leaf(&self) -> Option<&Leaf> {
+        match &self.kind {
+            Kind::Leaf(l) => Some(l),
+            _ => None,
+        }
+    }
+    fn leaf_mut(&mut self) -> Option<&mut Leaf> {
+        match &mut self.kind {
+            Kind::Leaf(l) => Some(l),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -350,9 +383,6 @@ pub struct Graph {
     start: Instant,
     /// `None` ⇒ bindings are stored and round-trip but never evaluate; the literal stands.
     evaluator: Option<Arc<dyn goofi_node::ExprEvaluator>>,
-    /// An organizational overlay only: members stay live and flat, and a scope merely references
-    /// them. Keyed by the scope uid, which is its collapsed facade's uid.
-    scopes: IndexMap<Uid, subpatch::Scope>,
     /// uid → parent scope (absent = ROOT). The ONE source of truth for parentage and membership.
     scope_of: HashMap<Uid, Option<Uid>>,
     /// Patch-scoped globals, system ones seeded and re-asserted by every `clear`/load.
@@ -394,8 +424,8 @@ impl Drop for Graph {
 
 /// `Arc::make_mut` clones only while a reader holds the previous snapshot, so a caller that took
 /// one keeps a consistent version and an unshared record is edited in place.
-fn edit_params(entry: &mut NodeEntry, edit: impl FnOnce(&mut ParamGroups)) {
-    edit(Arc::make_mut(&mut entry.params));
+fn edit_params(leaf: &mut Leaf, edit: impl FnOnce(&mut ParamGroups)) {
+    edit(Arc::make_mut(&mut leaf.params));
 }
 
 /// A global as the [`Param`] an expression variable carries. The bounds are a carrier's, not a
@@ -434,7 +464,6 @@ impl Graph {
             viewpoint: serde_json::Value::Null,
             start: Instant::now(),
             evaluator: None,
-            scopes: IndexMap::new(),
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
             globals_record: Arc::new(ArcSwap::from_pointee(
@@ -450,11 +479,11 @@ impl Graph {
     /// Stop every node and WAIT for each to release its shared memory. The waiting is why this is
     /// not what `clear()` does: only a process about to EXIT has no "a moment later".
     pub fn shutdown(&mut self) {
-        for entry in self.nodes.values() {
-            entry.host.signal_stop();
+        for (_, leaf) in self.leaves() {
+            leaf.host.signal_stop();
         }
         let deadline = Instant::now() + SHUTDOWN_WAIT;
-        while self.nodes.values().any(|e| !e.host.halt.released()) {
+        while self.leaves().any(|(_, l)| !l.host.halt.released()) {
             if Instant::now() >= deadline {
                 break;
             }
@@ -502,11 +531,10 @@ impl Graph {
     /// anything that moves a wire moves what `nd()` reads there. Free when the patch has neither.
     fn rebind_ports(&mut self) {
         let names: Vec<String> = self
-            .scopes
-            .values()
-            .flat_map(|s| {
-                std::iter::once(s.name.clone()).chain(s.stubs.values().map(|st| st.name.clone()))
-            })
+            .nodes
+            .iter()
+            .filter(|(_, e)| !matches!(e.kind, Kind::Leaf(_)))
+            .map(|(_, e)| e.name.clone())
             .collect();
         for name in names {
             self.rebind_naming(&name);
@@ -533,9 +561,8 @@ impl Graph {
 
     /// Every binding matching a predicate, as `(node, param)` — the addressing `rebind` takes.
     fn bindings_where(&self, want: impl Fn(&ExprBinding) -> bool) -> Vec<(Uid, ParamKey)> {
-        self.nodes
-            .iter()
-            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (*uid, k.clone(), b)))
+        self.leaves()
+            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (uid, k.clone(), b)))
             .filter(|(_, _, b)| want(b))
             .map(|(uid, key, _)| (uid, key))
             .collect()
@@ -545,7 +572,7 @@ impl Graph {
     /// operation that re-derives the rewrite, the variables, the handle and the wire plan together.
     fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
         for (uid, key) in bindings {
-            let Some(b) = self.nodes.get(uid).and_then(|e| e.bindings.get(key)) else { continue };
+            let Some(b) = self.leaf(*uid).and_then(|e| e.bindings.get(key)) else { continue };
             let (source, enabled, triggers) = (b.source.clone(), b.enabled, b.triggers_process);
             let _ = self.set_expression(*uid, &key.group, &key.name, &source, enabled, triggers);
         }
@@ -603,7 +630,14 @@ impl Graph {
     /// `creating` / `setup` / `ready` / `error`. Only `creating` is the graph's own — a node whose
     /// thread has not reported in yet. `error` means there is NO instance running.
     pub fn node_stage(&self, uid: Uid) -> &'static str {
-        let Some(entry) = self.nodes.get(&uid) else { return "error" };
+        // A facade and a port never run, so they reach no stage — `ready` is what "nothing is
+        // starting up here" means for something that is simply present.
+        let Some(entry) = self.leaf(uid) else {
+            return match self.nodes.contains_key(&uid) {
+                true => "ready",
+                false => "error",
+            };
+        };
         // A `process()` raise is deliberately NOT folded in: the stage says whether the node has an
         // instance behind it, and what its last run did is the ERROR, which rides its own field.
         if entry.setup_error.is_some() {
@@ -615,7 +649,7 @@ impl Graph {
     /// The node's current measured update frequency (Hz), as it last reported it. `None` until it
     /// has been measured (≥2 emits).
     pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
-        self.nodes.get(&uid).and_then(|e| e.ufreq)
+        self.leaf(uid).and_then(|e| e.ufreq)
     }
 
     /// Which node INSTANCE this uid holds: bumped on every birth, so a report from the node born at
@@ -690,39 +724,59 @@ impl Graph {
         self.nodes.len()
     }
 
+    /// The RUNNING node at `uid`, or `None` for a facade, a port, or nothing at all — the one seam
+    /// every reader of a leaf-only field goes through.
+    fn leaf(&self, uid: Uid) -> Option<&Leaf> {
+        self.nodes.get(&uid)?.leaf()
+    }
+
+    fn leaf_mut(&mut self, uid: Uid) -> Option<&mut Leaf> {
+        self.nodes.get_mut(&uid)?.leaf_mut()
+    }
+
+    /// Every running node, in insertion order.
+    fn leaves(&self) -> impl Iterator<Item = (Uid, &Leaf)> {
+        self.nodes.iter().filter_map(|(u, e)| e.leaf().map(|l| (*u, l)))
+    }
+
     pub fn contains(&self, uid: Uid) -> bool {
-        self.nodes.contains_key(&uid)
+        self.leaf(uid).is_some()
     }
 
     /// Is `uid` a live endpoint a wire may name — a leaf or a boundary port? A facade is not: an
     /// address naming one is folded onto its port before any link is stored.
     pub fn wirable(&self, uid: Uid) -> bool {
-        self.nodes.contains_key(&uid) || self.stub(uid).is_some()
+        self.contains(uid) || self.stub(uid).is_some()
     }
 
     /// Node uids in insertion order.
     pub fn node_uids(&self) -> Vec<Uid> {
+        self.leaves().map(|(u, _)| u).collect()
+    }
+
+    /// Every uid in the patch — leaves, facades and ports alike.
+    pub fn all_uids(&self) -> Vec<Uid> {
         self.nodes.keys().copied().collect()
     }
 
     pub fn type_name(&self, uid: Uid) -> Option<&'static str> {
-        self.nodes.get(&uid).map(|e| e.manifest.type_name)
+        self.leaf(uid).map(|e| e.manifest.type_name)
     }
 
     pub fn manifest(&self, uid: Uid) -> Option<&'static NodeManifest> {
-        self.nodes.get(&uid).map(|e| e.manifest)
+        self.leaf(uid).map(|e| e.manifest)
     }
 
     /// Derived fresh on read, so a binding that recovers on a node which never runs again still
     /// clears. Initialization failure wins, then a process error, then the smallest errored key.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
-        entry_error(self.nodes.get(&uid)?)
+        entry_error(self.leaf(uid)?)
     }
 
     /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The
     /// clock restarts when the message changes, so a node cycling through failures reads young.
     pub fn error_age(&self, uid: Uid) -> Option<Duration> {
-        let (_, since) = self.nodes.get(&uid)?.error_since.as_ref()?;
+        let (_, since) = self.leaf(uid)?.error_since.as_ref()?;
         Some(since.elapsed())
     }
 
@@ -868,17 +922,19 @@ impl Graph {
         self.nodes.insert(
             uid,
             NodeEntry {
-                manifest,
-                host,
-                params: Arc::new(params),
-                bindings: HashMap::new(),
-                evaluated: IndexMap::new(),
-                param_errors: IndexMap::new(),
-                setup_error: boot_error,
-                last_error: None,
-                error_since: None,
-                stage: "creating",
-                ufreq: None,
+                kind: Kind::Leaf(Box::new(Leaf {
+                    manifest,
+                    host,
+                    params: Arc::new(params),
+                    bindings: HashMap::new(),
+                    evaluated: IndexMap::new(),
+                    param_errors: IndexMap::new(),
+                    setup_error: boot_error,
+                    last_error: None,
+                    error_since: None,
+                    stage: "creating",
+                    ufreq: None,
+                })),
                 name,
                 pos: [0.0, 0.0],
                 viewers: serde_json::json!({}),
@@ -924,8 +980,6 @@ impl Graph {
         self.nodes
             .iter()
             .map(|(u, e)| (*u, e.name.as_str()))
-            .chain(self.scopes.iter().map(|(u, s)| (*u, s.name.as_str())))
-            .chain(self.scopes.values().flat_map(|s| s.stubs.iter().map(|(u, st)| (*u, st.name.as_str()))))
     }
 
     fn name_in_use(&self, name: &str) -> bool {
@@ -950,29 +1004,38 @@ impl Graph {
         unreachable!()
     }
 
-    /// Display name of anything a uid can name: a node, a sub-patch facade, or a boundary port.
-    /// Uniform so `EditNode` reads all three through one seam.
+    /// Display name of anything a uid can name — one map, so one lookup for all three kinds.
     pub fn name(&self, uid: Uid) -> Option<&str> {
-        self.nodes
-            .get(&uid)
-            .map(|e| e.name.as_str())
-            .or_else(|| self.scopes.get(&uid).map(|s| s.name.as_str()))
-            .or_else(|| self.stub(uid).map(|(_, s)| s.name.as_str()))
+        self.nodes.get(&uid).map(|e| e.name.as_str())
     }
 
-    /// Position of a node, a facade (whose pos lives in `scopes[uid].pos`) or a boundary port.
+    /// Where anything a uid can name sits on the canvas.
     pub fn pos(&self, uid: Uid) -> Option<[f64; 2]> {
-        self.nodes
-            .get(&uid)
-            .map(|e| e.pos)
-            .or_else(|| self.scopes.get(&uid).map(|s| s.pos))
-            .or_else(|| self.stub(uid).map(|(_, s)| s.pos))
+        self.nodes.get(&uid).map(|e| e.pos)
     }
 
     /// The boundary port a uid names, with the scope holding it. Ports are few and scopes fewer, so
     /// this scans rather than keeping a second index beside `scopes`.
-    pub fn stub(&self, uid: Uid) -> Option<(Uid, &subpatch::Stub)> {
-        self.scopes.iter().find_map(|(s, sc)| sc.stubs.get(&uid).map(|st| (*s, st)))
+    pub fn stub(&self, uid: Uid) -> Option<(Uid, subpatch::Port)> {
+        match self.nodes.get(&uid)?.kind {
+            Kind::Port(p) => Some((self.scope_of.get(&uid).copied().flatten()?, p)),
+            _ => None,
+        }
+    }
+
+    /// Is `uid` a sub-patch facade?
+    pub fn is_facade(&self, uid: Uid) -> bool {
+        matches!(self.nodes.get(&uid).map(|e| &e.kind), Some(Kind::Facade))
+    }
+
+    /// A scope's boundary ports, in the map's insertion order — which is the order they were
+    /// authored in, and the order a facade lists its slots.
+    pub fn ports_of(&self, scope: Uid) -> Vec<Uid> {
+        self.nodes
+            .iter()
+            .filter(|(u, e)| matches!(e.kind, Kind::Port(_)) && self.scope_of(**u) == Some(scope))
+            .map(|(u, _)| *u)
+            .collect()
     }
 
     /// The physical `(node, slot)` a boundary port's data lives on, or `None` while nothing is
@@ -987,7 +1050,7 @@ impl Graph {
     /// A node's params as of now. An owned snapshot rather than a borrow: cloning the `Arc` is
     /// cheap, and a `&` would borrow the whole graph for as long as the caller held it.
     pub fn params(&self, uid: Uid) -> Option<Arc<ParamGroups>> {
-        self.nodes.get(&uid).map(|e| e.params.clone())
+        self.leaf(uid).map(|e| e.params.clone())
     }
 
 
@@ -1006,17 +1069,9 @@ impl Graph {
             return Err(format!("display name `{name}` already in use"));
         }
         // A facade, a boundary port and a leaf all wear a name in the ONE namespace `nd()` reads,
-        // so all three rename through the shared rewrite below.
-        let old_name = if let Some(s) = self.scopes.get_mut(&uid) {
-            std::mem::replace(&mut s.name, name.to_string())
-        } else if let Some((scope, old)) = self.stub(uid).map(|(s, st)| (s, st.name.clone())) {
-            self.stub_mut(scope, uid).expect("just found").name = name.to_string();
-            old
-        } else {
-            let old = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?.name.clone();
-            self.nodes.get_mut(&uid).unwrap().name = name.to_string();
-            old
-        };
+        // and now in one map — so the rename is one write and the rewrite below is shared.
+        let e = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let old_name = std::mem::replace(&mut e.name, name.to_string());
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
         let touched = self.rewrite_nd_refs_for_rename(&old_name, name);
@@ -1030,7 +1085,7 @@ impl Graph {
     /// source. Returns the distinct referrer uids whose source changed.
     fn rewrite_nd_refs_for_rename(&mut self, old: &str, new: &str) -> Vec<Uid> {
         let mut edits: Vec<(Uid, ParamKey, String, bool, bool)> = Vec::new();
-        for (&ruid, entry) in &self.nodes {
+        for (ruid, entry) in self.leaves() {
             for (key, b) in &entry.bindings {
                 let rewritten = goofi_node::rewrite_nd_refs(&b.source, |n| {
                     (n == old).then(|| new.to_string())
@@ -1054,19 +1109,7 @@ impl Graph {
     }
 
     pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
-        if let Some(scope) = self.stub(uid).map(|(s, _)| s) {
-            self.stub_mut(scope, uid).expect("just found").pos = pos;
-            return Ok(());
-        }
-        // A scope facade's pos lives in `scopes[uid].pos` (it is not a live node) — move it there.
-        if let Some(s) = self.scopes.get_mut(&uid) {
-            s.pos = pos;
-            return Ok(());
-        }
-        let e = self
-            .nodes
-            .get_mut(&uid)
-            .ok_or_else(|| format!("no such node {uid}"))?;
+        let e = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         e.pos = pos;
         Ok(())
     }
@@ -1074,27 +1117,14 @@ impl Graph {
     /// Replace a node's opaque viewer view-state blob (persisted to `.gfi`, echoed in node
     /// info). The backend never interprets it — it is the editor's per-slot kind/settings.
     pub fn set_node_viewers(&mut self, uid: Uid, viewers: serde_json::Value) -> Result<(), String> {
-        if let Some(e) = self.nodes.get_mut(&uid) {
-            e.viewers = viewers;
-            return Ok(());
-        }
-        if let Some(sc) = self.scopes.get_mut(&uid) {
-            sc.viewers = viewers;
-            return Ok(());
-        }
-        let scope = self.stub(uid).map(|(s, _)| s).ok_or_else(|| format!("no such node {uid}"))?;
-        self.stub_mut(scope, uid).expect("just found").viewers = viewers;
+        let e = self.nodes.get_mut(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        e.viewers = viewers;
         Ok(())
     }
 
-    /// The viewer view-state blob of anything a uid can name — a node, a facade or a boundary port
-    /// (empty object if never set).
+    /// The viewer view-state blob of anything a uid can name (empty object if never set).
     pub fn viewers(&self, uid: Uid) -> Option<&serde_json::Value> {
-        self.nodes
-            .get(&uid)
-            .map(|e| &e.viewers)
-            .or_else(|| self.scopes.get(&uid).map(|s| &s.viewers))
-            .or_else(|| self.stub(uid).map(|(_, s)| &s.viewers))
+        self.nodes.get(&uid).map(|e| &e.viewers)
     }
 
     // Grouping never touches the flat runtime — the members stay the exact live nodes they were,
@@ -1113,25 +1143,19 @@ impl Graph {
 
     /// All scope uids (each == its collapsed facade node's uid).
     pub fn scope_uids(&self) -> Vec<Uid> {
-        self.scopes.keys().copied().collect()
+        self.nodes
+            .iter()
+            .filter(|(_, e)| matches!(e.kind, Kind::Facade))
+            .map(|(u, _)| *u)
+            .collect()
     }
 
-    pub fn scope(&self, uid: Uid) -> Option<&subpatch::Scope> {
-        self.scopes.get(&uid)
-    }
-
-    /// The direct member uids of a scope, in flat-`nodes` then scope insertion order — derived from
-    /// the `scope_of` tree, so there is no parallel member list to keep in sync.
+    /// Everything `scope_of` places inside `scope`, ports included — they are members like any
+    /// other node, which is the whole of what a scope holds.
     pub fn scope_members(&self, scope: Uid) -> Vec<Uid> {
-        let mut out: Vec<Uid> = self
-            .nodes
-            .keys()
-            .copied()
-            .filter(|u| self.scope_of(*u) == Some(scope))
-            .collect();
-        out.extend(self.scopes.keys().copied().filter(|u| self.scope_of(*u) == Some(scope)));
-        out
+        self.nodes.keys().copied().filter(|u| self.scope_of(*u) == Some(scope)).collect()
     }
+
 
     /// Chain-resolve a scope's stub port to the single physical inner leaf `(uid, slot)` it exposes,
     /// walking nested scopes; `None` if unwired.
@@ -1159,12 +1183,13 @@ impl Graph {
     /// a port wears — either direction, because a port RELAYS rather than produces, so what it
     /// stands in front of is readable from both sides of the wall.
     pub fn output_slots(&self, uid: Uid) -> Vec<(String, String, goofi_core::SlotType)> {
-        if let Some(scope) = self.scopes.get(&uid) {
-            return scope
-                .stubs
-                .iter()
-                .filter(|(_, s)| s.dir == subpatch::Dir::Out)
-                .map(|(id, s)| (id.to_hex(), s.name.clone(), s.dtype))
+        if self.is_facade(uid) {
+            return self
+                .ports_of(uid)
+                .into_iter()
+                .filter_map(|id| self.stub(id).map(|(_, p)| (id, p)))
+                .filter(|(_, p)| p.dir == subpatch::Dir::Out)
+                .map(|(id, p)| (id.to_hex(), self.name(id).unwrap_or("").to_string(), p.dtype))
                 .collect();
         }
         if let Some((_, st)) = self.stub(uid) {
@@ -1173,6 +1198,7 @@ impl Graph {
         }
         self.nodes
             .get(&uid)
+            .and_then(|e| e.leaf())
             .map(|e| {
                 e.manifest.outputs.iter().map(|o| (o.name.to_string(), o.name.to_string(), o.kind)).collect()
             })
@@ -1181,18 +1207,18 @@ impl Graph {
 
     /// The type name of anything a uid names — a leaf's, a facade's, or a port's boundary type.
     pub fn node_type(&self, uid: Uid) -> Option<&'static str> {
-        if self.scopes.contains_key(&uid) {
+        if self.is_facade(uid) {
             return Some(subpatch::SCOPE_TYPE);
         }
         if let Some((_, st)) = self.stub(uid) {
             return Some(subpatch::boundary_type_name(st.dir, st.dtype));
         }
-        self.nodes.get(&uid).map(|e| e.manifest.type_name)
+        self.leaf(uid).map(|e| e.manifest.type_name)
     }
 
     /// A facade address, folded one level onto the port it names. Everything else is itself.
     fn normalise(&self, uid: Uid, slot: &str) -> (Uid, String) {
-        match self.scopes.contains_key(&uid) {
+        match self.is_facade(uid) {
             true => match Uid::from_hex(slot) {
                 Some(port) if self.stub(port).is_some() => (port, subpatch::BOUNDARY_SLOT.to_string()),
                 _ => (uid, slot.to_string()),
@@ -1212,7 +1238,7 @@ impl Graph {
         let (mut at, mut slot) = self.normalise(uid, slot);
         let mut seen: Vec<Uid> = Vec::new();
         loop {
-            if self.nodes.contains_key(&at) {
+            if self.leaf(at).is_some() {
                 return Some(Stream::At(at, self.resolve_output(at, &slot)?));
             }
             // A hand-edited `.gfi` can persist a cyclic chain; walking it must stop, not recurse.
@@ -1282,7 +1308,7 @@ impl Graph {
                 false => self.scope_of(scope),
             });
         }
-        (self.nodes.contains_key(&uid) || self.scopes.contains_key(&uid)).then(|| self.scope_of(uid))
+        self.nodes.contains_key(&uid).then(|| self.scope_of(uid))
     }
 
     /// One end of a wire: the `&'static` name a link is keyed by, the dtype the cross-dtype check
@@ -1293,8 +1319,7 @@ impl Graph {
             return (slot == subpatch::BOUNDARY_SLOT)
                 .then_some(SlotFace { name: subpatch::BOUNDARY_SLOT, kind: st.dtype, multi: false });
         }
-        self.nodes
-            .get(&uid)?
+        self.leaf(uid)?
             .manifest
             .outputs
             .iter()
@@ -1309,8 +1334,7 @@ impl Graph {
             return (slot == subpatch::BOUNDARY_SLOT)
                 .then_some(SlotFace { name: subpatch::BOUNDARY_SLOT, kind: st.dtype, multi: false });
         }
-        self.nodes
-            .get(&uid)?
+        self.leaf(uid)?
             .manifest
             .inputs
             .iter()
@@ -1329,11 +1353,11 @@ impl Graph {
     /// Move a node or scope into `scope` (`None` = ROOT), returning its prior membership — the one
     /// validated re-parent seam. Errors on an unknown uid or a `scope` that is not a live scope.
     pub fn reparent(&mut self, uid: Uid, scope: Option<Uid>) -> Result<Option<Uid>, String> {
-        if !self.nodes.contains_key(&uid) && !self.scopes.contains_key(&uid) {
+        if !self.nodes.contains_key(&uid) {
             return Err(format!("reparent: no such node/scope {uid}"));
         }
         if let Some(s) = scope {
-            if !self.scopes.contains_key(&s) {
+            if !self.is_facade(s) {
                 return Err(format!("reparent: no such scope {s}"));
             }
         }
@@ -1370,12 +1394,10 @@ impl Graph {
     /// The stub on nested scope `scope` whose chain-to-leaf resolution is exactly `(leaf, slot)`
     /// in direction `dir` — the interior endpoint of a link crossing into a nested member.
     fn stub_exposing(&self, scope: Uid, leaf: Uid, slot: &str, dir: subpatch::Dir) -> Option<Uid> {
-        let s = self.scopes.get(&scope)?;
-        s.stubs
-            .iter()
-            .filter(|(_, st)| st.dir == dir)
-            .find(|(id, _)| self.resolve_stub(scope, &id.to_hex()).is_some_and(|(u, sl)| u == leaf && sl == slot))
-            .map(|(id, _)| *id)
+        self.ports_of(scope)
+            .into_iter()
+            .filter(|id| self.stub(*id).is_some_and(|(_, p)| p.dir == dir))
+            .find(|id| self.resolve_stub(scope, &id.to_hex()).is_some_and(|(u, sl)| u == leaf && sl == slot))
     }
 
     /// The direct member of `scope` on the path from `leaf` up the `scope_of` tree, or `leaf` itself
@@ -1433,10 +1455,17 @@ impl Graph {
             subpatch::Dir::Out => [base[0] + 220.0, base[1]],
             subpatch::Dir::In => [base[0] - 40.0, base[1]],
         };
-        if let Some(s) = self.scopes.get_mut(&member) {
-            s.stubs.insert(id, subpatch::Stub::new(dir, dtype, pos, name));
-            minted.push((member, id));
-        }
+        self.nodes.insert(
+            id,
+            NodeEntry {
+                kind: Kind::Port(subpatch::Port { dir, dtype }),
+                name,
+                pos,
+                viewers: serde_json::json!({}),
+            },
+        );
+        self.scope_of.insert(id, Some(member));
+        minted.push((member, id));
         let (node, slot) = inner;
         let _ = match dir {
             subpatch::Dir::In => self.add_link(id, subpatch::BOUNDARY_SLOT, node, &slot),
@@ -1453,7 +1482,7 @@ impl Graph {
         }
         let mut parent: Option<Option<Uid>> = None;
         for &m in members {
-            if !self.nodes.contains_key(&m) && !self.scopes.contains_key(&m) {
+            if !self.nodes.contains_key(&m) {
                 return Err(format!("group: no such member {m}"));
             }
             let s = self.scope_of(m);
@@ -1480,7 +1509,7 @@ impl Graph {
         pos: [f64; 2],
         minted: &mut Vec<(Uid, Uid)>,
     ) -> Result<Uid, String> {
-        use subpatch::{Dir, Scope};
+        use subpatch::Dir;
         // 1. Validate BEFORE any mutation: each exists, and all share one parent scope.
         let parent = self.common_parent(members)?;
         let member_set: std::collections::HashSet<Uid> = members.iter().copied().collect();
@@ -1489,7 +1518,11 @@ impl Graph {
         // namespace, so a batch that names every port out of the state it started in hands each of
         // them the same label — and `nd()` then cannot tell two ports apart.
         let disp = self.fresh_name("subpatch");
-        self.scopes.insert(scope_uid, Scope::new(disp, pos, IndexMap::new()));
+        self.nodes.insert(
+            scope_uid,
+            NodeEntry { kind: Kind::Facade, name: disp, pos, viewers: serde_json::json!({}) },
+        );
+        self.scope_of.insert(scope_uid, parent);
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a
         //    port for the slot it crosses at, and the cable is SPLIT in two around it — the outer
@@ -1585,10 +1618,10 @@ impl Graph {
         name: String,
         pos: [f64; 2],
         members: &[Uid],
-        stubs: IndexMap<Uid, subpatch::Stub>,
+        stubs: Vec<subpatch::PortRecord>,
         parent: Option<Uid>,
     ) -> Result<Uid, String> {
-        if self.scopes.contains_key(&scope_id) {
+        if self.is_facade(scope_id) {
             return Err(format!("restore_scope: scope {scope_id} already live"));
         }
         // The parent is captured explicitly rather than derived from members, so an EMPTY scope
@@ -1599,82 +1632,77 @@ impl Graph {
             true => self.fresh_name("subpatch"),
             false => name,
         };
-        self.scopes.insert(scope_id, subpatch::Scope::new(name, pos, IndexMap::new()));
-        for (id, mut st) in stubs {
-            if st.name.is_empty() {
-                st.name = self.fresh_name(st.dir.name());
-            }
-            let label = st.name.clone();
-            if let Some(sc) = self.scopes.get_mut(&scope_id) {
-                sc.stubs.insert(id, st);
-            }
+        self.nodes.insert(
+            scope_id,
+            NodeEntry { kind: Kind::Facade, name, pos, viewers: serde_json::json!({}) },
+        );
+        for r in stubs {
+            let label = match r.name.is_empty() {
+                true => self.fresh_name(r.port.dir.name()),
+                false => r.name,
+            };
+            self.nodes.insert(
+                r.id,
+                NodeEntry { kind: Kind::Port(r.port), name: label.clone(), pos: r.pos, viewers: r.viewers },
+            );
+            self.scope_of.insert(r.id, Some(scope_id));
             self.rebind_naming(&label);
         }
         for &m in members {
-            if self.nodes.contains_key(&m) || self.scopes.contains_key(&m) {
+            if self.nodes.contains_key(&m) {
                 self.set_member_scope(m, Some(scope_id));
             }
         }
         // A peer may have dissolved the captured parent since. Writing it verbatim would install a
         // dangling-parent orphan, so degrade to ROOT, as the `SetScope` child does.
-        self.set_member_scope(scope_id, parent.filter(|p| self.scopes.contains_key(p)));
+        self.set_member_scope(scope_id, parent.filter(|p| self.is_facade(*p)));
         Ok(scope_id)
     }
 
-    /// The parent-scope stubs that currently expose `scope`, as `(parent, stub, inner)`. `Expand`
+    /// The parent-scope ports that currently expose `scope`, as `(parent, port, inner)`. `Expand`
     /// captures these BEFORE dissolving so its `Group` inverse can re-point them back exactly.
     pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<subpatch::ParentStub> {
-        let Some(p) = self.scope_of(scope) else {
-            return vec![];
-        };
-        self.scopes
-            .get(&p)
-            .map(|ps| {
-                ps.stubs
-                    .keys()
-                    .filter_map(|id| {
-                        let inner = self.port_inner(*id)?;
-                        (inner.0 == scope).then(|| (p, *id, Some((inner.0, inner.1.to_string()))))
-                    })
-                    .collect()
+        let Some(p) = self.scope_of(scope) else { return vec![] };
+        self.ports_of(p)
+            .into_iter()
+            .filter_map(|id| {
+                let inner = self.port_inner(id)?;
+                (inner.0 == scope).then(|| (p, id, Some((inner.0, inner.1.to_string()))))
             })
-            .unwrap_or_default()
+            .collect()
     }
 
-    /// One stub of a scope, mutable. Answers `None` rather than an error string: every `Command`
-    /// that edits a boundary already guards on the stub existing.
-    pub fn stub_mut(&mut self, scope: Uid, stub: Uid) -> Option<&mut subpatch::Stub> {
-        self.scopes.get_mut(&scope)?.stubs.get_mut(&stub)
-    }
 
     /// Put a captured port back exactly as it was — the inverse of [`Self::remove_stub`].
-    pub fn restore_stub(&mut self, scope: Uid, port: Uid, mut stub: subpatch::Stub) {
+    pub fn restore_stub(&mut self, scope: Uid, port: Uid, p: subpatch::Port, name: String, pos: [f64; 2]) {
         // An empty name means MINT one, as it does for a node — which is what makes a copied port
         // land beside the original rather than colliding with it.
-        if stub.name.is_empty() {
-            stub.name = self.fresh_name(stub.dir.name());
-        }
-        let name = stub.name.clone();
-        if let Some(s) = self.scopes.get_mut(&scope) {
-            s.stubs.insert(port, stub);
-            self.rebind_naming(&name);
-        }
+        let name = match name.is_empty() {
+            true => self.fresh_name(p.dir.name()),
+            false => name,
+        };
+        self.nodes.insert(
+            port,
+            NodeEntry { kind: Kind::Port(p), name: name.clone(), pos, viewers: serde_json::json!({}) },
+        );
+        self.scope_of.insert(port, Some(scope));
+        self.rebind_naming(&name);
     }
 
     /// The display names of a scope's ports, captured before a removal that drops them — a `nd()`
     /// binding on a name nothing wears can never be re-resolved by a later edit, so the invalidation
     /// has to happen at the removal.
     fn stub_names(&self, scope: Uid) -> Vec<String> {
-        self.scopes
-            .get(&scope)
-            .map(|s| s.stubs.values().map(|st| st.name.clone()).collect())
-            .unwrap_or_default()
+        self.ports_of(scope)
+            .into_iter()
+            .filter_map(|p| self.name(p).map(str::to_string))
+            .collect()
     }
 
     /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
     /// The crossing flat links already point leaf→leaf, so they survive verbatim. Uid-stable.
     pub fn expand_instance(&mut self, scope: Uid) -> Result<Vec<Uid>, String> {
-        if !self.scopes.contains_key(&scope) {
+        if !self.is_facade(scope) {
             return Err(format!("expand_instance: no such scope {scope}"));
         }
         let dropped = self.stub_names(scope);
@@ -1683,8 +1711,7 @@ impl Graph {
 
         // Every port is about to go, and each carried half a cable on either side of it. Capture the
         // JOIN of those halves — the wall is what the two halves existed for, and the wall is going.
-        let ports: Vec<Uid> =
-            self.scopes.get(&scope).map(|s| s.stubs.keys().copied().collect()).unwrap_or_default();
+        let ports: Vec<Uid> = self.ports_of(scope);
         let mut splices: Vec<(Uid, &'static str, Uid, &'static str)> = Vec::new();
         for &port in &ports {
             let Some(feed) = self.links.iter().find(|l| l.node_in == port).map(|l| (l.node_out, l.slot_out))
@@ -1700,7 +1727,11 @@ impl Graph {
         for &m in &restored {
             self.set_member_scope(m, parent);
         }
-        self.scopes.shift_remove(&scope);
+        for p in &ports {
+            self.nodes.shift_remove(p);
+            self.scope_of.remove(p);
+        }
+        self.nodes.shift_remove(&scope);
         self.scope_of.remove(&scope);
         // …and only now, with the members up one level and the wall gone, do the two halves of each
         // cable become one link that both ends can face.
@@ -1716,18 +1747,22 @@ impl Graph {
     /// Delete a whole sub-patch scope: tear down every member, recursing into nested scopes, then
     /// drop the scope.
     pub fn remove_instance(&mut self, scope: Uid) -> Result<(), String> {
-        if !self.scopes.contains_key(&scope) {
+        if !self.is_facade(scope) {
             return Err(format!("remove_instance: no such scope {scope}"));
         }
         let dropped = self.stub_names(scope);
         for m in self.scope_members(scope) {
-            if self.scopes.contains_key(&m) {
+            if self.is_facade(m) {
                 self.remove_instance(m)?; // nested scope subtree
             } else {
                 let _ = self.remove_node(m); // leaf (tolerate an already-gone member)
             }
         }
-        self.scopes.shift_remove(&scope);
+        for p in self.ports_of(scope) {
+            self.nodes.shift_remove(&p);
+            self.scope_of.remove(&p);
+        }
+        self.nodes.shift_remove(&scope);
         self.scope_of.remove(&scope);
         for name in dropped {
             self.rebind_naming(&name);
@@ -1741,22 +1776,16 @@ impl Graph {
         let scope = self
             .scope_of(member)
             .ok_or_else(|| format!("remove_member: {member} is not a sub-patch member"))?;
-        if self.scopes.contains_key(&member) {
+        if self.is_facade(member) {
             self.remove_instance(member)?;
         } else {
             let _ = self.remove_node(member);
         }
         let exposing: Vec<Uid> = self
-            .scopes
-            .get(&scope)
-            .map(|s| {
-                s.stubs
-                    .keys()
-                    .filter(|id| self.port_inner(**id).is_some_and(|(u, _)| u == member))
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
+            .ports_of(scope)
+            .into_iter()
+            .filter(|id| self.port_inner(*id).is_some_and(|(u, _)| u == member))
+            .collect();
         for id in exposing {
             self.set_stub_inner(scope, id, None)?;
         }
@@ -1773,13 +1802,21 @@ impl Graph {
         pos: [f64; 2],
         name: Option<String>,
     ) -> Result<Uid, String> {
-        if !self.scopes.contains_key(&scope) {
+        if !self.is_facade(scope) {
             return Err(format!("add_stub: no such scope {scope}"));
         }
         let name = name.unwrap_or_else(|| self.fresh_name(dir.name()));
         let id = self.mint();
-        let s = self.scopes.get_mut(&scope).expect("checked above");
-        s.stubs.insert(id, subpatch::Stub::new(dir, dtype, pos, name.clone()));
+        self.nodes.insert(
+            id,
+            NodeEntry {
+                kind: Kind::Port(subpatch::Port { dir, dtype }),
+                name: name.clone(),
+                pos,
+                viewers: serde_json::json!({}),
+            },
+        );
+        self.scope_of.insert(id, Some(scope));
         // A binding already written against this name becomes resolvable the moment the port exists.
         self.rebind_naming(&name);
         Ok(id)
@@ -1790,23 +1827,25 @@ impl Graph {
     pub fn port_above(&self, scope: Uid, port: Uid) -> Option<(Uid, Uid)> {
         let parent = self.scope_of(scope)?;
         let slot = port.to_hex();
-        self.scopes.get(&parent).and_then(|ps| {
-            ps.stubs
-                .keys()
-                .find(|id| self.port_inner(**id).is_some_and(|(u, s)| u == scope && s == slot))
-                .map(|id| (parent, *id))
-        })
+        self.ports_of(parent)
+            .into_iter()
+            .find(|id| self.port_inner(*id).is_some_and(|(u, s)| u == scope && s == slot))
+            .map(|id| (parent, id))
     }
 
     /// Take a boundary port off a scope, answering the port it removed. Every `nd()` naming it goes
     /// unresolvable here rather than at the next edit that happens to touch it, and the port above
     /// it — which named this one — goes UNWIRED, into the state `add_stub` mints.
-    pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<subpatch::Stub> {
-        let st = self.scopes.get_mut(&scope)?.stubs.shift_remove(&port)?;
+    pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<(subpatch::Port, String, [f64; 2])> {
+        self.stub(port).filter(|(s, _)| *s == scope)?;
+        let e = self.nodes.shift_remove(&port)?;
+        self.scope_of.remove(&port);
+        let Kind::Port(p) = e.kind else { return None };
+        let st = (p, e.name, e.pos);
         // Its wires go with it, both halves: a link naming a port nothing holds is a cable drawn in
         // no scope, which is the state a delete must never leave behind.
         self.links.retain(|l| l.node_in != port && l.node_out != port);
-        self.rebind_naming(&st.name);
+        self.rebind_naming(&st.1);
         if let Some((psc, id)) = self.port_above(scope, port) {
             let _ = self.set_stub_inner(psc, id, None);
         }
@@ -1861,8 +1900,8 @@ impl Graph {
     /// Release every compiled expression handle a node entry holds, so the evaluator's
     /// registry doesn't leak across a node/graph teardown.
     fn release_entry_bindings(&self, entry: &NodeEntry) {
-        if let Some(ev) = &self.evaluator {
-            for b in entry.bindings.values() {
+        if let (Some(ev), Some(leaf)) = (&self.evaluator, entry.leaf()) {
+            for b in leaf.bindings.values() {
                 if let Some(id) = b.id {
                     ev.release(id);
                 }
@@ -1907,7 +1946,7 @@ impl Graph {
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         // A facade has no thread of its own, so restarting it is restarting what is inside it — to
         // any depth. A port has neither thread nor members, so it is a restart of nothing.
-        if self.scopes.contains_key(&uid) {
+        if self.is_facade(uid) {
             for m in self.scope_members(uid) {
                 self.restart_node(m)?;
             }
@@ -1916,7 +1955,7 @@ impl Graph {
         if self.stub(uid).is_some() {
             return Ok(());
         }
-        let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
         let held = entry.params.clone();
         // Fold what the node HAS onto what its type declares NOW: only the saved VALUE carries
@@ -1940,14 +1979,17 @@ impl Graph {
         let generation = self.wire.bump_generation(uid);
         let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
 
-        let entry = self.nodes.get_mut(&uid).expect("looked up above");
-        // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with the
-        // instance: keeping the old one leaves the graph describing a node no longer running.
-        entry.manifest = manifest;
-        entry.host = host;
+        {
+            let entry = self.leaf_mut(uid).expect("looked up above");
+            // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with
+            // the instance: keeping the old one leaves the graph describing a node not running.
+            entry.manifest = manifest;
+            entry.host = host;
+        }
         // The corpse's channel goes with it, and BEFORE the new generation reports `Ready`: while
         // it stands, the reborn node reads as addressable and messages reach dead services.
         self.wire.detach(uid);
+        let entry = self.leaf_mut(uid).expect("looked up above");
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
         entry.params = Arc::new(params);
@@ -1995,8 +2037,7 @@ impl Graph {
         value: Param,
     ) -> Result<(), String> {
         let entry = self
-            .nodes
-            .get_mut(&uid)
+            .leaf_mut(uid)
             .ok_or_else(|| format!("no such node {uid}"))?;
         if entry.params.get(group).is_none() {
             return Err(format!("no such param group `{group}`"));
@@ -2007,7 +2048,7 @@ impl Graph {
         // A LITERAL on a driven param unbinds it, which is what the node does with this write's
         // `SetParam`. An ENABLED binding only: a disabled one is source the fx toggle holds.
         let key = ParamKey::new(group, name);
-        if self.nodes[&uid].bindings.get(&key).is_some_and(|b| b.enabled) {
+        if self.nodes[&uid].leaf().expect("a leaf").bindings.get(&key).is_some_and(|b| b.enabled) {
             self.unbind(uid, &key);
         }
         // The record has moved and the node has been told; nothing else happens here.
@@ -2019,7 +2060,7 @@ impl Graph {
     /// Ask the node to re-enumerate a refreshable `Str` param's options — the ⟳ button. It answers
     /// only that the request was DISPATCHED; the options arrive as a later `RefreshOptions` status.
     pub fn refresh_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
-        let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
         let live = entry.params.clone();
         let param = goofi_node::param(&live, group, name)
             .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
@@ -2041,7 +2082,7 @@ impl Graph {
         enabled: bool,
         triggers_process: bool,
     ) -> Result<(), String> {
-        if !self.nodes.contains_key(&uid) {
+        if self.leaf(uid).is_none() {
             return Err(format!("no such node {uid}"));
         }
         let key = ParamKey::new(group, name);
@@ -2053,14 +2094,14 @@ impl Graph {
             return Ok(());
         }
         // Release any prior compiled handle first — this path REPLACES it.
-        if let Some(prev) = self.nodes.get(&uid).and_then(|e| e.bindings.get(&key)) {
+        if let Some(prev) = self.leaf(uid).and_then(|e| e.bindings.get(&key)) {
             if let (Some(ev), Some(id)) = (&self.evaluator, prev.id) {
                 ev.release(id);
             }
         }
         // A non-empty source binds a real param: a dangling binding is invisible in the descriptor
         // and unclearable from the UI.
-        if goofi_node::param(&self.nodes[&uid].params, group, name).is_none() {
+        if goofi_node::param(&self.nodes[&uid].leaf().expect("a leaf").params, group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
         let bind_id = self.bind_id(uid, &key);
@@ -2105,7 +2146,7 @@ impl Graph {
             bind_id,
             bind_error: error,
         };
-        if let Some(e) = self.nodes.get_mut(&uid) {
+        if let Some(e) = self.leaf_mut(uid) {
             e.bindings.insert(key, binding);
         }
         self.replan_binding(uid, bind_id);
@@ -2115,7 +2156,7 @@ impl Graph {
     /// Drop a binding and release its compiled handle — the shared tail of an empty `set_expression`
     /// and of a literal write over a bound param. It does NOT re-plan: its callers do, exactly once.
     fn unbind(&mut self, uid: Uid, key: &ParamKey) {
-        let Some(binding) = self.nodes.get_mut(&uid).and_then(|e| e.bindings.remove(key)) else {
+        let Some(binding) = self.leaf_mut(uid).and_then(|e| e.bindings.remove(key)) else {
             return;
         };
         if let (Some(ev), Some(id)) = (&self.evaluator, binding.id) {
@@ -2133,7 +2174,7 @@ impl Graph {
     /// This PARAM's index into [`Self::bind_keys`]. Keyed by param, not by binding, because the
     /// channel outlives any one binding on it. Append-only, cleared only by a whole-graph `clear`.
     fn bind_id(&mut self, uid: Uid, key: &ParamKey) -> usize {
-        if let Some(b) = self.nodes.get(&uid).and_then(|e| e.bindings.get(key)) {
+        if let Some(b) = self.leaf(uid).and_then(|e| e.bindings.get(key)) {
             return b.bind_id;
         }
         if let Some(at) = self.bind_keys.iter().position(|(u, k)| *u == uid && k == key) {
@@ -2147,8 +2188,7 @@ impl Graph {
     /// reason neither was found. Event ids come from §3.2's `65..=128` budget, lowest free first.
     fn resolve_vars(&self, consumer: Uid, key: &ParamKey, refs: &[expr_rewrite::VarRef]) -> Vec<BoundVar> {
         let mut taken: Vec<runtime::EventId> = self
-            .nodes
-            .get(&consumer)
+            .leaf(consumer)
             .into_iter()
             .flat_map(|e| e.bindings.iter().filter(|(k, _)| *k != key))
             .flat_map(|(_, b)| &b.vars)
@@ -2221,7 +2261,7 @@ impl Graph {
     /// The expression binding on a param, for the bridge descriptor + `.gfi` (or `None`
     /// if the param is a plain literal).
     pub fn param_expression(&self, uid: Uid, group: &str, name: &str) -> Option<ExprInfo> {
-        let entry = self.nodes.get(&uid)?;
+        let entry = self.leaf(uid)?;
         let key = ParamKey::new(group, name);
         let b = entry.bindings.get(&key)?;
         Some(ExprInfo {
@@ -2237,8 +2277,7 @@ impl Graph {
     /// Every expression binding on a node as `(group, name, source, enabled, triggers)` — what a
     /// delete's inverse must re-apply, since params alone carry only the literal value.
     pub fn param_bindings(&self, uid: Uid) -> Vec<(String, String, String, bool, bool)> {
-        self.nodes
-            .get(&uid)
+        self.leaf(uid)
             .map(|e| {
                 e.bindings
                     .iter()
@@ -2253,7 +2292,7 @@ impl Graph {
     /// What the params driven by an ENABLED binding currently evaluate to — the inspector's live
     /// preview. A disabled binding is excluded: its value is the literal, already on the descriptor.
     pub fn expression_values(&self, uid: Uid) -> Vec<(&str, &str, &Param)> {
-        let Some(entry) = self.nodes.get(&uid) else {
+        let Some(entry) = self.leaf(uid) else {
             return Vec::new();
         };
         entry
@@ -2377,7 +2416,7 @@ impl Graph {
     /// Re-plan the real consumers a wire change reaches. For a leaf that is the slot itself; for a
     /// PORT it is every leaf input past it, because a port carries no plan of its own.
     fn replan_behind(&mut self, node_in: Uid, slot_in: &'static str) {
-        if self.nodes.contains_key(&node_in) {
+        if self.leaf(node_in).is_some() {
             self.replan_slot(node_in, slot_in);
             return;
         }
@@ -2442,11 +2481,11 @@ impl Graph {
         }
         // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
         // the same re-plan its input slots get — both ends of one.
-        for (consumer, entry) in &self.nodes {
+        for (consumer, entry) in self.leaves() {
             for binding in entry.bindings.values() {
-                let touches = *consumer == uid
+                let touches = consumer == uid
                     || binding.vars.iter().filter_map(BoundVar::wire).any(|(p, _)| p == uid);
-                let key = (*consumer, runtime::plan::Slot::Bind(binding.bind_id));
+                let key = (consumer, runtime::plan::Slot::Bind(binding.bind_id));
                 if touches && !slots.contains(&key) {
                     slots.push(key);
                 }
@@ -2504,9 +2543,8 @@ impl Graph {
     /// Answers how many landed, so a caller can tell a quiet graph from one it stopped hearing.
     pub fn drain_status(&mut self) -> usize {
         let channels: Vec<(Uid, Arc<runtime::NodeChannel>)> = self
-            .nodes
-            .iter()
-            .filter_map(|(uid, e)| e.host.channel.clone().map(|c| (*uid, c)))
+            .leaves()
+            .filter_map(|(uid, e)| e.host.channel.clone().map(|c| (uid, c)))
             .collect();
         let mut applied = 0;
         for (uid, channel) in channels {
@@ -2529,7 +2567,7 @@ impl Graph {
         // …and so is `Ready`: it is what makes a node addressable, and the sink it attaches is the
         // graph's, not the entry's.
         if matches!(status, runtime::Status::Ready) {
-            if let Some(channel) = self.nodes.get(&uid).and_then(|e| e.host.channel.clone()) {
+            if let Some(channel) = self.leaf(uid).and_then(|e| e.host.channel.clone()) {
                 self.attach_control_sink(uid, channel);
             }
             return;
@@ -2537,7 +2575,7 @@ impl Graph {
         // Set by the `RefreshOptions` arm and drained after the match: `entry` holds a mutable
         // borrow of `self` for the whole of it, so the queue cannot be pushed to from inside.
         let mut refreshed: Option<ParamKey> = None;
-        let Some(entry) = self.nodes.get_mut(&uid) else { return };
+        let Some(entry) = self.leaf_mut(uid) else { return };
         match status {
             // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
             // the bridge locks with `.lock().unwrap()`, so a panic here would poison the control plane.
@@ -2603,7 +2641,7 @@ impl Graph {
     /// Stamp when this node's error first read the way it does now. Derived from [`entry_error`], so
     /// all three kinds are stamped by one rule and the stamp cannot outlive its error.
     fn stamp_error_onset(&mut self, uid: Uid) {
-        let Some(e) = self.nodes.get_mut(&uid) else { return };
+        let Some(e) = self.leaf_mut(uid) else { return };
         let current = entry_error(e);
         if e.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
             e.error_since = current.map(|m| (m.to_string(), Instant::now()));
@@ -2662,7 +2700,7 @@ impl Graph {
         if *owner != uid {
             return None;
         }
-        let entry = self.nodes.get(&uid)?;
+        let entry = self.leaf(uid)?;
         let value = match entry.bindings.get(key).filter(|b| b.live()) {
             Some(b) => runtime::ParamValue::Expr {
                 source: b.rewritten.clone(),
@@ -2724,7 +2762,7 @@ impl Graph {
     /// The binding a planner id names, if it still exists.
     fn binding_of(&self, uid: Uid, bind_id: usize) -> Option<&ExprBinding> {
         let (owner, key) = self.bind_keys.get(bind_id)?;
-        (*owner == uid).then(|| self.nodes.get(&uid)?.bindings.get(key)).flatten()
+        (*owner == uid).then(|| self.leaf(uid)?.bindings.get(key)).flatten()
     }
 
     /// Every doorbell one output slot rings, with the event id that says why the far node woke — the
@@ -2739,16 +2777,16 @@ impl Graph {
             .filter_map(|(n, s)| Some((self.door_of(n), self.input_event_id(n, s)?)))
             .collect::<Vec<_>>()
             .into_iter();
-        let bound = self.nodes.iter().flat_map(|(consumer, entry)| {
+        let bound = self.leaves().flat_map(|(consumer, entry)| {
             entry.bindings.values().filter(|b| b.live()).flat_map(move |b| {
                 b.vars
                     .iter()
                     .filter(move |v| v.wire() == Some((producer, slot)))
                     .filter(move |_| {
-                        !self.wire.unapplied((*consumer, runtime::plan::Slot::Bind(b.bind_id)), (producer, slot))
+                        !self.wire.unapplied((consumer, runtime::plan::Slot::Bind(b.bind_id)), (producer, slot))
                     })
                     .filter_map(move |v| match v {
-                        BoundVar::Stream { event_id, .. } => Some((self.door_of(*consumer), *event_id)),
+                        BoundVar::Stream { event_id, .. } => Some((self.door_of(consumer), *event_id)),
                         _ => None,
                     })
             })
@@ -2759,7 +2797,7 @@ impl Graph {
     /// An input slot's event id: its position in the manifest's inputs, past `EventId(0)`, which is
     /// the control channel's (§3.2). `None` beyond the 64 ids the budget gives input slots.
     fn input_event_id(&self, uid: Uid, slot: &str) -> Option<runtime::EventId> {
-        let at = self.nodes.get(&uid)?.manifest.inputs.iter().position(|s| s.name == slot)?;
+        let at = self.leaf(uid)?.manifest.inputs.iter().position(|s| s.name == slot)?;
         (at < 64).then_some(at as runtime::EventId + 1)
     }
 
@@ -2772,7 +2810,6 @@ impl Graph {
         }
         self.nodes.clear();
         self.links.clear();
-        self.scopes.clear();
         self.scope_of.clear();
         // The channels addressed nodes that no longer exist; the generations stay, because they are
         // what keeps whatever is born at those uids next clear of what just died.
@@ -2805,81 +2842,47 @@ impl Graph {
     pub fn serialize(&self) -> String {
         use serde_json::{json, Map, Value};
         let mut nodes = Map::new();
-        for uid in self.node_uids() {
-            let e = &self.nodes[&uid];
-            let mut params = Map::new();
-            let live = e.params.clone();
-            for (group, names) in &*live {
-                let mut gmap = Map::new();
-                for (name, p) in names {
-                    gmap.insert(name.clone(), param_value_json(p, false));
-                }
-                params.insert(group.clone(), Value::Object(gmap));
-            }
+        // ONE loop over ONE map: a leaf, a facade and a port are all node records in the file, and
+        // membership rides each record rather than a member list beside what `scope_of` owns.
+        for (uid, e) in self.nodes.iter() {
             let mut node_obj = Map::new();
-            node_obj.insert("type".into(), json!(e.manifest.type_name));
+            node_obj.insert("type".into(), json!(self.node_type(*uid).unwrap_or("")));
             node_obj.insert("name".into(), json!(e.name));
             node_obj.insert("pos".into(), json!(e.pos));
-            node_obj.insert("params".into(), Value::Object(params));
-            // Persist expression bindings (sorted for a stable diff) — else a save/load
-            // silently freezes every live-driven param to its last evaluated literal.
-            if !e.bindings.is_empty() {
-                let mut binds: Vec<(&ParamKey, &ExprBinding)> = e.bindings.iter().collect();
-                binds.sort_by(|a, b| a.0.cmp(b.0));
-                let arr: Vec<Value> = binds
-                    .iter()
-                    .map(|(k, b)| {
-                        json!({ "group": k.group, "name": k.name, "source": b.source,
-                                "enabled": b.enabled, "triggers_process": b.triggers_process })
-                    })
-                    .collect();
-                node_obj.insert("expressions".into(), Value::Array(arr));
+            let mut params = Map::new();
+            if let Some(leaf) = e.leaf() {
+                for (group, names) in &*leaf.params.clone() {
+                    let mut gmap = Map::new();
+                    for (name, p) in names {
+                        gmap.insert(name.clone(), param_value_json(p, false));
+                    }
+                    params.insert(group.clone(), Value::Object(gmap));
+                }
+                // Persist expression bindings (sorted for a stable diff) — else a save/load
+                // silently freezes every live-driven param to its last evaluated literal.
+                if !leaf.bindings.is_empty() {
+                    let mut binds: Vec<(&ParamKey, &ExprBinding)> = leaf.bindings.iter().collect();
+                    binds.sort_by(|a, b| a.0.cmp(b.0));
+                    let arr: Vec<Value> = binds
+                        .iter()
+                        .map(|(k, b)| {
+                            json!({ "group": k.group, "name": k.name, "source": b.source,
+                                    "enabled": b.enabled, "triggers_process": b.triggers_process })
+                        })
+                        .collect();
+                    node_obj.insert("expressions".into(), Value::Array(arr));
+                }
             }
+            node_obj.insert("params".into(), Value::Object(params));
             // Persist viewer view-state (per-slot kind/settings) when the editor has set
             // any — an empty blob stays out of the file so a fresh patch has no noise.
             if e.viewers.as_object().is_some_and(|m| !m.is_empty()) {
                 node_obj.insert("viewers".into(), e.viewers.clone());
             }
+            if let Some(p) = self.scope_of(*uid) {
+                node_obj.insert("scope".into(), json!(p.to_hex()));
+            }
             nodes.insert(uid.to_hex(), Value::Object(node_obj));
-        }
-        // A facade and a boundary port are node records too — one entity kind in the file, keyed by
-        // one uid space. Membership rides each record rather than a member list beside it, which
-        // would be a second holder of what `scope_of` already owns.
-        for (uid, scope) in &self.scopes {
-            nodes.insert(
-                uid.to_hex(),
-                {
-                    let mut rec = json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name,
-                                          "pos": scope.pos, "params": {} });
-                    if scope.viewers.as_object().is_some_and(|m| !m.is_empty()) {
-                        rec["viewers"] = scope.viewers.clone();
-                    }
-                    rec
-                },
-            );
-            for (id, st) in &scope.stubs {
-                let mut rec = json!({
-                    "type": subpatch::boundary_type_name(st.dir, st.dtype),
-                    "name": st.name,
-                    "pos": st.pos,
-                    "params": {},
-                    "scope": uid.to_hex(),
-                });
-                if st.viewers.as_object().is_some_and(|m| !m.is_empty()) {
-                    rec["viewers"] = st.viewers.clone();
-                }
-                nodes.insert(id.to_hex(), rec);
-            }
-        }
-        for (uid, parent) in self.scopes.keys().filter_map(|u| self.scope_of(*u).map(|p| (*u, p))) {
-            if let Some(Value::Object(rec)) = nodes.get_mut(&uid.to_hex()) {
-                rec.insert("scope".into(), json!(parent.to_hex()));
-            }
-        }
-        for uid in self.node_uids() {
-            if let (Some(p), Some(Value::Object(rec))) = (self.scope_of(uid), nodes.get_mut(&uid.to_hex())) {
-                rec.insert("scope".into(), json!(p.to_hex()));
-            }
         }
         // A port's inner wire is a link like any other — the same one `add_link` writes — so the
         // file has one relation kind as well as one entity kind.
@@ -2972,13 +2975,14 @@ impl Graph {
         }
         // Then the facades, before anything that can name one.
         for (old, rec) in nodes.iter().filter(|(_, r)| r["type"] == subpatch::SCOPE_TYPE) {
-            self.scopes.insert(
+            self.nodes.insert(
                 idmap[old],
-                subpatch::Scope::new(
-                    rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    read_pos(rec),
-                    IndexMap::new(),
-                ),
+                NodeEntry {
+                    kind: Kind::Facade,
+                    name: rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    pos: read_pos(rec),
+                    viewers: serde_json::json!({}),
+                },
             );
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(idmap[old], v.clone());
@@ -3046,14 +3050,20 @@ impl Graph {
             let uid = idmap[old];
             let Some(scope) = self.scope_of(uid) else { continue };
             let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mut stub = subpatch::Stub::new(dir, dtype, read_pos(rec), name);
-            if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
-                stub.viewers = v.clone();
-            }
-            if let Some(s) = self.scopes.get_mut(&scope) {
-                s.stubs.insert(uid, stub);
-                port_of.insert(uid, scope);
-            }
+            self.nodes.insert(
+                uid,
+                NodeEntry {
+                    kind: Kind::Port(subpatch::Port { dir, dtype }),
+                    name,
+                    pos: read_pos(rec),
+                    viewers: rec
+                        .get("viewers")
+                        .filter(|v| v.is_object())
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                },
+            );
+            port_of.insert(uid, scope);
         }
         if let Some(links) = links_v.and_then(|v| v.as_array()) {
             for l in links {
@@ -3102,7 +3112,7 @@ fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
 
 /// One node's current error, derived fresh from the places one can arise. A free function so
 /// [`Graph::stamp_error_onset`] can read it while holding a `&mut NodeEntry`.
-fn entry_error(e: &NodeEntry) -> Option<&str> {
+fn entry_error(e: &Leaf) -> Option<&str> {
     // Initialization failure outranks a process error, and is the only thing that CAN be true
     // beside one: if `setup` failed, `process` never ran.
     if let Some(err) = e.setup_error.as_deref() {
