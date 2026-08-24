@@ -7,6 +7,7 @@ import { SCOPE_TYPE, BOUNDARY_SLOT, boundaryType } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
+import { liveCatalogue } from '$lib/inspector/expr/catalogue';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
 function catalog(): NodeTypeInfo[] {
@@ -231,5 +232,36 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 		d.patch(spec);
 		expect(slotView(g.nodeById('i9'), 'p9').kind, 'the re-minted scope inherits no kind').toBeUndefined();
 		expect(isSlotExpanded(g.nodeById('i9'), 'p9'), 'nor a collapse').toBe(true);
+	});
+});
+
+describe('the expression catalogue — what nd() can name', () => {
+	it('offers a sub-patch by name and its ports by name, beside the leaves', () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		g.nodeTypes = catalog();
+		const sp = scope('i2', {
+			name: 'subpatch0',
+			ports: [
+				{ uid: 'p2', type: 'OutArray', name: 'wave', inner: ['m2', 'out'] },
+				{ uid: 'p3', type: 'InArray', name: 'feed' }
+			]
+		});
+		seed(fc).patch({
+			nodes: { n1: node('Oscillator', 'osc0'), m2: node('Buffer', 'buffer0', 'i2'), ...sp.nodes },
+			links: sp.links
+		});
+
+		const names = liveCatalogue(g).nodes.map((n) => n.name);
+		// A facade and a port are things `nd()` resolves, so a completion that cannot offer them
+		// hides half the patch from the one surface that exists to say what is nameable.
+		expect(names).toContain('subpatch0');
+		expect(names).toContain('wave');
+		expect(names).toContain('osc0');
+
+		// A facade's slots are keyed by port uid and ADDRESSED by the port's name, so the name is
+		// what is offered — a uid would complete to an expression the resolver refuses.
+		const facade = liveCatalogue(g).nodes.find((n) => n.name === 'subpatch0');
+		expect(facade?.slots.map((s) => s.name)).toEqual(['wave']);
 	});
 });

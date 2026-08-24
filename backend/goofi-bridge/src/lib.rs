@@ -291,22 +291,23 @@ fn routes(state: AppState) -> Router {
 }
 
 /// The uids whose error state changed since `last`, which is updated in place. A node first seen
-/// HEALTHY is not a change, and a removed node is forgotten so a re-created uid reports fresh.
+/// HEALTHY is not a change, and a memo answers for the node INSTANCE that reported it: a rebirth at
+/// a uid — a load, a restart — is a transition whatever its predecessor last said.
 fn error_transitions(
-    current: &[(String, Option<String>)],
-    last: &mut HashMap<String, Option<String>>,
+    current: &[(String, u64, Option<String>)],
+    last: &mut HashMap<String, (u64, Option<String>)>,
 ) -> Vec<String> {
-    let seen: HashSet<&String> = current.iter().map(|(u, _)| u).collect();
+    let seen: HashSet<&String> = current.iter().map(|(u, ..)| u).collect();
     let mut changed = Vec::new();
-    for (uid, err) in current {
+    for (uid, generation, err) in current {
         let is_changed = match last.get(uid) {
-            Some(prev) => prev != err,
+            Some((g, e)) => g != generation || e != err,
             None => err.is_some(),
         };
         if is_changed {
             changed.push(uid.clone());
         }
-        last.insert(uid.clone(), err.clone());
+        last.insert(uid.clone(), (*generation, err.clone()));
     }
     last.retain(|k, _| seen.contains(k));
     changed
@@ -324,9 +325,9 @@ const DRAIN_PERIOD: Duration = Duration::from_millis(1);
 pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
-        let mut last_errors: HashMap<String, Option<String>> = HashMap::new();
+        let mut last_errors: HashMap<String, (u64, Option<String>)> = HashMap::new();
         // A node's stage changes on its own thread, with no RPC to ride on.
-        let mut last_stages: HashMap<String, &'static str> = HashMap::new();
+        let mut last_stages: HashMap<String, (u64, &'static str)> = HashMap::new();
         let mut next_broadcast = Instant::now() + period;
         loop {
             std::thread::sleep(DRAIN_PERIOD);
@@ -342,8 +343,8 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     let refreshed = g.take_refreshed();
                     let g = &*g;
                     let mut rates: Vec<(String, f64)> = Vec::new();
-                    let mut errs: Vec<(String, Option<String>)> = Vec::new();
-                    let mut stages: Vec<(String, &'static str)> = Vec::new();
+                    let mut errs: Vec<(String, u64, Option<String>)> = Vec::new();
+                    let mut stages: Vec<(String, u64, &'static str)> = Vec::new();
                     let mut expr_vals: Vec<(String, Value)> = Vec::new();
                     for u in g.node_uids() {
                         let hex = u.to_hex();
@@ -354,8 +355,9 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                         if vals.as_object().is_some_and(|o| !o.is_empty()) {
                             expr_vals.push((hex.clone(), vals));
                         }
-                        stages.push((hex.clone(), g.node_stage(u)));
-                        errs.push((hex, g.last_error(u).map(str::to_string)));
+                        let generation = g.node_generation(u);
+                        stages.push((hex.clone(), generation, g.node_stage(u)));
+                        errs.push((hex, generation, g.last_error(u).map(str::to_string)));
                     }
                     let refreshed: Vec<String> = refreshed
                         .into_iter()
@@ -386,15 +388,16 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 let _ = events.send(event("param_values", json!({ "node": node, "values": values })));
             }
             for hex in changed {
-                let err = errs.iter().find(|(h, _)| *h == hex).and_then(|(_, e)| e.clone());
+                let err = errs.iter().find(|(h, ..)| *h == hex).and_then(|(.., e)| e.clone());
                 let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
-            for (node, stage) in stages {
-                if last_stages.insert(node.clone(), stage) != Some(stage) {
+            for (node, generation, stage) in stages {
+                if last_stages.insert(node.clone(), (generation, stage)) != Some((generation, stage))
+                {
                     let _ = events.send(event("node_stage", json!({ "node": node, "stage": stage })));
                 }
             }
-            last_stages.retain(|h, _| errs.iter().any(|(e, _)| e == h));
+            last_stages.retain(|h, _| errs.iter().any(|(e, ..)| e == h));
         }
     });
 }

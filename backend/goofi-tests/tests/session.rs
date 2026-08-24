@@ -80,6 +80,34 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
                b"the EEG source is on channel 3", "the workspace travelled with the patch");
     assert_eq!(other.call("get_patch", j!({}))["dirty"], false,
                "a patch is not unsaved the moment it finishes loading");
+
+    // …and reopened over ITSELF, in the session that has been running it all along.
+    let mut ev = g.events();
+    let late = g.add("Oscillator");
+    g.ready(late);
+    // A uid the status worker has never reported on, so its `ready` is the tick that also memoized
+    // every node already running.
+    loop {
+        let told = ev.next("node_stage");
+        if told["node"] == hex(late) && told["stage"] == "ready" {
+            break;
+        }
+    }
+    g.call("save", j!({ "path": path.to_string_lossy() }));
+    g.call("load", j!({ "path": path.to_string_lossy() }));
+
+    let snap = ev.next("graph_replaced");
+    assert_eq!(snap["runtime"][hex(late)]["stage"], "creating",
+               "the load rebuilt it at the uid it was saved with, and the snapshot caught it starting");
+    g.ready(late);
+    // The stage stream is a delta over that snapshot, so the node reaching `ready` again HAS to be
+    // said — the uid it came back at reported the same thing in its previous life.
+    loop {
+        let told = ev.next("node_stage");
+        if told["node"] == hex(late) && told["stage"] == "ready" {
+            break;
+        }
+    }
 }
 
 #[test]

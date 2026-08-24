@@ -1,5 +1,5 @@
 /** What the expression completion source knows about the patch: node names, output slots, globals. */
-import { graph } from '$lib/stores/graph.svelte';
+import { graph, type GraphStore } from '$lib/stores/graph.svelte';
 
 export interface CatalogueSlot {
 	name: string;
@@ -23,14 +23,24 @@ export interface ExprCatalogue {
 	globals: CatalogueGlobal[];
 }
 
-/** The live patch, read at the moment a completion is asked for. */
-export function liveCatalogue(): ExprCatalogue {
-	const g = graph();
+/** The live patch, read at the moment a completion is asked for. `g` is the store to read, so a
+ * test can drive this against a seeded one. */
+export function liveCatalogue(g: GraphStore = graph()): ExprCatalogue {
 	return {
-		nodes: g.nodes.map((n) => ({
-			name: n.name,
-			slots: Object.entries(n.output_slots).map(([name, dtype]) => ({ name, dtype }))
-		})),
+		// Everything `nd()` can name — leaves, boundary ports and sub-patch facades alike. A facade
+		// keys its slots by port uid, and `nd()` addresses them by the port's NAME, so the label is
+		// what is offered.
+		nodes: g.bindable.flatMap(({ uid }) => {
+			const n = g.nodeById(uid);
+			if (!n) return [];
+			return [{
+				name: n.name,
+				slots: Object.entries(n.output_slots).map(([key, dtype]) => ({
+					name: n.slot_labels?.[key] ?? key,
+					dtype
+				}))
+			}];
+		}),
 		globals: g.globals.map((gv) => ({ name: gv.name, type: gv.type }))
 	};
 }
