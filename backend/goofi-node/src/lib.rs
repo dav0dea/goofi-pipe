@@ -499,25 +499,6 @@ pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     out
 }
 
-/// Rewrite every `nd('name')` literal `rename` answers for, leaving every other byte alone.
-pub fn rewrite_nd_refs(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
-    // Splice right-to-left, so earlier byte offsets stay valid as the string is edited.
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
-    for call in scan_nd_calls(source) {
-        if let Some(new) = rename(call.name) {
-            edits.push((call.name_start, call.name_end, new));
-        }
-    }
-    if edits.is_empty() {
-        return None;
-    }
-    let mut out = source.to_string();
-    for (start, end, repl) in edits.into_iter().rev() {
-        out.replace_range(start..end, &repl);
-    }
-    Some(out)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isolation {
     InProcess,

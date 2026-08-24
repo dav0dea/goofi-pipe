@@ -490,6 +490,27 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     assert!(!followed.contains("subpatch0"), "…and nothing still spells the old name: {followed}");
     assert!(!followed.contains("[error:"), "the binding stayed live across the rename: {followed}");
 
+    // Renaming the PORT moves a SLOT LABEL, because a facade's slots are called what its ports are
+    // called — so the one rename has to reach the expression in the slot position too. Nothing else
+    // writes that half: the name in `nd('chain')` is untouched and the rewrite that follows a node
+    // rename never looks past it.
+    g.call("edit_node", j!({ "node": outp, "name": "drain" }));
+    let slot_moved = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(slot_moved.contains("nd('chain').drain"), "the reference followed the port: {slot_moved}");
+    assert!(!slot_moved.contains(".sink"), "…and nothing still spells the old slot: {slot_moved}");
+    assert!(!slot_moved.contains("[error:"), "the binding stayed live across it: {slot_moved}");
+
+    // The mirror case: a source spelling a slot no port wears YET heals when a rename gives a port
+    // that name. Nobody re-edits the expression — the rename is what makes it resolvable, exactly
+    // as it is for a node's own name.
+    let ahead = bind("nd('chain').tap");
+    assert!(ahead.as_str().is_some_and(|e| e.contains("no output")),
+            "a slot nothing wears is refused: {ahead}");
+    g.call("edit_node", j!({ "node": second, "name": "tap" }));
+    let healed = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(!healed.contains("[error:"), "the rename resolved the waiting binding: {healed}");
+    bind("nd('chain').drain");
+
     // …and it SURVIVES the round trip, which is where a source left spelling a dead name shows up.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("renamed.gfi");
@@ -501,7 +522,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
         .find(|u| back.doc()["nodes"][u]["name"] == "buffer0")
         .expect("the member came back");
     let reloaded = back.call("inspect_node", j!({ "node": loaded_buf }))["text"].as_str().unwrap().to_string();
-    assert!(reloaded.contains("nd('chain').sink"), "the saved source names the sub-patch: {reloaded}");
+    assert!(reloaded.contains("nd('chain').drain"), "the saved source names the sub-patch: {reloaded}");
     assert!(!reloaded.contains("[error:"), "and it resolves on load: {reloaded}");
 
     // A port's label lives in the ONE display-name namespace `nd()` reads, so it cannot shadow a

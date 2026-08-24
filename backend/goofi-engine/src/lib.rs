@@ -550,11 +550,13 @@ impl Graph {
         self.rebind(&reading);
     }
 
-    /// Re-resolve and re-send every binding whose source references the node display name `name` —
-    /// §5.3's "renamed, added, removed or restarted", stated once.
+    /// Re-resolve and re-send every binding whose source SPELLS the display name `name` — in either
+    /// position, since a port's name is read as a node's and as its facade's slot label. §5.3's
+    /// "renamed, added, removed or restarted", stated once.
     fn rebind_naming(&mut self, name: &str) {
         let naming = self.bindings_where(|b| {
-            b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Node { name: n, .. } if n == name))
+            b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Node { name: n, slot, .. }
+                if n == name || slot.as_deref() == Some(name)))
         });
         self.rebind(&naming);
     }
@@ -1074,7 +1076,7 @@ impl Graph {
         let old_name = std::mem::replace(&mut e.name, name.to_string());
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
-        let touched = self.rewrite_nd_refs_for_rename(&old_name, name);
+        let touched = self.rewrite_nd_refs_for_rename(uid, &old_name, name);
         // …and re-resolve the ones ALREADY written against the new name: such a binding has no
         // `nd('<old>')` for the rewrite to follow, and this rename is what makes it resolvable.
         self.rebind_naming(name);
@@ -1083,12 +1085,18 @@ impl Graph {
 
     /// Rewrite `nd('old')` -> `nd('new')` across every param expression, re-binding each changed
     /// source. Returns the distinct referrer uids whose source changed.
-    fn rewrite_nd_refs_for_rename(&mut self, old: &str, new: &str) -> Vec<Uid> {
+    fn rewrite_nd_refs_for_rename(&mut self, uid: Uid, old: &str, new: &str) -> Vec<Uid> {
+        // A port's name is ALSO a slot label — on the facade that holds it, and nowhere else — so
+        // the one rename reaches an expression in both positions through the one rewrite.
+        let facade = self.stub(uid).and_then(|(scope, _)| self.name(scope)).map(str::to_string);
         let mut edits: Vec<(Uid, ParamKey, String, bool, bool)> = Vec::new();
         for (ruid, entry) in self.leaves() {
             for (key, b) in &entry.bindings {
-                let rewritten = goofi_node::rewrite_nd_refs(&b.source, |n| {
-                    (n == old).then(|| new.to_string())
+                let rewritten = expr_rewrite::rename_refs(&b.source, |n, slot| {
+                    (
+                        (n == old).then(|| new.to_string()),
+                        (slot == Some(old) && Some(n) == facade.as_deref()).then(|| new.to_string()),
+                    )
                 });
                 if let Some(src) = rewritten {
                     edits.push((ruid, key.clone(), src, b.enabled, b.triggers_process));

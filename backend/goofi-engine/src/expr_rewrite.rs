@@ -108,6 +108,37 @@ fn merge(mut terms: Vec<Term>) -> Vec<Term> {
     merged
 }
 
+/// Rewrite the `nd('name').slot` terms `rename` answers for — a replacement name, a replacement
+/// slot, or neither — leaving every other byte alone. Both positions, because a display name is
+/// read in both: a node's own, and, when that node is a boundary port, the slot label its facade
+/// wears.
+pub fn rename_refs(
+    source: &str,
+    rename: impl Fn(&str, Option<&str>) -> (Option<String>, Option<String>),
+) -> Option<String> {
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for call in goofi_node::scan_nd_calls(source) {
+        let slot = call.end.and_then(|end| slot_after(source, end));
+        let (name, label) = rename(call.name, slot.map(|(s, _)| s));
+        if let Some(name) = name {
+            edits.push((call.name_start, call.name_end, name));
+        }
+        if let (Some((was, at)), Some(label)) = (slot, label) {
+            edits.push((at - was.len(), at, label));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    // Splice right-to-left, so earlier byte offsets stay valid as the string is edited.
+    let mut out = source.to_string();
+    edits.sort_by_key(|(start, _, _)| *start);
+    for (start, end, repl) in edits.into_iter().rev() {
+        out.replace_range(start..end, &repl);
+    }
+    Some(out)
+}
+
 /// The output slot named after a closed `nd(..)` call, and where it ends. `None` when the next
 /// thing is a method call, or not an attribute at all.
 fn slot_after(source: &str, end: usize) -> Option<(&str, usize)> {
