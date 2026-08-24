@@ -521,12 +521,13 @@ export class GraphStore {
 		});
 	}
 
-	/** The runtime overlay for a node materializing from the doc for the FIRST time. A node created
-	 * after the snapshot has no entry, and `creating` is what that means. */
-	private _seedRuntime(uid: string): RuntimeOverlay {
+	/** The runtime overlay for a node materializing from the doc for the FIRST time. A leaf is
+	 * `creating` until its own thread says otherwise; a virtual node runs nothing, so it is born at
+	 * the stage the backend already answers for it rather than waiting a stats period to hear so. */
+	private _seedRuntime(uid: string, virtual: boolean): RuntimeOverlay {
 		const seed = this._snapshotRuntime[uid];
 		delete this._snapshotRuntime[uid];
-		return { stage: seed?.stage ?? 'creating', error: seed?.error ?? null };
+		return { stage: seed?.stage ?? (virtual ? 'ready' : 'creating'), error: seed?.error ?? null };
 	}
 
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off a node so a re-assemble keeps them. */
@@ -581,10 +582,9 @@ export class GraphStore {
 		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
 			const existing = this.nodeById(nv.uid);
 			const catalog = byType.get(nv.type);
-			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : this._seedRuntime(nv.uid);
-			// Neither a port nor a facade has a thread, so no `node_stage` will ever arrive for one —
-			// seeded `creating` it would sit booting for the life of the patch.
-			if (boundaryType(nv.type) || faces.has(nv.uid)) runtime.stage = 'ready';
+			const runtime: RuntimeOverlay = existing
+				? this._extractRuntime(existing)
+				: this._seedRuntime(nv.uid, !!boundaryType(nv.type) || faces.has(nv.uid));
 			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime, faces.get(nv.uid));
 		});
