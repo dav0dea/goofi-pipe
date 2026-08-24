@@ -19,7 +19,20 @@ import {
 	replicaNodes,
 	restoreSocket
 } from '../lib/raw';
-import { addNode, nodeParams, redo, undo, waitForNode } from '../lib/goofi';
+import { addNode, nodeParams, redo, selectNode, undo, waitForNode } from '../lib/goofi';
+
+/** Whether the platform clipboard holds a goofi payload naming `uid` — the observable a copy is
+ * finished by, since the manager is asked for the subtree before anything is written. */
+async function clipboardHolds(page: Page, uid: string): Promise<boolean> {
+	return page.evaluate(async (u) => {
+		try {
+			const text = await navigator.clipboard.readText();
+			return text.includes('__goofi_clip__') && text.includes(u);
+		} catch {
+			return false;
+		}
+	}, uid);
+}
 
 /** The replica and the manager hold the same uids. Polled: the replica lags by a round trip. */
 async function expectAgreement(page: Page, what: string): Promise<string[]> {
@@ -276,6 +289,119 @@ test.describe('the control socket', () => {
 				// The feeder was this step's alone; the step after this one counts what is left.
 				await page.evaluate((f) => (window as any).goofi.commands.removeNodes([f]), feeder);
 				await expect.poll(async () => (await backendDoc(page)).nodes[feeder]).toBeUndefined();
+			});
+
+			await test.step('a sub-patch is copied whole, and a selection is CUT into one', async () => {
+				// The clipboard is the one seam neither half's suite can reach: `goofi-tests` proves
+				// copy_nodes/paste_nodes against the manager, and the editor's own tests prove what
+				// the store sends — but only a browser carries a payload OUT through the platform
+				// clipboard and back in, which is what a copy and a paste actually are.
+				await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+				const a = await addNode(page, 'Oscillator', 'inputs', [0, 300]);
+				const b = await addNode(page, 'Buffer', 'signal', [280, 300]);
+				await waitForNode(page, a);
+				await waitForNode(page, b);
+				const scope = await page.evaluate(
+					(us) => (window as any).goofi.commands.groupNodes(us, [140, 300]),
+					[a, b]
+				);
+				await expect
+					.poll(async () => (await backendDoc(page)).nodes[scope]?.type)
+					.toBe('SubPatch');
+				const inside = async (uid: string) =>
+					Object.entries((await backendDoc(page)).nodes).filter(
+						([, n]: [string, any]) => n.scope === uid
+					).length;
+				const held = await inside(scope);
+
+				// Copy the FACADE and paste it. A sub-patch is not one type, so what rides the
+				// clipboard has to be its members, its ports and the wiring among them.
+				await selectNode(page, scope);
+				await page.keyboard.press('Control+c');
+				// Gate on the payload BEING there. A copy asks the manager for the subtree first,
+				// so the clipboard is written a round trip after the key — and a paste that races
+				// it reads whatever was there before.
+				await expect
+					.poll(() => clipboardHolds(page, scope), { message: 'the copy reached the clipboard' })
+					.toBe(true);
+				await page.keyboard.press('Control+v');
+				await expect
+					.poll(
+						async () =>
+							Object.values((await backendDoc(page)).nodes).filter(
+								(n: any) => n.type === 'SubPatch'
+							).length,
+						{ message: 'the pasted sub-patch reached the manager' }
+					)
+					.toBe(2);
+				const copy = Object.entries((await backendDoc(page)).nodes).find(
+					([uid, n]: [string, any]) => n.type === 'SubPatch' && uid !== scope
+				)![0];
+				expect(await inside(copy), 'holding everything the original held').toBe(held);
+
+				// CUT a plain selection, then paste it INSIDE a sub-patch. Cut is a copy and a
+				// delete in one undo step; the paste lands where the editor is ENTERED, which is
+				// the only way a node reaches the inside of a sub-patch by gesture.
+				const c = await addNode(page, 'Oscillator', 'inputs', [0, 600]);
+				const d = await addNode(page, 'Buffer', 'signal', [280, 600]);
+				await waitForNode(page, c);
+				await waitForNode(page, d);
+				await page.evaluate(
+					([x, y]) =>
+						(window as any).goofi.commands.addLink({
+							node_out: x,
+							slot_out: 'out',
+							node_in: y,
+							slot_in: 'data'
+						}),
+					[c, d]
+				);
+				// A two-node selection is SETUP here; the gesture under test is the cut and the paste.
+				await page.evaluate((us) => (window as any).goofi.commands.select(us), [c, d]);
+				await page.keyboard.press('Control+x');
+				await expect
+					.poll(() => clipboardHolds(page, c), { message: 'the cut reached the clipboard' })
+					.toBe(true);
+				await expect
+					.poll(async () => (await backendDoc(page)).nodes[c], {
+						message: 'a cut takes the nodes out of the patch'
+					})
+					.toBeUndefined();
+				expect((await backendDoc(page)).nodes[d], 'both of them').toBeUndefined();
+
+				await page.locator(`.svelte-flow__node[data-id="${scope}"]`).dblclick();
+				await expect(page.getByTestId('subpatch-breadcrumb')).toBeVisible();
+				await page.keyboard.press('Control+v');
+				await expect
+					.poll(async () => await inside(scope), {
+						message: 'and the paste puts them INSIDE the sub-patch that was entered'
+					})
+					.toBe(held + 2);
+				// …with the cable between them, because a link rides when both its ends do.
+				const doc = await backendDoc(page);
+				const within = Object.entries(doc.nodes)
+					.filter(([, n]: [string, any]) => n.scope === scope)
+					.map(([uid]) => uid);
+				expect(
+					doc.links.some(
+						(l: { node_out: string; node_in: string }) =>
+							within.includes(l.node_out) && within.includes(l.node_in) && l.slot_in === 'data'
+					),
+					'the cut carried the wiring among the cut nodes'
+				).toBe(true);
+				await page
+					.getByTestId('subpatch-breadcrumb')
+					.getByRole('button', { name: 'Patch', exact: true })
+					.click();
+
+				// This step's scene was its own; the step after it counts what is left.
+				await page.evaluate(
+					(us) => (window as any).goofi.commands.removeNodes(us),
+					[scope, copy]
+				);
+				await expect
+					.poll(async () => (await backendDoc(page)).nodes[scope])
+					.toBeUndefined();
 			});
 
 			await test.step('a removal leaves the two halves holding the same nothing', async () => {

@@ -233,6 +233,7 @@
 				action: () => ed?.groupSelection()
 			},
 			{ label: 'Copy', disabled: !has, action: () => ed?.copySelection() },
+			{ label: 'Cut', disabled: !has, action: () => ed?.cutSelection() },
 			{ label: 'Paste', disabled: !ed, action: () => ed?.pasteClipboard() },
 			{ label: 'Duplicate', disabled: !has, action: () => ed?.duplicateSelection() }
 		];

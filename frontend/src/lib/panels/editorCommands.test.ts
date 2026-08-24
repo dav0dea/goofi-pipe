@@ -18,6 +18,7 @@ function stub(): EditorCommands {
 		deleteSelection: vi.fn(),
 		groupSelection: vi.fn(),
 		copySelection: vi.fn(),
+		cutSelection: vi.fn(),
 		pasteClipboard: vi.fn(),
 		duplicateSelection: vi.fn(),
 		hasSelection: () => false

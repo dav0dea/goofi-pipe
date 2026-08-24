@@ -8,6 +8,7 @@ export interface EditorCommands {
 	deleteSelection: () => void;
 	groupSelection: () => void;
 	copySelection: () => void;
+	cutSelection: () => void;
 	pasteClipboard: () => void;
 	duplicateSelection: () => void;
 	/** Store selection AND a live marquee. */

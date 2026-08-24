@@ -756,9 +756,13 @@
 			e.preventDefault();
 			selectAll();
 		} else if (meta && e.key.toLowerCase() === 'c') {
+			// Stop the browser's own copy: it would put the (empty) DOM selection on the clipboard
+			// over the payload. Ctrl+V is deliberately NOT here — the `paste` event is that door.
+			e.preventDefault();
 			void copySelection();
-		} else if (meta && e.key.toLowerCase() === 'v') {
-			void pasteClipboard();
+		} else if (meta && e.key.toLowerCase() === 'x') {
+			e.preventDefault();
+			void cutSelection();
 		} else if (meta && e.key.toLowerCase() === 'd') {
 			e.preventDefault();
 			void duplicateSelection();
@@ -823,14 +827,29 @@
 		sel.selectNodes(panelId, childrenOfScope(entered ?? ROOT_ID, memberIndex));
 	}
 
-	async function copySelection(): Promise<void> {
+	/** Put the selection on the clipboard, answering what was put there. The manager reads the
+	 * SUBTREE, so a sub-patch's members, ports and nested scopes come with it — which is what makes
+	 * the payload paste-able into a patch that never held those uids. */
+	async function copySelection(): Promise<string[]> {
 		const uids = selectedUids();
-		if (uids.length === 0) return;
-		// The manager reads the subtree: a sub-patch's members, ports and nested scopes come with it,
-		// which is what makes the payload paste-able into a patch that never held those uids.
+		if (uids.length === 0) return [];
 		if (!(await copyText(JSON.stringify(serializeClipboard(await g.copyNodes(uids)))))) {
-			console.warn('clipboard write failed');
+			notify().failure('Copy', 'the clipboard refused the payload');
+			return [];
 		}
+		return uids;
+	}
+
+	/** Cut: the copy, then the delete, as ONE history entry — so one undo puts the nodes back and
+	 * the clipboard still holds them. The delete waits on the copy, or a failed write would take
+	 * the nodes with it. */
+	async function cutSelection(): Promise<void> {
+		const uids = await copySelection();
+		if (uids.length === 0) return;
+		await history()
+			.transaction('Cut nodes', () => g.removeNodes(uids))
+			.catch((e) => notify().failure('Cut', e));
+		sel.clear(panelId);
 	}
 
 	async function duplicateSelection(): Promise<void> {
@@ -842,13 +861,18 @@
 	}
 
 
+	/** Paste what the platform clipboard holds. The `paste` EVENT is the door that always works —
+	 * `navigator.clipboard.readText` needs a secure context, and goofi is served over plain http on
+	 * a LAN — so a menu item, which has no event to read, asks for it and says so when refused. */
 	async function pasteClipboard(): Promise<void> {
-		let text = '';
 		try {
-			text = await navigator.clipboard.readText();
+			await pasteText(await navigator.clipboard.readText());
 		} catch {
-			return;
+			notify().failure('Paste', 'this browser only pastes with the keyboard here — press Ctrl+V');
 		}
+	}
+
+	async function pasteText(text: string): Promise<void> {
 		const clip = parseClipboard(text);
 		if (!clip) return;
 		// Anchor the paste at the visible viewport centre, in FLOW space. The fragment carries the
@@ -959,6 +983,19 @@
 		sel.selectNodes(panelId, [uid]);
 	}
 
+	/** The platform's own paste, which carries the text with it — so it needs no permission and no
+	 * secure context. Guarded exactly as the key handler is: a paste into a text field is that
+	 * field's, and a paste into a panel that is not active is not this editor's. */
+	function onPaste(e: ClipboardEvent): void {
+		if (!isActive()) return;
+		const t = e.target as HTMLElement | null;
+		if (t?.closest?.('dialog[open]') || isTextEditingTarget(t)) return;
+		const text = e.clipboardData?.getData('text') ?? '';
+		if (!parseClipboard(text)) return; // not ours: leave it for whatever else is listening
+		e.preventDefault();
+		void pasteText(text);
+	}
+
 	onMount(() => {
 		registerEditor(panelId, {
 			openAddMenu: openAddMenuCentered,
@@ -969,11 +1006,13 @@
 			deleteSelection,
 			groupSelection: () => void groupSelection(),
 			copySelection: () => void copySelection(),
+			cutSelection: () => void cutSelection(),
 			pasteClipboard: () => void pasteClipboard(),
 			duplicateSelection: () => void duplicateSelection(),
 			hasSelection
 		});
 		window.addEventListener('keydown', onKeydown);
+		window.addEventListener('paste', onPaste);
 		window.addEventListener('mousemove', trackMouse);
 		rootEl?.addEventListener('click', onCanvasClick, true);
 		rootEl?.addEventListener('pointerdown', onCanvasPointerDown);
@@ -1004,6 +1043,7 @@
 			// Do NOT forget this panel's selection here: unmount also fires on a tab switch, and the
 			// selection must survive switching away and back.
 			window.removeEventListener('keydown', onKeydown);
+			window.removeEventListener('paste', onPaste);
 			window.removeEventListener('mousemove', trackMouse);
 			// A drag in flight must not leave drop outlines lit on the other panels.
 			if (uiStore.nodeDrag !== null) {
