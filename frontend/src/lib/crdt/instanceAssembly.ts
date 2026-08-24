@@ -1,5 +1,4 @@
-/** Render-time `InstanceInfo` records for the sub-patch forest; what the doc does not mirror is
- * reconstructed here to MATCH the backend's `describe_instance`. */
+/** Render-time `InstanceInfo` records for the sub-patch forest, out of the replicated document. */
 import type { InstanceInfo, SubPatchPort } from '$lib/api/control';
 import type { InstanceView, BoundaryView } from './graphDoc';
 import { ROOT_ID } from '$lib/editor/subpatchScene';

@@ -195,6 +195,15 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
     }
 }
 
+/// The node a slot's frames really come from: itself for a leaf, and for a port — which relays
+/// rather than runs — whatever is behind it. `slot` names a facade's port by uid.
+fn behind(g: &Graph, uid: Uid, slot: &str) -> Uid {
+    Uid::from_hex(slot)
+        .and_then(|port| g.stub_stream(port))
+        .or_else(|| g.stub_stream(uid))
+        .map_or(uid, |(u, _)| u)
+}
+
 /// `inspect_node`: what the node is, what its params say, which output slots it has and whether it
 /// is emitting on them. The frames themselves are only on `/data/<node>/<slot>`.
 pub fn node(
@@ -204,24 +213,29 @@ pub fn node(
     want_params: bool,
     want_error: bool,
 ) -> Result<String, String> {
-    let manifest = g.manifest(uid).ok_or_else(|| format!("inspect_node: no node `{}`", uid.to_hex()))?;
-    let tier = match manifest.isolation {
-        goofi_node::Isolation::InProcess => "in-process",
-        goofi_node::Isolation::Subprocess => "subprocess",
+    let type_name = crate::vocab::node_type(g, uid)
+        .ok_or_else(|| format!("inspect_node: no node `{}`", uid.to_hex()))?;
+    // A port and a facade never run, so they wear no tier and reach no stage; everything else a
+    // read says about a node, they answer.
+    let runtime = match g.manifest(uid) {
+        Some(m) => format!(
+            ", {}, stage {}",
+            match m.isolation {
+                goofi_node::Isolation::InProcess => "in-process",
+                goofi_node::Isolation::Subprocess => "subprocess",
+            },
+            g.node_stage(uid),
+        ),
+        None => String::new(),
     };
-    let mut out = format!(
-        "{}: {} (uid {}, {tier}, stage {})\n",
-        g.name(uid).unwrap_or("?"),
-        manifest.type_name,
-        uid.to_hex(),
-        g.node_stage(uid),
-    );
+    let mut out =
+        format!("{}: {type_name} (uid {}{runtime})\n", g.name(uid).unwrap_or("?"), uid.to_hex());
+    let outputs = crate::vocab::output_slots(g, uid);
     if let Some(s) = slot {
-        if !manifest.outputs.iter().any(|o| o.name == s) {
+        if !outputs.iter().any(|(name, _)| name == s) {
             return Err(format!(
-                "inspect_node: `{}` has no output slot `{s}` (it has: {})",
-                manifest.type_name,
-                manifest.outputs.iter().map(|o| o.name).collect::<Vec<_>>().join(", "),
+                "inspect_node: `{type_name}` has no output slot `{s}` (it has: {})",
+                outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
             ));
         }
     }
@@ -237,17 +251,17 @@ pub fn node(
     }
 
     out.push_str("\noutputs:\n");
-    if manifest.outputs.is_empty() {
+    if outputs.is_empty() {
         out.push_str("  (none)\n");
     }
-    // The rate is the NODE's, not the slot's: `ufreq` measures how often the node RUNS, so every
-    // slot line carries the same number.
-    let rate = match g.node_ufreq(uid) {
-        Some(hz) => format!("emitting at {hz:.1} Hz"),
-        None => "nothing emitted yet".to_string(),
-    };
-    for o in manifest.outputs.iter().filter(|o| slot.is_none_or(|s| s == o.name)) {
-        out.push_str(&format!("  {}: {} — {rate}\n", o.name, o.kind.name()));
+    for (name, kind) in outputs.iter().filter(|(n, _)| slot.is_none_or(|s| s == n)) {
+        // `ufreq` measures how often a node RUNS, so it is read off whichever node the frames
+        // really come from — itself for a leaf, the node behind it for a port.
+        let rate = match g.node_ufreq(behind(g, uid, name)) {
+            Some(hz) => format!("emitting at {hz:.1} Hz"),
+            None => "nothing emitted yet".to_string(),
+        };
+        out.push_str(&format!("  {name}: {kind} — {rate}\n"));
     }
 
     if want_error {
@@ -276,12 +290,12 @@ pub fn globals(g: &Graph) -> Value {
     json!({ "globals": entries })
 }
 
-/// `read_node_source`: a node type's text where it has one, and its provenance either way.
+/// `list_nodes {type}`: a node type's text where it has one, and its provenance either way.
 pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
     let native = goofi_node::find(ty);
     let manifest = native
         .or_else(|| g.dyn_type_manifests().into_iter().find(|m| m.type_name == ty))
-        .ok_or_else(|| format!("read_node_source: no node type `{ty}` (see list_nodes)"))?;
+        .ok_or_else(|| format!("list_nodes: no node type `{ty}`"))?;
     let mut info = crate::schemas::node_type_info(
         manifest,
         if g.is_patch_type(ty) { "patch" } else { "builtin" },

@@ -133,7 +133,7 @@ impl SlotReducers {
 
 /// How often the slot's subscribe address is re-derived from the graph: a service name carries the
 /// node's GENERATION, so a restart re-homes the stream to a name this task has never opened.
-const REHOME_INTERVAL: Duration = Duration::from_secs(1);
+pub const REHOME_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One end of a slot's data service: the subscriber, its iceoryx2 node, and the service name it
 /// was opened on.

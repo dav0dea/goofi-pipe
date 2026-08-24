@@ -562,7 +562,7 @@ impl Layout {
     /// ONLY root the TAB goes with it. The last tab never goes.
     fn take(&mut self, root: &str) -> Result<Node, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — move it in the strip with move_panel's `index` alone".into());
+            return Err("a tab is not a subtree — move it in the strip with place_panel's `index` alone".into());
         }
         let Some((tab, at)) = self.path_of(root) else {
             return Err(format!("no such panel `{root}`"));
@@ -967,7 +967,7 @@ impl Layout {
         order_index: usize,
     ) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — move it in the strip with move_panel's `index` alone".into());
+            return Err("a tab is not a subtree — move it in the strip with place_panel's `index` alone".into());
         }
         if self.node(root).is_none() {
             return Err(format!("no such panel `{root}`"));

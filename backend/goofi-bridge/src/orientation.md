@@ -112,7 +112,7 @@ required=True)` — and the engine then refuses the tick rather than calling you
 Edit the file and rescan again: it returns under `changed`, and every live instance of that type
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens. A
 node whose imports are missing registers as unavailable and names the module; a node that raises
-inside `process()` becomes that node's error, not a crash. `read_node_source {type}` gives you a
+inside `process()` becomes that node's error, not a crash. `list_nodes {type}` gives you a
 shipped Python node to copy from (a native Rust type has no source text).
 
 ## The workspace

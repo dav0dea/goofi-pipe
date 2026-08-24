@@ -66,11 +66,11 @@ pub static REGISTRY: &[Op] = &[
          result: "{added: [type], changed: [type], removed: [type]}" },
     Op { name: "add_node", surface: Mcp, writes: true,
          args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid params:json",
-         doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `params` is edit_node's bag, applied at birth.\n\n\
+         doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `params` is edit_node's bag, applied at birth. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
                The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same five ops — but it never runs, so it takes no params and no chosen uid.",
          result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." },
     Op { name: "remove_node", surface: Mcp, writes: true, args: "node:uid!",
-         doc: "Delete a node, a sub-patch boundary port, a sub-patch member, or a whole collapsed sub-patch instance. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
+         doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that existed only to expose a deleted one goes with it. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
          result: "{removed: bool} — false when the uid named nothing" },
     Op { name: "restart_node", surface: Mcp, writes: true, args: "node:uid!",
          doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
@@ -89,7 +89,7 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true} — the options land on the node; inspect_node reports them" },
     Op { name: "edit_node", surface: Mcp, writes: true,
          args: "node:uid! name:string pos:float2 params:json viewers:json",
-         doc: "Edit a node: rename it, move it, set params, set viewers — any of them, in one step and one undo. An omitted field is left alone. A sub-patch boundary port takes a name and a pos; it has no thread to parameterise and no output to view, and its label may collide because it addresses nothing.\n\n\
+         doc: "Edit a node: rename it, move it, set params, set viewers — any of them, in one step and one undo. An omitted field is left alone. A sub-patch boundary port takes every field but `params`, which it has no thread to hold: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
                `params` is `{group: {param: …}}`, the shape add_node takes. A param entry is either a bare value or `{value, expression, mode, triggers}`: `mode` is `constant`/`expression` and defaults to `expression` when an expression is given, so binding one is a single field. An empty expression clears the binding. Only the params named are touched.\n\n\
                `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.\n\n\
                A value is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero. The declared min/max are the editor's range, NOT a clamp.\n\n\
@@ -104,7 +104,7 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "edit_panel", surface: Mcp, writes: true,
          args: "panel:uid! name:string type:panel_type state:json fractions:float[]",
          doc: "Edit ONE entry's fields — a tab, a split or a panel, whichever the id names. Any mix of them is one call and one undo, and an omitted field is left alone.\n\n\
-               `name` relabels a TAB. Its id and every panel on it stand; the strip index is where it sits, which move_panel owns.\n\n\
+               `name` relabels a TAB. Its id and every panel on it stand; the strip index is where it sits, which place_panel owns.\n\n\
                `type` and `state` are a PANEL's. State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. `type` is one of: {panel_types}. A viewer panel's `state.kind` is one of: {viewer_kinds}; a STRING or TABLE slot ignores it and uses its own.\n\n\
                `fractions` sets the shares of ALL of a SPLIT's children at once, in child order — what a resize drag commits. Renormalized to fill the slot.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
@@ -125,10 +125,10 @@ pub static REGISTRY: &[Op] = &[
          doc: "Run several write ops in order as ONE undo step. `ops` is a list of `{op, payload}`. A refused step takes back the ones that already landed, so the call either happens whole or not at all. A step must be an undoable write: undo, redo, compound itself and the ops that replace the patch are refused.",
          result: "{results} — each step's own reply, in order" },
     Op { name: "group_nodes", surface: Mcp, writes: true, args: "members:uid[]! pos:float2",
-         doc: "Collapse nodes into a new sub-patch, returning its instance uid.",
+         doc: "Collapse nodes into a new sub-patch, returning its instance uid. `members` must share one scope, and one of them may itself be a sub-patch. Every wire that ends up CROSSING the new boundary mints a port to carry it, so nothing is disconnected and nothing stops running; a wire buried in a nested member mints a port there too, so it can reach the new boundary.",
          result: "{inst_id: uid}" },
     Op { name: "expand_instance", surface: Mcp, writes: true, args: "inst_id:uid!",
-         doc: "Dissolve a sub-patch, returning its members to the parent scope.",
+         doc: "Dissolve a sub-patch, returning its members to the parent scope. Its ports go with it and every wire they carried stands, because a port keeps its wire against the node behind it. A port of an ENCLOSING sub-patch that exposed one of these follows down onto what it exposed.",
          result: "{ok: true}" },
     Op { name: "serialize", surface: ControlOnly, writes: false, args: "",
          doc: "The patch manifest as YAML — a debug read, not a save path.",
@@ -159,8 +159,8 @@ pub static REGISTRY: &[Op] = &[
          doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output. The FRAMES are not here and cannot be: subscribe to `/data/<node>/<slot>` to see a node's data, exactly as a viewer does.",
          result: "{text: string}" },
     Op { name: "get_state", surface: Internal, writes: false, args: "",
-         doc: "The replicated control-plane projection — nodes, links, instances, globals, arrangement — as plain JSON. What every client mirrors, read without the sync protocol that carries it.",
-         result: "{nodes, links, instances, globals, arrangement} — each an object keyed by id." },
+         doc: "The replicated control-plane projection — nodes, links, globals, arrangement — as plain JSON. What every client mirrors, read without the sync protocol that carries it. ONE `nodes` map carries leaves, sub-patch facades and boundary ports alike, each naming its scope, and a port's inner wire is in `links` like any other cable.",
+         result: "{nodes, links, globals, arrangement} — nodes and globals keyed by id, links a list." },
     Op { name: "get_patch", surface: Mcp, writes: false, args: "",
          doc: "The open patch itself: where it lives, where its workspace is, whether it differs from disk, and every standing error with how long it has stood. One read for `is my patch healthy, and have I saved it`.",
          result: "{save_path: string | null, workspace: string, dirty: bool, errors: [{node, path, error, standing}]}" },

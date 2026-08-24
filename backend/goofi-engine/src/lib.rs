@@ -1494,8 +1494,8 @@ impl Graph {
         Ok(())
     }
 
-    /// Remove a member of a sub-patch, then drop any stub of the enclosing scope that referenced
-    /// it — so a dangling port is never left for a save to resurrect.
+    /// Remove a member of a sub-patch, then UNWIRE any port of that scope which exposed it. The
+    /// port stays, in the state `add_stub` mints — a leaf whose upstream is deleted stays too.
     pub fn remove_member(&mut self, member: Uid) -> Result<(), String> {
         let scope = self
             .scope_of(member)
@@ -1517,7 +1517,7 @@ impl Graph {
             })
             .unwrap_or_default();
         for id in exposing {
-            self.remove_stub(scope, id);
+            self.set_stub_inner(scope, id, None)?;
         }
         Ok(())
     }
@@ -1552,37 +1552,27 @@ impl Graph {
         Ok(id)
     }
 
-    /// The ports ABOVE `(scope, port)` that expose it, innermost-first. Read through `inner`, so it
-    /// answers the same before and after the port itself is gone.
-    pub fn stubs_exposing(&self, scope: Uid, port: Uid) -> Vec<(Uid, Uid, subpatch::Stub)> {
-        let mut out = Vec::new();
-        let (mut scope, mut slot) = (scope, port.to_hex());
-        while let Some(parent) = self.scope_of(scope) {
-            let found = self.scopes.get(&parent).and_then(|ps| {
-                ps.stubs
-                    .iter()
-                    .find(|(_, st)| st.inner.as_ref().is_some_and(|(u, s)| *u == scope && *s == slot))
-                    .map(|(id, st)| (*id, st.clone()))
-            });
-            let Some((id, st)) = found else { break };
-            out.push((parent, id, st));
-            (scope, slot) = (parent, id.to_hex());
-        }
-        out
+    /// The port of the ENCLOSING scope that exposes `(scope, port)`, if one does. Read through
+    /// `inner`, so it answers the same before and after the port itself is gone.
+    pub fn port_above(&self, scope: Uid, port: Uid) -> Option<(Uid, Uid)> {
+        let parent = self.scope_of(scope)?;
+        let slot = port.to_hex();
+        self.scopes.get(&parent).and_then(|ps| {
+            ps.stubs
+                .iter()
+                .find(|(_, st)| st.inner.as_ref().is_some_and(|(u, s)| *u == scope && *s == slot))
+                .map(|(id, _)| (parent, *id))
+        })
     }
 
     /// Take a boundary port off a scope, answering the port it removed. Every `nd()` naming it goes
-    /// unresolvable here rather than at the next edit that happens to touch it, and the ports above
-    /// it follow it out: one whose inner names a slot nothing has resolves to nothing AND still
-    /// reads as wired, so it can be neither used nor re-wired.
+    /// unresolvable here rather than at the next edit that happens to touch it, and the port above
+    /// it — which named this one — goes UNWIRED, into the state `add_stub` mints.
     pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<subpatch::Stub> {
         let st = self.scopes.get_mut(&scope)?.stubs.shift_remove(&port)?;
         self.rebind_naming(&st.name);
-        for (psc, id, dead) in self.stubs_exposing(scope, port) {
-            if let Some(s) = self.scopes.get_mut(&psc) {
-                s.stubs.shift_remove(&id);
-            }
-            self.rebind_naming(&dead.name);
+        if let Some((psc, id)) = self.port_above(scope, port) {
+            let _ = self.set_stub_inner(psc, id, None);
         }
         Some(st)
     }

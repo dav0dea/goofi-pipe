@@ -177,7 +177,24 @@ fn removing_a_grouped_member_leaves_no_dangling_entry() {
     g.call("remove_node", j!({ "node": hex(osc) }));
     assert_eq!(g.members(&inst), vec![hex(buf)], "osc dropped from the scope's members too");
     assert!(!g.nodes().contains(&hex(osc)), "and out of the graph");
-    assert_eq!(g.instances(), vec![inst], "the instance survives its other member");
+    assert_eq!(g.instances(), vec![inst.clone()], "the instance survives its other member");
+
+    // A port exposing the LAST member outlives it, unwired — a leaf whose upstream is deleted
+    // stays too, and a port gets no different treatment.
+    let bnd = boundary(&g, &inst, "out");
+    wire(&g, &bnd, "out", &hex(buf), "out");
+    assert_eq!(g.inner(&bnd), Some((hex(buf), "out".into())), "wired to the member");
+
+    g.call("remove_node", j!({ "node": hex(buf) }));
+    assert!(g.ports(&inst).contains(&bnd), "the port stayed: {:?}", g.ports(&inst));
+    assert_eq!(g.inner(&bnd), None, "…and went unwired, not away");
+    assert_eq!(g.members(&inst), vec![bnd.clone()], "the port is all the scope still holds");
+
+    // Standing means usable: a fresh member takes the port that is already there.
+    let member = g.call("add_node", j!({ "type": "Oscillator", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().expect("a uid").to_string();
+    wire(&g, &bnd, "out", &member, "out");
+    assert_eq!(g.inner(&bnd), Some((member, "out".into())), "the standing port re-wired");
 }
 
 #[test]
@@ -260,16 +277,25 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     assert_eq!(g.inner(&ob), Some((inner.clone(), ib.clone())),
                "wired to the nested scope's facade at its own port, not dropped");
 
-    // Removing the nested port takes the outer one with it. A port whose inner names a slot that no
-    // longer exists resolves to nothing AND still reads as wired, so it can be neither used nor
-    // re-wired — the same prune a removed MEMBER already gets from the scope that exposed it.
+    // Removing the nested port UNWIRES the outer one and leaves it standing — the state a fresh
+    // port is minted in, which is where a leaf lands when the node feeding it is deleted.
     g.call("remove_node", j!({ "node": ib }));
-    assert!(g.ports(&outer).is_empty(), "the outer port followed the one it exposed: {:?}", g.ports(&outer));
+    assert!(g.ports(&outer).contains(&ob), "the outer port stayed: {:?}", g.ports(&outer));
+    assert_eq!(g.inner(&ob), None, "…and went unwired rather than naming a slot nothing has");
     let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
     assert!(links.iter().all(|l| l["node_in"] != ob && l["node_out"] != ob),
-            "and its inner wire went with it, rather than naming a slot nothing has: {links:?}");
+            "so no cable is drawn at it: {links:?}");
 
-    // …and one undo puts the pair back, innermost first, so the chain is whole again.
+    // An unwired port is re-wirable, exactly as a leaf whose upstream went away is.
+    let again = boundary(&g, &inner, "out");
+    wire(&g, &again, "out", &hex(buf), "out");
+    wire(&g, &ob, "out", &inner, &again);
+    assert_eq!(g.inner(&ob), Some((inner.clone(), again)), "the standing port took a new target");
+
+    // …and undo walks all of it back, ending with the outer port naming the port it first exposed.
+    for _ in 0..3 {
+        g.call("undo", j!({}));
+    }
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(g.inner(&ob), Some((inner, ib)), "the outer port names the inner one again");
 }

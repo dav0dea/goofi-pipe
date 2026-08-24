@@ -93,14 +93,14 @@ export interface SubPatchPort {
 	inner_node: string | null;
 	inner_slot: string | null;
 	pos: [number, number];
-	/** The portal's renameable display label, decoupled from the stable routing key. */
+	/** The port's display label, decoupled from the stable routing key. */
 	name?: string;
 }
 
 
 
-/** A sub-patch instance the editor renders as a group node — mirrored from the bridge's
- * `describe_instance`, never re-derived here. */
+/** A sub-patch instance the editor renders as a group node — assembled from the replicated
+ * document by `instanceAssembly`, never fetched. */
 export interface InstanceInfo {
 	/** The scope's stable uid — also its facade node's uid. */
 	uid: string;

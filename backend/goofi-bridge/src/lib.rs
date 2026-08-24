@@ -1712,7 +1712,7 @@ impl AppState {
             // These need the re-mirror but are not EDITS, so they must not raise the unsaved dot:
             // a load clears the flag in its own arm, and the other three are recovery or runtime.
             match op.as_str() {
-                "load" | "new" => events.extend(state.set_dirty(false)),
+                "load" => events.extend(state.set_dirty(false)),
                 "set_viewpoint" => {}
                 "restart_node" | "refresh_param" | "rescan_nodes" => {}
                 _ => events.extend(state.set_dirty(true)),
@@ -1970,28 +1970,27 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             return;
         }
     };
-    // Exactly one physical leaf slot is streamed, so a viewer on a facade port, one on the port
-    // INSIDE the sub-patch, and one on the leaf itself all coalesce onto the same reducer.
-    let target = {
+    // The address must NAME an output slot — of a leaf, a port or a facade alike. What is behind it
+    // is a separate question, asked again below, because a port with nothing wired yet is a real
+    // node with no data, exactly as a leaf nobody has connected is.
+    let named = {
         let g = state.graph.lock().unwrap();
-        if g.manifest(uid).map(|m| m.outputs.iter().any(|o| o.name == slot)).unwrap_or(false) {
-            Some((uid, slot.clone()))
-        } else if g.stub(uid).is_some() {
-            g.stub_stream(uid).map(|(u, s)| (u, s.to_string()))
-        } else {
-            g.resolve_stub(uid, &slot)
-        }
+        vocab::output_slots(&g, uid).into_iter().any(|(name, _)| name == slot)
     };
-    let Some((stream_uid, stream_slot)) = target else {
+    if !named {
         let _ = tx.send(close(4004, "unknown node/slot")).await;
         return;
-    };
+    }
 
-    // The SHARED per-slot reducer: this connection forwards its frames and pushes its own
-    // ViewSpecs into the union.
-    let key: reducer::SlotKey = (stream_uid, stream_slot);
+    // The SHARED per-slot reducer, keyed on the PHYSICAL slot: a viewer on a facade port, one on the
+    // port inside the sub-patch and one on the leaf itself all coalesce onto the same one. Which
+    // physical slot a port stands in front of is graph state, so the socket re-asks rather than
+    // freezing the answer at open — a port wired later starts drawing, and a re-wire is followed.
     let conn = state.reducers.new_conn();
-    let mut frames = state.reducers.subscribe(key.clone(), conn);
+    let mut key = stream_behind(&state.graph.lock().unwrap(), uid, &slot);
+    let mut frames = key.clone().map(|k| state.reducers.subscribe(k, conn));
+    let mut specs: Vec<goofi_view::ViewSpec> = Vec::new();
+    let mut rehome = tokio::time::interval(reducer::REHOME_INTERVAL);
 
     // A dead-but-not-closed peer produces NO socket error, so without an active probe this
     // connection would live forever.
@@ -2000,8 +1999,9 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     let mut keepalive = tokio::time::interval(cfg.ping_interval);
 
     loop {
+        let mut recheck = false;
         tokio::select! {
-            frame = frames.recv() => match frame {
+            frame = next_frame(&mut frames) => match frame {
                 Ok(bytes) => {
                     // Giving up on a frame is NOT a liveness signal in either direction: only the
                     // pong decides.
@@ -2009,13 +2009,13 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                         SendOutcome::Sent => {}
                         // The sweep will not resend an unchanged frame, so a dropped one must be
                         // asked for again.
-                        SendOutcome::Dropped => state.reducers.reoffer(&key),
+                        SendOutcome::Dropped => reoffer(&state, &key),
                         SendOutcome::Gone => break, // the socket really is gone
                     }
                 }
                 // A lagged viewer drops frames rather than stalling the shared reducer, and
                 // re-offers because the missed frame may have been the last.
-                Err(broadcast::error::RecvError::Lagged(_)) => state.reducers.reoffer(&key),
+                Err(broadcast::error::RecvError::Lagged(_)) => reoffer(&state, &key),
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             incoming = rx.next() => match incoming {
@@ -2024,13 +2024,19 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(m) = serde_json::from_str::<ViewMsg>(t.as_str()) {
                         if m.op == "view" {
-                            state.reducers.set_specs(&key, conn, m.specs);
+                            // Held, because a re-subscribe onto another physical slot has to carry
+                            // this viewer's constraints with it or it asks for full resolution.
+                            specs = m.specs;
+                            if let Some(k) = &key {
+                                state.reducers.set_specs(k, conn, specs.clone());
+                            }
                         }
                     }
                 }
                 Some(Ok(Message::Pong(_))) => live.pong(),
                 _ => {}
             },
+            _ = rehome.tick() => recheck = true,
             // The bounded send above stops the loop parking on a BACKED-UP peer; this catches an
             // IDLE dead one, where no frames means no send and a write timeout never fires.
             _ = keepalive.tick() => match live.beat(std::time::Instant::now()) {
@@ -2045,8 +2051,52 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 Beat::Dead => break,
             },
         }
+        if recheck {
+            let want = stream_behind(&state.graph.lock().unwrap(), uid, &slot);
+            if want != key {
+                if let Some(old) = &key {
+                    state.reducers.unsubscribe(old, conn);
+                }
+                frames = want.clone().map(|k| {
+                    let rx = state.reducers.subscribe(k.clone(), conn);
+                    state.reducers.set_specs(&k, conn, specs.clone());
+                    rx
+                });
+                key = want;
+            }
+        }
     }
-    state.reducers.unsubscribe(&key, conn);
+    if let Some(k) = &key {
+        state.reducers.unsubscribe(k, conn);
+    }
+}
+
+/// The physical `(node, slot)` a `/data` address stands for: a leaf is its own, and a port relays,
+/// so it is whatever is behind it. `None` while nothing is — a wait, never an error.
+fn stream_behind(g: &Graph, uid: Uid, slot: &str) -> Option<reducer::SlotKey> {
+    if g.manifest(uid).is_some() {
+        return Some((uid, slot.to_string()));
+    }
+    // A facade names one of its ports as the slot, which is this same question one level out.
+    let port = if g.stub(uid).is_some() { Some(uid) } else { Uid::from_hex(slot) };
+    port.and_then(|p| g.stub_stream(p)).map(|(leaf, s)| (leaf, s.to_string()))
+}
+
+/// The next frame, or a future that never finishes while nothing is behind the address yet — which
+/// is what keeps an unwired port's socket open and silent instead of closed.
+async fn next_frame(
+    frames: &mut Option<broadcast::Receiver<axum::body::Bytes>>,
+) -> Result<axum::body::Bytes, broadcast::error::RecvError> {
+    match frames {
+        Some(f) => f.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn reoffer(state: &AppState, key: &Option<reducer::SlotKey>) {
+    if let Some(k) = key {
+        state.reducers.reoffer(k);
+    }
 }
 
 // The two blocks below are the deliberate exception to "the suite lives in goofi-tests": each

@@ -245,6 +245,18 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
         .collect()
 }
 
+/// The type name of anything a uid can name: a leaf's manifest type, a sub-patch facade's, or a
+/// boundary port's. Uniform, so a read answers about all three through one seam.
+pub fn node_type(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Option<&'static str> {
+    if g.scope(uid).is_some() {
+        return Some(SCOPE_TYPE);
+    }
+    if let Some((_, st)) = g.stub(uid) {
+        return Some(goofi_engine::subpatch::boundary_type_name(st.dir, st.dtype));
+    }
+    g.manifest(uid).map(|m| m.type_name)
+}
+
 /// A node's OUTPUT slots — a leaf's declared outputs, a collapsed sub-patch's outward boundary
 /// ports, or the single slot an IN port wears (an OUT port drains, so it has none).
 pub fn output_slots(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Vec<(String, &'static str)> {

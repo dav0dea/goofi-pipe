@@ -230,6 +230,34 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
             "the port draws the stream behind it");
     assert_eq!(g.state.reducers.active_slots(), 1, "…on the reducer that was already open");
     assert_eq!(g.state.reducers.subscribers(&key), 7);
+
+    // An UNWIRED port is a node with no data, never a node that is absent: its socket opens and
+    // idles, exactly as one on a leaf nobody has connected does. Nothing is behind it, so it joins
+    // no reducer and opens none.
+    let mid = g.call("add_node", j!({ "type": "Buffer", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    let bare = g.call("add_node", j!({ "type": "InArray", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    let mut pending = Viewer::open(&base, &bare, "value").await;
+    pending.view(spec(32)).await;
+    assert_eq!(g.state.reducers.active_slots(), 1, "nothing is behind it yet, so no second reducer");
+    assert_eq!(g.state.reducers.subscribers(&key), 7, "and it joined nothing");
+
+    // Wiring BOTH sides is what puts a stream behind it, and neither half alone does — so the
+    // socket has to still be there for the second one. It then joins the reducer already serving
+    // that stream, rather than staying frozen on the answer it got when it opened.
+    g.call("add_link", j!({ "node_out": bare, "slot_out": "value",
+                            "node_in": mid, "slot_in": "data" }));
+    assert_eq!(g.state.reducers.subscribers(&key), 7, "the inside alone feeds it nothing");
+    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+                            "node_in": inst, "slot_in": bare }));
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 8).await,
+            "the open socket joined the stream its port now stands in front of");
+    assert_eq!(g.state.reducers.active_slots(), 1, "still one reducer for the one physical slot");
+    assert!(!f32s(&pending.until(|d| !f32s(d).is_empty()).await).is_empty(),
+            "and it draws, on a socket that never closed");
+    drop(pending);
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 7).await);
     drop(through);
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 6).await);
     g.call("remove_node", j!({ "node": inst }));
