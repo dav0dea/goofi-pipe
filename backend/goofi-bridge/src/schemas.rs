@@ -125,7 +125,7 @@ pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
 fn slot_map<'a>(slots: impl Iterator<Item = (&'a str, &'a str)>) -> Value {
     Value::Object(slots.map(|(name, dtype)| (name.to_string(), json!(dtype))).collect())
 }
-pub fn input_slots(m: &NodeManifest) -> Value {
+fn input_slots(m: &NodeManifest) -> Value {
     slot_map(m.inputs.iter().map(|s| (s.name, s.kind.name())))
 }
 
@@ -133,7 +133,7 @@ pub fn input_slots(m: &NodeManifest) -> Value {
 fn input_multi(m: &NodeManifest) -> Value {
     Value::Array(m.inputs.iter().filter(|s| s.multi).map(|s| json!(s.name)).collect())
 }
-pub fn output_slots(m: &NodeManifest) -> Value {
+fn output_slots(m: &NodeManifest) -> Value {
     slot_map(m.outputs.iter().map(|s| (s.name, s.kind.name())))
 }
 

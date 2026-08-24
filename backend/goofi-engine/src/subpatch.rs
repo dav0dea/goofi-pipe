@@ -68,13 +68,3 @@ pub struct Port {
     pub dtype: SlotType,
 }
 
-/// A captured port — what it IS, plus what it wears as the node it is. Enough to put one back
-/// exactly, which is what every boundary inverse restores.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PortRecord {
-    pub id: Uid,
-    pub port: Port,
-    pub name: String,
-    pub pos: [f64; 2],
-    pub viewers: serde_json::Value,
-}

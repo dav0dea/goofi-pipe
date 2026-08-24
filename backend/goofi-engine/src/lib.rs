@@ -756,6 +756,11 @@ impl Graph {
         self.leaves().map(|(u, _)| u).collect()
     }
 
+    /// Is there a node of ANY kind at `uid`?
+    pub fn exists(&self, uid: Uid) -> bool {
+        self.nodes.contains_key(&uid)
+    }
+
     /// Every uid in the patch — leaves, facades and ports alike.
     pub fn all_uids(&self) -> Vec<Uid> {
         self.nodes.keys().copied().collect()
@@ -839,55 +844,84 @@ impl Graph {
         }
     }
 
-    /// Instantiate a node by type name (compile-time catalog or a
-    /// runtime-registered type). `params` defaults to the type's defaults.
-    pub fn add_node(
-        &mut self,
-        type_name: &str,
-        params: Option<ParamGroups>,
-    ) -> Result<Uid, String> {
-        // A fresh mint plus an empty name is what `add_node_at` treats as "pick them for me", so
-        // the two paths share one body.
-        let uid = self.mint();
-        self.add_node_at(type_name, params, uid, "")
+    /// Instantiate a node by type name (compile-time catalog or a runtime-registered type).
+    /// `params` defaults to the type's defaults.
+    pub fn add_node(&mut self, type_name: &str, params: Option<ParamGroups>) -> Result<Uid, String> {
+        self.create_node(type_name, None, "", params, None)
     }
 
-    /// Instantiate a node at a SPECIFIC uid + display name — the undo/redo restoration path. The
-    /// uid must be free; a requested name already in use falls back to a fresh unique one.
-    pub fn add_node_at(
+    /// Create the node `type_name` names — a leaf, a sub-patch facade or a boundary port — at
+    /// `uid` when one is given and a fresh mint otherwise. The last two run nothing, so they carry
+    /// no manifest, no thread and no params; what a port carries instead is the `scope` it is a
+    /// port OF, which is what makes it one. An empty or taken `name` is minted fresh.
+    pub fn create_node(
         &mut self,
         type_name: &str,
-        params: Option<ParamGroups>,
-        uid: Uid,
+        uid: Option<Uid>,
         name: &str,
+        params: Option<ParamGroups>,
+        scope: Option<Uid>,
     ) -> Result<Uid, String> {
-        if self.contains(uid) {
-            return Err(format!("add_node_at: uid {} already in use", uid.to_hex()));
+        if let Some(u) = uid.filter(|u| self.nodes.contains_key(u)) {
+            return Err(format!("add_node: uid {} already in use", u.to_hex()));
         }
-        let params_arg_was_none = params.is_none();
-        let (manifest, params, build) = self.build_node(type_name, params)?;
-        let name = if name.is_empty() || self.name_in_use(name) {
-            self.fresh_name(&manifest.type_name.to_lowercase())
-        } else {
-            name.to_string()
+        if let Some(s) = scope.filter(|s| !self.is_facade(*s)) {
+            return Err(format!("add_node: no such scope {s}"));
+        }
+        let (kind, base) = match subpatch::boundary_type(type_name) {
+            Some((dir, dtype)) => {
+                if scope.is_none() {
+                    return Err("add_node: a boundary port needs a scope — it is a port OF a sub-patch".into());
+                }
+                (Kind::Port(subpatch::Port { dir, dtype }), dir.name().to_string())
+            }
+            None if type_name == subpatch::SCOPE_TYPE => (Kind::Facade, "subpatch".to_string()),
+            None => {
+                // A leaf is the only kind with a manifest, so it is the only one that can seed the
+                // default expressions its type declares.
+                let seed = params.is_none();
+                let (manifest, params, build) = self.build_node(type_name, params)?;
+                let uid = self.claim(uid);
+                let born = self.pick_name(name, &manifest.type_name.to_lowercase());
+                self.insert_node_at(uid, born.clone(), manifest, build, params);
+                if seed {
+                    self.seed_default_expressions(uid, manifest);
+                }
+                self.set_member_scope(uid, scope);
+                // A name that meant nothing a moment ago now names a producer (§5.3). This also
+                // covers undo-of-delete, which is how a binding survives a delete and a restore.
+                self.rebind_naming(&born);
+                return Ok(uid);
+            }
         };
-        let seed = params_arg_was_none;
-        let born = name.clone();
-        self.insert_node_at(uid, name, manifest, build, params);
-        if uid.0 >= self.next_uid {
-            self.next_uid = uid.0 + 1;
-        }
-        if seed {
-            self.seed_default_expressions(uid, manifest);
-        }
-        // A name that meant nothing a moment ago now names a producer (§5.3). This also covers
-        // undo-of-delete, which is how a binding survives its reference being deleted and restored.
+        let uid = self.claim(uid);
+        let born = self.pick_name(name, &base);
+        self.nodes.insert(
+            uid,
+            NodeEntry { kind, name: born.clone(), pos: [0.0, 0.0], viewers: serde_json::json!({}) },
+        );
+        self.set_member_scope(uid, scope);
         self.rebind_naming(&born);
         Ok(uid)
     }
 
-    /// The fresh-add analogue of a literal default. An `ExprMode::Off` declaration is CARRIED, so
-    /// the fx toggle has a source to turn on. Skipped without an evaluator.
+    /// The uid a create will use, with the mint counter kept past it so a restored uid is never
+    /// handed out a second time.
+    fn claim(&mut self, uid: Option<Uid>) -> Uid {
+        let uid = uid.unwrap_or_else(|| self.mint());
+        self.next_uid = self.next_uid.max(uid.0 + 1);
+        uid
+    }
+
+    /// The display name a create lands on: the one asked for, or a fresh `base<N>` when it is
+    /// empty or already worn.
+    fn pick_name(&self, want: &str, base: &str) -> String {
+        match want.is_empty() || self.name_in_use(want) {
+            true => self.fresh_name(base),
+            false => want.to_string(),
+        }
+    }
+
     fn seed_default_expressions(&mut self, uid: Uid, manifest: &'static NodeManifest) {
         if self.evaluator.is_none() {
             return;
@@ -1209,6 +1243,30 @@ impl Graph {
             .and_then(|e| e.leaf())
             .map(|e| {
                 e.manifest.outputs.iter().map(|o| (o.name.to_string(), o.name.to_string(), o.kind)).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The input slots of anything a uid names, as [`Graph::output_slots`] gives the output ones:
+    /// a leaf's declarations, a facade's IN ports, and a port's single `value` — which it wears on
+    /// both sides, because it relays and so consumes and produces the one wire.
+    pub fn input_slots(&self, uid: Uid) -> Vec<(String, String, goofi_core::SlotType)> {
+        if self.is_facade(uid) {
+            return self
+                .ports_of(uid)
+                .into_iter()
+                .filter_map(|id| self.stub(id).map(|(_, p)| (id, p)))
+                .filter(|(_, p)| p.dir == subpatch::Dir::In)
+                .map(|(id, p)| (id.to_hex(), self.name(id).unwrap_or("").to_string(), p.dtype))
+                .collect();
+        }
+        if let Some((_, st)) = self.stub(uid) {
+            let slot = subpatch::BOUNDARY_SLOT.to_string();
+            return vec![(slot.clone(), slot, st.dtype)];
+        }
+        self.leaf(uid)
+            .map(|e| {
+                e.manifest.inputs.iter().map(|s| (s.name.to_string(), s.name.to_string(), s.kind)).collect()
             })
             .unwrap_or_default()
     }
@@ -1570,7 +1628,9 @@ impl Graph {
                         ),
                     };
                     let inner_slot = self.expose_in_nested_member(member, end, at_slot, dir, minted);
-                    let id = self.add_stub(scope_uid, dir, dtype, at, None)?;
+                    let ty = subpatch::boundary_type_name(dir, dtype);
+                    let id = self.create_node(ty, None, "", None, Some(scope_uid))?;
+                    let _ = self.set_node_pos(id, at);
                     match outward {
                         true => {
                             wires.push((member, inner_slot, id, subpatch::BOUNDARY_SLOT.to_string()));
@@ -1626,7 +1686,6 @@ impl Graph {
         name: String,
         pos: [f64; 2],
         members: &[Uid],
-        stubs: Vec<subpatch::PortRecord>,
         parent: Option<Uid>,
     ) -> Result<Uid, String> {
         if self.is_facade(scope_id) {
@@ -1634,28 +1693,17 @@ impl Graph {
         }
         // The parent is captured explicitly rather than derived from members, so an EMPTY scope
         // restores fine. Re-tag only members that actually exist.
-        // An empty name means MINT one, for the scope and for every port it carries — the rule
-        // `add_node_at` has always used, which is what lets a COPY land beside its original.
-        let name = match name.is_empty() {
-            true => self.fresh_name("subpatch"),
-            false => name,
-        };
+        // An empty name means MINT one, the rule every create uses — which is what lets a COPY
+        // land beside its original.
         self.nodes.insert(
             scope_id,
-            NodeEntry { kind: Kind::Facade, name, pos, viewers: serde_json::json!({}) },
+            NodeEntry {
+                kind: Kind::Facade,
+                name: self.pick_name(&name, "subpatch"),
+                pos,
+                viewers: serde_json::json!({}),
+            },
         );
-        for r in stubs {
-            let label = match r.name.is_empty() {
-                true => self.fresh_name(r.port.dir.name()),
-                false => r.name,
-            };
-            self.nodes.insert(
-                r.id,
-                NodeEntry { kind: Kind::Port(r.port), name: label.clone(), pos: r.pos, viewers: r.viewers },
-            );
-            self.scope_of.insert(r.id, Some(scope_id));
-            self.rebind_naming(&label);
-        }
         for &m in members {
             if self.nodes.contains_key(&m) {
                 self.set_member_scope(m, Some(scope_id));
@@ -1681,22 +1729,6 @@ impl Graph {
     }
 
 
-    /// Put a captured port back exactly as it was — the inverse of [`Self::remove_stub`].
-    pub fn restore_stub(&mut self, scope: Uid, port: Uid, p: subpatch::Port, name: String, pos: [f64; 2]) {
-        // An empty name means MINT one, as it does for a node — which is what makes a copied port
-        // land beside the original rather than colliding with it.
-        let name = match name.is_empty() {
-            true => self.fresh_name(p.dir.name()),
-            false => name,
-        };
-        self.nodes.insert(
-            port,
-            NodeEntry { kind: Kind::Port(p), name: name.clone(), pos, viewers: serde_json::json!({}) },
-        );
-        self.scope_of.insert(port, Some(scope));
-        self.rebind_naming(&name);
-    }
-
     /// The display names of a scope's ports, captured before a removal that drops them — a `nd()`
     /// binding on a name nothing wears can never be re-resolved by a later edit, so the invalidation
     /// has to happen at the removal.
@@ -1709,7 +1741,12 @@ impl Graph {
 
     /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
     /// The crossing flat links already point leaf→leaf, so they survive verbatim. Uid-stable.
-    pub fn expand_instance(&mut self, scope: Uid) -> Result<Vec<Uid>, String> {
+    /// Dissolve a scope, answering the cables its removal JOINED — each pair of halves that met at
+    /// a port, now one link. Putting the wall back means taking those joins out again.
+    pub fn expand_instance(
+        &mut self,
+        scope: Uid,
+    ) -> Result<Vec<(Uid, &'static str, Uid, &'static str)>, String> {
         if !self.is_facade(scope) {
             return Err(format!("expand_instance: no such scope {scope}"));
         }
@@ -1743,13 +1780,16 @@ impl Graph {
         self.scope_of.remove(&scope);
         // …and only now, with the members up one level and the wall gone, do the two halves of each
         // cable become one link that both ends can face.
+        let mut joined = Vec::new();
         for (a, so, b, si) in splices {
-            let _ = self.add_link(a, so, b, si);
+            if self.add_link(a, so, b, si).is_ok() {
+                joined.push((a, so, b, si));
+            }
         }
         for name in dropped {
             self.rebind_naming(&name);
         }
-        Ok(restored)
+        Ok(joined)
     }
 
     /// Delete a whole sub-patch scope: tear down every member, recursing into nested scopes, then
@@ -1798,36 +1838,6 @@ impl Graph {
             self.set_stub_inner(scope, id, None)?;
         }
         Ok(())
-    }
-
-    /// Add an UNWIRED stub to a scope; returns its uid. `dtype` is the caller's provisional type
-    /// until the port is wired, and an unnamed port takes the next free `in{n}`/`out{n}` label.
-    pub fn add_stub(
-        &mut self,
-        scope: Uid,
-        dir: subpatch::Dir,
-        dtype: goofi_core::SlotType,
-        pos: [f64; 2],
-        name: Option<String>,
-    ) -> Result<Uid, String> {
-        if !self.is_facade(scope) {
-            return Err(format!("add_stub: no such scope {scope}"));
-        }
-        let name = name.unwrap_or_else(|| self.fresh_name(dir.name()));
-        let id = self.mint();
-        self.nodes.insert(
-            id,
-            NodeEntry {
-                kind: Kind::Port(subpatch::Port { dir, dtype }),
-                name: name.clone(),
-                pos,
-                viewers: serde_json::json!({}),
-            },
-        );
-        self.scope_of.insert(id, Some(scope));
-        // A binding already written against this name becomes resolvable the moment the port exists.
-        self.rebind_naming(&name);
-        Ok(id)
     }
 
     /// The port of the ENCLOSING scope that exposes `(scope, port)`, if one does. Read through

@@ -113,6 +113,23 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     assert!(whole(&hex(osc), &hex(buf)) && whole(&hex(buf), &hex(sink)),
             "and each names the leaves it always ran between: {after:?}");
 
+    // …and UNDOING that expand puts the wall back whole: the ports return as the nodes they are,
+    // each cable is two halves again, and the join the wall's removal made is gone. A join left
+    // behind is a cable running straight through a restored boundary that both ends face across.
+    g.call("undo", j!({}));
+    let regrouped = g.doc()["links"].as_array().cloned().unwrap_or_default();
+    let back = |a: &str, b: &str| regrouped.iter().any(|l| l["node_out"] == a && l["node_in"] == b);
+    assert_eq!(g.ports(&inst).len(), 2, "both ports came back: {:?}", g.ports(&inst));
+    assert!(back(&hex(osc), &inp) && back(&inp, &hex(buf)), "the cable in is two halves again: {regrouped:?}");
+    assert!(back(&hex(buf), &outp) && back(&outp, &hex(sink)), "…and so is the cable out: {regrouped:?}");
+    assert!(!back(&hex(osc), &hex(buf)), "and the join across the wall is gone: {regrouped:?}");
+    assert_eq!(regrouped.len(), 4, "four halves and nothing else: {regrouped:?}");
+    // …and REDO is that same list read backwards, so the two orders have to both be legal: the
+    // joins may only go back once the wall is down again, which is what refuses if they are not.
+    g.call("redo", j!({}));
+    assert!(g.instances().is_empty(), "redo expands it again");
+    assert_eq!(g.doc()["links"].as_array().map(|l| l.len()), Some(2), "each cable whole once more");
+
     // Widen the selection and the cable between the two stops crossing, so nothing is minted for it.
     let both = group(&g, &[hex(osc), hex(buf)]);
     let (drain, _) = port_of(&g, &both, "OutArray");

@@ -1040,44 +1040,6 @@ impl AppState {
                         }
                         None => None,
                     };
-                    // A boundary type is a PORT of a sub-patch rather than a node with a thread,
-                    // so the command differs — but the op, the args and the reply do not.
-                    if let Some((dir, dtype)) = subpatch::boundary_type(&ty) {
-                        let scope = scope.ok_or(
-                            "add_node: a boundary port needs `inst_id` — it is a port OF a sub-patch",
-                        )?;
-                        if restore.is_some() {
-                            return Err("add_node: a boundary port cannot take a chosen uid".into());
-                        }
-                        let uid = match state.history.lock().unwrap().apply(
-                            &mut g,
-                            &session,
-                            goofi_engine::Command::AddStub {
-                                scope,
-                                dir,
-                                dtype,
-                                pos,
-                                name: (!name.is_empty()).then_some(name),
-                                restore: None,
-                            },
-                        )? {
-                            goofi_engine::Outcome::Uid(u) => u,
-                            _ => return Err("add_node: no uid returned".into()),
-                        };
-                        events.push(event("node_added", json!({ "uid": uid.to_hex() })));
-                        let slot = json!({ subpatch::BOUNDARY_SLOT: dtype.name() });
-                        let (inputs, outputs) = match dir {
-                            goofi_engine::subpatch::Dir::In => (json!({}), slot),
-                            goofi_engine::subpatch::Dir::Out => (slot, json!({})),
-                        };
-                        return Ok(json!({
-                            "uid": uid.to_hex(),
-                            "name": g.name(uid).unwrap_or_default(),
-                            "input_slots": inputs,
-                            "output_slots": outputs,
-                            "params": {},
-                        }));
-                    }
                     // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node,
                     // so an undo→redo restores them without threading them through the command.
                     let cmd = goofi_engine::Command::AddNode {
@@ -1107,12 +1069,16 @@ impl AppState {
                     events.push(event("node_added", json!({ "uid": uid.to_hex() })));
                     // The REPLY answers a caller with no doc replica: the minted name, the slots to
                     // wire, and the params as BORN.
-                    let m = g.manifest(uid);
+                    // Read off the GRAPH, not a manifest: a facade and a port have none, and each
+                    // answers the one slot vocabulary the wiring ops judge against.
+                    let slots = |v: Vec<(String, String, goofi_core::SlotType)>| {
+                        Value::Object(v.into_iter().map(|(k, _, t)| (k, json!(t.name()))).collect())
+                    };
                     Ok(json!({
                         "uid": uid.to_hex(),
                         "name": g.name(uid).unwrap_or_default(),
-                        "input_slots": m.map(schemas::input_slots).unwrap_or_else(|| json!({})),
-                        "output_slots": m.map(schemas::output_slots).unwrap_or_else(|| json!({})),
+                        "input_slots": slots(g.input_slots(uid)),
+                        "output_slots": slots(g.output_slots(uid)),
                         "params": g.params(uid).map(|p| schemas::param_value_map(&p)).unwrap_or_else(|| json!({})),
                     }))
                 }
@@ -1120,12 +1086,8 @@ impl AppState {
                     let uid = parse_uid(&payload, "node")?;
                     // The command is idempotent, so a uid naming nothing succeeds; the reply says
                     // which of the two happened.
-                    let port = g.stub(uid).map(|(s, _)| s);
-                    let existed = port.is_some() || bindable_node(&g, &uid.to_hex());
-                    let cmd = match port {
-                        Some(scope) => goofi_engine::Command::RemoveStub { scope, stub: uid },
-                        None => goofi_engine::Command::RemoveNode { uid },
-                    };
+                    let existed = g.exists(uid);
+                    let cmd = goofi_engine::Command::RemoveNode { uid };
                     state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
                     Ok(json!({ "removed": existed }))
                 }
