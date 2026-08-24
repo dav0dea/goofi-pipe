@@ -2,7 +2,6 @@
  * component just reads its `$state` fields. */
 import {
 	getControl,
-	paramValues,
 	type Control,
 	type ControlEvent,
 	type DirListing,
@@ -19,7 +18,6 @@ import { workspace } from 'panelty';
 import type { SlotView } from '$lib/viewers/inlineView';
 import { history, type Action } from './history.svelte';
 import { captureNavContext } from '$lib/stores/navContext';
-import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { SyncClient } from '$lib/crdt/syncClient';
 import {
 	linkViews,
@@ -647,14 +645,20 @@ export class GraphStore {
 			pos: offset,
 			inst_id: instId ?? null
 		});
+		this._recordGraphCmd('Paste nodes');
 		return r.rename ?? {};
 	}
 
 	/** Duplicate `uids` in place — a copy and a paste, which is what a duplicate IS, so a sub-patch
-	 * and a leaf go through the one door. */
-	async cloneNodes(uids: string[], offset: [number, number] = [40, 40]): Promise<Record<string, string>> {
+	 * and a leaf go through the one door. `instId` is where the selection came FROM: a fragment
+	 * names a scope only when that scope is in it, so a member copied alone names none. */
+	async cloneNodes(
+		uids: string[],
+		offset: [number, number] = [40, 40],
+		instId?: string
+	): Promise<Record<string, string>> {
 		if (uids.length === 0) return {};
-		return this.pasteNodes(await this.copyNodes(uids), offset);
+		return this.pasteNodes(await this.copyNodes(uids), offset, instId);
 	}
 
 

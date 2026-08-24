@@ -7,7 +7,7 @@
 use serde_json::{Map, Value};
 
 /// The roots, in the order a fresh document declares them.
-const ROOTS: [&str; 5] = ["nodes", "links", "instances", "globals", "arrangement"];
+const ROOTS: [&str; 4] = ["nodes", "links", "globals", "arrangement"];
 
 /// The RFC 7386 merge patch that turns `before` into `after`, or `None` when they are equal.
 pub fn merge_patch(before: &Value, after: &Value) -> Option<Value> {
@@ -143,9 +143,6 @@ impl GraphDoc {
         self.root_keys("nodes")
     }
 
-    pub fn instance_ids(&self) -> Vec<String> {
-        self.root_keys("instances")
-    }
 }
 
 impl Default for GraphDoc {

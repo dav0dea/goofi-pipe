@@ -1,6 +1,5 @@
 //! Patch commands with exact inverses — the manager's undo/redo unit.
 
-use crate::subpatch;
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
@@ -37,9 +36,6 @@ pub struct ScopeRestore {
     /// The scope's parent, captured explicitly (not derived from members) so an EMPTY scope — a
     /// sub-patch whose members were all deleted — restores at the right place. `None` = ROOT.
     pub parent: Option<Uid>,
-    /// Parent-scope stubs `Expand` re-pointed away from this scope, so the Group inverse re-points
-    /// them back exactly. Empty for a delete-undo, which prunes rather than re-points.
-    pub parent_stubs: Vec<subpatch::ParentStub>,
 }
 
 /// One semantic patch edit. Every variant has an exact inverse (see [`Command::execute`]).
@@ -59,8 +55,9 @@ pub enum Command {
         exprs: Vec<(String, String, ExprState)>,
         /// Captured viewer view-state blob to restore; `None` for a user add (defaults to empty).
         viewers: Option<serde_json::Value>,
-        /// The scope to create the node INSIDE (`None` = ROOT). NOT used by a `RemoveNode`
-        /// inverse, which restores membership with its own [`Command::SetScope`] child.
+        /// The scope to create the node INSIDE (`None` = ROOT). A PORT's membership rides HERE and
+        /// nowhere else: one cannot be created without a scope. Every other kind is placed by a
+        /// [`Command::SetScope`] child, after every uid the capture names exists.
         scope: Option<Uid>,
     },
     RemoveNode {
@@ -179,6 +176,11 @@ impl Command {
             Command::Expand { scope } => {
                 g.is_facade(*scope).then_some(()).ok_or_else(|| format!("no sub-patch {}", scope.to_hex()))
             }
+            // Never silently rooted on a scope that is not there: the canvas draws one scope, so a
+            // node placed in another is invisible exactly where the caller put it.
+            Command::AddNode { scope: Some(s), .. } => {
+                g.is_facade(*s).then_some(()).ok_or_else(|| format!("add_node: no such scope {s}"))
+            }
             // A collapsed sub-patch facade is editable here (name/pos), so either kind counts.
             Command::EditNode { uid, .. } => {
                 (g.contains(*uid) || g.is_facade(*uid) || g.stub(*uid).is_some())
@@ -231,12 +233,11 @@ impl Command {
             }
 
             Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
-                // Validate the destination BEFORE mutating anything: an add that cannot honour its
-                // scope must leave the graph exactly as it found it.
-                if let Some(s) = scope {
-                    if !g.is_facade(s) {
-                        return Err(format!("add_node: no such scope {s}"));
-                    }
+                // A peer dissolved the scope this restore names. Tolerated HERE, because a replay
+                // that errors wedges the session's stack for good; the fresh caller is refused by
+                // this command's precondition instead.
+                if scope.is_some_and(|s| !g.is_facade(s)) {
+                    return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 // Idempotent: the uid is already present (a redo racing another client's add) —
                 // reuse it, and re-place it only when a scope was ASKED for, since an
@@ -271,13 +272,10 @@ impl Command {
                 // A panel bound to a uid this delete takes renders empty, so the binding goes with
                 // the node — HERE, inside the one command, so it is one undo step.
                 let unbind = g.arrangement().unbind(&gone);
-                // A PORT is taken off its scope; a scope MEMBER routes through remove_member (which
-                // unwires the ports that exposed it); a scope tears down its subtree; a plain leaf
-                // is a single-node removal.
+                // By KIND, not by where it sits: a port is taken off its scope, a facade tears
+                // down its subtree, and a leaf is a single-node removal, member or not.
                 if let Some((scope, _)) = g.stub(uid) {
                     g.remove_stub(scope, uid);
-                } else if g.scope_of(uid).is_some() {
-                    g.remove_member(uid)?;
                 } else if g.is_facade(uid) {
                     g.remove_instance(uid)?;
                 } else {
@@ -504,7 +502,7 @@ impl Command {
 
             Command::SetScope { uid, scope } => {
                 // Idempotent: the uid is gone (a redo racing a delete) → no-op.
-                if !g.contains(uid) && !g.is_facade(uid) {
+                if !g.exists(uid) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
                 // The destination scope was dissolved. `SetScope` is never a user RPC, so this is
@@ -522,21 +520,10 @@ impl Command {
                 let mut minted: Vec<(Uid, Uid)> = Vec::new();
                 let scope = match restore {
                     None => g.group_nodes_capturing(&members, pos, &mut minted)?,
-                    Some(r) => {
-                        // Idempotent: the exact scope is already live (a redo racing another client) —
-                        // reuse it; otherwise recreate it uid-stable.
-                        let scope = if g.is_facade(r.scope_id) {
-                            r.scope_id
-                        } else {
-                            g.restore_scope(r.scope_id, r.name, pos, &members, r.parent)?
-                        };
-                        // The exact reversal of `expand_instance`, written with NO validation: this
-                        // restores a known-good captured state, which may name a nested scope.
-                        for (p, sid, inner) in r.parent_stubs {
-                            let _ = g.set_stub_inner(p, sid, inner);
-                        }
-                        scope
-                    }
+                    // Idempotent: the exact scope is already live (a redo racing another client) —
+                    // reuse it; otherwise recreate it uid-stable.
+                    Some(r) if g.is_facade(r.scope_id) => r.scope_id,
+                    Some(r) => g.restore_scope(r.scope_id, r.name, pos, &members, r.parent)?,
                 };
                 // Inverse: expand the new scope, then remove each minted port so group→undo is
                 // exact (redo re-adds them before re-grouping, since Compound reverses child inverses).
@@ -557,6 +544,9 @@ impl Command {
                 // Capture the scope verbatim BEFORE dissolving, so the inverse re-groups it exactly.
                 let name = g.name(scope).unwrap_or("").to_string();
                 let spos = g.pos(scope).unwrap_or([0.0, 0.0]);
+                // A facade wears viewers on its out ports like any node, and `restore_scope` builds
+                // a bare record — so the blob rides back as the ordinary edit that sets one.
+                let seen = g.viewers(scope).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).cloned();
                 // Its ports come back as the NODES they are, and their cables as the links they
                 // are — after the facade, which is what a port needs to be a port of.
                 let ports: Vec<Command> = g
@@ -586,9 +576,6 @@ impl Command {
                     })
                     .collect();
                 let sparent = g.scope_of(scope); // the scope's parent, captured before it dissolves
-                // Parent stubs expand_instance is about to re-point — captured BEFORE, so the Group
-                // inverse re-points them back exactly.
-                let parent_stubs = g.parent_stubs_referencing(scope);
                 let members = g.scope_members(scope);
                 let spliced = g.expand_instance(scope)?;
                 // The wall's removal JOINED each crossing cable's two halves; putting the wall back
@@ -607,8 +594,14 @@ impl Command {
                 inverse.push(Command::Group {
                     members,
                     pos: spos,
-                    restore: Some(ScopeRestore { scope_id: scope, name, parent: sparent, parent_stubs }),
+                    restore: Some(ScopeRestore { scope_id: scope, name, parent: sparent }),
                 });
+                inverse.extend(seen.map(|v| Command::EditNode {
+                    uid: scope,
+                    name: None,
+                    pos: None,
+                    viewers: Some(v),
+                }));
                 inverse.extend(ports);
                 inverse.extend(cables);
                 Ok((Outcome::Ok, Command::Compound(inverse)))
@@ -779,9 +772,10 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
         });
     }
 
-    // Membership, once every uid exists. The root's own is last, so a member delete puts the top
-    // back INSIDE its enclosing scope; a top-level one already lands at ROOT.
-    for &u in members.iter().chain(&ports) {
+    // Membership, once every uid exists. A PORT is not here: its scope rode its `AddNode`, because
+    // a port cannot be created without one, and one owner is the rule. The root's own is last, so a
+    // member delete puts the top back INSIDE its enclosing scope; a top-level one lands at ROOT.
+    for &u in &members {
         if u == root {
             continue;
         }

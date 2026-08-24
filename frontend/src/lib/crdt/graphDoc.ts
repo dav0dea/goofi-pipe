@@ -62,7 +62,7 @@ function scopeOf(rec: Obj | undefined): string {
 	return optStr(rec, 'scope') ?? ROOT_ID;
 }
 
-export function globalsMap(doc: Doc): Record<string, Obj> {
+function globalsMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.globals) as Record<string, Obj>;
 }
 

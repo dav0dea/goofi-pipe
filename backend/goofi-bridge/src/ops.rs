@@ -67,7 +67,7 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "add_node", surface: Mcp, writes: true,
          args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid params:json",
          doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `params` is edit_node's bag, applied at birth. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
-               The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same five ops — but it never runs, so it takes no params and no chosen uid. To COPY a node rather than build one, read it with copy_nodes and put it back with paste_nodes.",
+               The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same five ops — but it never runs, so it takes no params. To COPY a node rather than build one, read it with copy_nodes and put it back with paste_nodes.",
          result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." },
     Op { name: "copy_nodes", surface: Mcp, writes: false, args: "nodes:uid[]!",
          doc: "Read `nodes` and everything they hold — a sub-patch's members, their ports and the nested sub-patches below them, to any depth — as a self-contained fragment. A link rides only when BOTH its ends are in the fragment. The shape is the `.gfi`'s own, so a fragment is a patch's worth of nodes in the format a patch is written in, and paste_nodes is what puts one back.",
@@ -76,7 +76,7 @@ pub static REGISTRY: &[Op] = &[
          doc: "Add a copy_nodes fragment on FRESH uids and fresh names, so it lands beside whatever it was copied from rather than colliding with it. `pos` shifts the whole fragment by that offset; `inst_id` puts its roots inside that sub-patch, absent = root. A record naming a scope that is IN the fragment keeps the shape it was copied with. One command, so it is one undo step.",
          result: "{rename: {old_uid: new_uid}} — every record's uid in the fragment mapped to the one it was created at" },
     Op { name: "remove_node", surface: Mcp, writes: true, args: "node:uid!",
-         doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that existed only to expose a deleted one goes with it. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
+         doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
          result: "{removed: bool} — false when the uid named nothing" },
     Op { name: "restart_node", surface: Mcp, writes: true, args: "node:uid!",
          doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
@@ -84,8 +84,8 @@ pub static REGISTRY: &[Op] = &[
     Op { name: "add_link", surface: Mcp, writes: true,
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",
          doc: "Wire an output slot to an input slot. Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
-               A link never crosses a sub-patch boundary, and the two acts that look like it are ordinary links in different scopes. From the OUTSIDE you wire a node to the sub-patch's facade, naming a port's uid as the slot; the wire is stored against the inner leaf that port exposes, so a facade port with nothing behind it is refused. From the INSIDE you wire a port to a member, both of them in that sub-patch; a port carries one slot, `value`, and one inner wire, so a second is refused rather than replacing the first.",
-         result: "{node_out, slot_out, node_in, slot_in, dtype} — the wire as made, with a facade endpoint resolved to the inner leaf it exposes." },
+               A link never crosses a sub-patch boundary, and the two acts that look like it are ordinary links in different scopes. From the OUTSIDE you wire a node to the sub-patch's facade, naming a port's uid as the slot; the wire is stored against the PORT, whether or not anything is behind it yet. From the INSIDE you wire a port to a member, both of them in that sub-patch. A port carries one slot, `value`, on both of its sides.",
+         result: "{node_out, slot_out, node_in, slot_in, dtype} — the wire as made, with a facade endpoint resolved to the PORT it named." },
     Op { name: "remove_link", surface: Mcp, writes: true,
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",
          doc: "Remove one wire, addressed by both of its endpoints — a boundary port's inner wire included. Idempotent, like remove_node.",

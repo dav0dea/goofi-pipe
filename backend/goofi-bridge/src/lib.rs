@@ -879,16 +879,21 @@ fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid,
 /// `add_link` gets and a REPLAY does not, since a replay must converge rather than wedge the stack.
 fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
     let (node, slot) = resolve_link_endpoint(g, uid, slot);
-    if g.contains(node) || g.stub(node).is_some() {
+    if g.wirable(node) {
         return Ok((node, slot));
     }
-    Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex()))
+    // A FACADE is a node that exists and simply has no slot by that name — saying it names nothing
+    // sends a caller looking for the wrong mistake.
+    match g.is_facade(uid) {
+        true => Err(format!("add_link: `{which}` names sub-patch {} — name one of its ports as the slot", uid.to_hex())),
+        false => Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex())),
+    }
 }
 
 /// Is `node` something a panel could bind to? A UID, and only a uid: a display name stops resolving
 /// the moment somebody renames the node. A boundary port counts — it exposes a real stream.
 fn bindable_node(g: &Graph, node: &str) -> bool {
-    Uid::from_hex(node).is_some_and(|u| g.contains(u) || g.is_facade(u) || g.stub(u).is_some())
+    Uid::from_hex(node).is_some_and(|u| g.exists(u))
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step, and

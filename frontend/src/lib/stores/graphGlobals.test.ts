@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { globalsMap } from '$lib/crdt/graphDoc';
 import { history } from './history.svelte';
 
 /** Seed a system global the way the manager sends one. */

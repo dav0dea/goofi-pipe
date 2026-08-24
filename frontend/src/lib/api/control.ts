@@ -63,7 +63,7 @@ export interface NodeInstanceInfo {
 	/** The scope this node sits in; `'__root__'` at the top level. */
 	scope: string;
 	error: string | null;
-	/** Lifecycle stage. Optional so a synthesized virtual node can omit it. */
+	/** Lifecycle stage; absent until the node reports one. */
 	stage?: NodeStage;
 	/** Rolling execution telemetry, absent until the node's first `node_stats` event. */
 	stats?: NodeStats | null;
@@ -110,15 +110,6 @@ export interface DirListing {
 	roots: FsRoot[];
 }
 
-/** Flatten a node's grouped param descriptors to a plain `{group: {name: value}}` bag. */
-export function paramValues(node: NodeInstanceInfo): Record<string, Record<string, unknown>> {
-	const out: Record<string, Record<string, unknown>> = {};
-	for (const [group, params] of Object.entries(node.params)) {
-		out[group] = {};
-		for (const [name, p] of Object.entries(params)) out[group][name] = p.value;
-	}
-	return out;
-}
 
 export interface GraphSnapshot {
 	/** Control-plane protocol version, present on the `hello` handshake. */

@@ -75,7 +75,6 @@ export interface Executor<A extends Action = Action> {
 	inverse(action: A, deps: ExecutorDeps): Promise<void>;
 }
 
-export type { ControlEvent };
 
 /** Replays a CompoundAction's children — forward in order, inverse in reverse. */
 const compoundExecutor: Executor = {

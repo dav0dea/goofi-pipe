@@ -1175,21 +1175,7 @@ impl Graph {
     /// The parent scope of a node/scope (`None` = ROOT). Absent ⇒ ROOT, so a plain flat graph
     /// needs no entries.
     pub fn scope_of(&self, uid: Uid) -> Option<Uid> {
-        // A port's membership is the scope that HOLDS it — it is a member like any other, so every
-        // reader of membership answers for one without knowing it is a port.
-        match self.scope_of.get(&uid) {
-            Some(parent) => *parent,
-            None => self.stub(uid).map(|(scope, _)| scope),
-        }
-    }
-
-    /// All scope uids (each == its collapsed facade node's uid).
-    pub fn scope_uids(&self) -> Vec<Uid> {
-        self.nodes
-            .iter()
-            .filter(|(_, e)| matches!(e.kind, Kind::Facade))
-            .map(|(u, _)| *u)
-            .collect()
+        self.scope_of.get(&uid).copied().flatten()
     }
 
     /// Everything `scope_of` places inside `scope`, ports included — they are members like any
@@ -1296,10 +1282,7 @@ impl Graph {
     /// THE resolution: what real leaf slot an address stands for. A port relays, so the walk takes
     /// one hop per boundary, however deep the nesting. `Open` is the port the walk stopped at
     /// because nothing feeds it yet — a legitimate answer, never an error. `None` only when the
-    /// address names no output slot at all.
-    ///
-    /// One function, so `nd()` and a cable follow the same wiring; two resolvers gave answers of
-    /// opposite polarity for one address, which is what every sub-patch defect grew out of.
+    /// address names no output slot at all. One function, so `nd()` and a cable follow one wiring.
     pub fn stream(&self, uid: Uid, slot: &str) -> Option<Stream> {
         let (mut at, mut slot) = self.normalise(uid, slot);
         let mut seen: Vec<Uid> = Vec::new();
@@ -1530,7 +1513,7 @@ impl Graph {
                 viewers: serde_json::json!({}),
             },
         );
-        self.scope_of.insert(id, Some(member));
+        self.set_member_scope(id, Some(member));
         minted.push((member, id));
         let (node, slot) = inner;
         let _ = match dir {
@@ -1561,12 +1544,6 @@ impl Graph {
         Ok(parent.unwrap())
     }
 
-    /// Group `members`, all of ONE scope, into a new one. Pure reference-move bookkeeping: the flat
-    /// `nodes`/`links` and every uid are UNCHANGED, so it is uid-stable by construction.
-    pub fn group_nodes(&mut self, members: &[Uid], pos: [f64; 2]) -> Result<Uid, String> {
-        self.group_nodes_capturing(members, pos, &mut Vec::new())
-    }
-
     /// Like [`Self::group_nodes`], but records into `minted` every stub it has to MINT on a
     /// pre-existing nested member, so the `Group` inverse can un-mint them.
     pub fn group_nodes_capturing(
@@ -1588,7 +1565,7 @@ impl Graph {
             scope_uid,
             NodeEntry { kind: Kind::Facade, name: disp, pos, viewers: serde_json::json!({}) },
         );
-        self.scope_of.insert(scope_uid, parent);
+        self.set_member_scope(scope_uid, parent);
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a
         //    port for the slot it crosses at, and the cable is SPLIT in two around it — the outer
@@ -1669,7 +1646,7 @@ impl Graph {
         for &m in members {
             self.set_member_scope(m, Some(scope_uid));
         }
-        self.scope_of.insert(scope_uid, parent);
+        self.set_member_scope(scope_uid, parent);
         // 4. …and only NOW wire the minted ports: a cable's two ends must face the same scope, and
         //    until the re-tag above there was no scope for them to face.
         for (a, so, b, si) in wires {
@@ -1715,19 +1692,6 @@ impl Graph {
         Ok(scope_id)
     }
 
-    /// The parent-scope ports that currently expose `scope`, as `(parent, port, inner)`. `Expand`
-    /// captures these BEFORE dissolving so its `Group` inverse can re-point them back exactly.
-    pub fn parent_stubs_referencing(&self, scope: Uid) -> Vec<subpatch::ParentStub> {
-        let Some(p) = self.scope_of(scope) else { return vec![] };
-        self.ports_of(p)
-            .into_iter()
-            .filter_map(|id| {
-                let inner = self.port_inner(id)?;
-                (inner.0 == scope).then(|| (p, id, Some((inner.0, inner.1.to_string()))))
-            })
-            .collect()
-    }
-
 
     /// The display names of a scope's ports, captured before a removal that drops them — a `nd()`
     /// binding on a name nothing wears can never be re-resolved by a later edit, so the invalidation
@@ -1739,10 +1703,8 @@ impl Graph {
             .collect()
     }
 
-    /// Inline a scope back into its parent: re-tag each member, then drop the scope and its stubs.
-    /// The crossing flat links already point leaf→leaf, so they survive verbatim. Uid-stable.
     /// Dissolve a scope, answering the cables its removal JOINED — each pair of halves that met at
-    /// a port, now one link. Putting the wall back means taking those joins out again.
+    /// a port, now one link. Uid-stable.
     pub fn expand_instance(
         &mut self,
         scope: Uid,
@@ -1806,10 +1768,6 @@ impl Graph {
                 let _ = self.remove_node(m); // leaf (tolerate an already-gone member)
             }
         }
-        for p in self.ports_of(scope) {
-            self.nodes.shift_remove(&p);
-            self.scope_of.remove(&p);
-        }
         self.nodes.shift_remove(&scope);
         self.scope_of.remove(&scope);
         for name in dropped {
@@ -1818,88 +1776,31 @@ impl Graph {
         Ok(())
     }
 
-    /// Remove a member of a sub-patch, then UNWIRE any port of that scope which exposed it. The
-    /// port stays, in the state `add_stub` mints — a leaf whose upstream is deleted stays too.
-    pub fn remove_member(&mut self, member: Uid) -> Result<(), String> {
-        let scope = self
-            .scope_of(member)
-            .ok_or_else(|| format!("remove_member: {member} is not a sub-patch member"))?;
-        if self.is_facade(member) {
-            self.remove_instance(member)?;
-        } else {
-            let _ = self.remove_node(member);
-        }
-        let exposing: Vec<Uid> = self
-            .ports_of(scope)
-            .into_iter()
-            .filter(|id| self.port_inner(*id).is_some_and(|(u, _)| u == member))
-            .collect();
-        for id in exposing {
-            self.set_stub_inner(scope, id, None)?;
-        }
-        Ok(())
-    }
-
     /// The port of the ENCLOSING scope that exposes `(scope, port)`, if one does. Read through
     /// `inner`, so it answers the same before and after the port itself is gone.
-    pub fn port_above(&self, scope: Uid, port: Uid) -> Option<(Uid, Uid)> {
-        let parent = self.scope_of(scope)?;
-        let slot = port.to_hex();
-        self.ports_of(parent)
-            .into_iter()
-            .find(|id| self.port_inner(*id).is_some_and(|(u, s)| u == scope && s == slot))
-            .map(|id| (parent, id))
+    /// Take every cable that touches `uid` off the graph, through the door `remove_link` is — so
+    /// the consumers it fed are re-planned rather than left holding a feed that has gone.
+    fn cut_cables(&mut self, uid: Uid) {
+        for l in self.links_view() {
+            if l.node_in == uid || l.node_out == uid {
+                let _ = self.remove_link(l.node_out, l.slot_out, l.node_in, l.slot_in);
+            }
+        }
     }
 
     /// Take a boundary port off a scope, answering the port it removed. Every `nd()` naming it goes
-    /// unresolvable here rather than at the next edit that happens to touch it, and the port above
-    /// it — which named this one — goes UNWIRED, into the state `add_stub` mints.
+    /// unresolvable here rather than at the next edit that happens to touch it.
     pub fn remove_stub(&mut self, scope: Uid, port: Uid) -> Option<(subpatch::Port, String, [f64; 2])> {
         self.stub(port).filter(|(s, _)| *s == scope)?;
+        // Its wires go with it, both halves — through the ONE door that removes a link, and BEFORE
+        // the port does, so what the port relayed to is re-planned rather than left subscribed.
+        self.cut_cables(port);
         let e = self.nodes.shift_remove(&port)?;
         self.scope_of.remove(&port);
         let Kind::Port(p) = e.kind else { return None };
         let st = (p, e.name, e.pos);
-        // Its wires go with it, both halves: a link naming a port nothing holds is a cable drawn in
-        // no scope, which is the state a delete must never leave behind.
-        self.links.retain(|l| l.node_in != port && l.node_out != port);
         self.rebind_naming(&st.1);
-        if let Some((psc, id)) = self.port_above(scope, port) {
-            let _ = self.set_stub_inner(psc, id, None);
-        }
         Some(st)
-    }
-
-    /// Set or clear a port's inner wire. The wire IS a link, so this is `add_link`/`remove_link`
-    /// with the port on whichever end its direction puts it — the same two ops a user calls.
-    pub fn set_stub_inner(&mut self, scope: Uid, stub: Uid, inner: subpatch::StubInner) -> Result<(), String> {
-        let dir = self.stub(stub).filter(|(s, _)| *s == scope).map(|(_, st)| st.dir)
-            .ok_or("set_stub_inner: no such stub")?;
-        let held = self.port_inner(stub);
-        match dir {
-            subpatch::Dir::In => self.links.retain(|l| l.node_out != stub),
-            subpatch::Dir::Out => self.links.retain(|l| l.node_in != stub),
-        }
-        let Some((member, slot)) = inner else {
-            self.rebind_ports();
-            return Ok(());
-        };
-        let made = match dir {
-            subpatch::Dir::In => self.add_link(stub, subpatch::BOUNDARY_SLOT, member, &slot),
-            subpatch::Dir::Out => self.add_link(member, &slot, stub, subpatch::BOUNDARY_SLOT),
-        };
-        // Check-then-mutate: a refused wire leaves the port exactly as it was, held wire included.
-        if let Err(e) = made {
-            if let Some((u, sl)) = held {
-                let _ = match dir {
-                    subpatch::Dir::In => self.add_link(stub, subpatch::BOUNDARY_SLOT, u, sl),
-                    subpatch::Dir::Out => self.add_link(u, sl, stub, subpatch::BOUNDARY_SLOT),
-                };
-            }
-            return Err(e);
-        }
-        self.rebind_ports();
-        Ok(())
     }
 
     /// All links as resolved views (snapshot projection).
@@ -1953,7 +1854,7 @@ impl Graph {
         self.links
             .retain(|l| l.node_out != uid && l.node_in != uid);
         for l in dropped.iter().filter(|l| l.node_in != uid) {
-            self.replan_slot(l.node_in, l.slot_in);
+            self.replan_behind(l.node_in, l.slot_in);
         }
         self.rebind_ports();
         Ok(())
@@ -2980,6 +2881,22 @@ impl Graph {
             }
         }
         let idmap = self.remap_fragment(nodes);
+        // The names the copy will wear, picked BEFORE anything is built, because an expression in
+        // the fragment spells a NAME: a source left naming the original binds the copy to it, and
+        // outlives the original's deletion as a broken reference.
+        let mut taken: std::collections::HashSet<String> =
+            self.nodes.values().map(|e| e.name.clone()).collect();
+        let mut renamed: HashMap<String, String> = HashMap::new();
+        for rec in nodes.values() {
+            let base = name_base(rec["type"].as_str().unwrap_or(""));
+            let fresh = (0..)
+                .map(|n| format!("{base}{n}"))
+                .find(|c| !taken.contains(c))
+                .expect("an unbounded counter finds a free name");
+            taken.insert(fresh.clone());
+            renamed.insert(rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(), fresh);
+        }
+        let by_old = |old: &str| renamed.get(old).cloned();
         let at = |p: [f64; 2]| [p[0] + offset[0], p[1] + offset[1]];
         // A facade before the members that name it, and a port after every facade: a port is a
         // port OF a scope, so it takes its scope at birth where everything else is placed below.
@@ -2999,12 +2916,27 @@ impl Graph {
                 type_name: ty.to_string(),
                 pos: at(read_pos(rec)),
                 uid: Some(idmap[*old]),
-                // Minted fresh, so a paste beside the original cannot collide with it.
-                name: None,
+                name: by_old(rec.get("name").and_then(|v| v.as_str()).unwrap_or("")),
                 params: (!structural(ty)).then(|| self.record_params(ty, rec)).transpose()?,
-                exprs: record_exprs(rec),
-                viewers: rec.get("viewers").filter(|v| v.is_object()).cloned(),
-                scope: subpatch::boundary_type(ty).and(inner),
+                exprs: record_exprs(rec)
+                    .into_iter()
+                    .map(|(group, name, mut e)| {
+                        // Both positions a display name is read in: a copied node's own, and — under
+                        // a copied facade — a copied PORT's, which is what that facade calls a slot.
+                        if let Some(src) = expr_rewrite::rename_refs(&e.source, |named, slot| {
+                            let to = by_old(named);
+                            let label = to.as_ref().and(slot).and_then(by_old);
+                            (to, label)
+                        }) {
+                            e.source = src;
+                        }
+                        (group, name, e)
+                    })
+                    .collect(),
+                viewers: rec.get("viewers").filter(|v| v.is_object()).map(|v| remap_slots(v, &idmap)),
+                // A port cannot exist without a scope, so it takes the paste target when its own
+                // facade is not in the fragment — the same fallback every other kind gets below.
+                scope: subpatch::boundary_type(ty).and(inner.or(scope)),
             });
         }
         for old in &order {
@@ -3162,13 +3094,15 @@ impl Graph {
         }
         // The ports. Each is a member record whose type carries its direction and dtype, so nothing
         // about it is re-derived from the wire it will get below.
-        let mut port_of: HashMap<Uid, Uid> = HashMap::new();
         for (old, rec) in nodes {
             let Some((dir, dtype)) = subpatch::boundary_type(rec["type"].as_str().unwrap_or("")) else {
                 continue;
             };
             let uid = idmap[old];
-            let Some(scope) = self.scope_of(uid) else { continue };
+            // A port with no scope is not one, and the membership pass above is what gave it its.
+            if self.scope_of(uid).is_none() {
+                continue;
+            }
             let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             self.nodes.insert(
                 uid,
@@ -3183,7 +3117,6 @@ impl Graph {
                         .unwrap_or_else(|| serde_json::json!({})),
                 },
             );
-            port_of.insert(uid, scope);
         }
         if let Some(links) = links_v.and_then(|v| v.as_array()) {
             for l in links {
@@ -3214,7 +3147,6 @@ impl Graph {
         self.arrangement_warning = warning;
         Ok(())
     }
-
 }
 
 /// Is this a type the MODEL owns rather than the palette — a sub-patch facade or a boundary port?
@@ -3222,7 +3154,30 @@ fn structural(ty: &str) -> bool {
     ty == subpatch::SCOPE_TYPE || subpatch::boundary_type(ty).is_some()
 }
 
-/// A record's `pos`, or the origin when it is absent or malformed.
+/// The stem a minted display name counts from: a leaf's type, and the kind's own word for the two
+/// that have no type to be named after.
+fn name_base(type_name: &str) -> String {
+    match subpatch::boundary_type(type_name) {
+        Some((dir, _)) => dir.name().to_string(),
+        None if type_name == subpatch::SCOPE_TYPE => "subpatch".to_string(),
+        None => type_name.to_lowercase(),
+    }
+}
+
+/// A viewer blob under the uids a paste minted. A facade keys its blob by PORT UID, so a copy that
+/// kept the original's keys would point at slots it does not have; a leaf keys its by slot NAME,
+/// which no remap names, so it rides through unchanged.
+fn remap_slots(viewers: &serde_json::Value, idmap: &HashMap<String, Uid>) -> serde_json::Value {
+    match viewers.as_object() {
+        None => viewers.clone(),
+        Some(m) => serde_json::Value::Object(
+            m.iter()
+                .map(|(k, v)| (idmap.get(k).map_or_else(|| k.clone(), |u| u.to_hex()), v.clone()))
+                .collect(),
+        ),
+    }
+}
+
 /// The expression bindings a record carries, in the shape [`command::Command::AddNode`] re-applies.
 fn record_exprs(rec: &serde_json::Value) -> Vec<(String, String, command::ExprState)> {
     rec.get("expressions")

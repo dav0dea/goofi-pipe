@@ -38,11 +38,9 @@
 	import { portal } from 'panelty';
 	import {
 		linkKey,
-		type LinkInfo,
 		type NodeInstanceInfo,
 		type NodeTypeInfo
 	} from '$lib/api/control';
-	import { boundaryType } from '$lib/api/vocab';
 	import { ROOT_ID, childrenOfScope, drawEndpoint as sceneDrawEndpoint } from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits } from '$lib/editor/nodeMetrics';
 	import { isSlotExpanded } from '$lib/viewers/inlineView';
@@ -375,11 +373,6 @@
 		}
 	}
 
-	/** Is this uid a boundary port of the ENTERED scope? */
-	function portHere(id: string): boolean {
-		return !!entered && memberIndex.get(id) === entered && !!boundaryType(g.nodeById(id)?.type ?? '');
-	}
-
 	function onConnect(c: Connection): void {
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
 		// Every cable is one `add_link`, the pill's included: a port is a node to the op vocabulary,
@@ -398,15 +391,8 @@
 	}
 
 	/** Drag an existing edge's endpoint to a new slot. Remove + add are one history entry, so a
-	 * single undo reverts the move; boundary edges are left to the explicit wire/unwire flow. */
+	 * single undo reverts the move. */
 	function onReconnect(oldEdge: Edge, c: Connection): void {
-		if (
-			portHere(oldEdge.source) ||
-			portHere(oldEdge.target) ||
-			portHere(c.source ?? '') ||
-			portHere(c.target ?? '')
-		)
-			return;
 		const oldSo = oldEdge.sourceHandle;
 		const oldSi = oldEdge.targetHandle;
 		if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle || !oldSo || !oldSi) return;
@@ -849,7 +835,7 @@
 
 	async function duplicateSelection(): Promise<void> {
 		const rename = await history().transaction('Duplicate nodes', () =>
-			g.cloneNodes(selectedUids(), [40, 40])
+			g.cloneNodes(selectedUids(), [40, 40], entered ?? undefined)
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
@@ -922,7 +908,6 @@
 		pendingPlacement = null;
 		// A boundary type takes this same path: `add_node` with `inst_id` is what makes a PORT of the
 		// entered sub-patch, and the catalog gives it the slots `autoLink` matches against.
-		if (boundaryType(placement.typeInfo.type) && !entered) return;
 		const label = placement.seed
 			? `Add ${placement.typeInfo.type} + connect`
 			: `Add ${placement.typeInfo.type}`;

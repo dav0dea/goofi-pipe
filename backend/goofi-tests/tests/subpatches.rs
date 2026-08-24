@@ -632,7 +632,12 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     g.link(buf, "out", sink, "data");
 
     // An inner sub-patch around the Buffer, then an outer one around that: a copy has to recurse.
-    let inner = group(&g, &[hex(buf)]);
+    // The Buffer reads its neighbour by name, so the copy has a reference to get right.
+    let lfo = g.add("Oscillator");
+    g.call("edit_node", j!({ "node": hex(lfo), "name": "lfo" }));
+    g.call("edit_node", j!({ "node": hex(buf), "params": { "common": { "max_frequency":
+                                 { "expression": "nd('lfo')" } } } }));
+    let inner = group(&g, &[hex(buf), hex(lfo)]);
     let outer = group(&g, std::slice::from_ref(&inner));
     assert_eq!(g.doc()["nodes"][&outer]["name"], "subpatch1", "the second sub-patch is subpatch1");
 
@@ -640,7 +645,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     let fragment = g.call("copy_nodes", j!({ "nodes": [outer] }))["doc"].clone();
     // A fragment is SELF-CONTAINED: it holds the whole subtree and no cable that reaches out of it.
     let held = fragment["nodes"].as_object().expect("a nodes map").len();
-    assert_eq!(held, 7, "two facades, their four ports, and the one leaf inside: {fragment}");
+    assert_eq!(held, 8, "two facades, their four ports, and the two leaves inside: {fragment}");
     assert!(fragment["links"].as_array().is_some_and(|l| !l.is_empty()), "…and its inner wiring: {fragment}");
 
     let rename = g.call("paste_nodes", j!({ "doc": fragment, "pos": [400.0, 0.0] }))["rename"].clone();
@@ -676,6 +681,20 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     assert_eq!(touches(&copy), 0, "the copied facade is not wired into the patch: {links:?}");
     assert!(touches(&leaf) > 0, "but its innards are wired to each other: {links:?}");
 
+    // An expression INSIDE the copy names the copy's own node. A fragment carries display names,
+    // and a paste mints fresh ones — so a source left spelling the original's name binds the copy
+    // to the original, and deleting the original then breaks a sub-patch that only looks separate.
+    let doc_now = g.doc();
+    let inner_osc = g.members(&copied_inner).into_iter()
+        .find(|m| doc_now["nodes"][m]["type"] == "Oscillator")
+        .expect("the copied oscillator");
+    let copy_name = doc_now["nodes"][&inner_osc]["name"].as_str().unwrap().to_string();
+    let bound = g.call("inspect_node", j!({ "node": leaf }))["text"].as_str().unwrap().to_string();
+    assert!(bound.contains(&format!("nd('{copy_name}')")),
+            "the copy reads its OWN oscillator `{copy_name}`: {bound}");
+    assert!(!bound.contains("no node named"), "…and that name resolves: {bound}");
+    assert!(!bound.contains("nd('lfo')"), "…and nothing still reads the original's: {bound}");
+
     // It is INDEPENDENT: editing the copy leaves the original alone.
     g.call("edit_node", j!({ "node": leaf, "params": { "common": { "max_frequency": 3.0 } } }));
     let orig = g.call("inspect_node", j!({ "node": hex(buf), "params": true }))["text"]
@@ -696,6 +715,15 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     let there = landed[&inner].as_str().expect("the sub-patch landed").to_string();
     assert!(elsewhere.instances().contains(&there), "…as a sub-patch: {:?}", elsewhere.instances());
     assert_eq!(elsewhere.members(&there).len(), g.members(&inner).len(), "with everything it held");
+
+    // A PORT copied without its facade takes the paste target: a port cannot exist outside a
+    // sub-patch, so a select-all inside one — which takes the ports with it — must still paste.
+    let had = g.ports(&inner);
+    let ports_only = g.call("copy_nodes", j!({ "nodes": had.clone() }))["doc"].clone();
+    let into = g.call("paste_nodes", j!({ "doc": ports_only, "inst_id": inner }))["rename"].clone();
+    assert_eq!(into.as_object().map(|m| m.len()), Some(had.len()), "every copied port landed: {into}");
+    assert_eq!(g.ports(&inner).len(), had.len() * 2,
+               "…inside the sub-patch that was asked for: {:?}", g.ports(&inner));
 
     // …and it lands INSIDE a named sub-patch when one is asked for, which is what a paste while
     // entered has to do — the roots go there, and what named a scope in the fragment keeps it.
@@ -720,9 +748,13 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     g.link(src, "out", dst, "in");
     g.until("a frame before any sub-patch exists", |_| at_dst.latest());
 
-    // Collapsing the consumer is pure bookkeeping: the wire is the same wire.
+    // Collapsing the consumer is pure bookkeeping: the wire is the same wire. Asked as a RISING
+    // count, because `latest` is sticky — it answers with the last frame forever, so it cannot
+    // tell a running stream from one that stopped a moment ago.
     let inst = group(&g, &[hex(dst)]);
-    assert!(g.stays(|_| at_dst.latest().is_some()), "grouping did not interrupt the stream");
+    let before_group = at_dst.count();
+    assert!(g.until("frames after grouping", |_| (at_dst.count() > before_group).then_some(true)),
+            "grouping did not interrupt the stream");
 
     // A fresh member behind a fresh IN port: nothing feeds it until BOTH sides are wired, and each
     // half alone must leave it quiet rather than half-connected.
@@ -753,11 +785,36 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
                             "node_in": inst, "slot_in": port }));
     g.until("frames again after re-wiring", |_| at_mid.latest());
     let outer = group(&g, std::slice::from_ref(&inst));
-    assert!(g.stays(|_| at_mid.latest().is_some()), "nesting kept the stream alive");
+    let before_nest = at_mid.count();
+    assert!(g.until("frames after nesting", |_| (at_mid.count() > before_nest).then_some(true)),
+            "nesting kept the stream alive");
 
     // …and expanding splices the chain back to one hop without dropping a frame.
     g.call("expand_instance", j!({ "inst_id": outer }));
     let before = at_mid.count();
     assert!(g.until("frames after the expand", |_| (at_mid.count() > before).then_some(true)),
             "expanding spliced the cable rather than cutting it");
+
+    // Deleting the SOURCE stops it, and that is a different door from cutting the cable: the wire
+    // it drops ends on a PORT, and a re-plan aimed at a port re-plans nothing by itself — what has
+    // to be reached is the leaf behind it.
+    g.call("remove_node", j!({ "node": hex(src) }));
+    let after_src = at_mid.count();
+    assert!(g.stays(|_| at_mid.count() == after_src),
+            "deleting the source stopped the stream: {after_src}");
+
+    // Feed it again, then delete the PORT itself. A port relays, so its removal has to end the
+    // relay — dropping its cables without re-planning leaves the member behind it subscribed to a
+    // feed that no longer exists, and nothing above notices.
+    let src2 = g.add("_TestCounter");
+    g.ready(src2);
+    g.call("add_link", j!({ "node_out": hex(src2), "slot_out": "out",
+                            "node_in": inst, "slot_in": port }));
+    let refed = at_mid.count();
+    assert!(g.until("frames from the second source", |_| (at_mid.count() > refed).then_some(true)),
+            "the sub-patch takes a new feed on the same port");
+    g.call("remove_node", j!({ "node": port }));
+    let after_port = at_mid.count();
+    assert!(g.stays(|_| at_mid.count() == after_port),
+            "the port's deletion stopped the stream: {after_port}");
 }

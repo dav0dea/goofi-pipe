@@ -11,7 +11,7 @@ export interface Clipboard {
 }
 
 export interface GraphFragment {
-	nodes: Record<string, { pos?: [number, number] }>;
+	nodes: Record<string, { pos?: [number, number]; scope?: string }>;
 	links?: unknown[];
 }
 
@@ -30,12 +30,16 @@ export function parseClipboard(text: string): Clipboard | null {
 	const clip = payload as Clipboard | null;
 	if (typeof clip !== 'object' || clip === null || clip.__goofi_clip__ !== CLIP_VERSION) return null;
 	if (typeof clip.doc !== 'object' || clip.doc === null || typeof clip.doc.nodes !== 'object') return null;
-	return { __goofi_clip__: CLIP_VERSION, doc: clip.doc };
+	return clip;
 }
 
-/** The centre of a fragment's records, which is what a paste anchors at a point. */
+/** The centre of a fragment's ROOTS, which is what a paste anchors at a point. A record naming a
+ * scope inside the fragment is drawn in that scope's own space, so its position is not on the
+ * canvas the anchor is measured on. */
 export function fragmentCentre(doc: GraphFragment): [number, number] {
-	const at = Object.values(doc.nodes ?? {}).map((n) => n.pos ?? [0, 0]);
+	const at = Object.values(doc.nodes ?? {})
+		.filter((n) => n.scope === undefined)
+		.map((n) => n.pos ?? [0, 0]);
 	if (at.length === 0) return [0, 0];
 	return [
 		at.reduce((a, p) => a + (p[0] ?? 0), 0) / at.length,
