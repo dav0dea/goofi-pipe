@@ -119,8 +119,6 @@
 			{#snippet title()}No node selected{/snippet}
 			{#snippet hint()}Select a node to edit its parameters.{/snippet}
 		</EmptyState>
-	{:else if node.subpatch}
-		<SubPatchInspector {node} />
 	{:else}
 		{#if showHeader}
 			<Bar class="pf-identity-bar">
@@ -185,38 +183,42 @@
 			{/if}
 		{/if}
 
-		{#if tabItems.length > 0}
-			<Tabs
-				items={tabItems}
-				active={activeGroup ?? undefined}
-				onSelect={(id) => (frontGroup = id)}
-				data-testid="param-tabs"
-			/>
-		{/if}
-
-		<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
-		<div
-			class="pf-rows"
-			role={tabItems.length > 0 ? 'tabpanel' : undefined}
-			aria-label={activeGroup ?? undefined}
-			data-testid="param-rows"
-		>
-			{#if activeParams.length === 0}
-				<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
-			{:else}
-				{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
-					<ParamField
-						{paramName}
-						{descriptor}
-						data-testid={`param-field-${paramName}`}
-						refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}
-						onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
-						onSetExpression={(expr, opts) => setExpression(activeGroup ?? '', paramName, expr, opts)}
-						onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
-					/>
-				{/each}
+		{#if node.subpatch}
+			<SubPatchInspector {node} />
+		{:else}
+			{#if tabItems.length > 0}
+				<Tabs
+					items={tabItems}
+					active={activeGroup ?? undefined}
+					onSelect={(id) => (frontGroup = id)}
+					data-testid="param-tabs"
+				/>
 			{/if}
-		</div>
+
+			<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
+			<div
+				class="pf-rows"
+				role={tabItems.length > 0 ? 'tabpanel' : undefined}
+				aria-label={activeGroup ?? undefined}
+				data-testid="param-rows"
+			>
+				{#if activeParams.length === 0}
+					<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
+				{:else}
+					{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
+						<ParamField
+							{paramName}
+							{descriptor}
+							data-testid={`param-field-${paramName}`}
+							refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}
+							onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
+							onSetExpression={(expr, opts) => setExpression(activeGroup ?? '', paramName, expr, opts)}
+							onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
+						/>
+					{/each}
+				{/if}
+			</div>
+		{/if}
 	{/if}
 </section>
 

@@ -43,15 +43,17 @@ pub fn of(g: &Graph) -> Value {
         }
         nodes.insert(uid.to_hex(), Value::Object(node));
     }
-    // A facade and a boundary port are node records too. Neither runs, so neither carries params or
-    // viewers — the key is simply absent, as it is on a node that has none.
+    // A facade and a boundary port are node records too. Neither runs, so neither carries params —
+    // the key is simply absent, as it is on a node that has none. Both DO wear viewers: a facade
+    // draws its out ports as slots, and an in port wears one of its own.
     for uid in g.scope_uids() {
         let Some(scope) = g.scope(uid) else { continue };
-        nodes.insert(
-            uid.to_hex(),
-            json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name, "pos": pos_json(scope.pos),
-                    "params": {} }),
-        );
+        let mut facade = json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name,
+                                 "pos": pos_json(scope.pos), "params": {} });
+        if scope.viewers.as_object().is_some_and(|m| !m.is_empty()) {
+            facade["viewers"] = json!(scope.viewers.to_string());
+        }
+        nodes.insert(uid.to_hex(), facade);
         for (id, st) in scope.stubs.iter() {
             let mut rec = json!({ "type": subpatch::boundary_type_name(st.dir, st.dtype),
                                   "name": st.name, "pos": pos_json(st.pos), "params": {},

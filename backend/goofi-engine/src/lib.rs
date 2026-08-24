@@ -1079,16 +1079,22 @@ impl Graph {
             e.viewers = viewers;
             return Ok(());
         }
+        if let Some(sc) = self.scopes.get_mut(&uid) {
+            sc.viewers = viewers;
+            return Ok(());
+        }
         let scope = self.stub(uid).map(|(s, _)| s).ok_or_else(|| format!("no such node {uid}"))?;
         self.stub_mut(scope, uid).expect("just found").viewers = viewers;
         Ok(())
     }
 
-    /// A node's or a boundary port's viewer view-state blob (empty object if never set).
+    /// The viewer view-state blob of anything a uid can name — a node, a facade or a boundary port
+    /// (empty object if never set).
     pub fn viewers(&self, uid: Uid) -> Option<&serde_json::Value> {
         self.nodes
             .get(&uid)
             .map(|e| &e.viewers)
+            .or_else(|| self.scopes.get(&uid).map(|s| &s.viewers))
             .or_else(|| self.stub(uid).map(|(_, s)| &s.viewers))
     }
 
@@ -1304,7 +1310,7 @@ impl Graph {
         // namespace, so a batch that names every port out of the state it started in hands each of
         // them the same label — and `nd()` then cannot tell two ports apart.
         let disp = self.mint_subpatch_name(scope_uid);
-        self.scopes.insert(scope_uid, Scope { name: disp, pos, stubs: IndexMap::new() });
+        self.scopes.insert(scope_uid, Scope::new(disp, pos, IndexMap::new()));
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
         //    naming the DIRECT member; both or neither leaves the link verbatim.
@@ -1371,7 +1377,7 @@ impl Graph {
         }
         // The parent is captured explicitly rather than derived from members, so an EMPTY scope
         // restores fine. Re-tag only members that actually exist.
-        self.scopes.insert(scope_id, subpatch::Scope { name, pos, stubs });
+        self.scopes.insert(scope_id, subpatch::Scope::new(name, pos, stubs));
         for &m in members {
             if self.nodes.contains_key(&m) || self.scopes.contains_key(&m) {
                 self.set_member_scope(m, Some(scope_id));
@@ -1704,6 +1710,17 @@ impl Graph {
     /// Respawn a node's instance IN PLACE. Everything that identifies it in the patch survives, so
     /// remove+add is no substitute. A Python node re-runs the source CAPTURED AT DISCOVERY.
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
+        // A facade has no thread of its own, so restarting it is restarting what is inside it — to
+        // any depth. A port has neither thread nor members, so it is a restart of nothing.
+        if self.scopes.contains_key(&uid) {
+            for m in self.scope_members(uid) {
+                self.restart_node(m)?;
+            }
+            return Ok(());
+        }
+        if self.stub(uid).is_some() {
+            return Ok(());
+        }
         let entry = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
         let type_name = entry.manifest.type_name;
         let held = entry.params.clone();
@@ -2603,7 +2620,14 @@ impl Graph {
         for (uid, scope) in &self.scopes {
             nodes.insert(
                 uid.to_hex(),
-                json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name, "pos": scope.pos, "params": {} }),
+                {
+                    let mut rec = json!({ "type": subpatch::SCOPE_TYPE, "name": scope.name,
+                                          "pos": scope.pos, "params": {} });
+                    if scope.viewers.as_object().is_some_and(|m| !m.is_empty()) {
+                        rec["viewers"] = scope.viewers.clone();
+                    }
+                    rec
+                },
             );
             for (id, st) in &scope.stubs {
                 let mut rec = json!({
@@ -2735,12 +2759,15 @@ impl Graph {
         for (old, rec) in nodes.iter().filter(|(_, r)| r["type"] == subpatch::SCOPE_TYPE) {
             self.scopes.insert(
                 idmap[old],
-                subpatch::Scope {
-                    name: rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    pos: read_pos(rec),
-                    stubs: IndexMap::new(),
-                },
+                subpatch::Scope::new(
+                    rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    read_pos(rec),
+                    IndexMap::new(),
+                ),
             );
+            if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
+                let _ = self.set_node_viewers(idmap[old], v.clone());
+            }
         }
         for (old, rec) in nodes.iter().filter(|(_, r)| !structural(r["type"].as_str().unwrap_or(""))) {
             let ty = rec["type"].as_str().unwrap();

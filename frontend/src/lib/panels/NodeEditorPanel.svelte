@@ -356,12 +356,14 @@
 		flowEdges = next;
 	});
 
-	/** Real-node ids selected in THIS editor — the store's selection plus a live marquee. Sub-patch
-	 * group nodes are excluded: they cannot round-trip through the generic clone/clipboard path. */
+	/** Node ids selected in THIS editor — the store's selection plus a live marquee. A boundary port
+	 * is one of them: it is a doc node record with a type and a pos, so it clones like any other.
+	 * A sub-patch FACADE is not, because cloning a scope means cloning its members and their wiring,
+	 * which is a feature rather than a branch to delete. */
 	function selectedNodeNames(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
-		return [...ids].filter((id) => !(id in g.instances) && !g.portScope(id));
+		return [...ids].filter((id) => !(id in g.instances));
 	}
 
 	async function groupSelection(): Promise<void> {

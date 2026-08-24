@@ -309,7 +309,7 @@ pub fn check_viewers(
     let bag = viewers
         .as_object()
         .ok_or_else(|| format!("{OP}: viewers is a {{slot: {{kind, settings, collapsed}}}} map"))?;
-    if g.manifest(uid).is_none() && g.stub(uid).is_none() {
+    if crate::vocab::node_type(g, uid).is_none() {
         return Ok(());
     }
     for (slot, view) in bag {

@@ -12,6 +12,7 @@ function inst(over: Partial<InstanceView> & { uid: string }): InstanceView {
 		pos: over.pos ?? [0, 0],
 		members: over.members ?? {},
 		interface: over.interface ?? [],
+		viewers: over.viewers,
 		uid: over.uid
 	};
 }

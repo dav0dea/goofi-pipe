@@ -471,11 +471,21 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     let outp = boundary(&g, &inst, "out");
     g.refuse("edit_node", j!({ "node": outp, "viewers": { "value": { "kind": "line" } } }));
 
-    // The blob survives a save and a load, as a node's does.
+    // The FACADE is a node too, and it draws that OUT port as one of its output slots — so the
+    // viewer that has no meaning INSIDE the sub-patch is exactly the one it wears outside.
+    wire(&g, &outp, "out", &hex(buf), "out");
+    g.call("edit_node", j!({ "node": inst, "viewers": { &outp: { "kind": "line" } } }));
+    let facade = g.doc()["nodes"][&inst]["viewers"].as_str().expect("a blob, as a node's").to_string();
+    assert!(facade.contains("line"), "the facade kept the view state: {facade}");
+    g.refuse("edit_node", j!({ "node": inst, "viewers": { "nope": { "kind": "line" } } }));
+
+    // Both blobs survive a save and a load, as a node's does.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ports.gfi");
     g.call("save", j!({ "path": path.to_string_lossy() }));
     let other = Goofi::new();
     other.call("load", j!({ "path": path.to_string_lossy() }));
     assert_eq!(other.doc()["nodes"][&inp]["viewers"], g.doc()["nodes"][&inp]["viewers"]);
+    assert_eq!(other.doc()["nodes"][&inst]["viewers"], g.doc()["nodes"][&inst]["viewers"],
+               "the facade's too — it is a node record in the archive like any other");
 }

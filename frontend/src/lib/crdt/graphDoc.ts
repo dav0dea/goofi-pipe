@@ -46,6 +46,8 @@ export interface InstanceView {
 	members: Record<string, boolean>;
 	/** The scope's boundary ports, in document order. */
 	interface: BoundaryView[];
+	/** The facade's own per-slot viewer blob, as a leaf carries one. */
+	viewers: unknown;
 }
 
 type Obj = Record<string, unknown>;
@@ -226,7 +228,8 @@ export function instanceView(doc: Doc, uid: string): InstanceView | null {
 		parent: scopeOf(inst),
 		pos: pos2(inst),
 		members,
-		interface: iface
+		interface: iface,
+		viewers: viewersJson(doc, uid)
 	};
 }
 

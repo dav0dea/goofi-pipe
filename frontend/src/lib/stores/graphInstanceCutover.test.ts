@@ -195,8 +195,8 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 	});
 });
 
-describe('a collapsed scope’s inline viewer, whose blob only the instance record holds', () => {
-	it('answers a write, and a re-minted uid inherits nothing of it', () => {
+describe('a collapsed scope’s inline viewer, which is a node’s inline viewer', () => {
+	it('goes out as edit_node, rides the doc back, and a re-minted uid inherits nothing of it', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
@@ -209,15 +209,20 @@ describe('a collapsed scope’s inline viewer, whose blob only the instance reco
 
 		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
 		g.setSlotView('i9', 'p9', { kind: 'image', collapsed: true });
+		// A facade is a node here and in the engine, so the write is the op a leaf's write is —
+		// which is what makes it undoable, replicated to a second tab, and saved with the patch.
+		const sent = fc.recordedCalls().find((c) => c.op === 'edit_node');
+		expect(sent?.payload).toMatchObject({ node: 'i9', viewers: { p9: { kind: 'image' } } });
+
+		// …and the state it shows comes BACK through the doc, exactly as a leaf's does.
+		expect(slotView(g.nodeById('i9'), 'p9').kind, 'nothing until the manager answers').toBeUndefined();
+		d.patch({ nodes: { i9: { viewers: JSON.stringify({ p9: { kind: 'image', collapsed: true } }) } } });
 		expect(slotView(g.nodeById('i9'), 'p9').kind).toBe('image');
 		expect(isSlotExpanded(g.nodeById('i9'), 'p9')).toBe(false);
-		// A scope uid is not a node: the engine refuses one, so the record is the whole of the state
-		// and nothing is sent. (This is also why it does not survive a reload.)
-		expect(fc.recordedCalls().some((c) => c.op === 'edit_node')).toBe(false);
 
-		// An unrelated doc write re-assembles every scope from the doc, which carries no viewer blob.
+		// An unrelated doc write re-assembles every scope; the blob is in the doc, so it survives.
 		d.patch({ nodes: { m9: { name: 'buffer9b' } } });
-		expect(slotView(g.nodeById('i9'), 'p9').kind, 'a survivor keeps its live view state').toBe('image');
+		expect(slotView(g.nodeById('i9'), 'p9').kind, 'a survivor keeps its view state').toBe('image');
 
 		// Ungroup: the facade and its port leave the doc, taking the blob with them. That uid can be
 		// re-minted by a later backend, and what comes back must start clean.

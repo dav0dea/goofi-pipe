@@ -174,23 +174,10 @@ export class GraphStore {
 	}
 
 	/** Write ONE slot's inline view, merging into the node's blob. The kind stored is the user's RAW
-	 * pick; a sub-patch SCOPE has no engine blob, so its record holds it client-side. */
+	 * pick. A facade and a boundary port take the same op a leaf does — each is a node here. */
 	setSlotView(uid: string, slot: string, view: SlotView): void {
 		const node = this.nodeById(uid);
 		if (!node?.output_slots[slot]) return;
-		const inst = this.instances[uid];
-		if (inst) {
-			// From the node's CURRENT output slots, never the blob's keys: a blob saved before a
-			// node file changed its slots carries a name that is no longer a slot.
-			const viewers: NodeInstanceInfo['viewers'] = {};
-			for (const s of Object.keys(node.output_slots)) {
-				const stored = node.viewers?.[s];
-				if (s === slot) viewers[s] = { ...stored, ...view };
-				else if (stored) viewers[s] = { ...stored };
-			}
-			inst.viewers = viewers;
-			return;
-		}
 		void this.ctl
 			.call('edit_node', { node: uid, viewers: { [slot]: view } })
 			.then(() => this._recordGraphCmd(`Set ${slot} view`))
@@ -520,15 +507,6 @@ export class GraphStore {
 		this._recordGraphCmd('Ungroup');
 	}
 
-	/** The sub-patch a boundary port belongs to, or null when the uid names no port. A port is not a
-	 * leaf node, so `nodeById` does not answer for one; everything else about it is a node op. */
-	portScope(uid: string): string | null {
-		for (const [scope, inst] of Object.entries(this.instances)) {
-			if (inst.interface[uid]) return scope;
-		}
-		return null;
-	}
-
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
 	async listDir(path?: string): Promise<DirListing> {
 		return this.ctl.call<DirListing>('list_dir', { path });
@@ -558,6 +536,17 @@ export class GraphStore {
 			return null;
 		}
 		return this._synthSubpatchNode(id, inst);
+	}
+
+	/** Every node a panel can bind or a picker can list: the leaves and ports the doc carries, plus
+	 * the sub-patch facades, which are nodes everywhere else in the editor. ROOT is the canvas. */
+	get bindable(): { uid: string; name: string }[] {
+		return [
+			...this.nodes.map((n) => ({ uid: n.uid, name: n.name })),
+			...Object.values(this.instances)
+				.filter((i) => i.uid !== ROOT_ID)
+				.map((i) => ({ uid: i.uid, name: i.name }))
+		];
 	}
 
 	/** Memoized virtual sub-patch nodes: a fresh object per call re-subscribed the inline viewer. */
@@ -697,9 +686,7 @@ export class GraphStore {
 	private _reconcileInstances(next: Record<string, InstanceInfo>): void {
 		for (const [uid, rec] of Object.entries(next)) {
 			const cur = this.instances[uid];
-			// A scope's `viewers` is not in the document, so the record IS its holder — the assembled
-			// one is always empty and would blank a survivor's live view state.
-			if (cur) Object.assign(cur, rec, { viewers: cur.viewers });
+			if (cur) Object.assign(cur, rec);
 			else this.instances[uid] = rec;
 		}
 		for (const uid of Object.keys(this.instances)) {

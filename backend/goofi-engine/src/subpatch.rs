@@ -83,13 +83,22 @@ impl Stub {
     }
 }
 
-/// A sub-patch scope: its display name, facade position and boundary stubs. Membership lives in
-/// the Graph's `scope_of` index.
+/// A sub-patch scope: its display name, facade position, boundary stubs and the facade's own
+/// per-slot viewer state. Membership lives in the Graph's `scope_of` index.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scope {
     pub name: String,
     pub pos: [f64; 2],
     pub stubs: IndexMap<Uid, Stub>,
+    /// Per-slot viewer view-state, as a node and a port carry it — the facade draws its OUT ports
+    /// as output slots, so each of them is a slot a viewer attaches to.
+    pub viewers: serde_json::Value,
+}
+
+impl Scope {
+    pub fn new(name: String, pos: [f64; 2], stubs: IndexMap<Uid, Stub>) -> Self {
+        Scope { name, pos, stubs, viewers: serde_json::json!({}) }
+    }
 }
 
 /// Chain-to-leaf: resolve `(scope_uid, stub slot)` to the physical inner leaf it exposes.

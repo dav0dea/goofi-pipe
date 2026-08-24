@@ -120,7 +120,7 @@
 		></div>
 		<ScrollArea>
 			<ParamForm node={renderedNode} {onClose} />
-			{#if renderedNode && !renderedNode.subpatch}
+			{#if renderedNode}
 				<MetadataPanel node={renderedNode} />
 				{#if renderedNode.error}
 					<section class="node-error" data-testid="inspector-error">

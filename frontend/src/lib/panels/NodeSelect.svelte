@@ -19,7 +19,7 @@
 
 	const g = graph();
 	const ws = workspace();
-	const list = $derived(nodePickList(g.nodes, linkedNodeName(state), emptyLabel));
+	const list = $derived(nodePickList(g.bindable, linkedNodeName(state), emptyLabel));
 
 	function choose(uid: string): void {
 		if (uid === NO_NODE) ws.unlinkNodeFromPanel(panelId);

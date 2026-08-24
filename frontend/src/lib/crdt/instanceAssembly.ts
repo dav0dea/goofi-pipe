@@ -34,7 +34,7 @@ export function assembleInstance(
 		pos: view.pos,
 		members,
 		error,
-		viewers: {}
+		viewers: (view.viewers ?? {}) as InstanceInfo['viewers']
 	};
 }
 
