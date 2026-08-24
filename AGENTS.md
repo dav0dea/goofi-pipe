@@ -293,8 +293,9 @@ of the package, never a patch in this tree.
   the Python wheel derives it. Bumping it also re-provisions the venvs.
 - Commit in small, focused, readable steps at green checkpoints — never one mega-commit. Commit
   messages end with a `Co-Authored-By:` trailer naming the model that actually wrote them.
-- **`docs/` is gitignored on this branch.** It holds `roadmap/` — one file per major unbuilt
-  feature — and nothing else. Do not restore what is not there.
+- **`roadmap/` is the backlog, and it is committed.** One file per unbuilt feature, in the repo
+  root. It is the ONE place a deferred item is recorded — an item tracked anywhere else is an item
+  that drifts. A file states the decisions already taken and what is open, never a plan.
 - No auth on the WS endpoints — single-user, local/trusted-LAN app.
 - **Responsive and touch-capable across desktop, tablet and phone**, both orientations. Desktop is
   the reference, but no interaction may exist solely behind hover, right-click or a keyboard
