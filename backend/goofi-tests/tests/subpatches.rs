@@ -517,6 +517,25 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     assert!(!slot_moved.contains(".sink"), "…and nothing still spells the old slot: {slot_moved}");
     assert!(!slot_moved.contains("[error:"), "the binding stayed live across it: {slot_moved}");
 
+    // A display name is read as an ATTRIBUTE in an expression — `nd('chain').drain` — so a name
+    // Python cannot parse as one breaks every reference to it, and the rewrite that follows the
+    // NEXT rename can no longer find what it broke. The name is refused instead, for every kind
+    // of node: the namespace is one, so the rule on it is one.
+    let before_bad = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    for bad in ["nd()", "a b", "1st", "a.b", "", "class", "it's"] {
+        g.refuse("edit_node", j!({ "node": outp, "name": bad }));
+        g.refuse("edit_node", j!({ "node": inst, "name": bad }));
+        g.refuse("edit_node", j!({ "node": hex(buf), "name": bad }));
+        // …and at birth too, for every kind. An EMPTY name is the one exception there: it is how a
+        // caller asks to be given one, where a rename to nothing is not a rename.
+        if !bad.is_empty() {
+            g.refuse("add_node", j!({ "type": "Buffer", "name": bad }));
+        }
+    }
+    assert_eq!(g.doc()["nodes"][&outp]["name"], "drain", "a refused rename changed nothing");
+    let after_bad = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert_eq!(before_bad, after_bad, "…and left every expression exactly as it was");
+
     // The mirror case: a source spelling a slot no port wears YET heals when a rename gives a port
     // that name. Nobody re-edits the expression — the rename is what makes it resolvable, exactly
     // as it is for a node's own name.

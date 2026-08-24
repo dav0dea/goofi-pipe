@@ -434,11 +434,14 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         g.refuse(op, payload);
     }
 
-    // A rename splices into expression SOURCE, so a quote yields invalid Python the referrer carries.
-    for bad in ["a'b", "a\\b", "a\"b"] {
-        g.refuse("edit_node", j!({ "node": hex(osc), "name": bad }));
+    // An expression reads a name as an ATTRIBUTE — `globals.gain`, `nd('sub').slot` — so a name
+    // Python cannot parse as one is refused, whatever makes it unparseable. The refusal says the
+    // rule rather than the one character it caught.
+    for bad in ["a'b", "a\\b", "a\"b", "a b-2", "nd()", "1st", "class", ""] {
+        let why = g.refuse("edit_node", j!({ "node": hex(osc), "name": bad }));
+        assert!(why.contains("letters, digits or _"), "the refusal states the rule: {why}");
     }
-    g.call("edit_node", j!({ "node": hex(osc), "name": "a b-2" }));
+    g.call("edit_node", j!({ "node": hex(osc), "name": "a_b_2" }));
     // The command tolerates a collision so replay converges; the RPC boundary raises the user error.
     g.add("Buffer");
     g.refuse("edit_node", j!({ "node": hex(osc), "name": "buffer0" }));

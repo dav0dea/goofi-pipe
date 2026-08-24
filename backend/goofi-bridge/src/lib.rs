@@ -1048,8 +1048,19 @@ impl AppState {
                     let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     // A chosen name that collides is DROPPED by the command, so a caller told
                     // nothing would get a node under a name it never asked for.
-                    if !name.is_empty() && g.name_taken(&name, None) {
-                        return Err(format!("add_node: the name `{name}` is taken"));
+                    // A chosen name that collides — or that an expression could not read as an
+                    // attribute — is DROPPED by the create, so a caller told nothing would get a
+                    // node under a name it never asked for.
+                    if !name.is_empty() {
+                        if g.name_taken(&name, None) {
+                            return Err(format!("add_node: the name `{name}` is taken"));
+                        }
+                        if !goofi_core::globals::is_valid_identifier(&name) {
+                            return Err(format!(
+                                "add_node: `{name}` is not a legal name: {}",
+                                goofi_engine::NAME_RULE
+                            ));
+                        }
                     }
                     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
                     // Never silently rooted on a bad `inst_id`: the canvas draws only the entered
@@ -1178,12 +1189,14 @@ impl AppState {
                             return Err(format!("edit_node: the name `{n}` is taken"));
                         }
                     }
-                    // A display name is spliced into expression SOURCE, so a quote or backslash
-                    // would yield invalid Python in every referring node.
-                    if name.as_deref().is_some_and(|n| n.contains(['\'', '"', '\\'])) {
-                        return Err("edit_node: a name cannot contain a quote or backslash — it is \
-                                    spliced into nd() expression source"
-                            .into());
+                    // A display name is read as an ATTRIBUTE in an expression, so it has to be one
+                    // — which also covers the quote and backslash that would break the source.
+                    if name.as_deref().is_some_and(|n| !goofi_core::globals::is_valid_identifier(n)) {
+                        return Err(format!(
+                            "edit_node: `{}` is not a legal name: {}",
+                            name.unwrap_or_default(),
+                            goofi_engine::NAME_RULE
+                        ));
                     }
                     let pos = payload
                         .get("pos")

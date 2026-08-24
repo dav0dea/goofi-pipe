@@ -55,6 +55,10 @@ impl std::fmt::Display for Uid {
 /// archive somebody actually holds — not once per change while the format is still moving.
 const MANIFEST_VERSION: i64 = 1;
 
+/// What a name has to be, said once — it is the tail of every refusal about one.
+pub const NAME_RULE: &str =
+    "a letter or _ then letters, digits or _, and not a Python keyword — an expression reads a name as an attribute";
+
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
 /// `add_node` answers and *addressable* only once it reports [`runtime::Status::Ready`].
 struct NodeHost {
@@ -882,7 +886,7 @@ impl Graph {
                 let seed = params.is_none();
                 let (manifest, params, build) = self.build_node(type_name, params)?;
                 let uid = self.claim(uid);
-                let born = self.pick_name(name, &manifest.type_name.to_lowercase());
+                let born = self.pick_name(name, &manifest.type_name.to_lowercase(), None);
                 self.insert_node_at(uid, born.clone(), manifest, build, params);
                 if seed {
                     self.seed_default_expressions(uid, manifest);
@@ -895,7 +899,7 @@ impl Graph {
             }
         };
         let uid = self.claim(uid);
-        let born = self.pick_name(name, &base);
+        let born = self.pick_name(name, &base, None);
         self.nodes.insert(
             uid,
             NodeEntry { kind, name: born.clone(), pos: [0.0, 0.0], viewers: serde_json::json!({}) },
@@ -914,9 +918,10 @@ impl Graph {
     }
 
     /// The display name a create lands on: the one asked for, or a fresh `base<N>` when it is
-    /// empty or already worn.
-    fn pick_name(&self, want: &str, base: &str) -> String {
-        match want.is_empty() || self.name_in_use(want) {
+    /// empty, already worn, or not a legal name. A CREATE degrades where a rename refuses, because
+    /// this is also the restore path — a hand-edited archive must cost one name, not the patch.
+    fn pick_name(&self, want: &str, base: &str, except: Option<Uid>) -> String {
+        match self.name_taken(want, except) || !goofi_core::globals::is_valid_identifier(want) {
             true => self.fresh_name(base),
             false => want.to_string(),
         }
@@ -1101,6 +1106,9 @@ impl Graph {
     /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')`, and the referrer uids
     /// come back so the bridge can rebroadcast them. The rewrite happens only on success.
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
+        if !goofi_core::globals::is_valid_identifier(name) {
+            return Err(format!("`{name}` is not a legal name: {NAME_RULE}"));
+        }
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
         }
@@ -1497,23 +1505,16 @@ impl Graph {
             subpatch::Dir::In => self.input_slot_type(leaf, slot),
         }
         .unwrap_or(goofi_core::SlotType::Array);
-        let name = self.fresh_name(dir.name());
-        let id = self.mint();
         let base = self.pos(member).unwrap_or([0.0, 0.0]);
         let pos = match dir {
             subpatch::Dir::Out => [base[0] + 220.0, base[1]],
             subpatch::Dir::In => [base[0] - 40.0, base[1]],
         };
-        self.nodes.insert(
-            id,
-            NodeEntry {
-                kind: Kind::Port(subpatch::Port { dir, dtype }),
-                name,
-                pos,
-                viewers: serde_json::json!({}),
-            },
-        );
-        self.set_member_scope(id, Some(member));
+        let ty = subpatch::boundary_type_name(dir, dtype);
+        let Ok(id) = self.create_node(ty, None, "", None, Some(member)) else {
+            return slot.to_string();
+        };
+        let _ = self.set_node_pos(id, pos);
         minted.push((member, id));
         let (node, slot) = inner;
         let _ = match dir {
@@ -1676,7 +1677,7 @@ impl Graph {
             scope_id,
             NodeEntry {
                 kind: Kind::Facade,
-                name: self.pick_name(&name, "subpatch"),
+                name: self.pick_name(&name, "subpatch", Some(scope_id)),
                 pos,
                 viewers: serde_json::json!({}),
             },
@@ -2750,9 +2751,13 @@ impl Graph {
         self.start = Instant::now();
     }
 
+    /// Take the name a RESTORE asks for. It goes through the same gate a create does, so an
+    /// archive naming something illegal or already worn costs that NAME and not the patch.
     fn force_set_name(&mut self, uid: Uid, name: &str) {
+        let Some(base) = self.node_type(uid).map(name_base) else { return };
+        let name = self.pick_name(name, &base, Some(uid));
         if let Some(e) = self.nodes.get_mut(&uid) {
-            e.name = name.to_string();
+            e.name = name;
         }
     }
 
@@ -3054,11 +3059,12 @@ impl Graph {
                 idmap[old],
                 NodeEntry {
                     kind: Kind::Facade,
-                    name: rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    name: String::new(),
                     pos: read_pos(rec),
                     viewers: serde_json::json!({}),
                 },
             );
+            self.force_set_name(idmap[old], rec.get("name").and_then(|v| v.as_str()).unwrap_or(""));
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(idmap[old], v.clone());
             }
@@ -3103,12 +3109,11 @@ impl Graph {
             if self.scope_of(uid).is_none() {
                 continue;
             }
-            let name = rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             self.nodes.insert(
                 uid,
                 NodeEntry {
                     kind: Kind::Port(subpatch::Port { dir, dtype }),
-                    name,
+                    name: String::new(),
                     pos: read_pos(rec),
                     viewers: rec
                         .get("viewers")
@@ -3117,6 +3122,7 @@ impl Graph {
                         .unwrap_or_else(|| serde_json::json!({})),
                 },
             );
+            self.force_set_name(uid, rec.get("name").and_then(|v| v.as_str()).unwrap_or(""));
         }
         if let Some(links) = links_v.and_then(|v| v.as_array()) {
             for l in links {

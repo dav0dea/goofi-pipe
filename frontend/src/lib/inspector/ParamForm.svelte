@@ -20,6 +20,7 @@
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
+	import { isValidIdentifier } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
@@ -79,7 +80,9 @@
 		editingUid = null;
 		if (!uid || !node || node.uid !== uid) return;
 		const base = nameDraft.trim();
-		if (!base) return; // empty → keep the current name
+		// The manager refuses a name an expression could not read as an attribute; saying so here
+		// is what keeps the draft rather than throwing the user's typing away on a blur.
+		if (!isValidIdentifier(base)) return;
 		void g.renameNode(uid, base).catch((e) => console.warn('rename failed', e));
 	}
 	function cancelRename(): void {
@@ -130,6 +133,7 @@
 								<input
 									{...MODE_ATTRS.search}
 									class="pf-rename"
+									class:bad={nameDraft.trim() !== '' && !isValidIdentifier(nameDraft.trim())}
 									aria-label="Node name"
 									value={nameDraft}
 									oninput={(e) => (nameDraft = e.currentTarget.value)}
@@ -276,6 +280,9 @@
 		background: var(--surface-2);
 		border: 1px solid var(--accent);
 		border-radius: var(--radius-sm);
+	}
+	.pf-rename.bad {
+		color: var(--danger);
 	}
 	.pf-type {
 		color: var(--text-muted);

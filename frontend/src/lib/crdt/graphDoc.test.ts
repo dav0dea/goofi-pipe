@@ -9,6 +9,7 @@ import {
 	docParams,
 	globalViews,
 	isValidGlobalName,
+	isValidIdentifier,
 	arrangementTabs,
 	type Doc
 } from './graphDoc';
@@ -203,6 +204,16 @@ describe('graphDoc globals', () => {
 		expect(isValidGlobalName('a b')).toBe(false);
 		expect(isValidGlobalName('a.b')).toBe(false);
 		expect(isValidGlobalName('globals')).toBe(false);
+		// A keyword passes the character rule and fails the parser, and both namespaces are read as
+		// an ATTRIBUTE in an expression — `globals.gain`, `nd('chain').drain` — so both refuse one.
+		expect(isValidIdentifier('drain')).toBe(true);
+		expect(isValidIdentifier('class')).toBe(false);
+		expect(isValidIdentifier('None')).toBe(false);
+		expect(isValidIdentifier('nd()')).toBe(false);
+		expect(isValidIdentifier("it's")).toBe(false);
+		expect(isValidGlobalName('lambda')).toBe(false);
+		// …and `globals` is legal as a NODE name; it is only the globals namespace that reserves it.
+		expect(isValidIdentifier('globals')).toBe(true);
 	});
 
 	/* The arrangement parser. It reads a tree straight into the shape the panel system draws, so it

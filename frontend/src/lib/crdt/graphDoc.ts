@@ -286,7 +286,21 @@ export function arrangementTabs(doc: Doc): Workspace[] {
 	return out;
 }
 
-/** Whether `name` is a legal global identifier — the exact mirror of the Rust `is_valid_global_name`. */
+/** Python's keywords: a regex reads one as an identifier and a parser does not. */
+const KEYWORDS = new Set(
+	`False None True and as assert async await break class continue def del elif else except
+	 finally for from global if import in is lambda nonlocal not or pass raise return try while
+	 with yield`.split(/\s+/)
+);
+
+/** Whether `name` is a legal Python identifier — the exact mirror of the Rust `is_valid_identifier`.
+ * Every name an expression can spell is held to it, because an expression reads one as an
+ * ATTRIBUTE: `globals.gain`, and a sub-patch's slot in `nd('chain').drain`. */
+export function isValidIdentifier(name: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !KEYWORDS.has(name);
+}
+
+/** …and never the reserved namespace token `globals`, which is the one extra a global carries. */
 export function isValidGlobalName(name: string): boolean {
-	return name !== 'globals' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+	return name !== 'globals' && isValidIdentifier(name);
 }

@@ -84,9 +84,23 @@ pub static SYSTEM_GLOBALS: &[GlobalDef] = &[GlobalDef {
     doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
 }];
 
-/// A legal identifier `[A-Za-z_][A-Za-z0-9_]*`, and never the reserved namespace token `globals`.
-pub fn is_valid_global_name(name: &str) -> bool {
-    if name == "globals" {
+/// Python's keywords. A regex reads one as an identifier and a parser does not, so a name that is
+/// one cannot be an attribute — which is the position both namespaces are read in.
+const KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+/// A legal Python identifier: `[A-Za-z_][A-Za-z0-9_]*` and not a keyword.
+///
+/// Every name an expression can spell is held to this, because an expression reads one as an
+/// ATTRIBUTE — `globals.gain`, and a sub-patch's slot in `nd('chain').drain`. A name Python cannot
+/// parse there breaks every reference to it and takes the rewrite with it: the next rename has no
+/// `nd('<old>')` left to follow, so the damage cannot be undone by renaming back.
+pub fn is_valid_identifier(name: &str) -> bool {
+    if KEYWORDS.contains(&name) {
         return false;
     }
     let mut chars = name.chars();
@@ -95,6 +109,11 @@ pub fn is_valid_global_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// …and never the reserved namespace token `globals`, which is the one extra a global carries.
+pub fn is_valid_global_name(name: &str) -> bool {
+    name != "globals" && is_valid_identifier(name)
 }
 
 /// An immutable, cheaply-cloned view of the patch globals, for node setup/process and eval.
