@@ -243,6 +243,22 @@ ways must not be three conditions to keep in step. That stamp is also what separ
 bundle someone ASKED for from one that is a broken build: the first is the mode, the second is
 refused.
 
+**A virtual node is a node, and only the backend may know otherwise.** A boundary port and a
+sub-patch facade are nodes: named in the one namespace `nd()` reads, moved, wired, viewed, copied,
+deleted and inspected by the same ops, and carried in the document's ONE `nodes` map. The backend
+keeps the thin distinctions their own nature forces — neither runs, so neither holds params, a
+manifest or a lifecycle stage, and a port relays rather than produces, so a read resolves what is
+behind it. **The frontend gets none.** A frontend branch on port-ness or scope-ness is a defect
+unless it is purely about how the thing is DRAWN.
+
+The test for "is this necessary" is the UNWIRED state: a port with nothing behind it must be in the
+state an unconnected leaf is in — present, addressable, viewable, wireable, saved — just with no
+data. It is never absent, never an error, never a closed socket. Deleting the node behind a port
+leaves the port; a viewer opened before the wire stays open and starts drawing when the wire lands.
+What this cost, three times over: a port was DELETED when its target was, its `/data` socket was
+refused with a terminal close code that the client then made permanent, and `inspect_node` answered
+"no node" for the thing `add_node` had just returned.
+
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,
 or neither. A load restores the uids the patch was saved with, because everything keyed by uid
