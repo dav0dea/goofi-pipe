@@ -926,3 +926,86 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     (Command::Compound(cmds), subtree)
 }
 
+
+/// One uid through the copy map; a uid the map does not name lies OUTSIDE the subtree, so it stays
+/// as it is — which is what leaves a copy's outward cables behind.
+fn mapped(u: Uid, map: &std::collections::HashMap<Uid, Uid>) -> Option<Uid> {
+    map.get(&u).copied()
+}
+
+/// Rewrite a captured-subtree command onto fresh uids, clearing every minted name so the copy takes
+/// its own out of the one namespace. A command naming something outside the subtree is dropped:
+/// a copy arrives unconnected, exactly as a fresh node does.
+fn as_copy(
+    cmd: Command,
+    map: &std::collections::HashMap<Uid, Uid>,
+    offset: [f64; 2],
+) -> Option<Command> {
+    let at = |p: [f64; 2]| [p[0] + offset[0], p[1] + offset[1]];
+    Some(match cmd {
+        Command::AddNode { type_name, pos, uid, params, exprs, viewers, scope, .. } => Command::AddNode {
+            type_name,
+            pos: at(pos),
+            uid: Some(mapped(uid?, map)?),
+            name: None, // minted fresh, so the copy cannot collide with what it was copied from
+            params,
+            exprs,
+            viewers,
+            scope: scope.and_then(|s| mapped(s, map)),
+        },
+        Command::Group { members, pos, restore } => {
+            let r = restore?;
+            Command::Group {
+                members: members.iter().filter_map(|m| mapped(*m, map)).collect(),
+                pos: at(pos),
+                restore: Some(ScopeRestore {
+                    scope_id: mapped(r.scope_id, map)?,
+                    name: String::new(),
+                    stubs: r
+                        .stubs
+                        .into_iter()
+                        .filter_map(|(id, mut st)| {
+                            st.name = String::new();
+                            st.inner = st.inner.and_then(|(u, s)| mapped(u, map).map(|u| (u, s)));
+                            mapped(id, map).map(|id| (id, st))
+                        })
+                        .collect(),
+                    parent: r.parent.and_then(|p| mapped(p, map)),
+                    parent_stubs: vec![],
+                }),
+            }
+        }
+        Command::SetScope { uid, scope } => Command::SetScope {
+            uid: mapped(uid, map)?,
+            scope: scope.and_then(|s| mapped(s, map)),
+        },
+        // BOTH ends must be inside, or the cable reached out of the subtree and is not the copy's.
+        Command::AddLink { node_out, slot_out, node_in, slot_in } => Command::AddLink {
+            node_out: mapped(node_out, map)?,
+            slot_out,
+            node_in: mapped(node_in, map)?,
+            slot_in,
+        },
+        other => other,
+    })
+}
+
+/// The commands that build a COPY of the subtree rooted at `root`, and the copy's own root uid.
+/// This is the capture a delete's inverse already builds, put through a uid remap — so duplication
+/// is one traversal in the codebase rather than a second one that can drift from it.
+pub fn copy_subtree(g: &mut Graph, root: Uid, offset: [f64; 2]) -> Result<(Command, Uid), String> {
+    if g.name(root).is_none() {
+        return Err(format!("copy_of: no node {root}"));
+    }
+    let (captured, subtree) = capture_subtree_restore(g, root);
+    let mut map = std::collections::HashMap::new();
+    for uid in subtree.iter().copied() {
+        map.insert(uid, g.mint());
+    }
+    let fresh_root = *map.get(&root).ok_or("copy_of: the subtree did not name its own root")?;
+    let Command::Compound(steps) = captured else {
+        return Err("copy_of: the subtree capture is a compound".into());
+    };
+    let copied: Vec<Command> = steps.into_iter().filter_map(|c| as_copy(c, &map, offset)).collect();
+    Ok((Command::Compound(copied), fresh_root))
+}

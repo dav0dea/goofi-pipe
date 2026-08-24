@@ -75,6 +75,8 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     let rec = g.doc()["nodes"][&inst].clone();
     // A facade is a node record; a TOP-LEVEL one simply names no scope, exactly as a root node does.
     assert_eq!(rec["type"], "SubPatch", "the facade is a node record: {rec}");
+    // Its display name is minted from the ONE namespace, so it counts sub-patches — never uids.
+    assert_eq!(rec["name"], "subpatch0", "the first sub-patch in a patch is subpatch0: {rec}");
     assert!(rec.get("scope").is_none(), "a top-level scope names no parent: {rec}");
     assert!(rec.get("def_id").is_none(), "no sharing ⇒ no def_id");
 
@@ -134,6 +136,17 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     let (_, nested_inner) = port_of(&g, &outer, "OutArray");
     assert_eq!(nested_inner, Some((both.clone(), drain)), "the outer port names the inner one");
     assert_eq!(g.ports(&both).len(), 1, "and nothing new was minted inside");
+
+    // A selection that MIXES a sub-patch with plain nodes nests the sub-patch like any other
+    // member — a facade is a node, so what it is made of is no business of the grouping.
+    let mixed = group(&g, &[outer.clone(), hex(sink)]);
+    let members = g.members(&mixed);
+    assert!(members.contains(&outer), "the sub-patch went inside: {members:?}");
+    assert!(members.contains(&hex(sink)), "…beside the leaf it was selected with: {members:?}");
+    assert_eq!(g.doc()["nodes"][&outer]["scope"], mixed, "and it names its new parent");
+    // The LOWEST free name, so the two scopes expanded above gave theirs back — a count of what
+    // exists, never of what has ever existed, and never a uid.
+    assert_eq!(g.doc()["nodes"][&mixed]["name"], "subpatch2");
 }
 
 #[test]
@@ -419,11 +432,40 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     let renamed = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     assert!(renamed.contains("nd('left')"), "the reference followed the port's rename: {renamed}");
 
-    // An OUT port drains the sub-patch, so there is nothing to read from it.
+    // An OUT port DRAINS a member, and what it drains is a stream — so it reads exactly as an IN
+    // port does, from the other side. Unwired, it says so in the same words.
     let outp = boundary(&g, &inst, "out");
     g.call("edit_node", j!({ "node": outp, "name": "sink" }));
-    let refused = bind("nd('sink')");
-    assert!(refused.as_str().is_some_and(|e| e.contains("no stream")), "{refused}");
+    let dry = bind("nd('sink')");
+    assert!(dry.as_str().is_some_and(|e| e.contains("sink") && e.contains("wired")),
+            "an unwired out port says so, like an in port: {dry}");
+    wire(&g, &outp, "out", &hex(buf), "out");
+    let drained = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(!drained.contains("[error:"), "wiring the out port made the reference resolve: {drained}");
+
+    // …and the SUB-PATCH itself is referenceable, because it has that port as an output slot. One
+    // output, so a bare reference is unambiguous — the same rule a one-output node gets.
+    let facade = bind("nd('subpatch0')");
+    assert!(facade.is_null(), "a sub-patch with one output resolves bare: {facade}");
+
+    // A second output makes it ambiguous, and the refusal names the way out — again the node rule.
+    // It drains a second member, because one leaf slot sits behind exactly one chain of ports.
+    let other_member = g.call("add_node", j!({ "type": "Oscillator", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    let second = boundary(&g, &inst, "out");
+    g.call("edit_node", j!({ "node": second, "name": "other" }));
+    wire(&g, &second, "out", &other_member, "out");
+    let ambiguous = bind("nd('subpatch0')");
+    assert!(ambiguous.as_str().is_some_and(|e| e.contains("ambiguous")),
+            "two outputs, so name one: {ambiguous}");
+
+    // Naming one is by its PORT NAME: the facade's slots are called what its ports are called, so
+    // both resolve and neither needs the uid the document keys them by.
+    assert!(bind("nd('subpatch0').sink").is_null(), "the first port names a slot");
+    assert!(bind("nd('subpatch0').other").is_null(), "and so does the second");
+    let unknown = bind("nd('subpatch0').nosuch");
+    assert!(unknown.as_str().is_some_and(|e| e.contains("no output")),
+            "a name no port wears is refused as a leaf's would be: {unknown}");
 
     // A port's label lives in the ONE display-name namespace `nd()` reads, so it cannot shadow a
     // node's — a second `left` would make the reference above ambiguous.
@@ -467,9 +509,12 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     // …and it is refused on a slot the port does not have, rather than stored and never drawn.
     g.refuse("edit_node", j!({ "node": inp, "viewers": { "out": { "kind": "line" } } }));
 
-    // An OUT port drains the sub-patch: no output, so no viewer.
+    // An OUT port RELAYS what it drains, so it carries a stream and takes a viewer on the same
+    // `value` slot an IN port wears — a port is a pass-through, never a sink, whichever way it faces.
     let outp = boundary(&g, &inst, "out");
-    g.refuse("edit_node", j!({ "node": outp, "viewers": { "value": { "kind": "line" } } }));
+    g.call("edit_node", j!({ "node": outp, "viewers": { "value": { "kind": "line" } } }));
+    let drained = g.doc()["nodes"][&outp]["viewers"].as_str().unwrap_or("").to_string();
+    assert!(drained.contains("line"), "the out port kept its view state: {drained}");
 
     // The FACADE is a node too, and it draws that OUT port as one of its output slots — so the
     // viewer that has no meaning INSIDE the sub-patch is exactly the one it wears outside.
@@ -478,6 +523,14 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     let facade = g.doc()["nodes"][&inst]["viewers"].as_str().expect("a blob, as a node's").to_string();
     assert!(facade.contains("line"), "the facade kept the view state: {facade}");
     g.refuse("edit_node", j!({ "node": inst, "viewers": { "nope": { "kind": "line" } } }));
+
+    // A facade NAMES its slots the way a node does: the port's display name, never its uid. The doc
+    // keys them by uid so a rename cannot break a wire, but nothing a human or an agent reads
+    // should show hex where a leaf shows `out`.
+    let read = g.call("inspect_node", j!({ "node": inst }))["text"].as_str().unwrap().to_string();
+    let outp_name = g.doc()["nodes"][&outp]["name"].as_str().unwrap_or("?").to_string();
+    assert!(read.contains(&outp_name), "the facade lists its slot by name: {read}");
+    assert!(!read.contains(&outp), "…and not by uid: {read}");
 
     // Both blobs survive a save and a load, as a node's does.
     let dir = tempfile::tempdir().unwrap();
@@ -488,4 +541,124 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     assert_eq!(other.doc()["nodes"][&inp]["viewers"], g.doc()["nodes"][&inp]["viewers"]);
     assert_eq!(other.doc()["nodes"][&inst]["viewers"], g.doc()["nodes"][&inst]["viewers"],
                "the facade's too — it is a node record in the archive like any other");
+}
+
+#[test]
+fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
+    // Duplicating a sub-patch is duplicating everything it contains, to any depth — members, nested
+    // scopes, ports and the wiring among them. `copy_of` is the same op for a leaf, so there is one
+    // door rather than a clone path per node kind.
+    let g = Goofi::new();
+    let osc = g.add("Oscillator");
+    let buf = g.add("Buffer");
+    let sink = g.add("Buffer");
+    g.link(osc, "out", buf, "data");
+    g.link(buf, "out", sink, "data");
+
+    // An inner sub-patch around the Buffer, then an outer one around that: a copy has to recurse.
+    let inner = group(&g, &[hex(buf)]);
+    let outer = group(&g, std::slice::from_ref(&inner));
+    assert_eq!(g.doc()["nodes"][&outer]["name"], "subpatch1", "the second sub-patch is subpatch1");
+
+    let before_nodes = g.nodes().len();
+    let copy = g.call("add_node", j!({ "copy_of": outer, "pos": [400.0, 0.0] }))
+        ["uid"].as_str().expect("the copy's facade uid").to_string();
+    assert_ne!(copy, outer, "a copy is a new node, at a new uid");
+
+    // The whole shape came with it: a nested scope inside, holding a Buffer, behind its own ports.
+    let copied_inner = g.members(&copy).into_iter()
+        .find(|m| g.instances().contains(m))
+        .expect("the nested sub-patch was copied too");
+    assert_ne!(copied_inner, inner, "…as a fresh scope, not a second reference to the original");
+    let doc = g.doc();
+    let leaf = g.members(&copied_inner).into_iter()
+        .find(|m| doc["nodes"][m]["type"] == "Buffer")
+        .expect("the innermost member came along");
+    assert_ne!(leaf, hex(buf), "at its own uid");
+    assert!(g.nodes().len() > before_nodes, "the copy added nodes rather than re-pointing at them");
+
+    // Every name is minted fresh out of the one namespace, so nothing collides and `nd()` can tell
+    // the copy from the original.
+    let names: Vec<&str> = doc["nodes"].as_object().unwrap().values()
+        .filter_map(|n| n["name"].as_str()).collect();
+    let mut uniq = names.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    assert_eq!(uniq.len(), names.len(), "no two nodes wear one name after a copy: {names:?}");
+
+    // Wiring INSIDE the copy is the original's; wiring to the patch AROUND it is not, because a copy
+    // is a new node and a new node arrives unconnected.
+    let links = doc["links"].as_array().cloned().unwrap_or_default();
+    let touches = |uid: &str| links.iter().filter(|l| l["node_out"] == uid || l["node_in"] == uid).count();
+    assert_eq!(touches(&copy), 0, "the copied facade is not wired into the patch: {links:?}");
+    assert!(touches(&leaf) > 0, "but its innards are wired to each other: {links:?}");
+
+    // It is INDEPENDENT: editing the copy leaves the original alone.
+    g.call("edit_node", j!({ "node": leaf, "params": { "common": { "max_frequency": 3.0 } } }));
+    let orig = g.call("inspect_node", j!({ "node": hex(buf), "params": true }))["text"]
+        .as_str().unwrap().to_string();
+    assert!(!orig.contains("max_frequency = 3"), "the original kept its own params: {orig}");
+
+    // …and it is ONE undo step, however deep it went.
+    assert_eq!(g.call("undo", j!({}))["changed"], true); // the param edit
+    assert_eq!(g.call("undo", j!({}))["changed"], true); // the whole copy
+    assert!(!g.instances().contains(&copy), "undo took the copied subtree whole");
+    assert_eq!(g.nodes().len(), before_nodes, "leaving exactly what was there before: {:?}", g.nodes());
+    let _ = (osc, sink);
+}
+
+#[test]
+fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
+    // The NODE-TO-NODE plane, which no other test reaches across a sub-patch wall: `running.rs`
+    // proves the viewer/reducer plane and would stay green while every frame stopped flowing here.
+    // A boundary is bookkeeping — grouping, nesting and expanding must not interrupt a stream.
+    let g = Goofi::new();
+    let src = g.add("_TestCounter");
+    let dst = g.add("_TestEcho");
+    g.ready(src);
+    g.ready(dst);
+    let at_dst = g.probe(dst, "out");
+    g.link(src, "out", dst, "in");
+    g.until("a frame before any sub-patch exists", |_| at_dst.latest());
+
+    // Collapsing the consumer is pure bookkeeping: the wire is the same wire.
+    let inst = group(&g, &[hex(dst)]);
+    assert!(g.stays(|_| at_dst.latest().is_some()), "grouping did not interrupt the stream");
+
+    // A fresh member behind a fresh IN port: nothing feeds it until BOTH sides are wired, and each
+    // half alone must leave it quiet rather than half-connected.
+    let mid = g.call("add_node", j!({ "type": "_TestEcho", "inst_id": inst, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    let mid_uid = goofi_engine::Uid::from_hex(&mid).expect("a uid");
+    g.ready(mid_uid);
+    let at_mid = g.probe(mid_uid, "out");
+    let port = boundary(&g, &inst, "in");
+    wire(&g, &port, "in", &mid, "in");
+    assert!(g.stays(|_| at_mid.latest().is_none()), "the inside alone feeds it nothing");
+
+    // Wiring the OUTSIDE is what makes frames cross. This is the step a planner that drops a port
+    // endpoint fails, and it fails nowhere else.
+    g.call("add_link", j!({ "node_out": hex(src), "slot_out": "out",
+                            "node_in": inst, "slot_in": port }));
+    g.until("a frame to cross the boundary", |_| at_mid.latest());
+
+    // Cutting the outer cable stops it, through the same door.
+    g.call("remove_link", j!({ "node_out": hex(src), "slot_out": "out",
+                              "node_in": inst, "slot_in": port }));
+    let seen = at_mid.count();
+    assert!(g.stays(|_| at_mid.count() == seen), "the cut stopped the stream: {seen}");
+
+    // Re-wire, then nest the whole sub-patch one level deeper. The chain of ports lengthens and the
+    // frames must still arrive — a relay walk that stops at the first hop fails here.
+    g.call("add_link", j!({ "node_out": hex(src), "slot_out": "out",
+                            "node_in": inst, "slot_in": port }));
+    g.until("frames again after re-wiring", |_| at_mid.latest());
+    let outer = group(&g, std::slice::from_ref(&inst));
+    assert!(g.stays(|_| at_mid.latest().is_some()), "nesting kept the stream alive");
+
+    // …and expanding splices the chain back to one hop without dropping a frame.
+    g.call("expand_instance", j!({ "inst_id": outer }));
+    let before = at_mid.count();
+    assert!(g.until("frames after the expand", |_| (at_mid.count() > before).then_some(true)),
+            "expanding spliced the cable rather than cutting it");
 }

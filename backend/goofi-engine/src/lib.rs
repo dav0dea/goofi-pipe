@@ -305,6 +305,16 @@ pub struct ExprInfo {
 }
 
 /// The authoritative graph + scheduler.
+/// What a source address really produces. A port relays rather than runs, so its stream is
+/// whatever is wired into it — and "nothing yet" is an answer, not a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stream {
+    /// A real leaf output slot — the only thing the transport can subscribe to.
+    At(Uid, &'static str),
+    /// The port the walk stopped at, because nothing feeds it yet.
+    Open(Uid),
+}
+
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
@@ -693,7 +703,7 @@ impl Graph {
         Some(since.elapsed())
     }
 
-    fn mint(&mut self) -> Uid {
+    pub(crate) fn mint(&mut self) -> Uid {
         let u = Uid(self.next_uid);
         self.next_uid += 1;
         u
@@ -917,17 +927,6 @@ impl Graph {
         unreachable!()
     }
 
-    /// A display name for a fresh scope. Leaves and scopes share one namespace, so a name a leaf
-    /// already holds falls back to `fresh_name`.
-    fn mint_subpatch_name(&self, uid: Uid) -> String {
-        let base = format!("subpatch{}", uid.0);
-        if self.name_in_use(&base) {
-            self.fresh_name("subpatch")
-        } else {
-            base
-        }
-    }
-
     /// Display name of anything a uid can name: a node, a sub-patch facade, or a boundary port.
     /// Uniform so `EditNode` reads all three through one seam.
     pub fn name(&self, uid: Uid) -> Option<&str> {
@@ -953,23 +952,12 @@ impl Graph {
         self.scopes.iter().find_map(|(s, sc)| sc.stubs.get(&uid).map(|st| (*s, st)))
     }
 
-    /// The physical `(node, slot)` a boundary port's data really lives on. A port never runs, so it
-    /// never holds a frame: an OUT port exposes the inner leaf it drains, and an IN port exposes
-    /// whatever is wired to it from outside the sub-patch. `None` until both sides are wired.
+    /// The physical `(node, slot)` a boundary port's data lives on, or `None` while nothing is
+    /// behind it. One call into [`Graph::stream`], which is the walk a cable follows too.
     pub fn stub_stream(&self, port: Uid) -> Option<(Uid, &'static str)> {
-        let (scope, st) = self.stub(port)?;
-        let dir = st.dir;
-        let (leaf, slot) = self.resolve_stub(scope, &port.to_hex())?;
-        match dir {
-            subpatch::Dir::Out => Some((leaf, self.resolve_output(leaf, &slot)?)),
-            // The port resolves to an INPUT slot, so the stream is the wire feeding that slot.
-            subpatch::Dir::In => {
-                let slot = self.resolve_input(leaf, &slot)?;
-                self.links
-                    .iter()
-                    .find(|l| l.node_in == leaf && l.slot_in == slot)
-                    .map(|l| (l.node_out, l.slot_out))
-            }
+        match self.stream(port, subpatch::BOUNDARY_SLOT)? {
+            Stream::At(leaf, slot) => Some((leaf, slot)),
+            Stream::Open(_) => None,
         }
     }
 
@@ -1133,6 +1121,98 @@ impl Graph {
     /// walking nested scopes; `None` if unwired.
     pub fn resolve_stub(&self, scope: Uid, stub: &str) -> subpatch::StubInner {
         subpatch::resolve_stub(&self.scopes, scope, stub)
+    }
+
+    /// The output slots of anything a uid names: `(key, label, dtype)`. A leaf's declarations; a
+    /// facade's OUT ports, keyed by the port uid so a rename cannot orphan a wire or a panel, and
+    /// LABELLED by the port's own name so nothing has to keep a second map; and the single `value`
+    /// a port wears — either direction, because a port RELAYS rather than produces, so what it
+    /// stands in front of is readable from both sides of the wall.
+    pub fn output_slots(&self, uid: Uid) -> Vec<(String, String, goofi_core::SlotType)> {
+        if let Some(scope) = self.scopes.get(&uid) {
+            return scope
+                .stubs
+                .iter()
+                .filter(|(_, s)| s.dir == subpatch::Dir::Out)
+                .map(|(id, s)| (id.to_hex(), s.name.clone(), s.dtype))
+                .collect();
+        }
+        if let Some((_, st)) = self.stub(uid) {
+            let slot = subpatch::BOUNDARY_SLOT.to_string();
+            return vec![(slot.clone(), slot, st.dtype)];
+        }
+        self.nodes
+            .get(&uid)
+            .map(|e| {
+                e.manifest.outputs.iter().map(|o| (o.name.to_string(), o.name.to_string(), o.kind)).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The type name of anything a uid names — a leaf's, a facade's, or a port's boundary type.
+    pub fn node_type(&self, uid: Uid) -> Option<&'static str> {
+        if self.scopes.contains_key(&uid) {
+            return Some(subpatch::SCOPE_TYPE);
+        }
+        if let Some((_, st)) = self.stub(uid) {
+            return Some(subpatch::boundary_type_name(st.dir, st.dtype));
+        }
+        self.nodes.get(&uid).map(|e| e.manifest.type_name)
+    }
+
+    /// A facade address, folded one level onto the port it names. Everything else is itself.
+    fn normalise(&self, uid: Uid, slot: &str) -> (Uid, String) {
+        match self.scopes.contains_key(&uid) {
+            true => match Uid::from_hex(slot) {
+                Some(port) if self.stub(port).is_some() => (port, subpatch::BOUNDARY_SLOT.to_string()),
+                _ => (uid, slot.to_string()),
+            },
+            false => (uid, slot.to_string()),
+        }
+    }
+
+    /// THE resolution: what real leaf slot an address stands for. A port relays, so the walk takes
+    /// one hop per boundary, however deep the nesting. `Open` is the port the walk stopped at
+    /// because nothing feeds it yet — a legitimate answer, never an error. `None` only when the
+    /// address names no output slot at all.
+    ///
+    /// One function, so `nd()` and a cable follow the same wiring; two resolvers gave answers of
+    /// opposite polarity for one address, which is what every sub-patch defect grew out of.
+    pub fn stream(&self, uid: Uid, slot: &str) -> Option<Stream> {
+        let (mut at, mut slot) = self.normalise(uid, slot);
+        let mut seen: Vec<Uid> = Vec::new();
+        loop {
+            if self.nodes.contains_key(&at) {
+                return Some(Stream::At(at, self.resolve_output(at, &slot)?));
+            }
+            // A hand-edited `.gfi` can persist a cyclic chain; walking it must stop, not recurse.
+            if seen.contains(&at) {
+                return Some(Stream::Open(at));
+            }
+            seen.push(at);
+            let (scope, st) = self.stub(at)?;
+            let dir = st.dir;
+            let Some((next, next_slot)) = self.stub_feed(scope, at, dir) else {
+                return Some(Stream::Open(at));
+            };
+            (at, slot) = (next, next_slot);
+        }
+    }
+
+    /// One hop back from a port to whatever feeds it: for an OUT port the member it drains, for an
+    /// IN port the wire arriving from outside the sub-patch.
+    fn stub_feed(&self, scope: Uid, port: Uid, dir: subpatch::Dir) -> Option<(Uid, String)> {
+        let (inner, inner_slot) = self.resolve_stub(scope, &port.to_hex())?;
+        match dir {
+            subpatch::Dir::Out => Some((inner, inner_slot)),
+            subpatch::Dir::In => {
+                let slot = self.resolve_input(inner, &inner_slot)?;
+                self.links
+                    .iter()
+                    .find(|l| l.node_in == inner && l.slot_in == slot)
+                    .map(|l| (l.node_out, l.slot_out.to_string()))
+            }
+        }
     }
 
     /// The output slot decl named `slot` on node `uid`, if any — the shared lookup behind
@@ -1309,7 +1389,7 @@ impl Graph {
         // Registered BEFORE its ports are minted. A port's label comes from the patch's ONE display
         // namespace, so a batch that names every port out of the state it started in hands each of
         // them the same label — and `nd()` then cannot tell two ports apart.
-        let disp = self.mint_subpatch_name(scope_uid);
+        let disp = self.fresh_name("subpatch");
         self.scopes.insert(scope_uid, Scope::new(disp, pos, IndexMap::new()));
 
         // 2. Classify each link by TRANSITIVE containment. Exactly one endpoint inside mints a stub
@@ -1377,7 +1457,23 @@ impl Graph {
         }
         // The parent is captured explicitly rather than derived from members, so an EMPTY scope
         // restores fine. Re-tag only members that actually exist.
-        self.scopes.insert(scope_id, subpatch::Scope::new(name, pos, stubs));
+        // An empty name means MINT one, for the scope and for every port it carries — the rule
+        // `add_node_at` has always used, which is what lets a COPY land beside its original.
+        let name = match name.is_empty() {
+            true => self.fresh_name("subpatch"),
+            false => name,
+        };
+        self.scopes.insert(scope_id, subpatch::Scope::new(name, pos, IndexMap::new()));
+        for (id, mut st) in stubs {
+            if st.name.is_empty() {
+                st.name = self.fresh_name(st.dir.name());
+            }
+            let label = st.name.clone();
+            if let Some(sc) = self.scopes.get_mut(&scope_id) {
+                sc.stubs.insert(id, st);
+            }
+            self.rebind_naming(&label);
+        }
         for &m in members {
             if self.nodes.contains_key(&m) || self.scopes.contains_key(&m) {
                 self.set_member_scope(m, Some(scope_id));
@@ -1414,7 +1510,12 @@ impl Graph {
     }
 
     /// Put a captured port back exactly as it was — the inverse of [`Self::remove_stub`].
-    pub fn restore_stub(&mut self, scope: Uid, port: Uid, stub: subpatch::Stub) {
+    pub fn restore_stub(&mut self, scope: Uid, port: Uid, mut stub: subpatch::Stub) {
+        // An empty name means MINT one, as it does for a node — which is what makes a copied port
+        // land beside the original rather than colliding with it.
+        if stub.name.is_empty() {
+            stub.name = self.fresh_name(stub.dir.name());
+        }
         let name = stub.name.clone();
         if let Some(s) = self.scopes.get_mut(&scope) {
             s.stubs.insert(port, stub);
@@ -1994,31 +2095,32 @@ impl Graph {
     /// multi-output node is refused HERE — the graph is what knows how many outputs a node has.
     fn resolve_stream(&self, name: &str, slot: Option<&str>) -> Result<(Uid, &'static str), String> {
         let uid = self.uid_by_name(name).ok_or_else(|| format!("no node named `{name}`"))?;
-        // A boundary port is a naming indirection over a real slot, so a reference to one binds to
-        // the stream BEHIND it — which is what makes `nd()` work across a sub-patch wall.
-        if let Some((_, st)) = self.stub(uid) {
-            if st.dir == subpatch::Dir::Out {
-                return Err(format!("`{name}` is a sub-patch output port, which carries no stream to read"));
-            }
-            if slot.is_some_and(|s| s != subpatch::BOUNDARY_SLOT) {
-                return Err(format!("port `{name}` has one slot, `{}`", subpatch::BOUNDARY_SLOT));
-            }
-            return self
-                .stub_stream(uid)
-                .ok_or_else(|| format!("port `{name}` has nothing wired to it yet"));
-        }
-        let outputs = self.nodes.get(&uid).map(|e| e.manifest.outputs).ok_or_else(|| {
-            format!("`{name}` is a sub-patch, which carries no stream to read")
-        })?;
-        match slot {
-            Some(slot) => outputs
+        // The slot vocabulary is one question and the stream behind it another, and every node kind
+        // answers both — a leaf, a facade whose outputs are its ports, and a port itself.
+        let outputs = self.output_slots(uid);
+        let key = match slot {
+            // A reference is by NAME, because `nd()` reads the one display namespace: a facade's
+            // slot is its port's name, never the uid the document keys it by.
+            Some(want) => outputs
                 .iter()
-                .find(|o| o.name == slot)
-                .map(|o| (uid, o.name))
-                .ok_or_else(|| format!("node `{name}` has no output `{slot}`")),
-            None if outputs.len() == 1 => Ok((uid, outputs[0].name)),
-            None if outputs.is_empty() => Err(format!("node `{name}` has no outputs")),
-            None => Err(format!("nd('{name}') is ambiguous: it has multiple outputs; use nd('{name}').slot")),
+                .find(|(_, label, _)| label == want)
+                .map(|(key, _, _)| key.clone())
+                .ok_or_else(|| format!("node `{name}` has no output `{want}`"))?,
+            None if outputs.len() == 1 => outputs[0].0.clone(),
+            None if outputs.is_empty() => return Err(format!("node `{name}` has no outputs")),
+            None => {
+                return Err(format!(
+                    "nd('{name}') is ambiguous: it has multiple outputs; use nd('{name}').slot"
+                ))
+            }
+        };
+        match self.stream(uid, &key) {
+            Some(Stream::At(leaf, slot)) => Ok((leaf, slot)),
+            Some(Stream::Open(port)) => Err(format!(
+                "port `{}` has nothing wired to it yet",
+                self.name(port).unwrap_or(name)
+            )),
+            None => Err(format!("node `{name}` has no output `{key}`")),
         }
     }
 

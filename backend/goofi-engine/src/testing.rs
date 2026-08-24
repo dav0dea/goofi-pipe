@@ -22,6 +22,8 @@ pub struct OutputProbe {
     /// The newest frame seen so far. Kept because the subscriber's queue is one deep and
     /// latest-wins.
     latest: std::cell::RefCell<Option<Data>>,
+    /// Frames taken so far. `latest` alone cannot tell a stopped stream from a quiet one.
+    seen: std::cell::Cell<u64>,
     /// Must outlive the subscriber built from it, so it is declared LAST — Rust drops a struct's
     /// fields in declaration order.
     _node: IoxNode,
@@ -40,7 +42,7 @@ impl OutputProbe {
         let node = iox_node().expect("an iceoryx2 node for the probe");
         let subscriber = crate::runtime::open_output_subscriber(&node, &g.output_service_of(uid, slot))
             .expect("a subscriber on the producer's output service");
-        OutputProbe { _node: node, subscriber, latest: std::cell::RefCell::new(None) }
+        OutputProbe { _node: node, subscriber, latest: std::cell::RefCell::new(None), seen: std::cell::Cell::new(0) }
     }
 
     /// Take everything waiting, keeping the newest. Answers whether anything arrived.
@@ -49,10 +51,18 @@ impl OutputProbe {
         while let Ok(Some(sample)) = self.subscriber.receive() {
             if let Ok(frame) = goofi_codec::decode(sample.payload()) {
                 *self.latest.borrow_mut() = Some(frame);
+                self.seen.set(self.seen.get() + 1);
                 got = true;
             }
         }
         got
+    }
+
+    /// How many frames have arrived, looking once and waiting for nothing — so a caller can ask
+    /// whether a stream STOPPED, which the newest frame alone cannot say.
+    pub fn count(&self) -> u64 {
+        self.poll();
+        self.seen.get()
     }
 
     /// The newest frame seen so far, looking once and waiting for nothing.

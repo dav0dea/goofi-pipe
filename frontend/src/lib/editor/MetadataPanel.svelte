@@ -73,6 +73,7 @@
 					value={internalSlot ?? ''}
 					onChange={(v) => (internalSlot = v)}
 					options={slots}
+					labels={node.slot_labels}
 				/>
 			{/if}
 		</header>

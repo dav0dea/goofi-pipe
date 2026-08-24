@@ -1048,6 +1048,20 @@ impl AppState {
                     Ok(json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed }))
                 }
                 "add_node" => {
+                    // A COPY names no type: what to build is read off what is being copied, and for
+                    // a sub-patch that is its whole subtree. One op, so a leaf and a sub-patch are
+                    // duplicated through the same door.
+                    if let Some(src) = payload.get("copy_of").and_then(|v| v.as_str()) {
+                        let src = Uid::from_hex(src).ok_or("add_node: malformed copy_of")?;
+                        let offset = payload.get("pos").and_then(parse_pos).map_or([40.0, 40.0], |to| {
+                            let from = g.pos(src).unwrap_or([0.0, 0.0]);
+                            [to[0] - from[0], to[1] - from[1]]
+                        });
+                        let (cmd, uid) = goofi_engine::command::copy_subtree(&mut g, src, offset)?;
+                        state.history.lock().unwrap().apply(&mut g, &session, cmd)?;
+                        events.push(event("node_added", json!({ "uid": uid.to_hex() })));
+                        return Ok(json!({ "uid": uid.to_hex(), "name": g.name(uid).unwrap_or("") }));
+                    }
                     let ty = payload
                         .get("type")
                         .and_then(|v| v.as_str())
@@ -1220,8 +1234,8 @@ impl AppState {
                     // and the agreed dtype gates the next link to this output.
                     let dtype = vocab::output_slots(&g, a)
                         .into_iter()
-                        .find(|(name, _)| *name == so)
-                        .map(|(_, dtype)| dtype);
+                        .find(|(key, _, _)| *key == so)
+                        .map(|(_, _, dtype)| dtype);
                     Ok(json!({
                         "node_out": a.to_hex(), "slot_out": so,
                         "node_in": b.to_hex(), "slot_in": si,
@@ -1975,7 +1989,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     // node with no data, exactly as a leaf nobody has connected is.
     let named = {
         let g = state.graph.lock().unwrap();
-        vocab::output_slots(&g, uid).into_iter().any(|(name, _)| name == slot)
+        vocab::output_slots(&g, uid).into_iter().any(|(key, _, _)| key == slot)
     };
     if !named {
         let _ = tx.send(close(4004, "unknown node/slot")).await;

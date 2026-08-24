@@ -62,7 +62,7 @@ scope: root
 flowchart LR
   n000000000001[\"oscillator0: Oscillator<br/>000000000001\"]
   n000000000002[\"⚠ _testfail0: _TestFail<br/>000000000002\"]
-  n000000000004[[\"subpatch4<br/>000000000004\"]]
+  n000000000004[[\"subpatch0<br/>000000000004\"]]
   n000000000001 -- out→data --> n000000000004
 ```
 
@@ -90,7 +90,7 @@ fn inspect_patch_draws_a_sub_patchs_boundary_ports_as_the_nodes_they_are() {
 patch: (never saved)
 workspace: <workspace>
 unsaved changes: yes
-scope: subpatch4 (000000000004)
+scope: subpatch0 (000000000004)
 
 ```mermaid
 flowchart LR

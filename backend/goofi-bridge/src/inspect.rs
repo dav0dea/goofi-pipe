@@ -198,10 +198,10 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
 /// The node a slot's frames really come from: itself for a leaf, and for a port — which relays
 /// rather than runs — whatever is behind it. `slot` names a facade's port by uid.
 fn behind(g: &Graph, uid: Uid, slot: &str) -> Uid {
-    Uid::from_hex(slot)
-        .and_then(|port| g.stub_stream(port))
-        .or_else(|| g.stub_stream(uid))
-        .map_or(uid, |(u, _)| u)
+    match g.stream(uid, slot) {
+        Some(goofi_engine::Stream::At(leaf, _)) => leaf,
+        _ => uid,
+    }
 }
 
 /// `inspect_node`: what the node is, what its params say, which output slots it has and whether it
@@ -213,7 +213,7 @@ pub fn node(
     want_params: bool,
     want_error: bool,
 ) -> Result<String, String> {
-    let type_name = crate::vocab::node_type(g, uid)
+    let type_name = g.node_type(uid)
         .ok_or_else(|| format!("inspect_node: no node `{}`", uid.to_hex()))?;
     // A port and a facade never run, so they wear no tier and reach no stage; everything else a
     // read says about a node, they answer.
@@ -230,12 +230,14 @@ pub fn node(
     };
     let mut out =
         format!("{}: {type_name} (uid {}{runtime})\n", g.name(uid).unwrap_or("?"), uid.to_hex());
+    // `(key, label, dtype)`: a facade keys its slots by port uid so a rename cannot break a wire,
+    // and carries the port's display name beside it — so nothing here re-derives a label.
     let outputs = crate::vocab::output_slots(g, uid);
     if let Some(s) = slot {
-        if !outputs.iter().any(|(name, _)| name == s) {
+        if !outputs.iter().any(|(key, label, _)| label == s || key == s) {
             return Err(format!(
                 "inspect_node: `{type_name}` has no output slot `{s}` (it has: {})",
-                outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                outputs.iter().map(|(_, l, _)| l.as_str()).collect::<Vec<_>>().join(", "),
             ));
         }
     }
@@ -254,10 +256,10 @@ pub fn node(
     if outputs.is_empty() {
         out.push_str("  (none)\n");
     }
-    for (name, kind) in outputs.iter().filter(|(n, _)| slot.is_none_or(|s| s == n)) {
+    for (key, name, kind) in outputs.iter().filter(|(k, l, _)| slot.is_none_or(|s| s == k || s == l)) {
         // `ufreq` measures how often a node RUNS, so it is read off whichever node the frames
         // really come from — itself for a leaf, the node behind it for a port.
-        let rate = match g.node_ufreq(behind(g, uid, name)) {
+        let rate = match g.node_ufreq(behind(g, uid, key)) {
             Some(hz) => format!("emitting at {hz:.1} Hz"),
             None => "nothing emitted yet".to_string(),
         };
