@@ -60,20 +60,19 @@ export interface NodeInstanceInfo {
 	pos: [number, number];
 	/** Per-output-slot view state restored from the .gfi patch. */
 	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
-	/** Sub-patch membership marker; null for a top-level node. */
-	membership?: { instance: string; local_name: string } | null;
+	/** The scope this node sits in; `'__root__'` at the top level. */
+	scope: string;
 	error: string | null;
 	/** Lifecycle stage. Optional so a synthesized virtual node can omit it. */
 	stage?: NodeStage;
 	/** Rolling execution telemetry, absent until the node's first `node_stats` event. */
 	stats?: NodeStats | null;
-	/** Set only on a virtual node synthesized for a sub-patch scope. */
-	subpatch?: SubpatchMeta | null;
+	/** Set only on a sub-patch facade — the node that stands for a scope. */
+	subpatch?: SubpatchMeta;
 }
 
-/** Marks a virtual node as standing in for a sub-patch scope. */
+/** Marks a node record as the facade of a sub-patch scope. */
 export interface SubpatchMeta {
-	instId: string;
 	memberCount: number;
 }
 
@@ -83,39 +82,6 @@ export interface LinkInfo {
 	node_in: string;
 	slot_out: string;
 	slot_in: string;
-}
-
-/** One boundary (In/Out node) of a sub-patch; `inner_node`/`inner_slot` are null when unwired. */
-export interface SubPatchPort {
-	dir: 'in' | 'out';
-	/** The port's advertised dtype — the type name IS the (dir, dtype) pair, so it is never absent. */
-	dtype: string;
-	inner_node: string | null;
-	inner_slot: string | null;
-	pos: [number, number];
-	/** The port's display label, decoupled from the stable routing key. */
-	name?: string;
-}
-
-
-
-/** A sub-patch instance the editor renders as a group node — assembled from the replicated
- * document by `instanceAssembly`, never fetched. */
-export interface InstanceInfo {
-	/** The scope's stable uid — also its facade node's uid. */
-	uid: string;
-	name: string;
-	/** Parent scope uid; null at the top level. */
-	parent: string | null;
-	/** stub id -> port; `inner_node` is the direct inner member uid. */
-	interface: Record<string, SubPatchPort>;
-	pos: [number, number];
-	/** member uid -> whether that member is itself a nested scope. */
-	members: Record<string, { uid: string; is_instance: boolean }>;
-	/** First errored descendant across the whole subtree, or null. */
-	error: string | null;
-	/** Per-output-boundary view state persisted in the .gfi patch, keyed by boundary id. */
-	viewers: Record<string, { collapsed?: boolean; kind?: string; settings?: Record<string, unknown> }>;
 }
 
 /** Canonical string key for a link — its four slot endpoints. */

@@ -14,7 +14,7 @@ function nodeInfo(uid: string, name: string, type = 'Oscillator'): NodeInstanceI
 		params: {},
 		pos: [10, 20],
 		viewers: {},
-		membership: null,
+		scope: '__root__',
 		error: null
 	};
 }

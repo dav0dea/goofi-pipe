@@ -2,7 +2,7 @@
  * the event-sourced runtime overlay. */
 import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
-import type { NodeView, DocParamLeaves } from './graphDoc';
+import type { NodeView, DocParamLeaves, FacadeFace } from './graphDoc';
 
 export type { DocParamLeaves };
 
@@ -22,7 +22,6 @@ export interface RuntimeOverlay {
 	error?: string | null;
 	stage?: NodeStage;
 	stats?: NodeStats | null;
-	membership?: { instance: string; local_name: string } | null;
 	params?: Record<string, Record<string, ParamRuntime>>;
 }
 
@@ -64,13 +63,15 @@ function mergeParam(
 	return p;
 }
 
-/** Assemble a full render `NodeInstanceInfo` from the doc view, catalog and runtime overlay. */
+/** Assemble a full render `NodeInstanceInfo` from the doc view, catalog and runtime overlay. A
+ * facade has no catalog entry — it runs nothing — so its `face` carries the slots instead. */
 export function assembleNode(
 	view: NodeView,
 	docParams: DocParamLeaves,
 	viewers: ViewersBlob,
 	catalog: NodeTypeInfo | undefined,
-	runtime: RuntimeOverlay
+	runtime: RuntimeOverlay,
+	face?: FacadeFace
 ): NodeInstanceInfo {
 	const params: Record<string, Record<string, ParamDescriptor>> = {};
 	const groupNames = catalog ? Object.keys(catalog.params) : Object.keys(docParams);
@@ -92,15 +93,17 @@ export function assembleNode(
 		type: view.type,
 		category: catalog?.category ?? '',
 		doc: catalog?.doc ?? '',
-		input_slots: catalog?.input_slots ?? {},
+		input_slots: face?.input_slots ?? catalog?.input_slots ?? {},
 		input_multi: catalog?.input_multi,
-		output_slots: catalog?.output_slots ?? {},
+		output_slots: face?.output_slots ?? catalog?.output_slots ?? {},
+		slot_labels: face?.slot_labels,
 		params,
 		pos: view.pos,
 		viewers,
-		membership: runtime.membership ?? null,
+		scope: view.scope,
 		error: runtime.error ?? null,
 		stage: runtime.stage,
-		stats: runtime.stats ?? null
+		stats: runtime.stats ?? null,
+		subpatch: face && { memberCount: face.memberCount }
 	};
 }

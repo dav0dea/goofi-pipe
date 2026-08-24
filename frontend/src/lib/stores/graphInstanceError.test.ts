@@ -2,13 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap } from '$lib/crdt/graphDoc';
 import { SCOPE_TYPE } from '$lib/api/vocab';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 
 /**
- * A collapsed sub-patch's health is DERIVED from its descendants and cached in
- * `instances[id].error`. Only the discrete `error` event recomputed that cache — but a node's
+ * A collapsed sub-patch's health is DERIVED from its descendants and cached on the facade's own
+ * `error`. Only the discrete `error` event recomputed that cache — but a node's
  * `error` field is written by three other paths, and the most important of them is the one
  * designed to heal a missed transition:
  *
@@ -23,13 +22,13 @@ import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 describe('GraphStore — a collapsed sub-patch follows every path that writes a node error', () => {
 	it('updates and recovers on `state_update` alone', () => {
 		const { g, fc } = subpatchWithOneMember();
-		expect(g.instances['i1'].error).toBeFalsy();
+		expect(g.nodeById('i1')!.error).toBeFalsy();
 
 		fc.emit({ event: 'state_update', payload: { node: 'n1', error: 'boom', params: {} } });
-		expect(g.instances['i1'].error, 'the facade shows its member failing').toBe('boom');
+		expect(g.nodeById('i1')!.error, 'the facade shows its member failing').toBe('boom');
 
 		fc.emit({ event: 'state_update', payload: { node: 'n1', error: null, params: {} } });
-		expect(g.instances['i1'].error, 'and recovers with it').toBeFalsy();
+		expect(g.nodeById('i1')!.error, 'and recovers with it').toBeFalsy();
 	});
 
 	it('updates on `node_stage` alone', () => {
@@ -38,7 +37,7 @@ describe('GraphStore — a collapsed sub-patch follows every path that writes a 
 			event: 'node_stage',
 			payload: { node: 'n1', stage: 'error', error: 'ImportError: no scipy' }
 		});
-		expect(g.instances['i1'].error).toBe('ImportError: no scipy');
+		expect(g.nodeById('i1')!.error).toBe('ImportError: no scipy');
 	});
 
 	it('updates from a reconnect snapshot runtime overlay', () => {
@@ -49,7 +48,7 @@ describe('GraphStore — a collapsed sub-patch follows every path that writes a 
 			event: 'hello',
 			payload: snap('sess1', { n1: { stage: 'error', error: 'crashed while we were away' } })
 		});
-		expect(g.instances['i1'].error).toBe('crashed while we were away');
+		expect(g.nodeById('i1')!.error).toBe('crashed while we were away');
 	});
 });
 

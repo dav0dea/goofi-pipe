@@ -17,6 +17,8 @@ export interface NodeView {
 	type: string;
 	name: string;
 	pos: [number, number];
+	/** The scope this record is drawn in; `ROOT_ID` when it names none. */
+	scope: string;
 }
 
 export interface LinkView {
@@ -26,28 +28,12 @@ export interface LinkView {
 	slot_in: string;
 }
 
-export interface BoundaryView {
-	bnd_id: string;
-	dir: string; // 'in' | 'out'
-	dtype: string;
-	name: string;
-	pos: [number, number];
-	inner_node?: string;
-	inner_slot?: string;
-}
-
-export interface InstanceView {
-	uid: string;
-	name: string;
-	/** Parent scope uid, or `'__root__'` for a top-level scope. */
-	parent: string;
-	pos: [number, number];
-	/** member uid → whether the member is itself a nested scope. */
-	members: Record<string, boolean>;
-	/** The scope's boundary ports, in document order. */
-	interface: BoundaryView[];
-	/** The facade's own per-slot viewer blob, as a leaf carries one. */
-	viewers: unknown;
+/** What a sub-patch facade exposes, derived from the records that name it. */
+export interface FacadeFace {
+	input_slots: Record<string, string>;
+	output_slots: Record<string, string>;
+	slot_labels: Record<string, string>;
+	memberCount: number;
 }
 
 type Obj = Record<string, unknown>;
@@ -76,12 +62,6 @@ function scopeOf(rec: Obj | undefined): string {
 	return optStr(rec, 'scope') ?? ROOT_ID;
 }
 
-/** Every record of one kind, keyed by uid. One map carries leaves, facades and ports alike, so
- * which kind a record is is a question about its `type`. */
-function records(doc: Doc, want: (type: string) => boolean): [string, Obj][] {
-	return Object.entries(nodesMap(doc)).filter(([, n]) => want(str(n, 'type')));
-}
-
 export function globalsMap(doc: Doc): Record<string, Obj> {
 	return obj(doc.globals) as Record<string, Obj>;
 }
@@ -95,17 +75,39 @@ function pos2(m: Obj | undefined): [number, number] {
 export function nodeView(doc: Doc, uid: string): NodeView | null {
 	const n = nodesMap(doc)[uid];
 	if (!n) return null;
-	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n) };
+	return { uid, type: str(n, 'type'), name: str(n, 'name'), pos: pos2(n), scope: scopeOf(n) };
 }
 
-/** Every node the canvas draws — leaves and boundary ports alike. A port has no thread behind it,
- * but it is a node in every way the editor addresses one, so it is not a second kind here. A
- * FACADE is left out: it is a scope, and `instanceView` reads it. */
+/** Every record the canvas draws: leaf, sub-patch facade and boundary port alike, in one list,
+ * because the document carries them in one map and they are one kind of thing to the editor. */
 export function nodeViews(doc: Doc): NodeView[] {
 	const out: NodeView[] = [];
-	for (const [uid] of records(doc, (t) => t !== SCOPE_TYPE)) {
+	for (const uid of Object.keys(nodesMap(doc))) {
 		const v = nodeView(doc, uid);
 		if (v) out.push(v);
+	}
+	return out;
+}
+
+/** Each facade's face, keyed by its uid: a PORT is the facade's slot, keyed by the port's stable
+ * uid and labelled with its renameable name, so a rename relabels without re-keying the wire. */
+export function facadeFaces(doc: Doc): Map<string, FacadeFace> {
+	const out = new Map<string, FacadeFace>();
+	const at = (uid: string): FacadeFace => {
+		let f = out.get(uid);
+		if (!f) out.set(uid, (f = { input_slots: {}, output_slots: {}, slot_labels: {}, memberCount: 0 }));
+		return f;
+	};
+	for (const [uid, rec] of Object.entries(nodesMap(doc))) {
+		if (str(rec, 'type') === SCOPE_TYPE) at(uid);
+		const parent = optStr(rec, 'scope');
+		if (!parent) continue;
+		const face = at(parent);
+		face.memberCount++;
+		const bnd = boundaryType(str(rec, 'type'));
+		if (!bnd) continue;
+		(bnd.dir === 'in' ? face.input_slots : face.output_slots)[uid] = bnd.dtype;
+		face.slot_labels[uid] = str(rec, 'name');
 	}
 	return out;
 }
@@ -190,56 +192,6 @@ export function viewersJson(doc: Doc, uid: string): unknown {
 	} catch {
 		return undefined;
 	}
-}
-
-export function instanceView(doc: Doc, uid: string): InstanceView | null {
-	const inst = nodesMap(doc)[uid];
-	if (!inst || str(inst, 'type') !== SCOPE_TYPE) return null;
-	const members: Record<string, boolean> = {};
-	for (const [muid, m] of Object.entries(nodesMap(doc))) {
-		if (scopeOf(m) === uid) members[muid] = str(m, 'type') === SCOPE_TYPE;
-	}
-	// A port's inner wire is a link, so it is read where every other cable is read.
-	const wires = linkViews(doc);
-	const iface: BoundaryView[] = [];
-	for (const [bnd, b] of records(doc, (t) => !!boundaryType(t))) {
-		if (scopeOf(b) !== uid) continue;
-		const kind = boundaryType(str(b, 'type'))!;
-		const wire =
-			kind.dir === 'in'
-				? wires.find((l) => l.node_out === bnd)
-				: wires.find((l) => l.node_in === bnd);
-		const inner = kind.dir === 'in'
-			? wire && { node: wire.node_in, slot: wire.slot_in }
-			: wire && { node: wire.node_out, slot: wire.slot_out };
-		iface.push({
-			bnd_id: bnd,
-			dir: kind.dir,
-			dtype: kind.dtype,
-			name: str(b, 'name'),
-			pos: pos2(b),
-			inner_node: inner?.node,
-			inner_slot: inner?.slot
-		});
-	}
-	return {
-		uid,
-		name: str(inst, 'name'),
-		parent: scopeOf(inst),
-		pos: pos2(inst),
-		members,
-		interface: iface,
-		viewers: viewersJson(doc, uid)
-	};
-}
-
-export function instanceViews(doc: Doc): InstanceView[] {
-	const out: InstanceView[] = [];
-	for (const [uid] of records(doc, (t) => t === SCOPE_TYPE)) {
-		const v = instanceView(doc, uid);
-		if (v) out.push(v);
-	}
-	return out;
 }
 
 export function linkViews(doc: Doc): LinkView[] {

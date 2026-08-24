@@ -46,12 +46,7 @@ async function expectAgreement(page: Page, what: string): Promise<string[]> {
 async function clearGraph(page: Page): Promise<void> {
 	await page.evaluate(async () => {
 		const g = (window as any).goofi;
-		// Facades too: `graph().nodes` is LEAVES, so a sub-patch left behind would outlive a sweep
-		// that only read that list — and take its members and ports with it.
-		const uids = [
-			...g.query.graph().nodes.map((n: { uid: string }) => n.uid),
-			...Object.keys(g.query.instances())
-		];
+		const uids = g.query.graph().nodes.map((n: { uid: string }) => n.uid);
 		if (uids.length) await g.commands.removeNodes(uids);
 	});
 	await expect.poll(async () => (await backendNodes(page)).length).toBe(0);
@@ -177,11 +172,12 @@ test.describe('the control socket', () => {
 					.toBe('InArray');
 				expect((await backendDoc(page)).nodes[port].scope, 'and it names its sub-patch').toBe(scope);
 
-				// The replica draws the pill at that very uid, which is what makes the ops addressable.
+				// The replica draws the pill at that very uid, which is what makes the ops addressable —
+				// and the facade wears it as a slot, because an in port FEEDS the sub-patch.
 				await expect
 					.poll(() =>
 						page.evaluate(
-							([s, p]) => !!(window as any).goofi.query.instance(s)?.interface[p],
+							([s, p]) => !!(window as any).goofi.query.node(s)?.input_slots[p],
 							[scope, port]
 						)
 					)
@@ -212,6 +208,35 @@ test.describe('the control socket', () => {
 						)
 					)
 					.toBe(true);
+
+				// A cable from OUTSIDE names the port, and the canvas must reroute it onto the facade's
+				// handle. The link and the drawing are two different questions, and only a browser
+				// answers the second: the manager holds `feeder → port`, while the top level draws
+				// `feeder → scope@port`, and nothing outside this file crosses that gap.
+				const feeder = await addNode(page, 'Oscillator', 'inputs', [-200, 0]);
+				await waitForNode(page, feeder);
+				await page.evaluate(
+					([f, sc, p]) =>
+						(window as any).goofi.commands.addLink({
+							node_out: f,
+							slot_out: 'out',
+							node_in: sc,
+							slot_in: p
+						}),
+					[feeder, scope, port]
+				);
+				await expect
+					.poll(async () =>
+						(await backendDoc(page)).links.some(
+							(l: { node_out: string; node_in: string }) => l.node_out === feeder && l.node_in === port
+						),
+						{ message: 'the manager stores the cable against the PORT' }
+					)
+					.toBe(true);
+				await expect(
+					page.locator(`.svelte-flow__edge[data-id="${feeder}.out\u2192${port}.value"]`),
+					'and the canvas draws it, rerouted onto the facade'
+				).toHaveCount(1);
 
 				// …and it DRAWS as a node: entered, the port is a full node surface with a header and
 				// a slot, not a chrome of its own. A pill had neither, and nothing else here would
@@ -248,6 +273,9 @@ test.describe('the control socket', () => {
 
 				await page.evaluate((s) => (window as any).goofi.commands.expandInstance(s), scope);
 				await expect.poll(async () => (await backendDoc(page)).nodes[scope]).toBeUndefined();
+				// The feeder was this step's alone; the step after this one counts what is left.
+				await page.evaluate((f) => (window as any).goofi.commands.removeNodes([f]), feeder);
+				await expect.poll(async () => (await backendDoc(page)).nodes[feeder]).toBeUndefined();
 			});
 
 			await test.step('a removal leaves the two halves holding the same nothing', async () => {

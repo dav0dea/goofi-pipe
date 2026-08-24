@@ -3,7 +3,7 @@ import { assembleNode, type DocParamLeaves, type RuntimeOverlay } from './nodeAs
 import type { NodeTypeInfo } from '$lib/api/control';
 import type { NodeView } from './graphDoc';
 
-const view: NodeView = { uid: 'n1', type: 'Oscillator', name: 'osc0', pos: [10, 20] };
+const view: NodeView = { uid: 'n1', type: 'Oscillator', name: 'osc0', pos: [10, 20], scope: '__root__' };
 
 /** A catalog entry with a static float param + a refreshable string param. */
 function catalog(): NodeTypeInfo {

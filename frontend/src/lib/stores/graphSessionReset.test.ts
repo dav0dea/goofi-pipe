@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed, type DocSeed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
 import { workspace } from 'panelty';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
@@ -11,7 +10,7 @@ import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
  * A fresh backend session is a GENERATION boundary, not merely a document swap.
  *
  * `SyncClient.reset()` correctly hands the store an empty replica — but the Svelte projections
- * assembled from the OLD document (`nodes`, `links`, `instances`, `globals` — and the per-slot
+ * assembled from the OLD document (`nodes`, `links`, `globals` — and the per-slot
  * viewer state each node record carries) are plain state that nothing clears. Reconciliation runs
  * only from the doc observer, and only when `txn.changed.size > 0`.
  *
@@ -46,11 +45,6 @@ describe('GraphStore — a new backend session clears what the old one drew', ()
 		expect(g.nodes, 'nodes').toEqual([]);
 		expect(g.links, 'links').toEqual([]);
 		expect(g.globals, 'globals').toEqual([]);
-		// ROOT is SYNTHESIZED on every reconcile — it is the canvas, not a scope the manager sent —
-		// so the fresh session has one, holding nothing. Asserting `{}` here would only pass against
-		// a fixture that reconciled nothing at all, which is not what a new session does.
-		expect(Object.keys(g.instances), 'instances').toEqual([ROOT_ID]);
-		expect(g.instances[ROOT_ID].members, 'and it kept no member of the old session').toEqual({});
 		expect(g.nodeById('n1'), 'and no node record survives to carry its view state').toBeNull();
 
 		// The new session mints `n1` again, and what it draws is the fresh document's alone: no kind,

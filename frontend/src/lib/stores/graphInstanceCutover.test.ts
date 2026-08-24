@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
-import { nodesMap } from '$lib/crdt/graphDoc';
 import { SCOPE_TYPE, BOUNDARY_SLOT, boundaryType } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
@@ -71,7 +70,7 @@ function scope(
 }
 
 describe('scope-forest read cutover — scopes built from the doc when the catalog is present', () => {
-	it('synthesizes ROOT and assembles a scope from the doc forest', () => {
+	it('assembles a scope from the doc forest, as one node record among the rest', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
@@ -92,30 +91,23 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 			links: sp.links
 		});
 
-		// ROOT synthesized: top-level node + the scope, keyed by uid; the member excluded.
-		const root = g.instances[ROOT_ID];
-		expect(root, 'ROOT scope present for the canvas to render').toBeDefined();
-		expect(root.members.n0).toEqual({ uid: 'n0', is_instance: false });
-		expect(root.members.i1).toEqual({ uid: 'i1', is_instance: true });
-		expect(root.members.m1).toBeUndefined(); // a member of i1, not top-level
+		// Membership rides the record, so ROOT is simply the scope a top-level record names.
+		const members = (scope: string) => g.nodes.filter((n) => n.scope === scope).map((n) => n.uid);
+		expect.soft(members(ROOT_ID)).toEqual(['n0', 'i1']);
+		// A port is a member like any other node — it is what the canvas draws inside the scope.
+		expect.soft(members('i1')).toEqual(['m1', 'p0', 'p1']);
 
-		// The scope assembled from the doc.
-		const i1 = g.instances.i1;
+		// The facade is one node in the ONE list, with the position and name the doc gave it.
+		const i1 = g.nodeById('i1')!;
 		expect(i1.name).toBe('subpatch0');
 		expect(i1.pos).toEqual([5, 6]);
-		// A port is a member like any other node — it is what the canvas draws inside the scope.
-		expect(i1.members).toEqual({
-			m1: { uid: 'm1', is_instance: false },
-			p0: { uid: 'p0', is_instance: false },
-			p1: { uid: 'p1', is_instance: false }
-		});
+		expect(i1.subpatch).toEqual({ memberCount: 3 });
 
-		// The collapsed sub-patch exposes ONE slot per port, by direction. The inner wire is a
-		// separate question: authoring `p1` is what gives the parent's facade its input.
-		const synth = g.nodeById('i1');
-		expect(synth?.output_slots).toEqual({ p0: 'ARRAY' });
-		expect(synth?.input_slots).toEqual({ p1: 'ARRAY' });
-		expect(synth?.slot_labels).toEqual({ p0: 'wave', p1: 'feed' });
+		// It exposes ONE slot per port, by direction. The inner wire is a separate question:
+		// authoring `p1` is what gives the parent's facade its input.
+		expect.soft(i1.output_slots).toEqual({ p0: 'ARRAY' });
+		expect.soft(i1.input_slots).toEqual({ p1: 'ARRAY' });
+		expect.soft(i1.slot_labels).toEqual({ p0: 'wave', p1: 'feed' });
 	});
 
 	it('a scope removed from the doc vanishes and its member returns to ROOT', () => {
@@ -125,14 +117,14 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const d = seed(fc).patch({
 			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
 		});
-		expect(g.instances.i1).toBeDefined();
-		expect(g.instances[ROOT_ID].members.m1).toBeUndefined(); // owned by i1
+		expect(g.nodeById('i1')?.subpatch).toBeDefined();
+		expect(g.nodeById('m1')!.scope).toBe('i1');
 
 		// Expand: the facade leaves the document and its member loses the `scope` naming it — the
 		// exact delta the manager sends, both halves in one patch.
 		d.patch({ nodes: { i1: null, m1: { scope: null } } });
-		expect(g.instances.i1, 'scope dropped when removed from the doc').toBeUndefined();
-		expect(g.instances[ROOT_ID].members.m1).toEqual({ uid: 'm1', is_instance: false });
+		expect(g.nodeById('i1'), 'scope dropped when removed from the doc').toBeNull();
+		expect(g.nodeById('m1')!.scope).toBe(ROOT_ID);
 	});
 
 	it('derives a collapsed scope deep-error from a member NODE error (recursion-correct)', () => {
@@ -148,12 +140,12 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		// Grouping m1 into i1 (mirror writes the scope → doc reconcile) must redden the collapsed
 		// sub-patch with its member's deep error, as describe_instance.error did pre-cutover.
 		d.patch({ nodes: { ...scope('i1', { name: 'sp0' }).nodes, m1: { scope: 'i1' } } });
-		expect(g.instances.i1.error, 'collapsed scope reflects its member deep error').toBe('member boom');
+		expect(g.nodeById('i1')!.error, 'collapsed scope reflects its member deep error').toBe('member boom');
 
 		// Clearing the member error and re-reconciling clears the scope error (no stale chip).
 		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
 		d.patch({ nodes: { i1: { name: 'sp0b' } } });
-		expect(g.instances.i1.error, 'cleared member error clears the derived scope error').toBeNull();
+		expect(g.nodeById('i1')!.error, 'cleared member error clears the derived scope error').toBeNull();
 	});
 
 	it('a member runtime error live-updates the collapsed scope badge (no doc transaction)', () => {
@@ -163,22 +155,22 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		seed(fc).patch({
 			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
 		});
-		expect(g.instances.i1.error).toBeNull();
+		expect(g.nodeById('i1')!.error).toBeNull();
 
 		// A member's runtime error arrives via the `error` event (keyed by the member NODE uid). It
 		// fires NO doc transaction, so the collapsed badge must be recomputed from members right here.
 		fc.emit({ event: 'error', payload: { node: 'm1', error: 'runtime boom' } });
 		expect(g.nodeById('m1')!.error).toBe('runtime boom');
-		expect(g.instances.i1.error, 'collapsed scope reflects the member runtime error live').toBe('runtime boom');
-		// …and the collapsed synth node's border reflects it (its sig includes error).
-		expect(g.nodeById('i1')!.error).toBe('runtime boom');
+		expect(g.nodeById('i1')!.error, 'collapsed scope reflects the member runtime error live').toBe(
+			'runtime boom'
+		);
 
 		// Recovery clears it live too.
 		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
-		expect(g.instances.i1.error, 'collapsed scope clears when the member recovers').toBeNull();
+		expect(g.nodeById('i1')!.error, 'collapsed scope clears when the member recovers').toBeNull();
 	});
 
-	it('the synth node keeps a stable reference across an unrelated doc change', () => {
+	it('a facade keeps a stable reference across an unrelated doc change', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
@@ -192,7 +184,7 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const before = g.nodeById('i1');
 		// A change to an UNRELATED node must not churn the sub-patch synth node identity.
 		d.patch({ nodes: { n0: { name: 'osc0b' } } });
-		expect(g.nodeById('i1'), 'synth node reference stable when the scope is unchanged').toBe(before);
+		expect(g.nodeById('i1'), 'facade reference stable when the scope is unchanged').toBe(before);
 	});
 });
 
@@ -228,7 +220,7 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 		// Ungroup: the facade and its port leave the doc, taking the blob with them. That uid can be
 		// re-minted by a later backend, and what comes back must start clean.
 		d.patch({ nodes: { i9: null, p9: null, m9: { scope: null } }, links: [] });
-		expect(g.instances.i9).toBeUndefined();
+		expect(g.nodeById('i9')).toBeNull();
 		d.patch(spec);
 		expect(slotView(g.nodeById('i9'), 'p9').kind, 'the re-minted scope inherits no kind').toBeUndefined();
 		expect(isSlotExpanded(g.nodeById('i9'), 'p9'), 'nor a collapse').toBe(true);

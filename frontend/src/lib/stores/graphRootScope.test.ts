@@ -3,7 +3,6 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import { nodesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo } from '$lib/api/control';
 
 /** The catalog makes the doc authoritative for node + scope identity (see the node cutover). */
@@ -23,17 +22,15 @@ function catalog(): NodeTypeInfo[] {
 	];
 }
 
-describe('root-as-scope: ROOT is synthesized as the canvas scope', () => {
-	it('nodeById(ROOT_ID) is null — ROOT is the canvas, never a synth group node', () => {
+describe('root-as-scope: ROOT is the canvas, and no record is it', () => {
+	it('a top-level record NAMES the root scope, and ROOT itself resolves to no node', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		const d = seed(fc);
 		g.nodeTypes = catalog();
-		// Any document change runs the reconcile, which synthesizes the ROOT scope.
 		seed(fc).node('m1', 'Buffer', 'buffer0');
 
-		expect(g.instances[ROOT_ID]).toBeDefined(); // ROOT is in the mirror
-		expect(g.nodeById(ROOT_ID)).toBe(null); // …but never synthesized as a node
+		expect(g.nodeById('m1')!.scope).toBe(ROOT_ID); // a record with no `scope` is drawn at ROOT
+		expect(g.nodeById(ROOT_ID)).toBe(null); // …and the sentinel names no record
 	});
 
 	it('restartNode respawns in place via the restart_node RPC (keeps scope, no cascade)', async () => {

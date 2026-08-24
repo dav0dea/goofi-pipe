@@ -5,8 +5,7 @@ import {
 	nodeViews,
 	setParamExpr,
 	linkViews,
-	instanceView,
-	instanceViews,
+	facadeFaces,
 	docParams,
 	globalViews,
 	isValidGlobalName,
@@ -40,9 +39,13 @@ function seedDoc(): Doc {
 describe('graphDoc readers', () => {
 	it('reads node identity views', () => {
 		const doc = seedDoc();
-		expect(nodeView(doc, 'a')).toEqual({ uid: 'a', type: 'Oscillator', name: 'osc0', pos: [10, 20] });
-		// A node with no pos defaults to [0,0].
-		expect(nodeView(doc, 'b')).toEqual({ uid: 'b', type: 'Buffer', name: 'buf0', pos: [0, 0] });
+		expect(nodeView(doc, 'a')).toEqual({
+			uid: 'a', type: 'Oscillator', name: 'osc0', pos: [10, 20], scope: '__root__'
+		});
+		// A node with no pos defaults to [0,0], and one naming no scope is at the top level.
+		expect(nodeView(doc, 'b')).toEqual({
+			uid: 'b', type: 'Buffer', name: 'buf0', pos: [0, 0], scope: '__root__'
+		});
 		expect(nodeView(doc, 'missing')).toBeNull();
 		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b']);
 	});
@@ -81,30 +84,24 @@ describe('graphDoc readers', () => {
 			]
 		};
 
-		// A port IS a node the canvas draws; a FACADE is a scope, and `instanceView` reads it.
-		expect(nodeViews(doc).map((n) => n.uid)).toEqual(['a', 'b', 'm1', 'p1']);
-		expect(instanceViews(doc).map((i) => i.uid)).toEqual(['i1']);
-		expect(instanceView(doc, 'i1')).toEqual({
-			uid: 'i1',
-			name: 'subpatch0',
-			parent: '__root__',
-			pos: [5, 6],
-			members: { m1: false, p1: false },
-			interface: [
-				{
-					bnd_id: 'p1',
-					dir: 'out',
-					dtype: 'ARRAY',
-					name: 'wave',
-					pos: [1, 2],
-					inner_node: 'm1',
-					inner_slot: 'out'
-				}
-			]
+		// ONE list, because the document is one map: leaf, facade and port alike, each carrying the
+		// scope it is drawn in.
+		expect(nodeViews(doc).map((n) => [n.uid, n.scope])).toEqual([
+			['a', '__root__'],
+			['b', '__root__'],
+			['m1', 'i1'],
+			['i1', '__root__'],
+			['p1', 'i1']
+		]);
+		// A port IS the facade's slot: keyed by the port's stable uid, labelled with its name.
+		expect(facadeFaces(doc).get('i1')).toEqual({
+			input_slots: {},
+			output_slots: { p1: 'ARRAY' },
+			slot_labels: { p1: 'wave' },
+			memberCount: 2
 		});
-		expect(instanceView(doc, 'missing')).toBeNull();
-		// A uid that names a LEAF is not a scope, however much it looks like one from outside.
-		expect(instanceView(doc, 'a')).toBeNull();
+		// A uid that names a LEAF has no face, however much it looks like a scope from outside.
+		expect(facadeFaces(doc).has('a')).toBe(false);
 	});
 
 	it('reads a node param leaves (value + expression binding) via docParams', () => {
@@ -120,17 +117,27 @@ describe('graphDoc readers', () => {
 		expect(docParams(doc, 'b')).toEqual({});
 	});
 
-	it('an unwired port omits its inner pair rather than carrying an empty one', () => {
-		// An unwired port simply has no link naming it. A reader that answered `''` would draw a
-		// cable to nowhere.
+	it('an unwired port is a slot like any other — a facade with nothing behind it still has a face', () => {
+		// The unwired state is the test: a port with no link naming it is present, named and
+		// addressable, exactly as a leaf that was never connected is.
 		const doc: Doc = {
 			...seedDoc(),
 			nodes: { i1: { type: 'SubPatch', name: 's' }, p1: { type: 'InArray', name: 'a', scope: 'i1' } },
 			links: []
 		};
-		const port = instanceView(doc, 'i1')!.interface[0];
-		expect(port.inner_node).toBeUndefined();
-		expect(port.inner_slot).toBeUndefined();
+		expect(facadeFaces(doc).get('i1')).toEqual({
+			input_slots: { p1: 'ARRAY' },
+			output_slots: {},
+			slot_labels: { p1: 'a' },
+			memberCount: 1
+		});
+		// …and an EMPTY sub-patch is a node too, with a face that simply exposes nothing.
+		expect(facadeFaces({ nodes: { i1: { type: 'SubPatch', name: 's' } } }).get('i1')).toEqual({
+			input_slots: {},
+			output_slots: {},
+			slot_labels: {},
+			memberCount: 0
+		});
 	});
 
 	it('a wrongly-typed or absent root reads as empty rather than throwing', () => {
@@ -139,7 +146,7 @@ describe('graphDoc readers', () => {
 		expect(nodeViews({})).toEqual([]);
 		expect(linkViews({ links: 'not an array' })).toEqual([]);
 		expect(globalViews({ globals: null })).toEqual([]);
-		expect(instanceViews({ nodes: 7 })).toEqual([]);
+		expect(facadeFaces({ nodes: 7 }).size).toBe(0);
 	});
 });
 

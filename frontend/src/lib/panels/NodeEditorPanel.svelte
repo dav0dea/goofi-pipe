@@ -38,18 +38,12 @@
 	import { portal } from 'panelty';
 	import {
 		linkKey,
-		type InstanceInfo,
 		type LinkInfo,
 		type NodeInstanceInfo,
 		type NodeTypeInfo
 	} from '$lib/api/control';
 	import { boundaryType } from '$lib/api/vocab';
-	import {
-		ROOT_ID,
-		buildMemberIndex,
-		childrenOfScope,
-		drawEndpoint as sceneDrawEndpoint
-	} from '$lib/editor/subpatchScene';
+	import { ROOT_ID, childrenOfScope, drawEndpoint as sceneDrawEndpoint } from '$lib/editor/subpatchScene';
 	import { nodeSurfaceSize, inputUnits } from '$lib/editor/nodeMetrics';
 	import { isSlotExpanded } from '$lib/viewers/inlineView';
 	import {
@@ -268,11 +262,16 @@
 		if (!samePath(persisted, untrack(() => enteredPath))) enteredPath = persisted;
 	});
 
-	/** Index every entity (node OR nested instance) by uid, for parent-scope and local lookups. */
-	const memberIndex = $derived(buildMemberIndex(g.instances));
+	/** uid → the scope it is drawn in. Membership rides the record, so this is a read, not a walk. */
+	const memberIndex = $derived(new Map(g.nodes.map((n) => [n.uid, n.scope])));
+
+	/** Is this uid a sub-patch facade — the one thing this gesture can ENTER? */
+	function isScope(uid: string): boolean {
+		return !!g.nodeById(uid)?.subpatch;
+	}
 
 	function enterInstance(instId: string): void {
-		if (!g.instances[instId]) return;
+		if (!isScope(instId)) return;
 		if (enteredPath[enteredPath.length - 1] === instId) return; // already inside it
 		sel.clear(panelId);
 		enteredPath = [...enteredPath, instId];
@@ -292,33 +291,27 @@
 	$effect(() => {
 		if (enteredPath.length === 0) return;
 		let depth = enteredPath.length;
-		while (depth > 0 && !g.instances[enteredPath[depth - 1]]) depth--;
+		while (depth > 0 && !isScope(enteredPath[depth - 1])) depth--;
 		if (depth !== enteredPath.length) {
 			enteredPath = enteredPath.slice(0, depth);
 			persistEnteredPath();
 		}
 	});
 
-	/** Resolve a link endpoint to what is actually drawn in the entered scope: the nearest visible
-	 * boundary port up the nesting tree, or null when the slot is not exposed. */
-	function drawEndpoint(
-		node: string,
-		slot: string,
-		dir: 'in' | 'out'
-	): { node: string; handle: string } | null {
+	/** Resolve a link endpoint to what is actually drawn in the entered scope: the facade of the
+	 * nearest enclosing scope, or null when the endpoint lies outside the entered subtree. */
+	function drawEndpoint(node: string, slot: string): { node: string; handle: string } | null {
 		// The scene algebra always takes a real scope id; `entered` stays null at root, which is
 		// what the "are we inside a sub-patch?" decisions read.
-		return sceneDrawEndpoint(node, slot, dir, entered ?? ROOT_ID, g.instances, memberIndex);
+		return sceneDrawEndpoint(node, slot, entered ?? ROOT_ID, memberIndex);
 	}
 
-	// Render the direct children of the entered scope: real nodes, nested instances, and inside an
-	// entered instance its In/Out boundary pills.
+	// Render the direct children of the entered scope — leaves, nested facades and boundary ports
+	// alike, because each is a node record that names this scope.
 	$effect(() => {
 		const scope = entered ?? ROOT_ID;
 		const next: Node[] = [];
-		const kids = childrenOfScope(scope, g.instances, g.nodes.map((n) => n.uid), memberIndex);
-		const childUids = [...kids.nodeUids, ...kids.instUids];
-		for (const uid of childUids) {
+		for (const uid of childrenOfScope(scope, memberIndex)) {
 			const n = g.nodeById(uid);
 			if (!n) continue;
 			next.push({
@@ -338,8 +331,8 @@
 		reconcileTick; // re-derive on demand to drop an optimistic ghost edge after a rejected wire
 		const next: Edge[] = [];
 		for (const l of g.links) {
-			const src = drawEndpoint(l.node_out, l.slot_out, 'out');
-			const dst = drawEndpoint(l.node_in, l.slot_in, 'in');
+			const src = drawEndpoint(l.node_out, l.slot_out);
+			const dst = drawEndpoint(l.node_in, l.slot_in);
 			if (!src || !dst) continue;
 			if (src.node === dst.node && l.node_out !== l.node_in) continue; // internal to one collapsed child -> hidden (but keep a real self-loop)
 			const id = linkKey(l);
@@ -356,18 +349,21 @@
 		flowEdges = next;
 	});
 
-	/** Node ids selected in THIS editor — the store's selection plus a live marquee. A boundary port
-	 * is one of them: it is a doc node record with a type and a pos, so it clones like any other.
-	 * A sub-patch FACADE is not, because cloning a scope means cloning its members and their wiring,
-	 * which is a feature rather than a branch to delete. */
-	function selectedNodeNames(): string[] {
+	/** Node ids selected in THIS editor — the store's selection plus a live marquee. */
+	function selectedUids(): string[] {
 		const ids = new Set<string>(sel.nodes(panelId));
 		for (const n of flowNodes) if (n.selected) ids.add(n.id);
-		return [...ids].filter((id) => !(id in g.instances));
+		return [...ids];
+	}
+
+	/** …minus the facades, which `cloneNodes` cannot copy: it instantiates by TYPE, and a scope's
+	 * copy is its members and their wiring. The backend's `add_node {copy_of}` is what lifts this. */
+	function clonableUids(): string[] {
+		return selectedUids().filter((id) => !isScope(id));
 	}
 
 	async function groupSelection(): Promise<void> {
-		const names = selectedNodeNames();
+		const names = selectedUids();
 		if (names.length === 0) return;
 		// Place the collapsed group node at the centroid of its members.
 		const pts = names.map((n) => g.nodeById(n)?.pos).filter((p): p is [number, number] => !!p);
@@ -387,7 +383,7 @@
 
 	/** Is this uid a boundary port of the ENTERED scope? */
 	function portHere(id: string): boolean {
-		return !!entered && !!g.instances[entered]?.interface[id];
+		return !!entered && memberIndex.get(id) === entered && !!boundaryType(g.nodeById(id)?.type ?? '');
 	}
 
 	function onConnect(c: Connection): void {
@@ -720,7 +716,7 @@
 		const now = performance.now();
 		const hereNode = nodeUnder(event.target);
 		// …of which only a sub-patch instance is something this gesture can ENTER.
-		const here = hereNode in g.instances ? hereNode : '';
+		const here = isScope(hereNode) ? hereNode : '';
 		// Per gesture, not per device.
 		const slop = (event as PointerEvent).pointerType === 'touch' ? DBL_PX_TOUCH : DBL_PX;
 		if (
@@ -844,17 +840,11 @@
 
 	/** Select what is on screen: the entered scope's members, group nodes included. */
 	function selectAll(): void {
-		const kids = childrenOfScope(
-			entered ?? ROOT_ID,
-			g.instances,
-			g.nodes.map((n) => n.uid),
-			memberIndex
-		);
-		sel.selectNodes(panelId, [...kids.nodeUids, ...kids.instUids]);
+		sel.selectNodes(panelId, childrenOfScope(entered ?? ROOT_ID, memberIndex));
 	}
 
 	async function copySelection(): Promise<void> {
-		const names = new Set(selectedNodeNames());
+		const names = new Set(clonableUids());
 		const selNodes = g.nodes.filter((n) => names.has(n.uid));
 		if (selNodes.length === 0) return;
 		const links = g.links.filter((l) => names.has(l.node_in) && names.has(l.node_out));
@@ -866,7 +856,7 @@
 	async function duplicateSelection(): Promise<void> {
 		// One transaction, so duplicating N nodes and their links is a single undo.
 		const rename = await history().transaction('Duplicate nodes', () =>
-			g.cloneNodes(selectedNodeNames(), [40, 40], entered ?? undefined)
+			g.cloneNodes(clonableUids(), [40, 40], entered ?? undefined)
 		);
 		const created = Object.values(rename);
 		if (created.length > 0) sel.selectNodes(panelId, created);
@@ -1054,7 +1044,7 @@
 					>Patch</Button
 				>
 				{#each enteredPath as inst, i (inst)}
-					{@const label = g.instances[inst]?.name ?? inst}
+					{@const label = g.nodeById(inst)?.name ?? inst}
 					<span class="sep">›</span>
 					<Button
 						variant="ghost"

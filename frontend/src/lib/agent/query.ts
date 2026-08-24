@@ -9,8 +9,8 @@ import { asStateObject, linkedNodeName } from 'panelty';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
 import { summaryOf } from '$lib/viewers/viewMeta';
-import { ROOT_ID } from '$lib/editor/subpatchScene';
-import type { InstanceInfo, LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+
+import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 import type { GlobalView } from '$lib/crdt/graphDoc';
 
 export interface FrameSummary {
@@ -70,14 +70,6 @@ export const query = {
 	docSynced: (): boolean => graph().docSynced,
 	/** Every patch global (system + user), in system-first/creation order. */
 	globals: (): GlobalView[] => graph().globals,
-	/** Every sub-patch instance by uid. ROOT is excluded — it is the canvas, not a sub-patch. */
-	instances: (): Record<string, InstanceInfo> => {
-		const { [ROOT_ID]: _root, ...rest } = graph().instances;
-		return rest;
-	},
-	/** One sub-patch instance by uid, or null (ROOT is not a sub-patch). */
-	instance: (uid: string): InstanceInfo | null =>
-		uid === ROOT_ID ? null : graph().instances[uid] ?? null,
 	node: (uid: string): NodeInstanceInfo | null => graph().nodeById(uid),
 	nodeParams: (uid: string): NodeInstanceInfo['params'] | null =>
 		graph().nodeById(uid)?.params ?? null,

@@ -58,7 +58,7 @@ function nodeWithParam(uid: string, value: unknown): NodeInstanceInfo {
 		params: { common: { frequency: { value } } } as unknown as NodeInstanceInfo['params'],
 		pos: [0, 0],
 		viewers: {},
-		membership: null,
+		scope: '__root__',
 		error: null
 	};
 }

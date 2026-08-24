@@ -1,6 +1,6 @@
 /** Unified undo/redo — ONE client stack of markers that delegate to the manager's own history. A
  * node's INLINE viewer state is the one exception: no command owns it, so it replays a snapshot. */
-import type { Control, ControlEvent, InstanceInfo } from '$lib/api/control';
+import type { Control, ControlEvent } from '$lib/api/control';
 import { getControl } from '$lib/api/control';
 import type { ViewerKind } from '$lib/viewers/kind';
 import type { SettingsMap } from '$lib/viewers/settingsSchema';
@@ -75,7 +75,7 @@ export interface Executor<A extends Action = Action> {
 	inverse(action: A, deps: ExecutorDeps): Promise<void>;
 }
 
-export type { ControlEvent, InstanceInfo };
+export type { ControlEvent };
 
 /** Replays a CompoundAction's children — forward in order, inverse in reverse. */
 const compoundExecutor: Executor = {

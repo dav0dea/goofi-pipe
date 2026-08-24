@@ -8,13 +8,10 @@
 
 	const g = graph();
 
-	const instId = $derived(node.subpatch?.instId ?? node.name);
-	// Live instance state: the synthetic node is only rebuilt on the next selection recompute.
-	const inst = $derived(g.instances[instId] ?? null);
-	const memberCount = $derived(Object.keys(inst?.members ?? {}).length);
+	const memberCount = $derived(node.subpatch?.memberCount ?? 0);
 
 	function expand(): void {
-		void g.expandInstance(instId).catch((e) => console.warn('expand failed', e));
+		void g.expandInstance(node.uid).catch((e) => console.warn('expand failed', e));
 	}
 </script>
 

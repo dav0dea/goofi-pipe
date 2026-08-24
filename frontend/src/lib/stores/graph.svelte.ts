@@ -7,7 +7,6 @@ import {
 	type ControlEvent,
 	type DirListing,
 	type GraphSnapshot,
-	type InstanceInfo,
 	type LinkInfo,
 	type NodeInstanceInfo,
 	type NodeTypeInfo,
@@ -25,7 +24,7 @@ import { SyncClient } from '$lib/crdt/syncClient';
 import {
 	linkViews,
 	nodeViews,
-	instanceViews,
+	facadeFaces,
 	docParams,
 	viewersJson,
 	globalViews,
@@ -35,7 +34,6 @@ import {
 	type GlobalType
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
-import { assembleInstances, instanceError } from '$lib/crdt/instanceAssembly';
 import type { StringParam } from '$lib/api/types';
 
 /** Safety net: lift a ⟳ spinner after this long when a node never reports the refresh done.
@@ -50,8 +48,6 @@ function refreshKey(node: string, group: string, name: string): string {
 export class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
 	links = $state<LinkInfo[]>([]);
-	/** Sub-patch instances keyed by instance id (flatten-at-runtime group nodes). */
-	instances = $state<Record<string, InstanceInfo>>({});
 	savePath = $state<string | null>(null);
 	unsavedChanges = $state(false);
 	connected = $state(false);
@@ -119,9 +115,8 @@ export class GraphStore {
 		this.globals = globalViews(doc);
 		// The workspace store rebuilds its tree from this; the client holds no second copy.
 		workspace().syncFromDoc(arrangementTabs(doc));
-		// Both reconcilers no-op until the catalog lands, then rebuild from the doc.
+		// No-ops until the catalog lands, then rebuilds from the doc.
 		this._reconcileNodesFromDoc();
-		this._reconcileInstancesFromDoc();
 	}
 
 	/** Apply a wholesale snapshot, returning whether it came from a NEW backend session — which is
@@ -134,13 +129,13 @@ export class GraphStore {
 		// overlay is both stashed for nodes still to materialize and applied to those already here.
 		this._snapshotRuntime = snap.runtime ?? {};
 		for (const [uid, rt] of Object.entries(this._snapshotRuntime)) {
-			const node = this._realNode(uid);
+			const node = this.nodeById(uid);
 			if (!node) continue;
 			node.stage = rt.stage;
 			node.error = rt.error ?? null;
 		}
 		// A same-session reconnect fires no doc transaction, so nothing else refreshes the facades.
-		this._recomputeInstanceErrors();
+		this._recomputeScopeErrors();
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -157,7 +152,6 @@ export class GraphStore {
 	private _resetProjection(): void {
 		this.nodes = [];
 		this.links = [];
-		this.instances = {};
 		this.globals = [];
 		// `_snapshotRuntime` is NOT cleared: `_replaceSnapshot` ran first, so it already holds the
 		// INCOMING session's overlay. The arrangement store is a separate singleton, so it is here.
@@ -219,7 +213,7 @@ export class GraphStore {
 						t.error = ev.payload.error ?? null;
 						// A collapsed sub-patch's health is derived and cached, so every writer of a
 						// node's `error` has to invalidate it.
-						this._recomputeInstanceErrors();
+						this._recomputeScopeErrors();
 					}
 				}
 				// Lift each spinner exactly when the fresh options land. Keyed by node, not by `t`.
@@ -230,12 +224,12 @@ export class GraphStore {
 			}
 			case 'node_stage': {
 				// Discrete stage transitions the state plane cannot carry — today only a bootstrap error.
-				const t = this._realNode(ev.payload.node);
+				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.stage = ev.payload.stage;
 					if (ev.payload.error !== undefined) {
 						t.error = ev.payload.error;
-						this._recomputeInstanceErrors(); // derived facade health — see `state_update`
+						this._recomputeScopeErrors(); // derived facade health — see `state_update`
 					}
 				}
 				break;
@@ -262,12 +256,12 @@ export class GraphStore {
 			}
 			case 'error': {
 				// Always keyed by a REAL node uid; a sub-patch's deep error is derived, and this event
-				// fires no doc transaction, so the enclosing instances are recomputed by hand.
+				// fires no doc transaction, so the enclosing facades are recomputed by hand.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.error = ev.payload.error;
 				if (ev.payload.error)
 					consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
-				this._recomputeInstanceErrors();
+				this._recomputeScopeErrors();
 				break;
 			}
 			case 'unsaved_changes':
@@ -282,11 +276,10 @@ export class GraphStore {
 		}
 	}
 
-	/** Adopt a palette catalog. It supplies the descriptors, so nodes and instances rebuild here. */
+	/** Adopt a palette catalog. It supplies the descriptors, so the nodes rebuild here. */
 	private _applyNodeTypes(types: NodeTypeInfo[]): void {
 		this.nodeTypes = types;
 		this._reconcileNodesFromDoc();
-		this._reconcileInstancesFromDoc();
 	}
 
 	/** Re-derive the node registry from disk and report what changed; explicit, since there is no
@@ -340,7 +333,7 @@ export class GraphStore {
 		this._recordGraphCmd(label);
 	}
 
-	/** Respawn a node in place, keeping its uid, name, params, position, membership and links. A
+	/** Respawn a node in place, keeping its uid, name, params, position, scope and links. A
 	 * recovery action rather than an edit, so it records no history. */
 	async restartNode(uid: string): Promise<void> {
 		await this.ctl.call('restart_node', { node: uid });
@@ -518,43 +511,14 @@ export class GraphStore {
 		await this.ctl.call('load', { path });
 	}
 
-	/** A real node by uid (no sub-patch synthesis), or null. */
-	private _realNode(uid: string): NodeInstanceInfo | null {
-		return this.nodes.find((n) => n.uid === uid) ?? null;
-	}
-
-	/** Resolve a node by UID — the one accessor. A sub-patch instance id resolves to a VIRTUAL node
-	 * whose own uid is the instance id, so selection, inspector and drag treat it like a node. */
+	/** Resolve a node by uid — the ONE accessor, and every kind of node record answers it. */
 	nodeById(id: string): NodeInstanceInfo | null {
-		const real = this._realNode(id);
-		if (real) return real;
-		// ROOT is a real scope in the mirror, but it is the canvas — never a selectable node.
-		if (id === ROOT_ID) return null;
-		const inst = this.instances[id];
-		if (!inst) {
-			this._synthCache.delete(id);
-			return null;
-		}
-		return this._synthSubpatchNode(id, inst);
+		return this.nodes.find((n) => n.uid === id) ?? null;
 	}
 
-	/** Every node a panel can bind or a picker can list: the leaves and ports the doc carries, plus
-	 * the sub-patch facades, which are nodes everywhere else in the editor. ROOT is the canvas. */
+	/** Every node a panel can bind or a picker can list. ROOT is the canvas, and it is not one. */
 	get bindable(): { uid: string; name: string }[] {
-		return [
-			...this.nodes.map((n) => ({ uid: n.uid, name: n.name })),
-			...Object.values(this.instances)
-				.filter((i) => i.uid !== ROOT_ID)
-				.map((i) => ({ uid: i.uid, name: i.name }))
-		];
-	}
-
-	/** Memoized virtual sub-patch nodes: a fresh object per call re-subscribed the inline viewer. */
-	private _synthCache = new Map<string, { sig: string; node: NodeInstanceInfo }>();
-
-	/** Validate that `uid` is a direct member of `instId` and return it. */
-	memberUid(instId: string, uid: string): string | null {
-		return this.instances[instId]?.members[uid]?.uid ?? null;
+		return this.nodes.map((n) => ({ uid: n.uid, name: n.name }));
 	}
 
 	/** Reconcile the flat node list IN PLACE by uid, so a survivor keeps its object reference and
@@ -592,7 +556,6 @@ export class GraphStore {
 				params[group][name] = pr;
 			}
 		}
-		// `membership` is NOT extracted: the caller always re-derives it from the doc's forest.
 		return {
 			error: node.error,
 			stage: node.stage,
@@ -617,133 +580,51 @@ export class GraphStore {
 		}
 	}
 
-	/** Derive a node's sub-patch membership from the doc's mirrored scope forest; ROOT → null. */
-	private _membershipFromDoc(
-		uid: string,
-		index: Map<string, string>
-	): { instance: string; local_name: string } | null {
-		const instance = index.get(uid);
-		return instance ? { instance, local_name: uid } : null;
-	}
-
-	/** uid → owning instance id, built ONCE per reconcile: per node it is an O(nodes × instances) walk. */
-	private _membershipIndex(): Map<string, string> {
-		const index = new Map<string, string>();
-		for (const iv of instanceViews(this._sync.doc)) {
-			for (const member of Object.keys(iv.members)) index.set(member, iv.uid);
-		}
-		return index;
-	}
-
-	/** Build `this.nodes` from the doc: each node is the doc's own fields, plus the catalog
-	 * descriptor for its type, plus the runtime overlay the doc never holds. */
+	/** Build `this.nodes` from the doc: each record is the doc's own fields, plus the catalog
+	 * descriptor for its type, plus the runtime overlay the doc never holds. A facade has no
+	 * catalog entry — it runs nothing — so its ports supply its slots instead. */
 	private _reconcileNodesFromDoc(): void {
 		if (!this.nodeTypes?.length) return; // no catalog yet → keep the current nodes; rebuild when it lands
 		const doc = this._sync.doc;
 		// Both indexes are built ONCE per reconcile rather than per node.
 		const byType = new Map(this.nodeTypes.map((t) => [t.type, t]));
-		const membership = this._membershipIndex();
+		const faces = facadeFaces(doc);
 		const next: NodeInstanceInfo[] = nodeViews(doc).map((nv) => {
-			const existing = this._realNode(nv.uid);
+			const existing = this.nodeById(nv.uid);
 			const catalog = byType.get(nv.type);
 			const runtime: RuntimeOverlay = existing ? this._extractRuntime(existing) : this._seedRuntime(nv.uid);
-			// A boundary port has no thread, so no `node_stage` will ever arrive for it — seeded
-			// `creating` it would sit booting for the life of the patch.
-			if (boundaryType(nv.type)) runtime.stage = 'ready';
-			runtime.membership = this._membershipFromDoc(nv.uid, membership);
+			// Neither a port nor a facade has a thread, so no `node_stage` will ever arrive for one —
+			// seeded `creating` it would sit booting for the life of the patch.
+			if (boundaryType(nv.type) || faces.has(nv.uid)) runtime.stage = 'ready';
 			const viewers = (viewersJson(doc, nv.uid) ?? {}) as NodeInstanceInfo['viewers'];
-			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime);
+			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime, faces.get(nv.uid));
 		});
 		this._reconcileNodes(next);
+		this._recomputeScopeErrors();
 	}
 
-	/** Build `this.instances` — the whole sub-patch forest, ROOT included — from the doc; `error` is
-	 * DERIVED from the members' runtime errors, since the bridge never keys one by an instance uid. */
-	private _reconcileInstancesFromDoc(): void {
-		if (!this.nodeTypes?.length) return; // no catalog yet → keep event-sourced instances
-		const doc = this._sync.doc;
-		const nodes = nodeViews(doc).map((n) => ({ uid: n.uid, name: n.name }));
-		const next = assembleInstances(instanceViews(doc), nodes, (uid) => this._realNode(uid)?.error ?? null);
-		this._reconcileInstances(next);
-	}
-
-	/** Re-derive every instance's deep error in place: a member `error` event fires no doc
-	 * transaction, so the reconcile that normally derives it does not run. */
-	private _recomputeInstanceErrors(): void {
-		if (!this.nodeTypes?.length) return; // instances are event-sourced until the catalog lands
-		const views = instanceViews(this._sync.doc);
-		const byUid = new Map(views.map((v) => [v.uid, v]));
-		const nodeError = (uid: string) => this._realNode(uid)?.error ?? null;
-		for (const view of views) {
-			const rec = this.instances[view.uid];
-			if (!rec) continue;
-			const err = instanceError(view, byUid, nodeError);
-			if (rec.error !== err) rec.error = err;
-		}
-	}
-
-	/** Reconcile the instances map IN PLACE by uid, so a survivor keeps its object reference. */
-	private _reconcileInstances(next: Record<string, InstanceInfo>): void {
-		for (const [uid, rec] of Object.entries(next)) {
-			const cur = this.instances[uid];
-			if (cur) Object.assign(cur, rec);
-			else this.instances[uid] = rec;
-		}
-		for (const uid of Object.keys(this.instances)) {
-			if (!(uid in next)) {
-				delete this.instances[uid];
-				this._synthCache.delete(uid); // cache lifetime tracks the instances map
-			}
-		}
-	}
-
-	/** Build the virtual NodeInstanceInfo that stands in for a sub-patch instance: its boundary
-	 * ports become real slots, so the canvas treats it exactly like a node. */
-	private _synthSubpatchNode(instId: string, inst: InstanceInfo): NodeInstanceInfo {
-		const error = inst.error ?? null;
-		const memberCount = Object.keys(inst.members).length;
-		// Everything the synth node RENDERS except position, which is applied in place below so a
-		// per-frame drag keeps one identity and never churns the viewer.
-		const portSig = Object.entries(inst.interface)
-			.map(([bid, p]) => `${bid}=${p.dir}:${p.dtype}:${p.name ?? ''}`)
-			.join(',');
-		const sig = `${inst.name}|${error ?? ''}|${memberCount}|${portSig}`;
-
-		const cached = this._synthCache.get(instId);
-		if (cached && cached.sig === sig) {
-			cached.node.pos = inst.pos; // keep position fresh without a new identity
-			cached.node.viewers = inst.viewers ?? {}; // …and its view state, which the sig cannot carry
-			return cached.node;
-		}
-
-		// A port IS a facade slot, wired inside or not: the scope's ports are the only owner of what
-		// the collapsed node exposes. Keyed by the stable boundary id but labelled with the
-		// renameable port NAME, so a rename relabels the slot without re-keying the wire.
-		const input_slots: Record<string, string> = {};
-		const output_slots: Record<string, string> = {};
-		const slot_labels: Record<string, string> = {};
-		for (const [bid, port] of Object.entries(inst.interface)) {
-			(port.dir === 'in' ? input_slots : output_slots)[bid] = port.dtype;
-			if (port.name) slot_labels[bid] = port.name;
-		}
-		const node: NodeInstanceInfo = {
-			uid: instId,
-			name: inst.name ?? instId,
-			type: 'Sub-patch',
-			category: 'subpatch',
-			doc: '',
-			input_slots,
-			output_slots,
-			slot_labels,
-			params: {},
-			pos: inst.pos,
-			viewers: inst.viewers ?? {},
-			membership: null,
-			error,
-			subpatch: { instId, memberCount }
+	/** A facade's health is its members': the FIRST errored descendant at any depth. Derived,
+	 * because the bridge keys `error` by the node that ran, and a facade runs nothing. */
+	private _recomputeScopeErrors(): void {
+		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
+		const kids = new Map<string, string[]>();
+		for (const n of this.nodes) kids.set(n.scope, [...(kids.get(n.scope) ?? []), n.uid]);
+		const deep = new Map<string, string | null>();
+		const errorOf = (uid: string): string | null => {
+			const cached = deep.get(uid);
+			if (cached !== undefined) return cached;
+			deep.set(uid, null); // an in-progress scope contributes nothing, so a cycle terminates
+			const n = byUid.get(uid);
+			let err = n && !n.subpatch ? n.error : null;
+			if (n?.subpatch) for (const kid of kids.get(uid) ?? []) if ((err = errorOf(kid))) break;
+			deep.set(uid, err ?? null);
+			return err ?? null;
 		};
-		this._synthCache.set(instId, { sig, node });
-		return node;
+		for (const n of this.nodes) {
+			if (!n.subpatch) continue;
+			const err = errorOf(n.uid);
+			if (n.error !== err) n.error = err;
+		}
 	}
 
 	/** Create a batch of nodes and wire the given links onto the new uids, returning the original→new
