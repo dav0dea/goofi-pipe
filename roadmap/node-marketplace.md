@@ -28,7 +28,8 @@ library and not this patch's own.
 - Versioning and update semantics for a patch that names a package it was authored against.
 - Where packages live on disk, and how that interacts with the per-patch workspace.
 - Trust. A node package is arbitrary code executed on the user's machine; there is no sandbox
-  today and adding one is a project of its own.
+  today and adding one is a project of its own. A panel plugin has the same problem one step worse
+  (see `panel-plugins.md`), so distribution and trust want ONE answer for both.
 - Discovery and distribution — whether that is a registry goofi hosts, a git URL, or a directory
   someone drops in.
 

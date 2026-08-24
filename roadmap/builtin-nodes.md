@@ -56,4 +56,5 @@ already compose to, and is this genuinely outside that span?"
 - Whether the shipped library is Rust-first (fast, compiled in) or Python-first (editable, the
   thing a user can fork) — and how a user's edit to a shipped node is meant to work.
 - What decides that a node is written in Rust. Today it is "the four that had to be fast", which is
-  a history rather than a rule.
+  a history rather than a rule — and `node-sources.md` is where that question gets settled, because
+  it decides whether a Rust node is even a thing a user can write.
