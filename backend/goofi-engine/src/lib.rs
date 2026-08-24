@@ -488,16 +488,18 @@ impl Graph {
         Ok(())
     }
 
-    /// Re-resolve every expression that names a boundary PORT. A node's stream is fixed by its
-    /// manifest, but a port's IS the wire behind it — so anything that moves a wire moves what
-    /// `nd('port')` reads, and the binding has to follow. Free when the patch has no ports.
+    /// Re-resolve every expression that names a boundary PORT or a sub-patch FACADE. A leaf's
+    /// stream is fixed by its manifest, but a port relays and a facade exposes its ports — so
+    /// anything that moves a wire moves what `nd()` reads there. Free when the patch has neither.
     fn rebind_ports(&mut self) {
-        let ports: Vec<String> = self
+        let names: Vec<String> = self
             .scopes
             .values()
-            .flat_map(|s| s.stubs.values().map(|st| st.name.clone()))
+            .flat_map(|s| {
+                std::iter::once(s.name.clone()).chain(s.stubs.values().map(|st| st.name.clone()))
+            })
             .collect();
-        for name in ports {
+        for name in names {
             self.rebind_naming(&name);
         }
     }
@@ -605,6 +607,12 @@ impl Graph {
     /// has been measured (≥2 emits).
     pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
         self.nodes.get(&uid).and_then(|e| e.ufreq)
+    }
+
+    /// Which node INSTANCE this uid holds: bumped on every birth, so a report from the node born at
+    /// a uid is distinguishable from its predecessor's last one.
+    pub fn node_generation(&self, uid: Uid) -> u64 {
+        self.wire.generation(uid)
     }
 
     /// The flat arrangement — pages, splits and panels. Reads plan against this; writes go through
@@ -982,29 +990,17 @@ impl Graph {
         if self.name_in_use(name) {
             return Err(format!("display name `{name}` already in use"));
         }
-        // A scope facade carries its own display name, but exposes no single stream, so no `nd()`
-        // reference can be following it.
-        if let Some(s) = self.scopes.get_mut(&uid) {
-            s.name = name.to_string();
-            return Ok(vec![]);
-        }
-        // A boundary port DOES expose a stream, so its rename follows into expressions exactly as a
-        // leaf's does — the rewrite below is shared.
-        let old_name = match self.stub(uid).map(|(s, st)| (s, st.name.clone())) {
-            Some((scope, old)) => {
-                self.stub_mut(scope, uid).expect("just found").name = name.to_string();
-                old
-            }
-            None => {
-                let old = self
-                    .nodes
-                    .get(&uid)
-                    .ok_or_else(|| format!("no such node {uid}"))?
-                    .name
-                    .clone();
-                self.nodes.get_mut(&uid).unwrap().name = name.to_string();
-                old
-            }
+        // A facade, a boundary port and a leaf all wear a name in the ONE namespace `nd()` reads,
+        // so all three rename through the shared rewrite below.
+        let old_name = if let Some(s) = self.scopes.get_mut(&uid) {
+            std::mem::replace(&mut s.name, name.to_string())
+        } else if let Some((scope, old)) = self.stub(uid).map(|(s, st)| (s, st.name.clone())) {
+            self.stub_mut(scope, uid).expect("just found").name = name.to_string();
+            old
+        } else {
+            let old = self.nodes.get(&uid).ok_or_else(|| format!("no such node {uid}"))?.name.clone();
+            self.nodes.get_mut(&uid).unwrap().name = name.to_string();
+            old
         };
         // `name_in_use` guarantees `name != old_name`, so the rename genuinely moved the
         // display name — propagate it into every expression that referenced it.
@@ -2969,6 +2965,9 @@ impl Graph {
                 }
             }
         }
+        // A load writes scopes and ports straight into the maps, so it never pays the
+        // `rebind_naming` a live add does — and a binding parsed before them names nothing yet.
+        self.rebind_ports();
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
         // A corrupt arrangement costs the CHROME, never the patch. The reason is kept for the load
         // reply; an ABSENT arrangement is not a corrupt one and warns about nothing.

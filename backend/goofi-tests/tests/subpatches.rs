@@ -467,6 +467,30 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     assert!(unknown.as_str().is_some_and(|e| e.contains("no output")),
             "a name no port wears is refused as a leaf's would be: {unknown}");
 
+    // Renaming the SUB-PATCH follows into the expression, exactly as renaming a leaf or a port
+    // does. Without it the binding survives only until the next re-resolve: the source still spells
+    // a name nothing wears, so a reload raises an error on an expression the user never touched.
+    bind("nd('subpatch0').sink");
+    g.call("edit_node", j!({ "node": inst, "name": "chain" }));
+    let followed = g.call("inspect_node", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
+    assert!(followed.contains("nd('chain').sink"), "the reference followed the sub-patch: {followed}");
+    assert!(!followed.contains("subpatch0"), "…and nothing still spells the old name: {followed}");
+    assert!(!followed.contains("[error:"), "the binding stayed live across the rename: {followed}");
+
+    // …and it SURVIVES the round trip, which is where a source left spelling a dead name shows up.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("renamed.gfi");
+    g.call("save", j!({ "path": path.to_string_lossy() }));
+    let back = Goofi::new();
+    back.state.graph.lock().unwrap().set_evaluator(Arc::new(Always));
+    back.call("load", j!({ "path": path.to_string_lossy() }));
+    let loaded_buf = back.nodes().into_iter()
+        .find(|u| back.doc()["nodes"][u]["name"] == "buffer0")
+        .expect("the member came back");
+    let reloaded = back.call("inspect_node", j!({ "node": loaded_buf }))["text"].as_str().unwrap().to_string();
+    assert!(reloaded.contains("nd('chain').sink"), "the saved source names the sub-patch: {reloaded}");
+    assert!(!reloaded.contains("[error:"), "and it resolves on load: {reloaded}");
+
     // A port's label lives in the ONE display-name namespace `nd()` reads, so it cannot shadow a
     // node's — a second `left` would make the reference above ambiguous.
     g.call("edit_node", j!({ "node": hex(osc), "name": "source" }));
