@@ -326,8 +326,9 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
     std::thread::spawn(move || {
         let period = Duration::from_secs_f64(1.0 / hz as f64);
         let mut last_errors: HashMap<String, (u64, Option<String>)> = HashMap::new();
-        // A node's stage changes on its own thread, with no RPC to ride on.
-        let mut last_stages: HashMap<String, (u64, &'static str)> = HashMap::new();
+        // A node's stage changes on its own thread, with no RPC to ride on. It carries the error
+        // too, because a facade HAS health and never reports one.
+        let mut last_stages: HashMap<String, (u64, &'static str, Option<String>)> = HashMap::new();
         let mut next_broadcast = Instant::now() + period;
         loop {
             std::thread::sleep(DRAIN_PERIOD);
@@ -344,9 +345,10 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     let g = &*g;
                     let mut rates: Vec<(String, f64)> = Vec::new();
                     let mut errs: Vec<(String, u64, Option<String>)> = Vec::new();
-                    let mut stages: Vec<(String, u64, &'static str)> = Vec::new();
+                    let mut stages: Vec<(String, u64, &'static str, Option<String>)> = Vec::new();
                     let mut expr_vals: Vec<(String, Value)> = Vec::new();
-                    for u in g.node_uids() {
+                    let leaves = g.node_uids();
+                    for u in g.all_uids() {
                         let hex = u.to_hex();
                         if let Some(f) = g.node_ufreq(u) {
                             rates.push((hex.clone(), f));
@@ -356,12 +358,16 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                             expr_vals.push((hex.clone(), vals));
                         }
                         let generation = g.node_generation(u);
-                        stages.push((hex.clone(), generation, g.node_stage(u)));
-                        errs.push((hex, generation, g.last_error(u).map(str::to_string)));
+                        let err = g.last_error(u).map(str::to_string);
+                        // The console is a transcript of REPORTS, so only a node that runs enters it.
+                        if leaves.contains(&u) {
+                            errs.push((hex.clone(), generation, err.clone()));
+                        }
+                        stages.push((hex, generation, g.node_stage(u), err));
                     }
                     let refreshed: Vec<String> = refreshed
                         .into_iter()
-                        .filter(|(uid, _)| g.node_uids().contains(uid))
+                        .filter(|(uid, _)| leaves.contains(uid))
                         .map(|(uid, key)| {
                             param_state_update_refreshed(g, uid, &[(&key.group, &key.name)])
                         })
@@ -391,13 +397,16 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 let err = errs.iter().find(|(h, ..)| *h == hex).and_then(|(.., e)| e.clone());
                 let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
-            for (node, generation, stage) in stages {
-                let now = (generation, stage);
-                if last_stages.insert(node.clone(), now) != Some(now) {
-                    let _ = events.send(event("node_stage", json!({ "node": node, "stage": stage })));
+            last_stages.retain(|h, _| stages.iter().any(|(s, ..)| s == h));
+            for (node, generation, stage, err) in stages {
+                let now = (generation, stage, err);
+                if last_stages.get(&node) == Some(&now) {
+                    continue;
                 }
+                let ev = json!({ "node": &node, "stage": now.1, "error": &now.2 });
+                let _ = events.send(event("node_stage", ev));
+                last_stages.insert(node, now);
             }
-            last_stages.retain(|h, _| errs.iter().any(|(e, ..)| e == h));
         }
     });
 }

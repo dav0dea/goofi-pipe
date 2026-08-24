@@ -199,10 +199,11 @@ pub fn catalog_types(g: &Graph) -> Value {
 }
 
 /// The per-node RUNTIME overlay that never enters the doc. It rides the snapshot because its live
-/// stream pushes only transitions.
+/// stream pushes only transitions. EVERY node is in it — a facade's health is its members' and a
+/// port reaches no stage, and a client that had to work either out would be a second owner.
 pub fn runtime_overlay(g: &Graph) -> Value {
     let mut m = Map::new();
-    for uid in g.node_uids() {
+    for uid in g.all_uids() {
         m.insert(
             uid.to_hex(),
             json!({ "stage": g.node_stage(uid), "error": g.last_error(uid) }),

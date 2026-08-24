@@ -127,49 +127,6 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		expect(g.nodeById('m1')!.scope).toBe(ROOT_ID);
 	});
 
-	it('derives a collapsed scope deep-error from a member NODE error (recursion-correct)', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		g.nodeTypes = catalog();
-		// m1 exists at top level and goes into error. The bridge only ever emits `error` keyed by a
-		// real NODE uid (never a scope uid) — so the scope error must be DERIVED from members.
-		const d = seed(fc).node('m1', 'Buffer', 'buffer0');
-		fc.emit({ event: 'error', payload: { node: 'm1', error: 'member boom' } });
-		expect(g.nodeById('m1')!.error).toBe('member boom');
-
-		// Grouping m1 into i1 (mirror writes the scope → doc reconcile) must redden the collapsed
-		// sub-patch with its member's deep error, as describe_instance.error did pre-cutover.
-		d.patch({ nodes: { ...scope('i1', { name: 'sp0' }).nodes, m1: { scope: 'i1' } } });
-		expect(g.nodeById('i1')!.error, 'collapsed scope reflects its member deep error').toBe('member boom');
-
-		// Clearing the member error and re-reconciling clears the scope error (no stale chip).
-		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
-		d.patch({ nodes: { i1: { name: 'sp0b' } } });
-		expect(g.nodeById('i1')!.error, 'cleared member error clears the derived scope error').toBeNull();
-	});
-
-	it('a member runtime error live-updates the collapsed scope badge (no doc transaction)', () => {
-		const fc = new FakeControl();
-		const g = new GraphStore(fc);
-		g.nodeTypes = catalog();
-		seed(fc).patch({
-			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
-		});
-		expect(g.nodeById('i1')!.error).toBeNull();
-
-		// A member's runtime error arrives via the `error` event (keyed by the member NODE uid). It
-		// fires NO doc transaction, so the collapsed badge must be recomputed from members right here.
-		fc.emit({ event: 'error', payload: { node: 'm1', error: 'runtime boom' } });
-		expect(g.nodeById('m1')!.error).toBe('runtime boom');
-		expect(g.nodeById('i1')!.error, 'collapsed scope reflects the member runtime error live').toBe(
-			'runtime boom'
-		);
-
-		// Recovery clears it live too.
-		fc.emit({ event: 'error', payload: { node: 'm1', error: null } });
-		expect(g.nodeById('i1')!.error, 'collapsed scope clears when the member recovers').toBeNull();
-	});
-
 	it('a facade keeps a stable reference across an unrelated doc change', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
@@ -198,7 +155,22 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 			ports: [{ uid: 'p9', type: 'OutArray', name: 'wave', inner: ['m9', 'out'] }]
 		});
 		const spec = { nodes: { m9: node('Buffer', 'buffer9', 'i9'), ...sp9.nodes }, links: sp9.links };
+		// The snapshot's runtime overlay lands BEFORE the doc materializes the nodes it names — the
+		// two ride separate channels in no defined order.
+		fc.emit({
+			event: 'hello',
+			payload: {
+				runtime: { i9: { stage: 'ready', error: 'a member of it was failing' } },
+				save_path: null,
+				unsaved_changes: false,
+				instance_id: 'sess1',
+				viewpoint: null
+			} as unknown as GraphSnapshot
+		});
 		const d = seed(fc).patch(spec);
+		expect(g.nodeById('i9')!.error, 'the overlay reaches a node that arrives after it').toBe(
+			'a member of it was failing'
+		);
 
 		// The user gives the collapsed sub-patch's boundary slot an inline viewer and collapses it.
 		g.setSlotView('i9', 'p9', { kind: 'image', collapsed: true });
@@ -224,6 +196,7 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 		d.patch(spec);
 		expect(slotView(g.nodeById('i9'), 'p9').kind, 'the re-minted scope inherits no kind').toBeUndefined();
 		expect(isSlotExpanded(g.nodeById('i9'), 'p9'), 'nor a collapse').toBe(true);
+		expect(g.nodeById('i9')!.error, 'nor the badge that overlay handed the first one').toBeNull();
 	});
 });
 

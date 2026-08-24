@@ -166,7 +166,7 @@ export type ControlEvent =
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
-	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string } }
+	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string | null } }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
 	// Applied surgically (only these params' `value`), never a wholesale params replace.
 	| {

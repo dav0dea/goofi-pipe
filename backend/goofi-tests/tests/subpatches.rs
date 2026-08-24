@@ -26,6 +26,10 @@ impl ExprEvaluator for Always {
     fn release(&self, _id: BindingId) {}
 }
 
+fn uid(hex: &str) -> goofi_engine::Uid {
+    goofi_engine::Uid::from_hex(hex).expect("a uid")
+}
+
 fn group(g: &Goofi, members: &[String]) -> String {
     g.call("group_nodes", j!({ "members": members, "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().expect("group answers an inst_id").to_string()
@@ -341,6 +345,16 @@ fn a_boundary_wires_to_a_nested_scopes_own_port() {
     }
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(g.inner(&ob), Some((ib, "value".to_string())), "the outer port names the inner one again");
+
+    // A facade RUNS nothing, so its health is its members' — at ANY depth, which is what a nested
+    // scope is here to prove.
+    let boom = g.call("add_node", j!({ "type": "_TestFail", "inst_id": inner, "pos": [0.0, 0.0] }))
+        ["uid"].as_str().unwrap().to_string();
+    let why = g.until("the fault to reach the facades", |g| g.error(uid(&outer)));
+    assert_eq!(Some(&why), g.error(uid(&boom)).as_ref(), "in the member's own words");
+    assert_eq!(Some(why), g.error(uid(&inner)), "…on the scope it sits in as well as the one above");
+    g.call("remove_node", j!({ "node": boom }));
+    assert!(g.stays(|g| g.error(uid(&outer)).is_none()), "and both recover when it goes");
 }
 
 #[test]
@@ -779,7 +793,7 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     // half alone must leave it quiet rather than half-connected.
     let mid = g.call("add_node", j!({ "type": "_TestEcho", "inst_id": inst, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
-    let mid_uid = goofi_engine::Uid::from_hex(&mid).expect("a uid");
+    let mid_uid = uid(&mid);
     g.ready(mid_uid);
     let at_mid = g.probe(mid_uid, "out");
     let port = boundary(&g, &inst, "in");

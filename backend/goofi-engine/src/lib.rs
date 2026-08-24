@@ -781,7 +781,27 @@ impl Graph {
     /// Derived fresh on read, so a binding that recovers on a node which never runs again still
     /// clears. Initialization failure wins, then a process error, then the smallest errored key.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
-        entry_error(self.leaf(uid)?)
+        if let Some(leaf) = self.leaf(uid) {
+            return entry_error(leaf);
+        }
+        // A facade runs nothing, so its health is its members': the first errored descendant, at any
+        // depth. Derived HERE, so a human's badge and an agent's read are one answer. The walked
+        // set doubles as the cycle guard a hand-edited `.gfi` needs.
+        let mut walk = vec![uid];
+        let mut at = 0;
+        while at < walk.len() {
+            let u = walk[at];
+            at += 1;
+            if let Some(err) = self.leaf(u).and_then(entry_error) {
+                return Some(err);
+            }
+            for m in self.scope_members(u) {
+                if !walk.contains(&m) {
+                    walk.push(m);
+                }
+            }
+        }
+        None
     }
 
     /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The

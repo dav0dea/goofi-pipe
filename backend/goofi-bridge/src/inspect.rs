@@ -94,12 +94,12 @@ pub fn patch(
             let hex = uid.to_hex();
             let name = label(g.name(uid).unwrap_or("?"));
             let ty = g.node_type(uid).unwrap_or("?");
+            let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
             if g.stub(uid).is_some() {
-                out.push_str(&format!("  {}([\"{name}: {ty}<br/>{hex}\"])\n", mid(uid)));
+                out.push_str(&format!("  {}([\"{warn}{name}: {ty}<br/>{hex}\"])\n", mid(uid)));
             } else if g.is_facade(uid) {
-                out.push_str(&format!("  {}[[\"{name}<br/>{hex}\"]]\n", mid(uid)));
+                out.push_str(&format!("  {}[[\"{warn}{name}<br/>{hex}\"]]\n", mid(uid)));
             } else {
-                let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
                 out.push_str(&format!("  {}[\"{warn}{name}: {ty}<br/>{hex}\"]\n", mid(uid)));
             }
         }

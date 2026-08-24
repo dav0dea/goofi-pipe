@@ -69,7 +69,8 @@ export class GraphStore {
 	/** instance_id of the manager we last hydrated from; a change is a fresh session, not a reconnect. */
 	private _lastInstanceId: string | null = null;
 
-	/** The last snapshot's per-node runtime overlay, consumed by `_seedRuntime`. */
+	/** Per-node runtime for nodes the snapshot named but the doc has not yet materialized. One-shot:
+	 * `_seedRuntime` takes its entry, so a later node at the same uid seeds fresh. */
 	private _snapshotRuntime: GraphSnapshot['runtime'] = {};
 
 	/** The control client (injectable for tests; defaults to the live WS one). */
@@ -133,8 +134,6 @@ export class GraphStore {
 			node.stage = rt.stage;
 			node.error = rt.error ?? null;
 		}
-		// A same-session reconnect fires no doc transaction, so nothing else refreshes the facades.
-		this._recomputeScopeErrors();
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
 
@@ -208,12 +207,7 @@ export class GraphStore {
 					if (ev.payload.stage) t.stage = ev.payload.stage;
 					// The state plane re-pushes the current error, so backend truth wins here even
 					// when no diff-driven `error` event fired.
-					if ('error' in ev.payload) {
-						t.error = ev.payload.error ?? null;
-						// A collapsed sub-patch's health is derived and cached, so every writer of a
-						// node's `error` has to invalidate it.
-						this._recomputeScopeErrors();
-					}
+					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
 				}
 				// Lift each spinner exactly when the fresh options land. Keyed by node, not by `t`.
 				for (const [group, name] of ev.payload.refreshed_params ?? []) {
@@ -226,10 +220,7 @@ export class GraphStore {
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.stage = ev.payload.stage;
-					if (ev.payload.error !== undefined) {
-						t.error = ev.payload.error;
-						this._recomputeScopeErrors(); // derived facade health — see `state_update`
-					}
+					if (ev.payload.error !== undefined) t.error = ev.payload.error ?? null;
 				}
 				break;
 			}
@@ -254,13 +245,11 @@ export class GraphStore {
 				break;
 			}
 			case 'error': {
-				// Always keyed by a REAL node uid; a sub-patch's deep error is derived, and this event
-				// fires no doc transaction, so the enclosing facades are recomputed by hand.
+				// A REPORT, so only a node that RUNS raises one — a facade's health rides `node_stage`.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.error = ev.payload.error;
 				if (ev.payload.error)
 					consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
-				this._recomputeScopeErrors();
 				break;
 			}
 			case 'unsaved_changes':
@@ -536,6 +525,7 @@ export class GraphStore {
 	 * after the snapshot has no entry, and `creating` is what that means. */
 	private _seedRuntime(uid: string): RuntimeOverlay {
 		const seed = this._snapshotRuntime[uid];
+		delete this._snapshotRuntime[uid];
 		return { stage: seed?.stage ?? 'creating', error: seed?.error ?? null };
 	}
 
@@ -599,31 +589,6 @@ export class GraphStore {
 			return assembleNode(nv, docParams(doc, nv.uid), viewers, catalog, runtime, faces.get(nv.uid));
 		});
 		this._reconcileNodes(next);
-		this._recomputeScopeErrors();
-	}
-
-	/** A facade's health is its members': the FIRST errored descendant at any depth. Derived,
-	 * because the bridge keys `error` by the node that ran, and a facade runs nothing. */
-	private _recomputeScopeErrors(): void {
-		const byUid = new Map(this.nodes.map((n) => [n.uid, n]));
-		const kids = new Map<string, string[]>();
-		for (const n of this.nodes) kids.set(n.scope, [...(kids.get(n.scope) ?? []), n.uid]);
-		const deep = new Map<string, string | null>();
-		const errorOf = (uid: string): string | null => {
-			const cached = deep.get(uid);
-			if (cached !== undefined) return cached;
-			deep.set(uid, null); // an in-progress scope contributes nothing, so a cycle terminates
-			const n = byUid.get(uid);
-			let err = n && !n.subpatch ? n.error : null;
-			if (n?.subpatch) for (const kid of kids.get(uid) ?? []) if ((err = errorOf(kid))) break;
-			deep.set(uid, err ?? null);
-			return err ?? null;
-		};
-		for (const n of this.nodes) {
-			if (!n.subpatch) continue;
-			const err = errorOf(n.uid);
-			if (n.error !== err) n.error = err;
-		}
 	}
 
 	/** Read `uids` and everything they hold — members, ports and nested sub-patches, to any depth —
