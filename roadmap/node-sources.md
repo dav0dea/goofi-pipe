@@ -24,7 +24,30 @@ binary was started.
 This wants the config folder (see `config-folder.md`), which is where an installed node package
 would land.
 
-## On-the-fly Rust nodes
+## The audio plane answers this differently, and that is decided
+
+The audio engine (see `audio-engine.md`) locks its own answer: **every audio processing node is a
+CLAP plugin in a `cdylib`, loaded with `libloading`, and authored by recompiling that `cdylib` and
+reloading it while the audio thread runs.** Audio I/O nodes are the engine's own, not plugins. goofi's own audio nodes and a vendored third-party plugin are the
+same kind of thing, loaded the same way. A toolchain is needed to AUTHOR one and never to run one;
+the shipped nodes are built with goofi.
+
+**Why the two planes diverge, stated once.** The objection below — a `cdylib` means a versioned ABI,
+and a mismatch is a crash rather than an error — is an objection to goofi minting an ABI of its own.
+CLAP is a C ABI that already exists, is versioned, and is what every audio host on all three
+platforms already does. And the risk it carries is bounded by what a DSP kernel IS: it is handed a
+buffer and returns a buffer, so `#![forbid(unsafe_code)]` plus a dependency allowlist is a real
+envelope. A signal node is not that shape — it legitimately opens sockets and serial ports, starts
+background threads and blocks for a long time — so a process boundary earns its keep there and does
+not in a 64-frame block.
+
+The measurements that settled it, on the working prototype: 126 ms from a saved edit to audible new
+code, and a profile-matched incremental rebuild of 0.16–0.18 s against 0.35–0.42 s for the same node
+built as plain Rust. Build time decides nothing at that scale.
+
+The loading rules are in `audio-engine.md` and are not repeated here.
+
+## On-the-fly Rust nodes, on the SIGNAL plane
 
 **A process is the leading candidate, not a dynamic library.** Runtime-linking a Rust crate means a
 stable ABI across a `cdylib` boundary — versioned, and a mismatch is a crash rather than an error.
@@ -37,7 +60,8 @@ To be investigated, in this order:
 1. **Whether the existing node contract carries a Rust node unchanged.** If it does, this item is
    mostly a compile pipeline and not an engine change at all.
 2. **The compile pipeline.** Where the crate is generated, what it depends on, where the artifact is
-   cached, and what invalidates the cache.
+   cached, and what invalidates the cache. **The audio plane will have built one**, so this is
+   adoption before it is design.
 3. **`cdylib` + `libloading` as the alternative**, measured against the process for latency. It only
    wins if per-frame process overhead turns out to matter, and the shared-memory transport is
    already what carries frames — so it probably does not.
@@ -47,19 +71,20 @@ To be investigated, in this order:
 - **A Rust toolchain is not a goofi dependency.** Setup is `cargo run -p goofi-init` and `cargo run`,
   and a user who installs a binary has neither. A node that needs `cargo` must degrade to
   "unavailable, and here is why" on a machine without it — the same way a Python node with a missing
-  import already does.
+  import already does. On the audio plane this is narrower: only AUTHORING is absent, and every
+  shipped and vendored node still loads.
 - **Compile latency is seconds to minutes**, where a Python node is instant. The node lifecycle
   already models "not ready yet", so the stage machinery exists; the UX of a node that is compiling
   does not.
 - **The version lives in one place.** A compiled node artifact is pinned to the goofi version that
   built it, and a stale artifact must be detected rather than loaded.
 - Whether an on-the-fly Rust node can be EDITED in the app the way a Python node can, or whether it
-  is a build product a user brings.
+  is a build product a user brings. **The audio plane says edited**, and makes it first-class.
 
 ## Open questions
 
 - Does a patch's `.gfi` carry Rust node SOURCE, a built artifact, or neither? Source is portable and
   slow; an artifact is fast and machine-specific. Today a `.gfi` carries source, because Python has
-  no other form.
+  no other form. The audio plane needs the same answer and does not yet have it.
 - What a Rust node buys that a Python node does not, stated in measurements rather than instinct.
   The four shipped Rust nodes are a history, not a rule (see `builtin-nodes.md`).
