@@ -2,6 +2,8 @@
 
 A second node engine — Rust + wgpu, 60 FPS, 2D and 3D, compute shaders first-class — living as a
 **peer of the signal engine inside one graph**. Designed 2026-08-09 with the user; not built.
+The engine seam this assumes was specified later, against the audio plane: see
+`multi-engine-graph.md`.
 
 ## The thesis
 
