@@ -166,12 +166,17 @@ export type ControlEvent =
 				stage?: NodeStage;
 				// Re-pushed on the state plane, so a lost first error still surfaces and a clear lifts it.
 				error?: string | null;
+				// Which tier the node's type runs on now; a GIL demotion moves it mid-session.
+				runtime?: NodeRuntime | null;
 				// Params whose ⟳ refresh completed on this push, so the UI can clear the spinner.
 				refreshed_params?: [string, string][];
 			};
 	  }
 	| { event: 'error'; payload: { node: string; error: string | null } }
-	| { event: 'node_stage'; payload: { node: string; stage: NodeStage; error?: string | null } }
+	| {
+			event: 'node_stage';
+			payload: { node: string; stage: NodeStage; error?: string | null; runtime?: NodeRuntime | null };
+	  }
 	| { event: 'node_stats'; payload: { node: string; stats: NodeStats } }
 	// Applied surgically (only these params' `value`), never a wholesale params replace.
 	| {

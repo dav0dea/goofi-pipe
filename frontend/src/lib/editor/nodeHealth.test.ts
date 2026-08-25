@@ -58,19 +58,19 @@ describe('nodeHealth', () => {
 	it('carries a compact runtime token, on every health kind', () => {
 		// The pill shows one token; the long form is the tooltip. A node that runs NOWHERE — a port,
 		// a facade — reports no runtime, and must not invent one.
-		expect(nodeHealth({ stage: 'ready', runtime: 'native' }).runtime).toBe('rs');
-		// Both Python tokens name WHERE they run: a bare `py` left the tier legible only on hover.
-		expect(nodeHealth({ stage: 'ready', runtime: 'in-process' }).runtime).toBe('py\u00b7in');
-		expect(nodeHealth({ stage: 'ready', runtime: 'subprocess' }).runtime).toBe('py\u00b7sub');
+		expect(nodeHealth({ stage: 'ready', runtime: 'native' }).runtime).toBe('rs.ip');
+		// Every token is `<language>.<where>`, both halves two letters — the tier is never hover-only.
+		expect(nodeHealth({ stage: 'ready', runtime: 'in-process' }).runtime).toBe('py.ip');
+		expect(nodeHealth({ stage: 'ready', runtime: 'subprocess' }).runtime).toBe('py.sp');
 		expect(nodeHealth({ stage: 'ready', runtime: 'subprocess' }).runtimeTitle).toBe(
 			'Python, in a subprocess'
 		);
 		expect(nodeHealth({ stage: 'ready' }).runtime).toBeUndefined();
 
 		// A demoted node is usually ALSO erroring, so the token has to survive every branch.
-		expect(nodeHealth({ stage: 'error', runtime: 'subprocess' }).runtime).toBe('py\u00b7sub');
-		expect(nodeHealth({ error: 'boom', runtime: 'in-process' }).runtime).toBe('py\u00b7in');
-		expect(nodeHealth({ stage: 'setup', runtime: 'native' }).runtime).toBe('rs');
+		expect(nodeHealth({ stage: 'error', runtime: 'subprocess' }).runtime).toBe('py.sp');
+		expect(nodeHealth({ error: 'boom', runtime: 'in-process' }).runtime).toBe('py.ip');
+		expect(nodeHealth({ stage: 'setup', runtime: 'native' }).runtime).toBe('rs.ip');
 	});
 
 	it('a real error outranks a stuck booting stage (failed setup keeps its stage)', () => {

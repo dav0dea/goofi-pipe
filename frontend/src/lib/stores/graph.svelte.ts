@@ -209,6 +209,7 @@ export class GraphStore {
 					// The state plane re-pushes the current error, so backend truth wins here even
 					// when no diff-driven `error` event fired.
 					if ('error' in ev.payload) t.error = ev.payload.error ?? null;
+					if (ev.payload.runtime !== undefined) t.runtime = ev.payload.runtime ?? undefined;
 				}
 				// Lift each spinner exactly when the fresh options land. Keyed by node, not by `t`.
 				for (const [group, name] of ev.payload.refreshed_params ?? []) {
@@ -222,6 +223,9 @@ export class GraphStore {
 				if (t) {
 					t.stage = ev.payload.stage;
 					if (ev.payload.error !== undefined) t.error = ev.payload.error ?? null;
+					// The tier arrives here as well as on the snapshot: a node added after connecting
+					// is in no snapshot, and a GIL demotion moves it while the session is live.
+					if (ev.payload.runtime !== undefined) t.runtime = ev.payload.runtime ?? undefined;
 				}
 				break;
 			}

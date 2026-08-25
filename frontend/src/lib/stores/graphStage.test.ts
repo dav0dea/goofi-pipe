@@ -99,6 +99,37 @@ describe('node lifecycle stage', () => {
 		expect(g.nodeById('n1')?.runtime).toBe('in-process');
 	});
 
+	it('a node ADDED after connecting gets its runtime off the transition channel', () => {
+		// The snapshot is sent on connect and on load, so a node dragged in afterwards appears in
+		// none — its tier has to ride the stage transitions it is about to make anyway.
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		g.nodeTypes = catalog();
+		d.node('n1', 'PSD', 'psd0', [0, 0]);
+		expect(g.nodeById('n1')?.stage, 'born mid-session, ahead of any word from its thread').toBe(
+			'creating'
+		);
+		expect(g.nodeById('n1')?.runtime, 'nothing has said where it runs yet').toBeUndefined();
+
+		fc.emit({
+			event: 'node_stage',
+			payload: { node: 'n1', stage: 'ready', error: null, runtime: 'in-process' }
+		});
+		expect(g.nodeById('n1')?.runtime).toBe('in-process');
+
+		// A GIL demotion moves the tier mid-session, and arrives the same way.
+		fc.emit({
+			event: 'node_stage',
+			payload: { node: 'n1', stage: 'ready', error: 'GIL re-enabled', runtime: 'subprocess' }
+		});
+		expect(g.nodeById('n1')?.runtime).toBe('subprocess');
+
+		// A stage event with no runtime at all must leave the known tier alone, not blank it.
+		fc.emit({ event: 'node_stage', payload: { node: 'n1', stage: 'ready', error: null } });
+		expect(g.nodeById('n1')?.runtime).toBe('subprocess');
+	});
+
 	it('state_update carries the error and applies it (a healthy respawn clears the stale chip)', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);

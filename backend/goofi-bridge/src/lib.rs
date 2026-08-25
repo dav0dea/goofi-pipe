@@ -328,7 +328,7 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
         let mut last_errors: HashMap<String, (u64, Option<String>)> = HashMap::new();
         // A node's stage changes on its own thread, with no RPC to ride on. It carries the error
         // too, because a facade HAS health and never reports one.
-        let mut last_stages: HashMap<String, (u64, &'static str, Option<String>)> = HashMap::new();
+        let mut last_stages: HashMap<String, NodeState> = HashMap::new();
         let mut next_broadcast = Instant::now() + period;
         loop {
             std::thread::sleep(DRAIN_PERIOD);
@@ -345,7 +345,7 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                     let g = &*g;
                     let mut rates: Vec<(String, f64)> = Vec::new();
                     let mut errs: Vec<(String, u64, Option<String>)> = Vec::new();
-                    let mut stages: Vec<(String, u64, &'static str, Option<String>)> = Vec::new();
+                    let mut stages: Vec<(String, NodeState)> = Vec::new();
                     let mut expr_vals: Vec<(String, Value)> = Vec::new();
                     let leaves = g.node_uids();
                     for u in g.all_uids() {
@@ -363,7 +363,10 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                         if leaves.contains(&u) {
                             errs.push((hex.clone(), generation, err.clone()));
                         }
-                        stages.push((hex, generation, g.node_stage(u), err));
+                        // The tier rides the TRANSITION channel, not the snapshot alone: a node
+                        // added after connecting is in no snapshot, and a demotion changes it live.
+                        let tier = g.manifest(u).map(|m| m.isolation.get().wire());
+                        stages.push((hex, (generation, g.node_stage(u), err, tier)));
                     }
                     let refreshed: Vec<String> = refreshed
                         .into_iter()
@@ -398,18 +401,22 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                 let _ = events.send(event("error", json!({ "node": hex, "error": err })));
             }
             last_stages.retain(|h, _| stages.iter().any(|(s, ..)| s == h));
-            for (node, generation, stage, err) in stages {
-                let now = (generation, stage, err);
+            for (node, now) in stages {
                 if last_stages.get(&node) == Some(&now) {
                     continue;
                 }
-                let ev = json!({ "node": &node, "stage": now.1, "error": &now.2 });
+                let ev =
+                    json!({ "node": &node, "stage": now.1, "error": &now.2, "runtime": now.3 });
                 let _ = events.send(event("node_stage", ev));
                 last_stages.insert(node, now);
             }
         }
     });
 }
+
+/// What the state sweep diffs per node: generation, stage, last error, and the tier it runs on.
+/// A change in any of them is one `node_stage` event.
+type NodeState = (u64, &'static str, Option<String>, Option<&'static str>);
 
 /// The API router, with no SPA.
 pub fn router(state: AppState) -> Router {
@@ -708,6 +715,7 @@ fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]
             "params": schemas::describe_node_params(g, peer),
             "stage": g.node_stage(peer),
             "error": g.last_error(peer),
+            "runtime": g.manifest(peer).map(|m| m.isolation.get().wire()),
             "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),
         }),
     )

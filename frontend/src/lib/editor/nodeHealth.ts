@@ -3,11 +3,11 @@ import type { StatusTone } from '$lib/ui';
 import type { NodeRuntime } from '$lib/api/control';
 
 /** The compact runtime token the status pill carries, and the long form for its tooltip. Every
- * Python token names WHERE it runs: a bare `py` would leave the tier legible only on hover. */
+ * token is `<language>.<where>`, both halves two letters, so the pill's width never moves. */
 const RUNTIME: Record<NodeRuntime, { token: string; title: string }> = {
-	native: { token: 'rs', title: 'Rust, in-process' },
-	'in-process': { token: 'py·in', title: 'Python, in-process' },
-	subprocess: { token: 'py·sub', title: 'Python, in a subprocess' }
+	native: { token: 'rs.ip', title: 'Rust, in-process' },
+	'in-process': { token: 'py.ip', title: 'Python, in-process' },
+	subprocess: { token: 'py.sp', title: 'Python, in a subprocess' }
 };
 
 /** The status token, one per kind — three characters each, so the pill's width does not move with
