@@ -21,7 +21,7 @@ describe('nodeHealth', () => {
 			tone: 'warn',
 			title: 'creating…',
 			label: 'creating…',
-			status: 'init',
+			status: 'ini',
 			hint: 'creating…',
 			runtime: undefined,
 			runtimeTitle: undefined
@@ -31,7 +31,7 @@ describe('nodeHealth', () => {
 			tone: 'warn',
 			title: 'setting up…',
 			label: 'setting up…',
-			status: 'init',
+			status: 'ini',
 			hint: 'setting up…',
 			runtime: undefined,
 			runtimeTitle: undefined
@@ -43,7 +43,7 @@ describe('nodeHealth', () => {
 		// Four kinds, four tokens — the pill is a few characters wide, so none of them spells a word.
 		expect(nodeHealth({ stage: 'ready' }).status).toBe('run');
 		expect(nodeHealth({ error: 'boom' }).status).toBe('err');
-		expect(nodeHealth({ stage: 'setup' }).status).toBe('init');
+		expect(nodeHealth({ stage: 'setup' }).status).toBe('ini');
 		expect(nodeHealth({ stage: 'error' }).status).toBe('off');
 
 		// The hint is where the long form lives — for an error, that is the message itself, and

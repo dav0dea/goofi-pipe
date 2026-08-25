@@ -10,12 +10,12 @@ const RUNTIME: Record<NodeRuntime, { token: string; title: string }> = {
 	subprocess: { token: 'py·sub', title: 'Python, in a subprocess' }
 };
 
-/** The status token, one per kind. The pill is a few characters wide, so the long form stays in
- * the tooltip — which for an error is the message itself. */
+/** The status token, one per kind — three characters each, so the pill's width does not move with
+ * the state. The long form stays in the tooltip, which for an error is the message itself. */
 const STATUS: Record<HealthKind, string> = {
 	ok: 'run',
 	error: 'err',
-	booting: 'init',
+	booting: 'ini',
 	dead: 'off'
 };
 
