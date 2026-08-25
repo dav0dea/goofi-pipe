@@ -133,6 +133,7 @@ export class GraphStore {
 			if (!node) continue;
 			node.stage = rt.stage;
 			node.error = rt.error ?? null;
+			node.runtime = rt.runtime;
 		}
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
@@ -527,7 +528,11 @@ export class GraphStore {
 	private _seedRuntime(uid: string, virtual: boolean): RuntimeOverlay {
 		const seed = this._snapshotRuntime[uid];
 		delete this._snapshotRuntime[uid];
-		return { stage: seed?.stage ?? (virtual ? 'ready' : 'creating'), error: seed?.error ?? null };
+		return {
+			stage: seed?.stage ?? (virtual ? 'ready' : 'creating'),
+			error: seed?.error ?? null,
+			runtime: seed?.runtime
+		};
 	}
 
 	/** Pull the RUNTIME (event-sourced, never-in-the-doc) fields off a node so a re-assemble keeps them. */
@@ -549,6 +554,7 @@ export class GraphStore {
 		return {
 			error: node.error,
 			stage: node.stage,
+			runtime: node.runtime,
 			stats: node.stats,
 			params
 		};
