@@ -20,22 +20,47 @@ describe('nodeHealth', () => {
 			kind: 'booting',
 			tone: 'warn',
 			title: 'creating…',
-			label: 'creating…'
+			label: 'creating…',
+			status: 'init',
+			hint: 'creating…',
+			runtime: undefined,
+			runtimeTitle: undefined
 		});
 		expect(nodeHealth({ stage: 'setup' })).toEqual({
 			kind: 'booting',
 			tone: 'warn',
 			title: 'setting up…',
-			label: 'setting up…'
+			label: 'setting up…',
+			status: 'init',
+			hint: 'setting up…',
+			runtime: undefined,
+			runtimeTitle: undefined
 		});
 		expect(nodeHealth({ stage: 'ready' }).kind).toBe('ok');
+	});
+
+	it('abbreviates every state for the pill, and spells it out in the hint', () => {
+		// Four kinds, four tokens — the pill is a few characters wide, so none of them spells a word.
+		expect(nodeHealth({ stage: 'ready' }).status).toBe('run');
+		expect(nodeHealth({ error: 'boom' }).status).toBe('err');
+		expect(nodeHealth({ stage: 'setup' }).status).toBe('init');
+		expect(nodeHealth({ stage: 'error' }).status).toBe('off');
+
+		// The hint is where the long form lives — for an error, that is the message itself, and
+		// losing it to the runtime label would cost the only place the message is readable.
+		expect(nodeHealth({ error: 'boom' }).hint).toBe('boom');
+		expect(nodeHealth({ error: 'boom', runtime: 'subprocess' }).hint).toBe(
+			'boom — Python, in a subprocess'
+		);
+		expect(nodeHealth({ stage: 'ready', runtime: 'native' }).hint).toBe('running — Rust, in-process');
 	});
 
 	it('carries a compact runtime token, on every health kind', () => {
 		// The pill shows one token; the long form is the tooltip. A node that runs NOWHERE — a port,
 		// a facade — reports no runtime, and must not invent one.
 		expect(nodeHealth({ stage: 'ready', runtime: 'native' }).runtime).toBe('rs');
-		expect(nodeHealth({ stage: 'ready', runtime: 'in-process' }).runtime).toBe('py');
+		// Both Python tokens name WHERE they run: a bare `py` left the tier legible only on hover.
+		expect(nodeHealth({ stage: 'ready', runtime: 'in-process' }).runtime).toBe('py\u00b7in');
 		expect(nodeHealth({ stage: 'ready', runtime: 'subprocess' }).runtime).toBe('py\u00b7sub');
 		expect(nodeHealth({ stage: 'ready', runtime: 'subprocess' }).runtimeTitle).toBe(
 			'Python, in a subprocess'
@@ -44,7 +69,7 @@ describe('nodeHealth', () => {
 
 		// A demoted node is usually ALSO erroring, so the token has to survive every branch.
 		expect(nodeHealth({ stage: 'error', runtime: 'subprocess' }).runtime).toBe('py\u00b7sub');
-		expect(nodeHealth({ error: 'boom', runtime: 'in-process' }).runtime).toBe('py');
+		expect(nodeHealth({ error: 'boom', runtime: 'in-process' }).runtime).toBe('py\u00b7in');
 		expect(nodeHealth({ stage: 'setup', runtime: 'native' }).runtime).toBe('rs');
 	});
 

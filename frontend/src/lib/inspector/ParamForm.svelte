@@ -1,5 +1,14 @@
 <script module lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
+	import type { StatusTone } from '$lib/ui';
+	import type { BadgeTone } from '$lib/ui/Badge.svelte';
+
+	/** The health scale onto the Badge's — two tone vocabularies, mapped in one place. */
+	const BADGE_TONE: Record<StatusTone, BadgeTone> = {
+		ok: 'success',
+		warn: 'warning',
+		error: 'danger'
+	};
 
 	/** Parameter group names in display order: node-specific groups alphabetical, 'common' last. */
 	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
@@ -161,13 +170,13 @@
 				{/snippet}
 				{#snippet end()}
 					<Badge
-						tone={node.error ? 'danger' : 'success'}
+						tone={BADGE_TONE[health.tone]}
 						class="pf-state"
-						title={health.runtimeTitle}
+						title={health.hint}
 						data-testid="node-state"
 					>
-						{node.error ? 'error' : 'running'}{#if health.runtime}<span class="pf-runtime"
-								data-testid="node-runtime">{health.runtime}</span
+						{health.status}{#if health.runtime}<span class="pf-runtime" data-testid="node-runtime"
+								>{health.runtime}</span
 							>{/if}
 					</Badge>
 					{#if onClose}
