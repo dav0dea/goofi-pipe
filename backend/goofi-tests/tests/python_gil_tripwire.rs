@@ -3,7 +3,7 @@
 #![cfg(feature = "embed")]
 
 use goofi_core::Data;
-use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
+use goofi_node::{Inputs, Isolation, IsolationCell, Node, NodeCtx, Outputs, ParamGroups, Params};
 use goofi_python::inproc::PyNode;
 use indexmap::IndexMap;
 
@@ -29,17 +29,36 @@ fn tick(node: &mut PyNode, params: &ParamGroups) -> goofi_node::NodeResult {
 }
 
 #[test]
-fn a_serialized_interpreter_keeps_being_reported_every_tick() {
+fn a_serialized_interpreter_is_reported_every_tick_and_demotes_its_type() {
     let p = ParamGroups::new();
-    let mut node = PyNode::from_source(SRC, vec![], vec!["out"]).expect("PyNode");
+    // The tier a registry would hold for this type: routed nodes read it at every build, so writing
+    // it is the whole re-route.
+    let tier = IsolationCell::leak(Isolation::InProcess);
+    let mut node = PyNode::from_source(SRC, vec![], vec!["out"]).expect("PyNode").routed_by(tier);
     node.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("setup");
+    assert_eq!(tier.get(), Isolation::InProcess, "the probe cleared this type on its import");
 
     let first = tick(&mut node, &p);
     assert!(first.is_err(), "the tripwire must report the GIL being re-enabled");
+    assert_eq!(
+        tier.get(),
+        Isolation::Subprocess,
+        "tripping demotes the TYPE, so the next restart_node builds it in a subprocess"
+    );
 
     // The condition is PERMANENT, and the 2 Hz stats sweep diffs SAMPLED state, so the error has
     // to persist while the condition does.
     let second = tick(&mut node, &p);
     assert!(second.is_err(), "a still-serialized interpreter must still be an error on the next tick");
     assert_eq!(format!("{:?}", first.unwrap_err()), format!("{:?}", second.unwrap_err()));
+    assert_eq!(tier.get(), Isolation::Subprocess, "and the demotion holds rather than flapping");
+}
+
+/// A node built outside any registry has no tier to write, and must not panic reaching for one.
+#[test]
+fn an_unrouted_node_still_reports_the_trip() {
+    let p = ParamGroups::new();
+    let mut node = PyNode::from_source(SRC, vec![], vec!["out"]).expect("PyNode");
+    node.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("setup");
+    assert!(tick(&mut node, &p).is_err(), "the error is the tripwire's, not the demotion's");
 }

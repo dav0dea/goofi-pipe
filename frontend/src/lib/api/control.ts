@@ -14,6 +14,9 @@ export function isProtocolCompatible(remote: unknown): boolean {
 /** A node's lifecycle stage. 'error' is terminal: the backend does not auto-restart it. */
 export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
 
+/** Where a node's code runs. Absent for a port and a facade, which run nowhere. */
+export type NodeRuntime = 'native' | 'in-process' | 'subprocess';
+
 export interface NodeTypeInfo {
 	type: string;
 	category: string;
@@ -65,6 +68,8 @@ export interface NodeInstanceInfo {
 	error: string | null;
 	/** Lifecycle stage; absent until the node reports one. */
 	stage?: NodeStage;
+	/** Where this node's code runs; absent for a port and a facade, which run nowhere. */
+	runtime?: NodeRuntime;
 	/** Rolling execution telemetry, absent until the node's first `node_stats` event. */
 	stats?: NodeStats | null;
 	/** Set only on a sub-patch facade — the node that stands for a scope. */
@@ -117,7 +122,7 @@ export interface GraphSnapshot {
 	/** Identifies the manager process; it changes when the backend is restarted. */
 	instance_id: string;
 	/** Per-node runtime state, seeded here because its live stream pushes only transitions. */
-	runtime: Record<string, { stage?: NodeStage; error?: string | null }>;
+	runtime: Record<string, { stage?: NodeStage; error?: string | null; runtime?: NodeRuntime }>;
 	/** The node palette, carried on `hello`/`graph_replaced`. Absent on an older backend. */
 	node_types?: NodeTypeInfo[];
 	save_path: string | null;

@@ -5,6 +5,6 @@ mod discover;
 mod expr;
 mod host;
 
-pub use discover::{node_type_from, probe, PyNodeType};
+pub use discover::{build_routed, node_type_from, probe, PyNodeType};
 pub use expr::PyExprEvaluator;
 pub use host::{interpreter_path, PyNode};

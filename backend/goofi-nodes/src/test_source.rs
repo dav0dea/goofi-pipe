@@ -3,7 +3,7 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
@@ -52,7 +52,7 @@ inventory::submit! {
         inputs: INPUTS,
         outputs: OUTPUTS,
         params: PARAMS,
-        isolation: Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer: true,
         factory: default_factory::<TestConst>,
     }

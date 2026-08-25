@@ -4,7 +4,7 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, ExprDecl, ExprMode, Inputs, Isolation, Node, NodeCtx, NodeManifest,
+    default_factory, ExprDecl, ExprMode, Inputs,  Node, NodeCtx, NodeManifest,
     NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, ParamSpec, Params,
 };
 use std::f64::consts::{PI, TAU};
@@ -174,7 +174,7 @@ inventory::submit! {
         inputs: &[],
         outputs: OUTPUTS,
         params: PARAMS,
-        isolation: Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer: true,
         factory: default_factory::<Oscillator>,
     }

@@ -11,11 +11,13 @@ use goofi_core::{Data, Param, Value};
 use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{
-    Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
+    Inputs, Isolation, IsolationCell, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
     ParamGroups, Params, SlotDecl,
 };
 use goofi_python::inproc::PyNode;
 use goofi_python::subproc::RemoteNode;
+
+static BENCH_TIER: IsolationCell = IsolationCell::new(Isolation::InProcess);
 
 /// The identical workload every backend computes.
 const PY_SRC: &str = concat!(
@@ -76,7 +78,7 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
         inputs: IN,
         outputs: OUT,
         params: NO_PARAMS,
-        isolation: Isolation::InProcess,
+        isolation: &BENCH_TIER,
         producer: false,
         factory: stub_factory,
     }

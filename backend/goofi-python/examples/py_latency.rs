@@ -7,7 +7,7 @@ use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
 use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
-use goofi_node::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
+use goofi_node::{Isolation, IsolationCell, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 use goofi_python::inproc::PyNode;
 
 static PY_IN: &[SlotDecl] = &[SlotDecl {
@@ -25,6 +25,7 @@ static PY_PARAMS: &[ParamDecl] = &[];
 fn py_stub_factory() -> Box<dyn Node> {
     unreachable!()
 }
+static PY_TIER: IsolationCell = IsolationCell::new(Isolation::InProcess);
 static PY_MANIFEST: NodeManifest = NodeManifest {
     type_name: "PyNode",
     category: "python",
@@ -32,7 +33,7 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     inputs: PY_IN,
     outputs: PY_OUT,
     params: PY_PARAMS,
-    isolation: Isolation::InProcess,
+    isolation: &PY_TIER,
     producer: false,
     factory: py_stub_factory,
 };

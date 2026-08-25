@@ -499,11 +499,70 @@ pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     out
 }
 
+/// Where a node type's code actually runs. This is the ONE owner of that fact: the palette shows
+/// it, the per-node runtime overlay reports it, and a Python type's factory BUILDS from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isolation {
+    /// Compiled into the binary, on the engine's own threads.
+    Native,
+    /// Python, in the embedded free-threaded interpreter.
     InProcess,
+    /// Python, in a subprocess with its own GIL.
     Subprocess,
 }
+
+impl Isolation {
+    /// The wire name, shared by `inspect_type`'s `tier` and the per-node runtime overlay.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Isolation::Native => "native",
+            Isolation::InProcess => "in-process",
+            Isolation::Subprocess => "subprocess",
+        }
+    }
+    /// Which language the node is written in — a reading of the tier, never a second field.
+    pub fn language(self) -> &'static str {
+        match self {
+            Isolation::Native => "rust",
+            _ => "python",
+        }
+    }
+    fn from_u8(v: u8) -> Isolation {
+        match v {
+            0 => Isolation::Native,
+            1 => Isolation::InProcess,
+            _ => Isolation::Subprocess,
+        }
+    }
+}
+
+/// A manifest's [`Isolation`], writable through the `&'static NodeManifest` everything else holds.
+/// It is interior-mutable for one reason: a Python node that re-enables the GIL at RUNTIME is only
+/// discovered to be subprocess-bound after its import already passed the probe, and demoting the
+/// type is what the next `restart_node` reads.
+#[derive(Debug)]
+pub struct IsolationCell(std::sync::atomic::AtomicU8);
+
+impl IsolationCell {
+    pub const fn new(i: Isolation) -> IsolationCell {
+        IsolationCell(std::sync::atomic::AtomicU8::new(i as u8))
+    }
+    /// A cell of its own, for a manifest built at runtime rather than declared in a `static`.
+    pub fn leak(i: Isolation) -> &'static IsolationCell {
+        Box::leak(Box::new(IsolationCell::new(i)))
+    }
+    pub fn get(&self) -> Isolation {
+        Isolation::from_u8(self.0.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    /// Returns whether this changed anything, so a caller can report a demotion exactly once.
+    pub fn set(&self, i: Isolation) -> bool {
+        self.0.swap(i as u8, std::sync::atomic::Ordering::Relaxed) != i as u8
+    }
+}
+
+/// The cell every compiled-in node points at. Shared because a native node's tier is fixed —
+/// only a Python type, whose cell is leaked per type at discovery, is ever written.
+pub static NATIVE: IsolationCell = IsolationCell::new(Isolation::Native);
 
 pub struct SlotDecl {
     pub name: &'static str,
@@ -530,7 +589,7 @@ pub struct NodeManifest {
     pub outputs: &'static [OutputDecl],
     /// Declared params; the runtime `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
-    pub isolation: Isolation,
+    pub isolation: &'static IsolationCell,
     /// This type is a SOURCE: it makes frames on its own schedule, so `common.autotrigger` and the
     /// carried `globals.default_ufreq` expression both default on.
     pub producer: bool,

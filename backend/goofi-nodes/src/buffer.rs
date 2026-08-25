@@ -3,7 +3,7 @@
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
@@ -107,7 +107,7 @@ inventory::submit! {
         inputs: INPUTS,
         outputs: OUTPUTS,
         params: PARAMS,
-        isolation: Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer: false,
         factory: default_factory::<Buffer>,
     }

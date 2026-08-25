@@ -4,7 +4,7 @@
 use goofi_core::probe;
 use goofi_core::SlotType;
 
-use crate::{Isolation, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
+use crate::{Isolation, IsolationCell, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
 
 /// Builds a fresh boxed instance of a runtime-discovered node type from its params.
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
@@ -71,7 +71,7 @@ pub fn leak_manifest(
         inputs: Box::leak(inputs.into_boxed_slice()),
         outputs: Box::leak(outputs.into_boxed_slice()),
         params: Box::leak(params.into_boxed_slice()),
-        isolation,
+        isolation: IsolationCell::leak(isolation),
         producer: intro.producer,
         factory: stub,
     }))

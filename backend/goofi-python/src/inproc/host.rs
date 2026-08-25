@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, SrcDtype};
-use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
+use goofi_node::{Inputs, Isolation, IsolationCell, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -18,6 +18,9 @@ pub struct PyNode {
     gil_checked: bool,
     /// Source dtypes already warned about (dedup for the ingest cast warning).
     cast_warned: HashSet<SrcDtype>,
+    /// This node TYPE's tier. The tripwire writes it, and the next build reads it. `None` for a
+    /// node built from a source string rather than discovered, which no registry routes.
+    tier: Option<&'static IsolationCell>,
 }
 
 impl PyNode {
@@ -42,8 +45,15 @@ impl PyNode {
                 out_slots,
                 gil_checked: false,
                 cast_warned: HashSet::new(),
+                tier: None,
             })
         })
+    }
+
+    /// Let this node demote its own TYPE when the runtime GIL tripwire fires.
+    pub fn routed_by(mut self, tier: &'static IsolationCell) -> PyNode {
+        self.tier = Some(tier);
+        self
     }
 
     /// Whether the embedded interpreter currently has the GIL enabled.
@@ -107,9 +117,15 @@ impl Node for PyNode {
             Ok((outs, tripped))
         })?;
         if tripped {
+            // The probe cleared this type on its IMPORT; only running it revealed otherwise. Writing
+            // the type's tier is the whole re-route: the next `restart_node` builds from this.
+            let demoted = self.tier.is_some_and(|t| t.set(Isolation::Subprocess));
+            if demoted {
+                eprintln!("note: this node re-enabled the GIL; restart it to move it to a subprocess");
+            }
             // Deliberately not latched: the condition is permanent, so the error must keep being
             // re-reported — the stats sweep samples state, and would miss a one-tick error.
-            return Err("node re-enabled the GIL at runtime; quarantine it to the subprocess tier".into());
+            return Err("node re-enabled the GIL at runtime; restart it to move it to a subprocess".into());
         }
         self.gil_checked = true;
         for (slot, data) in outs {

@@ -129,7 +129,7 @@ static FLAKY: goofi_node::NodeManifest = goofi_node::NodeManifest {
     inputs: &[],
     outputs: &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }],
     params: &[],
-    isolation: goofi_node::Isolation::InProcess,
+    isolation: &goofi_node::NATIVE,
     producer: true,
     factory: || unreachable!("a dyn type is built by its registered factory"),
 };
@@ -372,7 +372,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     static SLOW_BUILD: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "_TestSlowBuild", category: "test", doc: "takes 700 ms to construct",
         inputs: SLOW_IN, outputs: SLOW_OUT, params: &[],
-        isolation: goofi_node::Isolation::InProcess, producer: false,
+        isolation: &goofi_node::NATIVE, producer: false,
         factory: || unreachable!("a dyn type is built by its registered factory"),
     };
     g.register_dyn(&SLOW_BUILD, Box::new(|_| {

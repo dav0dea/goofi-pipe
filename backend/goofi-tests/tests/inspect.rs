@@ -176,7 +176,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     });
 
     let out = text(&g, "inspect_node", j!({ "node": hex(osc) }));
-    assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, in-process, stage ready)", hex(osc))),
+    assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, native, stage ready)", hex(osc))),
             "{out}");
     // The goldened inline param format, round-trippable into edit_node…
     assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
@@ -264,6 +264,8 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     // The path is RE-DERIVED from the type name rather than recorded, so this pins the derivation.
     static OUT: &[goofi_node::OutputDecl] =
         &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+    static BOOM_TIER: goofi_node::IsolationCell =
+        goofi_node::IsolationCell::new(goofi_node::Isolation::InProcess);
     static BOOM: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "Boom",
         category: "python",
@@ -271,7 +273,7 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
         inputs: &[],
         outputs: OUT,
         params: &[],
-        isolation: goofi_node::Isolation::InProcess,
+        isolation: &BOOM_TIER,
         producer: true,
         factory: || unreachable!("a catalog read never instantiates"),
     };

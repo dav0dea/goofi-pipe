@@ -206,7 +206,12 @@ pub fn runtime_overlay(g: &Graph) -> Value {
     for uid in g.all_uids() {
         m.insert(
             uid.to_hex(),
-            json!({ "stage": g.node_stage(uid), "error": g.last_error(uid) }),
+            json!({
+                "stage": g.node_stage(uid),
+                "error": g.last_error(uid),
+                // Absent for a port and a facade, which run nowhere — as `stage` is for inspect.
+                "runtime": g.manifest(uid).map(|m| m.isolation.get().wire()),
+            }),
         );
     }
     Value::Object(m)

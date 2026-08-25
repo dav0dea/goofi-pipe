@@ -9,7 +9,7 @@ use std::sync::Arc;
 use goofi_bridge::{ScannedType, Tier};
 use goofi_core::{Data, Meta};
 use goofi_engine::Graph;
-use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl,
+use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl,
                  Outputs, Params};
 use goofi_tests::{j, Goofi, OutputProbe};
 
@@ -45,7 +45,7 @@ fn stub_scan(g: &mut Graph, dir: &Path) -> Vec<ScannedType> {
             inputs: &[],
             outputs: OUT,
             params: &[],
-            isolation: Isolation::InProcess,
+            isolation: &goofi_node::NATIVE,
             producer: true,
             factory: || unreachable!("a scanned type is built by its registered factory"),
         }));

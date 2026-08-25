@@ -196,10 +196,7 @@ pub fn node(
     let runtime = match g.manifest(uid) {
         Some(m) => format!(
             ", {}, stage {}",
-            match m.isolation {
-                goofi_node::Isolation::InProcess => "in-process",
-                goofi_node::Isolation::Subprocess => "subprocess",
-            },
+            m.isolation.get().wire(),
             g.node_stage(uid),
         ),
         None => String::new(),
@@ -292,12 +289,8 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
             })?;
         Some((path, *provenance))
     });
-    info["language"] = json!(if native.is_some() { "rust" } else { "python" });
-    info["tier"] = json!(match (native.is_some(), manifest.isolation) {
-        (true, _) => "native",
-        (_, goofi_node::Isolation::Subprocess) => "subprocess",
-        _ => "in-process",
-    });
+    info["language"] = json!(manifest.isolation.get().language());
+    info["tier"] = json!(manifest.isolation.get().wire());
     info["provenance"] = json!(match &found {
         Some((_, p)) => *p,
         None => "compiled in — no source file; copy a python node into the patch workspace to modify one",

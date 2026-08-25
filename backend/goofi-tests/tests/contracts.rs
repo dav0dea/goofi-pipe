@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use goofi_bridge::ops::{find, typescript, Surface, MCP_PREFIX, REGISTRY};
 use goofi_bridge::vocab;
 use goofi_core::{Data, Meta, SlotType, Value as DataValue};
-use goofi_node::{Isolation, NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
+use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
 // Linked for its side effect: a crate nothing NAMES is a crate rustc drops, catalog and all.
 use goofi_nodes as _;
 use goofi_tests::{hex, j, Client, Goofi};
@@ -141,7 +141,7 @@ fn never() -> Box<dyn goofi_node::Node> {
 const fn manifest(type_name: &'static str, inputs: &'static [SlotDecl],
                   params: &'static [ParamDecl], producer: bool) -> NodeManifest {
     NodeManifest { type_name, category: "test", doc: "a catalog fixture", inputs, outputs: OUT,
-                   params, isolation: Isolation::InProcess, producer, factory: never }
+                   params, isolation: &goofi_node::NATIVE, producer, factory: never }
 }
 static SOURCE: NodeManifest = manifest("MyPyThing", &[], &[], true);
 static MULTI_IN: &[SlotDecl] = &[

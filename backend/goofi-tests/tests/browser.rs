@@ -16,7 +16,7 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
         inputs: &[],
         outputs: &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }],
         params: &[],
-        isolation: goofi_node::Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer: true,
         factory: || unreachable!("list_nodes never instantiates"),
     };

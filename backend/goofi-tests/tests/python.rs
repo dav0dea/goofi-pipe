@@ -403,10 +403,12 @@ class Sleeper(goofi.Node):
             trigger_process: true, multi: false, required: false }];
         static OUT: &[goofi_node::OutputDecl] =
             &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
+        static SLEEPY_TIER: goofi_node::IsolationCell =
+            goofi_node::IsolationCell::new(goofi_node::Isolation::InProcess);
         static SLEEPY: goofi_node::NodeManifest = goofi_node::NodeManifest {
             type_name: "Sleeper", category: "python", doc: "sleeps 150 ms per run",
             inputs: IN, outputs: OUT, params: &[],
-            isolation: goofi_node::Isolation::InProcess, producer: false,
+            isolation: &SLEEPY_TIER, producer: false,
             factory: || unreachable!("a dyn type is built by its registered factory"),
         };
 

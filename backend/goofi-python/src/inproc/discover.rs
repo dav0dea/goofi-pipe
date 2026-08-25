@@ -34,6 +34,19 @@ fn build_py_node(source: &str, in_slots: Vec<&'static str>, out_slots: Vec<&'sta
     }
 }
 
+/// As [`build_py_node`], with the node wired to demote its own type when the GIL tripwire fires.
+pub fn build_routed(
+    source: &str,
+    in_slots: Vec<&'static str>,
+    out_slots: Vec<&'static str>,
+    tier: &'static goofi_node::IsolationCell,
+) -> Box<dyn Node> {
+    match PyNode::from_source(source, in_slots, out_slots) {
+        Ok(n) => Box::new(n.routed_by(tier)),
+        Err(e) => Box::new(FailedNode(format!("Python node construction failed: {e}"))),
+    }
+}
+
 /// A discovered Python node type, ready to register into a `Graph`.
 pub struct PyNodeType {
     pub manifest: &'static NodeManifest,

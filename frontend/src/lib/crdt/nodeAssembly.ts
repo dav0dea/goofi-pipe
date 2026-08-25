@@ -1,6 +1,6 @@
 /** The three-way merge of a render `NodeInstanceInfo` from doc leaves, the static per-type catalog and
  * the event-sourced runtime overlay. */
-import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats } from '$lib/api/control';
+import type { NodeInstanceInfo, NodeTypeInfo, NodeStage, NodeStats, NodeRuntime } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
 import type { NodeView, DocParamLeaves, FacadeFace } from './graphDoc';
 
@@ -21,6 +21,8 @@ export interface ParamRuntime {
 export interface RuntimeOverlay {
 	error?: string | null;
 	stage?: NodeStage;
+	/** Which tier the node's type currently runs on; the GIL tripwire can demote a Python type. */
+	runtime?: NodeRuntime;
 	stats?: NodeStats | null;
 	params?: Record<string, Record<string, ParamRuntime>>;
 }
@@ -103,6 +105,7 @@ export function assembleNode(
 		scope: view.scope,
 		error: runtime.error ?? null,
 		stage: runtime.stage,
+		runtime: runtime.runtime,
 		stats: runtime.stats ?? null,
 		subpatch: face && { memberCount: face.memberCount }
 	};

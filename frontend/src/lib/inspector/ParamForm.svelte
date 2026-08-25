@@ -22,6 +22,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidIdentifier } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
+	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
@@ -94,6 +95,7 @@
 	}
 
 	const groupNames = $derived(paramGroupNames(node));
+	const health = $derived(nodeHealth(node));
 
 	const tabItems = $derived(groupNames.map((name) => ({ id: name, label: name })));
 
@@ -158,8 +160,15 @@
 					</div>
 				{/snippet}
 				{#snippet end()}
-					<Badge tone={node.error ? 'danger' : 'success'} class="pf-state" data-testid="node-state">
-						{node.error ? 'error' : 'running'}
+					<Badge
+						tone={node.error ? 'danger' : 'success'}
+						class="pf-state"
+						title={health.runtimeTitle}
+						data-testid="node-state"
+					>
+						{node.error ? 'error' : 'running'}{#if health.runtime}<span class="pf-runtime"
+								data-testid="node-runtime">{health.runtime}</span
+							>{/if}
 					</Badge>
 					{#if onClose}
 						<IconButton
@@ -312,6 +321,14 @@
 	}
 	.param-form :global(.pf-identity-bar .pf-close:hover) {
 		color: var(--text);
+	}
+	/* The runtime rides INSIDE the state pill rather than beside it: one pill is what the row has
+	   space for, and a second would be the first thing a narrow pane drops. */
+	.param-form :global(.pf-state .pf-runtime) {
+		margin-inline-start: var(--space-2);
+		padding-inline-start: var(--space-2);
+		border-inline-start: 1px solid currentColor;
+		opacity: 0.7;
 	}
 	/* Below this the row cannot seat name + state + ✕, and the overflow would walk the ✕ off screen; the
 	   badge is what yields. Asked of the PANE, not the host panel. */

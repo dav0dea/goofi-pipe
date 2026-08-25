@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, Meta, SlotType};
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl,
 };
 
@@ -43,7 +43,7 @@ pub const fn manifest(
         inputs,
         outputs,
         params,
-        isolation: Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer,
         factory,
     }

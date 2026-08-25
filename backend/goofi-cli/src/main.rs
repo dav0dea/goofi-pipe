@@ -416,7 +416,9 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
     for (path, probed) in paths.iter().zip(probes) {
         let (type_name, tier, registration) = match probed {
             Probed::InProcess(d) => {
-                let t = goofi_python::inproc::node_type_from(d);
+                // Registered ROUTED: the manifest's `isolation` decides the tier at every build, so
+                // the runtime GIL tripwire demoting it is all a re-route takes.
+                let t = goofi_python::routed_node_type(d, subproc_python);
                 (t.manifest.type_name.to_string(), Tier::InProcess, g.register_dyn_type(t.manifest, t.factory))
             }
             Probed::Subprocess(d) => {
@@ -604,7 +606,7 @@ mod tests {
         inputs: &[],
         outputs: &[],
         params: &[],
-        isolation: goofi_node::Isolation::InProcess,
+        isolation: &goofi_node::NATIVE,
         producer: true,
         factory: || unreachable!("built by the registered factory"),
     };

@@ -14,7 +14,7 @@ use goofi_engine::runtime::{
 };
 use goofi_engine::Uid;
 use goofi_node::{
-    default_factory, Inputs, Isolation, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs,
+    default_factory, Inputs, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs,
     ParamKey, Params, SlotDecl,
 };
 
@@ -44,7 +44,7 @@ static MANIFEST: NodeManifest = NodeManifest {
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: &[],
-    isolation: Isolation::InProcess,
+    isolation: &goofi_node::NATIVE,
     producer: false,
     factory: default_factory::<Passthrough>,
 };
