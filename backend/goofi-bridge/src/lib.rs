@@ -877,19 +877,19 @@ fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String>
         .ok_or_else(|| format!("{op}: side is `left`, `right`, `top` or `bottom`, not `{raw}`"))
 }
 
+/// An `endpoint` — `uid/slot`, split on the FIRST `/`. The slot half may itself be a port uid
+/// (wiring a facade from outside), so it is never validated here.
+fn parse_endpoint(p: &Value, key: &str) -> Result<(Uid, String), String> {
+    let raw = p.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))?;
+    let (uid, slot) =
+        raw.split_once('/').ok_or_else(|| format!("`{key}` is `uid/slot`, not `{raw}`"))?;
+    let uid = Uid::from_hex(uid).ok_or_else(|| format!("malformed uid in `{key}`"))?;
+    Ok((uid, slot.to_string()))
+}
+
 fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
-    let node_out = parse_uid(p, "node_out")?;
-    let node_in = parse_uid(p, "node_in")?;
-    let slot_out = p
-        .get("slot_out")
-        .and_then(|v| v.as_str())
-        .ok_or("missing slot_out")?
-        .to_string();
-    let slot_in = p
-        .get("slot_in")
-        .and_then(|v| v.as_str())
-        .ok_or("missing slot_in")?
-        .to_string();
+    let (node_out, slot_out) = parse_endpoint(p, "from")?;
+    let (node_in, slot_in) = parse_endpoint(p, "to")?;
     Ok((node_out, slot_out, node_in, slot_in))
 }
 

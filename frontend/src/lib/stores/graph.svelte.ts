@@ -44,6 +44,14 @@ function refreshKey(node: string, group: string, name: string): string {
 	return `${node}\u001f${group}\u001f${name}`;
 }
 
+/** A doc link as the wire ops spell it: two `uid/slot` endpoints. */
+function linkEndpoints(link: LinkInfo): { from: string; to: string } {
+	return {
+		from: `${link.node_out}/${link.slot_out}`,
+		to: `${link.node_in}/${link.slot_in}`
+	};
+}
+
 export class GraphStore {
 	nodes = $state<NodeInstanceInfo[]>([]);
 	links = $state<LinkInfo[]>([]);
@@ -323,12 +331,12 @@ export class GraphStore {
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		await this.ctl.call('link add', link as unknown as Record<string, unknown>);
+		await this.ctl.call('link add', linkEndpoints(link));
 		this._recordGraphCmd('Connect');
 	}
 
 	async removeLink(link: LinkInfo): Promise<void> {
-		await this.ctl.call('link remove', link as unknown as Record<string, unknown>);
+		await this.ctl.call('link remove', linkEndpoints(link));
 		this._recordGraphCmd('Disconnect');
 	}
 

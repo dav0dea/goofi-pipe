@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use goofi_core::Param;
 use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
-use goofi_tests::{hex, j, Goofi};
+use goofi_tests::{Goofi, ep, hex, j};
 use serde_json::Value;
 
 /// Ages and the workspace path are per-run, so the golden pins everything but their values.
@@ -38,10 +38,8 @@ fn fixture() -> (Goofi, String) {
         .as_str().unwrap().to_string();
     let bnd = g.call("node add", j!({ "type": "InArray", "inst_id": scope,
                                      "pos": [0.0, 0.0] }))["uid"].as_str().unwrap().to_string();
-    g.call("link add", j!({ "node_out": bnd, "slot_out": "value",
-                           "node_in": hex(buf), "slot_in": "data" }));
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                           "node_in": scope, "slot_in": bnd }));
+    g.call("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&scope, &bnd) }));
     // The fault is a REPORT — the graph does not hold it until the node has run and said so.
     g.until("the failing node's first fault", |g| g.error(boom));
     (g, scope)

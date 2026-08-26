@@ -96,10 +96,7 @@ impl Goofi {
     /// Wire an output slot to an input slot.
     #[track_caller]
     pub fn link(&self, from: Uid, out: &str, to: Uid, into: &str) {
-        self.call(
-            "link add",
-            json!({ "node_out": hex(from), "slot_out": out, "node_in": hex(to), "slot_in": into }),
-        );
+        self.call("link add", json!({ "from": ep(hex(from), out), "to": ep(hex(to), into) }));
     }
 
     /// The replicated projection every client mirrors.
@@ -293,6 +290,11 @@ impl Events {
 /// A uid as the wire spells it.
 pub fn hex(u: Uid) -> String {
     u.to_string()
+}
+
+/// A link endpoint as the wire spells it: `uid/slot`.
+pub fn ep(uid: impl std::fmt::Display, slot: impl std::fmt::Display) -> String {
+    format!("{uid}/{slot}")
 }
 
 pub use goofi_bridge::doc::{GraphDoc, Patch};

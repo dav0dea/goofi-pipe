@@ -338,8 +338,8 @@ pub(crate) fn link_add(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let (a, so, b, si) = parse_link(payload)?;
-    let (a, so) = wirable_endpoint(&g, a, &so, "node_out")?;
-    let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
+    let (a, so) = wirable_endpoint(&g, a, &so, "from")?;
+    let (b, si) = wirable_endpoint(&g, b, &si, "to")?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
@@ -357,8 +357,8 @@ pub(crate) fn link_add(
         .find(|(key, _, _)| *key == so)
         .map(|(_, _, dtype)| dtype);
     Ok(json!({
-        "node_out": a.to_hex(), "slot_out": so,
-        "node_in": b.to_hex(), "slot_in": si,
+        "from": format!("{}/{so}", a.to_hex()),
+        "to": format!("{}/{si}", b.to_hex()),
         "dtype": dtype,
     }))
 }

@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use goofi_core::Param;
 use goofi_node::{BindingId, Compiled, EvalCtx, ExprError, ExprEvaluator};
-use goofi_tests::{hex, j, Goofi};
+use goofi_tests::{Goofi, ep, hex, j};
 
 /// Compiles anything and hands the target value back. With one installed, a binding error in the
 /// reply is the GRAPH's own resolution talking rather than "no evaluator here".
@@ -45,8 +45,8 @@ fn boundary(g: &Goofi, inst: &str, dir: &str) -> String {
 /// port on whichever end its direction puts it.
 fn wire(g: &Goofi, bnd: &str, dir: &str, node: &str, slot: &str) -> Value {
     let p = match dir {
-        "in" => j!({ "node_out": bnd, "slot_out": "value", "node_in": node, "slot_in": slot }),
-        _ => j!({ "node_out": node, "slot_out": slot, "node_in": bnd, "slot_in": "value" }),
+        "in" => j!({ "from": ep(bnd, "value"), "to": ep(node, slot) }),
+        _ => j!({ "from": ep(node, slot), "to": ep(bnd, "value") }),
     };
     g.call("link add", p)
 }
@@ -146,8 +146,7 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     // from the state it started in mints two `out0`s, which `nd()` cannot tell apart.
     let far = g.call("node add", j!({ "type": "Buffer", "inst_id": both, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                            "node_in": far, "slot_in": "data" }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&far, "data") }));
     let pair = group(&g, &[hex(buf), hex(osc)]);
     let doc = g.doc();
     let mut minted: Vec<&str> =
@@ -248,8 +247,7 @@ fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
     let bnd = boundary(&g, &inst, "in");
     wire(&g, &bnd, "in", &hex(buf), "data");
 
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                           "node_in": inst, "slot_in": bnd }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bnd) }));
 
     // Two cables, one per scope, and BOTH end at the port: the facade address the caller named is
     // folded onto its port, and the port carries it the rest of the way. What the frames really do
@@ -290,8 +288,7 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     let bnd = boundary(&g, &inst, "out");
     g.call("compound", j!({ "ops": [
         { "op": "node edit", "payload": { "node": bnd, "name": "wave", "pos": [12.0, 34.0] } },
-        { "op": "link add", "payload": { "node_out": hex(buf), "slot_out": "out",
-                                         "node_in": bnd, "slot_in": "value" } },
+        { "op": "link add", "payload": { "from": ep(hex(buf), "out"), "to": ep(&bnd, "value") } },
     ] }));
 
     let port = g.doc()["nodes"][&bnd].clone();
@@ -367,21 +364,18 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
     wire(&g, &bnd, "in", &hex(buf), "data");
 
     // Cutting the inner cable is `remove_link` — the same op that cuts any other.
-    let cut = g.call("link remove", j!({ "node_out": bnd, "slot_out": "value",
-                                        "node_in": hex(buf), "slot_in": "data" }));
+    let cut = g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }));
     assert_eq!(cut["removed"], true, "the cut says it found the wire");
     assert_eq!(g.inner(&bnd), None, "the leaf is pruned, not left stale");
     assert_eq!(g.doc()["nodes"][&bnd]["type"], "InArray", "the pill itself survives the unwire");
 
     // Idempotent like every other remove, so a second cut is a no-op that says so.
-    assert_eq!(g.call("link remove", j!({ "node_out": bnd, "slot_out": "value",
-                                         "node_in": hex(buf), "slot_in": "data" }))["removed"], false);
+    assert_eq!(g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }))["removed"], false);
 
     // A port carries ONE inner wire, so a second is refused rather than replacing the first.
     wire(&g, &bnd, "in", &hex(buf), "data");
     let second = g.add("Buffer");
-    g.refuse("link add", j!({ "node_out": bnd, "slot_out": "value",
-                             "node_in": hex(second), "slot_in": "data" }));
+    g.refuse("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(second), "data") }));
 }
 
 #[test]
@@ -401,19 +395,16 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     g.refuse("node param edit", j!({ "node": bnd, "param": "common/autotrigger", "value": true }));
 
     // A port that DOES exist, aimed at an inner target that cannot take the wire.
-    g.refuse("link add", j!({ "node_out": bnd, "slot_out": "value",
-                             "node_in": hex(buf), "slot_in": "nope" }));
+    g.refuse("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "nope") }));
     // …and one aimed the wrong way round: an input port FEEDS the sub-patch, so its consumer side
     // faces OUTWARD and a member cannot reach it. One rule — the two ends must face one scope.
-    let why = g.refuse("link add", j!({ "node_out": hex(buf), "slot_out": "out",
-                                        "node_in": bnd, "slot_in": "value" }));
+    let why = g.refuse("link add", j!({ "from": ep(hex(buf), "out"), "to": ep(&bnd, "value") }));
     assert!(why.contains("not in the same sub-patch"), "the face rule says which wall: {why}");
 
     // A cable onto an UNWIRED port LANDS: the port is a node, and a node with nothing behind it
     // takes a wire exactly as an unconnected leaf does. The stream arrives when the inside is wired.
-    let made = g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                                       "node_in": inst, "slot_in": bnd }));
-    assert_eq!(made["node_in"], bnd, "the outer cable names the port: {made}");
+    let made = g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bnd) }));
+    assert_eq!(made["to"], ep(&bnd, "value"), "the outer cable resolves to the port: {made}");
     wire(&g, &bnd, "in", &hex(buf), "data");
     assert_eq!(g.inner(&bnd), Some((hex(buf), "data".into())), "and the inside fills in after it");
 }
@@ -457,15 +448,13 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
             "an unwired port says so, and says which: {why}");
 
     // Wiring the OUTSIDE resolves the same binding — nobody re-writes the expression.
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                           "node_in": inst, "slot_in": inp }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &inp) }));
     let bound = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     assert!(bound.contains("common.max_frequency = expr: nd('wall')"), "{bound}");
     assert!(!bound.contains("[error:"), "the wire behind the port made it resolvable: {bound}");
 
     // …and cutting that wire takes it back, through the same door.
-    g.call("link remove", j!({ "node_out": hex(osc), "slot_out": "out",
-                              "node_in": inst, "slot_in": inp }));
+    g.call("link remove", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &inp) }));
     let cut = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     assert!(cut.contains("[error:") && cut.contains("wired"),
             "the binding follows the wire away again: {cut}");
@@ -583,8 +572,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     // Dissolving the sub-patch deletes its ports, and a binding that named one has to go
     // unresolvable HERE. `remove_node` on a port does that; expanding took the same ports out by
     // another door, and a name nothing wears can never be re-resolved by a later edit.
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                           "node_in": inst, "slot_in": inp }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &inp) }));
     bind("nd('left')");
     let live = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     assert!(!live.contains("[error:"), "the binding is live going in: {live}");
@@ -604,8 +592,7 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     let inst = group(&g, &[hex(buf)]);
     let inp = boundary(&g, &inst, "in");
     wire(&g, &inp, "in", &hex(buf), "data");
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                           "node_in": inst, "slot_in": inp }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &inp) }));
 
     // An IN port wears an output slot, so it takes a viewer exactly as a node does.
     g.call("node edit", j!({ "node": inp, "viewer": [{ "slot": "value", "kind": "line" }] }));
@@ -801,20 +788,17 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
 
     // Wiring the OUTSIDE is what makes frames cross. This is the step a planner that drops a port
     // endpoint fails, and it fails nowhere else.
-    g.call("link add", j!({ "node_out": hex(src), "slot_out": "out",
-                            "node_in": inst, "slot_in": port }));
+    g.call("link add", j!({ "from": ep(hex(src), "out"), "to": ep(&inst, &port) }));
     g.until("a frame to cross the boundary", |_| at_mid.latest());
 
     // Cutting the outer cable stops it, through the same door.
-    g.call("link remove", j!({ "node_out": hex(src), "slot_out": "out",
-                              "node_in": inst, "slot_in": port }));
+    g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(&inst, &port) }));
     let seen = at_mid.count();
     assert!(g.stays(|_| at_mid.count() == seen), "the cut stopped the stream: {seen}");
 
     // Re-wire, then nest the whole sub-patch one level deeper. The chain of ports lengthens and the
     // frames must still arrive — a relay walk that stops at the first hop fails here.
-    g.call("link add", j!({ "node_out": hex(src), "slot_out": "out",
-                            "node_in": inst, "slot_in": port }));
+    g.call("link add", j!({ "from": ep(hex(src), "out"), "to": ep(&inst, &port) }));
     g.until("frames again after re-wiring", |_| at_mid.latest());
     let outer = group(&g, std::slice::from_ref(&inst));
     let before_nest = at_mid.count();
@@ -840,8 +824,7 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     // feed that no longer exists, and nothing above notices.
     let src2 = g.add("_TestCounter");
     g.ready(src2);
-    g.call("link add", j!({ "node_out": hex(src2), "slot_out": "out",
-                            "node_in": inst, "slot_in": port }));
+    g.call("link add", j!({ "from": ep(hex(src2), "out"), "to": ep(&inst, &port) }));
     let refed = at_mid.count();
     assert!(g.until("frames from the second source", |_| (at_mid.count() > refed).then_some(true)),
             "the sub-patch takes a new feed on the same port");

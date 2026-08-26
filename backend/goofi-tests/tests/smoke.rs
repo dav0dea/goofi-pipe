@@ -1,7 +1,7 @@
 //! The harness proving itself: a node is born, wired, runs, and is observed — every door the rest
 //! of the suite uses, exercised once so a harness fault reads as a harness failure.
 
-use goofi_tests::{j, Goofi};
+use goofi_tests::{Goofi, ep, j};
 use goofi_view::Reducible; // shape()/ndim() on a decoded frame
 
 #[test]
@@ -46,8 +46,7 @@ fn a_failing_node_reports_why_and_a_healthy_one_stays_quiet() {
 fn a_refusal_says_what_was_wrong() {
     let g = Goofi::new();
     let n = g.add("_TestEcho");
-    let why = g.refuse("link add", j!({ "node_out": goofi_tests::hex(n), "slot_out": "nope",
-                                        "node_in": goofi_tests::hex(n), "slot_in": "in" }));
+    let why = g.refuse("link add", j!({ "from": ep(goofi_tests::hex(n), "nope"), "to": ep(goofi_tests::hex(n), "in") }));
     assert!(why.contains("nope"), "the refusal names the slot: {why}");
 }
 

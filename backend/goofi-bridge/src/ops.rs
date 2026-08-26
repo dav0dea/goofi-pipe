@@ -169,12 +169,12 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true}" },
     // -- link ------------------------------------------------------------------------------------
     Op { name: "link add", handler: Write(arms::link_add),
-         args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!", positional: 0,
-         doc: "Wire an output slot to an input slot. Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
+         args: "from:endpoint! to:endpoint!", positional: 2,
+         doc: "Wire `from` (an output, as `uid/slot`) to `to` (an input). Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
                A link never crosses a sub-patch boundary, and the two acts that look like it are ordinary links in different scopes. From the OUTSIDE you wire a node to the sub-patch's facade, naming a port's uid as the slot; the wire is stored against the PORT, whether or not anything is behind it yet. From the INSIDE you wire a port to a member, both of them in that sub-patch. A port carries one slot, `value`, on both of its sides.",
-         result: "{node_out, slot_out, node_in, slot_in, dtype} — the wire as made, with a facade endpoint resolved to the PORT it named." },
+         result: "{from, to, dtype} — the wire as made, with a facade endpoint resolved to the PORT it named." },
     Op { name: "link remove", handler: Write(arms::link_remove),
-         args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!", positional: 0,
+         args: "from:endpoint! to:endpoint!", positional: 2,
          doc: "Remove one wire, addressed by both of its endpoints — a boundary port's inner wire included. Idempotent, like `node remove`.",
          result: "{removed: bool} — false when there was no such wire" },
     // -- global ----------------------------------------------------------------------------------

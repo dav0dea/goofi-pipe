@@ -3,7 +3,7 @@
 
 use serde_json::{Map, Value};
 
-use goofi_tests::{hex, j, Goofi};
+use goofi_tests::{Goofi, ep, hex, j};
 
 /// The arrangement flattened to an id-keyed map with a `parent` on each node.
 fn entries(g: &Goofi) -> Map<String, Value> {
@@ -188,7 +188,7 @@ fn a_stale_toggle_converges_instead_of_wedging_the_stack() {
     let two = one.client("s2");
     let osc = one.add("Oscillator");
     let buf = one.add("Buffer");
-    let link = j!({ "node_out": hex(osc), "slot_out": "out", "node_in": hex(buf), "slot_in": "data" });
+    let link = j!({ "from": ep(hex(osc), "out"), "to": ep(hex(buf), "data") });
     one.call("link add", link.clone());
     one.call("link remove", link);
     two.call("node remove", j!({ "node": hex(buf) })); // s1's newest toggle now names a dead uid
@@ -422,14 +422,12 @@ fn a_reply_says_what_the_write_actually_did() {
     let coerced = g.set_param(buf, "buffer", "size", 512.6);
     assert_eq!(coerced["value"], 513, "an int param rounds: {coerced}");
 
-    let wired = g.call("link add", j!({ "node_out": osc, "slot_out": "out",
-                                        "node_in": hex(buf), "slot_in": "data" }));
-    assert_eq!((&wired["node_out"], &wired["dtype"]), (&j!(osc), &j!("ARRAY")), "{wired}");
+    let wired = g.call("link add", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "data") }));
+    assert_eq!((&wired["from"], &wired["dtype"]), (&j!(ep(&osc, "out")), &j!("ARRAY")), "{wired}");
 
     assert_eq!(g.call("node remove", j!({ "node": GHOST }))["removed"], false);
     assert_eq!(g.call("node remove", j!({ "node": osc }))["removed"], true);
-    assert_eq!(g.call("link remove", j!({ "node_out": osc, "slot_out": "out",
-                                         "node_in": hex(buf), "slot_in": "data" }))["removed"],
+    assert_eq!(g.call("link remove", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "data") }))["removed"],
                false);
 }
 
@@ -449,9 +447,8 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     let why = g.refuse("agent start", j!({ "name": "claude-code" }));
     assert!(why.contains("claude") && why.contains("codex"), "{why}");
 
-    let why = g.refuse("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                                        "node_in": GHOST, "slot_in": "data" }));
-    assert!(why.contains("node_in") && why.contains(GHOST), "{why}");
+    let why = g.refuse("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(GHOST, "data") }));
+    assert!(why.contains("`to`") && why.contains(GHOST), "{why}");
 
     for (op, payload) in [
         ("nodes ungroup", j!({ "subpatch": GHOST })),

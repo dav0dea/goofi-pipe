@@ -59,8 +59,7 @@ can read.
        "output_slots": {"out": "ARRAY"},
        "params": {"oscillator": {"frequency": 1.0, "waveform": "sine", …}, "common": {…}}}
 
-    link add --node_out 000000000001 --slot_out out \
-             --node_in 000000000002 --slot_in data   → {…, "dtype": "ARRAY"}
+    link add 000000000001/out 000000000002/data   → {"from": …, "to": …, "dtype": "ARRAY"}
 
     node param edit 000000000001 oscillator/frequency --value 7.5
     → {"value": 7.5, "error": null}

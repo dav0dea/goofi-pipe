@@ -28,7 +28,7 @@ fn every_op_row_is_well_formed_and_reachable() {
     // line by the FIRST complete phrase it finds, so the set must be PREFIX-FREE: a phrase that
     // is a word-prefix of another would swallow it whole.
     const ARG_TYPES: &[&str] = &["uid", "string", "float", "int", "bool", "float2", "json",
-                                 "any", "param_addr", "panel_type",
+                                 "any", "param_addr", "endpoint", "panel_type",
                                  "uid[]", "string[]", "float[]", "json[]"];
     let mut seen = HashSet::new();
     for op in REGISTRY {

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goofi_tests::{hex, holds_within, j, Goofi, Viewer};
+use goofi_tests::{Goofi, Viewer, ep, hex, holds_within, j};
 
 fn f32s(d: &goofi_core::Data) -> Vec<f32> {
     let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
@@ -246,11 +246,9 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // Wiring BOTH sides is what puts a stream behind it, and neither half alone does — so the
     // socket has to still be there for the second one. It then joins the reducer already serving
     // that stream, rather than staying frozen on the answer it got when it opened.
-    g.call("link add", j!({ "node_out": bare, "slot_out": "value",
-                            "node_in": mid, "slot_in": "data" }));
+    g.call("link add", j!({ "from": ep(&bare, "value"), "to": ep(&mid, "data") }));
     assert_eq!(g.state.reducers.subscribers(&key), 7, "the inside alone feeds it nothing");
-    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
-                            "node_in": inst, "slot_in": bare }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bare) }));
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 8).await,
             "the open socket joined the stream its port now stands in front of");
     assert_eq!(g.state.reducers.active_slots(), 1, "still one reducer for the one physical slot");
