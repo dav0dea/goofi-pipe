@@ -237,7 +237,7 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
 #[test]
 fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
     let ops: Vec<&str> = goofi_bridge::ops::REGISTRY.iter()
-        .filter(|o| o.writes && (o.name.ends_with("_tab") || o.name.ends_with("_panel")))
+        .filter(|o| o.handler.is_write() && (o.name.ends_with("_tab") || o.name.ends_with("_panel")))
         .map(|o| o.name)
         .collect();
     assert!(ops.contains(&"remove_panel") && ops.contains(&"place_panel"),
