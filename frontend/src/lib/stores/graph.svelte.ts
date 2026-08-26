@@ -172,7 +172,7 @@ export class GraphStore {
 		const node = this.nodeById(uid);
 		if (!node?.output_slots[slot]) return;
 		void this.ctl
-			.call('node edit', { node: uid, viewers: { [slot]: view } })
+			.call('node edit', { node: uid, viewer: [{ slot, ...view }] })
 			.then(() => this._recordGraphCmd(`Set ${slot} view`))
 			.catch(() => {
 				/* soft view state — the next edit re-sends it */
@@ -298,19 +298,11 @@ export class GraphStore {
 		this._record({ kind: 'graph_cmd', domain: 'graph', label, context: captureNavContext() });
 	}
 
-	async addNode(
-		type: string,
-		pos: [number, number],
-		instId?: string,
-		params?: Record<string, Record<string, unknown>>
-	): Promise<string> {
-		// `params` are applied at creation UNDER THE GRAPH LOCK: a post-add leaf write would no-op
-		// until the new node syncs into the replica, silently dropping the values.
+	async addNode(type: string, pos: [number, number], instId?: string): Promise<string> {
 		const born = await this.ctl.call<{ uid: string }>('node add', {
 			type,
 			pos,
-			inst_id: instId,
-			params
+			inst_id: instId
 		});
 		const uid = born?.uid ?? '';
 		if (uid) this._recordGraphCmd(`Add ${type}`);
@@ -343,8 +335,8 @@ export class GraphStore {
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
 		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
-		if (!param) throw new Error(`node edit: no param ${group}.${name} on node ${node}`);
-		await this.ctl.call('node edit', { node, params: { [group]: { [name]: value } } });
+		if (!param) throw new Error(`node param edit: no param ${group}.${name} on node ${node}`);
+		await this.ctl.call('node param edit', { node, param: `${group}/${name}`, value });
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
@@ -388,7 +380,7 @@ export class GraphStore {
 		const key = refreshKey(node, group, name);
 		this._beginRefresh(key);
 		try {
-			await this.ctl.call('node param refresh', { node, group, name });
+			await this.ctl.call('node param refresh', { node, param: `${group}/${name}` });
 		} catch (e) {
 			// A failed dispatch means the node never re-scans, so do not wait out the safety timeout.
 			this._endRefresh(key);
@@ -423,19 +415,14 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
-		if (!d) throw new Error(`node edit: no param ${group}.${name} on node ${node}`);
+		if (!d) throw new Error(`node param edit: no param ${group}.${name} on node ${node}`);
 		// `expression` is sent even when null: its PRESENCE is what clears a binding.
-		await this.ctl.call('node edit', {
+		await this.ctl.call('node param edit', {
 			node,
-			params: {
-				[group]: {
-					[name]: {
-						expression: expression ?? '',
-						mode: opts.enabled ? 'expression' : 'constant',
-						triggers: opts.triggers_process ?? false
-					}
-				}
-			}
+			param: `${group}/${name}`,
+			expression: expression ?? '',
+			mode: opts.enabled ? 'expression' : 'constant',
+			triggers: opts.triggers_process ?? false
 		});
 		this._recordGraphCmd(`Set ${name} expression`);
 	}

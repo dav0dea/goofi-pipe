@@ -429,7 +429,7 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     g.ready(mute);
     let mut ev = g.events();
 
-    g.call("node param refresh", j!({ "node": hex(picker), "group": "io", "name": "device" }));
+    g.call("node param refresh", j!({ "node": hex(picker), "param": "io/device" }));
     let p = g.until("the picker's echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(picker)).then_some(p)
@@ -440,7 +440,7 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     assert_eq!(p["refreshed_params"], j!([["io", "device"]]), "…and the spinner is cleared");
 
     // A node with no hook must still get its echo, or the button spins for its full safety timeout.
-    g.call("node param refresh", j!({ "node": hex(mute), "group": "io", "name": "device" }));
+    g.call("node param refresh", j!({ "node": hex(mute), "param": "io/device" }));
     let p = g.until("the mute picker's echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(mute)).then_some(p)
@@ -451,6 +451,6 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     // A fixed list is refused, which is what lifts the spinner on the frontend's side.
     let osc = g.add("Oscillator");
     let why = g.refuse("node param refresh",
-                       j!({ "node": hex(osc), "group": "oscillator", "name": "waveform" }));
+                       j!({ "node": hex(osc), "param": "oscillator/waveform" }));
     assert!(why.contains("not refreshable"), "{why}");
 }

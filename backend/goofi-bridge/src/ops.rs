@@ -124,19 +124,22 @@ pub static REGISTRY: &[Op] = &[
          doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output; `--no-params` and `--no-error` drop a section. The FRAMES are not here and cannot be: subscribe to `/data/<node>/<slot>` to see a node's data, exactly as a viewer does.",
          result: "{text: string}" },
     Op { name: "node add", handler: Write(arms::node_add),
-         args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid params:json", positional: 1,
-         doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `params` is `node edit`'s bag, applied at birth. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
+         args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid param:json[]", positional: 1,
+         doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. Each `--param` is one birth param, self-addressed: `{\"name\": \"group/param\", …}` carrying `node param edit`'s fields — inside a JSON flag under bash, spell nested strings with ESCAPED double quotes (`\"nd(\\\"other\\\").sfreq\"`); a single-quoted `nd('x')` inside a single-quoted shell token loses its quotes silently. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
                The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same ops — but it never runs, so it takes no params. To COPY a node rather than build one, read it with `nodes copy` and put it back with `nodes paste`.",
          result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." },
     Op { name: "node edit", handler: Write(arms::node_edit),
-         args: "node:uid! name:string pos:float2 params:json viewers:json", positional: 1,
-         doc: "Edit a node: rename it, move it, set params, set viewers — any of them, in one step and one undo. An omitted field is left alone. A sub-patch boundary port takes every field but `params`, which it has no thread to hold: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
+         args: "node:uid! name:string pos:float2 viewer:json[]", positional: 1,
+         doc: "Edit a node's own record: rename it, move it, set viewers — any of them, in one step and one undo. An omitted field is left alone. Params are `node param edit`'s. A sub-patch boundary port takes every field: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
                A `name` must be a legal Python identifier and not a keyword, for every kind of node. An expression reads a name as an ATTRIBUTE — a sub-patch's slot in `nd('chain').drain` — so one Python cannot parse there breaks every reference to it, and the rewrite that follows the NEXT rename can no longer find what it broke.\n\n\
-               `params` is `{group: {param: …}}`, the shape `node add` takes. A param entry is either a bare value or `{value, expression, mode, triggers}`: `mode` is `constant`/`expression` and defaults to `expression` when an expression is given, so binding one is a single field. An empty expression clears the binding. Only the params named are touched.\n\n\
-               `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.\n\n\
-               A value is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero. The declared min/max are the editor's range, NOT a clamp.\n\n\
-               `viewers` is `{slot: {kind, settings}}`, merged key by key, so only the slots named move. `kind` is one of: {viewer_kinds}.",
-         result: "{params} — every param touched, as STORED, with its binding error if the expression did not compile." },
+               Each `--viewer` is one slot's inline view, `{\"slot\": \"out\", \"kind\": …, \"settings\": …}`, merged slot by slot so only the slots named move; `{\"slot\": \"out\", \"clear\": true}` removes that slot's stored view. `kind` is one of: {viewer_kinds}.",
+         result: "{ok: true}" },
+    Op { name: "node param edit", handler: Write(arms::node_param_edit),
+         args: "node:uid! param:param_addr! value:string expression:string mode:string triggers:bool",
+         positional: 2,
+         doc: "Set ONE param, addressed `group/param`. `value` is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero; the declared min/max are the editor's range, NOT a clamp. `mode` is `constant`/`expression` and defaults to `expression` when an expression is given, so binding one is a single flag; an empty expression clears the binding, and a mode or trigger given alone edits the binding already there.\n\n\
+               `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.",
+         result: "{value, error} — the value as STORED, with its binding error if the expression did not compile." },
     Op { name: "node remove", handler: Write(arms::node_remove), args: "node:uid!", positional: 1,
          doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
          result: "{removed: bool} — false when the uid named nothing" },
@@ -144,8 +147,8 @@ pub static REGISTRY: &[Op] = &[
          doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
          result: "{ok: true}" },
     Op { name: "node param refresh", handler: Effect(arms::node_param_refresh),
-         args: "node:uid! group:string! name:string!", positional: 1,
-         doc: "Ask a node to re-enumerate a refreshable string param's options (a device or stream picker). The scan runs on the node's own thread, so this reply only says the request was dispatched — read the fresh options back with `node state`.",
+         args: "node:uid! param:param_addr!", positional: 2,
+         doc: "Ask a node to re-enumerate a refreshable string param's options (a device or stream picker), addressed `group/param`. The scan runs on the node's own thread, so this reply only says the request was dispatched — read the fresh options back with `node state`.",
          result: "{ok: true} — the options land on the node; `node state` reports them" },
     // -- nodes: the graph of several -------------------------------------------------------------
     Op { name: "nodes inspect", handler: Read(arms::nodes_inspect), args: "scope:uid", positional: 1,
@@ -179,10 +182,10 @@ pub static REGISTRY: &[Op] = &[
          doc: "Every patch global — what an expression can read and the global writes can set.",
          result: "{globals: [{name, type, value, system: bool}]}" },
     Op { name: "global add", handler: Write(arms::global_add),
-         args: "name:string! type:string! value:json!", positional: 1,
+         args: "name:string! type:string! value:any!", positional: 1,
          doc: "Create a patch global. `type` is one of float/int/bool/string; a name the patch already holds is refused — `global edit` changes one. To rename a global, compound an add of the new name with a remove of the old.",
          result: "{value} — the value as stored, type-coerced" },
-    Op { name: "global edit", handler: Write(arms::global_edit), args: "name:string! value:json!", positional: 1,
+    Op { name: "global edit", handler: Write(arms::global_edit), args: "name:string! value:any!", positional: 1,
          doc: "Change an existing global's value, type-coerced to the type it holds. The type is immutable, because every expression reading a global depends on it: re-typing is a remove and an add.",
          result: "{value} — the value as stored, type-coerced" },
     Op { name: "global remove", handler: Write(arms::global_remove), args: "name:string!", positional: 1,

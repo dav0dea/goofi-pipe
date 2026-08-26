@@ -397,8 +397,8 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     // An edit that names NEITHER field is a caller error, not a silent no-op.
     let bnd = boundary(&g, &inst, "in");
     g.refuse("node edit", j!({ "node": bnd }));
-    // …and a port carries no params and no viewers, so asking is refused rather than dropped.
-    g.refuse("node edit", j!({ "node": bnd, "params": { "common": { "autotrigger": true } } }));
+    // …and a port carries no params, so asking is refused rather than dropped.
+    g.refuse("node param edit", j!({ "node": bnd, "param": "common/autotrigger", "value": true }));
 
     // A port that DOES exist, aimed at an inner target that cannot take the wire.
     g.refuse("link add", j!({ "node_out": bnd, "slot_out": "value",
@@ -449,9 +449,8 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
 
     // A member reads its own sub-patch's input port. Nothing feeds it yet, so the refusal names it.
     let bind = |expr: &str| {
-        g.call("node edit", j!({ "node": hex(buf), "params": { "common": { "max_frequency":
-                                     { "expression": expr } } } }))
-            ["params"]["common"]["max_frequency"]["error"].clone()
+        g.call("node param edit", j!({ "node": hex(buf), "param": "common/max_frequency",
+                                       "expression": expr }))["error"].clone()
     };
     let why = bind("nd('wall')");
     assert!(why.as_str().is_some_and(|e| e.contains("wall") && e.contains("wired")),
@@ -609,28 +608,28 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
                            "node_in": inst, "slot_in": inp }));
 
     // An IN port wears an output slot, so it takes a viewer exactly as a node does.
-    g.call("node edit", j!({ "node": inp, "viewers": { "value": { "kind": "line" } } }));
+    g.call("node edit", j!({ "node": inp, "viewer": [{ "slot": "value", "kind": "line" }] }));
     let doc = g.doc();
     let stored = doc["nodes"][&inp]["viewers"].as_str().expect("a viewer blob rides as a string");
     assert!(stored.contains("line"), "the port kept the view state: {stored}");
 
     // …and it is refused on a slot the port does not have, rather than stored and never drawn.
-    g.refuse("node edit", j!({ "node": inp, "viewers": { "out": { "kind": "line" } } }));
+    g.refuse("node edit", j!({ "node": inp, "viewer": [{ "slot": "out", "kind": "line" }] }));
 
     // An OUT port RELAYS what it drains, so it carries a stream and takes a viewer on the same
     // `value` slot an IN port wears — a port is a pass-through, never a sink, whichever way it faces.
     let outp = boundary(&g, &inst, "out");
-    g.call("node edit", j!({ "node": outp, "viewers": { "value": { "kind": "line" } } }));
+    g.call("node edit", j!({ "node": outp, "viewer": [{ "slot": "value", "kind": "line" }] }));
     let drained = g.doc()["nodes"][&outp]["viewers"].as_str().unwrap_or("").to_string();
     assert!(drained.contains("line"), "the out port kept its view state: {drained}");
 
     // The FACADE is a node too, and it draws that OUT port as one of its output slots — so the
     // viewer that has no meaning INSIDE the sub-patch is exactly the one it wears outside.
     wire(&g, &outp, "out", &hex(buf), "out");
-    g.call("node edit", j!({ "node": inst, "viewers": { &outp: { "kind": "line" } } }));
+    g.call("node edit", j!({ "node": inst, "viewer": [{ "slot": &outp, "kind": "line" }] }));
     let facade = g.doc()["nodes"][&inst]["viewers"].as_str().expect("a blob, as a node's").to_string();
     assert!(facade.contains("line"), "the facade kept the view state: {facade}");
-    g.refuse("node edit", j!({ "node": inst, "viewers": { "nope": { "kind": "line" } } }));
+    g.refuse("node edit", j!({ "node": inst, "viewer": [{ "slot": "nope", "kind": "line" }] }));
 
     // A facade NAMES its slots the way a node does: the port's display name, never its uid. The doc
     // keys them by uid so a rename cannot break a wire, but nothing a human or an agent reads
@@ -668,8 +667,8 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     // The Buffer reads its neighbour by name, so the copy has a reference to get right.
     let lfo = g.add("Oscillator");
     g.call("node edit", j!({ "node": hex(lfo), "name": "lfo" }));
-    g.call("node edit", j!({ "node": hex(buf), "params": { "common": { "max_frequency":
-                                 { "expression": "nd('lfo')" } } } }));
+    g.call("node param edit", j!({ "node": hex(buf), "param": "common/max_frequency",
+                                   "expression": "nd('lfo')" }));
     let inner = group(&g, &[hex(buf), hex(lfo)]);
     let outer = group(&g, std::slice::from_ref(&inner));
     assert_eq!(g.doc()["nodes"][&outer]["name"], "subpatch1", "the second sub-patch is subpatch1");
@@ -729,7 +728,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     assert!(!bound.contains("nd('lfo')"), "…and nothing still reads the original's: {bound}");
 
     // It is INDEPENDENT: editing the copy leaves the original alone.
-    g.call("node edit", j!({ "node": leaf, "params": { "common": { "max_frequency": 3.0 } } }));
+    g.call("node param edit", j!({ "node": leaf, "param": "common/max_frequency", "value": 3.0 }));
     let orig = g.call("node state", j!({ "node": hex(buf), "params": true }))["text"]
         .as_str().unwrap().to_string();
     assert!(!orig.contains("max_frequency = 3"), "the original kept its own params: {orig}");

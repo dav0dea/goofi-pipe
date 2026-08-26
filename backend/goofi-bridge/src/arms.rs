@@ -272,8 +272,9 @@ pub(crate) fn node_add(
     };
     // Applied UNDER THE GRAPH LOCK, so the node is born configured before the resync mirrors it
     // into the doc.
-    if let Some(params) = payload.get("params").filter(|v| !v.is_null()) {
-        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("node add: {e}"))? {
+    if let Some(entries) = payload.get("param").filter(|v| !v.is_null()) {
+        let bag = param_entries_bag(entries).map_err(|e| format!("node add: {e}"))?;
+        for cmd in parse_params_bag(&g, uid, &bag).map_err(|e| format!("node add: {e}"))? {
             cmd.execute(&mut g).map_err(|e| format!("node add: {e}"))?;
         }
     }
@@ -393,12 +394,77 @@ pub(crate) fn node_param_refresh(
     {
         let mut g = state.graph.lock().unwrap();
         let uid = parse_uid(payload, "node")?;
-        let group = parse_str(payload, "group")?.to_string();
-        let name = parse_str(payload, "name")?.to_string();
+        let (group, name) = parse_param_addr(payload, "node param refresh")?;
         g.refresh_param(uid, &group, &name)?;
     }
     resync_and_broadcast(state);
     Ok(json!({ "ok": true }))
+}
+
+/// The joined `param_addr` — `group/param`, split on the FIRST `/` — one spelling on both surfaces.
+fn parse_param_addr(payload: &Value, op: &str) -> Result<(String, String), String> {
+    let addr = payload
+        .get("param")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("{op}: missing param"))?;
+    let (group, name) = addr
+        .split_once('/')
+        .ok_or_else(|| format!("{op}: `{addr}` is not `group/param`"))?;
+    Ok((group.to_string(), name.to_string()))
+}
+
+/// `--param` entries `{name: "group/param", …fields}`, folded into the `{group: {param: fields}}`
+/// bag the engine path reads.
+fn param_entries_bag(entries: &Value) -> Result<Value, String> {
+    let list = entries.as_array().ok_or("`param` is a list of entries")?;
+    let mut bag = serde_json::Map::new();
+    for e in list {
+        let mut o = e
+            .as_object()
+            .cloned()
+            .ok_or(r#"a param entry is {"name": "group/param", …}"#)?;
+        let addr = match o.remove("name") {
+            Some(Value::String(s)) => s,
+            _ => return Err(r#"a param entry names its param: {"name": "group/param", …}"#.into()),
+        };
+        let (group, name) =
+            addr.split_once('/').ok_or_else(|| format!("`{addr}` is not `group/param`"))?;
+        bag.entry(group.to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap()
+            .insert(name.to_string(), Value::Object(o));
+    }
+    Ok(Value::Object(bag))
+}
+
+pub(crate) fn node_param_edit(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let uid = parse_uid(payload, "node")?;
+    let (group, name) = parse_param_addr(payload, "node param edit")?;
+    let mut entry = serde_json::Map::new();
+    for key in ["value", "expression", "mode", "triggers"] {
+        if let Some(v) = payload.get(key).filter(|v| !v.is_null()) {
+            entry.insert(key.into(), v.clone());
+        }
+    }
+    let bag = json!({ &group: { &name: entry } });
+    let mut cmds =
+        parse_params_bag(&g, uid, &bag).map_err(|e| format!("node param edit: {e}"))?;
+    state.history.lock().unwrap().apply(&mut g, actor, cmds.pop().unwrap())?;
+    // The runtime `expression_error` is doc-invisible, so echo the descriptor.
+    events.push(param_state_update(&g, uid));
+    Ok(json!({
+        "value": g.params(uid)
+            .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
+            .map(|p| goofi_engine::param_value_json(&p, true)),
+        "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
+    }))
 }
 
 pub(crate) fn node_edit(
@@ -431,69 +497,58 @@ pub(crate) fn node_edit(
         .filter(|v| !v.is_null())
         .map(|v| parse_pos(v).ok_or("node edit: pos is [x, y]"))
         .transpose()?;
-    // Viewers MERGE key by key, so only the slots named move; the command then sets the whole
-    // blob, which is what makes its inverse exact. The PATCH is what is checked — a stale slot
-    // already stored is inert, and refusing it would block every later edit on a node whose file
-    // changed its slots.
-    let viewers = match payload.get("viewers").filter(|v| !v.is_null()) {
-        Some(patch) => {
-            vocab::check_viewers(&g, uid, patch)?;
+    // Viewer entries MERGE slot by slot, so only the slots named move; the command then sets the
+    // whole blob, which is what makes its inverse exact. The PATCH is what is checked — a stale
+    // slot already stored is inert, and refusing it would block every later edit on a node whose
+    // file changed its slots.
+    let viewers = match payload.get("viewer").filter(|v| !v.is_null()) {
+        Some(entries) => {
+            let patch = viewer_entries_patch(entries)?;
+            vocab::check_viewers(&g, uid, &patch)?;
             let mut whole = g.viewers(uid).cloned().ok_or("node edit: no such node")?;
-            merge_json(&mut whole, patch);
+            merge_json(&mut whole, &patch);
             Some(whole)
         }
         None => None,
     };
-    let params = payload.get("params").filter(|v| !v.is_null());
-    if name.is_none() && pos.is_none() && viewers.is_none() && params.is_none() {
-        return Err("node edit: give a name, pos, params or viewers".into());
-    }
-
-    // ONE command, so one undo step covers whatever the call carried: the node's own fields,
-    // then a param edit each.
-    let mut cmds = Vec::new();
-    if name.is_some() || pos.is_some() || viewers.is_some() {
-        cmds.push(goofi_engine::Command::EditNode { uid, name, pos, viewers });
-    }
-    let mut touched: Vec<(String, String)> = Vec::new();
-    if let Some(params) = params {
-        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("node edit: {e}"))? {
-            if let goofi_engine::Command::EditParam { group, name, .. } = &cmd {
-                touched.push((group.clone(), name.clone()));
-            }
-            cmds.push(cmd);
-        }
+    if name.is_none() && pos.is_none() && viewers.is_none() {
+        return Err("node edit: give a name, pos or viewer".into());
     }
     let out = state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        if cmds.len() == 1 { cmds.pop().unwrap() } else { goofi_engine::Command::Compound(cmds) },
+        goofi_engine::Command::EditNode { uid, name, pos, viewers },
     )?;
-    // The runtime `expression_error` is doc-invisible, so echo the descriptors — for this node,
-    // and for every referrer a rename rewrote.
-    if !touched.is_empty() {
-        events.push(param_state_update(&g, uid));
-    }
+    // The runtime `expression_error` is doc-invisible, so echo every referrer a rename rewrote.
     if let goofi_engine::Outcome::Nodes(referrers) = out {
         for r in referrers {
             events.push(param_state_update(&g, r));
         }
     }
-    // Every param touched AS STORED: a literal is coerced to its declared type, and a binding
-    // that does not compile is stored WITH its error.
-    let mut out = serde_json::Map::new();
-    for (group, name) in touched {
-        let entry = json!({
-            "value": g.params(uid)
-                .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-                .map(|p| goofi_engine::param_value_json(&p, true)),
-            "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
-        });
-        out.entry(group).or_insert_with(|| json!({}))
-            .as_object_mut().unwrap()
-            .insert(name, entry);
+    Ok(json!({ "ok": true }))
+}
+
+/// `--viewer` entries `{slot, …view}` — or `{slot, clear: true}` — as the merge patch the stored
+/// blob takes, where clearing is the patch's `null`.
+fn viewer_entries_patch(entries: &Value) -> Result<Value, String> {
+    let list = entries.as_array().ok_or("node edit: `viewer` is a list of entries")?;
+    let mut patch = serde_json::Map::new();
+    for e in list {
+        let mut o = e
+            .as_object()
+            .cloned()
+            .ok_or(r#"node edit: a viewer entry is {"slot", …} or {"slot", "clear": true}"#)?;
+        let slot = match o.remove("slot") {
+            Some(Value::String(s)) => s,
+            _ => return Err("node edit: a viewer entry names its slot".into()),
+        };
+        match o.remove("clear") {
+            Some(Value::Bool(true)) => patch.insert(slot, Value::Null),
+            None => patch.insert(slot, Value::Object(o)),
+            _ => return Err("node edit: `clear` is only ever true — omit it to set".into()),
+        };
     }
-    Ok(json!({ "params": Value::Object(out) }))
+    Ok(Value::Object(patch))
 }
 
 /// Where THIS client is looking: not a doc root, so it neither drags a peer nor raises the

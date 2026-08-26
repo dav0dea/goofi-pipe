@@ -803,6 +803,15 @@ fn merge_json(target: &mut Value, patch: &Value) {
     }
 }
 
+/// A CLI `--value` arrives as its raw string; the DECLARED type says what it meant.
+fn param_value(existing: &goofi_core::Param, v: &Value) -> goofi_core::Param {
+    let parsed = match (existing, v.as_str()) {
+        (goofi_core::Param::Str { .. }, _) | (_, None) => None,
+        (_, Some(s)) => serde_json::from_str::<Value>(s).ok(),
+    };
+    goofi_engine::param_from_json(existing, parsed.as_ref().unwrap_or(v), true)
+}
+
 /// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, mode, triggers}`.
 /// No param type is an object, so the two forms cannot be confused. An expression given without a
 /// mode turns the binding on, and a mode or trigger given alone edits the binding already there.
@@ -812,7 +821,7 @@ fn parse_param_entry(
     spec: &Value,
 ) -> Result<(Option<goofi_core::Param>, Option<goofi_engine::ExprState>), String> {
     let Some(o) = spec.as_object() else {
-        return Ok((Some(goofi_engine::param_from_json(existing, spec, true)), None));
+        return Ok((Some(param_value(existing, spec)), None));
     };
     if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "value" | "expression" | "mode" | "triggers")) {
         return Err(format!("unknown field `{k}` — value, expression, mode, triggers"));
@@ -820,7 +829,7 @@ fn parse_param_entry(
     let value = o
         .get("value")
         .filter(|v| !v.is_null())
-        .map(|v| goofi_engine::param_from_json(existing, v, true));
+        .map(|v| param_value(existing, v));
     let mode = match o.get("mode").filter(|v| !v.is_null()) {
         None => None,
         Some(v) => match v.as_str() {

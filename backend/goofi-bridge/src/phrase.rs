@@ -80,7 +80,9 @@ fn typed(op: &Op, key: &str, ty: &str, raw: String) -> Result<Value, String> {
         }
         "json" => serde_json::from_str(&raw)
             .map_err(|e| format!("{}: `--{key}` takes JSON — {e}", op.name)),
-        // uid, string, panel_type and the rest ride as the string they are.
+        // `any`: JSON when it parses, otherwise the bare string — `--value 2.5` and `--value hi`.
+        "any" => Ok(serde_json::from_str(&raw).unwrap_or(Value::String(raw))),
+        // uid, string, param_addr and the rest ride as the string they are.
         _ => Ok(Value::String(raw)),
     }
 }

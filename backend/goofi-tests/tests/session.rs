@@ -26,8 +26,8 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.link(buf, "out", sink, "data");
 
     g.call("global add", j!({ "name": "gain", "value": 2.0, "type": "float" }));
-    g.call("node edit", j!({ "node": hex(sink),
-                             "params": { "buffer": { "size": { "expression": "globals.gain * 64" } } } }));
+    g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size",
+                                   "expression": "globals.gain * 64" }));
 
     let scope = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();

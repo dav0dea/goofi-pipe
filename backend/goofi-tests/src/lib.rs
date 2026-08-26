@@ -87,9 +87,10 @@ impl Goofi {
     /// param's declared type.
     #[track_caller]
     pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
-        let r = self
-            .call("node edit", json!({ "node": hex(uid), "params": { group: { name: value.into() } } }));
-        r["params"][group][name].clone()
+        self.call(
+            "node param edit",
+            json!({ "node": hex(uid), "param": format!("{group}/{name}"), "value": value.into() }),
+        )
     }
 
     /// Wire an output slot to an input slot.

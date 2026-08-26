@@ -36,10 +36,10 @@ function fixture() {
 		view: (slot: string) => slotView(g.nodeById('osc0'), slot),
 		deps: { control: {} as never, graph: g },
 		echo: () => {
-			const sent = fc.recordedCalls().filter((c) => c.op === 'node edit' && c.payload.viewers);
+			const sent = fc.recordedCalls().filter((c) => c.op === 'node edit' && c.payload.viewer);
 			const whole: Record<string, object> = {};
 			for (const c of sent)
-				for (const [slot, v] of Object.entries(c.payload.viewers as Record<string, object>))
+				for (const { slot, ...v } of c.payload.viewer as Array<{ slot: string }>)
 					whole[slot] = { ...whole[slot], ...v };
 			const node = sent[sent.length - 1]!.payload.node as string;
 			d.patch({ nodes: { [node]: { viewers: JSON.stringify(whole) } } });

@@ -46,7 +46,7 @@ default. Pass `--no-params` or `--no-error` to drop a section, `--slot` to narro
 The `out:` line is the value-health line — shape, how many elements are real numbers, and the scale
 of the ones that are. `finite=511/512` is a NaN leaking in, `range=[0,0]` is silence; reading it
 never dumps data. A param bound to an expression prints as `expr: <source> → <value> (on)`, which
-is what `node edit` takes back.
+is what `node param edit` takes back.
 
 `layout inspect` names the pages and panel ids the layout ops address; `session status` says
 where the patch is saved and whether it differs from disk; `global list` says what an expression
@@ -62,14 +62,15 @@ can read.
     link add --node_out 000000000001 --slot_out out \
              --node_in 000000000002 --slot_in data   → {…, "dtype": "ARRAY"}
 
-    node edit 000000000001 --params '{"oscillator": {"frequency": 7.5}}'
-    → {"params": {"oscillator": {"frequency": {"value": 7.5, "error": null}}}}
+    node param edit 000000000001 oscillator/frequency --value 7.5
+    → {"value": 7.5, "error": null}
 
-`name` is what `nd()` addresses a node by; `uid` is what every tool takes. `node edit` answers each
-param **as stored** — coerced to the param's declared type, so a fraction into an int comes back
-rounded, and a declared min/max is the editor's range, not a clamp. It is also the rename, the move
-and the viewer write, and any mix of them is one call and one undo. A param entry may be
-`{"expression": "nd('other_node').sfreq"}` — or `globals.x`, or `t` — instead of a literal.
+`name` is what `nd()` addresses a node by; `uid` is what every tool takes. `node param edit`
+answers the param **as stored** — coerced to its declared type, so a fraction into an int comes
+back rounded, and a declared min/max is the editor's range, not a clamp. `--expression
+"nd('other_node').sfreq"` — or `globals.x`, or `t` — binds instead of a literal. `node edit` is
+the node's own record — the rename, the move and the viewer write, any mix in one call and one
+undo.
 
 `link add` refuses a dtype mismatch and names both ends, and a wrong slot name is refused by naming
 the slots that exist — but a uid naming nothing is *not* refused: it answers as though it wired and

@@ -80,9 +80,10 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     g.set_param(buf, "buffer", "size", 512);
-    // ONE step, whatever it carries: a rename, a move and a param in a single edit_node.
+    // ONE step, whatever it carries: a rename, a move and a viewer in a single node edit.
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier", "pos": [40.0, 60.0],
-                             "params": { "oscillator": { "sfreq": 128.0 } } }));
+                             "viewer": [{ "slot": "out", "kind": "line" }] }));
+    g.set_param(osc, "oscillator", "sfreq", 128.0);
     g.call("global add", j!({ "name": "subj", "value": "P01", "type": "string" }));
     // A rename is a compound: set the new name, delete the old, ONE undo step.
     g.call("compound", j!({ "ops": [
@@ -122,7 +123,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["participant"].is_null() && g.doc()["globals"]["subj"].is_null());
-    assert_eq!(steps, 9, "one step per command — a compound and a three-field node edit are each ONE");
+    assert_eq!(steps, 10, "one step per command — a compound and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
@@ -456,8 +457,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         ("nodes ungroup", j!({ "subpatch": GHOST })),
         ("node edit", j!({ "node": GHOST, "pos": [1.0, 2.0] })),
         ("node edit", j!({ "node": GHOST, "name": "renamed" })),
-        ("node edit", j!({ "node": GHOST,
-                           "params": { "buffer": { "size": { "expression": "1" } } } })),
+        ("node param edit", j!({ "node": GHOST, "param": "buffer/size", "expression": "1" })),
     ] {
         g.refuse(op, payload);
     }
@@ -486,10 +486,9 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
 
     // A binding that cannot compile is STORED, so the refusal has to travel in the reply.
     // An expression given with no `mode` binds: that is what writing one means.
-    let set = |expr: &str| g.call("node edit", j!({ "node": hex(consumer),
-                                                    "params": { "common": { "max_frequency":
-                                                        { "expression": expr } } } }))
-        ["params"]["common"]["max_frequency"].clone();
+    let set = |expr: &str| g.call("node param edit", j!({ "node": hex(consumer),
+                                                          "param": "common/max_frequency",
+                                                          "expression": expr }));
     assert!(set("@@ not an expression @@")["error"].as_str().is_some_and(|e| !e.is_empty()),
             "the compile error must ride the reply");
     assert!(set("")["error"].is_null(), "an empty expression clears the binding");
@@ -534,7 +533,7 @@ fn a_node_can_be_born_configured_at_a_chosen_uid_and_name() {
     let g = Goofi::new();
     let mut ev = g.events();
     let born = g.call("node add", j!({ "type": "Oscillator",
-                                       "params": { "common": { "max_frequency": 42.0 } } }));
+                                       "param": [{ "name": "common/max_frequency", "value": 42.0 }] }));
     let uid = born["uid"].as_str().unwrap().to_string();
     assert_eq!(ev.next("node_added")["uid"], uid);
     assert_eq!(g.doc()["nodes"][&uid]["params"]["common"]["max_frequency"]["value"], 42.0);
@@ -554,23 +553,26 @@ fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     assert!(g.doc()["nodes"][hex(osc)].get("viewers").is_none(), "no viewers leaf when empty");
 
     let why = g.refuse("node edit", j!({ "node": hex(osc),
-                                         "viewers": { "out": { "kind": "waveform" } } }));
+                                         "viewer": [{ "slot": "out", "kind": "waveform" }] }));
     assert!(why.contains("waveform") && why.contains("line") && why.contains("topomap"), "{why}");
     let why = g.refuse("node edit", j!({ "node": hex(osc),
-                                         "viewers": { "psd": { "kind": "line" } } }));
+                                         "viewer": [{ "slot": "psd", "kind": "line" }] }));
     assert!(why.contains("psd") && why.contains("out"), "an unknown slot names the real ones: {why}");
     let why = g.refuse("node edit", j!({ "node": GHOST,
-                                         "viewers": { "out": { "kind": "line" } } }));
+                                         "viewer": [{ "slot": "out", "kind": "line" }] }));
     assert!(why.contains("no such node"), "{why}");
-    let why = g.refuse("node edit", j!({ "node": hex(osc), "viewers": 7 }));
-    assert!(why.contains("map"), "a bag that is not a map says what one looks like: {why}");
+    let why = g.refuse("node edit", j!({ "node": hex(osc), "viewer": 7 }));
+    assert!(why.contains("list"), "an arg that is not a list says what one looks like: {why}");
+    let why = g.refuse("node edit", j!({ "node": hex(osc), "viewer": [{ "kind": "line" }] }));
+    assert!(why.contains("slot"), "an entry without a slot is refused by naming it: {why}");
 
     g.call("node edit", j!({ "node": hex(osc),
-                             "viewers": { "out": { "collapsed": false, "kind": "line",
-                                                   "settings": { "yScale": 2 } } } }));
+                             "viewer": [{ "slot": "out", "collapsed": false, "kind": "line",
+                                          "settings": { "yScale": 2 } }] }));
     assert!(!g.doc()["nodes"][hex(osc)]["viewers"].is_null(), "…and the leaf appears once set");
-    // A patch MERGES, key by key: naming one setting leaves the kind and the others where they were.
-    g.call("node edit", j!({ "node": hex(osc), "viewers": { "out": { "settings": { "xScale": 3 } } } }));
+    // Entries MERGE, slot by slot: naming one setting leaves the kind and the others where they were.
+    g.call("node edit", j!({ "node": hex(osc),
+                             "viewer": [{ "slot": "out", "settings": { "xScale": 3 } }] }));
     let view = |g: &Goofi| g.doc()["nodes"][hex(osc)]["viewers"].as_str().unwrap_or("").to_string();
     let merged = view(&g);
     for kept in ["\"kind\":\"line\"", "\"yScale\":2", "\"xScale\":3"] {
@@ -583,6 +585,13 @@ fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     assert!(view(&g).contains("xScale"), "…and the redo put it back: {}", view(&g));
     let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     assert!(yaml.contains("yScale"), "the view state persists: {yaml}");
+
+    // `clear` removes the slot's stored view — the entry form's spelling of the old null.
+    let why = g.refuse("node edit", j!({ "node": hex(osc),
+                                         "viewer": [{ "slot": "out", "clear": false }] }));
+    assert!(why.contains("clear"), "a false `clear` is refused rather than read as a set: {why}");
+    g.call("node edit", j!({ "node": hex(osc), "viewer": [{ "slot": "out", "clear": true }] }));
+    assert!(!view(&g).contains("yScale"), "the clear dropped the stored view: {}", view(&g));
 
     g.call("global add", j!({ "name": "subject", "value": "P01", "type": "string" }));
     assert_eq!(g.doc()["globals"]["default_ufreq"]["system"], true);

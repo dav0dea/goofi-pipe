@@ -177,7 +177,7 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 		// A facade is a node here and in the engine, so the write is the op a leaf's write is —
 		// which is what makes it undoable, replicated to a second tab, and saved with the patch.
 		const sent = fc.recordedCalls().find((c) => c.op === 'node edit');
-		expect(sent?.payload).toMatchObject({ node: 'i9', viewers: { p9: { kind: 'image' } } });
+		expect(sent?.payload).toMatchObject({ node: 'i9', viewer: [{ slot: 'p9', kind: 'image' }] });
 
 		// …and the state it shows comes BACK through the doc, exactly as a leaf's does.
 		expect(slotView(g.nodeById('i9'), 'p9').kind, 'nothing until the manager answers').toBeUndefined();

@@ -318,7 +318,7 @@ describe('inline viewer state — the document is the one holder, so it follows 
 		const call = fc.recordedCalls().find((c) => c.op === 'node edit');
 		expect(call!.payload, 'only the slot edited travels — the manager merges the rest').toEqual({
 			node: 'n1',
-			viewers: { sig: { collapsed: false } }
+			viewer: [{ slot: 'sig', collapsed: false }]
 		});
 		// Nothing changed until the manager answers — the document is the holder, not this store.
 		expect(isSlotExpanded(g.nodeById('n1'), 'sig')).toBe(false);

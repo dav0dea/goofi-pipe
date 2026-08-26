@@ -28,7 +28,8 @@ fn every_op_row_is_well_formed_and_reachable() {
     // line by the FIRST complete phrase it finds, so the set must be PREFIX-FREE: a phrase that
     // is a word-prefix of another would swallow it whole.
     const ARG_TYPES: &[&str] = &["uid", "string", "float", "int", "bool", "float2", "json",
-                                 "panel_type", "uid[]", "string[]", "float[]"];
+                                 "any", "param_addr", "panel_type",
+                                 "uid[]", "string[]", "float[]", "json[]"];
     let mut seen = HashSet::new();
     for op in REGISTRY {
         assert!(seen.insert(op.name), "`{}` is declared twice", op.name);
@@ -100,10 +101,14 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
         assert!(doc.contains(word), "`{word}` is not offered by the panel edit doc: {doc}");
     }
     // The description is the ONLY text an agent reads, so node edit's has to carry the viewer
-    // vocabulary AND the two words that decide what an expression does.
+    // vocabulary, and node param edit's the two words that decide what an expression does.
     let doc = find("node edit").expect("registered").doc();
-    for word in ["line", "topomap", "table", "`triggers` defaults false", "triggers: true"] {
+    for word in ["line", "topomap", "table"] {
         assert!(doc.contains(word), "`{word}` is not offered by node edit's doc: {doc}");
+    }
+    let doc = find("node param edit").expect("registered").doc();
+    for word in ["`triggers` defaults false", "triggers: true"] {
+        assert!(doc.contains(word), "`{word}` is not offered by node param edit's doc: {doc}");
     }
 
     // The generator emits TS string literals with NO escaping, so a quote or newline breaks the file.
@@ -225,8 +230,8 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     let a = g.add("Oscillator");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
-    g.call("node edit", j!({ "node": hex(a), "params": { "common": {
-                                 "max_frequency": { "expression": "@@@ not an expression @@@" } } } }));
+    g.call("node param edit", j!({ "node": hex(a), "param": "common/max_frequency",
+                                   "expression": "@@@ not an expression @@@" }));
     g.ready(b);
 
     let (_c, hello) = Client::connect(&g.serve().await).await;
@@ -335,8 +340,8 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    g.call("node edit", j!({ "node": hex(osc), "params": { "oscillator": {
-                                 "frequency": { "expression": "globals.default_ufreq" } } } }));
+    g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/frequency",
+                                   "expression": "globals.default_ufreq" }));
     g.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" }));
     let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();

@@ -12,6 +12,7 @@ export type OpName =
 	| 'node state'
 	| 'node add'
 	| 'node edit'
+	| 'node param edit'
 	| 'node remove'
 	| 'node restart'
 	| 'node param refresh'

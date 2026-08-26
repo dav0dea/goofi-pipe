@@ -87,8 +87,8 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     let born: Value = serde_json::from_str(&born).expect("the rendered reply is the op's JSON");
     let uid = born["uid"].as_str().expect("a uid").to_string();
     assert_eq!(born["name"], json!("osc"));
-    let line = format!(
-        r#"node edit --node {uid} --params '{{"oscillator": {{"frequency": 7.5}}}}'"#);
+    // …and both 2b positionals at once: the uid, then the joined `group/param` address.
+    let line = format!("node param edit {uid} oscillator/frequency --value 7.5");
     let edited = ok_exec(&addr, 4, &line).await;
     assert!(edited.contains("7.5"), "the param came back as stored: {edited}");
     let patch = ok_exec(&addr, 5, "nodes inspect").await;

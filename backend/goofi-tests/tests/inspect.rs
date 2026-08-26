@@ -162,8 +162,8 @@ impl ExprEvaluator for Flaky {
 fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
-    g.call("node edit", j!({ "node": hex(osc), "params": { "oscillator": {
-                                 "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
+    g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
+                                   "expression": "globals.default_ufreq / 30" }));
     // A rate is MEASURED, so it needs two emits and a report across the status service.
     g.until("the oscillator's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
@@ -206,8 +206,8 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
     let bound = g.add("Oscillator");
-    g.call("node edit", j!({ "node": hex(bound), "params": { "oscillator": {
-                                 "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
+    g.call("node param edit", j!({ "node": hex(bound), "param": "oscillator/amplitude",
+                                   "expression": "globals.default_ufreq / 30" }));
     let live = g.until("the node's own evaluation error", |g| {
         Some(text(g, "node state", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
     });

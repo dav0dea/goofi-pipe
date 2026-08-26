@@ -108,8 +108,8 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     let osc = g.add("Oscillator");
     let flood = std::thread::spawn(move || {
         for _ in 0..1200 {
-            g.call("node edit", j!({ "node": hex(osc), "params": { "common": {
-                                         "max_frequency": { "expression": "7" } } } }));
+            g.call("node param edit", j!({ "node": hex(osc), "param": "common/max_frequency",
+                                           "expression": "7" }));
         }
     });
     tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -308,8 +308,9 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
         for i in 0..BURST {
             let uid = a.call("node add", j!({ "type": "Oscillator" })).await["uid"]
                 .as_str().unwrap().to_string();
-            a.call("node edit", j!({ "node": uid, "name": format!("osc{i}"),
-                                     "params": { "oscillator": { "amplitude": 0.1 * i as f64 } } })).await;
+            a.call("node edit", j!({ "node": uid, "name": format!("osc{i}") })).await;
+            a.call("node param edit", j!({ "node": uid, "param": "oscillator/amplitude",
+                                           "value": 0.1 * i as f64 })).await;
         }
         a
     });
