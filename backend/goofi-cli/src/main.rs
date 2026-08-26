@@ -113,7 +113,8 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    std::process::exit(run(cli, python, AppState::new(), shutdown_signal()).await);
+    let state = AppState::new(cli.headless);
+    std::process::exit(run(cli, python, state, shutdown_signal()).await);
 }
 
 /// The interpreter the subprocess tier runs on: the venv `goofi-init` made, and only that one.
@@ -613,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signal_stops_every_node_before_the_run_returns() {
-        let state = AppState::new();
+        let state = AppState::new(false);
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let graph = state.graph.clone();
         {
@@ -634,7 +635,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_mount_lives_exactly_as_long_as_the_run() {
-        let state = AppState::new();
+        let state = AppState::new(false);
         let mount = state.mount();
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
         let cli = Cli { port: 0, ..Cli::default() };
@@ -643,7 +644,7 @@ mod tests {
         assert!(!husk.exists(), "the nonce directory goes too, not just workspace: {}", husk.display());
 
         // `--list-nodes` returns before the server ever binds; the same tail must still reclaim.
-        let listed = AppState::new();
+        let listed = AppState::new(false);
         let m2 = listed.mount();
         let cli = Cli { list_nodes: true, ..Cli::default() };
         assert_eq!(run(cli, "python3".into(), listed, std::future::pending()).await, 0);

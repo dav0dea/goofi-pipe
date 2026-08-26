@@ -4,41 +4,48 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::ops::{self, Op};
+use crate::ops::Op;
 
 /// A command line as bash would hand it to argv — same words, same quoting.
 pub fn split(line: &str) -> Result<Vec<String>, String> {
     shell_words::split(line).map_err(|e| format!("{e}"))
 }
 
-/// The op a word sequence names: the FIRST complete registered phrase, walking left to right.
-/// Prefix-freedom over the registry makes the first match the only possible one, so min-length
-/// and longest-match coincide. Answers the op and how many words its phrase consumed.
-pub fn resolve(words: &[String]) -> Result<(&'static Op, usize), String> {
+/// The op a word sequence names, against the rows THIS server serves: the FIRST complete
+/// registered phrase, walking left to right. Prefix-freedom over the registry makes the first
+/// match the only possible one, so min-length and longest-match coincide. Answers the op and how
+/// many words its phrase consumed.
+pub fn resolve<'a>(ops: &[&'a Op], words: &[String]) -> Result<(&'a Op, usize), String> {
     for n in 1..=words.len() {
-        if let Some(op) = ops::find(&words[..n].join(" ")) {
+        let phrase = words[..n].join(" ");
+        if let Some(op) = ops.iter().find(|o| o.name == phrase) {
             return Ok((op, n));
         }
     }
     let line = words.join(" ");
     let first = words.first().map(String::as_str).unwrap_or_default();
     let near: Vec<&str> =
-        ops::REGISTRY.iter().map(|o| o.name).filter(|n| n.split(' ').next() == Some(first)).collect();
-    match near.is_empty() {
-        true => Err(format!("unknown op `{line}` — `op list` answers every op this server speaks")),
-        false => Err(format!("unknown op `{line}` — under `{first}`: {}", near.join(", "))),
+        ops.iter().map(|o| o.name).filter(|n| n.split(' ').next() == Some(first)).collect();
+    match (near.is_empty(), first) {
+        (true, "layout") => Err(format!(
+            "unknown op `{line}` — this server is headless, and the layout ops are not served"
+        )),
+        (true, _) => {
+            Err(format!("unknown op `{line}` — `op list` answers every op this server speaks"))
+        }
+        (false, _) => Err(format!("unknown op `{line}` — under `{first}`: {}", near.join(", "))),
     }
 }
 
 /// One line, parsed against the registry: the phrase, then every argument as a flag the op's own
 /// schema types. Answers the op and the payload the socket envelope would carry — one payload
 /// shape, whichever surface spelled it.
-pub fn parse(line: &str) -> Result<(&'static Op, Value), String> {
+pub fn parse<'a>(ops: &[&'a Op], line: &str) -> Result<(&'a Op, Value), String> {
     let words = split(line)?;
     if words.is_empty() {
         return Err("empty command".into());
     }
-    let (op, used) = resolve(&words)?;
+    let (op, used) = resolve(ops, &words)?;
     let payload = parse_flags(op, &words[used..])?;
     Ok((op, payload))
 }
@@ -90,7 +97,7 @@ fn typed(op: &Op, key: &str, ty: &str, raw: String) -> Result<Value, String> {
 /// Flags → payload, mechanically from the args schema: a bool is `--x` / `--no-x` and sends its
 /// key only when given; a list-typed arg repeats; every other flag's value is the NEXT word,
 /// whatever it looks like, or inline via `--flag=value`.
-fn parse_flags(op: &'static Op, words: &[String]) -> Result<Value, String> {
+fn parse_flags(op: &Op, words: &[String]) -> Result<Value, String> {
     let decls: Vec<(&str, &str, bool)> = op.args().collect();
     let mut payload = Map::new();
     let mut i = 0;

@@ -325,7 +325,7 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
         assert!(want.starts_with('_'), "{want} would show in the palette");
     }
-    let palette = goofi_bridge::AppState::new().call("library list", j!({}), "t").unwrap();
+    let palette = goofi_bridge::AppState::new(false).call("library list", j!({}), "t").unwrap();
     let listed: Vec<&str> = palette["types"].as_array().unwrap().iter()
         .map(|t| t["type"].as_str().unwrap()).collect();
     assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");

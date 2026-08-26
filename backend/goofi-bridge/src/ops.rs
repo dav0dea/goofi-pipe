@@ -270,6 +270,15 @@ pub fn find(name: &str) -> Option<&'static Op> {
     REGISTRY.iter().find(|o| o.name == name)
 }
 
+/// The rows one server serves. Headless does not REGISTER the layout group — the one spelling of
+/// the mode, so `op list`, the phrase resolver and the MCP all shrink with it.
+pub fn table(headless: bool) -> Vec<&'static Op> {
+    REGISTRY
+        .iter()
+        .filter(|o| !headless || o.name.split(' ').next() != Some("layout"))
+        .collect()
+}
+
 /// The frontend's `OpName` union, generated from the registry and checked into the tree.
 pub fn typescript() -> String {
     let names: Vec<String> =

@@ -82,7 +82,7 @@ fn call_tool(state: &AppState, actor: &str, params: &Value) -> Value {
     };
     let mut parsed = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
-        match phrase::parse(line) {
+        match phrase::parse(state.ops(), line) {
             Ok((op, payload)) => parsed.push((op, payload)),
             Err(e) => return tool_result(format!("command {i}: {e}"), true),
         }

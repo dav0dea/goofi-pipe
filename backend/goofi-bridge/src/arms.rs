@@ -91,7 +91,9 @@ pub(crate) fn compound(
     let mut resolved = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
         let name = step.get("op").and_then(|v| v.as_str()).unwrap_or_default();
-        let op = ops::find(name).ok_or_else(|| format!("compound: step {i}: unknown op `{name}`"))?;
+        let op = state
+            .find_op(name)
+            .ok_or_else(|| format!("compound: step {i}: unknown op `{name}`"))?;
         if !(op.handler.is_read() || op.handler.is_write()) {
             return Err(format!(
                 "compound: step {i} `{name}` is not a step — a read or an undoable write \
@@ -1199,12 +1201,13 @@ pub(crate) fn redo(
 
 /// The registry itself, as data a caller derives a whole client from.
 pub(crate) fn op_list(
-    _state: &AppState,
+    state: &AppState,
     _payload: &Value,
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    let ops: Vec<Value> = ops::REGISTRY
+    let ops: Vec<Value> = state
+        .ops()
         .iter()
         .map(|o| {
             json!({

@@ -53,6 +53,8 @@ pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
+    /// The op rows THIS instance serves — headless leaves the layout group out.
+    ops: Arc<Vec<&'static ops::Op>>,
     /// The control-plane document every client replicates, re-projected from the graph after each
     /// successful op; its deltas ride the `events` channel.
     pub doc: Arc<Mutex<crate::doc::GraphDoc>>,
@@ -118,12 +120,12 @@ impl Default for DataLiveness {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
 impl AppState {
-    pub fn new() -> AppState {
+    pub fn new(headless: bool) -> AppState {
         let (events, _) = broadcast::channel(256);
         let iid = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -145,6 +147,7 @@ impl AppState {
             graph,
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
+            ops: Arc::new(ops::table(headless)),
             doc: Arc::new(Mutex::new(doc)),
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
@@ -937,13 +940,23 @@ fn apply_layout(
 }
 
 impl AppState {
+    /// The op rows this instance serves.
+    pub fn ops(&self) -> &[&'static ops::Op] {
+        &self.ops
+    }
+
+    /// The served row for `name` — absent rows (headless's layout group) answer `unknown op`.
+    pub fn find_op(&self, name: &str) -> Option<&'static ops::Op> {
+        self.ops.iter().find(|o| o.name == name).copied()
+    }
+
     /// Run one control op — the single entry point every surface shares. `actor` scopes the undo
     /// history: whose undo, the way a browser tab's id does. The op's row does the work: its handler
     /// runs, and its KIND decides the tail — a Write mutated the graph through the history, so
     /// ONE re-mirror and one dirty decision happen here, where no write arm can forget either; a
     /// Read touches nothing; an Effect's arm owns its own consequences.
     pub fn call(&self, op: &str, payload: Value, actor: &str) -> Result<Value, String> {
-        let Some(spec) = ops::find(op) else {
+        let Some(spec) = self.find_op(op) else {
             return Err(format!("unknown op `{op}`"));
         };
         let mut events: Vec<String> = Vec::new();

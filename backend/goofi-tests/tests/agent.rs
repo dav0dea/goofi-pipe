@@ -115,6 +115,30 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     assert!(err && text.contains("--type") && text.contains("required"), "{text}");
     let (text, err) = exec(&addr, "/mcp", 12, &["undo --hard"]).await;
     assert!(err && text.contains("takes no arguments"), "{text}");
+    let (text, err) = exec(&addr, "/mcp", 13, &["node add --type Oscillator --type Buffer"]).await;
+    assert!(err && text.contains("twice"), "{text}");
+    let (text, err) = exec(&addr, "/mcp", 14, &["node add --type"]).await;
+    assert!(err && text.contains("needs a value"), "{text}");
+
+    // …and each spelling the schema promises parses: `--flag=value`, the bool's `--no-` form on
+    // a declared bool only, `any` as JSON-or-bare-string, and a variadic positional list.
+    let born = ok_exec(&addr, 15, "node add --type=Oscillator --name inline_osc").await;
+    let born: Value = serde_json::from_str(&born).unwrap();
+    assert_eq!(born["name"], json!("inline_osc"));
+    let bare = ok_exec(&addr, 16, &format!("node state {} --no-params", born["uid"].as_str().unwrap())).await;
+    assert!(!bare.contains("params:"), "the bool's negative spelling gates the section: {bare}");
+    let (text, err) = exec(&addr, "/mcp", 17, &["node add --type Oscillator --no-name x"]).await;
+    assert!(err && text.contains("--no-name"), "`--no-` binds only to a declared bool: {text}");
+    ok_exec(&addr, 18, "global add gain --type float --value 2.5").await;
+    let tag: Value =
+        serde_json::from_str(&ok_exec(&addr, 19, "global add tag --type string --value hello").await)
+            .unwrap();
+    assert_eq!(tag["value"], json!("hello"), "`any` falls back to the bare string");
+    let second = ok_exec(&addr, 20, "node add --type Buffer").await;
+    let second: Value = serde_json::from_str(&second).unwrap();
+    let grouped = ok_exec(&addr, 21, &format!("nodes group {} {} --pos 0,0",
+        born["uid"].as_str().unwrap(), second["uid"].as_str().unwrap())).await;
+    assert!(grouped.contains("inst_id"), "the variadic positional took both words: {grouped}");
 }
 
 #[tokio::test]

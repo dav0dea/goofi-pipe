@@ -33,14 +33,23 @@ impl Default for Goofi {
 impl Goofi {
     /// Boot one, with the status-drain worker that makes a node addressable.
     pub fn new() -> Goofi {
-        let state = AppState::new();
+        Goofi::with_mode(false)
+    }
+
+    /// Boot a HEADLESS one — the layout rows are not registered.
+    pub fn headless() -> Goofi {
+        Goofi::with_mode(true)
+    }
+
+    fn with_mode(headless: bool) -> Goofi {
+        let state = AppState::new(headless);
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
         Goofi { state, actor: "test".into(), patience: WAIT }
     }
 
     /// Boot one whose `/data` sockets probe on a short clock.
     pub fn impatient() -> Goofi {
-        let mut state = AppState::new();
+        let mut state = AppState::new(false);
         state.data_liveness = goofi_bridge::DataLiveness {
             ping_interval: Duration::from_millis(100),
             pong_deadline: Duration::from_millis(1000),
