@@ -32,13 +32,13 @@ const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18",
 /// batch rule.
 const DESCRIPTION: &str = "\
 Drive goofi with command lines. Each entry in `commands` is one op: `<op> [--arg value …]`, with \
-bash's own quoting rules. Call `list_ops` first — it answers every op with its arguments, its \
+bash's own quoting rules. Call `op list` first — it answers every op with its arguments, its \
 result and its kind. A bool arg is `--x` or `--no-x`; a list arg repeats its flag; a `json` arg \
 takes one JSON string.\n\n\
 ONE command executes directly. SEVERAL execute as one batch and ONE undo step: every step must \
 be an undoable write, a refused step takes the whole batch back, and the reply is each step's \
 result in order. To wire nodes made in the same batch, choose their uids yourself with \
-`add_node --member_uid`.";
+`node add --member_uid`.";
 
 /// The tool list: one tool, whichever address serves it.
 pub fn tools() -> Vec<Value> {

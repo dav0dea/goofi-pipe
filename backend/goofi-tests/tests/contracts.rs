@@ -52,7 +52,7 @@ fn every_op_row_is_well_formed_and_reachable() {
                 "`{}` has an unexpanded placeholder — a model would read it verbatim", op.name);
     }
     // The `!` has to reach the parse, or every argument is advertised as optional.
-    let add: Vec<_> = find("add_node").expect("add_node is registered").args().collect();
+    let add: Vec<_> = find("node add").expect("node add is registered").args().collect();
     assert_eq!((add[0], add[1]), (("type", "string", true), ("pos", "float2", false)));
 
     // A row with no dispatch arm answers `unknown op` while palette and tool list advertise it.
@@ -93,13 +93,13 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
 #[test]
 fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for() {
     // Each op that takes a vocabulary word enumerates the set in its own description, by expansion.
-    let doc = find("edit_panel").expect("registered").doc();
+    let doc = find("layout panel edit").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
         assert!(doc.contains(word), "`{word}` is not offered by edit_panel's doc: {doc}");
     }
     // The description is the ONLY text an agent reads, so edit_node's has to carry the viewer
     // vocabulary AND the two words that decide what an expression does.
-    let doc = find("edit_node").expect("registered").doc();
+    let doc = find("node edit").expect("registered").doc();
     for word in ["line", "topomap", "table", "`triggers` defaults false", "triggers: true"] {
         assert!(doc.contains(word), "`{word}` is not offered by edit_node's doc: {doc}");
     }
@@ -157,7 +157,7 @@ static OVERRIDE_PARAMS: &[ParamDecl] = &[ParamDecl {
 static OVERRIDES_COMMON: NodeManifest = manifest("OverridesCommon", &[], OVERRIDE_PARAMS, false);
 
 fn row(g: &Goofi, type_name: &str) -> Value {
-    g.call("list_nodes", j!({}))["types"].as_array().expect("a palette").iter()
+    g.call("library list", j!({}))["types"].as_array().expect("a palette").iter()
         .find(|v| v["type"] == type_name)
         .unwrap_or_else(|| panic!("{type_name} is in the palette")).clone()
 }
@@ -223,12 +223,12 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     let a = g.add("Oscillator");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
-    g.call("edit_node", j!({ "node": hex(a), "params": { "common": {
+    g.call("node edit", j!({ "node": hex(a), "params": { "common": {
                                  "max_frequency": { "expression": "@@@ not an expression @@@" } } } }));
     g.ready(b);
 
     let (_c, hello) = Client::connect(&g.serve().await).await;
-    assert_eq!(hello["node_types"], g.call("list_nodes", j!({}))["types"],
+    assert_eq!(hello["node_types"], g.call("library list", j!({}))["types"],
                "hello embeds the same palette `list_nodes` answers");
     for dead in ["nodes", "links", "instances"] {
         assert!(hello.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
@@ -240,9 +240,9 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
             "a reconnecting client learns the node is errored: {rt}");
 
     // The catalog rides its OWN event, not the replacement snapshot, which would re-ship on every load.
-    let yaml = g.call("serialize", j!({}))["yaml"].as_str().unwrap().to_string();
+    let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     let mut ev = g.events();
-    g.call("load", j!({ "content": yaml }));
+    g.call("session load", j!({ "content": yaml }));
     assert!(ev.next("graph_replaced").get("node_types").is_none(), "the echo omits the catalog");
     assert!(ev.next("node_types")["types"].as_array().is_some_and(|a| !a.is_empty()),
             "…and a separate event carries it");
@@ -318,7 +318,7 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
         assert!(want.starts_with('_'), "{want} would show in the palette");
     }
-    let palette = goofi_bridge::AppState::new().call("list_nodes", j!({}), "t").unwrap();
+    let palette = goofi_bridge::AppState::new().call("library list", j!({}), "t").unwrap();
     let listed: Vec<&str> = palette["types"].as_array().unwrap().iter()
         .map(|t| t["type"].as_str().unwrap()).collect();
     assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");
@@ -333,10 +333,10 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    g.call("edit_node", j!({ "node": hex(osc), "params": { "oscillator": {
+    g.call("node edit", j!({ "node": hex(osc), "params": { "oscillator": {
                                  "frequency": { "expression": "globals.default_ufreq" } } } }));
-    g.call("set_global", j!({ "name": "subject", "value": "P07", "type": "string" }));
-    let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
+    g.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" }));
+    let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     // Grouping a node fed from outside mints a WIRED port, which is how this reaches the two
     // optional leaves a scope has: a record's `scope` key, and the link that is its inner wire.
@@ -348,7 +348,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
                 ports.iter().any(|p| l["node_out"] == p.as_str() || l["node_in"] == p.as_str())
             }),
             "no port is wired, so this test would not reach the inner-wire link: {}", doc["links"]);
-    g.call("place_panel", j!({ "to": panel_id(&g), "direction": "right", "ratio": 0.5 }));
+    g.call("layout panel add", j!({ "beside": panel_id(&g), "side": "right", "ratio": 0.5 }));
 
     let doc = g.doc();
     for root in ["nodes", "links", "globals", "arrangement"] {

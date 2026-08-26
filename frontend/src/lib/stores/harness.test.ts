@@ -70,7 +70,7 @@ describe('the harness roster', () => {
 		expect(liveTermSessions(), 'and the dead terminal is gone with it').toEqual([]);
 		// …and the manager is told to drop it, so its roster and this one agree about what exists.
 		expect(ctl.recordedCalls().at(-1)).toEqual({
-			op: 'stop_harness',
+			op: 'agent stop',
 			payload: { instance: 'a' }
 		});
 		vi.unstubAllGlobals();
@@ -188,18 +188,18 @@ describe('the harness roster', () => {
 		const ctl = new FakeControl();
 		const h = new HarnessStore(ctl);
 		ctl.emit(hello(roster()));
-		ctl.setCallResult('spawn_harness', { instance_id: 'fresh' });
+		ctl.setCallResult('agent start', { instance_id: 'fresh' });
 
 		h.mount('panel-1');
 		await h.launch('panel-1', 'claude');
-		expect(ctl.recordedCalls()).toEqual([{ op: 'spawn_harness', payload: { harness: 'claude' } }]);
+		expect(ctl.recordedCalls()).toEqual([{ op: 'agent start', payload: { name: 'claude' } }]);
 		// The roster arrives on its own event; the binding is what the launch decided.
 		ctl.emit({ event: 'harness_changed', payload: roster(['fresh', 'running']) });
 		expect(h.instanceFor('panel-1')).toBe('fresh');
 
 		h.kill('fresh');
 		expect(ctl.recordedCalls().at(-1)).toEqual({
-			op: 'stop_harness',
+			op: 'agent stop',
 			payload: { instance: 'fresh' }
 		});
 	});

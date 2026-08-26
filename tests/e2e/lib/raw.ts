@@ -32,7 +32,7 @@ export async function rawCall(page: Page, op: string, payload: unknown = {}): Pr
 
 /** The manager's own document — the truth a replica is judged against. */
 export async function backendDoc(page: Page): Promise<any> {
-	return (await rawCall(page, 'get_state')).result;
+	return (await rawCall(page, 'session state')).result;
 }
 
 /** The uids the manager holds, sorted. */

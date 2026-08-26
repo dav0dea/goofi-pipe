@@ -88,7 +88,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 
 		// Forward: the instance IS deleted via remove_node (the manager's RemoveNode captures the
 		// whole subtree for its inverse — B3b).
-		expect(fc.recordedCalls().some((c) => c.op === 'remove_node' && c.payload.node === 'sub')).toBe(
+		expect(fc.recordedCalls().some((c) => c.op === 'node remove' && c.payload.node === 'sub')).toBe(
 			true
 		);
 		// One undoable entry, labelled for the instance.
@@ -110,7 +110,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		// from the inverse it captured) — never a client-side whole-patch checkpoint or a fragile
 		// add_node{Sub-patch} replay.
 		expect(undoCalls.some((c) => c.op === 'undo')).toBe(true);
-		expect(undoCalls.some((c) => c.op === 'load')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'session load')).toBe(false);
 		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
@@ -126,7 +126,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		// Forward deletes both.
 		const removed = fc
 			.recordedCalls()
-			.filter((c) => c.op === 'remove_node')
+			.filter((c) => c.op === 'node remove')
 			.map((c) => c.payload.node);
 		expect(removed).toContain('n1');
 		expect(removed).toContain('sub');
@@ -139,7 +139,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		await history().undo();
 		const undoCalls = fc.recordedCalls().slice(before);
 		expect(undoCalls.filter((c) => c.op === 'undo')).toHaveLength(2);
-		expect(undoCalls.some((c) => c.op === 'load')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'session load')).toBe(false);
 		expect(history().canRedo).toBe(true);
 
 		// Redo runs the compound FORWARD: one manager `redo` per child (two), re-deleting both.

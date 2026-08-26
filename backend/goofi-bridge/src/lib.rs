@@ -904,8 +904,8 @@ fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid
     // A FACADE is a node that exists and simply has no slot by that name — saying it names nothing
     // sends a caller looking for the wrong mistake.
     match g.is_facade(uid) {
-        true => Err(format!("add_link: `{which}` names sub-patch {} — name one of its ports as the slot", uid.to_hex())),
-        false => Err(format!("add_link: `{which}` names no node in this patch: {}", uid.to_hex())),
+        true => Err(format!("link add: `{which}` names sub-patch {} — name one of its ports as the slot", uid.to_hex())),
+        false => Err(format!("link add: `{which}` names no node in this patch: {}", uid.to_hex())),
     }
 }
 

@@ -172,7 +172,7 @@ export class GraphStore {
 		const node = this.nodeById(uid);
 		if (!node?.output_slots[slot]) return;
 		void this.ctl
-			.call('edit_node', { node: uid, viewers: { [slot]: view } })
+			.call('node edit', { node: uid, viewers: { [slot]: view } })
 			.then(() => this._recordGraphCmd(`Set ${slot} view`))
 			.catch(() => {
 				/* soft view state — the next edit re-sends it */
@@ -278,13 +278,13 @@ export class GraphStore {
 	/** Re-derive the node registry from disk and report what changed; explicit, since there is no
 	 * watcher. The fresh catalog arrives as a `node_types` event in every open tab. */
 	async rescanNodes(): Promise<ScanDiff> {
-		return this.ctl.call<ScanDiff>('rescan_nodes', {});
+		return this.ctl.call<ScanDiff>('library refresh', {});
 	}
 
 	/** Where this patch's workspace files live — a per-run temp directory under a random name. It
 	 * rides `get_patch` beside the save path, because both answer "where does this patch live". */
 	async openWorkspace(): Promise<string> {
-		const r = await this.ctl.call<{ workspace: string }>('get_patch', {});
+		const r = await this.ctl.call<{ workspace: string }>('session status', {});
 		return r.workspace;
 	}
 
@@ -307,7 +307,7 @@ export class GraphStore {
 	): Promise<string> {
 		// `params` are applied at creation UNDER THE GRAPH LOCK: a post-add leaf write would no-op
 		// until the new node syncs into the replica, silently dropping the values.
-		const born = await this.ctl.call<{ uid: string }>('add_node', {
+		const born = await this.ctl.call<{ uid: string }>('node add', {
 			type,
 			category,
 			pos,
@@ -322,23 +322,23 @@ export class GraphStore {
 	async removeNode(uid: string): Promise<void> {
 		// The label reads the node's name before it vanishes.
 		const label = `Delete ${this.nodeById(uid)?.name ?? uid}`;
-		await this.ctl.call('remove_node', { node: uid });
+		await this.ctl.call('node remove', { node: uid });
 		this._recordGraphCmd(label);
 	}
 
 	/** Respawn a node in place, keeping its uid, name, params, position, scope and links. A
 	 * recovery action rather than an edit, so it records no history. */
 	async restartNode(uid: string): Promise<void> {
-		await this.ctl.call('restart_node', { node: uid });
+		await this.ctl.call('node restart', { node: uid });
 	}
 
 	async addLink(link: LinkInfo): Promise<void> {
-		await this.ctl.call('add_link', link as unknown as Record<string, unknown>);
+		await this.ctl.call('link add', link as unknown as Record<string, unknown>);
 		this._recordGraphCmd('Connect');
 	}
 
 	async removeLink(link: LinkInfo): Promise<void> {
-		await this.ctl.call('remove_link', link as unknown as Record<string, unknown>);
+		await this.ctl.call('link remove', link as unknown as Record<string, unknown>);
 		this._recordGraphCmd('Disconnect');
 	}
 
@@ -346,28 +346,27 @@ export class GraphStore {
 		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
 		if (!param) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
-		await this.ctl.call('edit_node', { node, params: { [group]: { [name]: value } } });
+		await this.ctl.call('node edit', { node, params: { [group]: { [name]: value } } });
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
-	/** Add a NEW user global. The name is guarded HERE — `set_global` overwrites by design. */
+	/** Add a NEW user global; the server refuses a name the patch already holds. */
 	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
 		if (this.globals.some((g) => g.name === name)) throw new Error(`global ${name} already exists`);
-		await this.ctl.call('set_global', { name, value, type });
+		await this.ctl.call('global add', { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
 	}
 
-	/** Edit an existing global's value (system or user); the declared type + system flag are kept. */
+	/** Edit an existing global's value (system or user); the type is immutable and stays. */
 	async setGlobalValue(name: string, value: number | string | boolean): Promise<void> {
-		const type = this.globals.find((g) => g.name === name)?.type;
-		if (!type) throw new Error(`set_global: no global ${name}`);
-		await this.ctl.call('set_global', { name, value, type });
+		if (!this.globals.some((g) => g.name === name)) throw new Error(`no global ${name}`);
+		await this.ctl.call('global edit', { name, value });
 		this._recordGraphCmd(`Set global ${name}`);
 	}
 
 	/** Remove a user global (a system global is refused by the server). */
 	async removeGlobal(name: string): Promise<void> {
-		await this.ctl.call('set_global', { name });
+		await this.ctl.call('global remove', { name });
 		this._recordGraphCmd(`Remove global ${name}`);
 	}
 
@@ -378,8 +377,8 @@ export class GraphStore {
 		if (!held) throw new Error(`no global ${oldName}`);
 		await this.ctl.call('compound', {
 			ops: [
-				{ op: 'set_global', payload: { name: newName, value: held.value, type: held.type } },
-				{ op: 'set_global', payload: { name: oldName } }
+				{ op: 'global add', payload: { name: newName, value: held.value, type: held.type } },
+				{ op: 'global remove', payload: { name: oldName } }
 			]
 		});
 		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
@@ -391,7 +390,7 @@ export class GraphStore {
 		const key = refreshKey(node, group, name);
 		this._beginRefresh(key);
 		try {
-			await this.ctl.call('refresh_param', { node, group, name });
+			await this.ctl.call('node param refresh', { node, group, name });
 		} catch (e) {
 			// A failed dispatch means the node never re-scans, so do not wait out the safety timeout.
 			this._endRefresh(key);
@@ -428,7 +427,7 @@ export class GraphStore {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
 		if (!d) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
 		// `expression` is sent even when null: its PRESENCE is what clears a binding.
-		await this.ctl.call('edit_node', {
+		await this.ctl.call('node edit', {
 			node,
 			params: {
 				[group]: {
@@ -445,7 +444,7 @@ export class GraphStore {
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
 		// Committed on drag-stop only; a live drag stays local to Svelte Flow.
-		await this.ctl.call('edit_node', { node: uid, pos });
+		await this.ctl.call('node edit', { node: uid, pos });
 		this._recordGraphCmd(`Move ${this.nodeById(uid)?.name ?? uid}`);
 	}
 
@@ -453,7 +452,7 @@ export class GraphStore {
 	async renameNode(uid: string, name: string): Promise<void> {
 		const oldName = this.nodeById(uid)?.name ?? '';
 		if (oldName === name) return;
-		await this.ctl.call('edit_node', { node: uid, name });
+		await this.ctl.call('node edit', { node: uid, name });
 		this._recordGraphCmd(`Rename ${oldName} → ${name}`);
 	}
 
@@ -461,7 +460,7 @@ export class GraphStore {
 	 * dirtying: persistence and dirtiness are separate axes. */
 	async setViewpoint(viewpoint: unknown): Promise<void> {
 		try {
-			await this.ctl.call('set_viewpoint', { viewpoint });
+			await this.ctl.call('layout viewpoint edit', { value: viewpoint });
 		} catch {
 			/* not connected / in flight — ignore */
 		}
@@ -471,37 +470,37 @@ export class GraphStore {
 	 * latched from this reply — a latch names the patch only in the tab that saved it. */
 	async save(path: string): Promise<{ path: string }> {
 		// `path` is the whole payload and is REQUIRED; the arrangement is the manager's already.
-		return this.ctl.call<{ path: string }>('save', { path });
+		return this.ctl.call<{ path: string }>('session save', { path });
 	}
 
 	/** Reset to an empty, unnamed patch. Nothing is written here: a New emits no
 	 * `save_path_changed`, so the `graph_replaced` snapshot is the sole carrier of the null path. */
 	async newPatch(): Promise<void> {
-		await this.ctl.call('load', {});
+		await this.ctl.call('session new', {});
 	}
 
 	/** Group the named nodes into a sub-patch. Returns its instance id. */
 	async groupNodes(members: string[], pos?: [number, number]): Promise<string> {
-		const r = await this.ctl.call<{ inst_id: string }>('group_nodes', { members, pos });
+		const r = await this.ctl.call<{ inst_id: string }>('nodes group', { nodes: members, pos });
 		if (r?.inst_id) this._recordGraphCmd('Group nodes');
 		return r.inst_id;
 	}
 
 	/** Dissolve a sub-patch instance back into its member nodes. */
 	async expandInstance(instId: string): Promise<void> {
-		await this.ctl.call('expand_instance', { inst_id: instId });
+		await this.ctl.call('nodes ungroup', { subpatch: instId });
 		this._recordGraphCmd('Ungroup');
 	}
 
 	/** List one directory level on the BACKEND filesystem (full FS, no jail). */
 	async listDir(path?: string): Promise<DirListing> {
-		return this.ctl.call<DirListing>('list_dir', { path });
+		return this.ctl.call<DirListing>('dir list', { path });
 	}
 
 	/** Load a patch from a BACKEND filesystem path; destructive, and it resets the session, so
 	 * there is no history entry. A `.gfi` is a zip, so a path is the only door the client has. */
 	async load(path: string): Promise<void> {
-		await this.ctl.call('load', { path });
+		await this.ctl.call('session load', { path });
 	}
 
 	/** Resolve a node by uid — the ONE accessor, and every kind of node record answers it. */
@@ -604,7 +603,7 @@ export class GraphStore {
 	/** Read `uids` and everything they hold — members, ports and nested sub-patches, to any depth —
 	 * as a self-contained fragment in the shape a `.gfi` carries. */
 	async copyNodes(uids: string[]): Promise<GraphFragment> {
-		const r = await this.ctl.call<{ doc: GraphFragment }>('copy_nodes', { nodes: uids });
+		const r = await this.ctl.call<{ doc: GraphFragment }>('nodes copy', { nodes: uids });
 		return r.doc;
 	}
 
@@ -615,7 +614,7 @@ export class GraphStore {
 		offset: [number, number] = [0, 0],
 		instId?: string
 	): Promise<Record<string, string>> {
-		const r = await this.ctl.call<{ rename: Record<string, string> }>('paste_nodes', {
+		const r = await this.ctl.call<{ rename: Record<string, string> }>('nodes paste', {
 			doc,
 			pos: offset,
 			inst_id: instId ?? null

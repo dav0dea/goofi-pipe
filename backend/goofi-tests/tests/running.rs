@@ -169,7 +169,7 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
     let why = tokio::task::block_in_place(|| g.until("the first instance to fail", |g| g.error(uid)));
     assert!(why.contains("the device did not open"), "{why}");
 
-    g.call("restart_node", j!({ "node": hex(uid) }));
+    g.call("node restart", j!({ "node": hex(uid) }));
     tokio::task::block_in_place(|| {
         g.until("the second instance to boot clean", |g| g.error(uid).is_none().then_some(()))
     });
@@ -177,7 +177,7 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
     let mut v = Viewer::open(&base, &hex(uid), "out").await;
     assert_eq!(f32s(&v.decoded().await)[0], 1.0, "the stream is live on the recovered generation");
     let before = g.state.graph.lock().unwrap().output_service_of(uid, "out");
-    g.call("restart_node", j!({ "node": hex(uid) }));
+    g.call("node restart", j!({ "node": hex(uid) }));
     assert_ne!(g.state.graph.lock().unwrap().output_service_of(uid, "out"), before,
                "a rebirth is a new name");
     // For up to one rehome interval the reducer is still listening on the dead name.
@@ -220,7 +220,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // opening a second on a slot that produces nothing.
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
-    let inst = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
+    let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     // The group minted the port itself: the cable it cut is what a boundary port IS.
     let port = g.ports(&inst).first().cloned().expect("the cut is exposed as a port");
@@ -234,9 +234,9 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // An UNWIRED port is a node with no data, never a node that is absent: its socket opens and
     // idles, exactly as one on a leaf nobody has connected does. Nothing is behind it, so it joins
     // no reducer and opens none.
-    let mid = g.call("add_node", j!({ "type": "Buffer", "inst_id": inst, "pos": [0.0, 0.0] }))
+    let mid = g.call("node add", j!({ "type": "Buffer", "inst_id": inst, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
-    let bare = g.call("add_node", j!({ "type": "InArray", "inst_id": inst, "pos": [0.0, 0.0] }))
+    let bare = g.call("node add", j!({ "type": "InArray", "inst_id": inst, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
     let mut pending = Viewer::open(&base, &bare, "value").await;
     pending.view(spec(32)).await;
@@ -246,10 +246,10 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // Wiring BOTH sides is what puts a stream behind it, and neither half alone does — so the
     // socket has to still be there for the second one. It then joins the reducer already serving
     // that stream, rather than staying frozen on the answer it got when it opened.
-    g.call("add_link", j!({ "node_out": bare, "slot_out": "value",
+    g.call("link add", j!({ "node_out": bare, "slot_out": "value",
                             "node_in": mid, "slot_in": "data" }));
     assert_eq!(g.state.reducers.subscribers(&key), 7, "the inside alone feeds it nothing");
-    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
                             "node_in": inst, "slot_in": bare }));
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 8).await,
             "the open socket joined the stream its port now stands in front of");
@@ -260,7 +260,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 7).await);
     drop(through);
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 6).await);
-    g.call("remove_node", j!({ "node": inst }));
+    g.call("node remove", j!({ "node": inst }));
 
     let passes = g.state.reducers.reductions(&key);
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -306,7 +306,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
         assert_eq!(g.state.reducers.subscribers(&key), 0, "round {round}: the viewer's socket closed");
     }
 
-    g.call("remove_node", j!({ "node": hex(osc) }));
+    g.call("node remove", j!({ "node": hex(osc) }));
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.active_slots() == 0).await,
             "the node left and its reducer went with it");
 }
@@ -347,7 +347,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     std::thread::sleep(Duration::from_millis(60)); // both threads are now inside a ten-second run
 
     let t0 = Instant::now();
-    g.call("remove_node", j!({ "node": hex(slow) }));
+    g.call("node remove", j!({ "node": hex(slow) }));
     assert!(t0.elapsed() < Duration::from_millis(100),
             "the delete took {:?} — it waited on the busy node under the graph lock", t0.elapsed());
 
@@ -398,7 +398,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     assert_eq!(g.stage(heavy), "creating", "…and it is still building while that wire is planned");
     g.ready(heavy);
     g.until("the wire planned during the build to carry a frame", |_| probe.latest());
-    g.call("remove_node", j!({ "node": hex(quick) }));
+    g.call("node remove", j!({ "node": hex(quick) }));
 
     let t0 = Instant::now();
     g.state.graph.lock().unwrap().shutdown();
@@ -429,7 +429,7 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     g.ready(mute);
     let mut ev = g.events();
 
-    g.call("refresh_param", j!({ "node": hex(picker), "group": "io", "name": "device" }));
+    g.call("node param refresh", j!({ "node": hex(picker), "group": "io", "name": "device" }));
     let p = g.until("the picker's echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(picker)).then_some(p)
@@ -440,7 +440,7 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     assert_eq!(p["refreshed_params"], j!([["io", "device"]]), "…and the spinner is cleared");
 
     // A node with no hook must still get its echo, or the button spins for its full safety timeout.
-    g.call("refresh_param", j!({ "node": hex(mute), "group": "io", "name": "device" }));
+    g.call("node param refresh", j!({ "node": hex(mute), "group": "io", "name": "device" }));
     let p = g.until("the mute picker's echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(mute)).then_some(p)
@@ -450,7 +450,7 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
 
     // A fixed list is refused, which is what lifts the spinner on the frontend's side.
     let osc = g.add("Oscillator");
-    let why = g.refuse("refresh_param",
+    let why = g.refuse("node param refresh",
                        j!({ "node": hex(osc), "group": "oscillator", "name": "waveform" }));
     assert!(why.contains("not refreshable"), "{why}");
 }

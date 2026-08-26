@@ -22,7 +22,7 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await g.addGlobal('gain', 2.5, 'float');
-		expect(found(fc, 'set_global')).toEqual({ name: 'gain', value: 2.5, type: 'float' });
+		expect(found(fc, 'global add')).toEqual({ name: 'gain', value: 2.5, type: 'float' });
 		expect(history().canUndo).toBe(true);
 	});
 
@@ -32,16 +32,16 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const d = seed(fc);
 		d.global('gain', { value: 1, type: 'float', system: false });
 		await expect(g.addGlobal('gain', 2.5, 'float')).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'set_global')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'global add')).toBe(false);
 	});
 
-	it('setGlobalValue looks up the declared type and issues set_global', async () => {
+	it('setGlobalValue issues global edit — the held type stays, unsent', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		seedSystemGlobal(d, 'default_ufreq', 30);
 		await g.setGlobalValue('default_ufreq', 45);
-		expect(found(fc, 'set_global')).toEqual({ name: 'default_ufreq', value: 45, type: 'float' });
+		expect(found(fc, 'global edit')).toEqual({ name: 'default_ufreq', value: 45 });
 	});
 
 	it('setGlobalValue rejects an unknown global (no command sent)', async () => {
@@ -49,15 +49,15 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await expect(g.setGlobalValue('ghost', 1)).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'set_global')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'global edit')).toBe(false);
 	});
 
-	it('removeGlobal issues set_global{name} — no value is the delete', async () => {
+	it('removeGlobal issues global remove', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await g.removeGlobal('subject');
-		expect(found(fc, 'set_global')).toEqual({ name: 'subject' });
+		expect(found(fc, 'global remove')).toEqual({ name: 'subject' });
 	});
 
 	it('renameGlobal compounds the set and the delete into one undoable step', async () => {
@@ -68,8 +68,8 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		await g.renameGlobal('gain', 'gain_a');
 		expect(found(fc, 'compound')).toEqual({
 			ops: [
-				{ op: 'set_global', payload: { name: 'gain_a', value: 2.5, type: 'float' } },
-				{ op: 'set_global', payload: { name: 'gain' } }
+				{ op: 'global add', payload: { name: 'gain_a', value: 2.5, type: 'float' } },
+				{ op: 'global remove', payload: { name: 'gain' } }
 			]
 		});
 		expect(history().canUndo).toBe(true);
@@ -77,7 +77,7 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 
 	it('a server rejection propagates (name/collision/system are validated server-side)', async () => {
 		const fc = new FakeControl();
-		fc.failNext('set_global');
+		fc.failNext('global add');
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await expect(g.addGlobal('1bad', 0, 'int')).rejects.toThrow();

@@ -34,13 +34,13 @@ fn fixture() -> (Goofi, String) {
     let osc = g.add("Oscillator");
     let boom = g.add("_TestFail");
     let buf = g.add("Buffer");
-    let scope = g.call("group_nodes", j!({ "members": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
+    let scope = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();
-    let bnd = g.call("add_node", j!({ "type": "InArray", "inst_id": scope,
+    let bnd = g.call("node add", j!({ "type": "InArray", "inst_id": scope,
                                      "pos": [0.0, 0.0] }))["uid"].as_str().unwrap().to_string();
-    g.call("add_link", j!({ "node_out": bnd, "slot_out": "value",
+    g.call("link add", j!({ "node_out": bnd, "slot_out": "value",
                            "node_in": hex(buf), "slot_in": "data" }));
-    g.call("add_link", j!({ "node_out": hex(osc), "slot_out": "out",
+    g.call("link add", j!({ "node_out": hex(osc), "slot_out": "out",
                            "node_in": scope, "slot_in": bnd }));
     // The fault is a REPORT — the graph does not hold it until the node has run and said so.
     g.until("the failing node's first fault", |g| g.error(boom));
@@ -51,11 +51,8 @@ fn fixture() -> (Goofi, String) {
 fn inspect_patch_draws_the_scope_asked_for_and_get_patch_says_what_is_broken() {
     let (g, _) = fixture();
     assert_eq!(
-        text(&g, "inspect_patch", j!({})),
+        text(&g, "nodes inspect", j!({})),
         "\
-patch: (never saved)
-workspace: <workspace>
-unsaved changes: yes
 scope: root
 
 ```mermaid
@@ -72,7 +69,7 @@ uids: a uid is its mermaid id without the leading `n`.
 
     // What is BROKEN is the patch's business, not this scope's — one read, and the node's path
     // says where it lives, so a scope view never has to carry a neighbour's fault.
-    let health = g.call("get_patch", j!({}));
+    let health = g.call("session status", j!({}));
     let errs = health["errors"].as_array().cloned().unwrap_or_default();
     assert_eq!(errs.len(), 1, "one standing error: {health}");
     assert_eq!(errs[0]["node"], "000000000002");
@@ -85,11 +82,8 @@ uids: a uid is its mermaid id without the leading `n`.
 fn inspect_patch_draws_a_sub_patchs_boundary_ports_as_the_nodes_they_are() {
     let (g, scope) = fixture();
     assert_eq!(
-        text(&g, "inspect_patch", j!({ "scope": scope })),
+        text(&g, "nodes inspect", j!({ "scope": scope })),
         "\
-patch: (never saved)
-workspace: <workspace>
-unsaved changes: yes
 scope: subpatch0 (000000000004)
 
 ```mermaid
@@ -104,7 +98,7 @@ uids: a uid is its mermaid id without the leading `n`.
     );
     // The erroring node is in ROOT, and this is a sub-patch: asking about one scope used to report
     // every fault in the patch, so the same list arrived again under each scope.
-    assert!(!text(&g, "inspect_patch", j!({ "scope": scope })).contains("_testfail0"));
+    assert!(!text(&g, "nodes inspect", j!({ "scope": scope })).contains("_testfail0"));
 }
 
 #[test]
@@ -114,9 +108,9 @@ fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade
     let a = g.add("Oscillator");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
-    g.call("group_nodes", j!({ "members": [hex(a), hex(b)], "pos": [0.0, 0.0] }));
+    g.call("nodes group", j!({ "nodes": [hex(a), hex(b)], "pos": [0.0, 0.0] }));
 
-    let out = text(&g, "inspect_patch", j!({}));
+    let out = text(&g, "nodes inspect", j!({}));
     assert!(out.contains("[["), "the facade is drawn: {out}");
     assert!(!out.contains("-->"), "…with no edge at all at this level: {out}");
 }
@@ -127,21 +121,21 @@ fn a_node_wired_to_itself_keeps_its_edge() {
     let g = Goofi::new();
     let buf = g.add("Buffer");
     g.link(buf, "out", buf, "data");
-    let out = text(&g, "inspect_patch", j!({}));
+    let out = text(&g, "nodes inspect", j!({}));
     assert!(out.contains(&format!("n{0} -- out→data --> n{0}\n", hex(buf))), "{out}");
 }
 
 #[test]
 fn an_empty_scope_says_so_rather_than_drawing_an_empty_diagram() {
     let g = Goofi::new();
-    let out = text(&g, "inspect_patch", j!({}));
+    let out = text(&g, "nodes inspect", j!({}));
     assert!(out.contains("(no nodes)"), "{out}");
     assert!(!out.contains("mermaid"), "no diagram for an empty scope: {out}");
-    assert_eq!(g.call("get_patch", j!({}))["errors"], j!([]), "and nothing is broken");
+    assert_eq!(g.call("session status", j!({}))["errors"], j!([]), "and nothing is broken");
 
     // A scope uid that names a LEAF is refused rather than drawn as empty.
     let n = g.add("Oscillator");
-    g.refuse("inspect_patch", j!({ "scope": hex(n) }));
+    g.refuse("nodes inspect", j!({ "scope": hex(n) }));
 }
 
 const BLEW_UP: &str = "the expression blew up";
@@ -168,14 +162,14 @@ impl ExprEvaluator for Flaky {
 fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
-    g.call("edit_node", j!({ "node": hex(osc), "params": { "oscillator": {
+    g.call("node edit", j!({ "node": hex(osc), "params": { "oscillator": {
                                  "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
     // A rate is MEASURED, so it needs two emits and a report across the status service.
     g.until("the oscillator's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
     });
 
-    let out = text(&g, "inspect_node", j!({ "node": hex(osc) }));
+    let out = text(&g, "node state", j!({ "node": hex(osc) }));
     assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, native, stage ready)", hex(osc))),
             "{out}");
     // The goldened inline param format, round-trippable into edit_node…
@@ -195,16 +189,16 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
 
     // A node that has never emitted says so, rather than reading as healthy silence.
     let idle = g.add("Buffer");
-    let idle_out = text(&g, "inspect_node", j!({ "node": hex(idle), "params": false }));
+    let idle_out = text(&g, "node state", j!({ "node": hex(idle), "params": false }));
     assert!(idle_out.contains("  out: ARRAY — nothing emitted yet"), "{idle_out}");
     assert!(idle_out.ends_with("error: none\n"), "{idle_out}");
 
     // The flags actually gate their sections.
-    let bare = text(&g, "inspect_node", j!({ "node": hex(osc), "params": false, "error": false }));
+    let bare = text(&g, "node state", j!({ "node": hex(osc), "params": false, "error": false }));
     assert!(!bare.contains("params:") && !bare.contains("error:"), "{bare}");
 
     // An unknown slot is refused by naming the ones that exist.
-    let why = g.refuse("inspect_node", j!({ "node": hex(osc), "slot": "psd" }));
+    let why = g.refuse("node state", j!({ "node": hex(osc), "slot": "psd" }));
     assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
 
     // With an evaluator the error changes hands to the NODE. A node is handed one at BIRTH, so this
@@ -212,18 +206,18 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
     let bound = g.add("Oscillator");
-    g.call("edit_node", j!({ "node": hex(bound), "params": { "oscillator": {
+    g.call("node edit", j!({ "node": hex(bound), "params": { "oscillator": {
                                  "amplitude": { "expression": "globals.default_ufreq / 30" } } } }));
     let live = g.until("the node's own evaluation error", |g| {
-        Some(text(g, "inspect_node", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
+        Some(text(g, "node state", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
     });
     assert!(live.contains(&format!("(on) [error: {BLEW_UP}]")),
             "the bound param's own field carries it too: {live}");
 
     // The finding belongs to the INSTANCE, and a restart is a new one with nothing to report.
     broken.store(false, Ordering::Relaxed);
-    g.call("restart_node", j!({ "node": hex(bound) }));
-    let reborn = text(&g, "inspect_node", j!({ "node": hex(bound) }));
+    g.call("node restart", j!({ "node": hex(bound) }));
+    let reborn = text(&g, "node state", j!({ "node": hex(bound) }));
     assert!(!reborn.contains(BLEW_UP) && reborn.ends_with("error: none\n"),
             "a reborn node draws none of the corpse's binding errors: {reborn}");
 }
@@ -231,7 +225,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
 #[test]
 fn list_globals_names_the_system_globals_an_expression_can_read() {
     let g = Goofi::new();
-    let first = g.call("list_globals", j!({}))["globals"][0].clone();
+    let first = g.call("global list", j!({}))["globals"][0].clone();
     assert_eq!(first["name"], "default_ufreq");
     assert_eq!(first["type"], "float");
     assert_eq!(first["value"], 30.0);
@@ -243,10 +237,10 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     let g = Goofi::new();
     // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
     // with the wide one rather than be assembled a second way.
-    let all = g.call("list_nodes", j!({}))["types"].as_array().cloned().unwrap_or_default();
+    let all = g.call("library list", j!({}))["types"].as_array().cloned().unwrap_or_default();
     let listed = all.iter().find(|t| t["type"] == "Oscillator").expect("Oscillator is in the palette");
 
-    let v = g.call("list_nodes", j!({ "type": "Oscillator" }));
+    let v = g.call("library get", j!({ "type": "Oscillator" }));
     assert_eq!(v["type"], listed["type"]);
     assert_eq!(v["doc"], listed["doc"], "one entry says what the catalog says");
     assert_eq!(v["params"], listed["params"]);
@@ -256,7 +250,7 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     assert!(v["provenance"].as_str().unwrap().contains("copy a python node"), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
-    assert!(g.refuse("list_nodes", j!({ "type": "Nope" })).contains("no node type `Nope`"));
+    assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("no node type `Nope`"));
 }
 
 #[test]
@@ -285,7 +279,7 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     std::fs::create_dir_all(&nodes).unwrap();
     std::fs::write(nodes.join("boom.py"), "class Boom:\n    pass\n").unwrap();
 
-    let v = g.call("list_nodes", j!({ "type": "Boom" }));
+    let v = g.call("library get", j!({ "type": "Boom" }));
     assert_eq!(v["provenance"], "patch", "{v}");
     assert_eq!(v["path"], goofi_core::path::to_slash(&nodes.join("boom.py")), "{v}");
     assert_eq!(v["source"], "class Boom:\n    pass\n", "{v}");
@@ -293,7 +287,7 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
 
     // A tree holding no such file leaves the discovery half empty and SAYS so, rather than null.
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
-    let v = g.call("list_nodes", j!({ "type": "Boom" }));
+    let v = g.call("library get", j!({ "type": "Boom" }));
     assert_eq!(v["source"], Value::Null);
     assert!(v["provenance"].as_str().unwrap().contains("compiled in"), "{v}");
 }

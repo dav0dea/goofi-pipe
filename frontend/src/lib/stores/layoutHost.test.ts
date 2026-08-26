@@ -116,13 +116,13 @@ describe('a frozen gesture is a layout command', () => {
 		expect(root.children.map((c) => c.id)).toEqual(['panel-2', 'panel-3']);
 	});
 
-	it('splits through place_panel, carrying the SIDE the drag went', async () => {
+	it('splits through layout panel add, carrying the SIDE the drag went', async () => {
 		// The panel system raises an axis and a half; the op takes one word for the pair, so the two
 		// cannot disagree on the way over.
 		const ws = boot();
 		ws.split('panel-2', 'column', true, 0.25);
 		await Promise.resolve();
-		expect(sent()).toEqual([['place_panel', { to: 'panel-2', direction: 'top', ratio: 0.25 }]]);
+		expect(sent()).toEqual([['layout panel add', { beside: 'panel-2', side: 'top', ratio: 0.25 }]]);
 	});
 
 	it('…and every other side maps to its own word', async () => {
@@ -131,7 +131,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.split('panel-2', 'row', true);
 		ws.split('panel-2', 'row', false);
 		await Promise.resolve();
-		expect(sent().map(([, p]) => p.direction)).toEqual(['bottom', 'left', 'right']);
+		expect(sent().map(([, p]) => p.side)).toEqual(['bottom', 'left', 'right']);
 	});
 
 	it('closes, retypes and re-binds through the page ops', async () => {
@@ -140,7 +140,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.setType('panel-3', 'viewer');
 		ws.linkNodeToPanel('panel-3', 'a1b2');
 		await Promise.resolve();
-		expect(sent().map(([op]) => op)).toEqual(['remove_panel', 'edit_panel', 'edit_panel']);
+		expect(sent().map(([op]) => op)).toEqual(['layout remove', 'layout panel edit', 'layout panel edit']);
 		expect(sent()[2][1]).toEqual({
 			panel: 'panel-3',
 			state: { node: 'a1b2', slot: null }
@@ -173,7 +173,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.linkNodeToPanel('panel-8', 'a1b2');
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['edit_panel', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
+			['layout panel edit', { panel: 'panel-8', state: { node: 'a1b2', slot: null } }]
 		]);
 	});
 
@@ -188,7 +188,7 @@ describe('a frozen gesture is a layout command', () => {
 
 	it('brings a fresh tab forward off the ids the manager minted, once they arrive', async () => {
 		const ws = boot();
-		fc.setCallResult('place_panel', { tab: 'tab-3', id: 'panel-4' });
+		fc.setCallResult('layout panel add', { tab: 'tab-3', id: 'panel-4' });
 		ws.addTab();
 		await settle();
 		expect(ws.state.activeWorkspaceId, 'not before the tab exists to draw').toBe('tab-1');
@@ -202,7 +202,7 @@ describe('a frozen gesture is a layout command', () => {
 		// enough that the tab is usually drawn before the ids come back. Waiting for a later sync that
 		// nothing is going to send left the new tab sitting behind the one it was added from.
 		const ws = boot();
-		fc.setCallResult('place_panel', { tab: 'tab-3', id: 'panel-4' });
+		fc.setCallResult('layout panel add', { tab: 'tab-3', id: 'panel-4' });
 		ws.addTab('globals');
 		ws.syncFromDoc([...oneTab(), tab('tab-3', 'Tab 2', 'panel-4', 'globals')]);
 		expect(ws.state.activeWorkspaceId, 'not off a delta alone — the ids are still in flight').toBe(
@@ -219,7 +219,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropOn({ panel: 'panel-2', direction: 'column', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['place_panel', { panel: 'panel-3', to: 'panel-2', direction: 'bottom' }]
+			['layout move', { entry: 'panel-3', beside: 'panel-2', side: 'bottom' }]
 		]);
 		expect(ws.dragging, 'the drag is spent either way').toBeNull();
 	});
@@ -230,7 +230,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dropOn({ panel: 'panel-2', direction: 'row', placeBefore: false });
 		await Promise.resolve();
 		expect(sent()[0][1], 'a tab drag names the page’s root, not a panel').toMatchObject({
-			panel: 'split-4'
+			entry: 'split-4'
 		});
 	});
 
@@ -241,7 +241,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.dragging = { kind: 'panel', workspaceId: 'tab-1', panelId: 'panel-3' };
 		ws.dropOn({ newTab: 0 });
 		await settle();
-		expect(sent()).toEqual([['place_panel', { panel: 'panel-3', index: 0 }]]);
+		expect(sent()).toEqual([['layout move', { entry: 'panel-3', index: 0 }]]);
 		// A delta that is not this move's own — a peer editing the graph — must not spend the wait:
 		// the panel is still drawn on the tab it is LEAVING, and settling for that tab would leave the
 		// torn-off one behind the old one for good.
@@ -273,7 +273,7 @@ describe('a frozen gesture is a layout command', () => {
 		ws.closeTab('tab-5');
 		expect(ws.state.activeWorkspaceId, 'the neighbour, before the delta even lands').toBe('tab-3');
 		await Promise.resolve();
-		expect(sent()).toEqual([['remove_panel', { panel: 'tab-5' }]]);
+		expect(sent()).toEqual([['layout remove', { entry: 'tab-5' }]]);
 	});
 
 	it('asks for NO tab name — the strip it would have to guess at is the manager’s', async () => {
@@ -287,9 +287,9 @@ describe('a frozen gesture is a layout command', () => {
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(sent().map(([op]) => op), 'three taps, three requests').toEqual([
-			'place_panel',
-			'place_panel',
-			'place_panel'
+			'layout panel add',
+			'layout panel add',
+			'layout panel add'
 		]);
 		expect(
 			sent().some(([, p]) => 'name' in p),
@@ -324,9 +324,9 @@ describe('a frozen gesture is a layout command', () => {
 		ws.reorderTab(0, 0);
 		await Promise.resolve();
 		expect(sent()).toEqual([
-			['edit_panel', { panel: 'tab-1', name: 'Signals' }],
-			['remove_panel', { panel: 'tab-1' }],
-			['place_panel', { panel: 'tab-1', index: 0 }]
+			['layout tab edit', { tab: 'tab-1', name: 'Signals' }],
+			['layout remove', { entry: 'tab-1' }],
+			['layout move', { entry: 'tab-1', index: 0 }]
 		]);
 	});
 });
@@ -347,9 +347,9 @@ describe('a resize drag draws locally and commits once', () => {
 		await Promise.resolve();
 		expect(sent()).toHaveLength(1);
 		const [op, payload] = sent()[0];
-		expect(op).toBe('edit_panel');
-		expect(payload).toMatchObject({ panel: 'split-4' });
-		const fractions = payload.fractions as number[];
+		expect(op).toBe('layout split edit');
+		expect(payload).toMatchObject({ split: 'split-4' });
+		const fractions = payload.fraction as number[];
 		expect(fractions[0]).toBeCloseTo(0.75, 6);
 		expect(fractions[1]).toBeCloseTo(0.25, 6);
 	});
@@ -391,7 +391,7 @@ describe('a resize drag draws locally and commits once', () => {
 		ws.commitResize('split-4');
 		await Promise.resolve();
 		expect(sent(), 'the drag back is a change the user made and asked for').toHaveLength(2);
-		expect(sent()[1][1].fractions).toEqual([0.5, 0.5]);
+		expect(sent()[1][1].fraction).toEqual([0.5, 0.5]);
 	});
 
 	it('does not retire the override under a finger still on the seam', () => {
@@ -494,7 +494,7 @@ describe('the manager owns the undo step', () => {
 		await Promise.resolve();
 		expect(history().length).toBe(1);
 
-		fc.failNext('remove_panel');
+		fc.failNext('layout remove');
 		ws.close('panel-2');
 		await Promise.resolve();
 		await Promise.resolve();

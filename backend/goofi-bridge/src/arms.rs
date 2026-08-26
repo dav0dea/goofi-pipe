@@ -5,7 +5,7 @@
 
 use super::*;
 
-pub(crate) fn list_dir(
+pub(crate) fn dir_list(
     _state: &AppState,
     payload: &Value,
     _session: &str,
@@ -16,7 +16,7 @@ pub(crate) fn list_dir(
     Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())))
 }
 
-pub(crate) fn get_state(
+pub(crate) fn session_state(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -28,7 +28,7 @@ pub(crate) fn get_state(
 // The harness ops touch no graph state: they fork and signal children, and the roster converges
 // through `harness_changed` rather than by making a caller wait.
 
-pub(crate) fn list_harnesses(
+pub(crate) fn agent_list(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -38,16 +38,16 @@ pub(crate) fn list_harnesses(
     Ok(state.harnesses.roster())
 }
 
-pub(crate) fn spawn_harness(
+pub(crate) fn agent_start(
     state: &AppState,
     payload: &Value,
     _session: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let h = payload
-        .get("harness")
+        .get("name")
         .and_then(|v| v.as_str())
-        .ok_or("spawn_harness: missing harness")?;
+        .ok_or("agent start: missing name")?;
     let id = state.harnesses.spawn(
         h,
         &state.mount(),
@@ -59,7 +59,7 @@ pub(crate) fn spawn_harness(
     Ok(json!({ "instance_id": id }))
 }
 
-pub(crate) fn stop_harness(
+pub(crate) fn agent_stop(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -67,7 +67,7 @@ pub(crate) fn stop_harness(
 ) -> Result<Value, String> {
     state
         .harnesses
-        .stop(payload.get("instance").and_then(|v| v.as_str()).ok_or("stop_harness: missing instance")?)?;
+        .stop(payload.get("instance").and_then(|v| v.as_str()).ok_or("agent stop: missing instance")?)?;
     events.push(event("harness_changed", state.harnesses.roster()));
     Ok(json!({ "ok": true }))
 }
@@ -123,32 +123,39 @@ pub(crate) fn compound(
     Ok(json!({ "results": results }))
 }
 
-/// The catalog, or ONE entry of it in full. A type's source and provenance are the same entry
-/// with the file behind it read, so they are the same op narrowed.
-pub(crate) fn list_nodes(
+/// The whole library — the palette a client builds every node from.
+pub(crate) fn library_list(
+    state: &AppState,
+    _payload: &Value,
+    _session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let g = state.graph.lock().unwrap();
+    Ok(json!({ "types": schemas::catalog_types(&g) }))
+}
+
+/// ONE library entry in full: a type's source and provenance are the palette entry with the file
+/// behind it read.
+pub(crate) fn library_get(
     state: &AppState,
     payload: &Value,
     _session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
+    let ty = parse_str(payload, "type")?;
     let mount = state.mount();
     let g = state.graph.lock().unwrap();
-    match payload.get("type").and_then(|v| v.as_str()) {
-        None => Ok(json!({ "types": schemas::catalog_types(&g) })),
-        Some(ty) => {
-            // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets each
-            // directory overwrite the last, so a first-match search walks it backwards.
-            let dirs: Vec<(PathBuf, &str)> = [(mount.join("nodes"), "patch")]
-                .into_iter()
-                .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
-                .collect();
-            inspect::node_source(&g, ty, &dirs)
-        }
-    }
+    // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets each
+    // directory overwrite the last, so a first-match search walks it backwards.
+    let dirs: Vec<(PathBuf, &str)> = [(mount.join("nodes"), "patch")]
+        .into_iter()
+        .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
+        .collect();
+    inspect::node_source(&g, ty, &dirs)
 }
 
 /// Explicit, never watched: an agent calls it after writing a node file.
-pub(crate) fn rescan_nodes(
+pub(crate) fn library_refresh(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -165,7 +172,7 @@ pub(crate) fn rescan_nodes(
     Ok(result)
 }
 
-pub(crate) fn copy_nodes(
+pub(crate) fn nodes_copy(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -176,17 +183,17 @@ pub(crate) fn copy_nodes(
     Ok(json!({ "doc": g.fragment(&g.subtree_of(&uids)) }))
 }
 
-pub(crate) fn paste_nodes(
+pub(crate) fn nodes_paste(
     state: &AppState,
     payload: &Value,
     session: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let doc = payload.get("doc").ok_or("paste_nodes: missing doc")?;
+    let doc = payload.get("doc").ok_or("nodes paste: missing doc")?;
     let offset = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
     let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
-        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("paste_nodes: malformed inst_id")?),
+        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("nodes paste: malformed inst_id")?),
         None => None,
     };
     let (cmd, rename) = g.import_fragment(doc, scope, offset)?;
@@ -197,7 +204,7 @@ pub(crate) fn paste_nodes(
     Ok(json!({ "rename": rename }))
 }
 
-pub(crate) fn add_node(
+pub(crate) fn node_add(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -207,7 +214,7 @@ pub(crate) fn add_node(
     let ty = payload
         .get("type")
         .and_then(|v| v.as_str())
-        .ok_or("add_node: missing type")?
+        .ok_or("node add: missing type")?
         .to_string();
     // A CHOSEN uid and name, so a caller reconstructing a known graph keeps its uid-keyed
     // bindings. Not the undo path, which is manager-owned.
@@ -217,11 +224,11 @@ pub(crate) fn add_node(
     // refused here, so a caller told nothing cannot get a node under a name it never asked for.
     if !name.is_empty() {
         if g.name_taken(&name, None) {
-            return Err(format!("add_node: the name `{name}` is taken"));
+            return Err(format!("node add: the name `{name}` is taken"));
         }
         if !goofi_core::globals::is_valid_identifier(&name) {
             return Err(format!(
-                "add_node: `{name}` is not a legal name: {}",
+                "node add: `{name}` is not a legal name: {}",
                 goofi_engine::NAME_RULE
             ));
         }
@@ -230,7 +237,7 @@ pub(crate) fn add_node(
     // Never silently rooted on a bad `inst_id`: the canvas draws only the entered scope, so a
     // rooted node would be invisible exactly where the user placed it.
     let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
-        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("add_node: malformed inst_id")?),
+        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("node add: malformed inst_id")?),
         None => None,
     };
     // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node, so an
@@ -247,13 +254,13 @@ pub(crate) fn add_node(
     };
     let uid = match state.history.lock().unwrap().apply(&mut g, session, cmd)? {
         goofi_engine::Outcome::Uid(u) => u,
-        _ => return Err("add_node: no uid returned".into()),
+        _ => return Err("node add: no uid returned".into()),
     };
     // Applied UNDER THE GRAPH LOCK, so the node is born configured before the resync mirrors it
     // into the doc.
     if let Some(params) = payload.get("params").filter(|v| !v.is_null()) {
-        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("add_node: {e}"))? {
-            cmd.execute(&mut g).map_err(|e| format!("add_node: {e}"))?;
+        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("node add: {e}"))? {
+            cmd.execute(&mut g).map_err(|e| format!("node add: {e}"))?;
         }
     }
     // A bare uid: the node itself arrives via the doc mirror.
@@ -273,7 +280,7 @@ pub(crate) fn add_node(
     }))
 }
 
-pub(crate) fn remove_node(
+pub(crate) fn node_remove(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -291,7 +298,7 @@ pub(crate) fn remove_node(
 
 /// Recovery, not an edit, so it is NOT routed through the command history: the client records no
 /// `graph_cmd` for a restart and the two stacks must stay 1:1.
-pub(crate) fn restart_node(
+pub(crate) fn node_restart(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -308,7 +315,7 @@ pub(crate) fn restart_node(
     Ok(json!({ "ok": true }))
 }
 
-pub(crate) fn add_link(
+pub(crate) fn link_add(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -341,7 +348,7 @@ pub(crate) fn add_link(
     }))
 }
 
-pub(crate) fn remove_link(
+pub(crate) fn link_remove(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -363,7 +370,7 @@ pub(crate) fn remove_link(
 
 /// NOT a command: options are runtime-only, so there is nothing to undo. They do not ride this
 /// reply either — the hook runs on the node's own thread.
-pub(crate) fn refresh_param(
+pub(crate) fn node_param_refresh(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -380,7 +387,7 @@ pub(crate) fn refresh_param(
     Ok(json!({ "ok": true }))
 }
 
-pub(crate) fn edit_node(
+pub(crate) fn node_edit(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -393,14 +400,14 @@ pub(crate) fn edit_node(
     // user-facing error therefore belongs here, at the forward RPC.
     if let Some(n) = &name {
         if g.name_taken(n, Some(uid)) {
-            return Err(format!("edit_node: the name `{n}` is taken"));
+            return Err(format!("node edit: the name `{n}` is taken"));
         }
     }
     // A display name is read as an ATTRIBUTE in an expression, so it has to be one — which also
     // covers the quote and backslash that would break the source.
     if name.as_deref().is_some_and(|n| !goofi_core::globals::is_valid_identifier(n)) {
         return Err(format!(
-            "edit_node: `{}` is not a legal name: {}",
+            "node edit: `{}` is not a legal name: {}",
             name.unwrap_or_default(),
             goofi_engine::NAME_RULE
         ));
@@ -408,7 +415,7 @@ pub(crate) fn edit_node(
     let pos = payload
         .get("pos")
         .filter(|v| !v.is_null())
-        .map(|v| parse_pos(v).ok_or("edit_node: pos is [x, y]"))
+        .map(|v| parse_pos(v).ok_or("node edit: pos is [x, y]"))
         .transpose()?;
     // Viewers MERGE key by key, so only the slots named move; the command then sets the whole
     // blob, which is what makes its inverse exact. The PATCH is what is checked — a stale slot
@@ -417,7 +424,7 @@ pub(crate) fn edit_node(
     let viewers = match payload.get("viewers").filter(|v| !v.is_null()) {
         Some(patch) => {
             vocab::check_viewers(&g, uid, patch)?;
-            let mut whole = g.viewers(uid).cloned().ok_or("edit_node: no such node")?;
+            let mut whole = g.viewers(uid).cloned().ok_or("node edit: no such node")?;
             merge_json(&mut whole, patch);
             Some(whole)
         }
@@ -425,7 +432,7 @@ pub(crate) fn edit_node(
     };
     let params = payload.get("params").filter(|v| !v.is_null());
     if name.is_none() && pos.is_none() && viewers.is_none() && params.is_none() {
-        return Err("edit_node: give a name, pos, params or viewers".into());
+        return Err("node edit: give a name, pos, params or viewers".into());
     }
 
     // ONE command, so one undo step covers whatever the call carried: the node's own fields,
@@ -436,7 +443,7 @@ pub(crate) fn edit_node(
     }
     let mut touched: Vec<(String, String)> = Vec::new();
     if let Some(params) = params {
-        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("edit_node: {e}"))? {
+        for cmd in parse_params_bag(&g, uid, params).map_err(|e| format!("node edit: {e}"))? {
             if let goofi_engine::Command::EditParam { group, name, .. } = &cmd {
                 touched.push((group.clone(), name.clone()));
             }
@@ -477,7 +484,7 @@ pub(crate) fn edit_node(
 
 /// Where THIS client is looking: not a doc root, so it neither drags a peer nor raises the
 /// unsaved dot, but it still rides the `.gfi` and `hello`.
-pub(crate) fn set_viewpoint(
+pub(crate) fn layout_viewpoint_edit(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -485,13 +492,13 @@ pub(crate) fn set_viewpoint(
 ) -> Result<Value, String> {
     {
         let mut g = state.graph.lock().unwrap();
-        g.set_viewpoint(payload.get("viewpoint").cloned().unwrap_or(Value::Null));
+        g.set_viewpoint(payload.get("value").cloned().unwrap_or(Value::Null));
     }
     resync_and_broadcast(state);
     Ok(json!({ "ok": true }))
 }
 
-pub(crate) fn inspect_layout(
+pub(crate) fn layout_inspect(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -502,9 +509,22 @@ pub(crate) fn inspect_layout(
     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
 }
 
-/// One entry's FIELDS, whichever kind it is: a tab wears a name, a panel a type and a state, a
-/// split its shares. Several in one call is one Compound, so one undo step.
-pub(crate) fn edit_panel(
+/// Relabel a TAB — refused for any other kind of id, because an `edit` op edits ONE kind.
+pub(crate) fn layout_tab_edit(
+    state: &AppState,
+    payload: &Value,
+    session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let tab = parse_str(payload, "tab")?.to_string();
+    let name = parse_str(payload, "name")?;
+    let writes = g.arrangement().rename_tab(&tab, name)?;
+    apply_layout(state, &mut g, session, goofi_engine::Command::LayoutContents { writes })
+}
+
+/// Edit a PANEL's content: its type, its state, or both — one call, one undo.
+pub(crate) fn layout_panel_edit(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -512,142 +532,148 @@ pub(crate) fn edit_panel(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let panel = parse_str(payload, "panel")?.to_string();
-    let name = payload.get("name").and_then(|v| v.as_str());
     let ty = payload.get("type").and_then(|v| v.as_str()).map(str::to_string);
     let panel_state = payload.get("state").cloned().filter(|v| !v.is_null());
-    let fractions = match payload.get("fractions").filter(|v| !v.is_null()) {
-        // A non-numeric entry becomes NaN, which the planner refuses beside a zero or a negative
-        // one — so "is this a fraction" is answered in one place.
-        Some(v) => Some(
-            v.as_array()
-                .ok_or("edit_panel: fractions is a list of numbers")?
-                .iter()
-                .map(|x| x.as_f64().unwrap_or(f64::NAN))
-                .collect::<Vec<f64>>(),
-        ),
-        None => None,
-    };
-    if name.is_none() && ty.is_none() && panel_state.is_none() && fractions.is_none() {
-        return Err("edit_panel: give a name, type, state or fractions".into());
+    if ty.is_none() && panel_state.is_none() {
+        return Err("layout panel edit: give a type, a state, or both".into());
     }
-
-    let mut writes: Vec<goofi_engine::layout::Write> = Vec::new();
-    if let Some(n) = name {
-        writes.extend(g.arrangement().rename_tab(&panel, n)?);
-    }
-    if ty.is_some() || panel_state.is_some() {
-        // A panel bound to a node that is not there renders empty and explains nothing.
-        let named = panel_state
-            .as_ref()
-            .and_then(|s| s.get("node"))
-            .and_then(|v| v.as_str())
-            .filter(|n| !n.is_empty());
-        if let Some(node) = named {
-            if !bindable_node(&g, node) {
-                return Err(format!("edit_panel: no node `{node}` in this patch"));
-            }
+    // A panel bound to a node that is not there renders empty and explains nothing.
+    let named = panel_state
+        .as_ref()
+        .and_then(|s| s.get("node"))
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.is_empty());
+    if let Some(node) = named {
+        if !bindable_node(&g, node) {
+            return Err(format!("layout panel edit: no node `{node}` in this patch"));
         }
-        // The slot is checked against the node this write LEAVES the panel bound to: its own, or
-        // the one already stored, since a state write merges.
-        let bound = named
-            .or_else(|| {
-                g.arrangement()
-                    .panel_state(&panel)
-                    .and_then(|s| s.get("node"))
-                    .and_then(|v| v.as_str())
-            })
-            .and_then(Uid::from_hex);
-        vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
-        writes.extend(g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?);
     }
-
-    let mut cmds: Vec<goofi_engine::Command> = Vec::new();
-    if !writes.is_empty() {
-        cmds.push(goofi_engine::Command::LayoutContents { writes });
-    }
-    if let Some(fractions) = fractions {
-        // Planned here only so a bad split or a wrong fraction count answers teachably; the
-        // command re-plans it under this same lock.
-        g.arrangement().resize_split(&panel, &fractions)?;
-        cmds.push(goofi_engine::Command::LayoutResizeSplit { split: panel.clone(), fractions });
-    }
-    let cmd = if cmds.len() == 1 {
-        cmds.pop().expect("length checked")
-    } else {
-        goofi_engine::Command::Compound(cmds)
-    };
-    apply_layout(state, &mut g, session, cmd)
+    // The slot is checked against the node this write LEAVES the panel bound to: its own, or
+    // the one already stored, since a state write merges.
+    let bound = named
+        .or_else(|| {
+            g.arrangement().panel_state(&panel).and_then(|s| s.get("node")).and_then(|v| v.as_str())
+        })
+        .and_then(Uid::from_hex);
+    vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
+    let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
+    apply_layout(state, &mut g, session, goofi_engine::Command::LayoutContents { writes })
 }
 
-/// ONE op per drag gesture: a drop is one undo step, and peers never see an arrangement that was
-/// not on somebody's screen. Placement is ONE grammar: `panel` says what (an existing entry, or
-/// a fresh one when absent), the rest says where. Splitting it into a birth op and a move op
-/// spelled the "where" twice, and `add_tab {subtree}` was already both.
-pub(crate) fn place_panel(
+/// Set the shares of ALL of a SPLIT's children at once — what a resize drag commits.
+pub(crate) fn layout_split_edit(
     state: &AppState,
     payload: &Value,
     session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    const OP: &str = "place_panel";
     let mut g = state.graph.lock().unwrap();
-    let panel = payload.get("panel").and_then(|v| v.as_str()).map(str::to_string);
-    let to = payload.get("to").and_then(|v| v.as_str()).map(str::to_string);
-    let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
-    let side = match payload.get("direction").filter(|v| !v.is_null()) {
-        Some(_) => Some(parse_side(payload, OP)?),
-        None => None,
-    };
+    let split = parse_str(payload, "split")?.to_string();
+    // A non-numeric entry becomes NaN, which the planner refuses beside a zero or a negative
+    // one — so "is this a fraction" is answered in one place.
+    let fractions: Vec<f64> = payload
+        .get("fraction")
+        .and_then(|v| v.as_array())
+        .ok_or("layout split edit: `fraction` is a list of numbers")?
+        .iter()
+        .map(|x| x.as_f64().unwrap_or(f64::NAN))
+        .collect();
+    // Planned here only so a bad split or a wrong fraction count answers teachably; the command
+    // re-plans it under this same lock.
+    g.arrangement().resize_split(&split, &fractions)?;
+    apply_layout(state, &mut g, session,
+                 goofi_engine::Command::LayoutResizeSplit { split, fractions })
+}
+
+/// A fresh empty panel: beside a target, or on a new tab of its own.
+pub(crate) fn layout_panel_add(
+    state: &AppState,
+    payload: &Value,
+    session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    const OP: &str = "layout panel add";
+    let mut g = state.graph.lock().unwrap();
+    let beside = payload.get("beside").and_then(|v| v.as_str());
     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
-    let name = payload.get("name").and_then(|v| v.as_str());
-    // A tab already has a tab, so a `to`-less place is a reorder rather than a wrap. The id says
-    // which — as it does for `edit_panel` and `remove_panel`.
-    let is_tab = panel.as_deref().is_some_and(|p| g.arrangement().tab_index(p).is_some());
-    let (plan, placed) = match (panel.as_deref(), to.as_deref(), side) {
-        (Some(p), None, _) if is_tab => {
-            let at = index.ok_or(format!("{OP}: give a `to`, an `index`, or both"))?;
-            g.arrangement().reorder_tab(p, at)?;
-            let cmd = goofi_engine::Command::LayoutReorderTab { tab: p.to_string(), to_index: at };
-            let text = apply_layout(state, &mut g, session, cmd)?;
-            let tab = p.to_string();
-            return Ok(json!({ "id": tab, "tab": tab, "text": text["text"] }));
-        }
-        // Onto a tab of its own — a fresh panel, or an existing subtree wrapped, which is the
-        // drag onto the tab bar.
-        (p, None, _) => {
-            let (plan, tab) = g.arrangement().add_tab(name, index, p)?;
-            // A tab built AROUND an existing subtree is a MOVE, so its undo gives the subtree
-            // back; one born with a fresh panel inverts by closing.
-            let cmd = match p {
-                Some(root) => goofi_engine::Command::LayoutMove {
-                    plan: Some(plan), root: root.to_string(), home: None },
-                None => goofi_engine::Command::LayoutBirth { plan, born: tab.clone() },
+    match beside {
+        // Beside a target, dividing it — the drop on a panel's edge; the side defaults, as
+        // `split_panel` always did.
+        Some(target) => {
+            let side = match payload.get("side").filter(|v| !v.is_null()) {
+                Some(_) => parse_side(payload, OP)?,
+                None => goofi_engine::layout::Side::Right,
             };
-            let text = apply_layout(state, &mut g, session, cmd)?;
-            // The root panel's id, which a caller cannot otherwise know.
-            let id = p.map(str::to_string)
-                .unwrap_or_else(|| g.arrangement().root_of(&tab).unwrap_or_default());
-            return Ok(json!({ "id": id, "tab": tab, "text": text["text"] }));
-        }
-        // Beside a target, dividing it — the drop on a panel's edge, or a split.
-        (Some(p), Some(target), Some(side)) => {
-            (g.arrangement().insert_at_panel(p, target, side, ratio)?, p.to_string())
-        }
-        // A fresh panel divides its target; `to` cannot mean "inside that split" here, because
-        // there is nothing yet to put inside one. So the side simply defaults, as `split_panel`
-        // always did.
-        (None, Some(target), _) => {
-            let side = side.unwrap_or(goofi_engine::layout::Side::Right);
             let (plan, fresh) = g.arrangement().split_panel(target, side, ratio)?;
             let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
             let text = apply_layout(state, &mut g, session, cmd)?;
             let tab = g.arrangement().tab_of(&fresh).unwrap_or_default();
-            return Ok(json!({ "id": fresh, "tab": tab, "text": text["text"] }));
+            Ok(json!({ "id": fresh, "tab": tab, "text": text["text"] }))
         }
-        // Inside a split, at an index — the drop into a container that exists. There is nothing
-        // for a FRESH panel to take space from, so it needs a direction.
-        (Some(p), Some(parent), None) => {
-            (g.arrangement().move_subtree(p, parent, index.unwrap_or(0))?, p.to_string())
+        // On a tab of its own, at `index` in the strip, labelled `name` or minted.
+        None => {
+            let name = payload.get("name").and_then(|v| v.as_str());
+            let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
+            let (plan, tab) = g.arrangement().add_tab(name, index, None)?;
+            let cmd = goofi_engine::Command::LayoutBirth { plan, born: tab.clone() };
+            let text = apply_layout(state, &mut g, session, cmd)?;
+            // The root panel's id, which a caller cannot otherwise know.
+            let id = g.arrangement().root_of(&tab).unwrap_or_default();
+            Ok(json!({ "id": id, "tab": tab, "text": text["text"] }))
+        }
+    }
+}
+
+/// Move a layout entry — a panel, a subtree or a tab; ONE op per drag gesture, so a drop is one
+/// undo step and peers never see an arrangement that was not on somebody's screen.
+pub(crate) fn layout_move(
+    state: &AppState,
+    payload: &Value,
+    session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    const OP: &str = "layout move";
+    let mut g = state.graph.lock().unwrap();
+    let entry = parse_str(payload, "entry")?.to_string();
+    let beside = payload.get("beside").and_then(|v| v.as_str()).map(str::to_string);
+    let within = payload.get("in").and_then(|v| v.as_str()).map(str::to_string);
+    let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
+    let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    // A tab already has a tab, so a destination-less move is a reorder rather than a wrap. The
+    // id says which — as it does for the edit trio and `layout remove`.
+    let is_tab = g.arrangement().tab_index(&entry).is_some();
+    let (plan, placed) = match (beside.as_deref(), within.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(format!("{OP}: `--beside` and `--in` are two destinations — give one"))
+        }
+        // Beside a target, dividing it; the side defaults right, as a birth's does.
+        (Some(target), None) => {
+            let side = match payload.get("side").filter(|v| !v.is_null()) {
+                Some(_) => parse_side(payload, OP)?,
+                None => goofi_engine::layout::Side::Right,
+            };
+            (g.arrangement().insert_at_panel(&entry, target, side, ratio)?, entry.clone())
+        }
+        // Inside a split, at an index — the drop into a container that exists.
+        (None, Some(parent)) => {
+            (g.arrangement().move_subtree(&entry, parent, index.unwrap_or(0))?, entry.clone())
+        }
+        (None, None) if is_tab => {
+            let at = index.ok_or(format!("{OP}: a tab moves to an `--index` in the strip"))?;
+            g.arrangement().reorder_tab(&entry, at)?;
+            let cmd = goofi_engine::Command::LayoutReorderTab { tab: entry.clone(), to_index: at };
+            let text = apply_layout(state, &mut g, session, cmd)?;
+            return Ok(json!({ "id": entry, "tab": entry, "text": text["text"] }));
+        }
+        // Onto a tab of its own — the drag onto the tab bar. A tab built AROUND an existing
+        // subtree is a MOVE, so its undo gives the subtree back.
+        (None, None) => {
+            let name = payload.get("name").and_then(|v| v.as_str());
+            let (plan, tab) = g.arrangement().add_tab(name, index, Some(&entry))?;
+            let cmd = goofi_engine::Command::LayoutMove {
+                plan: Some(plan), root: entry.clone(), home: None };
+            let text = apply_layout(state, &mut g, session, cmd)?;
+            return Ok(json!({ "id": entry, "tab": tab, "text": text["text"] }));
         }
     };
     let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: placed.clone(), home: None };
@@ -656,14 +682,14 @@ pub(crate) fn place_panel(
     Ok(json!({ "id": placed, "tab": tab, "text": text["text"] }))
 }
 
-pub(crate) fn remove_panel(
+pub(crate) fn layout_remove(
     state: &AppState,
     payload: &Value,
     session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let panel = parse_str(payload, "panel")?.to_string();
+    let panel = parse_str(payload, "entry")?.to_string();
     // A tab is closed whole; anything else is closed with promote. Planned here only so a bad id
     // answers teachably: `LayoutClose` re-plans it under this same lock, and DEGRADES rather
     // than errors.
@@ -674,7 +700,9 @@ pub(crate) fn remove_panel(
     apply_layout(state, &mut g, session, goofi_engine::Command::LayoutClose { born: panel })
 }
 
-pub(crate) fn set_global(
+/// Create a global. Every expression reading one depends on its TYPE, so the type is declared
+/// at birth and immutable after — re-typing is a remove and an add.
+pub(crate) fn global_add(
     state: &AppState,
     payload: &Value,
     session: &str,
@@ -682,35 +710,13 @@ pub(crate) fn set_global(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let name = parse_str(payload, "name")?.to_string();
-    let held = g.globals().get(&name).map(goofi_engine::global_to_json);
-    // NO value is a delete, so removing a global is the absence of one rather than an op of its
-    // own.
-    let Some(val) = payload.get("value").filter(|v| !v.is_null()) else {
-        if held.is_none() {
-            return Err(format!("set_global: no such global `{name}`"));
-        }
-        state.history.lock().unwrap().apply(
-            &mut g,
-            session,
-            goofi_engine::Command::EditGlobal { name, value: None, at: None },
-        )?;
-        return Ok(json!({ "removed": true }));
-    };
-    // Every expression reading a global depends on its TYPE, so re-typing one through a value
-    // edit would break the reference rather than the call.
-    let held_ty = held.as_ref().map(|h| h["type"].as_str().unwrap_or_default().to_string());
-    let ty = match (payload.get("type").and_then(|v| v.as_str()), &held_ty) {
-        (Some(t), Some(h)) if t != h => {
-            return Err(format!(
-                "set_global: `{name}` is a {h} — remove it and set it again to re-type it"
-            ))
-        }
-        (Some(t), _) => t.to_string(),
-        (None, Some(h)) => h.clone(),
-        (None, None) => return Err(format!("set_global: `{name}` is new — give its `type`")),
-    };
+    if g.globals().get(&name).is_some() {
+        return Err(format!("global add: `{name}` already exists — `global edit` changes it"));
+    }
+    let ty = parse_str(payload, "type")?;
+    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global add: missing value")?;
     let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
-        .ok_or_else(|| format!("set_global: `{val}` is not a {ty}"))?;
+        .ok_or_else(|| format!("global add: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         session,
@@ -720,14 +726,57 @@ pub(crate) fn set_global(
     Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
 }
 
-pub(crate) fn group_nodes(
+pub(crate) fn global_edit(
     state: &AppState,
     payload: &Value,
     session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let uids = parse_uid_list(payload, "members")?;
+    let name = parse_str(payload, "name")?.to_string();
+    let held = g.globals().get(&name).map(goofi_engine::global_to_json);
+    let Some(held) = held else {
+        return Err(format!("global edit: no global `{name}` — `global add` creates one"));
+    };
+    let ty = held["type"].as_str().unwrap_or_default().to_string();
+    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global edit: missing value")?;
+    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+        .ok_or_else(|| format!("global edit: `{val}` is not a {ty}"))?;
+    state.history.lock().unwrap().apply(
+        &mut g,
+        session,
+        goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+    )?;
+    Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
+}
+
+pub(crate) fn global_remove(
+    state: &AppState,
+    payload: &Value,
+    session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let name = parse_str(payload, "name")?.to_string();
+    if g.globals().get(&name).is_none() {
+        return Err(format!("global remove: no global `{name}`"));
+    }
+    state.history.lock().unwrap().apply(
+        &mut g,
+        session,
+        goofi_engine::Command::EditGlobal { name, value: None, at: None },
+    )?;
+    Ok(json!({ "removed": true }))
+}
+
+pub(crate) fn nodes_group(
+    state: &AppState,
+    payload: &Value,
+    session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let uids = parse_uid_list(payload, "nodes")?;
     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
     let out = state.history.lock().unwrap().apply(
         &mut g,
@@ -736,19 +785,19 @@ pub(crate) fn group_nodes(
     )?;
     let inst = match out {
         goofi_engine::Outcome::Uid(u) => u,
-        _ => return Err("group_nodes: no scope uid returned".into()),
+        _ => return Err("nodes group: no scope uid returned".into()),
     };
     Ok(json!({ "inst_id": inst.to_hex() }))
 }
 
-pub(crate) fn expand_instance(
+pub(crate) fn nodes_ungroup(
     state: &AppState,
     payload: &Value,
     session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let inst = parse_uid(payload, "inst_id")?;
+    let inst = parse_uid(payload, "subpatch")?;
     state
         .history
         .lock()
@@ -757,30 +806,23 @@ pub(crate) fn expand_instance(
     Ok(json!({ "ok": true }))
 }
 
-pub(crate) fn inspect_patch(
+pub(crate) fn nodes_inspect(
     state: &AppState,
     payload: &Value,
     _session: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    // The header carries the workspace walk, so it is taken BEFORE the graph lock: no filesystem
-    // walk may run while the status-drain worker waits on that lock.
-    let dirty = state.is_dirty();
-    let workspace = state.mount();
-    let save_path = state.save_path();
     let g = state.graph.lock().unwrap();
     let scope = match payload.get("scope").filter(|v| !v.is_null()) {
         Some(v) => {
-            Some(v.as_str().and_then(Uid::from_hex).ok_or("inspect_patch: malformed scope")?)
+            Some(v.as_str().and_then(Uid::from_hex).ok_or("nodes inspect: malformed scope")?)
         }
         None => None,
     };
-    let text =
-        inspect::patch(&g, scope, save_path.as_deref(), &goofi_core::path::to_slash(&workspace), dirty)?;
-    Ok(json!({ "text": text }))
+    Ok(json!({ "text": inspect::patch(&g, scope)? }))
 }
 
-pub(crate) fn inspect_node(
+pub(crate) fn node_state(
     state: &AppState,
     payload: &Value,
     _session: &str,
@@ -794,7 +836,7 @@ pub(crate) fn inspect_node(
     Ok(json!({ "text": text }))
 }
 
-pub(crate) fn list_globals(
+pub(crate) fn global_list(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -806,7 +848,7 @@ pub(crate) fn list_globals(
 
 /// The open patch's identity AND its health. The error list was drawn under every
 /// `inspect_patch`, whichever scope was asked for, so it arrived again under each.
-pub(crate) fn get_patch(
+pub(crate) fn session_status(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -818,6 +860,9 @@ pub(crate) fn get_patch(
     let dirty = state.is_dirty();
     let g = state.graph.lock().unwrap();
     Ok(json!({
+        // The id is what the session-file probe verifies: a listener that answers with another
+        // id — or none — is not this session.
+        "instance_id": &*state.instance_id,
         "save_path": save_path,
         "workspace": workspace,
         "dirty": dirty,
@@ -825,7 +870,7 @@ pub(crate) fn get_patch(
     }))
 }
 
-pub(crate) fn serialize(
+pub(crate) fn session_manifest(
     state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -837,20 +882,20 @@ pub(crate) fn serialize(
 
 /// The mount is a per-run temp directory under a random name, so asking is the only way a client
 /// or a harness can find it.
-pub(crate) fn save(
+pub(crate) fn session_save(
     state: &AppState,
     payload: &Value,
     _session: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
-    // Expand `~` exactly as the browser does — the two must agree on what a path means. A save
-    // writes a file or it is malformed.
-    let path = payload
-        .get("path")
-        .and_then(|v| v.as_str())
-        .map(fsbrowse::resolve)
-        .ok_or("save: missing path")?;
+    // Expand `~` exactly as the browser does — the two must agree on what a path means. No path
+    // means the patch's HOME, and a patch that never had one is refused rather than guessed at.
+    let path = match payload.get("path").and_then(|v| v.as_str()) {
+        Some(p) => fsbrowse::resolve(p),
+        None => state.save_path().ok_or(
+            "session save: this patch has no home yet — give a path")?,
+    };
     let mount = state.mount();
     // Sampled BEFORE the pack: baselining after would call a file written during the zip packed
     // either way, which is the direction that LOSES an edit.
@@ -868,11 +913,11 @@ pub(crate) fn save(
     Ok(json!({ "path": path }))
 }
 
-/// One arm for every source, so nothing after the read can drift between them.
-pub(crate) fn load(
+/// The core every patch replacement shares, so nothing after the read can drift between the
+/// sources: a `.gfi`, an inline manifest, or nothing at all — the empty patch.
+fn load_patch(
     state: &AppState,
     payload: &Value,
-    _session: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let result = {
@@ -905,8 +950,8 @@ pub(crate) fn load(
         // A load fully resets the session: there is nothing to undo across it.
         state.history.lock().unwrap().clear();
         events.extend(state.set_dirty(false));
-        // NONE for an inline load and for `new`, neither with a file behind it: an inherited
-        // path would aim the next silent Save at an unrelated `.gfi`.
+        // NONE for an inline load and for `session new`, neither with a file behind it: an
+        // inherited path would aim the next silent save at an unrelated `.gfi`.
         *state.save_path.lock().unwrap() = from_path.clone();
         events.push(event(
             "graph_replaced",
@@ -924,6 +969,30 @@ pub(crate) fn load(
     };
     resync_and_broadcast(state);
     Ok(result)
+}
+
+pub(crate) fn session_load(
+    state: &AppState,
+    payload: &Value,
+    _session: &str,
+    events: &mut Vec<String>,
+) -> Result<Value, String> {
+    // A source is REQUIRED: no bare word may be the destructive New. `session new` is explicit.
+    let has_source = payload.get("path").and_then(|v| v.as_str()).is_some_and(|p| !p.is_empty())
+        || payload.get("content").and_then(|v| v.as_str()).is_some();
+    if !has_source {
+        return Err("session load: give a `path` or `--content` — `session new` opens the empty patch".into());
+    }
+    load_patch(state, payload, events)
+}
+
+pub(crate) fn session_new(
+    state: &AppState,
+    _payload: &Value,
+    _session: &str,
+    events: &mut Vec<String>,
+) -> Result<Value, String> {
+    load_patch(state, &json!({}), events)
 }
 
 pub(crate) fn undo(
@@ -961,7 +1030,7 @@ pub(crate) fn redo(
 }
 
 /// The registry itself, as data a caller derives a whole client from.
-pub(crate) fn list_ops(
+pub(crate) fn op_list(
     _state: &AppState,
     _payload: &Value,
     _session: &str,
@@ -973,6 +1042,7 @@ pub(crate) fn list_ops(
             json!({
                 "op": o.name,
                 "args": o.args,
+                "positional": o.positional,
                 "kind": o.handler.kind_name(),
                 "doc": o.doc(),
                 "result": o.result,

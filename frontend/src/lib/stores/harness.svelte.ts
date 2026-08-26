@@ -67,7 +67,7 @@ export class HarnessStore {
 		if (!was) return;
 		if (was.state === 'running' && i.exit_code)
 			notify().raise(`${harnessLabel(i)} exited unexpectedly (code ${i.exit_code})`);
-		void this.ctl.call('stop_harness', { instance: i.id }).catch(() => {});
+		void this.ctl.call('agent stop', { instance: i.id }).catch(() => {});
 	}
 
 	mount(panelId: string): void {
@@ -125,13 +125,13 @@ export class HarnessStore {
 
 	/** Launch a harness and bind it to the panel that asked, so that panel shows what it asked for. */
 	async launch(panelId: string, harness: string): Promise<void> {
-		const born = await this.ctl.call<{ instance_id: string }>('spawn_harness', { harness });
+		const born = await this.ctl.call<{ instance_id: string }>('agent start', { name: harness });
 		if (born?.instance_id) this.show(panelId, born.instance_id);
 	}
 
 	/** The Kill half — the manager's full stop path. */
 	kill(id: string): void {
-		void this.ctl.call('stop_harness', { instance: id });
+		void this.ctl.call('agent stop', { instance: id });
 		this.closing = null;
 	}
 }

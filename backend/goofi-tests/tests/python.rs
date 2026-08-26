@@ -92,7 +92,7 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
     let ty = install(&g, &py.py, "affine.py", AFFINE);
     assert_eq!(ty, "Affine", "the type is named after the file stem");
 
-    let row = g.call("list_nodes", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "Affine").expect("Affine is in the palette").clone();
     assert_eq!(row["input_slots"]["data"], "ARRAY", "{row}");
     assert_eq!(row["output_slots"]["out"], "ARRAY", "{row}");
@@ -226,11 +226,11 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
             panic!("a node with a missing import must not probe as loadable"),
         goofi_python::Discovery::Skip => panic!("the file was not taken for a node file at all"),
     }
-    let row = g.call("list_nodes", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "NeedsScipy").expect("the greyed row is in the palette").clone();
     assert_eq!(row["available"], false, "{row}");
     assert!(row["doc"].as_str().unwrap().contains("definitely_not_installed"), "{row}");
-    g.refuse("add_node", j!({ "type": "NeedsScipy" }));
+    g.refuse("node add", j!({ "type": "NeedsScipy" }));
 }
 
 #[test]
@@ -425,7 +425,7 @@ class Sleeper(goofi.Node):
         let t0 = Instant::now();
         g.until("the lone sleeper to emit", |_| solo_probe.latest());
         let one = t0.elapsed();
-        g.call("remove_node", j!({ "node": hex(solo) }));
+        g.call("node remove", j!({ "node": hex(solo) }));
 
         let sleepers: Vec<_> = (0..4).map(|_| g.add("Sleeper")).collect();
         let probes: Vec<_> = sleepers.iter().map(|u| g.probe(*u, "out")).collect();
@@ -449,7 +449,7 @@ class Sleeper(goofi.Node):
         let g = Goofi::new();
         g.state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(
             goofi_python::inproc::PyExprEvaluator::new().expect("the evaluator constructs")));
-        g.call("set_global", j!({ "name": "default_ufreq", "value": 5.0, "type": "float" }));
+        g.call("global edit", j!({ "name": "default_ufreq", "value": 5.0 }));
 
         let osc = g.add("Oscillator");
         let probe = g.probe(osc, "out");
@@ -474,7 +474,7 @@ class Sleeper(goofi.Node):
         let slow = runs(Duration::from_millis(800));
         assert!(slow <= 8, "5 Hz produced {slow} frames in 0.8 s — the global is not pacing it");
 
-        g.call("set_global", j!({ "name": "default_ufreq", "value": 60.0, "type": "float" }));
+        g.call("global edit", j!({ "name": "default_ufreq", "value": 60.0 }));
         g.until("every producer to be re-rated by one global edit",
                 |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
     }

@@ -89,7 +89,7 @@ fn emits(g: &Goofi, uid: goofi_tests::Uid, want: f32) {
 }
 
 fn rescan(g: &Goofi) -> serde_json::Value {
-    g.call("rescan_nodes", j!({}))
+    g.call("library refresh", j!({}))
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
     // Removal closes the door; it does not reach into the graph.
     std::fs::remove_file(nodes.join("my_thing.py")).unwrap();
     assert_eq!(rescan(&g)["removed"], j!(["MyThing"]));
-    g.refuse("add_node", j!({ "type": "MyThing" }));
+    g.refuse("node add", j!({ "type": "MyThing" }));
     emits(&g, live, 2.0); // …and its instance still runs
 }
 
@@ -133,7 +133,7 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
 
     let uid = g.add("MyThing");
     emits(&g, uid, 9.0); // the patch's own file wins the name
-    let source = |ty: &str| g.call("list_nodes", j!({}))["types"].as_array().unwrap().iter()
+    let source = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).unwrap()["source"].clone();
     assert_eq!(source("MyThing"), "patch", "…and says where it came from");
     assert_eq!(source("OnlyShipped"), "builtin", "the shipped tree's own node is not the patch's");
@@ -169,7 +169,7 @@ fn a_named_type_hands_back_the_file_that_is_actually_running() {
     g.state.system_nodes = vec![builtin.path().to_path_buf(), mine.path().to_path_buf()];
     rescan(&g);
 
-    let r = g.call("list_nodes", j!({ "type": "MyThing" }));
+    let r = g.call("library get", j!({ "type": "MyThing" }));
     assert_eq!(r["source"], "5.0", "the file that RUNS is the file handed back: {r}");
     assert_eq!(r["provenance"], "shipped", "{r}");
     assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("my_thing.py")),
@@ -177,7 +177,7 @@ fn a_named_type_hands_back_the_file_that_is_actually_running() {
 
     write_node(&g.state.mount().join("nodes"), "my_thing.py", "9.0");
     rescan(&g);
-    let r = g.call("list_nodes", j!({ "type": "MyThing" }));
+    let r = g.call("library get", j!({ "type": "MyThing" }));
     assert_eq!(r["provenance"], "patch", "{r}");
     assert_eq!(r["source"], "9.0", "{r}");
 }
@@ -191,16 +191,16 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
     write_node(&g.state.mount().join("nodes"), "my_thing.py", "5.0");
     rescan(&g);
     g.add("MyThing");
-    g.call("save", j!({ "path": target.to_string_lossy() }));
+    g.call("session save", j!({ "path": target.to_string_lossy() }));
 
     // A SECOND manager, which is the real case: it has never seen this type.
     let opened = scanning();
-    opened.call("load", j!({ "path": target.to_string_lossy() }));
+    opened.call("session load", j!({ "path": target.to_string_lossy() }));
     assert_eq!(opened.nodes().len(), 1);
     let uid = opened.state.graph.lock().unwrap().node_uids()[0];
     emits(&opened, uid, 5.0); // the instance runs the patch's code
 
     // `new` swaps in an empty workspace, so a type the previous patch brought stops being addable.
-    opened.call("load", j!({}));
-    opened.refuse("add_node", j!({ "type": "MyThing" }));
+    opened.call("session new", j!({}));
+    opened.refuse("node add", j!({ "type": "MyThing" }));
 }

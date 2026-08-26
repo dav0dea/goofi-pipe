@@ -49,60 +49,60 @@ export function goofiLayoutHost(deps: HostDeps): LayoutHost {
 		async addTab(opts): Promise<TabRef | null> {
 			// Grouped so a tab that arrives already showing its panel type is one ctrl-Z.
 			return await history().transaction('Add tab', async () => {
-				const born = await cmd<Placed>('Add tab', 'place_panel', { index: opts?.index });
+				const born = await cmd<Placed>('Add tab', 'layout panel add', { index: opts?.index });
 				if (born && opts?.panelType) {
-					await cmd('Change panel', 'edit_panel', { panel: born.id, type: opts.panelType });
+					await cmd('Change panel', 'layout panel edit', { panel: born.id, type: opts.panelType });
 				}
 				return born && { tab: born.tab, panel: born.id };
 			});
 		},
 
 		async removeTab(tab) {
-			return landed(await cmd('Close tab', 'remove_panel', { panel: tab }));
+			return landed(await cmd('Close tab', 'layout remove', { entry: tab }));
 		},
 
 		async renameTab(tab, name) {
-			return landed(await cmd('Rename tab', 'edit_panel', { panel: tab, name }));
+			return landed(await cmd('Rename tab', 'layout tab edit', { tab, name }));
 		},
 
 		async reorderTab(tab, toIndex) {
-			return landed(await cmd('Reorder tabs', 'place_panel', { panel: tab, index: toIndex }));
+			return landed(await cmd('Reorder tabs', 'layout move', { entry: tab, index: toIndex }));
 		},
 
-		// `to`, not `panel`: the fresh panel is what is placed, and it lands beside this one.
+		// `beside`: the fresh panel is what is placed, and it lands beside this one.
 		async splitPanel(panel, direction: Direction, placeBefore, ratio) {
-			const fresh = await cmd<Placed>('Split panel', 'place_panel', {
-				to: panel,
-				direction: side(direction, placeBefore),
+			const fresh = await cmd<Placed>('Split panel', 'layout panel add', {
+				beside: panel,
+				side: side(direction, placeBefore),
 				ratio
 			});
 			return fresh?.id ?? null;
 		},
 
 		async removePanel(panel) {
-			return landed(await cmd('Close panel', 'remove_panel', { panel }));
+			return landed(await cmd('Close panel', 'layout remove', { entry: panel }));
 		},
 
 		async resizeSplit(split, fractions) {
-			return landed(await cmd('Resize', 'edit_panel', { panel: split, fractions }));
+			return landed(await cmd('Resize', 'layout split edit', { split, fraction: fractions }));
 		},
 
 		async setPanel(panel, patch, label = 'Change panel') {
-			return landed(await cmd(label, 'edit_panel', { panel, ...patch }));
+			return landed(await cmd(label, 'layout panel edit', { panel, ...patch }));
 		},
 
 		// One op either way: a drop onto the tab bar names no target, a drop on an edge names one.
 		async movePanel(subtree, to) {
 			if ('newTab' in to) {
 				return landed(
-					await cmd('Move panel to new tab', 'place_panel', { panel: subtree, index: to.newTab })
+					await cmd('Move panel to new tab', 'layout move', { entry: subtree, index: to.newTab })
 				);
 			}
 			return landed(
-				await cmd('Move panel', 'place_panel', {
-					panel: subtree,
-					to: to.panel,
-					direction: side(to.direction, to.placeBefore)
+				await cmd('Move panel', 'layout move', {
+					entry: subtree,
+					beside: to.panel,
+					side: side(to.direction, to.placeBefore)
 				})
 			);
 		}

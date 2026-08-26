@@ -59,7 +59,7 @@ pub(crate) async fn upload(State(state): State<AppState>, body: Bytes) -> Respon
     if let Err(e) = std::fs::write(&tmp, &body) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", tmp.display())).into_response();
     }
-    let load = state.call("load", json!({ "path": tmp.to_string_lossy(), "adopt": false }), "upload");
+    let load = state.call("session load", json!({ "path": tmp.to_string_lossy(), "adopt": false }), "upload");
     let _ = std::fs::remove_file(&tmp);
 
     match load {

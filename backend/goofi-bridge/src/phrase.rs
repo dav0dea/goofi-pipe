@@ -25,7 +25,7 @@ pub fn resolve(words: &[String]) -> Result<(&'static Op, usize), String> {
     let near: Vec<&str> =
         ops::REGISTRY.iter().map(|o| o.name).filter(|n| n.split(' ').next() == Some(first)).collect();
     match near.is_empty() {
-        true => Err(format!("unknown op `{line}` — `list_ops` answers every op this server speaks")),
+        true => Err(format!("unknown op `{line}` — `op list` answers every op this server speaks")),
         false => Err(format!("unknown op `{line}` — under `{first}`: {}", near.join(", "))),
     }
 }
@@ -43,19 +43,23 @@ pub fn parse(line: &str) -> Result<(&'static Op, Value), String> {
     Ok((op, payload))
 }
 
-/// The flags an op offers, for a refusal that teaches: `--name <type>`, `!` marking required.
+/// The arguments an op offers, for a refusal that teaches: leading positionals as `<name>`,
+/// then `--name <type>`, `!` marking required.
 fn usage(op: &Op) -> String {
-    let flags: Vec<String> = op
+    let spelled: Vec<String> = op
         .args()
-        .map(|(name, ty, req)| match (ty, req) {
-            ("bool", _) => format!("--[no-]{name}"),
-            (ty, true) => format!("--{name} <{ty}>!"),
-            (ty, false) => format!("--{name} <{ty}>"),
+        .enumerate()
+        .map(|(i, (name, ty, req))| match (i < op.positional, ty, req) {
+            (true, _, true) => format!("<{name}>"),
+            (true, _, false) => format!("[{name}]"),
+            (false, "bool", _) => format!("--[no-]{name}"),
+            (false, ty, true) => format!("--{name} <{ty}>!"),
+            (false, ty, false) => format!("--{name} <{ty}>"),
         })
         .collect();
-    match flags.is_empty() {
+    match spelled.is_empty() {
         true => format!("`{}` takes no arguments", op.name),
-        false => format!("`{}` takes: {}", op.name, flags.join(" ")),
+        false => format!("`{}` takes: {}", op.name, spelled.join(" ")),
     }
 }
 
@@ -88,6 +92,28 @@ fn parse_flags(op: &'static Op, words: &[String]) -> Result<Value, String> {
     let decls: Vec<(&str, &str, bool)> = op.args().collect();
     let mut payload = Map::new();
     let mut i = 0;
+    // Leading bare words fill the op's positional args, in declaration order; a list-typed
+    // positional is variadic and takes every bare word up to the first flag. Each positional
+    // stays reachable as a flag too, so the sugar never hides a spelling.
+    for (name, ty, _) in decls.iter().take(op.positional) {
+        if words.get(i).is_none_or(|w| w.starts_with("--")) {
+            break;
+        }
+        match ty.strip_suffix("[]") {
+            Some(item) => {
+                let mut list = Vec::new();
+                while let Some(w) = words.get(i).filter(|w| !w.starts_with("--")) {
+                    list.push(typed(op, name, item, w.clone())?);
+                    i += 1;
+                }
+                payload.insert(name.to_string(), Value::Array(list));
+            }
+            None => {
+                payload.insert(name.to_string(), typed(op, name, ty, words[i].clone())?);
+                i += 1;
+            }
+        }
+    }
     while i < words.len() {
         let word = &words[i];
         i += 1;
@@ -135,7 +161,9 @@ fn parse_flags(op: &'static Op, words: &[String]) -> Result<Value, String> {
                 }
             }
             None => {
-                payload.insert(name.to_string(), typed(op, key, ty, raw)?);
+                if payload.insert(name.to_string(), typed(op, key, ty, raw)?).is_some() {
+                    return Err(format!("{}: `{key}` was given twice", op.name));
+                }
             }
         }
     }

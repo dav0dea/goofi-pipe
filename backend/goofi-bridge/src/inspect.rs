@@ -62,24 +62,16 @@ fn age(g: &Graph, uid: Uid) -> String {
     }
 }
 
-/// `inspect_patch`: ONE scope drawn as a mermaid flowchart, under a header that identifies the
-/// patch. Scope-wide and nothing more — the patch's standing errors are `get_patch`'s.
-pub fn patch(
-    g: &Graph,
-    scope: Option<Uid>,
-    save_path: Option<&str>,
-    workspace: &str,
-    dirty: bool,
-) -> Result<String, String> {
+/// `nodes inspect`: ONE scope drawn as a mermaid flowchart. Scope-wide and nothing more — the
+/// patch's identity and standing errors are `session status`'s.
+pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
     if let Some(s) = scope {
         if !g.is_facade(s) {
-            return Err(format!("inspect_patch: no sub-patch `{}`", s.to_hex()));
+            return Err(format!("nodes inspect: no sub-patch `{}`", s.to_hex()));
         }
     }
     let mut out = format!(
-        "patch: {}\nworkspace: {workspace}\nunsaved changes: {}\nscope: {}\n",
-        save_path.unwrap_or("(never saved)"),
-        if dirty { "yes" } else { "no" },
+        "scope: {}\n",
         scope.map_or("root".to_string(), |s| format!("{} ({})", scope_path(g, s), s.to_hex())),
     );
 
@@ -129,7 +121,7 @@ pub fn patch(
     Ok(out)
 }
 
-/// Every standing error in the patch, with the age of each — what `get_patch` answers, because a
+/// Every standing error in the patch, with the age of each — what `session status` answers, because a
 /// patch's health is the patch's, not a scope's. `inspect_patch` drew it under whichever scope was
 /// asked for, so the same list arrived again under each.
 pub fn errors(g: &Graph) -> Vec<Value> {
@@ -180,7 +172,7 @@ fn behind(g: &Graph, uid: Uid, slot: &str) -> Uid {
     }
 }
 
-/// `inspect_node`: what the node is, what its params say, which output slots it has and whether it
+/// `node state`: what the node is, what its params say, which output slots it has and whether it
 /// is emitting on them. The frames themselves are only on `/data/<node>/<slot>`.
 pub fn node(
     g: &Graph,
@@ -190,7 +182,7 @@ pub fn node(
     want_error: bool,
 ) -> Result<String, String> {
     let type_name = g.node_type(uid)
-        .ok_or_else(|| format!("inspect_node: no node `{}`", uid.to_hex()))?;
+        .ok_or_else(|| format!("node state: no node `{}`", uid.to_hex()))?;
     // A port and a facade never run, so they wear no tier and reach no stage; everything else a
     // read says about a node, they answer.
     let runtime = match g.manifest(uid) {
@@ -209,7 +201,7 @@ pub fn node(
     if let Some(s) = slot {
         if !outputs.iter().any(|(key, label, _)| label == s || key == s) {
             return Err(format!(
-                "inspect_node: `{type_name}` has no output slot `{s}` (it has: {})",
+                "node state: `{type_name}` has no output slot `{s}` (it has: {})",
                 outputs.iter().map(|(_, l, _)| l.as_str()).collect::<Vec<_>>().join(", "),
             ));
         }
@@ -248,7 +240,7 @@ pub fn node(
     Ok(out)
 }
 
-/// `list_globals`: what an expression can read and `set_global` can write.
+/// `global list`: what an expression can read and the global writes can set.
 pub fn globals(g: &Graph) -> Value {
     let entries: Vec<Value> = g
         .globals()
@@ -265,12 +257,12 @@ pub fn globals(g: &Graph) -> Value {
     json!({ "globals": entries })
 }
 
-/// `list_nodes {type}`: a node type's text where it has one, and its provenance either way.
+/// `library get`: a node type's text where it has one, and its provenance either way.
 pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
     let native = goofi_node::find(ty);
     let manifest = native
         .or_else(|| g.dyn_type_manifests().into_iter().find(|m| m.type_name == ty))
-        .ok_or_else(|| format!("list_nodes: no node type `{ty}`"))?;
+        .ok_or_else(|| format!("library get: no node type `{ty}`"))?;
     let mut info = crate::schemas::node_type_info(
         manifest,
         if g.is_patch_type(ty) { "patch" } else { "builtin" },
@@ -327,7 +319,7 @@ fn layout_line(n: &Node, depth: usize, out: &mut String) {
 pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
     let mut out = String::from(
         "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
-         The number on each entry is its share of its parent — what edit_panel's `fractions` sets.\n\n",
+         The number on each entry is its share of its parent — what `layout split edit` sets.\n\n",
     );
     let tabs = match tab {
         Some(t) => vec![t.to_string()],

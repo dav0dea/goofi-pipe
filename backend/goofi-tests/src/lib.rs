@@ -78,7 +78,7 @@ impl Goofi {
     /// Add a node and answer its uid.
     #[track_caller]
     pub fn add(&self, type_name: &str) -> Uid {
-        let r = self.call("add_node", json!({ "type": type_name }));
+        let r = self.call("node add", json!({ "type": type_name }));
         let hex = r["uid"].as_str().unwrap_or_else(|| panic!("add_node answered {r}"));
         Uid::from_hex(hex).unwrap_or_else(|| panic!("add_node answered a malformed uid {hex}"))
     }
@@ -88,7 +88,7 @@ impl Goofi {
     #[track_caller]
     pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
         let r = self
-            .call("edit_node", json!({ "node": hex(uid), "params": { group: { name: value.into() } } }));
+            .call("node edit", json!({ "node": hex(uid), "params": { group: { name: value.into() } } }));
         r["params"][group][name].clone()
     }
 
@@ -96,14 +96,14 @@ impl Goofi {
     #[track_caller]
     pub fn link(&self, from: Uid, out: &str, to: Uid, into: &str) {
         self.call(
-            "add_link",
+            "link add",
             json!({ "node_out": hex(from), "slot_out": out, "node_in": hex(to), "slot_in": into }),
         );
     }
 
     /// The replicated projection every client mirrors.
     pub fn doc(&self) -> Value {
-        self.call("get_state", json!({}))
+        self.call("session state", json!({}))
     }
 
     /// Bind a real server on a free port and answer its `ws://host:port` base.

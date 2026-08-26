@@ -31,14 +31,14 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     assert_eq!(hello["pillars"], j!(["signal"]), "the backend advertises what it hosts");
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
 
-    let types = c.call("list_nodes", j!({})).await["types"].as_array().cloned().unwrap();
+    let types = c.call("library list", j!({})).await["types"].as_array().cloned().unwrap();
     for want in ["Oscillator", "Buffer", "DiscoveredPyNode"] {
         // A crate nothing NAMES is a crate rustc drops, taking its `inventory` registrations with it.
         assert!(types.iter().any(|t| t["type"] == want), "`{want}` is missing: {types:?}");
     }
     assert!(!types.iter().any(|t| t["type"] == "_TestEcho"), "test nodes stay out of the palette");
 
-    let uid = c.call("add_node", j!({ "type": "Oscillator", "pos": [10.0, 20.0] })).await["uid"]
+    let uid = c.call("node add", j!({ "type": "Oscillator", "pos": [10.0, 20.0] })).await["uid"]
         .as_str().unwrap().to_string();
     let added = c.event("node_added").await;
     assert_eq!(added, j!({ "uid": uid }), "no graph state rides an event: {added}");
@@ -62,14 +62,14 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     assert_eq!(c.doc().version(), 1, "and at the manager's version, not at its own zero");
 
     // `call` reads past the delta on the way to the reply, and the replica takes it as it goes by.
-    let uid = c.call("add_node", j!({ "type": "Oscillator" })).await["uid"].as_str().unwrap().to_string();
+    let uid = c.call("node add", j!({ "type": "Oscillator" })).await["uid"].as_str().unwrap().to_string();
     c.until_doc(|d| d.node_ids().contains(&uid)).await;
     assert_eq!(c.doc().read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(Value::as_str),
                Some("Oscillator"), "the delta carried the node");
 
     let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
-    let fresh = peer.call("place_panel", j!({ "to": panel,
-                                             "direction": "right", "ratio": 0.5 }))
+    let fresh = peer.call("layout panel add", j!({ "beside": panel,
+                                                   "side": "right", "ratio": 0.5 }))
         .await["id"].as_str().unwrap().to_string();
     c.until_doc(|d| panels(d).contains(&fresh)).await;
     let born = goofi_tests::arrangement_node(&c.doc().to_json()["arrangement"], &fresh).cloned();
@@ -77,14 +77,14 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
                "the peer's split converged, and a split births an EMPTY panel");
 
     assert_eq!(c.doc().read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
-    peer.call("set_global", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
+    peer.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
     c.until_doc(|d| d.read_at(&["globals", "subject", "value"]).is_some()).await;
     assert_eq!(c.doc().read_at(&["globals", "subject", "value"]), Some(j!("P07")));
     assert_eq!(c.doc().read_at(&["globals", "subject", "system"]), Some(j!(false)),
                "a user global is distinguishable from a system one in the replica");
 
     // A merge patch spells a delete as an explicit `null`, and the gate compares the whole projection.
-    peer.call("remove_node", j!({ "node": uid.clone() })).await;
+    peer.call("node remove", j!({ "node": uid.clone() })).await;
     c.until_doc(|d| !d.node_ids().contains(&uid)).await;
 }
 
@@ -108,7 +108,7 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     let osc = g.add("Oscillator");
     let flood = std::thread::spawn(move || {
         for _ in 0..1200 {
-            g.call("edit_node", j!({ "node": hex(osc), "params": { "common": {
+            g.call("node edit", j!({ "node": hex(osc), "params": { "common": {
                                          "max_frequency": { "expression": "7" } } } }));
         }
     });
@@ -134,8 +134,8 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     // Two servers, because a round trip through one would pass against a route that packed nothing.
     let src = Goofi::new();
     let source = host(&src.serve().await).to_string();
-    tool(&source, "add_node --type Oscillator").await;
-    tool(&source, "add_node --type Buffer").await;
+    tool(&source, "node add --type Oscillator").await;
+    tool(&source, "node add --type Buffer").await;
 
     let (status, head, gfi) = http(&source, "GET", "/patch.gfi", "", b"").await;
     assert_eq!(status, 200, "{head}");
@@ -146,19 +146,20 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     let dst = Goofi::new();
     let dest = host(&dst.serve().await).to_string();
     let octet = "Content-Type: application/octet-stream\r\n";
-    assert!(!tool(&dest, "inspect_patch").await.contains("Oscillator"), "it starts empty");
+    assert!(!tool(&dest, "nodes inspect").await.contains("Oscillator"), "it starts empty");
     let (status, head, _) = http(&dest, "POST", "/patch.gfi", octet, &gfi).await;
     assert_eq!(status, 200, "{head}");
 
-    let after = tool(&dest, "inspect_patch").await;
+    let after = tool(&dest, "nodes inspect").await;
     assert!(after.contains("Oscillator") && after.contains("Buffer"), "the whole patch: {after}");
     // The staging path is deleted the moment the load returns, so it must not become the patch's home.
-    assert!(after.contains("(never saved)"), "an uploaded patch has no server-side home: {after}");
+    assert_eq!(dst.call("session status", goofi_tests::j!({}))["save_path"], serde_json::Value::Null,
+               "an uploaded patch has no server-side home");
 
     let (status, head, body) = http(&dest, "POST", "/patch.gfi", octet, b"not a zip").await;
     assert_eq!(status, 400, "a bad upload is the caller's error, not the server's: {head}");
     assert!(!body.is_empty(), "the refusal says why");
-    assert!(tool(&dest, "inspect_patch").await.contains("Oscillator"),
+    assert!(tool(&dest, "nodes inspect").await.contains("Oscillator"),
             "the live patch survived a refused upload");
 }
 
@@ -305,16 +306,16 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
 
     let ta = tokio::spawn(async move {
         for i in 0..BURST {
-            let uid = a.call("add_node", j!({ "type": "Oscillator" })).await["uid"]
+            let uid = a.call("node add", j!({ "type": "Oscillator" })).await["uid"]
                 .as_str().unwrap().to_string();
-            a.call("edit_node", j!({ "node": uid, "name": format!("osc{i}"),
+            a.call("node edit", j!({ "node": uid, "name": format!("osc{i}"),
                                      "params": { "oscillator": { "amplitude": 0.1 * i as f64 } } })).await;
         }
         a
     });
     let tb = tokio::spawn(async move {
         for i in 0..BURST {
-            b.call("set_global", j!({ "name": format!("g{i}"), "value": i as f64, "type": "float" })).await;
+            b.call("global add", j!({ "name": format!("g{i}"), "value": i as f64, "type": "float" })).await;
         }
         b
     });
@@ -325,7 +326,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
     let mut a = ta.await.expect("device A's task");
     let mut b = tb.await.expect("device B's task");
 
-    let want = g.call("get_state", j!({}));
+    let want = g.call("session state", j!({}));
     for (device, client) in [("built the graph", &mut a), ("edited the globals", &mut b),
                              ("joined mid-flight", &mut c)] {
         client.until_doc(|d| d.to_json() == want).await;

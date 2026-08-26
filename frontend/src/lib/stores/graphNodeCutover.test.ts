@@ -315,7 +315,7 @@ describe('inline viewer state — the document is the one holder, so it follows 
 		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { kind: 'image' }, sig: { collapsed: true }, gone: { collapsed: true } }));
 
 		g.setSlotView('n1', 'sig', { collapsed: false });
-		const call = fc.recordedCalls().find((c) => c.op === 'edit_node');
+		const call = fc.recordedCalls().find((c) => c.op === 'node edit');
 		expect(call!.payload, 'only the slot edited travels — the manager merges the rest').toEqual({
 			node: 'n1',
 			viewers: { sig: { collapsed: false } }

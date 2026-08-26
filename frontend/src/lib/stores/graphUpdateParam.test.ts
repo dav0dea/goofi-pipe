@@ -75,7 +75,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		// A missing group/name (agent typo, or a pre-hydration race) must not record a
 		// poisoned undo entry whose inverse would send value:undefined → backend KeyError.
 		await expect(g.updateParam('uidA', 'nope', 'missing', 5)).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'edit_node')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'node edit')).toBe(false);
 		expect(history().canUndo).toBe(false);
 	});
 
@@ -90,7 +90,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 		// The guard keys on the param's EXISTENCE, not the truthiness of its value, so editing a
 		// param whose current value is 0/false/'' still issues the command (a missing param throws).
 		await g.updateParam('uidA', 'common', 'frequency', 5);
-		const call = fc.recordedCalls().find((c) => c.op === 'edit_node');
+		const call = fc.recordedCalls().find((c) => c.op === 'node edit');
 		expect(call?.payload).toEqual({ node: 'uidA', params: { common: { frequency: 5 } } });
 		expect(history().canUndo).toBe(true);
 	});
@@ -122,7 +122,7 @@ describe('GraphStore.refreshParam — asks the node to re-evaluate options', () 
 		history().reset();
 
 		await g.refreshParam('uidA', 'audio', 'device');
-		const call = fc.recordedCalls().find((c) => c.op === 'refresh_param');
+		const call = fc.recordedCalls().find((c) => c.op === 'node param refresh');
 		expect(call?.payload).toEqual({ node: 'uidA', group: 'audio', name: 'device' });
 		// A refresh recomputes options, not values — it is not an undoable graph edit.
 		expect(history().canUndo).toBe(false);
@@ -189,7 +189,7 @@ describe('GraphStore refresh spinner — the entry stays disabled until fresh op
 
 	it('drops the spinner if the RPC dispatch itself fails (the node will never push)', async () => {
 		const fc = new FakeControl();
-		fc.failNext('refresh_param');
+		fc.failNext('node param refresh');
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		fc.emit({ event: 'node_added', payload: nodeWithParam('uidA', 0) });

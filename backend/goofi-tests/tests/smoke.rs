@@ -46,7 +46,7 @@ fn a_failing_node_reports_why_and_a_healthy_one_stays_quiet() {
 fn a_refusal_says_what_was_wrong() {
     let g = Goofi::new();
     let n = g.add("_TestEcho");
-    let why = g.refuse("add_link", j!({ "node_out": goofi_tests::hex(n), "slot_out": "nope",
+    let why = g.refuse("link add", j!({ "node_out": goofi_tests::hex(n), "slot_out": "nope",
                                         "node_in": goofi_tests::hex(n), "slot_in": "in" }));
     assert!(why.contains("nope"), "the refusal names the slot: {why}");
 }
@@ -60,6 +60,6 @@ fn the_state_clients_replicate_is_readable_as_plain_json() {
     assert_eq!(doc["nodes"][goofi_tests::hex(n)]["type"], "_TestEcho", "{doc}");
     assert!(doc["globals"]["default_ufreq"].is_object(), "the seeded system globals: {doc}");
 
-    g.call("remove_node", j!({ "node": goofi_tests::hex(n) }));
+    g.call("node remove", j!({ "node": goofi_tests::hex(n) }));
     assert!(g.doc()["nodes"].get(goofi_tests::hex(n)).is_none(), "and a removal leaves no tombstone");
 }

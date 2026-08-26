@@ -20,17 +20,17 @@ describe('copy / paste / duplicate — the store carries the manager’s fragmen
 		d.node('uidA', 'Oscillator', 'oscillator0', [0, 0]);
 		d.instance('i1', 'subpatch0', [10, 10]);
 		const doc = { nodes: { uidA: { pos: [0, 0] }, i1: { pos: [10, 10] } }, links: [] };
-		fc.setCallResult('copy_nodes', { doc });
-		fc.setCallResult('paste_nodes', { rename: { uidA: 'newA', i1: 'newI' } });
+		fc.setCallResult('nodes copy', { doc });
+		fc.setCallResult('nodes paste', { rename: { uidA: 'newA', i1: 'newI' } });
 
 		const rename = await g.cloneNodes(['uidA', 'i1']);
 		expect(rename).toEqual({ uidA: 'newA', i1: 'newI' });
 
-		const copy = fc.recordedCalls().find((c) => c.op === 'copy_nodes');
+		const copy = fc.recordedCalls().find((c) => c.op === 'nodes copy');
 		expect(copy?.payload, 'the selection goes as uids — a facade among them').toEqual({
 			nodes: ['uidA', 'i1']
 		});
-		const paste = fc.recordedCalls().find((c) => c.op === 'paste_nodes');
+		const paste = fc.recordedCalls().find((c) => c.op === 'nodes paste');
 		expect(paste?.payload.doc, 'the fragment is handed back VERBATIM').toEqual(doc);
 		expect(paste?.payload.pos, 'a duplicate lands beside its original').toEqual([40, 40]);
 	});
@@ -42,11 +42,11 @@ describe('copy / paste / duplicate — the store carries the manager’s fragmen
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		seed(fc);
-		fc.setCallResult('copy_nodes', { doc: { nodes: { m1: { pos: [0, 0] } }, links: [] } });
-		fc.setCallResult('paste_nodes', { rename: { m1: 'newM' } });
+		fc.setCallResult('nodes copy', { doc: { nodes: { m1: { pos: [0, 0] } }, links: [] } });
+		fc.setCallResult('nodes paste', { rename: { m1: 'newM' } });
 
 		await g.cloneNodes(['m1'], [40, 40], 'i1');
-		const paste = fc.recordedCalls().find((c) => c.op === 'paste_nodes');
+		const paste = fc.recordedCalls().find((c) => c.op === 'nodes paste');
 		expect(paste?.payload.inst_id, 'the copy stays where the original is').toBe('i1');
 	});
 
@@ -54,16 +54,16 @@ describe('copy / paste / duplicate — the store carries the manager’s fragmen
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		seed(fc);
-		fc.setCallResult('paste_nodes', { rename: {} });
+		fc.setCallResult('nodes paste', { rename: {} });
 
 		await g.pasteNodes({ nodes: { a: { pos: [0, 0] } } }, [7, 9], 'i1');
-		const paste = fc.recordedCalls().find((c) => c.op === 'paste_nodes');
+		const paste = fc.recordedCalls().find((c) => c.op === 'nodes paste');
 		expect(paste?.payload).toMatchObject({ pos: [7, 9], inst_id: 'i1' });
 
 		// …and at root, `inst_id` is explicitly null rather than absent: the manager reads a missing
 		// key and a null one the same way, and saying it is what keeps the two ends in step.
 		await g.pasteNodes({ nodes: {} });
-		const rooted = fc.recordedCalls().filter((c) => c.op === 'paste_nodes').at(-1);
+		const rooted = fc.recordedCalls().filter((c) => c.op === 'nodes paste').at(-1);
 		expect(rooted?.payload.inst_id).toBeNull();
 	});
 
@@ -75,7 +75,7 @@ describe('copy / paste / duplicate — the store carries the manager’s fragmen
 		const g = new GraphStore(fc);
 		seed(fc);
 		history().configureDeps(() => ({ control: fc, graph: g, workspace: workspace() }));
-		fc.setCallResult('paste_nodes', { rename: { a: 'newA' } });
+		fc.setCallResult('nodes paste', { rename: { a: 'newA' } });
 
 		await g.pasteNodes({ nodes: { a: { pos: [0, 0] } } });
 		expect(history().length).toBe(1);
@@ -87,6 +87,6 @@ describe('copy / paste / duplicate — the store carries the manager’s fragmen
 		const g = new GraphStore(fc);
 		seed(fc);
 		expect(await g.cloneNodes([])).toEqual({});
-		expect(fc.recordedCalls().some((c) => c.op === 'copy_nodes' || c.op === 'paste_nodes')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'nodes copy' || c.op === 'nodes paste')).toBe(false);
 	});
 });

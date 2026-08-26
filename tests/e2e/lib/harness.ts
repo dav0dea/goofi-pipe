@@ -35,11 +35,11 @@ export async function rawCall(page: Page, op: string, payload: unknown): Promise
 }
 
 export const spawnSh = async (page: Page): Promise<string> =>
-	(await rawCall(page, 'spawn_harness', { harness: '_sh' })).result.instance_id;
+	(await rawCall(page, 'agent start', { name: '_sh' })).result.instance_id;
 
 /** An instance's state on the manager's roster, or 'gone' once it has been dismissed. */
 export async function stateOf(page: Page, id: string): Promise<string> {
-	const roster = (await rawCall(page, 'list_harnesses', {})).result;
+	const roster = (await rawCall(page, 'agent list', {})).result;
 	return roster.instances.find((i: { id: string }) => i.id === id)?.state ?? 'gone';
 }
 
@@ -47,8 +47,8 @@ export async function stateOf(page: Page, id: string): Promise<string> {
  * stop is what dismisses, and only an ALREADY-EXITED instance is dismissed by one — so it waits
  * for the exit first. */
 export async function dismiss(page: Page, id: string): Promise<void> {
-	await rawCall(page, 'stop_harness', { instance: id });
+	await rawCall(page, 'agent stop', { instance: id });
 	await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toMatch(/exited|gone/);
-	if ((await stateOf(page, id)) === 'exited') await rawCall(page, 'stop_harness', { instance: id });
+	if ((await stateOf(page, id)) === 'exited') await rawCall(page, 'agent stop', { instance: id });
 	await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('gone');
 }

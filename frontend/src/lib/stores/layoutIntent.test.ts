@@ -19,9 +19,12 @@ import { history } from './history.svelte';
  */
 
 const LAYOUT_OPS = [
-	'place_panel',
-	'edit_panel',
-	'remove_panel'
+	'layout panel add',
+	'layout move',
+	'layout tab edit',
+	'layout panel edit',
+	'layout split edit',
+	'layout remove'
 ];
 
 function defaultTabs(): Workspace[] {
@@ -63,7 +66,7 @@ describe('layout write intent', () => {
 
 	it('does not let a REFUSED structural change count as an edit', async () => {
 		const ws = boot();
-		fc.failNext('remove_panel');
+		fc.failNext('layout remove');
 		ws.close('panel-2'); // the last panel cannot be closed
 		await Promise.resolve();
 		await Promise.resolve();
