@@ -507,6 +507,7 @@ name = "goofi-bridge"
 version = "3.1.0"
 dependencies = [
  "axum",
+ "base64",
  "futures-util",
  "getrandom 0.4.3",
  "goofi-codec",
@@ -638,6 +639,7 @@ dependencies = [
 name = "goofi-tests"
 version = "3.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "futures-util",
  "goofi-bridge",

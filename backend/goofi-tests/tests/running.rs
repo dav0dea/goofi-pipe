@@ -11,6 +11,23 @@ fn f32s(d: &goofi_core::Data) -> Vec<f32> {
     a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
 }
 
+/// A snapshot reply's NPY, decoded; empty when the reply holds none.
+fn npy(r: &serde_json::Value) -> Vec<u8> {
+    use base64::Engine;
+    r["npy_b64"].as_str()
+        .map(|s| base64::engine::general_purpose::STANDARD.decode(s).expect("valid base64"))
+        .unwrap_or_default()
+}
+
+/// The f32 payload behind an NPY header; empty when there is no valid header.
+fn npy_f32s(bytes: &[u8]) -> Vec<f32> {
+    if bytes.len() < 10 {
+        return Vec::new();
+    }
+    let data = 10 + u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+    bytes[data..].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+}
+
 #[test]
 fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     let g = Goofi::new();
@@ -18,6 +35,11 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     let buf = g.add("Buffer");
     g.set_param(buf, "buffer", "size", 64);
     g.set_param(osc, "oscillator", "sfreq", 64.0);
+    // Nothing has flowed yet, so the raw read answers null WITH the reason — and the ask itself
+    // is what opens the slot's feed.
+    let idle = g.call("node snapshot", j!({ "slot": ep(hex(buf), "out") }));
+    assert!(idle["frame"].is_null() && idle["reason"].as_str().is_some_and(|r| r.contains("emit")),
+            "{idle}");
     let probe = g.probe(buf, "out"); // opened BEFORE the wire: the data services keep no history
     g.link(osc, "out", buf, "data");
 
@@ -31,6 +53,24 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     g.until("the window to shrink under the running node", |_| {
         probe.latest().filter(|d| f32s(d).len() == 16).map(|_| ())
     });
+
+    // The raw one-shot read: exactly the frame the node emitted, as NPY — no subscription, no
+    // reduction, and refused by naming the real slots when the address is wrong.
+    let why = g.refuse("node snapshot", j!({ "slot": ep(hex(buf), "psd") }));
+    assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
+    let snap = g.until("a 16-wide raw frame in the snapshot cache", |g| {
+        Some(g.call("node snapshot", j!({ "slot": ep(hex(buf), "out") })))
+            .filter(|r| npy_f32s(&npy(r)).len() == 16)
+    });
+    let bytes = npy(&snap);
+    assert!(bytes.starts_with(b"\x93NUMPY\x01\x00"), "an NPY magic: {:?}", &bytes[..10]);
+    let hlen = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+    assert_eq!((10 + hlen) % 64, 0, "the data offset is 64-aligned");
+    let header = String::from_utf8_lossy(&bytes[10..10 + hlen]).to_string();
+    assert!(header.contains("'descr': '<f4'") && header.contains("(16,)"), "{header}");
+    let vals = npy_f32s(&bytes);
+    assert!(vals.iter().all(|v| v.is_finite() && v.abs() <= 1.0), "the unit sine, raw: {vals:?}");
+    assert_eq!(snap["meta"]["sfreq"], 64.0, "meta rides the snapshot: {snap}");
 
     let mut ev = g.events();
     let stats = g.until("a node_stats broadcast", |_| {

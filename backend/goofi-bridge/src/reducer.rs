@@ -5,7 +5,7 @@
 //! graph, because a closing socket is no evidence that a slot stopped being watched.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -29,16 +29,20 @@ struct SlotReducer {
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
     /// `Bytes` so the socket task forwards the SHARED buffer — a per-subscriber copy undoes dedup.
     tx: broadcast::Sender<Bytes>,
-    task: tokio::task::JoinHandle<()>,
+    stop: Arc<AtomicBool>,
     reductions: Arc<AtomicU64>,
     /// Serve generation: bumped on every spec change and subscriber join, so the loop re-serves
     /// the current frame once even when the producer has not emitted.
     gen: Arc<AtomicU64>,
+    /// The latest RAW frame, pre-reduction — what serves a re-attaching viewer and `node snapshot`.
+    latest: Arc<Mutex<Option<goofi_core::Data>>>,
 }
 
 impl Drop for SlotReducer {
     fn drop(&mut self) {
-        self.task.abort();
+        // Signalled, never joined: the slot's own loop is what removes its entry, and a join
+        // from there would be a join on itself.
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -64,32 +68,55 @@ impl SlotReducers {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Subscribe `conn` to `key`'s reduced stream, spawning the slot's reducer task if it has none.
-    pub fn subscribe(&self, key: SlotKey, conn: ConnId) -> broadcast::Receiver<Bytes> {
+    /// The slot's reducer, spawning its task if it has none.
+    fn ensure<'a>(
+        &self,
+        map: &'a mut HashMap<SlotKey, SlotReducer>,
+        key: &SlotKey,
+    ) -> &'a mut SlotReducer {
         let slots = Arc::downgrade(&self.inner);
-        let mut map = self.inner.lock().unwrap();
-        let reducer = map.entry(key.clone()).or_insert_with(|| {
+        map.entry(key.clone()).or_insert_with(|| {
             let specs = Arc::new(Mutex::new(HashMap::new()));
             let (tx, _) = broadcast::channel(16);
             let reductions = Arc::new(AtomicU64::new(0));
             let gen = Arc::new(AtomicU64::new(0));
-            let task = spawn_reducer(
+            let latest = Arc::new(Mutex::new(None));
+            let stop = Arc::new(AtomicBool::new(false));
+            spawn_reducer(
                 key.clone(),
                 specs.clone(),
                 tx.clone(),
                 self.graph.clone(),
                 reductions.clone(),
                 gen.clone(),
+                latest.clone(),
+                stop.clone(),
                 slots,
             );
-            SlotReducer { specs, tx, task, reductions, gen }
-        });
+            SlotReducer { specs, tx, stop, reductions, gen, latest }
+        })
+    }
+
+    /// Subscribe `conn` to `key`'s reduced stream, spawning the slot's reducer task if it has none.
+    pub fn subscribe(&self, key: SlotKey, conn: ConnId) -> broadcast::Receiver<Bytes> {
+        let mut map = self.inner.lock().unwrap();
+        let reducer = self.ensure(&mut map, &key);
         reducer.specs.lock().unwrap().entry(conn).or_default();
         // The receiver MUST exist before the bump, or a sweep between the two statements
         // broadcasts the join-serve into a fan-out this joiner is not yet part of.
         let rx = reducer.tx.subscribe();
         reducer.gen.fetch_add(1, Ordering::Release);
         rx
+    }
+
+    /// The slot's latest RAW frame, once — never reduced, never a subscription. Asking also makes
+    /// sure the slot's reducer runs, so a never-watched slot starts warming on the first ask.
+    pub fn latest(&self, key: SlotKey) -> Option<goofi_core::Data> {
+        let mut map = self.inner.lock().unwrap();
+        let latest = self.ensure(&mut map, &key).latest.clone();
+        drop(map);
+        let d = latest.lock().unwrap().clone();
+        d
     }
 
     /// Replace `conn`'s declared specs for `key` (latest-wins). No-op if the slot is gone.
@@ -158,9 +185,11 @@ fn open_feed(graph: &Mutex<Graph>, uid: Uid, slot: &str) -> Option<SlotFeed> {
     Some(SlotFeed { _node: node, subscriber, service })
 }
 
-/// Spawn the per-slot reducer loop: every ~16 ms take whatever the producer has published and —
-/// only when it emitted, a subscriber joined, or the spec union changed — reduce, encode once, and
-/// broadcast to all. The sweep is a sampling deadline, never a send cadence.
+/// Spawn the per-slot reducer loop, on a PLAIN thread so any transport's thread can open one:
+/// every ~16 ms take whatever the producer has published and — only when it emitted, a subscriber
+/// joined, or the spec union changed — reduce, encode once, and broadcast to all. The sweep is a
+/// sampling deadline, never a send cadence.
+#[allow(clippy::too_many_arguments)]
 fn spawn_reducer(
     key: SlotKey,
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
@@ -168,21 +197,21 @@ fn spawn_reducer(
     graph: Arc<Mutex<Graph>>,
     reductions: Arc<AtomicU64>,
     gen: Arc<AtomicU64>,
+    latest: Arc<Mutex<Option<goofi_core::Data>>>,
+    stop: Arc<AtomicBool>,
     slots: Weak<Mutex<HashMap<SlotKey, SlotReducer>>>,
-) -> tokio::task::JoinHandle<()> {
+) {
     let (uid, slot) = key.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_millis(16));
-        // Latest-wins: a deadline missed while this task was starved is a sample that no longer
-        // exists, not a debt tokio's default `Burst` should repay back-to-back.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    std::thread::spawn(move || {
         let mut feed = open_feed(&graph, uid, &slot);
         let mut rehomed = std::time::Instant::now();
         // `served: None` means "never broadcast", which is what sends the first frame without a bump.
-        let mut cached: Option<goofi_core::Data> = None;
         let mut served: Option<u64> = None;
         loop {
-            ticker.tick().await;
+            std::thread::sleep(Duration::from_millis(16));
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
             if rehomed.elapsed() >= REHOME_INTERVAL {
                 rehomed = std::time::Instant::now();
                 let current = {
@@ -209,7 +238,7 @@ fn spawn_reducer(
             if let Some(f) = &feed {
                 while let Ok(Some(sample)) = f.subscriber.receive() {
                     if let Ok(frame) = goofi_codec::decode(sample.payload()) {
-                        cached = Some(frame);
+                        *latest.lock().unwrap() = Some(frame);
                         fresh = true;
                     }
                 }
@@ -218,7 +247,7 @@ fn spawn_reducer(
             if specs.lock().unwrap().is_empty() {
                 continue;
             }
-            let Some(d) = cached.clone() else { continue };
+            let Some(d) = latest.lock().unwrap().clone() else { continue };
             let g_now = gen.load(Ordering::Acquire);
             if !fresh && served == Some(g_now) {
                 continue; // nothing new to say — no emit, no joiner, no spec change
@@ -235,5 +264,5 @@ fn spawn_reducer(
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
             served = Some(g_now);
         }
-    })
+    });
 }

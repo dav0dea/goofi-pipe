@@ -23,6 +23,8 @@ futures-util = "0.3"
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `node snapshot` answers an ARRAY frame as base64 NPY.
+base64 = "0.22"
 # The command-line split the phrase layer parses with: the same quoting bash gives argv, which is
 # the contract — every transport that speaks lines gets bash's own word rules.
 shell-words = "1"

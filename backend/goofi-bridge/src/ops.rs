@@ -121,8 +121,12 @@ pub static REGISTRY: &[Op] = &[
     // -- node: one instance ----------------------------------------------------------------------
     Op { name: "node state", handler: Read(arms::node_state),
          args: "node:uid! slot:string params:bool error:bool", positional: 1,
-         doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output; `--no-params` and `--no-error` drop a section. The FRAMES are not here and cannot be: subscribe to `/data/<node>/<slot>` to see a node's data, exactly as a viewer does.",
+         doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output; `--no-params` and `--no-error` drop a section. The FRAMES are not here: `node snapshot` reads one raw, and `/data/<node>/<slot>` streams them exactly as a viewer sees them.",
          result: "{text: string}" },
+    Op { name: "node snapshot", handler: Read(arms::node_snapshot), args: "slot:endpoint!",
+         positional: 1,
+         doc: "The slot's latest frame, RAW and once — the analysis read, addressed `uid/slot`. It reads the cache the slot's reducer already keeps, so it never wakes the node and never touches the viewers' shared stream. ARRAY answers base64 NPY; STRING and TABLE answer plain JSON, a table's ARRAY members as NPY again. A slot asked about before anything was cached answers `{frame: null}` with the reason — asking is also what opens the slot's feed, so ask again after the node's next emit.",
+         result: "{meta, npy_b64} for ARRAY; {meta, value} for STRING/TABLE; {frame: null, reason} before the first cached frame" },
     Op { name: "node add", handler: Write(arms::node_add),
          args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid param:json[]", positional: 1,
          doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. Each `--param` is one birth param, self-addressed: `{\"name\": \"group/param\", …}` carrying `node param edit`'s fields — inside a JSON flag under bash, spell nested strings with ESCAPED double quotes (`\"nd(\\\"other\\\").sfreq\"`); a single-quoted `nd('x')` inside a single-quoted shell token loses its quotes silently. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\

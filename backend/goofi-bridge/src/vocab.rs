@@ -261,13 +261,23 @@ fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<
 
 /// Check one output slot name against the node it is addressed on, refusing with the ones that
 /// exist.
-fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &str) -> Result<(), String> {
+/// Resolve a slot word — key or display label — to the KEY, refusing by naming the real ones.
+pub fn resolve_slot(
+    g: &goofi_engine::Graph,
+    op: &str,
+    uid: goofi_engine::Uid,
+    slot: &str,
+) -> Result<String, String> {
     let slots = output_slots(g, uid);
-    if slots.iter().any(|(key, label, _)| key == slot || label == slot) {
-        return Ok(());
+    if let Some((key, _, _)) = slots.iter().find(|(key, label, _)| key == slot || label == slot) {
+        return Ok(key.clone());
     }
     let have: Vec<&str> = slots.iter().map(|(_, l, _)| l.as_str()).collect();
     Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
+}
+
+fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &str) -> Result<(), String> {
+    resolve_slot(g, op, uid, slot).map(|_| ())
 }
 
 /// Validate an `edit_node` viewer bag: `{slot: {kind, settings, collapsed}}`. A uid naming no node

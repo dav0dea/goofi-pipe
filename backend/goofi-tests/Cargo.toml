@@ -28,6 +28,7 @@ goofi-python = { path = "../goofi-python" }
 # The embed-only suites drive the interpreter directly (module hygiene, bootstrap order).
 pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
 serde_json = "1"
+base64 = "0.22"
 # The manifest is YAML, and the session scenario reads the file the save actually wrote.
 serde_yaml_ng = "0.10"
 # `Events` wraps the bridge's own broadcast receiver.

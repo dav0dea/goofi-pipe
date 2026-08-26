@@ -10,6 +10,7 @@ export type OpName =
 	| 'session load'
 	| 'session new'
 	| 'node state'
+	| 'node snapshot'
 	| 'node add'
 	| 'node edit'
 	| 'node param edit'
