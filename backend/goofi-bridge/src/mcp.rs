@@ -14,9 +14,9 @@ use serde_json::{json, Value};
 
 use crate::{phrase, AppState};
 
-/// The undo scope every central MCP call runs in: the transport is stateless, so agents share one
-/// stack, which is still isolated from every human tab's.
-const AGENT_SESSION: &str = "mcp";
+/// The undo ACTOR every central MCP call runs as: the transport is stateless, so agents share
+/// one stack, which is still isolated from every human tab's.
+const AGENT_ACTOR: &str = "mcp";
 
 /// The revision to claim when a client names none.
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
@@ -66,7 +66,7 @@ fn tool_result(text: String, is_error: bool) -> Value {
 
 /// Run the one tool: parse every line first, then execute — one command directly, several as one
 /// compound, so a batch is one undo step and a refused step takes the others back.
-fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
+fn call_tool(state: &AppState, actor: &str, params: &Value) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
     if name != "goofi_exec" {
         return tool_result(format!("unknown tool `{name}` — this server has one: goofi_exec"), true);
@@ -88,16 +88,16 @@ fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
         }
     }
     if let [(op, payload)] = &parsed[..] {
-        return match state.call(op.name, payload.clone(), session) {
+        return match state.call(op.name, payload.clone(), actor) {
             Ok(result) => tool_result(phrase::render(&result), false),
             Err(e) => tool_result(e, true),
         };
     }
     let steps: Vec<Value> =
         parsed.iter().map(|(op, payload)| json!({ "op": op.name, "payload": payload })).collect();
-    match state.call("compound", json!({ "ops": steps }), session) {
-        Ok(result) => {
-            let list = result.get("results").cloned().unwrap_or(result);
+    match state.call("compound", json!({ "ops": steps }), actor) {
+        // The batch answers the BARE list of step results, in order.
+        Ok(list) => {
             tool_result(serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()), false)
         }
         Err(e) => tool_result(e, true),
@@ -116,11 +116,11 @@ fn rpc_error(id: Value, code: i64, message: String) -> Response {
 /// The central MCP endpoint — the address an external agent connects to. Registered with `post`,
 /// so axum answers the retired GET stream and DELETE teardown with the 405 the spec asks for.
 pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
-    serve(&state, AGENT_SESSION, None, &body).await
+    serve(&state, AGENT_ACTOR, None, &body).await
 }
 
 /// The address `spawn_harness` minted for ONE harness. Identity is the route itself, so there is
-/// nothing to spoof and nothing to validate, and the undo session follows the address.
+/// nothing to spoof and nothing to validate, and the undo actor follows the address.
 pub async fn instance_endpoint(
     axum::extract::Path(id): axum::extract::Path<String>,
     State(state): State<AppState>,
@@ -130,9 +130,9 @@ pub async fn instance_endpoint(
     serve(&state, &id, gone.then_some(id.as_str()), &body).await
 }
 
-/// One JSON-RPC request, in the undo session the address names. `gone` names an instance whose
+/// One JSON-RPC request, as the undo actor the address names. `gone` names an instance whose
 /// address has been dropped, and is answered rather than 404'd so a model can read the refusal.
-async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) -> Response {
+async fn serve(state: &AppState, actor: &str, gone: Option<&str>, body: &str) -> Response {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
@@ -176,7 +176,7 @@ async fn serve(state: &AppState, session: &str, gone: Option<&str>, body: &str) 
             }),
         ),
         "tools/list" => ok(id, json!({ "tools": tools() })),
-        "tools/call" => ok(id, call_tool(state, session, &params)),
+        "tools/call" => ok(id, call_tool(state, actor, &params)),
         "ping" => ok(id, json!({})),
         method => rpc_error(id, -32601, format!("unknown method `{method}`")),
     }

@@ -223,8 +223,8 @@ pub static REGISTRY: &[Op] = &[
          doc: "Redo this session's last undone graph command.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
     Op { name: "compound", handler: Effect(arms::compound), args: "ops:json!", positional: 0,
-         doc: "Run several write ops in order as ONE undo step. `ops` is a list of `{op, payload}`. A refused step takes back the ones that already landed, so the call either happens whole or not at all. A step must be an undoable write.",
-         result: "{results} — each step's own reply, in order" },
+         doc: "Run several steps in order as ONE undo step and one settled decision: viewers see no intermediate document, and the unsaved dot moves once. `ops` is a list of `{op, payload}`; a step is a read or an undoable write, and an effect is refused — it runs as its own call. A refused step takes back the ones that already landed, so the call either happens whole or not at all.",
+         result: "the steps' own replies, as a bare JSON list in order" },
     // -- layout: absent under headless -----------------------------------------------------------
     Op { name: "layout inspect", handler: Read(arms::layout_inspect), args: "tab:string", positional: 1,
          doc: "The arrangement as a tree: every tab, split and panel with its id, order and share of its parent. How a caller discovers the ids every layout op addresses. `tab` narrows it to one tab; no arg = all of them.",

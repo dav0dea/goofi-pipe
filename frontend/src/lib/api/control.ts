@@ -204,15 +204,15 @@ type Pending = {
 
 /** Minimal structural surface of the control client — the seam a test fake substitutes for. */
 export interface Control {
-	/** This client's stable session tag; it scopes the manager's per-session undo history. */
-	readonly session: string;
+	/** This client's stable ACTOR id; it scopes the manager's per-actor undo history. */
+	readonly actor: string;
 	call<T = unknown>(op: OpName, payload?: Record<string, unknown>): Promise<T>;
 	on(fn: (ev: ControlEvent) => void): () => void;
 	onConnect(fn: (c: boolean) => void): () => void;
 }
 
-/** This tab's stable command-session id, minted once per tab in `sessionStorage`. */
-function readOrMintSession(): string {
+/** This tab's stable actor id, minted once per tab in `sessionStorage`. */
+function readOrMintActor(): string {
 	try {
 		const KEY = 'goofi:session';
 		let s = sessionStorage.getItem(KEY);
@@ -229,7 +229,7 @@ function readOrMintSession(): string {
 export class ControlClient implements Control {
 	private ws: WebSocket | null = null;
 	private url: string;
-	readonly session = readOrMintSession();
+	readonly actor = readOrMintActor();
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
 	private handlers = new Set<EventHandler>();
@@ -345,8 +345,9 @@ export class ControlClient implements Control {
 		const id = this.nextId++;
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-			// `session` rides at the top level: the manager scopes its undo/redo history by it.
-			this.ws!.send(JSON.stringify({ id, op, payload, session: this.session }));
+			// `actor` rides at the top level: the manager scopes its undo/redo history by it —
+			// whose undo, where GOOFI_SESSION names which server.
+			this.ws!.send(JSON.stringify({ id, op, payload, actor: this.actor }));
 		});
 	}
 }

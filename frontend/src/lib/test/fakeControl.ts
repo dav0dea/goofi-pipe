@@ -3,8 +3,8 @@ import type { Control, ControlEvent } from '$lib/api/control';
 import type { OpName } from '$lib/api/ops';
 
 export class FakeControl implements Control {
-	/** Fixed stand-in for the tab's `sessionStorage` id. */
-	readonly session = 'fake-session';
+	/** Fixed stand-in for the tab's minted actor id. */
+	readonly actor = 'fake-actor';
 	private calls: Array<{ op: OpName; payload: Record<string, unknown> }> = [];
 	private listeners = new Set<(ev: ControlEvent) => void>();
 	private connectListeners = new Set<(c: boolean) => void>();

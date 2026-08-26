@@ -97,9 +97,18 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     ] }));
     assert!(why.contains("step 1"), "the refusal names the step that failed: {why}");
     assert!(g.doc()["globals"]["tmp"].is_null(), "the step that landed was taken back: {why}");
-    // A step is one undoable WRITE, so a read, a nesting and the stack ops themselves are refused.
-    for bad in ["undo", "compound", "nodes inspect", "session load"] {
-        g.refuse("compound", j!({ "ops": [{ "op": bad }] }));
+    // A READ rides a batch — its result in the bare list the batch answers — while an EFFECT is
+    // refused: its consequences are not the history's to take back, so it runs alone.
+    let ridden = g.call("compound", j!({ "ops": [
+        { "op": "nodes inspect" },
+        { "op": "node edit", "payload": { "node": hex(osc), "pos": [1.0, 2.0] } },
+    ] }));
+    assert!(ridden[0]["text"].as_str().is_some_and(|t| t.contains("carrier")),
+            "the read's own reply rides the list: {ridden}");
+    for bad in ["undo", "compound", "session load", "session new", "session save",
+                "node restart", "library refresh"] {
+        let why = g.refuse("compound", j!({ "ops": [{ "op": bad }] }));
+        assert!(why.contains("not a step"), "`{bad}`: {why}");
     }
     let scope = g.call("nodes group", j!({ "nodes": [hex(osc), hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
@@ -113,7 +122,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["participant"].is_null() && g.doc()["globals"]["subj"].is_null());
-    assert_eq!(steps, 8, "one step per command — a compound and a three-field node edit are each ONE");
+    assert_eq!(steps, 9, "one step per command — a compound and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
@@ -376,6 +385,15 @@ fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
                "a restart changes nothing that reaches the .gfi");
     assert_eq!(g.call("session status", j!({}))["dirty"], false, "so it must not dirty the patch");
     assert_eq!(g.call("undo", j!({}))["changed"], false, "and records no history entry");
+
+    // The batch decides dirtiness ONCE, from settled state: a batch that is fully taken back
+    // leaves the patch exactly as clean as it found it, though a step landed on the way.
+    g.refuse("compound", j!({ "ops": [
+        { "op": "node edit", "payload": { "node": uid, "pos": [5.0, 5.0] } },
+        { "op": "node edit", "payload": { "node": "ffffffffffff", "name": "ghost" } },
+    ] }));
+    assert_eq!(g.call("session status", j!({}))["dirty"], false,
+               "a rolled-back batch must not leave the unsaved dot raised");
 }
 
 /// A canonical 12-hex uid that names nothing.

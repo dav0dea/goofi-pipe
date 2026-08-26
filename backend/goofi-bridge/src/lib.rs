@@ -928,17 +928,17 @@ fn apply_layout(
 }
 
 impl AppState {
-    /// Run one control op — the single entry point every surface shares. `session` scopes the
-    /// undo history the way a browser tab's id does. The op's row does the work: its handler
+    /// Run one control op — the single entry point every surface shares. `actor` scopes the undo
+    /// history: whose undo, the way a browser tab's id does. The op's row does the work: its handler
     /// runs, and its KIND decides the tail — a Write mutated the graph through the history, so
     /// ONE re-mirror and one dirty decision happen here, where no write arm can forget either; a
     /// Read touches nothing; an Effect's arm owns its own consequences.
-    pub fn call(&self, op: &str, payload: Value, session: &str) -> Result<Value, String> {
+    pub fn call(&self, op: &str, payload: Value, actor: &str) -> Result<Value, String> {
         let Some(spec) = ops::find(op) else {
             return Err(format!("unknown op `{op}`"));
         };
         let mut events: Vec<String> = Vec::new();
-        let result = spec.handler.run(self, &payload, session, &mut events);
+        let result = spec.handler.run(self, &payload, actor, &mut events);
         if result.is_ok() && spec.handler.is_write() {
             resync_and_broadcast(self);
             events.extend(self.set_dirty(true));
@@ -950,17 +950,18 @@ impl AppState {
     }
 }
 
-/// The `/control` envelope over [`AppState::call`]: `{id, op, payload, session}` in, `{id, result}`
+/// The `/control` envelope over [`AppState::call`]: `{id, op, payload, actor}` in, `{id, result}`
 /// or `{id, error}` out. A request with no numeric `id` wants no reply.
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let req: Value = serde_json::from_str(text).ok()?;
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let op = req.get("op")?.as_str()?.to_string();
     let payload = req.get("payload").cloned().unwrap_or_else(|| json!({}));
-    // Absent ⇒ one shared "default" session, so a client that presents none still works.
-    let session = req.get("session").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    // The ACTOR scopes the undo history — whose undo, where `GOOFI_SESSION` says which server.
+    // Absent ⇒ one shared "default" actor, so a caller that presents none still works.
+    let actor = req.get("actor").and_then(|v| v.as_str()).unwrap_or("default").to_string();
 
-    let result = state.call(&op, payload, &session);
+    let result = state.call(&op, payload, &actor);
     match id {
         Value::Number(_) => Some(match result {
             Ok(r) => json!({ "id": id, "result": r }).to_string(),

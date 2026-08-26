@@ -8,7 +8,7 @@ use super::*;
 pub(crate) fn dir_list(
     _state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     // Served WITHOUT the graph mutex: it walks the filesystem, which under the lock would stall
@@ -19,7 +19,7 @@ pub(crate) fn dir_list(
 pub(crate) fn session_state(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     Ok(state.doc.lock().unwrap().to_json())
@@ -31,7 +31,7 @@ pub(crate) fn session_state(
 pub(crate) fn agent_list(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     state.harnesses.refresh_in_background(state.events.clone());
@@ -41,7 +41,7 @@ pub(crate) fn agent_list(
 pub(crate) fn agent_start(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let h = payload
@@ -62,7 +62,7 @@ pub(crate) fn agent_start(
 pub(crate) fn agent_stop(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     state
@@ -72,12 +72,13 @@ pub(crate) fn agent_stop(
     Ok(json!({ "ok": true }))
 }
 
-/// Several writes as ONE undo step. Each step is a whole [`AppState::call`]: it locks, mirrors
-/// the document and broadcasts exactly as it would alone.
+/// Several steps as ONE undo step, decided from SETTLED state: the handlers run directly, so no
+/// step re-mirrors or dirties on its own — the batch does each exactly once when it settles, and
+/// viewers never see an intermediate document.
 pub(crate) fn compound(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let steps = payload
@@ -85,49 +86,62 @@ pub(crate) fn compound(
         .and_then(|v| v.as_array())
         .ok_or("compound: `ops` is a list of {op, payload}")?
         .clone();
+    // Every row is resolved BEFORE anything lands: a Read rides for its result, a Write can be
+    // taken back, and an Effect owns consequences a rollback cannot reach — refused whole.
+    let mut resolved = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let name = step.get("op").and_then(|v| v.as_str());
-        // A step must be an undoable write — a Write row — or a rollback could not take it back.
-        if !name.and_then(ops::find).is_some_and(|o| o.handler.is_write()) {
+        let name = step.get("op").and_then(|v| v.as_str()).unwrap_or_default();
+        let op = ops::find(name).ok_or_else(|| format!("compound: step {i}: unknown op `{name}`"))?;
+        if !(op.handler.is_read() || op.handler.is_write()) {
             return Err(format!(
-                "compound: step {i} `{}` is not a step — a step is one undoable write",
-                name.unwrap_or("")
+                "compound: step {i} `{name}` is not a step — a read or an undoable write \
+                 rides a batch; an effect runs as the only command"
             ));
         }
+        resolved.push((op, step.get("payload").cloned().unwrap_or_else(|| json!({}))));
     }
+    let was_dirty = state.dirty.load(std::sync::atomic::Ordering::Relaxed);
     // The redo run is cleared UP FRONT so no step's own clearing can shift the mark.
     let from = {
         let mut h = state.history.lock().unwrap();
-        h.clear_redo(session);
+        h.clear_redo(actor);
         h.len()
     };
-    let mut results = Vec::with_capacity(steps.len());
-    for (i, step) in steps.iter().enumerate() {
-        let name = step["op"].as_str().unwrap_or_default().to_string();
-        let arg = step.get("payload").cloned().unwrap_or_else(|| json!({}));
-        match state.call(&name, arg, session) {
-            Ok(r) => results.push(r),
+    let mut results = Vec::with_capacity(resolved.len());
+    let mut wrote = false;
+    for (i, (op, arg)) in resolved.iter().enumerate() {
+        match op.handler.run(state, arg, actor, events) {
+            Ok(r) => {
+                wrote |= op.handler.is_write();
+                results.push(r);
+            }
             Err(e) => {
-                // A compound is a UNIT, so a refused step takes back the ones that landed.
+                // A compound is a UNIT, so a refused step takes back the ones that landed — and
+                // the dirty flag goes back to what the batch found, so a fully refused batch
+                // leaves the patch exactly as clean or dirty as it was.
                 let mut g = state.graph.lock().unwrap();
-                state.history.lock().unwrap().rollback(&mut g, session, from);
+                state.history.lock().unwrap().rollback(&mut g, actor, from);
                 drop(g);
+                events.extend(state.set_dirty(was_dirty));
                 resync_and_broadcast(state);
-                return Err(format!("compound: step {i} `{name}` was refused: {e}"));
+                return Err(format!("compound: step {i} `{}` was refused: {e}", op.name));
             }
         }
     }
-    state.history.lock().unwrap().coalesce(session, from);
+    state.history.lock().unwrap().coalesce(actor, from);
     resync_and_broadcast(state);
-    events.extend(state.set_dirty(true));
-    Ok(json!({ "results": results }))
+    if wrote {
+        events.extend(state.set_dirty(true));
+    }
+    // The steps' own replies, in order — a BARE list, the shape every batch door answers.
+    Ok(Value::Array(results))
 }
 
 /// The whole library — the palette a client builds every node from.
 pub(crate) fn library_list(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -139,7 +153,7 @@ pub(crate) fn library_list(
 pub(crate) fn library_get(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let ty = parse_str(payload, "type")?;
@@ -158,7 +172,7 @@ pub(crate) fn library_get(
 pub(crate) fn library_refresh(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let result = {
@@ -175,7 +189,7 @@ pub(crate) fn library_refresh(
 pub(crate) fn nodes_copy(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -186,7 +200,7 @@ pub(crate) fn nodes_copy(
 pub(crate) fn nodes_paste(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -197,7 +211,7 @@ pub(crate) fn nodes_paste(
         None => None,
     };
     let (cmd, rename) = g.import_fragment(doc, scope, offset)?;
-    state.history.lock().unwrap().apply(&mut g, session, cmd)?;
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     for uid in rename.values() {
         events.push(event("node_added", json!({ "uid": uid })));
     }
@@ -207,7 +221,7 @@ pub(crate) fn nodes_paste(
 pub(crate) fn node_add(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -252,7 +266,7 @@ pub(crate) fn node_add(
         viewers: None,
         scope,
     };
-    let uid = match state.history.lock().unwrap().apply(&mut g, session, cmd)? {
+    let uid = match state.history.lock().unwrap().apply(&mut g, actor, cmd)? {
         goofi_engine::Outcome::Uid(u) => u,
         _ => return Err("node add: no uid returned".into()),
     };
@@ -283,7 +297,7 @@ pub(crate) fn node_add(
 pub(crate) fn node_remove(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -292,7 +306,7 @@ pub(crate) fn node_remove(
     // two happened.
     let existed = g.exists(uid);
     let cmd = goofi_engine::Command::RemoveNode { uid };
-    state.history.lock().unwrap().apply(&mut g, session, cmd)?;
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     Ok(json!({ "removed": existed }))
 }
 
@@ -301,7 +315,7 @@ pub(crate) fn node_remove(
 pub(crate) fn node_restart(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     {
@@ -318,7 +332,7 @@ pub(crate) fn node_restart(
 pub(crate) fn link_add(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -327,7 +341,7 @@ pub(crate) fn link_add(
     let (b, si) = wirable_endpoint(&g, b, &si, "node_in")?;
     state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::AddLink {
             node_out: a,
             slot_out: so.clone(),
@@ -351,7 +365,7 @@ pub(crate) fn link_add(
 pub(crate) fn link_remove(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -362,7 +376,7 @@ pub(crate) fn link_remove(
     let existed = g.has_link(a, &so, b, &si);
     state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
     )?;
     Ok(json!({ "removed": existed }))
@@ -373,7 +387,7 @@ pub(crate) fn link_remove(
 pub(crate) fn node_param_refresh(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     {
@@ -390,7 +404,7 @@ pub(crate) fn node_param_refresh(
 pub(crate) fn node_edit(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -452,7 +466,7 @@ pub(crate) fn node_edit(
     }
     let out = state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         if cmds.len() == 1 { cmds.pop().unwrap() } else { goofi_engine::Command::Compound(cmds) },
     )?;
     // The runtime `expression_error` is doc-invisible, so echo the descriptors — for this node,
@@ -487,7 +501,7 @@ pub(crate) fn node_edit(
 pub(crate) fn layout_viewpoint_edit(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     {
@@ -501,7 +515,7 @@ pub(crate) fn layout_viewpoint_edit(
 pub(crate) fn layout_inspect(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -513,21 +527,21 @@ pub(crate) fn layout_inspect(
 pub(crate) fn layout_tab_edit(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let tab = parse_str(payload, "tab")?.to_string();
     let name = parse_str(payload, "name")?;
     let writes = g.arrangement().rename_tab(&tab, name)?;
-    apply_layout(state, &mut g, session, goofi_engine::Command::LayoutContents { writes })
+    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutContents { writes })
 }
 
 /// Edit a PANEL's content: its type, its state, or both — one call, one undo.
 pub(crate) fn layout_panel_edit(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -557,14 +571,14 @@ pub(crate) fn layout_panel_edit(
         .and_then(Uid::from_hex);
     vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
     let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
-    apply_layout(state, &mut g, session, goofi_engine::Command::LayoutContents { writes })
+    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutContents { writes })
 }
 
 /// Set the shares of ALL of a SPLIT's children at once — what a resize drag commits.
 pub(crate) fn layout_split_edit(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -581,7 +595,7 @@ pub(crate) fn layout_split_edit(
     // Planned here only so a bad split or a wrong fraction count answers teachably; the command
     // re-plans it under this same lock.
     g.arrangement().resize_split(&split, &fractions)?;
-    apply_layout(state, &mut g, session,
+    apply_layout(state, &mut g, actor,
                  goofi_engine::Command::LayoutResizeSplit { split, fractions })
 }
 
@@ -589,7 +603,7 @@ pub(crate) fn layout_split_edit(
 pub(crate) fn layout_panel_add(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     const OP: &str = "layout panel add";
@@ -606,7 +620,7 @@ pub(crate) fn layout_panel_add(
             };
             let (plan, fresh) = g.arrangement().split_panel(target, side, ratio)?;
             let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
-            let text = apply_layout(state, &mut g, session, cmd)?;
+            let text = apply_layout(state, &mut g, actor, cmd)?;
             let tab = g.arrangement().tab_of(&fresh).unwrap_or_default();
             Ok(json!({ "id": fresh, "tab": tab, "text": text["text"] }))
         }
@@ -616,7 +630,7 @@ pub(crate) fn layout_panel_add(
             let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
             let (plan, tab) = g.arrangement().add_tab(name, index, None)?;
             let cmd = goofi_engine::Command::LayoutBirth { plan, born: tab.clone() };
-            let text = apply_layout(state, &mut g, session, cmd)?;
+            let text = apply_layout(state, &mut g, actor, cmd)?;
             // The root panel's id, which a caller cannot otherwise know.
             let id = g.arrangement().root_of(&tab).unwrap_or_default();
             Ok(json!({ "id": id, "tab": tab, "text": text["text"] }))
@@ -629,7 +643,7 @@ pub(crate) fn layout_panel_add(
 pub(crate) fn layout_move(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     const OP: &str = "layout move";
@@ -662,7 +676,7 @@ pub(crate) fn layout_move(
             let at = index.ok_or(format!("{OP}: a tab moves to an `--index` in the strip"))?;
             g.arrangement().reorder_tab(&entry, at)?;
             let cmd = goofi_engine::Command::LayoutReorderTab { tab: entry.clone(), to_index: at };
-            let text = apply_layout(state, &mut g, session, cmd)?;
+            let text = apply_layout(state, &mut g, actor, cmd)?;
             return Ok(json!({ "id": entry, "tab": entry, "text": text["text"] }));
         }
         // Onto a tab of its own — the drag onto the tab bar. A tab built AROUND an existing
@@ -672,12 +686,12 @@ pub(crate) fn layout_move(
             let (plan, tab) = g.arrangement().add_tab(name, index, Some(&entry))?;
             let cmd = goofi_engine::Command::LayoutMove {
                 plan: Some(plan), root: entry.clone(), home: None };
-            let text = apply_layout(state, &mut g, session, cmd)?;
+            let text = apply_layout(state, &mut g, actor, cmd)?;
             return Ok(json!({ "id": entry, "tab": tab, "text": text["text"] }));
         }
     };
     let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: placed.clone(), home: None };
-    let text = apply_layout(state, &mut g, session, cmd)?;
+    let text = apply_layout(state, &mut g, actor, cmd)?;
     let tab = g.arrangement().tab_of(&placed).unwrap_or_default();
     Ok(json!({ "id": placed, "tab": tab, "text": text["text"] }))
 }
@@ -685,7 +699,7 @@ pub(crate) fn layout_move(
 pub(crate) fn layout_remove(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -697,7 +711,7 @@ pub(crate) fn layout_remove(
         Some(_) => g.arrangement().remove_tab(&panel)?,
         None => g.arrangement().remove_subtree(&panel)?,
     };
-    apply_layout(state, &mut g, session, goofi_engine::Command::LayoutClose { born: panel })
+    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutClose { born: panel })
 }
 
 /// Create a global. Every expression reading one depends on its TYPE, so the type is declared
@@ -705,7 +719,7 @@ pub(crate) fn layout_remove(
 pub(crate) fn global_add(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -719,7 +733,7 @@ pub(crate) fn global_add(
         .ok_or_else(|| format!("global add: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
     )?;
     // As STORED: the conversion is type-directed, so a fraction into an int rounds.
@@ -729,7 +743,7 @@ pub(crate) fn global_add(
 pub(crate) fn global_edit(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -744,7 +758,7 @@ pub(crate) fn global_edit(
         .ok_or_else(|| format!("global edit: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
     )?;
     Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
@@ -753,7 +767,7 @@ pub(crate) fn global_edit(
 pub(crate) fn global_remove(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -763,7 +777,7 @@ pub(crate) fn global_remove(
     }
     state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::EditGlobal { name, value: None, at: None },
     )?;
     Ok(json!({ "removed": true }))
@@ -772,7 +786,7 @@ pub(crate) fn global_remove(
 pub(crate) fn nodes_group(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -780,7 +794,7 @@ pub(crate) fn nodes_group(
     let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
     let out = state.history.lock().unwrap().apply(
         &mut g,
-        session,
+        actor,
         goofi_engine::Command::Group { members: uids, pos, restore: None },
     )?;
     let inst = match out {
@@ -793,7 +807,7 @@ pub(crate) fn nodes_group(
 pub(crate) fn nodes_ungroup(
     state: &AppState,
     payload: &Value,
-    session: &str,
+    actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
@@ -802,14 +816,14 @@ pub(crate) fn nodes_ungroup(
         .history
         .lock()
         .unwrap()
-        .apply(&mut g, session, goofi_engine::Command::Expand { scope: inst })?;
+        .apply(&mut g, actor, goofi_engine::Command::Expand { scope: inst })?;
     Ok(json!({ "ok": true }))
 }
 
 pub(crate) fn nodes_inspect(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -825,7 +839,7 @@ pub(crate) fn nodes_inspect(
 pub(crate) fn node_state(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -839,7 +853,7 @@ pub(crate) fn node_state(
 pub(crate) fn global_list(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -851,7 +865,7 @@ pub(crate) fn global_list(
 pub(crate) fn session_status(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     // The walks (dirty, mount) run before the graph lock, as everywhere.
@@ -873,7 +887,7 @@ pub(crate) fn session_status(
 pub(crate) fn session_manifest(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -885,7 +899,7 @@ pub(crate) fn session_manifest(
 pub(crate) fn session_save(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
@@ -974,7 +988,7 @@ fn load_patch(
 pub(crate) fn session_load(
     state: &AppState,
     payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     // A source is REQUIRED: no bare word may be the destructive New. `session new` is explicit.
@@ -989,7 +1003,7 @@ pub(crate) fn session_load(
 pub(crate) fn session_new(
     state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     load_patch(state, &json!({}), events)
@@ -998,34 +1012,40 @@ pub(crate) fn session_new(
 pub(crate) fn undo(
     state: &AppState,
     _payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let result = {
         let mut g = state.graph.lock().unwrap();
         let mut hist = state.history.lock().unwrap();
-        let changed = hist.undo(&mut g, session)?;
-        json!({ "changed": changed, "can_undo": hist.can_undo(session), "can_redo": hist.can_redo(session) })
+        let changed = hist.undo(&mut g, actor)?;
+        json!({ "changed": changed, "can_undo": hist.can_undo(actor), "can_redo": hist.can_redo(actor) })
     };
     resync_and_broadcast(state);
-    events.extend(state.set_dirty(true));
+    // Only a flip that CHANGED something raises the dot: an empty stack is not an edit.
+    if result["changed"] == json!(true) {
+        events.extend(state.set_dirty(true));
+    }
     Ok(result)
 }
 
 pub(crate) fn redo(
     state: &AppState,
     _payload: &Value,
-    session: &str,
+    actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let result = {
         let mut g = state.graph.lock().unwrap();
         let mut hist = state.history.lock().unwrap();
-        let changed = hist.redo(&mut g, session)?;
-        json!({ "changed": changed, "can_undo": hist.can_undo(session), "can_redo": hist.can_redo(session) })
+        let changed = hist.redo(&mut g, actor)?;
+        json!({ "changed": changed, "can_undo": hist.can_undo(actor), "can_redo": hist.can_redo(actor) })
     };
     resync_and_broadcast(state);
-    events.extend(state.set_dirty(true));
+    // Only a flip that CHANGED something raises the dot: an empty stack is not an edit.
+    if result["changed"] == json!(true) {
+        events.extend(state.set_dirty(true));
+    }
     Ok(result)
 }
 
@@ -1033,7 +1053,7 @@ pub(crate) fn redo(
 pub(crate) fn op_list(
     _state: &AppState,
     _payload: &Value,
-    _session: &str,
+    _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let ops: Vec<Value> = ops::REGISTRY

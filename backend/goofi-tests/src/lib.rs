@@ -20,7 +20,7 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// A running goofi: the graph, the runtime, the document, the status-drain worker.
 pub struct Goofi {
     pub state: AppState,
-    session: String,
+    actor: String,
     patience: Duration,
 }
 
@@ -35,7 +35,7 @@ impl Goofi {
     pub fn new() -> Goofi {
         let state = AppState::new();
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
-        Goofi { state, session: "test".into(), patience: WAIT }
+        Goofi { state, actor: "test".into(), patience: WAIT }
     }
 
     /// Boot one whose `/data` sockets probe on a short clock.
@@ -47,12 +47,12 @@ impl Goofi {
             send_timeout: Duration::from_millis(200),
         };
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
-        Goofi { state, session: "test".into(), patience: WAIT }
+        Goofi { state, actor: "test".into(), patience: WAIT }
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
-    pub fn client(&self, session: &str) -> Goofi {
-        Goofi { state: self.state.clone(), session: session.into(), patience: self.patience }
+    pub fn client(&self, actor: &str) -> Goofi {
+        Goofi { state: self.state.clone(), actor: actor.into(), patience: self.patience }
     }
 
     /// Run an op and unwrap it; an unexpected refusal is a failure here.
@@ -63,7 +63,7 @@ impl Goofi {
     }
 
     pub fn try_call(&self, op: &str, payload: Value) -> Result<Value, String> {
-        self.state.call(op, payload, &self.session)
+        self.state.call(op, payload, &self.actor)
     }
 
     /// Run an op that must be refused, and answer why.
@@ -305,7 +305,7 @@ pub type Ws = tokio_tungstenite::WebSocketStream<
 pub struct Client {
     pub ws: Ws,
     next_id: i64,
-    session: String,
+    actor: String,
     doc: GraphDoc,
 }
 
@@ -315,9 +315,9 @@ impl Client {
         Client::connect_as(base, "test").await
     }
 
-    pub async fn connect_as(base: &str, session: &str) -> (Client, Value) {
+    pub async fn connect_as(base: &str, actor: &str) -> (Client, Value) {
         let (ws, _) = tokio_tungstenite::connect_async(format!("{base}/control")).await.unwrap();
-        let mut c = Client { ws, next_id: 1, session: session.into(), doc: GraphDoc::new() };
+        let mut c = Client { ws, next_id: 1, actor: actor.into(), doc: GraphDoc::new() };
         let hello = c.text().await;
         (c, hello["payload"].clone())
     }
@@ -350,7 +350,7 @@ impl Client {
     pub async fn try_call(&mut self, op: &str, payload: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
-        let req = json!({ "id": id, "op": op, "payload": payload, "session": self.session });
+        let req = json!({ "id": id, "op": op, "payload": payload, "actor": self.actor });
         self.ws.send(Message::Text(req.to_string().into())).await.unwrap();
         loop {
             let m = self.text().await;

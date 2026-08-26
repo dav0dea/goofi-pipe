@@ -139,6 +139,13 @@ async fn several_commands_are_one_batch_and_a_refused_step_takes_the_whole_batch
     assert!(err && text.contains("not a step"), "{text}");
     assert_eq!(nodes(&g), 0, "a refused batch left nothing behind");
 
+    // A READ rides a batch, its reply in order beside the write's.
+    let (text, err) = exec(&addr, "/mcp", 5, &["node add --type Oscillator", "nodes inspect"]).await;
+    assert!(!err, "{text}");
+    let results: Value = serde_json::from_str(&text).unwrap();
+    assert!(results[1]["text"].as_str().is_some_and(|t| t.contains("Oscillator")), "{text}");
+    ok_exec(&addr, 6, "undo").await;
+
     // The same Effect alone is legal — the total surface includes the lifecycle.
     let loaded = ok_exec(&addr, 4, "session new").await;
     assert!(loaded.contains("\"ok\": true"), "{loaded}");
