@@ -7,6 +7,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 pub mod globals;
+pub mod home;
 pub mod path;
 pub mod probe;
 pub mod reduce;

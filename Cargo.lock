@@ -532,6 +532,7 @@ name = "goofi-cli"
 version = "3.1.0"
 dependencies = [
  "goofi-bridge",
+ "goofi-core",
  "goofi-engine",
  "goofi-init",
  "goofi-node",
@@ -559,6 +560,7 @@ dependencies = [
  "goofi-view",
  "indexmap",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

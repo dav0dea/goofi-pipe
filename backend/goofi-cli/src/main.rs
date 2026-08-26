@@ -190,6 +190,11 @@ async fn run(
                 // A spawned harness reaches MCP on loopback whatever `--bind` says; only the
                 // port, which `--port 0` makes knowable nowhere else, is handed over.
                 state.set_mcp_port(addr.port());
+                // The session file records loopback for the same reason — its reader is local.
+                let _session = SessionFile::write(
+                    &state.instance_id,
+                    &format!("http://127.0.0.1:{}", addr.port()),
+                );
                 let url = format!("http://{addr}");
                 println!("goofi-pipe → {url}");
                 println!("  MCP endpoint → http://{addr}/mcp");
@@ -224,6 +229,24 @@ async fn run(
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code
+}
+
+/// The `$GOOFI_HOME/.goofi/sessions/<id>.json` record of THIS server, removed when serving ends.
+/// Only the binary's serve path writes one — an in-process test server records nothing — and what
+/// a kill leaves behind, the next reader's probe sweeps.
+struct SessionFile(String);
+
+impl SessionFile {
+    fn write(id: &str, url: &str) -> SessionFile {
+        goofi_core::home::write_session(id, url);
+        SessionFile(id.to_string())
+    }
+}
+
+impl Drop for SessionFile {
+    fn drop(&mut self) {
+        goofi_core::home::remove_session(&self.0);
+    }
 }
 
 /// Resolve on the first request to stop. A door that cannot be installed must **never** resolve —

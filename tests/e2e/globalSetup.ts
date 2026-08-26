@@ -42,6 +42,12 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		}
 
 	fs.mkdirSync(LOG_DIR, { recursive: true });
+	// A test-scoped `GOOFI_HOME`, wiped up front: the fleet's session files and any test config
+	// land here, never in the runner's real home. The fleet dies by SIGKILL, so the files it
+	// leaves are exactly what a reader's probe must sweep — deliberately not cleaned up here.
+	const home = path.join(LOG_DIR, '..', 'goofi-home');
+	fs.rmSync(home, { recursive: true, force: true });
+	fs.mkdirSync(home, { recursive: true });
 	const fleet: Backend[] = [];
 	for (let slot = 0; slot < config.workers; slot++) {
 		const port = BASE_PORT + slot;
@@ -53,6 +59,7 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		// the shipped app, reachable only when it is asked for.
 		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port), '--debug'], {
 			cwd: REPO_ROOT,
+			env: { ...process.env, GOOFI_HOME: home },
 			stdio: ['ignore', fd, fd]
 		});
 		fs.closeSync(fd);
@@ -66,6 +73,14 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 	};
 	try {
 		await Promise.all(fleet.map(serving));
+		// The one e2e pin on the session records: a REAL binary spawn under a scoped GOOFI_HOME
+		// writes `sessions/<id>.json` per server, each url naming the port it serves.
+		const sessions = fs
+			.readdirSync(path.join(home, '.goofi', 'sessions'))
+			.map((f) => JSON.parse(fs.readFileSync(path.join(home, '.goofi', 'sessions', f), 'utf8')));
+		for (const { port } of fleet)
+			if (!sessions.some((s) => s.url === `http://127.0.0.1:${port}`))
+				throw new Error(`no session file names :${port} — got ${JSON.stringify(sessions)}`);
 	} catch (e) {
 		await reap(); // a fleet that never came up is still a fleet to reap
 		throw e;
