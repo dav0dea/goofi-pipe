@@ -356,6 +356,14 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
     g.call("layout move", j!({ "entry": mine, "beside": target,
                                "side": "top", "ratio": 0.3 }));
     assert_ne!(entries(&g), before, "the drop moved something");
+    // The SIDE really landed: `top` means a column split with the mover FIRST. This is the pin
+    // that caught `--side` being read off a dead key and every drop silently going right.
+    let parent = entries(&g)[&mine]["parent"].as_str().unwrap().to_string();
+    let split = &entries(&g)[&parent];
+    assert_eq!(split["axis"], "column", "a `top` drop splits vertically: {split}");
+    assert_eq!(split["children"][0]["id"], j!(mine.as_str()),
+               "…with the mover on the side it was dropped on: {split}");
+    g.refuse("layout move", j!({ "entry": mine, "beside": target, "side": "sideways" }));
     assert_eq!(g.call("undo", j!({}))["changed"], true);
     assert_eq!(entries(&g), before, "ONE ctrl-Z put the whole drag back");
 

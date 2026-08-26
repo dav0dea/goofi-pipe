@@ -111,7 +111,7 @@ describe('deleting a collapsed sub-patch instance is undoable (manager owns the 
 		// add_node{Sub-patch} replay.
 		expect(undoCalls.some((c) => c.op === 'undo')).toBe(true);
 		expect(undoCalls.some((c) => c.op === 'session load')).toBe(false);
-		expect(undoCalls.some((c) => c.op === 'add_node')).toBe(false);
+		expect(undoCalls.some((c) => c.op === 'node add')).toBe(false);
 		expect(history().canRedo).toBe(true);
 	});
 

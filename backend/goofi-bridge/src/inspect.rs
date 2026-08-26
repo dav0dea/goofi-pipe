@@ -122,7 +122,7 @@ pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
 }
 
 /// Every standing error in the patch, with the age of each — what `session status` answers, because a
-/// patch's health is the patch's, not a scope's. `inspect_patch` drew it under whichever scope was
+/// patch's health is the patch's, not a scope's. the scope diagram drew it under whichever scope was
 /// asked for, so the same list arrived again under each.
 pub fn errors(g: &Graph) -> Vec<Value> {
     g.node_uids()

@@ -48,6 +48,8 @@ fn every_op_row_is_well_formed_and_reachable() {
             assert!(ARG_TYPES.contains(&ty), "`{}`'s `{arg}` has unknown type `{ty}`", op.name);
         }
         assert!(!op.doc.is_empty() && !op.result.is_empty(), "`{}` is undocumented", op.name);
+        assert!(op.positional <= op.args().count() && op.positional <= 2,
+                "`{}` claims more positionals than it declares args", op.name);
         assert!(!op.doc().contains("{panel_types}") && !op.doc().contains("{viewer_kinds}"),
                 "`{}` has an unexpanded placeholder — a model would read it verbatim", op.name);
     }
@@ -95,13 +97,13 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
     // Each op that takes a vocabulary word enumerates the set in its own description, by expansion.
     let doc = find("layout panel edit").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
-        assert!(doc.contains(word), "`{word}` is not offered by edit_panel's doc: {doc}");
+        assert!(doc.contains(word), "`{word}` is not offered by the panel edit doc: {doc}");
     }
-    // The description is the ONLY text an agent reads, so edit_node's has to carry the viewer
+    // The description is the ONLY text an agent reads, so node edit's has to carry the viewer
     // vocabulary AND the two words that decide what an expression does.
     let doc = find("node edit").expect("registered").doc();
     for word in ["line", "topomap", "table", "`triggers` defaults false", "triggers: true"] {
-        assert!(doc.contains(word), "`{word}` is not offered by edit_node's doc: {doc}");
+        assert!(doc.contains(word), "`{word}` is not offered by node edit's doc: {doc}");
     }
 
     // The generator emits TS string literals with NO escaping, so a quote or newline breaks the file.

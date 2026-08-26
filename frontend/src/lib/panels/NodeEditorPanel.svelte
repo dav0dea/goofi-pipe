@@ -937,17 +937,12 @@
 			: `Add ${placement.typeInfo.type}`;
 		await history().transaction(label, async () => {
 			try {
-				const newName = await g.addNode(
-					placement.typeInfo.type,
-					placement.typeInfo.category,
-					pos,
-					entered ?? undefined
-				);
+				const newName = await g.addNode(placement.typeInfo.type, pos, entered ?? undefined);
 				// Safe before `node_added` lands: flowNodes derives `selected` from this set.
 				if (newName) sel.selectNodes(panelId, [newName]);
 				if (placement.seed && newName) await autoLink(placement.seed, placement.typeInfo, newName);
 			} catch (e) {
-				console.warn('add_node failed', e);
+				console.warn('node add failed', e);
 			}
 		});
 	}

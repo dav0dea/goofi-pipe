@@ -220,7 +220,7 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		// The catalog is in hand immediately — the doc becomes authoritative with no fallback window.
 		expect(g.nodeTypes?.length).toBe(1);
 		// …and no async round-trip was issued for it.
-		expect(fc.recordedCalls().some((c) => c.op === 'list_nodes')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'library list')).toBe(false);
 	});
 
 	it('seeds the event-sourced runtime overlay from the snapshot', () => {

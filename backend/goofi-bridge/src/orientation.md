@@ -30,7 +30,7 @@ whichever scope you drew — and the age tells a pipeline still settling from a 
 error may clear itself, one standing 30s will not.
 
 `node state <node>` is the cheap peek — params, output health, frame meta and error, all on by
-default. Pass `params`/`meta`/`error` false to drop a section, `slot` to narrow to one output.
+default. Pass `--no-params` or `--no-error` to drop a section, `--slot` to narrow to one output.
 
     buffer0: Buffer (uid 000000000002, in-process, stage ready)
 

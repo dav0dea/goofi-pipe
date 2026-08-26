@@ -282,7 +282,7 @@ export class GraphStore {
 	}
 
 	/** Where this patch's workspace files live — a per-run temp directory under a random name. It
-	 * rides `get_patch` beside the save path, because both answer "where does this patch live". */
+	 * rides `session status` beside the save path, because both answer "where does this patch live". */
 	async openWorkspace(): Promise<string> {
 		const r = await this.ctl.call<{ workspace: string }>('session status', {});
 		return r.workspace;
@@ -300,7 +300,6 @@ export class GraphStore {
 
 	async addNode(
 		type: string,
-		category: string,
 		pos: [number, number],
 		instId?: string,
 		params?: Record<string, Record<string, unknown>>
@@ -309,7 +308,6 @@ export class GraphStore {
 		// until the new node syncs into the replica, silently dropping the values.
 		const born = await this.ctl.call<{ uid: string }>('node add', {
 			type,
-			category,
 			pos,
 			inst_id: instId,
 			params
@@ -345,7 +343,7 @@ export class GraphStore {
 	async updateParam(node: string, group: string, name: string, value: unknown): Promise<void> {
 		// Guard on EXISTENCE, not truthiness — a real param may hold 0, false or ''.
 		const param = this.nodeById(node)?.params?.[group]?.[name];
-		if (!param) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
+		if (!param) throw new Error(`node edit: no param ${group}.${name} on node ${node}`);
 		await this.ctl.call('node edit', { node, params: { [group]: { [name]: value } } });
 		this._recordGraphCmd(`Set ${name}`);
 	}
@@ -425,7 +423,7 @@ export class GraphStore {
 		opts: { enabled?: boolean; triggers_process?: boolean } = {}
 	): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
-		if (!d) throw new Error(`edit_node: no param ${group}.${name} on node ${node}`);
+		if (!d) throw new Error(`node edit: no param ${group}.${name} on node ${node}`);
 		// `expression` is sent even when null: its PRESENCE is what clears a binding.
 		await this.ctl.call('node edit', {
 			node,
@@ -469,7 +467,7 @@ export class GraphStore {
 	/** Write the patch. Where it landed comes back from the MANAGER (`save_path_changed`), never
 	 * latched from this reply — a latch names the patch only in the tab that saved it. */
 	async save(path: string): Promise<{ path: string }> {
-		// `path` is the whole payload and is REQUIRED; the arrangement is the manager's already.
+		// A given `path` becomes the patch's home; the arrangement is the manager's already.
 		return this.ctl.call<{ path: string }>('session save', { path });
 	}
 

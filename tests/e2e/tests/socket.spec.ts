@@ -80,7 +80,7 @@ test.describe('the control socket', () => {
 
 			let osc = '';
 			await test.step('an added node reaches the manager, and reaches it once', async () => {
-				osc = await addNode(page, 'Oscillator', 'inputs');
+				osc = await addNode(page, 'Oscillator');
 				await waitForNode(page, osc);
 				const uids = await expectAgreement(page, 'after add_node');
 				expect(uids, 'one op, one node — an echo applied twice would show here').toEqual([osc]);
@@ -88,7 +88,7 @@ test.describe('the control socket', () => {
 
 			let buf = '';
 			await test.step('a second node and a link between them', async () => {
-				buf = await addNode(page, 'Buffer', 'signal', [280, 0]);
+				buf = await addNode(page, 'Buffer', [280, 0]);
 				await waitForNode(page, buf);
 				await page.evaluate(
 					([a, b]) =>
@@ -175,7 +175,7 @@ test.describe('the control socket', () => {
 				// A port is born through `addNode` like anything else — `inst_id` is what makes it a
 				// port OF that sub-patch rather than a node beside it.
 				const port = await page.evaluate(
-					(s) => (window as any).goofi.commands.addNode('InArray', 'boundary', [0, 40], s),
+					(s) => (window as any).goofi.commands.addNode('InArray', [0, 40], s),
 					scope
 				);
 				await expect
@@ -226,7 +226,7 @@ test.describe('the control socket', () => {
 				// handle. The link and the drawing are two different questions, and only a browser
 				// answers the second: the manager holds `feeder → port`, while the top level draws
 				// `feeder → scope@port`, and nothing outside this file crosses that gap.
-				const feeder = await addNode(page, 'Oscillator', 'inputs', [-200, 0]);
+				const feeder = await addNode(page, 'Oscillator', [-200, 0]);
 				await waitForNode(page, feeder);
 				await page.evaluate(
 					([f, sc, p]) =>
@@ -297,8 +297,8 @@ test.describe('the control socket', () => {
 				// the store sends — but only a browser carries a payload OUT through the platform
 				// clipboard and back in, which is what a copy and a paste actually are.
 				await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-				const a = await addNode(page, 'Oscillator', 'inputs', [0, 300]);
-				const b = await addNode(page, 'Buffer', 'signal', [280, 300]);
+				const a = await addNode(page, 'Oscillator', [0, 300]);
+				const b = await addNode(page, 'Buffer', [280, 300]);
 				await waitForNode(page, a);
 				await waitForNode(page, b);
 				const scope = await page.evaluate(
@@ -342,8 +342,8 @@ test.describe('the control socket', () => {
 				// CUT a plain selection, then paste it INSIDE a sub-patch. Cut is a copy and a
 				// delete in one undo step; the paste lands where the editor is ENTERED, which is
 				// the only way a node reaches the inside of a sub-patch by gesture.
-				const c = await addNode(page, 'Oscillator', 'inputs', [0, 600]);
-				const d = await addNode(page, 'Buffer', 'signal', [280, 600]);
+				const c = await addNode(page, 'Oscillator', [0, 600]);
+				const d = await addNode(page, 'Buffer', [280, 600]);
 				await waitForNode(page, c);
 				await waitForNode(page, d);
 				await page.evaluate(
@@ -439,7 +439,7 @@ test.describe('the control socket', () => {
 
 			let mine = '';
 			await test.step('what this tab adds, the other tab sees', async () => {
-				mine = await addNode(page, 'Oscillator', 'inputs');
+				mine = await addNode(page, 'Oscillator');
 				await expect
 					.poll(() => replicaNodes(other), { message: 'the peer mirrored the add' })
 					.toContain(mine);
@@ -498,7 +498,7 @@ test.describe('the control socket', () => {
 
 			let doomed = '';
 			await test.step('the tab holds a node before it goes dark', async () => {
-				doomed = await addNode(page, 'Oscillator', 'inputs');
+				doomed = await addNode(page, 'Oscillator');
 				await waitForNode(page, doomed);
 				await expectAgreement(page, 'before the drop');
 			});
@@ -609,7 +609,7 @@ test.describe('the control socket', () => {
 		await page.goto('/');
 		await waitForApp(page);
 		try {
-			const osc = await addNode(page, 'Oscillator', 'inputs');
+			const osc = await addNode(page, 'Oscillator');
 			await waitForNode(page, osc);
 			await page.evaluate(
 				(u) => (window as any).goofi.commands.updateParam(u, 'oscillator', 'sfreq', 64),

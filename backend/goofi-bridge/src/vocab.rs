@@ -277,7 +277,7 @@ pub fn check_viewers(
     uid: goofi_engine::Uid,
     viewers: &Value,
 ) -> Result<(), String> {
-    const OP: &str = "edit_node";
+    const OP: &str = "node edit";
     let bag = viewers
         .as_object()
         .ok_or_else(|| format!("{OP}: viewers is a {{slot: {{kind, settings, collapsed}}}} map"))?;
@@ -301,7 +301,7 @@ pub fn check_panel(
     state: Option<&Value>,
     bound: Option<goofi_engine::Uid>,
 ) -> Result<(), String> {
-    const OP: &str = "edit_panel";
+    const OP: &str = "layout panel edit";
     if let Some(t) = ty {
         check(OP, "panel type", t, panel_type_ids())?;
     }

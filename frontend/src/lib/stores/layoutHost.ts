@@ -6,7 +6,7 @@ import { history } from './history.svelte';
 import { getControl, type Control } from '$lib/api/control';
 import type { OpName } from '$lib/api/ops';
 
-/** What `place_panel` answers: the entry it placed, and the tab it landed on. */
+/** What a placement answers: the entry it placed, and the tab it landed on. */
 interface Placed {
 	id: string;
 	tab: string;

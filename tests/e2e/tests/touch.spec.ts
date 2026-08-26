@@ -83,7 +83,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 		let osc = '';
 		await test.step('a tap selects a node, and the inspector arrives as a sheet', async () => {
-			osc = await addNode(page, 'Oscillator', 'inputs', [40, 40]);
+			osc = await addNode(page, 'Oscillator', [40, 40]);
 			await waitForNode(page, osc);
 			await tapNode(page, osc);
 			await expect

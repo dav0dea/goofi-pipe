@@ -247,12 +247,12 @@ fn stage_load(mount: &std::path::Path, payload: &Value) -> Result<(String, Optio
     let inline = payload.get("content").and_then(|v| v.as_str());
     let (content, from_path, unpacked) = if let Some(p) = from_file {
         if inline.is_some() {
-            return Err("load: a `path` to an archive or a `content` manifest, never both".into());
+            return Err("session load: a `path` to an archive or a `content` manifest, never both".into());
         }
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
         let path = fsbrowse::resolve(p);
         let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
-            .map_err(|e| format!("load failed: {e}"))?;
+            .map_err(|e| format!("session load failed: {e}"))?;
         // Whether this file becomes the patch's home — the target a later silent Save overwrites.
         let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
         (manifest, adopt.then_some(path), true)
@@ -863,9 +863,9 @@ fn parse_param_entry(
 /// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two
 /// halves of one answer and two arguments can disagree.
 fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String> {
-    let raw = p.get("direction").and_then(|v| v.as_str()).unwrap_or("right");
+    let raw = p.get("side").and_then(|v| v.as_str()).unwrap_or("right");
     goofi_engine::layout::Side::parse(raw)
-        .ok_or_else(|| format!("{op}: direction is `left`, `right`, `top` or `bottom`, not `{raw}`"))
+        .ok_or_else(|| format!("{op}: side is `left`, `right`, `top` or `bottom`, not `{raw}`"))
 }
 
 fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {

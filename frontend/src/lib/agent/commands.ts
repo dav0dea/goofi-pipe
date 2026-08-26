@@ -12,12 +12,8 @@ function activeEditor(): string | null {
 }
 
 export const commands = {
-	addNode: (
-		type: string,
-		category: string,
-		pos: [number, number] = [0, 0],
-		instId?: string
-	): Promise<string> => graph().addNode(type, category, pos, instId),
+	addNode: (type: string, pos: [number, number] = [0, 0], instId?: string): Promise<string> =>
+		graph().addNode(type, pos, instId),
 	removeNode: (name: string): Promise<void> => graph().removeNode(name),
 	removeNodes: (names: string[]): Promise<void> => graph().removeNodes(names),
 	addLink: (link: LinkInfo): Promise<void> => graph().addLink(link),

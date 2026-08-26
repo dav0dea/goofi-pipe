@@ -4,12 +4,11 @@ import { test, type Page } from '@playwright/test';
 export function addNode(
 	page: Page,
 	type: string,
-	category = 'inputs',
 	pos: [number, number] = [0, 0]
 ): Promise<string> {
 	return page.evaluate(
-		([t, c, p]) => (window as any).goofi.commands.addNode(t, c, p),
-		[type, category, pos] as const
+		([t, p]) => (window as any).goofi.commands.addNode(t, p),
+		[type, pos] as const
 	);
 }
 

@@ -45,6 +45,6 @@ describe('root-as-scope: ROOT is the canvas, and no record is it', () => {
 		// must NOT do the old remove+add dance — that lands a member back at ROOT and, for a
 		// SHARED member, mirror-removes it across siblings (post Bug-C).
 		expect(calls.some((c) => c.op === 'node remove')).toBe(false);
-		expect(calls.some((c) => c.op === 'add_node')).toBe(false);
+		expect(calls.some((c) => c.op === 'node add')).toBe(false);
 	});
 });

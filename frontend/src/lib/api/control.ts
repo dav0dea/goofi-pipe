@@ -33,7 +33,7 @@ export interface NodeTypeInfo {
 	params: Record<string, Record<string, ParamDescriptor>>;
 }
 
-/** What one `rescan_nodes` changed, by type name. */
+/** What one `library refresh` changed, by type name. */
 export interface ScanDiff {
 	added: string[];
 	changed: string[];
