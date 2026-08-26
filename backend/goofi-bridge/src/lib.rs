@@ -4,6 +4,7 @@
 //! compiled into the binary.
 
 mod arms;
+pub mod phrase;
 /// The control-plane document and its deltas — shape-agnostic.
 pub mod doc;
 mod projection;

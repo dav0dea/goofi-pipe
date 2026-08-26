@@ -23,6 +23,9 @@ futures-util = "0.3"
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The command-line split the phrase layer parses with: the same quoting bash gives argv, which is
+# the contract — every transport that speaks lines gets bash's own word rules.
+shell-words = "1"
 # The PTY the agent harness runs on (wezterm's crate).
 portable-pty = "0.9"
 # What counts as an executable on THIS platform: the mode bits where those decide, `PATHEXT` where

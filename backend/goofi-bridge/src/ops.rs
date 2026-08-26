@@ -1,25 +1,12 @@
-//! The op registry — one row per `/control` op, and the single place the op SET is declared. An op
-//! not in this table is refused before `dispatch`, and the MCP tool list and the frontend's
-//! `OpName` union are both generated from it.
-
-/// Where an op is offered.
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub enum Surface {
-    /// Mirrored as an MCP tool for an agent.
-    Mcp,
-    /// `/control` only, and internal: state a test observes, which no product surface consumes.
-    Internal,
-    /// `/control` only: an op an agent must not reach, because it would replace the patch — or the
-    /// camera — it is working in.
-    ControlOnly,
-}
+//! The op registry — one row per op, and the single place the op SET is declared. Every op is on
+//! every transport: the socket names a row directly, the phrase layer parses a command line onto
+//! one, and the frontend's `OpName` union is generated from the table.
 
 /// One op's contract.
 pub struct Op {
-    /// `[a-z0-9_]+`, short enough that `mcp__goofi__<name>` fits in 64 characters: a longer or
-    /// dotted name makes a model provider reject the WHOLE tool list.
+    /// The op's phrase, words joined with single spaces; each word is `[a-z0-9_]+`. The socket
+    /// envelope and the phrase layer both spell an op this ONE way.
     pub name: &'static str,
-    pub surface: Surface,
     /// What calling the op IS — see [`Handler`]. The batch gate, the dirty decision and the
     /// re-mirror are all READ off this kind, never declared beside it.
     pub handler: Handler,
@@ -72,6 +59,14 @@ impl Handler {
     pub fn is_read(&self) -> bool {
         matches!(self, Handler::Read(_))
     }
+    /// The kind as the word `list_ops` answers with.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Handler::Read(_) => "read",
+            Handler::Write(_) => "write",
+            Handler::Effect(_) => "effect",
+        }
+    }
 }
 
 impl Op {
@@ -91,54 +86,50 @@ impl Op {
     }
 }
 
-/// The prefix a model provider gives every tool of this server; its length is the name budget.
-pub const MCP_PREFIX: &str = "mcp__goofi__";
-
 use crate::arms;
 use Handler::{Effect, Read, Write};
-use Surface::{ControlOnly, Internal, Mcp};
 
 pub static REGISTRY: &[Op] = &[
-    Op { name: "list_dir", surface: ControlOnly, handler: Read(arms::list_dir), args: "path:string",
+    Op { name: "list_dir", handler: Read(arms::list_dir), args: "path:string",
          doc: "List a directory on the goofi host — the save/load browser's read.",
          result: "{path, parent, entries: [{name, dir}], roots}" },
-    Op { name: "list_nodes", surface: Mcp, handler: Read(arms::list_nodes), args: "type:string",
+    Op { name: "list_nodes", handler: Read(arms::list_nodes), args: "type:string",
          doc: "The node palette: every registered type with its slots, params, docs and availability.\n\n\
                Name a `type` and you get that ONE entry instead, in full — the same fields plus where it came from and its source text. A native type has no source to read; copy a python node into the patch workspace to modify one.",
          result: "{types: [{type, category, doc, input_slots, output_slots, params, available}]} — or, for one `type`, that entry plus {language, tier, provenance, path, source}." },
-    Op { name: "rescan_nodes", surface: Mcp, handler: Effect(arms::rescan_nodes), args: "",
+    Op { name: "rescan_nodes", handler: Effect(arms::rescan_nodes), args: "",
          doc: "Re-read the shipped and patch node directories; live instances of a changed type restart onto the new code. Call after writing a node file.",
          result: "{added: [type], changed: [type], removed: [type]}" },
-    Op { name: "add_node", surface: Mcp, handler: Write(arms::add_node),
+    Op { name: "add_node", handler: Write(arms::add_node),
          args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid params:json",
          doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `params` is edit_node's bag, applied at birth. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
                The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same five ops — but it never runs, so it takes no params. To COPY a node rather than build one, read it with copy_nodes and put it back with paste_nodes.",
          result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." },
-    Op { name: "copy_nodes", surface: Mcp, handler: Read(arms::copy_nodes), args: "nodes:uid[]!",
+    Op { name: "copy_nodes", handler: Read(arms::copy_nodes), args: "nodes:uid[]!",
          doc: "Read `nodes` and everything they hold — a sub-patch's members, their ports and the nested sub-patches below them, to any depth — as a self-contained fragment. A link rides only when BOTH its ends are in the fragment. The shape is the `.gfi`'s own, so a fragment is a patch's worth of nodes in the format a patch is written in, and paste_nodes is what puts one back.",
          result: "{doc: {nodes, links}} — the fragment, keyed by the uids it was read from" },
-    Op { name: "paste_nodes", surface: Mcp, handler: Write(arms::paste_nodes), args: "doc:json! pos:float2 inst_id:uid",
+    Op { name: "paste_nodes", handler: Write(arms::paste_nodes), args: "doc:json! pos:float2 inst_id:uid",
          doc: "Add a copy_nodes fragment on FRESH uids and fresh names, so it lands beside whatever it was copied from rather than colliding with it. `pos` shifts the whole fragment by that offset; `inst_id` puts its roots inside that sub-patch, absent = root. A record naming a scope that is IN the fragment keeps the shape it was copied with. One command, so it is one undo step.",
          result: "{rename: {old_uid: new_uid}} — every record's uid in the fragment mapped to the one it was created at" },
-    Op { name: "remove_node", surface: Mcp, handler: Write(arms::remove_node), args: "node:uid!",
+    Op { name: "remove_node", handler: Write(arms::remove_node), args: "node:uid!",
          doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
          result: "{removed: bool} — false when the uid named nothing" },
-    Op { name: "restart_node", surface: Mcp, handler: Effect(arms::restart_node), args: "node:uid!",
+    Op { name: "restart_node", handler: Effect(arms::restart_node), args: "node:uid!",
          doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
          result: "{ok: true}" },
-    Op { name: "add_link", surface: Mcp, handler: Write(arms::add_link),
+    Op { name: "add_link", handler: Write(arms::add_link),
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",
          doc: "Wire an output slot to an input slot. Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
                A link never crosses a sub-patch boundary, and the two acts that look like it are ordinary links in different scopes. From the OUTSIDE you wire a node to the sub-patch's facade, naming a port's uid as the slot; the wire is stored against the PORT, whether or not anything is behind it yet. From the INSIDE you wire a port to a member, both of them in that sub-patch. A port carries one slot, `value`, on both of its sides.",
          result: "{node_out, slot_out, node_in, slot_in, dtype} — the wire as made, with a facade endpoint resolved to the PORT it named." },
-    Op { name: "remove_link", surface: Mcp, handler: Write(arms::remove_link),
+    Op { name: "remove_link", handler: Write(arms::remove_link),
          args: "node_out:uid! slot_out:string! node_in:uid! slot_in:string!",
          doc: "Remove one wire, addressed by both of its endpoints — a boundary port's inner wire included. Idempotent, like remove_node.",
          result: "{removed: bool} — false when there was no such wire" },
-    Op { name: "refresh_param", surface: Mcp, handler: Effect(arms::refresh_param), args: "node:uid! group:string! name:string!",
+    Op { name: "refresh_param", handler: Effect(arms::refresh_param), args: "node:uid! group:string! name:string!",
          doc: "Ask a node to re-enumerate a refreshable string param's options (a device or stream picker). The scan runs on the node's own thread, so this reply only says the request was dispatched — read the fresh options back with inspect_node.",
          result: "{ok: true} — the options land on the node; inspect_node reports them" },
-    Op { name: "edit_node", surface: Mcp, handler: Write(arms::edit_node),
+    Op { name: "edit_node", handler: Write(arms::edit_node),
          args: "node:uid! name:string pos:float2 params:json viewers:json",
          doc: "Edit a node: rename it, move it, set params, set viewers — any of them, in one step and one undo. An omitted field is left alone. A sub-patch boundary port takes every field but `params`, which it has no thread to hold: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
                A `name` must be a legal Python identifier and not a keyword, for every kind of node. An expression reads a name as an ATTRIBUTE — a sub-patch's slot in `nd('chain').drain` — so one Python cannot parse there breaks every reference to it, and the rewrite that follows the NEXT rename can no longer find what it broke.\n\n\
@@ -147,48 +138,48 @@ pub static REGISTRY: &[Op] = &[
                A value is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero. The declared min/max are the editor's range, NOT a clamp.\n\n\
                `viewers` is `{slot: {kind, settings}}`, merged key by key, so only the slots named move. `kind` is one of: {viewer_kinds}.",
          result: "{params} — every param touched, as STORED, with its binding error if the expression did not compile." },
-    Op { name: "set_viewpoint", surface: ControlOnly, handler: Effect(arms::set_viewpoint), args: "viewpoint:json!",
+    Op { name: "set_viewpoint", handler: Effect(arms::set_viewpoint), args: "viewpoint:json!",
          doc: "Store where this client is looking — active tab, maximize, camera, each panel's sub-patch path. Persisted, never converged, never dirtying.",
          result: "{ok: true}" },
-    Op { name: "inspect_layout", surface: Mcp, handler: Read(arms::inspect_layout), args: "tab:string",
+    Op { name: "inspect_layout", handler: Read(arms::inspect_layout), args: "tab:string",
          doc: "The arrangement as a tree: every tab, split and panel with its id, order and share of its parent. How a caller discovers the ids every layout op addresses. `tab` narrows it to one tab; no arg = all of them.",
          result: "{text: string}" },
-    Op { name: "edit_panel", surface: Mcp, handler: Write(arms::edit_panel),
+    Op { name: "edit_panel", handler: Write(arms::edit_panel),
          args: "panel:uid! name:string type:panel_type state:json fractions:float[]",
          doc: "Edit ONE entry's fields — a tab, a split or a panel, whichever the id names. Any mix of them is one call and one undo, and an omitted field is left alone.\n\n\
                `name` relabels a TAB. Its id and every panel on it stand; the strip index is where it sits, which place_panel owns.\n\n\
                `type` and `state` are a PANEL's. State MERGES key by key — send only what changes, and null to clear a key. A new type clears the old type's state, so send both together to rebind. `type` is one of: {panel_types}. A viewer panel's `state.kind` is one of: {viewer_kinds}; a STRING or TABLE slot ignores it and uses its own.\n\n\
                `fractions` sets the shares of ALL of a SPLIT's children at once, in child order — what a resize drag commits. Renormalized to fill the slot.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
-    Op { name: "place_panel", surface: Mcp, handler: Write(arms::place_panel),
+    Op { name: "place_panel", handler: Write(arms::place_panel),
          args: "panel:uid to:uid index:int direction:string ratio:float name:string",
          doc: "Put a panel somewhere. WHAT is placed: with `panel`, that entry — a panel, a whole split's subtree, or a tab — moves; with no `panel`, a fresh empty one is born. WHERE it lands is the same grammar either way, so a drag and a birth are one op and one undo step; taking a tab's last panel takes the tab with it.\n\n\
                With `to` and `direction` it lands BESIDE that panel, on its `left`/`right`/`top`/`bottom`, taking `ratio` of its space (default half) — a drop on a panel's edge, or a split.\n\n\
                With `to` and no direction it lands INSIDE that split, at `index` among its children — a MOVE only, since a fresh panel has nothing to put inside one; born, it simply divides `to` on the default side.\n\n\
                With no `to` it lands on a tab of its own at `index` in the strip — `name` labels it, and is minted (`Tab 2`, `Tab 3`, …) unless you give one. A `panel` that IS a tab just moves to `index` instead, because it already has one.",
          result: "{id, tab, text} — what was placed, the tab it is on, and the arrangement as inspect_layout draws it" },
-    Op { name: "remove_panel", surface: Mcp, handler: Write(arms::remove_panel), args: "panel:uid!",
+    Op { name: "remove_panel", handler: Write(arms::remove_panel), args: "panel:uid!",
          doc: "Close a panel, a whole split's subtree, or a tab and every panel on it. Its space goes to its siblings; a tab keeps its last panel, and the last tab stays.",
          result: "{text} — the resulting arrangement, as inspect_layout draws it" },
-    Op { name: "set_global", surface: Mcp, handler: Write(arms::set_global), args: "name:string! value:json type:string",
+    Op { name: "set_global", handler: Write(arms::set_global), args: "name:string! value:json type:string",
          doc: "Write a patch global: create it, change its value, or — with NO value — delete it. `type` is one of float/int/bool/string, required only when the global is new; giving a different one than it holds is refused, because every expression reading it depends on its type. System globals cannot be deleted. To rename one, compound a set of the new name with a delete of the old.",
          result: "{value} — the value as stored, type-coerced — or {removed: true}" },
-    Op { name: "compound", surface: Mcp, handler: Effect(arms::compound), args: "ops:json!",
+    Op { name: "compound", handler: Effect(arms::compound), args: "ops:json!",
          doc: "Run several write ops in order as ONE undo step. `ops` is a list of `{op, payload}`. A refused step takes back the ones that already landed, so the call either happens whole or not at all. A step must be an undoable write: undo, redo, compound itself and the ops that replace the patch are refused.",
          result: "{results} — each step's own reply, in order" },
-    Op { name: "group_nodes", surface: Mcp, handler: Write(arms::group_nodes), args: "members:uid[]! pos:float2",
+    Op { name: "group_nodes", handler: Write(arms::group_nodes), args: "members:uid[]! pos:float2",
          doc: "Collapse nodes into a new sub-patch, returning its instance uid. `members` must share one scope, and one of them may itself be a sub-patch. Every wire that ends up CROSSING the new boundary mints a port to carry it, so nothing is disconnected and nothing stops running; a wire buried in a nested member mints a port there too, so it can reach the new boundary.",
          result: "{inst_id: uid}" },
-    Op { name: "expand_instance", surface: Mcp, handler: Write(arms::expand_instance), args: "inst_id:uid!",
+    Op { name: "expand_instance", handler: Write(arms::expand_instance), args: "inst_id:uid!",
          doc: "Dissolve a sub-patch, returning its members to the parent scope. Its ports go with it and every wire they carried stands, because a port keeps its wire against the node behind it. A port of an ENCLOSING sub-patch that exposed one of these follows down onto what it exposed.",
          result: "{ok: true}" },
-    Op { name: "serialize", surface: ControlOnly, handler: Read(arms::serialize), args: "",
+    Op { name: "serialize", handler: Read(arms::serialize), args: "",
          doc: "The patch manifest as YAML — a debug read, not a save path.",
          result: "{yaml: string}" },
-    Op { name: "save", surface: ControlOnly, handler: Effect(arms::save), args: "path:string!",
+    Op { name: "save", handler: Effect(arms::save), args: "path:string!",
          doc: "Pack the patch and its workspace to a `.gfi` at `path`, and remember it as the patch's home.",
          result: "{path: string}" },
-    Op { name: "load", surface: ControlOnly, handler: Effect(arms::load), args: "path:string content:string adopt:bool",
+    Op { name: "load", handler: Effect(arms::load), args: "path:string content:string adopt:bool",
          doc: "Replace the open patch, losing unsaved work. `path` names a `.gfi` and brings its \
                workspace with it; `content` is an inline YAML manifest and carries no workspace; \
                NEITHER is an empty patch, which is a New. At most one of the two. `adopt` (default \
@@ -197,37 +188,40 @@ pub static REGISTRY: &[Op] = &[
                came from lives on the user's machine and the staged copy this reads is deleted \
                immediately.",
          result: "{ok: true}" },
-    Op { name: "undo", surface: Mcp, handler: Effect(arms::undo), args: "",
+    Op { name: "undo", handler: Effect(arms::undo), args: "",
          doc: "Undo this session's last graph command. Each caller's session has its own stack.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
-    Op { name: "redo", surface: Mcp, handler: Effect(arms::redo), args: "",
+    Op { name: "redo", handler: Effect(arms::redo), args: "",
          doc: "Redo this session's last undone graph command.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
-    Op { name: "inspect_patch", surface: Mcp, handler: Read(arms::inspect_patch), args: "scope:uid",
+    Op { name: "inspect_patch", handler: Read(arms::inspect_patch), args: "scope:uid",
          doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires. No arg = the root scope. Scope-wide and nothing more: what is broken is the whole patch's business, so get_patch answers that.",
          result: "{text: string}" },
-    Op { name: "inspect_node", surface: Mcp, handler: Read(arms::inspect_node),
+    Op { name: "inspect_node", handler: Read(arms::inspect_node),
          args: "node:uid! slot:string params:bool error:bool",
          doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output. The FRAMES are not here and cannot be: subscribe to `/data/<node>/<slot>` to see a node's data, exactly as a viewer does.",
          result: "{text: string}" },
-    Op { name: "get_state", surface: Internal, handler: Read(arms::get_state), args: "",
+    Op { name: "get_state", handler: Read(arms::get_state), args: "",
          doc: "The replicated control-plane projection — nodes, links, globals, arrangement — as plain JSON. What every client mirrors, read without the sync protocol that carries it. ONE `nodes` map carries leaves, sub-patch facades and boundary ports alike, each naming its scope, and a port's inner wire is in `links` like any other cable.",
          result: "{nodes, links, globals, arrangement} — nodes and globals keyed by id, links a list." },
-    Op { name: "get_patch", surface: Mcp, handler: Read(arms::get_patch), args: "",
+    Op { name: "get_patch", handler: Read(arms::get_patch), args: "",
          doc: "The open patch itself: where it lives, where its workspace is, whether it differs from disk, and every standing error with how long it has stood. One read for `is my patch healthy, and have I saved it`.",
          result: "{save_path: string | null, workspace: string, dirty: bool, errors: [{node, path, error, standing}]}" },
-    Op { name: "list_globals", surface: Mcp, handler: Read(arms::list_globals), args: "",
+    Op { name: "list_globals", handler: Read(arms::list_globals), args: "",
          doc: "Every patch global — what an expression can read and set_global can write.",
          result: "{globals: [{name, type, value, system: bool}]}" },
-    Op { name: "list_harnesses", surface: ControlOnly, handler: Read(arms::list_harnesses), args: "",
+    Op { name: "list_harnesses", handler: Read(arms::list_harnesses), args: "",
          doc: "The agent harnesses installed on this machine, and the ones goofi has running.",
          result: "{instances: [{id, harness, state, exit_code}], detected: [{harness, path, version}]}" },
-    Op { name: "spawn_harness", surface: ControlOnly, handler: Effect(arms::spawn_harness), args: "harness:string!",
+    Op { name: "spawn_harness", handler: Effect(arms::spawn_harness), args: "harness:string!",
          doc: "Launch an agent harness on a PTY with the patch workspace as its cwd, minting the MCP address it is handed. Read its terminal at /term/<instance_id>. An unknown name is refused with the set this build knows; list_harnesses says which of them are installed.",
          result: "{instance_id: string}" },
-    Op { name: "stop_harness", surface: ControlOnly, handler: Effect(arms::stop_harness), args: "instance:string!",
+    Op { name: "stop_harness", handler: Effect(arms::stop_harness), args: "instance:string!",
          doc: "Stop a running harness (SIGTERM, then SIGKILL), or dismiss one that already exited. Its MCP address drops immediately; the exit code arrives on harness_changed.",
          result: "{ok: true}" },
+    Op { name: "list_ops", handler: Read(arms::list_ops), args: "",
+         doc: "Every op this server speaks: its name, its arguments (`!` marks a required one), what it does, what it answers, and its kind — a `write` is undoable and may ride in a batch, an `effect` runs alone.",
+         result: "{ops: [{op, args, kind, doc, result}]}" },
 ];
 
 /// The row for `name`, if the op exists.
@@ -237,11 +231,8 @@ pub fn find(name: &str) -> Option<&'static Op> {
 
 /// The frontend's `OpName` union, generated from the registry and checked into the tree.
 pub fn typescript() -> String {
-    let names: Vec<String> = REGISTRY
-        .iter()
-        .filter(|o| o.surface != Surface::Internal)
-        .map(|o| format!("\t| '{}'", o.name))
-        .collect();
+    let names: Vec<String> =
+        REGISTRY.iter().map(|o| format!("\t| '{}'", o.name)).collect();
     format!(
         "// GENERATED from backend/goofi-bridge/src/ops.rs — do not edit by hand.\n\
          // The manager's op registry is the only place an op name is declared: naming one that is\n\

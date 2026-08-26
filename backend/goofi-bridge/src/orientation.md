@@ -5,9 +5,11 @@ draws the graph and lists every standing error with how long it has stood. Every
 with what it did, so read the reply instead of following it with another call. Never guess a name
 — node types, panel types and viewer kinds are enumerated by the tool that takes them.
 
-`list_nodes` is the palette; `add_node`, `add_link` and `edit_node` build; `rescan_nodes` loads
-a Python node you wrote into `nodes/` beside you. `undo`/`redo` are yours alone and never reach the
-human's edits. You cannot open, save or replace the patch. Below is detail: read what a step needs.
+You drive goofi through ONE tool, `goofi_exec`: each command is a line, `<op> [--arg value …]`,
+and `list_ops` answers every op with its arguments and result. `list_nodes` is the palette;
+`add_node`, `add_link` and `edit_node` build; `rescan_nodes` loads a Python node you wrote into
+`nodes/` beside you. `undo`/`redo` are yours alone and never reach the human's edits. Below is
+detail: read what a step needs.
 
 ## Seeing
 
@@ -124,9 +126,9 @@ directory, so ask rather than assume). `.goofiignore` says what is *not* package
 `*.pyc`, …); its header documents its own syntax, and the same list decides whether the workspace
 counts as changed, so a scratch file that should not travel belongs in it.
 
-## Not yours
+## Handle with care
 
-`load` and `new` replace the patch you work inside, and `new` clears the undo history
-so it could not be taken back. `save` and `list_dir` are the human's file browser, `set_viewpoint`
-belongs to a client with a screen, and the harness ops could stop the process you speak through.
-None are on your tool list; if the human wants one, ask them to do it in the UI.
+`load` replaces the patch you work inside and clears the undo history, so it could not be taken
+back. `save` and `list_dir` are the human's file browser, `set_viewpoint` is the camera of a
+client with a screen, and the harness ops can stop the process you speak through. All of these
+answer to you, but they act on what the human is looking at — ask the human before you use one.

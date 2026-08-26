@@ -1,9 +1,10 @@
-//! The MCP endpoint: every `Surface::Mcp` registry row becomes one tool, over one JSON object per
-//! POST — no session state, no SSE.
+//! The MCP endpoint: ONE tool, `goofi_exec`, whose input is a list of command lines — the same
+//! lines the CLI speaks, parsed by the same [`crate::phrase`] layer, so the two surfaces cannot
+//! drift. One JSON object per POST — no session state, no SSE.
 //!
-//! A tool call is a SYNCHRONOUS [`crate::dispatch`] inside an async task, so nothing awaits while
-//! the graph lock is held. And a refused tool name comes back as an `isError` result where the spec
-//! says `-32602`, because only the `isError` shape reaches the model that can correct the call.
+//! A tool call is a SYNCHRONOUS [`crate::AppState::call`] inside an async task, so nothing awaits
+//! while the graph lock is held. And a refused call comes back as an `isError` result where the
+//! spec says `-32602`, because only the `isError` shape reaches the model that can correct it.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -11,8 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
-use crate::ops::{self, Surface};
-use crate::AppState;
+use crate::{phrase, AppState};
 
 /// The undo scope every central MCP call runs in: the transport is stateless, so agents share one
 /// stack, which is still isolated from every human tab's.
@@ -28,66 +28,35 @@ const LATEST_PROTOCOL: &str = "2025-11-25";
 /// `ttlMs`/`cacheScope` and `server/discover` are not implemented here.
 const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", LATEST_PROTOCOL];
 
-/// One registry argument type as JSON Schema; `uid` and `string` share the default arm.
-fn json_schema(ty: &str) -> Value {
-    if let Some(item) = ty.strip_suffix("[]") {
-        return json!({ "type": "array", "items": json_schema(item) });
-    }
-    match ty {
-        "float" => json!({ "type": "number" }),
-        "int" => json!({ "type": "integer" }),
-        "bool" => json!({ "type": "boolean" }),
-        "float2" => {
-            json!({ "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 })
-        }
-        // An empty schema is how JSON Schema spells "anything".
-        "json" => json!({}),
-        // Advertised as the SET it may take, so a model reads the choices instead of guessing.
-        "panel_type" => json!({ "type": "string", "enum": crate::vocab::panel_type_ids() }),
-        _ => json!({ "type": "string" }),
-    }
-}
+/// What the one tool teaches a model BEFORE its first call: the line grammar, the index, and the
+/// batch rule.
+const DESCRIPTION: &str = "\
+Drive goofi with command lines. Each entry in `commands` is one op: `<op> [--arg value …]`, with \
+bash's own quoting rules. Call `list_ops` first — it answers every op with its arguments, its \
+result and its kind. A bool arg is `--x` or `--no-x`; a list arg repeats its flag; a `json` arg \
+takes one JSON string.\n\n\
+ONE command executes directly. SEVERAL execute as one batch and ONE undo step: every step must \
+be an undoable write, a refused step takes the whole batch back, and the reply is each step's \
+result in order. To wire nodes made in the same batch, choose their uids yourself with \
+`add_node --member_uid`.";
 
-/// The tool list, generated from the registry's agent surface.
+/// The tool list: one tool, whichever address serves it.
 pub fn tools() -> Vec<Value> {
-    ops::REGISTRY
-        .iter()
-        .filter(|op| op.surface == Surface::Mcp)
-        .map(|op| {
-            let mut properties = serde_json::Map::new();
-            let mut required = Vec::new();
-            for (name, ty, req) in op.args() {
-                properties.insert(name.to_string(), json_schema(ty));
-                if req {
-                    required.push(json!(name));
-                }
-            }
-            json!({
-                "name": op.name,
-                "description": format!("{}\n\nReturns: {}", op.doc(), op.result),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
+    vec![json!({
+        "name": "goofi_exec",
+        "description": DESCRIPTION,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "commands": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "One command per entry: `<op> [--arg value …]`.",
                 },
-            })
-        })
-        .collect()
-}
-
-/// A tool's answer as the text a model reads: prose and bare strings verbatim, everything else
-/// pretty-printed.
-fn render(result: &Value) -> String {
-    if let Value::String(s) = result {
-        return s.clone();
-    }
-    match result.as_object() {
-        Some(o) if o.len() == 1 => match o.get("text").and_then(|t| t.as_str()) {
-            Some(t) => t.to_string(),
-            None => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
+            },
+            "required": ["commands"],
         },
-        _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
-    }
+    })]
 }
 
 /// A `CallToolResult`: a failed op is `isError` inside a successful JSON-RPC reply.
@@ -95,17 +64,42 @@ fn tool_result(text: String, is_error: bool) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
 }
 
-/// Run one tool by handing the registry op straight to the control-plane dispatcher.
+/// Run the one tool: parse every line first, then execute — one command directly, several as one
+/// compound, so a batch is one undo step and a refused step takes the others back.
 fn call_tool(state: &AppState, session: &str, params: &Value) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    // The registry is the gate, checked BEFORE dispatch: a ControlOnly op has a live arm and would
-    // run perfectly well if asked for by name.
-    if !ops::find(name).is_some_and(|op| op.surface == Surface::Mcp) {
-        return tool_result(format!("unknown tool `{name}`"), true);
+    if name != "goofi_exec" {
+        return tool_result(format!("unknown tool `{name}` — this server has one: goofi_exec"), true);
     }
-    match state.call(name, arguments, session) {
-        Ok(result) => tool_result(render(&result), false),
+    let Some(lines) = params
+        .get("arguments")
+        .and_then(|a| a.get("commands"))
+        .and_then(|c| c.as_array())
+        .map(|c| c.iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect::<Vec<_>>())
+        .filter(|c: &Vec<String>| !c.is_empty())
+    else {
+        return tool_result("goofi_exec: `commands` is a non-empty list of command lines".into(), true);
+    };
+    let mut parsed = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        match phrase::parse(line) {
+            Ok((op, payload)) => parsed.push((op, payload)),
+            Err(e) => return tool_result(format!("command {i}: {e}"), true),
+        }
+    }
+    if let [(op, payload)] = &parsed[..] {
+        return match state.call(op.name, payload.clone(), session) {
+            Ok(result) => tool_result(phrase::render(&result), false),
+            Err(e) => tool_result(e, true),
+        };
+    }
+    let steps: Vec<Value> =
+        parsed.iter().map(|(op, payload)| json!({ "op": op.name, "payload": payload })).collect();
+    match state.call("compound", json!({ "ops": steps }), session) {
+        Ok(result) => {
+            let list = result.get("results").cloned().unwrap_or(result);
+            tool_result(serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()), false)
+        }
         Err(e) => tool_result(e, true),
     }
 }

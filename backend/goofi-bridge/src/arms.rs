@@ -959,3 +959,25 @@ pub(crate) fn redo(
     events.extend(state.set_dirty(true));
     Ok(result)
 }
+
+/// The registry itself, as data a caller derives a whole client from.
+pub(crate) fn list_ops(
+    _state: &AppState,
+    _payload: &Value,
+    _session: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let ops: Vec<Value> = ops::REGISTRY
+        .iter()
+        .map(|o| {
+            json!({
+                "op": o.name,
+                "args": o.args,
+                "kind": o.handler.kind_name(),
+                "doc": o.doc(),
+                "result": o.result,
+            })
+        })
+        .collect();
+    Ok(json!({ "ops": ops }))
+}

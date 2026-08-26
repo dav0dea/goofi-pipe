@@ -134,8 +134,8 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     // Two servers, because a round trip through one would pass against a route that packed nothing.
     let src = Goofi::new();
     let source = host(&src.serve().await).to_string();
-    tool(&source, "add_node", j!({ "type": "Oscillator" })).await;
-    tool(&source, "add_node", j!({ "type": "Buffer" })).await;
+    tool(&source, "add_node --type Oscillator").await;
+    tool(&source, "add_node --type Buffer").await;
 
     let (status, head, gfi) = http(&source, "GET", "/patch.gfi", "", b"").await;
     assert_eq!(status, 200, "{head}");
@@ -146,11 +146,11 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     let dst = Goofi::new();
     let dest = host(&dst.serve().await).to_string();
     let octet = "Content-Type: application/octet-stream\r\n";
-    assert!(!tool(&dest, "inspect_patch", j!({})).await.contains("Oscillator"), "it starts empty");
+    assert!(!tool(&dest, "inspect_patch").await.contains("Oscillator"), "it starts empty");
     let (status, head, _) = http(&dest, "POST", "/patch.gfi", octet, &gfi).await;
     assert_eq!(status, 200, "{head}");
 
-    let after = tool(&dest, "inspect_patch", j!({})).await;
+    let after = tool(&dest, "inspect_patch").await;
     assert!(after.contains("Oscillator") && after.contains("Buffer"), "the whole patch: {after}");
     // The staging path is deleted the moment the load returns, so it must not become the patch's home.
     assert!(after.contains("(never saved)"), "an uploaded patch has no server-side home: {after}");
@@ -158,7 +158,7 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     let (status, head, body) = http(&dest, "POST", "/patch.gfi", octet, b"not a zip").await;
     assert_eq!(status, 400, "a bad upload is the caller's error, not the server's: {head}");
     assert!(!body.is_empty(), "the refusal says why");
-    assert!(tool(&dest, "inspect_patch", j!({})).await.contains("Oscillator"),
+    assert!(tool(&dest, "inspect_patch").await.contains("Oscillator"),
             "the live patch survived a refused upload");
 }
 

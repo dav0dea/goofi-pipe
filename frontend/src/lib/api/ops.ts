@@ -31,8 +31,10 @@ export type OpName =
 	| 'redo'
 	| 'inspect_patch'
 	| 'inspect_node'
+	| 'get_state'
 	| 'get_patch'
 	| 'list_globals'
 	| 'list_harnesses'
 	| 'spawn_harness'
-	| 'stop_harness';
+	| 'stop_harness'
+	| 'list_ops';

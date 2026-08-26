@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::ops::{Surface, MCP_PREFIX, REGISTRY};
+use goofi_bridge::ops::REGISTRY;
 use goofi_bridge::{term, AppState};
 use goofi_tests::{host, http, Goofi};
 use serde_json::{json, Value};
@@ -37,20 +37,22 @@ async fn rpc(addr: &str, path: &str, id: i64, method: &str, params: Value) -> Va
     reply
 }
 
-/// A `tools/call`, answering `(rendered text, is_error)`.
-async fn tool(addr: &str, path: &str, id: i64, name: &str, args: Value) -> (String, bool) {
-    let r = rpc(addr, path, id, "tools/call", json!({ "name": name, "arguments": args })).await;
+/// A `goofi_exec` call with one or more command LINES, answering `(rendered text, is_error)`.
+async fn exec(addr: &str, path: &str, id: i64, commands: &[&str]) -> (String, bool) {
+    let args = json!({ "name": "goofi_exec", "arguments": { "commands": commands } });
+    let r = rpc(addr, path, id, "tools/call", args).await;
     let result = &r["result"];
     (result["content"][0]["text"].as_str().unwrap_or_default().to_string(),
      result["isError"] == json!(true))
 }
 
-/// A tool call that must succeed.
-async fn ok_tool(addr: &str, id: i64, name: &str, args: Value) -> String {
-    let (text, err) = tool(addr, "/mcp", id, name, args).await;
-    assert!(!err, "{name} failed: {text}");
+/// One command that must succeed.
+async fn ok_exec(addr: &str, id: i64, command: &str) -> String {
+    let (text, err) = exec(addr, "/mcp", id, &[command]).await;
+    assert!(!err, "`{command}` failed: {text}");
     text
 }
+
 
 async fn tools(addr: &str) -> Vec<Value> {
     rpc(addr, "/mcp", 1, "tools/list", json!({})).await["result"]["tools"]
@@ -58,62 +60,88 @@ async fn tools(addr: &str) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn the_served_tools_are_exactly_the_registrys_agent_surface_and_each_states_what_it_answers() {
-    // The list is GENERATED from the op registry: adding an op without a surface decision fails here.
-    let (_g, addr, _s) = start_server().await;
+async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
+    let (g, addr, _s) = start_server().await;
     let served = tools(&addr).await;
-    let mut names: Vec<String> =
-        served.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
-    let mut want: Vec<String> = REGISTRY.iter().filter(|o| o.surface == Surface::Mcp)
-        .map(|o| o.name.to_string()).collect();
-    names.sort();
-    want.sort();
-    assert_eq!(names, want);
+    assert_eq!(served.len(), 1, "ONE tool, whatever the registry holds: {served:?}");
+    let t = &served[0];
+    assert_eq!(t["name"], json!("goofi_exec"));
+    assert!(t["description"].as_str().is_some_and(|d| d.contains("list_ops")),
+            "the description points a model at the index: {t}");
+    // Even a one-argument tool advertises an object schema, or a client rejects it.
+    assert_eq!(t["inputSchema"]["type"], json!("object"));
+    assert_eq!(t["inputSchema"]["required"], json!(["commands"]));
 
-    // Each exclusion replaces the patch the agent is working inside, undo history included.
-    for off in ["load", "save", "serialize", "list_dir", "set_viewpoint"] {
-        assert!(REGISTRY.iter().any(|o| o.name == off && o.surface == Surface::ControlOnly),
-                "`{off}` is no longer a control-only row");
-        assert!(!names.iter().any(|t| t == off), "`{off}` reached the agent surface");
-    }
+    // The index is an op like any other, and it carries what a caller derives a client from.
+    let ops: Value = serde_json::from_str(&ok_exec(&addr, 2, "list_ops").await).unwrap();
+    let ops = ops["ops"].as_array().expect("an ops list");
+    assert_eq!(ops.len(), REGISTRY.len(), "every registry row is in the index");
+    let add = ops.iter().find(|o| o["op"] == json!("add_node")).unwrap();
+    assert_eq!(add["kind"], json!("write"));
+    assert!(add["args"].as_str().is_some_and(|a| a.contains("type:string!")),
+            "the args schema rides the index: {add}");
 
-    for t in &served {
-        // `mcp__goofi__<name>` past 64 characters makes a provider reject the WHOLE tool list.
-        let name = t["name"].as_str().unwrap();
-        assert!(name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
-                "`{name}` is not [a-z0-9_]+");
-        assert!(MCP_PREFIX.len() + name.len() <= 64,
-                "`{MCP_PREFIX}{name}` is over the 64 characters a tool name may have");
-        assert!(t["description"].as_str().is_some_and(|d| !d.is_empty()), "`{name}` is undescribed");
-        // Even an op with no arguments advertises an object schema, or a client rejects the tool.
-        assert_eq!(t["inputSchema"]["type"], json!("object"), "`{name}`");
-    }
+    // One command executes directly: flags typed by the schema — a NEGATIVE float2 value, a
+    // chosen name, and a `json` flag quoted as bash would quote it.
+    let born = ok_exec(&addr, 3, "add_node --type Oscillator --pos -100,-50 --name osc").await;
+    let born: Value = serde_json::from_str(&born).expect("the rendered reply is the op's JSON");
+    let uid = born["uid"].as_str().expect("a uid").to_string();
+    assert_eq!(born["name"], json!("osc"));
+    let line = format!(
+        r#"edit_node --node {uid} --params '{{"oscillator": {{"frequency": 7.5}}}}'"#);
+    let edited = ok_exec(&addr, 4, &line).await;
+    assert!(edited.contains("7.5"), "the param came back as stored: {edited}");
+    let patch = ok_exec(&addr, 5, "inspect_patch").await;
+    assert!(patch.contains(&uid), "a single-key text result renders as its text: {patch}");
 
-    // A required argument advertised as optional is one a model omits.
-    let add = served.iter().find(|t| t["name"] == json!("add_node")).unwrap();
-    assert_eq!(add["inputSchema"]["properties"]["type"]["type"], json!("string"));
-    assert_eq!(add["inputSchema"]["properties"]["pos"]["type"], json!("array"));
-    assert_eq!(add["inputSchema"]["required"], json!(["type"]));
-    let list = served.iter().find(|t| t["name"] == json!("list_nodes")).unwrap();
-    assert_eq!(list["inputSchema"]["required"], json!([]));
+    // Idempotence still SAYS which of the two happened.
+    let missing = ok_exec(&addr, 6, "remove_node --node aaaaaaaaaaaa").await;
+    assert!(missing.contains("\"removed\": false"), "a no-op success says so: {missing}");
+    let real = ok_exec(&addr, 7, &format!("remove_node --node {uid}")).await;
+    assert!(real.contains("\"removed\": true"), "a real delete is distinguishable: {real}");
 
-    let described = |name: &str| {
-        served.iter().find(|t| t["name"] == json!(name)).unwrap()["description"]
-            .as_str().unwrap().to_string()
-    };
-    ok_tool(&addr, 2, "add_node", json!({ "type": "Oscillator" })).await;
-    let undone: Value = serde_json::from_str(&ok_tool(&addr, 3, "undo", json!({})).await).unwrap();
-    assert!(undone["changed"].is_boolean(), "undo's `changed` is a bool: {undone}");
-    assert!(described("undo").contains("changed: bool"), "{}", described("undo"));
+    // An Effect runs when it is the ONLY command — undo brings the node back.
+    let undone: Value = serde_json::from_str(&ok_exec(&addr, 8, "undo").await).unwrap();
+    assert_eq!(undone["changed"], json!(true));
+    assert!(g.call("get_state", json!({}))["nodes"].as_object().is_some_and(|n| n.len() == 1),
+            "the undo really landed");
 
-    let missing = ok_tool(&addr, 4, "remove_node", json!({ "node": "aaaaaaaaaaaa" })).await;
-    assert!(missing.contains("\"removed\": false"), "a no-op success has to SAY so: {missing}");
-    let uid = ok_tool(&addr, 5, "add_node", json!({ "type": "Buffer" })).await;
-    let uid: Value = serde_json::from_str(&uid).unwrap();
-    let real = ok_tool(&addr, 6, "remove_node", json!({ "node": uid["uid"] })).await;
-    assert!(real.contains("\"removed\": true"), "…and a real delete is distinguishable: {real}");
-    let d = described("remove_node");
-    assert!(d.contains("Idempotent") && d.contains("removed"), "{d}");
+    // A refusal teaches: the op index, the op's own flags, the required set.
+    let (text, err) = exec(&addr, "/mcp", 9, &["frobnicate --hard"]).await;
+    assert!(err && text.contains("unknown op") && text.contains("list_ops"), "{text}");
+    let (text, err) = exec(&addr, "/mcp", 10, &["add_node --type Oscillator --sideways 3"]).await;
+    assert!(err && text.contains("--sideways") && text.contains("--pos"), "{text}");
+    let (text, err) = exec(&addr, "/mcp", 11, &["add_node"]).await;
+    assert!(err && text.contains("--type") && text.contains("required"), "{text}");
+    let (text, err) = exec(&addr, "/mcp", 12, &["undo --hard"]).await;
+    assert!(err && text.contains("takes no arguments"), "{text}");
+}
+
+#[tokio::test]
+async fn several_commands_are_one_batch_and_a_refused_step_takes_the_whole_batch_back() {
+    let (g, addr, _s) = start_server().await;
+    let nodes = |g: &Goofi| g.call("get_state", json!({}))["nodes"]
+        .as_object().map(|n| n.len()).unwrap_or(0);
+
+    let (text, err) =
+        exec(&addr, "/mcp", 1, &["add_node --type Oscillator", "add_node --type Buffer"]).await;
+    assert!(!err, "{text}");
+    let results: Value = serde_json::from_str(&text).expect("the batch answers a JSON list");
+    assert_eq!(results.as_array().map(|a| a.len()), Some(2), "each step's result, in order: {text}");
+    assert_eq!(nodes(&g), 2);
+
+    // ONE undo step covers the whole batch.
+    ok_exec(&addr, 2, "undo").await;
+    assert_eq!(nodes(&g), 0, "one undo took back both steps");
+
+    // A step that is not an undoable write refuses the batch BEFORE anything lands.
+    let (text, err) = exec(&addr, "/mcp", 3, &["add_node --type Oscillator", "load"]).await;
+    assert!(err && text.contains("not a step"), "{text}");
+    assert_eq!(nodes(&g), 0, "a refused batch left nothing behind");
+
+    // The same Effect alone is legal — the total surface includes the lifecycle.
+    let loaded = ok_exec(&addr, 4, "load").await;
+    assert!(loaded.contains("\"ok\": true"), "{loaded}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -132,7 +160,8 @@ async fn two_agents_drive_one_server_at_once_and_read_their_work_back_out_of_it(
         tokio::spawn(async move {
             let mut uids = Vec::new();
             for i in 0..4 {
-                uids.push(uid_of(ok_tool(&addr, base + i, "add_node", json!({ "type": ty })).await));
+                let line = format!("add_node --type {ty}");
+                uids.push(uid_of(ok_exec(&addr, base + i, &line).await));
             }
             uids
         })
@@ -142,17 +171,14 @@ async fn two_agents_drive_one_server_at_once_and_read_their_work_back_out_of_it(
     uids.extend(b.await.unwrap());
     assert_eq!(uids.iter().collect::<std::collections::HashSet<_>>().len(), 8,
                "two clients minted a colliding uid: {uids:?}");
-    let patch = ok_tool(&addr, 300, "inspect_patch", json!({})).await;
+    let patch = ok_exec(&addr, 300, "inspect_patch").await;
     for uid in &uids {
         assert!(patch.contains(uid), "{uid} is missing from the shared patch:\n{patch}");
     }
 
-    for (name, args, names) in [("add_node", json!({ "type": "NoSuchNodeType" }), "NoSuchNodeType"),
-                                ("load", json!({}), "load")] {
-        let (text, err) = tool(&addr, "/mcp", 400, name, args).await;
-        assert!(err, "`{name}` was not refused: {text}");
-        assert!(text.contains(names), "the refusal names what it refused: {text}");
-    }
+    let (text, err) = exec(&addr, "/mcp", 400, &["add_node --type NoSuchNodeType"]).await;
+    assert!(err, "an unknown type was not refused: {text}");
+    assert!(text.contains("NoSuchNodeType"), "the refusal names what it refused: {text}");
 
     for asked in ["2024-11-05", "2025-06-18", "2025-11-25"] {
         let r = rpc(&addr, "/mcp", 500, "initialize", json!({ "protocolVersion": asked })).await;
@@ -434,20 +460,20 @@ async fn a_minted_address_serves_its_own_agent_and_dies_with_the_patch_that_spaw
             "the config names a URL that reaches this server: {cfg}");
 
     let path = format!("/mcp/{id}");
-    let (born, err) = tool(&addr, &path, 1, "add_node", json!({ "type": "Oscillator" })).await;
+    let (born, err) = exec(&addr, &path, 1, &["add_node --type Oscillator"]).await;
     assert!(!err, "the instance's own address serves its tools: {born}");
-    let (undone, _) = tool(&addr, "/mcp", 2, "undo", json!({})).await;
+    let (undone, _) = exec(&addr, "/mcp", 2, &["undo"]).await;
     assert!(undone.contains("\"changed\": false"), "the central session undid another's: {undone}");
 
     call(&mut ctl, 3, "load", json!({})).await;
     let roster = call(&mut ctl, 4, "list_harnesses", json!({})).await;
     assert_eq!(roster["instances"], json!([]), "the replaced patch's harnesses stayed: {roster}");
-    let (refused, err) = tool(&addr, &path, 5, "add_node", json!({ "type": "Oscillator" })).await;
+    let (refused, err) = exec(&addr, &path, 5, &["add_node --type Oscillator"]).await;
     assert!(err, "a harness from the replaced patch still edited the new one: {refused}");
     assert!(refused.contains(&id), "the refusal names the instance it refused: {refused}");
     assert!(read_until(&mut term, "exit_code").await.contains("exit_code"),
             "the child outlived the patch that spawned it");
-    let (ok, err) = tool(&addr, "/mcp", 6, "add_node", json!({ "type": "Buffer" })).await;
+    let (ok, err) = exec(&addr, "/mcp", 6, &["add_node --type Buffer"]).await;
     assert!(!err, "replacing the patch closed the central endpoint too: {ok}");
 
     let (_ctl, _, mut left) = harness(&addr, "_sh").await;

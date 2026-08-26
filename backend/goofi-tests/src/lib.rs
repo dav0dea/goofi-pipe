@@ -567,15 +567,16 @@ pub async fn http(
     (status, head, raw[split + 4..].to_vec())
 }
 
-/// One MCP `tools/call`, answering the tool's rendered text. Fails if the tool reported an error.
-pub async fn tool(addr: &str, name: &str, args: Value) -> String {
+/// One `goofi_exec` command line over MCP, answering the rendered text. Fails if the tool
+/// reported an error.
+pub async fn tool(addr: &str, command: &str) -> String {
     let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                      "params": { "name": name, "arguments": args } });
+                      "params": { "name": "goofi_exec", "arguments": { "commands": [command] } } });
     let (status, _, body) =
         http(addr, "POST", "/mcp", "Content-Type: application/json\r\n", req.to_string().as_bytes())
             .await;
-    assert_eq!(status, 200, "{name} answered {status}");
+    assert_eq!(status, 200, "`{command}` answered {status}");
     let reply: Value = serde_json::from_slice(&body).expect("a JSON-RPC reply");
-    assert_eq!(reply["result"]["isError"], json!(false), "{name} failed: {}", reply["result"]);
+    assert_eq!(reply["result"]["isError"], json!(false), "`{command}` failed: {}", reply["result"]);
     reply["result"]["content"][0]["text"].as_str().unwrap().to_string()
 }

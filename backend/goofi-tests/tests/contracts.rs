@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use goofi_bridge::ops::{find, typescript, Surface, MCP_PREFIX, REGISTRY};
+use goofi_bridge::ops::{find, typescript, REGISTRY};
 use goofi_bridge::vocab;
 use goofi_core::{Data, Meta, SlotType, Value as DataValue};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
@@ -24,18 +24,23 @@ fn regenerated(rel: &str, want: String) {
 
 #[test]
 fn every_op_row_is_well_formed_and_reachable() {
-    // A name outside `[a-z0-9_]+`, or one pushing `mcp__goofi__<name>` past 64 characters, makes a
-    // provider reject the ENTIRE tool list; a duplicate also makes `find` prefer the first.
+    // An op's name is its phrase, words joined with single spaces. The phrase layer resolves a
+    // line by the FIRST complete phrase it finds, so the set must be PREFIX-FREE: a phrase that
+    // is a word-prefix of another would swallow it whole.
     const ARG_TYPES: &[&str] = &["uid", "string", "float", "int", "bool", "float2", "json",
                                  "panel_type", "uid[]", "string[]", "float[]"];
     let mut seen = HashSet::new();
     for op in REGISTRY {
         assert!(seen.insert(op.name), "`{}` is declared twice", op.name);
-        assert!(!op.name.is_empty()
-                && op.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
-                "`{}` is not [a-z0-9_]+", op.name);
-        assert!(MCP_PREFIX.len() + op.name.len() <= 64,
-                "`{MCP_PREFIX}{}` is over the 64 characters a tool name may have", op.name);
+        let words: Vec<&str> = op.name.split(' ').collect();
+        assert!(!words.is_empty() && words.iter().all(|w| !w.is_empty()
+                && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')),
+                "`{}` is not space-joined [a-z0-9_]+ words", op.name);
+        for other in REGISTRY {
+            let shorter: Vec<&str> = other.name.split(' ').collect();
+            assert!(op.name == other.name || words.get(..shorter.len()) != Some(&shorter[..]),
+                    "`{}` is a word-prefix of `{}` and would swallow it", other.name, op.name);
+        }
         // The args schema is a STRING, so a typo in it would otherwise be a fact only at read time.
         assert_eq!(op.args().count(), op.args.split_whitespace().count(),
                    "`{}` has an argument with no `name:type`: {:?}", op.name, op.args);
@@ -58,16 +63,6 @@ fn every_op_row_is_well_formed_and_reachable() {
                     "`{}` is in the registry but dispatch has no arm for it: {e}", op.name);
         }
     }
-}
-
-#[test]
-fn the_ops_kept_off_the_agent_surface_are_a_decision_and_are_named_here() {
-    // `surface` is the one column with a SAFETY consequence, so it is pinned as a SET: each name
-    // below replaces the patch an agent works inside, is the file browser's half, or is a harness op.
-    let control_only: Vec<&str> =
-        REGISTRY.iter().filter(|o| o.surface == Surface::ControlOnly).map(|o| o.name).collect();
-    assert_eq!(control_only, ["list_dir", "set_viewpoint", "serialize", "save", "load",
-                              "list_harnesses", "spawn_harness", "stop_harness"]);
 }
 
 #[test]
