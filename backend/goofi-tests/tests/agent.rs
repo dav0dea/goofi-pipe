@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use goofi_bridge::ops::REGISTRY;
 use goofi_bridge::{term, AppState};
-use goofi_tests::{host, http, Goofi};
+use goofi_tests::{host, http, Client, Goofi};
 use serde_json::{json, Value};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -138,7 +138,12 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     let second: Value = serde_json::from_str(&second).unwrap();
     let grouped = ok_exec(&addr, 21, &format!("nodes group {} {} --pos 0,0",
         born["uid"].as_str().unwrap(), second["uid"].as_str().unwrap())).await;
-    assert!(grouped.contains("inst_id"), "the variadic positional took both words: {grouped}");
+    let grouped: Value = serde_json::from_str(&grouped).unwrap();
+    let doc = g.call("session state", json!({}));
+    for uid in [born["uid"].as_str().unwrap(), second["uid"].as_str().unwrap()] {
+        assert_eq!(doc["nodes"][uid]["scope"], grouped["inst_id"],
+                   "the variadic positional took BOTH words into the new scope: {doc}");
+    }
 }
 
 #[tokio::test]
@@ -147,12 +152,21 @@ async fn several_commands_are_one_batch_and_a_refused_step_takes_the_whole_batch
     let nodes = |g: &Goofi| g.call("session state", json!({}))["nodes"]
         .as_object().map(|n| n.len()).unwrap_or(0);
 
+    // A tab watching from the start: the batch must reach it as ONE doc_patch carrying both
+    // births — a per-step broadcast would land a patch holding only the first.
+    let (mut tab, _hello) = Client::connect(&g.serve().await).await;
     let (text, err) =
         exec(&addr, "/mcp", 1, &["node add --type Oscillator", "node add --type Buffer"]).await;
     assert!(!err, "{text}");
     let results: Value = serde_json::from_str(&text).expect("the batch answers a JSON list");
     assert_eq!(results.as_array().map(|a| a.len()), Some(2), "each step's result, in order: {text}");
     assert_eq!(nodes(&g), 2);
+    let patch = tab.event("doc_patch").await;
+    for step in results.as_array().unwrap() {
+        let uid = step["uid"].as_str().expect("a birth reply");
+        assert!(patch["patch"]["nodes"].get(uid).is_some(),
+                "the ONE settle patch carries {uid}: {patch}");
+    }
 
     // ONE undo step covers the whole batch.
     ok_exec(&addr, 2, "undo").await;

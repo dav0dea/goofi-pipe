@@ -112,7 +112,7 @@ export async function addErroringNode(page: Page): Promise<string> {
 	// the budget is the import's, and the wait below is on the node having actually raised rather
 	// than on it merely existing: the add no longer stands in for "it is running".
 	test.setTimeout(120_000);
-	const uid = await addNode(page, 'LempelZiv', 'python');
+	const uid = await addNode(page, 'LempelZiv');
 	// `waitForNode` first, and not merely to settle: the client's `updateParam` guards on the param
 	// EXISTING in its replica, so an edit sent before the doc round-trip is refused outright.
 	await waitForNode(page, uid);

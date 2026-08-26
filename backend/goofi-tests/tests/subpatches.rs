@@ -610,9 +610,24 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     let drained = g.doc()["nodes"][&outp]["viewers"].as_str().unwrap_or("").to_string();
     assert!(drained.contains("line"), "the out port kept its view state: {drained}");
 
+    // The raw read resolves a port exactly as a viewer does: with nothing behind it, the answer
+    // is the unwired state — present and null, never an error.
+    let idle = g.call("node snapshot", j!({ "output": ep(&inst, &outp) }));
+    assert!(idle["frame"].is_null() && idle["reason"].as_str().is_some_and(|r| r.contains("behind")),
+            "{idle}");
+
     // The FACADE is a node too, and it draws that OUT port as one of its output slots — so the
     // viewer that has no meaning INSIDE the sub-patch is exactly the one it wears outside.
     wire(&g, &outp, "out", &hex(buf), "out");
+
+    // Wired, the port and the facade both answer the stream BEHIND the port, raw.
+    g.until("the port's stream through the raw read", |g| {
+        Some(g.call("node snapshot", j!({ "output": ep(&inst, &outp) })))
+            .filter(|r| r["npy_b64"].is_string())
+            .map(|_| ())
+    });
+    assert!(g.call("node snapshot", j!({ "output": ep(&outp, "value") }))["npy_b64"].is_string(),
+            "the port's own address answers the same stream");
     g.call("node edit", j!({ "node": inst, "viewer": [{ "slot": &outp, "kind": "line" }] }));
     let facade = g.doc()["nodes"][&inst]["viewers"].as_str().expect("a blob, as a node's").to_string();
     assert!(facade.contains("line"), "the facade kept the view state: {facade}");

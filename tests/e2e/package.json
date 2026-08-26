@@ -4,10 +4,13 @@
 	"description": "Playwright end-to-end suite driving the real goofi-pipe backend + SPA.",
 	"scripts": {
 		"build:backend": "npm --prefix ../../frontend run build && cargo build --manifest-path ../../Cargo.toml -p goofi-cli",
-		"e2e": "npm run build:backend && playwright test",
-		"test": "playwright test"
+		"e2e": "npm run check && npm run build:backend && playwright test",
+		"test": "playwright test",
+		"check": "tsc --noEmit"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.62.1"
+		"@playwright/test": "^1.62.1",
+		"@types/node": "^26.3.0",
+		"typescript": "^6.0.3"
 	}
 }

@@ -50,7 +50,7 @@ export async function setKeyboardInset(page: Page, px: number): Promise<void> {
 				get: () => window.innerHeight - n
 			});
 		} else {
-			delete vv.height;
+			delete (vv as { height?: number }).height;
 		}
 		vv.dispatchEvent(new Event('resize'));
 	}, px);

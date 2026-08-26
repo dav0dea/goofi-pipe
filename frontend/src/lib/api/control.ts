@@ -214,6 +214,8 @@ export interface Control {
 /** This tab's stable actor id, minted once per tab in `sessionStorage`. */
 function readOrMintActor(): string {
 	try {
+		// The STORAGE key keeps its historical spelling: renaming it would hand every open tab a
+		// fresh actor mid-upgrade, orphaning its undo stack.
 		const KEY = 'goofi:session';
 		let s = sessionStorage.getItem(KEY);
 		if (!s) {

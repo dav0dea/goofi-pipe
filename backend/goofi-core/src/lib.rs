@@ -219,6 +219,14 @@ impl Axes {
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(Axis::is_empty)
     }
+    /// The ONE wire spelling of positional axes: a `dimN` key per labeled dimension. Every
+    /// projection (msgpack, Python dict, JSON) maps these pairs into its own value type.
+    pub fn dims(&self) -> impl Iterator<Item = (String, &[Coord])> {
+        self.0
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| Some((format!("dim{i}"), &**a.coords.as_ref()?)))
+    }
     pub fn get(&self, dim: usize) -> Option<&Axis> {
         self.0.get(dim)
     }

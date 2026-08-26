@@ -37,7 +37,7 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     g.set_param(osc, "oscillator", "sfreq", 64.0);
     // Nothing has flowed yet, so the raw read answers null WITH the reason — and the ask itself
     // is what opens the slot's feed.
-    let idle = g.call("node snapshot", j!({ "slot": ep(hex(buf), "out") }));
+    let idle = g.call("node snapshot", j!({ "output": ep(hex(buf), "out") }));
     assert!(idle["frame"].is_null() && idle["reason"].as_str().is_some_and(|r| r.contains("emit")),
             "{idle}");
     let probe = g.probe(buf, "out"); // opened BEFORE the wire: the data services keep no history
@@ -56,10 +56,10 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
 
     // The raw one-shot read: exactly the frame the node emitted, as NPY — no subscription, no
     // reduction, and refused by naming the real slots when the address is wrong.
-    let why = g.refuse("node snapshot", j!({ "slot": ep(hex(buf), "psd") }));
+    let why = g.refuse("node snapshot", j!({ "output": ep(hex(buf), "psd") }));
     assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
     let snap = g.until("a 16-wide raw frame in the snapshot cache", |g| {
-        Some(g.call("node snapshot", j!({ "slot": ep(hex(buf), "out") })))
+        Some(g.call("node snapshot", j!({ "output": ep(hex(buf), "out") })))
             .filter(|r| npy_f32s(&npy(r)).len() == 16)
     });
     let bytes = npy(&snap);

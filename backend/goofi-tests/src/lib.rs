@@ -92,8 +92,8 @@ impl Goofi {
         Uid::from_hex(hex).unwrap_or_else(|| panic!("add_node answered a malformed uid {hex}"))
     }
 
-    /// Set one param's literal value, answering it AS STORED — a literal is coerced to the
-    /// param's declared type.
+    /// Set one param's literal value, answering `{value, error}` — the value as STORED, coerced
+    /// to the param's declared type.
     #[track_caller]
     pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
         self.call(

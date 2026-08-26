@@ -35,13 +35,12 @@ fn a_headless_server_serves_no_layout_op_and_carries_an_arrangement_through() {
     let Err(why) = phrase::resolve(full.state.ops(), &bad) else { panic!("frobnicate resolved") };
     assert!(why.contains("layout inspect") && !why.contains("headless"), "{why}");
 
-    // A patch saved headless keeps the arrangement it arrived with, untouched.
+    // A patch saved headless keeps the arrangement it arrived with, untouched — the whole
+    // manifest survives BYTE-identical, so no layout machinery had to run to carry it.
     g.call("session load", j!({ "content": yaml }));
     assert_eq!(g.doc()["arrangement"], authored, "the arrangement rode through");
     let saved = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
-    let reread = Goofi::new();
-    reread.call("session load", j!({ "content": saved }));
-    assert_eq!(reread.doc()["arrangement"], authored, "…and survives a headless save");
+    assert_eq!(saved, yaml, "a headless save is the manifest it loaded, byte for byte");
 
     // Everything OUTSIDE the group still runs: the mode is one group absent, not a second track.
     let osc = g.add("Oscillator");

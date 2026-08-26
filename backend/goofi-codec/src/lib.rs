@@ -99,13 +99,10 @@ fn pack_meta(d: &Data) -> Vec<u8> {
 
 fn channels_to_mp(ch: &goofi_core::Axes) -> Mp {
     // Python-compat: positional axes cross as a dim-keyed dict, and axis names have no wire slot.
-    let mut entries: Vec<(Mp, Mp)> = Vec::new();
-    for (dim, axis) in ch.0.iter().enumerate() {
-        if let Some(coords) = &axis.coords {
-            let list: Vec<Mp> = coords.iter().map(coord_to_mp).collect();
-            entries.push((Mp::from(format!("dim{dim}")), Mp::Array(list)));
-        }
-    }
+    let entries = ch
+        .dims()
+        .map(|(dim, coords)| (Mp::from(dim), Mp::Array(coords.iter().map(coord_to_mp).collect())))
+        .collect();
     Mp::Map(entries)
 }
 

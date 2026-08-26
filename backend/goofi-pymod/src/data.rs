@@ -184,17 +184,15 @@ fn meta_to_dict<'py>(py: Python<'py>, m: &Meta) -> PyResult<Bound<'py, PyDict>> 
 
 fn axes_to_dict<'py>(py: Python<'py>, axes: &Axes) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
-    for (dim, axis) in axes.0.iter().enumerate() {
-        if let Some(coords) = &axis.coords {
-            let list = PyList::empty(py);
-            for c in coords.iter() {
-                match c {
-                    Coord::Num(n) => list.append(*n)?,
-                    Coord::Str(s) => list.append(s.as_ref())?,
-                }
+    for (dim, coords) in axes.dims() {
+        let list = PyList::empty(py);
+        for c in coords {
+            match c {
+                Coord::Num(n) => list.append(*n)?,
+                Coord::Str(s) => list.append(s.as_ref())?,
             }
-            d.set_item(format!("dim{dim}"), list)?;
         }
+        d.set_item(dim, list)?;
     }
     Ok(d)
 }

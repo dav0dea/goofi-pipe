@@ -882,17 +882,18 @@ fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String>
 
 /// An `endpoint` — `uid/slot`, split on the FIRST `/`. The slot half may itself be a port uid
 /// (wiring a facade from outside), so it is never validated here.
-fn parse_endpoint(p: &Value, key: &str) -> Result<(Uid, String), String> {
-    let raw = p.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("missing {key}"))?;
+fn parse_endpoint(p: &Value, op: &str, key: &str) -> Result<(Uid, String), String> {
+    let raw =
+        p.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("{op}: missing {key}"))?;
     let (uid, slot) =
-        raw.split_once('/').ok_or_else(|| format!("`{key}` is `uid/slot`, not `{raw}`"))?;
-    let uid = Uid::from_hex(uid).ok_or_else(|| format!("malformed uid in `{key}`"))?;
+        raw.split_once('/').ok_or_else(|| format!("{op}: `{key}` is `uid/slot`, not `{raw}`"))?;
+    let uid = Uid::from_hex(uid).ok_or_else(|| format!("{op}: malformed uid in `{key}`"))?;
     Ok((uid, slot.to_string()))
 }
 
-fn parse_link(p: &Value) -> Result<(Uid, String, Uid, String), String> {
-    let (node_out, slot_out) = parse_endpoint(p, "from")?;
-    let (node_in, slot_in) = parse_endpoint(p, "to")?;
+fn parse_link(p: &Value, op: &str) -> Result<(Uid, String, Uid, String), String> {
+    let (node_out, slot_out) = parse_endpoint(p, op, "from")?;
+    let (node_in, slot_in) = parse_endpoint(p, op, "to")?;
     Ok((node_out, slot_out, node_in, slot_in))
 }
 
@@ -932,10 +933,10 @@ fn bindable_node(g: &Graph, node: &str) -> bool {
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
-    session: &str,
+    actor: &str,
     cmd: goofi_engine::Command,
 ) -> Result<Value, String> {
-    state.history.lock().unwrap().apply(g, session, cmd)?;
+    state.history.lock().unwrap().apply(g, actor, cmd)?;
     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
 }
 

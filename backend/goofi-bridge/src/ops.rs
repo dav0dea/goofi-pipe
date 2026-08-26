@@ -11,7 +11,8 @@ pub struct Op {
     /// re-mirror are all READ off this kind, never declared beside it.
     pub handler: Handler,
     /// The params schema: space-separated `name:type`, `!` marking a required one. Types are
-    /// `uid`, `string`, `float`, `int`, `bool`, `float2`, `json`, `panel_type`, and `[]` for a list.
+    /// `uid`, `string`, `float`, `int`, `bool`, `float2`, `json`, `any`, `param_addr`,
+    /// `endpoint`, `panel_type`, and `[]` for a list.
     pub args: &'static str,
     /// How many of the LEADING declared args a command line takes as positionals (0..=2). A
     /// list-typed positional is variadic; every positional stays reachable as a flag too.
@@ -30,8 +31,8 @@ pub enum Handler {
     /// Reads state, changes nothing: never dirties, never re-mirrors.
     Read(OpFn),
     /// Routes every mutation through the command history, so it has an exact inverse. The shared
-    /// tail in [`crate::AppState::call`] re-mirrors and raises the unsaved dot, and only a Write
-    /// may be a `compound` step.
+    /// tail in [`crate::AppState::call`] re-mirrors and raises the unsaved dot; a `compound`
+    /// step is a Write or a Read.
     Write(OpFn),
     /// Owns its consequences itself — re-mirror, events and dirty transitions — because they are
     /// not a graph command's: a save, a process, a restart, the history ops.
@@ -50,11 +51,11 @@ impl Handler {
         &self,
         state: &crate::AppState,
         payload: &serde_json::Value,
-        session: &str,
+        actor: &str,
         events: &mut Vec<String>,
     ) -> Result<serde_json::Value, String> {
         let (Handler::Read(f) | Handler::Write(f) | Handler::Effect(f)) = self;
-        f(state, payload, session, events)
+        f(state, payload, actor, events)
     }
     pub fn is_write(&self) -> bool {
         matches!(self, Handler::Write(_))
@@ -123,9 +124,9 @@ pub static REGISTRY: &[Op] = &[
          args: "node:uid! slot:string params:bool error:bool", positional: 1,
          doc: "Read one node: its params (values, ranges, expression bindings), each output slot's name and kind and whether the node is emitting on it, and its error. `slot` narrows to one output; `--no-params` and `--no-error` drop a section. The FRAMES are not here: `node snapshot` reads one raw, and `/data/<node>/<slot>` streams them exactly as a viewer sees them.",
          result: "{text: string}" },
-    Op { name: "node snapshot", handler: Read(arms::node_snapshot), args: "slot:endpoint!",
+    Op { name: "node snapshot", handler: Read(arms::node_snapshot), args: "output:endpoint!",
          positional: 1,
-         doc: "The slot's latest frame, RAW and once — the analysis read, addressed `uid/slot`. It reads the cache the slot's reducer already keeps, so it never wakes the node and never touches the viewers' shared stream. ARRAY answers base64 NPY; STRING and TABLE answer plain JSON, a table's ARRAY members as NPY again. A slot asked about before anything was cached answers `{frame: null}` with the reason — asking is also what opens the slot's feed, so ask again after the node's next emit.",
+         doc: "The output's latest frame, RAW and once — the analysis read, addressed `uid/slot`. A facade or a boundary port resolves to the stream behind it, exactly as a viewer's does. It reads the cache the slot's reducer already keeps, so it never wakes the node and never touches the viewers' shared stream. ARRAY answers base64 NPY; STRING and TABLE answer plain JSON, a table's ARRAY members as NPY again. A slot asked about before anything was cached answers `{frame: null}` with the reason — asking is also what opens the slot's feed, so ask again after the node's next emit.",
          result: "{meta, npy_b64} for ARRAY; {meta, value} for STRING/TABLE; {frame: null, reason} before the first cached frame" },
     Op { name: "node add", handler: Write(arms::node_add),
          args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid param:json[]", positional: 1,
@@ -224,13 +225,14 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true}" },
     // -- history and the batch -------------------------------------------------------------------
     Op { name: "undo", handler: Effect(arms::undo), args: "", positional: 0,
-         doc: "Undo this session's last graph command. Each caller's session has its own stack.",
+         doc: "Undo this actor's last graph command. Each actor — a browser tab, a shell, the MCP — has its own stack.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
     Op { name: "redo", handler: Effect(arms::redo), args: "", positional: 0,
-         doc: "Redo this session's last undone graph command.",
+         doc: "Redo this actor's last undone graph command.",
          result: "{changed: bool, can_undo: bool, can_redo: bool}" },
     Op { name: "compound", handler: Effect(arms::compound), args: "ops:json!", positional: 0,
-         doc: "Run several steps in order as ONE undo step and one settled decision: viewers see no intermediate document, and the unsaved dot moves once. `ops` is a list of `{op, payload}`; a step is a read or an undoable write, and an effect is refused — it runs as its own call. A refused step takes back the ones that already landed, so the call either happens whole or not at all.",
+         doc: "Run several steps in order as ONE undo step and one settled decision: viewers see no intermediate document, and the unsaved dot moves once. `ops` is a list of `{op, payload}`; a step is a read or an undoable write, and an effect is refused — it runs as its own call. A refused step takes back the ones that already landed, so the call either happens whole or not at all.\n\n\
+               A read step sees the earlier steps' writes on the GRAPH — but the document settles only when the batch does, so `session state` and `session status` inside a batch answer the document the batch found. Read them after it, not inside it.",
          result: "the steps' own replies, as a bare JSON list in order" },
     // -- layout: absent under headless -----------------------------------------------------------
     Op { name: "layout inspect", handler: Read(arms::layout_inspect), args: "tab:string", positional: 1,

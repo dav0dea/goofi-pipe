@@ -234,7 +234,7 @@ impl Command {
 
             Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
                 // A peer dissolved the scope this restore names. Tolerated HERE, because a replay
-                // that errors wedges the session's stack for good; the fresh caller is refused by
+                // that errors wedges the actor's stack for good; the fresh caller is refused by
                 // this command's precondition instead.
                 if scope.is_some_and(|s| !g.is_facade(s)) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
@@ -291,7 +291,7 @@ impl Command {
 
             Command::AddLink { node_out, slot_out, node_in, slot_in } => {
                 // An endpoint is gone, so the wire cannot exist and restoring it is a no-op.
-                // Without this a concurrent delete would error through `flip`, wedging the session.
+                // Without this a concurrent delete would error through `flip`, wedging the actor's stack.
                 if !g.wirable(node_out) || !g.wirable(node_in) {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 }
@@ -481,7 +481,7 @@ impl Command {
                     (None, None) => None,
                 };
                 // A stale replay — a peer closed or carried it off first. Degrade to a no-op like
-                // `LayoutClose`: an `Err` inside `flip` wedges that session's undo stack.
+                // `LayoutClose`: an `Err` inside `flip` wedges that actor's undo stack.
                 let (Some(plan), Some(back)) = (plan, back) else {
                     return Ok((Outcome::Ok, Command::Compound(vec![])));
                 };
@@ -612,8 +612,8 @@ impl Command {
     }
 }
 
-/// A per-session undo/redo history over one shared [`Graph`]. An entry holds ONE toggle, and
-/// executing it returns the next — so an entry ping-pongs and stays uid-stable. Scoped by session,
+/// A per-ACTOR undo/redo history over one shared [`Graph`]. An entry holds ONE toggle, and
+/// executing it returns the next — so an entry ping-pongs and stays uid-stable. Scoped by actor,
 /// so one client's timeline is independent of another's.
 #[derive(Default)]
 pub struct CommandHistory {
@@ -623,7 +623,7 @@ pub struct CommandHistory {
 struct HistoryEntry {
     /// The command that flips this entry's state: its inverse when applied, its forward when undone.
     toggle: Command,
-    session: String,
+    actor: String,
     undone: bool,
 }
 
@@ -632,20 +632,20 @@ impl CommandHistory {
         CommandHistory::default()
     }
 
-    /// Execute `cmd` against `g`, record its inverse tagged with `session`, and return the outcome.
-    /// A new command clears THIS session's redo run, never another session's.
-    pub fn apply(&mut self, g: &mut Graph, session: &str, cmd: Command) -> Result<Outcome, String> {
+    /// Execute `cmd` against `g`, record its inverse tagged with `actor`, and return the outcome.
+    /// A new command clears THIS actor's redo run, never another actor's.
+    pub fn apply(&mut self, g: &mut Graph, actor: &str, cmd: Command) -> Result<Outcome, String> {
         // The fresh-caller gate. `flip` deliberately does NOT call this — see `Command::precondition`.
         cmd.precondition(g)?;
         let (outcome, inverse) = cmd.execute(g)?;
         // Record EVERY successful command, a forward no-op included: the client records one entry
         // per mutating RPC, so skipping one here desyncs the stacks and a later undo flips wrong.
-        self.entries.retain(|e| !(e.session == session && e.undone));
-        self.entries.push(HistoryEntry { toggle: inverse, session: session.to_string(), undone: false });
+        self.entries.retain(|e| !(e.actor == actor && e.undone));
+        self.entries.push(HistoryEntry { toggle: inverse, actor: actor.to_string(), undone: false });
         Ok(outcome)
     }
 
-    /// Where this session's next entry will land — the mark a [`coalesce`](Self::coalesce) or a
+    /// Where this actor's next entry will land — the mark a [`coalesce`](Self::coalesce) or a
     /// [`rollback`](Self::rollback) measures from.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -655,54 +655,54 @@ impl CommandHistory {
         self.entries.is_empty()
     }
 
-    /// Drop this session's redo run, as an `apply` would. A compound clears it once up front, so
+    /// Drop this actor's redo run, as an `apply` would. A compound clears it once up front, so
     /// no step of its own can move the mark under it.
-    pub fn clear_redo(&mut self, session: &str) {
-        self.entries.retain(|e| !(e.session == session && e.undone));
+    pub fn clear_redo(&mut self, actor: &str) {
+        self.entries.retain(|e| !(e.actor == actor && e.undone));
     }
 
-    /// Fold everything this session has added since `from` into ONE entry, so a compound RPC is a
+    /// Fold everything this actor has added since `from` into ONE entry, so a compound RPC is a
     /// single undo step. A peer's entry that landed in between is left exactly where it is.
-    pub fn coalesce(&mut self, session: &str, from: usize) {
+    pub fn coalesce(&mut self, actor: &str, from: usize) {
         let mine: Vec<usize> =
-            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].session == session).collect();
+            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].actor == actor).collect();
         if mine.len() < 2 {
             return;
         }
         // Newest first: each toggle is an inverse, and a Compound applies its children in order.
         let toggle =
             Command::Compound(mine.iter().rev().map(|&i| self.entries.remove(i).toggle).collect());
-        self.entries.push(HistoryEntry { toggle, session: session.to_string(), undone: false });
+        self.entries.push(HistoryEntry { toggle, actor: actor.to_string(), undone: false });
     }
 
-    /// Undo and DISCARD everything this session has added since `from` — what a compound does when
+    /// Undo and DISCARD everything this actor has added since `from` — what a compound does when
     /// a later step is refused, so a failed call leaves no redo run either.
-    pub fn rollback(&mut self, g: &mut Graph, session: &str, from: usize) {
+    pub fn rollback(&mut self, g: &mut Graph, actor: &str, from: usize) {
         let mine: Vec<usize> =
-            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].session == session).collect();
+            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].actor == actor).collect();
         for &i in mine.iter().rev() {
             // Best-effort by necessity, exactly as `Compound`'s own unwind is.
             let _ = self.entries.remove(i).toggle.execute(g);
         }
     }
 
-    /// Drop the entire history (every session's entries). Loading a patch fully resets the
-    /// session — there is nothing to undo across a load — so the manager clears here.
+    /// Drop the entire history (every actor's entries). Loading a patch fully resets the
+    /// actor — there is nothing to undo across a load — so the manager clears here.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
 
-    /// Undo the session's most-recent applied command. `Ok(false)` if it has nothing to undo.
-    pub fn undo(&mut self, g: &mut Graph, session: &str) -> Result<bool, String> {
-        let Some(idx) = self.entries.iter().rposition(|e| e.session == session && !e.undone) else {
+    /// Undo the actor's most-recent applied command. `Ok(false)` if it has nothing to undo.
+    pub fn undo(&mut self, g: &mut Graph, actor: &str) -> Result<bool, String> {
+        let Some(idx) = self.entries.iter().rposition(|e| e.actor == actor && !e.undone) else {
             return Ok(false);
         };
         self.flip(g, idx, true)
     }
 
-    /// Redo the session's most-recently-undone command. `Ok(false)` if it has nothing to redo.
-    pub fn redo(&mut self, g: &mut Graph, session: &str) -> Result<bool, String> {
-        let Some(idx) = self.entries.iter().position(|e| e.session == session && e.undone) else {
+    /// Redo the actor's most-recently-undone command. `Ok(false)` if it has nothing to redo.
+    pub fn redo(&mut self, g: &mut Graph, actor: &str) -> Result<bool, String> {
+        let Some(idx) = self.entries.iter().position(|e| e.actor == actor && e.undone) else {
             return Ok(false);
         };
         self.flip(g, idx, false)
@@ -715,12 +715,12 @@ impl CommandHistory {
         Ok(true)
     }
 
-    pub fn can_undo(&self, session: &str) -> bool {
-        self.entries.iter().any(|e| e.session == session && !e.undone)
+    pub fn can_undo(&self, actor: &str) -> bool {
+        self.entries.iter().any(|e| e.actor == actor && !e.undone)
     }
 
-    pub fn can_redo(&self, session: &str) -> bool {
-        self.entries.iter().any(|e| e.session == session && e.undone)
+    pub fn can_redo(&self, actor: &str) -> bool {
+        self.entries.iter().any(|e| e.actor == actor && e.undone)
     }
 }
 

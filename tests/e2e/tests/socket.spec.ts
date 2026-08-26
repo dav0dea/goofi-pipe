@@ -384,7 +384,7 @@ test.describe('the control socket', () => {
 					.map(([uid]) => uid);
 				expect(
 					doc.links.some(
-						(l: { node_out: string; node_in: string }) =>
+						(l: { node_out: string; node_in: string; slot_in: string }) =>
 							within.includes(l.node_out) && within.includes(l.node_in) && l.slot_in === 'data'
 					),
 					'the cut carried the wiring among the cut nodes'
@@ -447,7 +447,7 @@ test.describe('the control socket', () => {
 
 			let theirs = '';
 			await test.step('…and the other way round', async () => {
-				theirs = await addNode(other, 'Buffer', 'signal', [280, 0]);
+				theirs = await addNode(other, 'Buffer', [280, 0]);
 				await expect.poll(() => replicaNodes(page)).toContain(theirs);
 			});
 
@@ -518,7 +518,7 @@ test.describe('the control socket', () => {
 
 			let survivor = '';
 			await test.step('the document moves under it, through a tab that is still connected', async () => {
-				survivor = await addNode(peer, 'Buffer', 'signal', [280, 0]);
+				survivor = await addNode(peer, 'Buffer', [280, 0]);
 				await peer.evaluate((u) => (window as any).goofi.commands.removeNode(u), doomed);
 				await expect
 					.poll(() => backendNodes(peer), { message: 'the manager holds only the peer’s node' })

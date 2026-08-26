@@ -259,8 +259,6 @@ fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<
     }
 }
 
-/// Check one output slot name against the node it is addressed on, refusing with the ones that
-/// exist.
 /// Resolve a slot word — key or display label — to the KEY, refusing by naming the real ones.
 pub fn resolve_slot(
     g: &goofi_engine::Graph,
@@ -280,21 +278,18 @@ fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &
     resolve_slot(g, op, uid, slot).map(|_| ())
 }
 
-/// Validate an `edit_node` viewer bag: `{slot: {kind, settings, collapsed}}`. A uid naming no node
-/// is left alone, because the engine's own write refuses it by name.
+/// Validate a `node edit` viewer patch — `--viewer` entries already folded to `{slot: view}`. A
+/// uid naming no node is left alone, because the engine's own write refuses it by name.
 pub fn check_viewers(
     g: &goofi_engine::Graph,
     uid: goofi_engine::Uid,
-    viewers: &Value,
+    viewers: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
     const OP: &str = "node edit";
-    let bag = viewers
-        .as_object()
-        .ok_or_else(|| format!("{OP}: viewers is a {{slot: {{kind, settings, collapsed}}}} map"))?;
     if g.node_type(uid).is_none() {
         return Ok(());
     }
-    for (slot, view) in bag {
+    for (slot, view) in viewers {
         check_slot(g, OP, uid, slot)?;
         if let Some(kind) = view.get("kind").and_then(Value::as_str).filter(|k| !k.is_empty()) {
             check(OP, "viewer kind", kind, viewer_kind_ids())?;

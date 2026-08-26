@@ -112,11 +112,13 @@ impl SlotReducers {
     /// The slot's latest RAW frame, once — never reduced, never a subscription. Asking also makes
     /// sure the slot's reducer runs, so a never-watched slot starts warming on the first ask.
     pub fn latest(&self, key: SlotKey) -> Option<goofi_core::Data> {
-        let mut map = self.inner.lock().unwrap();
-        let latest = self.ensure(&mut map, &key).latest.clone();
-        drop(map);
-        let d = latest.lock().unwrap().clone();
-        d
+        // The `inner` guard is released before `latest` is taken, mirroring the reducer's order.
+        let latest = {
+            let mut map = self.inner.lock().unwrap();
+            self.ensure(&mut map, &key).latest.clone()
+        };
+        let frame = latest.lock().unwrap().clone();
+        frame
     }
 
     /// Replace `conn`'s declared specs for `key` (latest-wins). No-op if the slot is gone.

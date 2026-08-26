@@ -102,37 +102,35 @@ pub(crate) fn compound(
         }
         resolved.push((op, step.get("payload").cloned().unwrap_or_else(|| json!({}))));
     }
-    let was_dirty = state.dirty.load(std::sync::atomic::Ordering::Relaxed);
-    // The redo run is cleared UP FRONT so no step's own clearing can shift the mark.
-    let from = {
+    // A batch of reads alone never reaches the history: a Read is a no-op for undo, and the
+    // actor's redo run must survive it.
+    let writes = resolved.iter().any(|(op, _)| op.handler.is_write());
+    // The redo run is cleared UP FRONT so no step's own clearing can shift the mark. No step
+    // touches the dirty flag — only this settle does — so a refusal has nothing to restore.
+    let from = writes.then(|| {
         let mut h = state.history.lock().unwrap();
         h.clear_redo(actor);
         h.len()
-    };
+    });
     let mut results = Vec::with_capacity(resolved.len());
-    let mut wrote = false;
     for (i, (op, arg)) in resolved.iter().enumerate() {
         match op.handler.run(state, arg, actor, events) {
-            Ok(r) => {
-                wrote |= op.handler.is_write();
-                results.push(r);
-            }
+            Ok(r) => results.push(r),
             Err(e) => {
-                // A compound is a UNIT, so a refused step takes back the ones that landed — and
-                // the dirty flag goes back to what the batch found, so a fully refused batch
-                // leaves the patch exactly as clean or dirty as it was.
-                let mut g = state.graph.lock().unwrap();
-                state.history.lock().unwrap().rollback(&mut g, actor, from);
-                drop(g);
-                events.extend(state.set_dirty(was_dirty));
-                resync_and_broadcast(state);
+                // A compound is a UNIT, so a refused step takes back the ones that landed.
+                if let Some(from) = from {
+                    let mut g = state.graph.lock().unwrap();
+                    state.history.lock().unwrap().rollback(&mut g, actor, from);
+                    drop(g);
+                    resync_and_broadcast(state);
+                }
                 return Err(format!("compound: step {i} `{}` was refused: {e}", op.name));
             }
         }
     }
-    state.history.lock().unwrap().coalesce(actor, from);
-    resync_and_broadcast(state);
-    if wrote {
+    if let Some(from) = from {
+        state.history.lock().unwrap().coalesce(actor, from);
+        resync_and_broadcast(state);
         events.extend(state.set_dirty(true));
     }
     // The steps' own replies, in order — a BARE list, the shape every batch door answers.
@@ -207,7 +205,12 @@ pub(crate) fn nodes_paste(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let doc = payload.get("doc").ok_or("nodes paste: missing doc")?;
-    let offset = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+    let offset = payload
+        .get("pos")
+        .filter(|v| !v.is_null())
+        .map(|v| parse_pos(v).ok_or("nodes paste: pos is [x, y]"))
+        .transpose()?
+        .unwrap_or([0.0, 0.0]);
     let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
         Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("nodes paste: malformed inst_id")?),
         None => None,
@@ -249,7 +252,12 @@ pub(crate) fn node_add(
             ));
         }
     }
-    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+    let pos = payload
+        .get("pos")
+        .filter(|v| !v.is_null())
+        .map(|v| parse_pos(v).ok_or("node add: pos is [x, y]"))
+        .transpose()?
+        .unwrap_or([0.0, 0.0]);
     // Never silently rooted on a bad `inst_id`: the canvas draws only the entered scope, so a
     // rooted node would be invisible exactly where the user placed it.
     let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
@@ -339,7 +347,7 @@ pub(crate) fn link_add(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let (a, so, b, si) = parse_link(payload)?;
+    let (a, so, b, si) = parse_link(payload, "link add")?;
     let (a, so) = wirable_endpoint(&g, a, &so, "from")?;
     let (b, si) = wirable_endpoint(&g, b, &si, "to")?;
     state.history.lock().unwrap().apply(
@@ -372,7 +380,7 @@ pub(crate) fn link_remove(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let (a, so, b, si) = parse_link(payload)?;
+    let (a, so, b, si) = parse_link(payload, "link remove")?;
     let (a, so) = resolve_link_endpoint(&g, a, &so);
     let (b, si) = resolve_link_endpoint(&g, b, &si);
     // Idempotent for the same reason `remove_node` is, and answered the same way.
@@ -431,11 +439,15 @@ fn param_entries_bag(entries: &Value) -> Result<Value, String> {
         };
         let (group, name) =
             addr.split_once('/').ok_or_else(|| format!("`{addr}` is not `group/param`"))?;
-        bag.entry(group.to_string())
+        let taken = bag
+            .entry(group.to_string())
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .unwrap()
             .insert(name.to_string(), Value::Object(o));
+        if taken.is_some() {
+            return Err(format!("`{addr}` is named twice"));
+        }
     }
     Ok(Value::Object(bag))
 }
@@ -446,15 +458,24 @@ pub(crate) fn node_snapshot(
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    let (uid, slot) = {
+    // The address resolves exactly as a viewer's does: a facade or a port names the stream
+    // BEHIND it, and one with nothing behind it yet is the unwired state, never an error.
+    let key = {
         let g = state.graph.lock().unwrap();
-        let (uid, slot) = parse_endpoint(payload, "slot")?;
+        let (uid, slot) = parse_endpoint(payload, "node snapshot", "output")?;
         if !g.exists(uid) {
             return Err(format!("node snapshot: no node {}", uid.to_hex()));
         }
-        (uid, vocab::resolve_slot(&g, "node snapshot", uid, &slot)?)
+        let slot = vocab::resolve_slot(&g, "node snapshot", uid, &slot)?;
+        stream_behind(&g, uid, &slot)
     };
-    match state.reducers.latest((uid, slot)) {
+    let Some(key) = key else {
+        return Ok(json!({
+            "frame": null,
+            "reason": "nothing is behind this port yet — wire its inside, then ask again",
+        }));
+    };
+    match state.reducers.latest(key) {
         Some(d) => Ok(frame_json(&d)),
         None => Ok(json!({
             "frame": null,
@@ -516,15 +537,15 @@ fn meta_value_json(v: &goofi_core::MetaValue) -> Option<Value> {
         }
         M::Bytes(_) => return None,
         M::Axes(a) => {
-            let mut dims = serde_json::Map::new();
-            for (i, axis) in a.0.iter().enumerate() {
-                let Some(coords) = &axis.coords else { continue };
-                let list: Vec<Value> = coords.iter().map(|c| match c {
-                    goofi_core::Coord::Num(n) => json!(n),
-                    goofi_core::Coord::Str(s) => json!(&**s),
-                }).collect();
-                dims.insert(format!("dim{i}"), Value::Array(list));
-            }
+            let dims: serde_json::Map<String, Value> = a
+                .dims()
+                .map(|(dim, coords)| {
+                    (dim, Value::Array(coords.iter().map(|c| match c {
+                        goofi_core::Coord::Num(n) => json!(n),
+                        goofi_core::Coord::Str(s) => json!(&**s),
+                    }).collect()))
+                })
+                .collect();
             match dims.is_empty() {
                 true => return None,
                 false => Value::Object(dims),
@@ -549,9 +570,11 @@ pub(crate) fn node_param_edit(
         }
     }
     let bag = json!({ &group: { &name: entry } });
-    let mut cmds =
-        parse_params_bag(&g, uid, &bag).map_err(|e| format!("node param edit: {e}"))?;
-    state.history.lock().unwrap().apply(&mut g, actor, cmds.pop().unwrap())?;
+    let cmd = parse_params_bag(&g, uid, &bag)
+        .map_err(|e| format!("node param edit: {e}"))?
+        .pop()
+        .ok_or("node param edit: nothing to change")?;
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     // The runtime `expression_error` is doc-invisible, so echo the descriptor.
     events.push(param_state_update(&g, uid));
     Ok(json!({
@@ -601,7 +624,7 @@ pub(crate) fn node_edit(
             let patch = viewer_entries_patch(entries)?;
             vocab::check_viewers(&g, uid, &patch)?;
             let mut whole = g.viewers(uid).cloned().ok_or("node edit: no such node")?;
-            merge_json(&mut whole, &patch);
+            merge_json(&mut whole, &Value::Object(patch));
             Some(whole)
         }
         None => None,
@@ -625,7 +648,7 @@ pub(crate) fn node_edit(
 
 /// `--viewer` entries `{slot, …view}` — or `{slot, clear: true}` — as the merge patch the stored
 /// blob takes, where clearing is the patch's `null`.
-fn viewer_entries_patch(entries: &Value) -> Result<Value, String> {
+fn viewer_entries_patch(entries: &Value) -> Result<serde_json::Map<String, Value>, String> {
     let list = entries.as_array().ok_or("node edit: `viewer` is a list of entries")?;
     let mut patch = serde_json::Map::new();
     for e in list {
@@ -637,13 +660,16 @@ fn viewer_entries_patch(entries: &Value) -> Result<Value, String> {
             Some(Value::String(s)) => s,
             _ => return Err("node edit: a viewer entry names its slot".into()),
         };
-        match o.remove("clear") {
-            Some(Value::Bool(true)) => patch.insert(slot, Value::Null),
-            None => patch.insert(slot, Value::Object(o)),
+        let taken = match o.remove("clear") {
+            Some(Value::Bool(true)) => patch.insert(slot.clone(), Value::Null),
+            None => patch.insert(slot.clone(), Value::Object(o)),
             _ => return Err("node edit: `clear` is only ever true — omit it to set".into()),
         };
+        if taken.is_some() {
+            return Err(format!("node edit: slot `{slot}` is named twice"));
+        }
     }
-    Ok(Value::Object(patch))
+    Ok(patch)
 }
 
 /// Where THIS client is looking: not a doc root, so it neither drags a peer nor raises the
@@ -941,7 +967,12 @@ pub(crate) fn nodes_group(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let uids = parse_uid_list(payload, "nodes")?;
-    let pos = payload.get("pos").and_then(parse_pos).unwrap_or([0.0, 0.0]);
+    let pos = payload
+        .get("pos")
+        .filter(|v| !v.is_null())
+        .map(|v| parse_pos(v).ok_or("nodes group: pos is [x, y]"))
+        .transpose()?
+        .unwrap_or([0.0, 0.0]);
     let out = state.history.lock().unwrap().apply(
         &mut g,
         actor,
