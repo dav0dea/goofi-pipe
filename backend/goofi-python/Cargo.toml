@@ -19,8 +19,7 @@ goofi-node = { path = "../goofi-node" }
 # the Rust crate on BOTH ends (the child runs `goofi.serve` from the abi3 wheel, same 0.9.3 ABI).
 goofi-codec = { path = "../goofi-codec" }
 iceoryx2 = "0.9.3"
-# The dual-built goofi pyclass crate, linked (rlib, `host`) into the embedded FT
-# interpreter. Its `[lib] name` is `goofi`; the dep key renames it to `goofi_pymod`.
+# The dual-built goofi pyclass crate, linked (rlib, `host`) into the embedded FT interpreter.
 goofi_pymod = { path = "../goofi-pymod", package = "goofi-pymod", features = ["host"], optional = true }
 pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
 

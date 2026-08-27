@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "goofi"
+# NOT `goofi`: on Windows the bin of that name and this cdylib both emit `goofi.pdb` into one
+# directory. `module-name` in pyproject.toml is what names the wheel's module.
+name = "goofi_pymod"
 # cdylib -> the importable extension (goofi.so, wheel); rlib -> linked into the host.
 crate-type = ["cdylib", "rlib"]
 
