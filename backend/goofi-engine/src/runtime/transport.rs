@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock, Once};
 use std::time::Duration;
 
 use iceoryx2::config::Config;
-use iceoryx2::node::{NodeState, NodeView};
+use iceoryx2::node::NodeState;
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
@@ -46,7 +46,6 @@ const MESSAGE_BUFFER: usize = 1024;
 const MESSAGE_READERS: usize = 1;
 /// How long an empty `<root>/nodes/<id>` directory is left alone before [`remove_empty_node_dirs`]
 /// takes it. iceoryx2 creates the directory and then writes into it, so a fresh one may be in use.
-const NODE_DIR_GRACE: Duration = Duration::from_secs(60);
 /// The pool a message publisher starts with; `PowerOfTwo` grows the segment for a rare large one.
 const MESSAGE_SLICE: usize = 1024;
 /// The pool a data publisher starts with; `PowerOfTwo` grows it for a larger frame.
@@ -393,57 +392,28 @@ pub(crate) fn iox_config() -> &'static Config {
     })
 }
 
-/// Remove the shared memory a CRASHED run left behind. A graceful exit needs none of it, but a
-/// killed process drops nothing and its segments stay allocated.
+/// Ask iceoryx2 to reclaim the shared memory a CRASHED run left behind. A graceful exit needs none
+/// of it, but a killed process drops nothing and its segments stay allocated.
+///
+/// It ASKS, and that is the whole of it. goofi used to delete `<root>/nodes/<id>` itself when the
+/// ask failed — reaching into another library's private layout to finish its bookkeeping. That is
+/// not goofi's to own, and on Windows it never worked anyway: the files carry a protected DACL
+/// with no DELETE, so both the ask and the reach fail alike (upstream #1869).
 pub fn reclaim_stale_resources() {
-    let mut abandoned: Vec<u128> = Vec::new();
     let _ = IoxNode::list(iox_config(), |state| {
         if let NodeState::Dead(view) = state {
-            // The id BEFORE the attempt: the reclaim consumes the view.
-            let id = view.id().value();
-            if view.try_remove_stale_resources().is_err() {
-                abandoned.push(id);
-            }
+            let _ = view.try_remove_stale_resources();
         }
         CallbackProgression::Continue
     });
-    for id in abandoned {
-        remove_node_dir(&id.to_string());
-    }
-    remove_empty_node_dirs();
 }
 
-/// Where iceoryx2 keeps one directory per node.
+/// Where iceoryx2 keeps one directory per node. Read-only: goofi looks, and no longer reaches in
+/// to delete — that layout is iceoryx2's to keep.
 pub fn nodes_dir() -> Option<String> {
     let root = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()).ok()?;
     let nodes = String::from_utf8(iox_config().global.node.directory.as_bytes().to_vec()).ok()?;
     Some(format!("{}/{}", root.trim_end_matches('/'), nodes.trim_end_matches('/')))
-}
-
-/// The inode half: take `<root>/nodes/<id>` for a dead node iceoryx2 REFUSED to clean up. Its
-/// refusal is permanent, and only a node iceoryx2 has itself declared dead ever reaches here.
-fn remove_node_dir(id: &str) {
-    let Some(dir) = nodes_dir() else { return };
-    let _ = std::fs::remove_dir_all(format!("{dir}/{id}"));
-}
-
-/// The other half: a node that exits GRACEFULLY leaves its directory behind. Only EMPTY ones, and
-/// only past [`NODE_DIR_GRACE`] — a fresh one may belong to a node another process is starting.
-fn remove_empty_node_dirs() {
-    let Some(dir) = nodes_dir() else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    for entry in entries.flatten() {
-        let stale = entry
-            .metadata()
-            .ok()
-            .filter(|m| m.is_dir())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age > NODE_DIR_GRACE);
-        if stale {
-            let _ = std::fs::remove_dir(entry.path());
-        }
-    }
 }
 
 /// Everything that happens once per PROCESS, before its first port exists. [`iox_node`] calls it
