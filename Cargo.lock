@@ -532,11 +532,14 @@ name = "goofi-cli"
 version = "3.1.0"
 dependencies = [
  "goofi-bridge",
+ "goofi-client",
  "goofi-core",
  "goofi-engine",
  "goofi-init",
  "goofi-node",
  "goofi-python",
+ "serde_json",
+ "shell-words",
  "tokio",
 ]
 

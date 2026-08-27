@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BASE_PORT, LOG_DIR, REPO_ROOT } from './playwright.config';
 
-const BIN = path.join(REPO_ROOT, 'target/debug/goofi-pipe');
+const BIN = path.join(REPO_ROOT, 'target/debug/goofi');
 const SHM = '/dev/shm';
 
 type Backend = { child: ChildProcess; port: number; log: string };
@@ -106,7 +106,7 @@ async function serving({ child, port, log }: Backend): Promise<void> {
 		}
 		if (exited || Date.now() > deadline)
 			throw new Error(
-				`goofi-pipe on :${port} never served / — tail of ${log}:\n${fs.readFileSync(log, 'utf8').slice(-800)}`
+				`goofi on :${port} never served / — tail of ${log}:\n${fs.readFileSync(log, 'utf8').slice(-800)}`
 			);
 		await new Promise((r) => setTimeout(r, 25));
 	}

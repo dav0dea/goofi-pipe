@@ -1,4 +1,5 @@
-//! `goofi-pipe` — the binary: arg parsing, tier routing, and the one exit path.
+//! `goofi` — the binary: serve by default, or be the CLIENT of a running server. Client mode
+//! holds zero op knowledge: it resolves WHICH server, sends the line, prints the answer.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -46,7 +47,7 @@ impl Default for Cli {
     }
 }
 
-const USAGE: &str = "usage: goofi-pipe [--port N] [--bind HOST] \
+const USAGE: &str = "usage: goofi [serve] [--port N] [--bind HOST] \
      [--extra-nodes DIR] [--list-nodes] [--headless] [--debug]";
 
 fn headless_env() -> bool {
@@ -82,7 +83,18 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
 
 #[tokio::main]
 async fn main() {
-    let mut cli = match parse_args(std::env::args().skip(1)) {
+    // Bare or flag-first argv serves — what `cargo run` depends on. A bare WORD is a command for
+    // a running server, except the few the client itself owns (`ops::RESERVED`'s doors).
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let rest = match argv.first().map(String::as_str) {
+        None => argv,
+        Some("help") | Some("--help") | Some("-h") => std::process::exit(help_main(&argv[1..])),
+        Some("-") => std::process::exit(client_stdin(&argv[1..])),
+        Some("serve") => argv[1..].to_vec(),
+        Some(first) if first.starts_with('-') => argv,
+        Some(_) => std::process::exit(client_main(argv)),
+    };
+    let mut cli = match parse_args(rest.into_iter()) {
         Ok(cli) => cli,
         Err(e) => {
             eprintln!("{e}");
@@ -93,6 +105,7 @@ async fn main() {
     cli.headless |= headless_env() || HEADLESS_BUILD;
     cli.debug |= debug_env();
     if cli.help {
+        // `goofi serve --help` / a flag mix that asked: the SERVE usage, not the op help door.
         println!(
             "{USAGE}\n\
              \n  \
@@ -115,6 +128,126 @@ async fn main() {
     };
     let state = AppState::new(cli.headless);
     std::process::exit(run(cli, python, state, shutdown_signal()).await);
+}
+
+/// What `goofi help` prints when NO server is running: the client's own summary — the op index
+/// lives on a server, so the full help does too.
+const LOCAL_HELP: &str = "goofi — no running server; a live one answers `help` in full.\n  \
+    goofi                  serve (flag-first argv serves too: --port, --headless, …)\n  \
+    goofi serve …          the same, spelled out\n  \
+    goofi session list     the recorded servers under $GOOFI_HOME/.goofi\n  \
+    goofi <phrase> …       run one op on the running server; `op list` is the index\n  \
+    goofi -                run stdin lines as ONE batch\n  \
+    goofi agent term <id>  attach an agent's terminal (not built yet)";
+
+/// Send lines to the resolved server and print each entry — decoded NPY bytes when the result
+/// carries them, the rendered text otherwise, or the raw JSON under `--json`.
+fn forward(lines: &[String], json: bool) -> i32 {
+    let target = match goofi_client::resolve_target() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let actor = std::env::var("GOOFI_ACTOR").unwrap_or_else(|_| "default".into());
+    match goofi_client::exec(&target.url, lines, &actor) {
+        Ok(entries) => {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            for e in &entries {
+                let bytes = match json {
+                    true => {
+                        let mut b = serde_json::to_string_pretty(&e.result)
+                            .unwrap_or_default()
+                            .into_bytes();
+                        b.push(b'\n');
+                        b
+                    }
+                    false => goofi_client::rendered(e),
+                };
+                let _ = out.write_all(&bytes);
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// Split off the client-consumed `--json`; everything else is the server's line, re-quoted by
+/// the same word rules bash used to split it.
+fn take_json(words: &mut Vec<String>) -> bool {
+    let n = words.len();
+    words.retain(|w| w != "--json");
+    words.len() != n
+}
+
+fn client_main(mut words: Vec<String>) -> i32 {
+    let json = take_json(&mut words);
+    match (words.first().map(String::as_str), words.get(1).map(String::as_str)) {
+        (Some("session"), Some("list")) => return print_sessions(),
+        (Some("agent"), Some("term")) => {
+            eprintln!("`agent term` is not built yet — the app's agent panel serves the terminal.");
+            return 1;
+        }
+        _ => {}
+    }
+    forward(&[shell_words::join(words.iter().map(String::as_str))], json)
+}
+
+/// `goofi -`: stdin lines as ONE batch — several ops, one undo step.
+fn client_stdin(rest: &[String]) -> i32 {
+    let json = rest.iter().any(|w| w == "--json");
+    let lines: Vec<String> = std::io::stdin()
+        .lines()
+        .map_while(Result::ok)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    forward(&lines, json)
+}
+
+fn print_sessions() -> i32 {
+    let rows = goofi_client::list();
+    if rows.is_empty() {
+        println!("no running goofi — start one with `goofi`");
+        return 0;
+    }
+    for r in rows {
+        let state = match r.probed {
+            goofi_client::Probed::Live => "live",
+            goofi_client::Probed::Unresponsive => "unresponsive",
+        };
+        let mark = if r.current { "  ← GOOFI_SESSION" } else { "" };
+        println!("{}  {}  {state}{mark}", r.session.id, r.session.url);
+    }
+    0
+}
+
+/// `goofi help [words…]`: ANY live session answers — help does not depend on which — and with
+/// none, the client's own one-screen summary.
+fn help_main(rest: &[String]) -> i32 {
+    let rows = goofi_client::list();
+    let Some(row) = rows.first() else {
+        println!("{LOCAL_HELP}");
+        return 0;
+    };
+    let words: Vec<&str> =
+        std::iter::once("help").chain(rest.iter().map(String::as_str)).collect();
+    match goofi_client::exec(&row.session.url, &[shell_words::join(words)], "default") {
+        Ok(entries) => {
+            for e in &entries {
+                println!("{}", e.text);
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
 }
 
 /// The interpreter the subprocess tier runs on: the venv `goofi-init` made, and only that one.
@@ -192,7 +325,7 @@ async fn run(
                 state.set_bound(addr);
                 let _session = SessionFile::write(&state.instance_id, &state.mcp_url());
                 let url = format!("http://{addr}");
-                println!("goofi-pipe → {url}");
+                println!("goofi → {url}");
                 println!("  MCP endpoint → http://{addr}/mcp");
                 let spa = if headless { &[][..] } else { SPA };
                 if headless {

@@ -60,9 +60,10 @@ methodology, and not an installed skill. Where an outside practice disagrees, th
    is smaller is the fix; a fix that is bigger needs a reason. Two code paths that should agree
    get unified at one source of truth rather than patched in both.
 
-5. **One artifact.** `goofi-pipe` is a single binary with the frontend compiled in. It serves the
-   app and never opens one — the URL is printed, and the opening is the user's. `--headless`
-   withholds the app entirely and serves the API alone.
+5. **One artifact.** `goofi` is a single binary with the frontend compiled in — the server, and
+   the CLI client of a running server, in one file. It serves the app and never opens one — the
+   URL is printed, and the opening is the user's. `--headless` withholds the app entirely and
+   serves the API alone.
 
 6. **One system, several representations.** Phone and desktop, agent and human, are the same
    machinery with different presentations — never a second track, never a per-device guard.
