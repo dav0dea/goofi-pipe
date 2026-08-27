@@ -12,8 +12,11 @@ fork and without a goofi release. Everything below follows from that.
 - **A frontend Svelte component**, rendered in its own panel and scoped to it. A plugin draws inside
   its panel and nowhere else.
 - **A backend process**, optional, in Rust or Python, with its own lifecycle.
-- **A set of control ops**, which join the ONE op vocabulary rather than opening a surface of their
-  own.
+- **A set of control ops**, which join the ONE op vocabulary rather than opening a surface of
+  their own. The shape is now decided: an op is a REGISTRY ROW — a noun-first phrase, an args
+  schema, and a handler whose kind (Read/Write/Effect) is its whole classification — and the
+  registry is a runtime value owned by `AppState`, so a row registered after construction is the
+  same type as a built-in's.
 - Its identity: a panel type id, a title, an icon, and whether it takes a bound node.
 
 ## What goofi exposes back
@@ -39,8 +42,9 @@ The plugin interface is the point of the whole design, and it must carry more th
 - **A panel with its own backend process already works.** The agent panel launches a harness from a
   declared adapter, binds it to the panel, streams it, and answers its own ✕. That is one worked
   example of the hardest part.
-- **The op table already has a `surface` field.** A plugin's ops joining that table, marked for
-  `/control` or for MCP, is an established shape rather than a new one.
+- **The registry is already runtime-owned.** `AppState` builds its op table at construction
+  (headless registers no layout rows), and dispatch is a lookup in it — the only shape a plugin
+  op can take. There is no `surface` field: every op is on every transport.
 
 ## Locked decisions
 
@@ -73,7 +77,11 @@ Its consequences, all of them unresolved:
 ## Needs
 
 - The spec. This item is not startable without one.
-- Op namespacing, so a plugin's op cannot collide with a core op or with another plugin's.
+- Op namespacing is DECIDED: `plugin <name> <phrase…>` always exists as the explicit spelling;
+  a plugin may also claim bare phrases, but the whole bare namespace — built-ins, the reserved
+  client words and every plugin — is ONE prefix-free set, checked at registration, and a plugin
+  phrase may never extend a built-in group word (`fancy add node` is fine; `node fancy` is not
+  registrable). What remains open is only the registration door itself.
 - What panel-to-panel messages ARE: a manager-ordered op, or a peer channel. The first is
   replayable, undoable and testable through the one interface; the second is cheaper and weaker.
 - The plugin package format, and how it relates to a node package (see `node-marketplace.md` — the

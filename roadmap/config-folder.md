@@ -1,26 +1,24 @@
 # A goofi config folder
 
-A place for what belongs to the INSTALL rather than to a patch. It lives outside `workspace/`, so it
-does not ride the `.gfi`.
+`$GOOFI_HOME/.goofi/` exists now — `goofi_core::home` owns it, `config.toml` holds the agents
+list, and `sessions/` holds the running servers' records. What remains here is what has not
+moved into it yet.
 
-## What moves into it
+## What still moves into it
 
-- **Harness declarations.** Today `static ADAPTERS` in `goofi-bridge/src/term.rs` — a compiled-in
-  list of the agent CLIs goofi knows how to launch. A user cannot add one without a rebuild.
-- **The agent orientation.** `orientation.md` is `include_str!`'d into the binary and laid into each
-  new workspace. It should be a file the user can edit, with the compiled-in copy as the default.
-- **A skills corpus** the harness can be pointed at.
+- **The agent orientation.** `orientation.md` is `include_str!`'d into the binary and laid into
+  each new workspace. It should be a file the user can edit, with the compiled-in copy as the
+  default — the same seed-once pattern `config.toml` uses.
+- **A skills corpus** the agent can be pointed at.
 - **App defaults** — default `ufreq`, port, bind address.
 
-## Why the placement is already decided
+## Decisions already taken
 
-The per-instance MCP config is written beside the workspace, and a `.gfi` packages the workspace
-tree. Anything a patch should NOT carry between machines has to sit outside that boundary, and there
-is no such place today.
+- The path is `$GOOFI_HOME/.goofi/`, `GOOFI_HOME` read per call and falling to the OS home.
+- A missing config reads as the default without writing; only the serve path seeds the file, so
+  the FILE stays the one owner and a test process never writes into a real home.
+- A malformed config degrades to the default in memory and reports why; it never stops the app.
 
-## Needs
+## Open
 
-- The path, per platform, and what `--config DIR` overrides.
-- Precedence: shipped default, then config folder, then the flag.
-- What a missing or malformed config does. It degrades to the default and says so; it never stops
-  the app.
+- Precedence when app defaults arrive: shipped default, then the config, then the flag.
