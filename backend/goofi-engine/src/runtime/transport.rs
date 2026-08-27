@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock, Once};
 use std::time::Duration;
 
 use iceoryx2::config::Config;
-use iceoryx2::node::NodeState;
+use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
@@ -400,13 +400,51 @@ pub(crate) fn iox_config() -> &'static Config {
 /// not goofi's to own, and on Windows it never worked anyway: the files carry a protected DACL
 /// with no DELETE, so both the ask and the reach fail alike (upstream #1869).
 pub fn reclaim_stale_resources() {
+    let mut refused: Vec<u128> = Vec::new();
     let _ = IoxNode::list(iox_config(), |state| {
         if let NodeState::Dead(view) = state {
-            let _ = view.try_remove_stale_resources();
+            // The id BEFORE the attempt: the reclaim consumes the view.
+            let id = view.id().value();
+            if view.try_remove_stale_resources().is_err() {
+                refused.push(id);
+            }
         }
         CallbackProgression::Continue
     });
+    for id in refused {
+        force_remove_refused(&id.to_string());
+    }
 }
+
+/// WORKAROUND, and it is one: eclipse-iceoryx/iceoryx2#1869. On Windows a node's bookkeeping files
+/// carry a PROTECTED DACL granting the owner no DELETE, so iceoryx2's own reclaim cannot take them
+/// and the directory strands for good — measured at 1,561 entries a week old, and it is what turns
+/// a later run's service open into `ServiceInCorruptedState`. The owner keeps implicit WRITE_DAC,
+/// so granting first is what makes the removal possible at all.
+///
+/// Only a node iceoryx2 has ITSELF declared dead AND then refused reaches here. Never a live peer,
+/// and never a blanket pass over the directory — that is what deleted a directory out from under a
+/// live enumeration and took the process down with iceoryx2's own assert.
+#[cfg(windows)]
+fn force_remove_refused(id: &str) {
+    use std::process::{Command, Stdio};
+    let Some(dir) = nodes_dir().map(|d| format!("{d}/{id}")) else { return };
+    if !std::path::Path::new(&dir).exists() {
+        return;
+    }
+    // `*S-1-3-4` is OWNER RIGHTS: it grants the object's own owner, which is this user, and nobody
+    // else. Shelling out for the same reason `proc::taskkill` does — `/T` has no one-call API.
+    let _ = Command::new("icacls")
+        .args([dir.as_str(), "/grant", "*S-1-3-4:(OI)(CI)F", "/T", "/C", "/Q"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Everywhere else iceoryx2's own reclaim is the whole of it, and a refusal is its business.
+#[cfg(not(windows))]
+fn force_remove_refused(_id: &str) {}
 
 /// Make the root iceoryx2 is configured for. It fills the layout in — `nodes/`, `services/` —
 /// but does not create the top directory, and on Windows nothing else does: every node then fails
