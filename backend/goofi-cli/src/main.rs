@@ -352,8 +352,8 @@ async fn run(
             }
             Ok(listener) => {
                 let addr = listener.local_addr().unwrap();
-                // A spawned harness reaches MCP on loopback whatever `--bind` says; only the
-                // port, which `--port 0` makes knowable nowhere else, is handed over.
+                // The session file needs the REAL address: `--port 0` makes it knowable
+                // nowhere else.
                 state.set_bound(addr);
                 // Only a real server writes into the home: its record, and the config seed.
                 goofi_core::home::seed_config();

@@ -93,12 +93,14 @@ pub fn config_file() -> PathBuf {
     dir().join("config.toml")
 }
 
-/// Seed the default config, absent-only — the serve path calls this once at start.
+/// Seed the default config, absent-only — the serve path calls this once at start. The
+/// session-file idiom: whole or absent, so two first boots cannot tear it for a third reader.
 pub fn seed_config() {
     let at = config_file();
     if !at.exists() {
         let _ = std::fs::create_dir_all(dir());
-        let _ = std::fs::write(at, DEFAULT_CONFIG);
+        let tmp = dir().join("config.toml.part");
+        let _ = std::fs::write(&tmp, DEFAULT_CONFIG).and_then(|()| std::fs::rename(&tmp, at));
     }
 }
 

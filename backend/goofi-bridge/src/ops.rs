@@ -215,13 +215,13 @@ pub static REGISTRY: &[Op] = &[
          result: "{ops: [{op, args, positional, kind, doc, result}]}" },
     // -- agent -----------------------------------------------------------------------------------
     Op { name: "agent list", handler: Read(arms::agent_list), args: "", positional: 0,
-         doc: "The agent harnesses installed on this machine, and the ones goofi has running.",
-         result: "{instances: [{id, harness, state, exit_code}], detected: [{harness, path, version}]}" },
+         doc: "The agents the config offers to launch, and the ones goofi has running.",
+         result: "{instances: [{id, harness, state, exit_code}], agents: [{name, command}], config_error: string | null}" },
     Op { name: "agent start", handler: Effect(arms::agent_start), args: "name:string!", positional: 1,
-         doc: "Launch an agent harness on a PTY with the patch workspace as its cwd, minting the MCP address it is handed. Read its terminal at /term/<instance_id>. An unknown name is refused with the set this build knows; `agent list` says which of them are installed.",
+         doc: "Launch a config-listed agent on a PTY with the patch workspace as its cwd, under a login shell — a command that cannot launch fails on the PTY itself. Read its terminal at /term/<instance_id>. An unknown name is refused with the config's list.",
          result: "{instance_id: string}" },
     Op { name: "agent stop", handler: Effect(arms::agent_stop), args: "instance:string!", positional: 1,
-         doc: "Stop a running agent (SIGTERM, then SIGKILL), or dismiss one that already exited. Its MCP address drops immediately; the exit code arrives on harness_changed.",
+         doc: "Stop a running agent (SIGTERM, then SIGKILL), or dismiss one that already exited. The shell's undo stack dies with it; the exit code arrives on harness_changed.",
          result: "{ok: true}" },
     // -- history and the batch -------------------------------------------------------------------
     Op { name: "undo", handler: Effect(arms::undo), args: "", positional: 0,

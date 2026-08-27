@@ -4,7 +4,8 @@
 //!
 //! The environment is inherited WHOLE, so the agent's own login and auth work; the terminal
 //! contract, `GOOFI_SESSION`/`GOOFI_ACTOR` and the `goofi` shim are overlaid. Nothing here
-//! emulates a terminal, so history is lost on a page reload.
+//! emulates a terminal; a bounded tail of output replays on attach, so a command that fails
+//! before any viewer arrives — or a page reload — still shows its words.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -23,6 +24,9 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// instead would stall the child.
 const OUTPUT_BACKLOG: usize = 1024;
 
+/// How much output an attach replays — enough for a `command not found` and a stack trace.
+const TAIL_BYTES: usize = 8192;
+
 /// The spawned agent instances — the whole harness plane's state.
 #[derive(Default)]
 pub struct Harnesses {
@@ -31,10 +35,10 @@ pub struct Harnesses {
 }
 
 impl Harnesses {
-
     /// The roster the snapshot seeds and `harness_changed` broadcasts — one shape for both: the
-    /// live instances, and the CONFIG's launchable list, `_`-test entries withheld.
-    pub fn roster(&self) -> Value {
+    /// live instances, and the CONFIG's launchable list, `_`-test entries withheld. `config` is
+    /// `home::agents()`, read by the CALLER so the disk read runs off whatever lock it holds.
+    pub fn roster(&self, config: &(Vec<goofi_core::home::Agent>, Option<String>)) -> Value {
         let instances: Vec<Value> = self.instances.lock().unwrap().iter()
             .map(|(id, i)| {
                 let exit = i.exit_code();
@@ -51,7 +55,7 @@ impl Harnesses {
                 })
             })
             .collect();
-        let (agents, config_error) = goofi_core::home::agents();
+        let (agents, config_error) = config;
         let agents: Vec<Value> = agents
             .iter()
             .filter(|a| !a.name.starts_with('_'))
@@ -60,7 +64,7 @@ impl Harnesses {
         json!({ "instances": instances, "agents": agents, "config_error": config_error })
     }
 
-    /// The instance behind a `/term` or `/mcp` path, if it is still on the roster.
+    /// The instance behind a `/term` path, if it is still on the roster.
     pub fn get(&self, id: &str) -> Option<Arc<Instance>> {
         self.instances.lock().unwrap().iter().find(|(k, _)| k == id).map(|(_, i)| i.clone())
     }
@@ -76,6 +80,7 @@ impl Harnesses {
         session_id: &str,
         env: &[(OsString, OsString)],
         events: broadcast::Sender<String>,
+        history: Arc<Mutex<goofi_engine::CommandHistory>>,
     ) -> Result<String, String> {
         let (agents, _) = goofi_core::home::agents();
         let command = agents
@@ -86,7 +91,13 @@ impl Harnesses {
                 // The `_`-prefixed test entries are spawnable but never advertised.
                 let have: Vec<&str> =
                     agents.iter().map(|a| a.name.as_str()).filter(|n| !n.starts_with('_')).collect();
-                format!("unknown agent `{agent}` — the config offers: {}", have.join(", "))
+                match have.is_empty() {
+                    true => format!(
+                        "unknown agent `{agent}` — the config lists none; add [[agents]] to {}",
+                        goofi_core::home::config_file().display()
+                    ),
+                    false => format!("unknown agent `{agent}` — the config offers: {}", have.join(", ")),
+                }
             })?;
         let id = crate::nonce_hex()[..12].to_string();
 
@@ -132,6 +143,7 @@ impl Harnesses {
             sizes: Mutex::default(),
             size: watch::channel(None).0,
             seats: AtomicU64::new(0),
+            tail: Mutex::default(),
         });
 
         // Drained unconditionally: a child whose output nobody reads blocks on a full buffer. A
@@ -143,7 +155,15 @@ impl Harnesses {
                 if n == 0 {
                     break;
                 }
-                let _ = output.send(answer_cursor_query(&answering, &buf[..n]));
+                let bytes = answer_cursor_query(&answering, &buf[..n]);
+                // Appended and sent under ONE lock, against `attach`'s snapshot-then-subscribe.
+                let mut tail = answering.tail.lock().unwrap();
+                tail.extend_from_slice(&bytes);
+                let over = tail.len().saturating_sub(TAIL_BYTES);
+                if over > 0 {
+                    tail.drain(..over);
+                }
+                let _ = output.send(bytes);
             }
             // AFTER the final send, so a socket that waits on this was offered every byte.
             ended.send_replace(true);
@@ -153,11 +173,16 @@ impl Harnesses {
         // instance is not yet on.
         self.instances.lock().unwrap().push((id.clone(), inst.clone()));
         let harnesses = self.clone();
+        let reaped = id.clone();
         std::thread::spawn(move || {
             let mut child = child;
             let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
+            // A stack's lifetime follows its actor: dropped where the actor DIES, and BEFORE the
+            // exit shows, so an observer that sees `exited` sees the stack gone too.
+            history.lock().unwrap().drop_actor(&actor_of(&reaped));
             inst.exit.send_replace(Some(code));
-            let _ = events.send(crate::event("harness_changed", harnesses.roster()));
+            let _ =
+                events.send(crate::event("harness_changed", harnesses.roster(&goofi_core::home::agents())));
         });
         Ok(id)
     }
@@ -184,8 +209,7 @@ impl Harnesses {
     }
 }
 
-/// Ask a running instance to leave, and insist after the grace. The address closes FIRST, so an
-/// in-flight tool call finishes while the next is refused.
+/// Ask a running instance to leave, and insist after the grace.
 fn begin_stop(inst: Arc<Instance>) -> Result<(), String> {
     inst.stopping.store(true, Ordering::Relaxed);
     signal(&inst, crate::proc::request_stop)?;
@@ -222,7 +246,7 @@ impl Sizes {
     }
 }
 
-/// One spawned harness: its PTY, its exit, and whether its MCP address is still open.
+/// One spawned harness: its PTY, its exit, and the tail an attach replays.
 pub struct Instance {
     harness: String,
     pid: Option<u32>,
@@ -241,14 +265,30 @@ pub struct Instance {
     sizes: Mutex<Sizes>,
     size: watch::Sender<Option<(u16, u16)>>,
     seats: AtomicU64,
+    /// The last [`TAIL_BYTES`] the child wrote, replayed to an attach that arrived after them.
+    tail: Mutex<Vec<u8>>,
+}
+
+/// What an attach hands a `/term` socket: the replayed tail, then the live channels.
+pub struct Attached {
+    pub tail: Vec<u8>,
+    pub output: broadcast::Receiver<Vec<u8>>,
+    pub exit: watch::Receiver<Option<u32>>,
+    pub eof: watch::Receiver<bool>,
 }
 
 impl Instance {
-    /// The PTY's output, the exit code, and the end-of-stream that says the output is complete.
-    pub fn attach(
-        &self,
-    ) -> (broadcast::Receiver<Vec<u8>>, watch::Receiver<Option<u32>>, watch::Receiver<bool>) {
-        (self.output.subscribe(), self.exit.subscribe(), self.eof.subscribe())
+    /// A replay of the tail, the live output, the exit code, and the end-of-stream that says the
+    /// output is complete. Snapshot and subscribe share the lock the drain sends under, so replay
+    /// meets live with no byte lost or doubled.
+    pub fn attach(&self) -> Attached {
+        let tail = self.tail.lock().unwrap();
+        Attached {
+            tail: tail.clone(),
+            output: self.output.subscribe(),
+            exit: self.exit.subscribe(),
+            eof: self.eof.subscribe(),
+        }
     }
 
     /// Take a seat number in the size arbitration, and read the answer as it changes; the seat is
@@ -310,8 +350,8 @@ pub fn seed_orientation(mount: &Path) {
     }
 }
 
-/// Where one instance's config is written: BESIDE the workspace, since inside would pack a stale
-/// URL into every `.gfi` and dirty the patch merely for launching an agent.
+/// Where one instance's config is written: BESIDE the workspace, since inside would pack the
+/// shim into every `.gfi` and dirty the patch merely for launching an agent.
 pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
     mount.parent().unwrap_or(mount).join("harness").join(id)
 }
@@ -388,11 +428,14 @@ fn shell_command(command: &str) -> CommandBuilder {
 fn write_shim(dir: &Path) -> Result<(), String> {
     let me = std::env::current_exe().map_err(|e| format!("the shim's target: {e}"))?;
     #[cfg(windows)]
-    let done = std::fs::copy(&me, dir.join("goofi.exe")).map(|_| ());
+    let done = std::fs::write(dir.join("goofi.cmd"), format!("@\"{}\" %*\r\n", me.display()));
     #[cfg(not(windows))]
-    let done = match std::os::unix::fs::symlink(&me, dir.join("goofi")) {
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        other => other,
+    let done = {
+        // Linked aside and renamed over, so a leftover always names the CURRENT binary.
+        let tmp = dir.join(".goofi.part");
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(&me, &tmp)
+            .and_then(|()| std::fs::rename(&tmp, dir.join("goofi")))
     };
     done.map_err(|e| format!("the goofi shim: {e}"))
 }

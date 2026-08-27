@@ -164,7 +164,7 @@ impl AppState {
         }
     }
 
-    /// Point a spawned harness's MCP config at the port this server actually bound.
+    /// Record the address this server actually bound — what `local_url` derives from.
     pub fn set_bound(&self, addr: std::net::SocketAddr) {
         *self.bound.lock().unwrap() = addr;
     }
@@ -646,16 +646,17 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     // neither, and the replica desyncs silently. A re-delivery is read as stale and skipped.
     let mut events = state.events.subscribe();
 
-    // Answered BEFORE the graph lock is taken: it walks the mount, and no filesystem walk may run
-    // while the status-drain worker waits on that lock.
+    // Answered BEFORE the graph lock is taken: these read the filesystem — the mount walk, the
+    // agents config — and no filesystem read may run while the status-drain worker waits on
+    // that lock.
     let unsaved = state.is_dirty();
     let saved_at = state.save_path();
+    let roster = state.harnesses.roster(&goofi_core::home::agents());
     let hello = {
         let g = state.graph.lock().unwrap();
         event(
             "hello",
-            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(),
-                              state.harnesses.roster()),
+            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(), roster),
         )
     };
     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -691,12 +692,13 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let unsaved = state.is_dirty(); // off the graph lock, as above
                     let saved_at = state.save_path();
+                    let roster = state.harnesses.roster(&goofi_core::home::agents());
                     let hello = {
                         let g = state.graph.lock().unwrap();
                         event(
                             "hello",
                             schemas::snapshot(&g, &state.instance_id, true, unsaved,
-                                              saved_at.as_deref(), state.harnesses.roster()),
+                                              saved_at.as_deref(), roster),
                         )
                     };
                     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -790,8 +792,8 @@ fn parse_pos(v: &Value) -> Option<[f64; 2]> {
     Some([a[0].as_f64()?, a[1].as_f64()?])
 }
 
-/// The `params` bag `add_node` and `edit_node` share — `{group: {param: value | {value,
-/// expression, mode, triggers}}}` — as one `EditParam` per entry.
+/// The one params bag — `node add`'s birth entries and `node param edit` both fold into
+/// `{group: {param: value | {value, expression, mode, triggers}}}` — as one `EditParam` per entry.
 fn parse_params_bag(g: &Graph, uid: Uid, params: &Value) -> Result<Vec<goofi_engine::Command>, String> {
     let groups = params.as_object().ok_or("params is {group: {param: …}}")?;
     let mut cmds = Vec::new();
@@ -1077,9 +1079,13 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
         let _ = tx.send(close(4004, "unknown harness instance")).await;
         return;
     };
-    // Taken before the first await: a subscription made later would miss what the child wrote.
-    let (mut output, mut exit, mut eof) = inst.attach();
+    // Attach snapshots the tail and subscribes as one step, so what the child wrote before this
+    // socket arrived replays first and the live stream follows with no byte lost or doubled.
+    let term::Attached { tail, mut output, mut exit, mut eof } = inst.attach();
     let (seat, mut size) = inst.join();
+    if !tail.is_empty() && tx.send(Message::Binary(tail.into())).await.is_err() {
+        return;
+    }
     // Sent up front: a view arriving on a settled size has no change event coming to tell it.
     let settled = *size.borrow_and_update();
     if let Some((cols, rows)) = settled {

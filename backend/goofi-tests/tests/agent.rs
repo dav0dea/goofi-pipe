@@ -30,7 +30,8 @@ async fn start_server() -> (Goofi, String, AppState) {
             // `sleep` is a child of the same group and would die of the group signal.
             "[[agents]]\nname = \"_deaf\"\n",
             "command = \"trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done\"\n\n",
-            "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n",
+            "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n\n",
+            "[[agents]]\nname = \"_gone\"\ncommand = \"definitely-not-a-cmd-4712\"\n",
         )).expect("the test config");
     });
     let addr = host(&g.serve().await).to_string();
@@ -410,7 +411,8 @@ async fn a_harness_runs_in_the_patchs_workspace_with_the_terminal_contract_overl
         ("TERM".into(), "dumb".into()), ("COLORTERM".into(), "no".into()),
         ("LANG".into(), "C".into()), ("STATED_BY_THE_TEST".into(), "kept".into())];
     let stated = state.harnesses
-        .spawn("_sh", &state.mount(), "http://127.0.0.1:1", &env, state.events.clone())
+        .spawn("_sh", &state.mount(), "http://127.0.0.1:1", &env, state.events.clone(),
+               state.history.clone())
         .expect("a spawn with a stated parent environment");
     let (mut term, _) = connect_async(format!("ws://{addr}/term/{stated}")).await.unwrap();
     let seen = report(&mut term).await;
@@ -453,6 +455,26 @@ async fn a_stop_asks_before_it_insists_and_reaps_a_harness_that_will_not_go() {
             break;
         }
     }
+
+    // A command that cannot launch fails ON its PTY — and the tail replays it to a socket
+    // that arrives after the words, the race the panel always loses to a fast shell.
+    let gone = call(&mut ctl, 4, "agent start", json!({ "name": "_gone" })).await["instance_id"]
+        .as_str().expect("the spawn succeeds; the SHELL is what fails").to_string();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    for probe in 100.. {
+        let roster = call(&mut ctl, probe, "agent list", json!({})).await;
+        let done = roster["instances"].as_array().unwrap().iter()
+            .any(|i| i["id"] == json!(gone) && i["state"] == json!("exited"));
+        if done {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the shell never exited: {roster}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let (mut late, _) = connect_async(format!("ws://{addr}/term/{gone}")).await.unwrap();
+    let said = read_until(&mut late, "not found").await;
+    assert!(said.contains("definitely-not-a-cmd-4712"), "the failure names the command: {said}");
+    call(&mut ctl, 5, "agent stop", json!({ "instance": gone })).await;
     state.release_mount();
 }
 
@@ -526,15 +548,29 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     let said = read_until(&mut term, "END").await;
     assert!(said.contains(&format!("S[{}]", &*state.instance_id)), "{said}");
     assert!(said.contains(&format!("A[{}]", term::actor_of(&id))), "{said}");
+    // A login profile may rebuild PATH over the shim, so the pin is the word's TARGET, not
+    // its seat.
+    let word = std::path::PathBuf::from(field(&said, "G["));
+    let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    assert_eq!(std::fs::canonicalize(&word).unwrap_or_default(), me, "{said}");
     let shim = term::config_dir(&mount, &id).join("goofi");
-    assert!(said.contains(&format!("G[{}]", shim.display())), "{said}");
     assert_eq!(std::fs::read_link(&shim).unwrap(), std::env::current_exe().unwrap(),
                "the shim IS this very binary");
 
     // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
+    // The drop happens at the exit the reaper observes, so wait until the roster shows it.
     let actor = term::actor_of(&id);
     g.client(&actor).call("node add", json!({ "type": "Oscillator" }));
     call(&mut ctl, 3, "agent stop", json!({ "instance": id })).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    for probe in 100.. {
+        let roster = call(&mut ctl, probe, "agent list", json!({})).await;
+        if roster["instances"][0]["state"] == json!("exited") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the child never exited: {roster}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     assert_eq!(g.client(&actor).call("undo", json!({}))["changed"], json!(false),
                "the dropped stack has nothing to undo");
     assert_eq!(g.call("session state", json!({}))["nodes"].as_object().map(|n| n.len()), Some(1),

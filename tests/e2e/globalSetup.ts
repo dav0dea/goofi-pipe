@@ -62,9 +62,11 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		// runner's process group, so a Ctrl-C reaches it even before `reap` gets its turn.
 		// `--debug` opens `/dev/*`, which the integrity sweep drives: the gallery is a real route of
 		// the shipped app, reachable only when it is asked for.
+		// SHELL pinned to one known POSIX shell: the `_sh` config command is POSIX text, and the
+		// product runs it under the user's own login shell.
 		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port), '--debug'], {
 			cwd: REPO_ROOT,
-			env: { ...process.env, GOOFI_HOME: home },
+			env: { ...process.env, GOOFI_HOME: home, SHELL: '/bin/sh' },
 			stdio: ['ignore', fd, fd]
 		});
 		fs.closeSync(fd);

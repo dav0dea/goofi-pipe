@@ -34,7 +34,7 @@ pub(crate) fn agent_list(
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    Ok(state.harnesses.roster())
+    Ok(state.harnesses.roster(&goofi_core::home::agents()))
 }
 
 pub(crate) fn agent_start(
@@ -53,8 +53,9 @@ pub(crate) fn agent_start(
         &state.instance_id,
         &term::parent_env(),
         state.events.clone(),
+        state.history.clone(),
     )?;
-    events.push(event("harness_changed", state.harnesses.roster()));
+    events.push(event("harness_changed", state.harnesses.roster(&goofi_core::home::agents())));
     Ok(json!({ "instance_id": id }))
 }
 
@@ -66,10 +67,9 @@ pub(crate) fn agent_stop(
 ) -> Result<Value, String> {
     let id =
         payload.get("instance").and_then(|v| v.as_str()).ok_or("agent stop: missing instance")?;
+    // The stopped shell's undo stack is dropped by the REAPER, where the actor really dies.
     state.harnesses.stop(id)?;
-    // A stack's lifetime follows its actor: the stopped shell's history goes with it.
-    state.history.lock().unwrap().drop_actor(&term::actor_of(id));
-    events.push(event("harness_changed", state.harnesses.roster()));
+    events.push(event("harness_changed", state.harnesses.roster(&goofi_core::home::agents())));
     Ok(json!({ "ok": true }))
 }
 
@@ -1116,6 +1116,8 @@ fn load_patch(
     payload: &Value,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
+    // Read OFF the graph lock, as the hello does: the roster's config half is a disk read.
+    let agents = goofi_core::home::agents();
     let result = {
         let mut g = state.graph.lock().unwrap();
         // Every source mounts FRESH, and the live mount is swapped only once the manifest has
@@ -1138,7 +1140,7 @@ fn load_patch(
         // one, and the replaced mount goes with the harnesses spawned into it.
         let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
         state.retire_mount(&replaced);
-        events.push(event("harness_changed", state.harnesses.roster()));
+        events.push(event("harness_changed", state.harnesses.roster(&agents)));
         // `read_gfi` restores no mtimes, so without a baseline taken HERE a patch would be dirty
         // from the moment it finished loading.
         *state.workspace_baseline.lock().unwrap() =
@@ -1152,7 +1154,7 @@ fn load_patch(
         events.push(event(
             "graph_replaced",
             schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
-                              state.harnesses.roster()),
+                              state.harnesses.roster(&agents)),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
         events.push(node_types_event(&g));

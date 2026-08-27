@@ -112,7 +112,9 @@
 				{#snippet hint()}
 					{hs.configError
 						? hs.configError
-						: 'It runs in this patch workspace, editing the patch with you.'}
+						: hs.agents.length === 0
+							? 'The config lists no agents — add [[agents]] entries to ~/.goofi/config.toml.'
+							: 'It runs in this patch workspace, editing the patch with you.'}
 				{/snippet}
 				<ChoiceGrid {choices} />
 			</EmptyState>

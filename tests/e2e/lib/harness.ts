@@ -4,9 +4,10 @@ import { expect, type Page } from '@playwright/test';
  * The agent-harness door for specs: spawn, read the roster, hand it back.
  *
  * Everything here goes through a RAW `/control` socket (the `ua-reset.spec.ts` idiom) because the
- * harness these specs use is `_sh` — Task 1's hidden test adapter, a plain `/bin/sh`, the same
- * `_`-prefixed idiom the node catalog uses. It has no door in the UI on purpose: the panel's
- * launcher lists DETECTED harnesses only. So nothing here needs an agent harness installed.
+ * harness these specs use is `_sh` — a config entry `globalSetup` writes into the scoped
+ * `GOOFI_HOME`, a plain `sh`, the same `_`-prefixed idiom the node catalog uses. A `_` entry has
+ * no door in the UI on purpose: the launcher never advertises it. So nothing here needs a real
+ * agent installed.
  */
 
 /** One RPC over its own `/control` socket. */

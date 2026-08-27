@@ -49,8 +49,13 @@ impl Goofi {
         HOME.call_once(|| {
             if std::env::var_os("GOOFI_HOME").is_none() {
                 let dir = std::env::temp_dir().join(format!("goofi-test-home-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir); // a crashed run under a recycled pid
                 std::env::set_var("GOOFI_HOME", dir);
             }
+            // The product spawns agents under the user's own shell; the SUITE spawns them under
+            // one known POSIX shell, so a fish or a loud profile cannot fail a test command.
+            #[cfg(unix)]
+            std::env::set_var("SHELL", "/bin/sh");
         });
         let state = AppState::new(headless);
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
