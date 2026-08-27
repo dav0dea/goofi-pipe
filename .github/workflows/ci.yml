@@ -11,17 +11,22 @@ on:
 # The steps are also the fresh-clone path, in order — `goofi-init`, then cargo — so a clone that
 # needs a third command fails HERE rather than on a contributor's machine.
 #
-# One job, run on TWO machines. The list is the same list — a Windows gate that ran a subset would
-# be the second spelling this file exists to prevent — and it is a matrix rather than a second job
-# for that reason. It earns its minutes: the platform half of this codebase is real (ConPTY, a
-# `cmd` launcher, `\` in a path, a `.pdb` name) and none of it is visible from Linux. `fail-fast`
-# is off so one platform's failure still reports the other's.
+# One job, run on THREE machines. The list is the same list — a per-platform gate running a subset
+# would be the second spelling this file exists to prevent — and it is a matrix rather than three
+# jobs for that reason. The two steps it does drop are dropped because they provably cannot differ,
+# not to save time; see the orientation. `fail-fast` is off so one platform's failure still reports
+# the others'.
+#
+# It costs nothing: standard runners are free on a public repo. What each one buys is different.
+# Windows is a whole separate PAL — ConPTY, a `cmd` launcher, `\` in every path, a `.pdb` two
+# targets collide on. macOS is arm64, so it is the only place aarch64 is compiled at all, and the
+# only place pyo3's embedded interpreter meets dylib and codesigning rules.
 jobs:
   gates:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
