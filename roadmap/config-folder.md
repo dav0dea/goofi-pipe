@@ -18,6 +18,8 @@ moved into it yet.
 - A missing config reads as the default without writing; only the serve path seeds the file, so
   the FILE stays the one owner and a test process never writes into a real home.
 - A malformed config degrades to the default in memory and reports why; it never stops the app.
+- The override is `GOOFI_HOME` alone, not a flag, and the path is the same on every platform —
+  no XDG or AppData branch.
 
 ## Open
 

@@ -97,7 +97,7 @@ redundant `InSlot` and burn an ack per consumer slot. One short-circuit, one lin
 - `_replaceSnapshot`'s `wholesale` parameter, which both call sites pass and the body never reads.
 
 **Not `Isolation`.** It looks decorative because the engine never reads it, but the bridge renders it
-in `inspect_node` and derives `info["tier"]` from it, and it is the only place a user sees which
+in `node state` and derives `info["tier"]` from it, and it is the only place a user sees which
 Python tier a node runs on.
 
 ## Open questions

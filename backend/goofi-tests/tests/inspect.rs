@@ -170,11 +170,11 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let out = text(&g, "node state", j!({ "node": hex(osc) }));
     assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, native, stage ready)", hex(osc))),
             "{out}");
-    // The goldened inline param format, round-trippable into edit_node…
+    // The goldened inline param format, round-trippable into `node param edit`…
     assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
-    // …and into edit_node’s expression half. This binding cannot compile (no evaluator here), shown inline.
+    // …and into its expression half. This binding cannot compile (no evaluator here), shown inline.
     assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 (on) [error: "),
             "{out}");
     // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.

@@ -14,9 +14,7 @@ fork and without a goofi release. Everything below follows from that.
 - **A backend process**, optional, in Rust or Python, with its own lifecycle.
 - **A set of control ops**, which join the ONE op vocabulary rather than opening a surface of
   their own. The shape is now decided: an op is a REGISTRY ROW — a noun-first phrase, an args
-  schema, and a handler whose kind (Read/Write/Effect) is its whole classification — and the
-  registry is a runtime value owned by `AppState`, so a row registered after construction is the
-  same type as a built-in's.
+  schema, and a handler whose kind (Read/Write/Effect) is its whole classification.
 - Its identity: a panel type id, a title, an icon, and whether it takes a bound node.
 
 ## What goofi exposes back
@@ -39,12 +37,14 @@ The plugin interface is the point of the whole design, and it must carry more th
   the document, undo, a second tab and the `.gfi` with no backend change at all.
 - **A panel already owns state.** Each layout panel node carries a `state` JSON value, and the
   document already owns it.
-- **A panel with its own backend process already works.** The agent panel launches a harness from a
-  declared adapter, binds it to the panel, streams it, and answers its own ✕. That is one worked
-  example of the hardest part.
-- **The registry is already runtime-owned.** `AppState` builds its op table at construction
-  (headless registers no layout rows), and dispatch is a lookup in it — the only shape a plugin
-  op can take. There is no `surface` field: every op is on every transport.
+- **A panel with its own backend process already works.** The agent panel launches a harness from
+  the config's agents list, binds it to the panel, streams it, and answers its own ✕. That is one
+  worked example of the hardest part.
+- **The op table is per-instance, and dispatch is a lookup.** `AppState` builds its rows at
+  construction (headless leaves the layout group out), and `call` looks a phrase up in them.
+  There is no `surface` field: every op is on every transport. The rows are still `&'static`, so
+  an OWNED row form — one a plugin can register after construction — is the first thing the
+  plugin door needs.
 
 ## Locked decisions
 
@@ -52,8 +52,8 @@ These are not choices — they are what this codebase's rules already say.
 
 - **The built-in panels go through the plugin door**, or the door is not proved. A capability only a
   shipped panel can reach is the defect.
-- **A plugin's ops join the one vocabulary.** Same names, same args, same undo, same MCP mirroring.
-  Never a second RPC surface.
+- **A plugin's ops join the one vocabulary.** Same names, same args, same undo, and reachable
+  through `goofi_exec` like every other op. Never a second RPC surface.
 - **The document stays the one owner of the panel tree.** A plugin holds no tree, exactly as panelty
   holds none — it raises intents and goofi turns each into one op.
 - **Styling is a CONTRACT, not a shared `:root`.** The panelty token pattern is the precedent: goofi
@@ -78,10 +78,11 @@ Its consequences, all of them unresolved:
 
 - The spec. This item is not startable without one.
 - Op namespacing is DECIDED: `plugin <name> <phrase…>` always exists as the explicit spelling;
-  a plugin may also claim bare phrases, but the whole bare namespace — built-ins, the reserved
-  client words and every plugin — is ONE prefix-free set, checked at registration, and a plugin
-  phrase may never extend a built-in group word (`fancy add node` is fine; `node fancy` is not
-  registrable). What remains open is only the registration door itself.
+  a plugin may also claim bare phrases, and the whole bare namespace — built-ins, the reserved
+  client words and every plugin — is ONE prefix-free set, checked at registration: an equal
+  phrase, an extension (`node add fancy`) and a prefix (`node`) are all refused, while a new
+  first word (`fancy node add`) collides with nothing. What remains open is the registration
+  door itself, and the owned row form it needs (above).
 - What panel-to-panel messages ARE: a manager-ordered op, or a peer channel. The first is
   replayable, undoable and testable through the one interface; the second is cheaper and weaker.
 - The plugin package format, and how it relates to a node package (see `node-marketplace.md` — the

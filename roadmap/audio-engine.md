@@ -261,7 +261,7 @@ survey from primary sources. Both landed on keep.
 - **Nothing has been measured with a real device callback.** Every number here is a synthetic loop.
   The interaction of the plugin host, RT priority and the control thread's graph lock is unmeasured,
   and the graph lock is the most plausible cause of a real xrun — a knob drag is a burst of
-  `edit_node` RPCs, each taking it.
+  `node param edit` RPCs, each taking it.
 - **Windows latency.** cpal's WASAPI backend is shared-mode only and its own source says the callback
   period is always `GetDevicePeriod()` whatever is requested, so `BufferSize::Fixed` is a lie there
   and the floor is ~10 ms. `IAudioClient3` reaches 2.66 ms and cpal does not use it. ASIO needs the
