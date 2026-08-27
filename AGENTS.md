@@ -371,10 +371,11 @@ one list — minus two steps that provably cannot differ. `svelte-check` type-ch
 no platform; Playwright drives a browser, and the half of it that IS platform-specific is the
 binary underneath, which `goofi-tests` already proves on every runner. **vitest is NOT in that
 set** and runs everywhere: its guards WALK THE TREE, and a `rel` built with `\` is how three of
-them failed on Windows while one of those quietly found nothing and passed. The platform half of this codebase is real and none of it is visible from Linux: a ConPTY
-that answers a cursor query and never reports EOF, a `cmd` launcher, `\` in every path a test
-compares, a `.pdb` two targets can collide on. Every one of those was found by hand, on a machine,
-after it had already shipped. Note what the warning gate still cannot hold: `-D warnings` is
+them failed on Windows while one of those quietly found nothing and passed.
+The matrix earns its minutes: the platform half of this codebase is real and none of it is visible
+from Linux — a ConPTY that answers a cursor query and never reports EOF, a `cmd` launcher, `\` in
+every path a test compares, a `.pdb` two targets can collide on. Every one of those was found by
+hand, on a machine, after it had already shipped. Note what the warning gate still cannot hold: `-D warnings` is
 rustc's, and a CARGO warning — the `.pdb` collision was one — passes it silently.
 **TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
 side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
