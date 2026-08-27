@@ -16,6 +16,19 @@ type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
+/// A harness that reports the SIGTERM and refuses to leave — and the ONE entry whose spelling the
+/// platforms cannot share. On unix the trap must live in the harness shell ITSELF: an inner
+/// `sh -c` puts it in a child, and the group signal then kills the outer shell, which holds no
+/// trap, so the harness that must refuse to leave leaves at once. On Windows `cmd /C` cannot read
+/// the syntax at all, so an inner shell is the only way in — and the trap is unobservable there
+/// regardless, because a stop is `taskkill` and never a signal.
+///
+/// The loop matters on both: a bare `sleep` is a child of the same group and dies of the signal.
+#[cfg(unix)]
+const DEAF: &str = "command = \"trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done\"\n\n";
+#[cfg(windows)]
+const DEAF: &str = "command = \"sh -c 'while :; do echo armed; sleep 0.2; done'\"\n\n";
+
 async fn start_server() -> (Goofi, String, AppState) {
     let g = Goofi::new();
     // The `_`-test agents are CONFIG entries now, written once into the test-scoped home the
@@ -24,20 +37,18 @@ async fn start_server() -> (Goofi, String, AppState) {
     CONFIG.call_once(|| {
         let at = goofi_core::home::config_file();
         let _ = std::fs::create_dir_all(at.parent().unwrap());
-        std::fs::write(at, concat!(
-            // Every entry that needs shell SYNTAX states `sh -c` itself, because the launcher
-            // shell is the user's own — `cmd /C` on Windows, which reads none of it.
+        let config = concat!(
+            // An entry needing shell SYNTAX states `sh -c` itself, because the launcher shell is
+            // the user's own — `cmd /C` on Windows, which reads none of it.
             "[[agents]]\nname = \"_sh\"\ncommand = \"sh\"\n\n",
-            // One that reports the SIGTERM and refuses to leave. The loop matters: a bare
-            // `sleep` is a child of the same group and would die of the group signal.
-            // The handler is a FUNCTION so the whole line needs no `"`: portable-pty quotes an
-            // argument the way `CommandLineToArgvW` reads it, and `cmd` reads `\"` as two words.
             "[[agents]]\nname = \"_deaf\"\n",
-            "command = \"sh -c 'got(){ echo GOT-TERM; }; trap got TERM; \
-             while :; do echo armed; sleep 0.2; done'\"\n\n",
-            "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n\n",
-            "[[agents]]\nname = \"_gone\"\ncommand = \"sh -c definitely-not-a-cmd-4712\"\n",
-        )).expect("the test config");
+        ).to_string()
+            + DEAF
+            + concat!(
+                "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n\n",
+                "[[agents]]\nname = \"_gone\"\ncommand = \"sh -c definitely-not-a-cmd-4712\"\n",
+            );
+        std::fs::write(at, config).expect("the test config");
     });
     let addr = host(&g.serve().await).to_string();
     let state = g.state.clone();
@@ -580,15 +591,17 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     let said = read_until(&mut term, "END").await;
     assert!(said.contains(&format!("S[{}]", &*state.instance_id)), "{said}");
     assert!(said.contains(&format!("A[{}]", term::actor_of(&id))), "{said}");
-    // The word RESOLVES — the half a `.cmd` launcher failed, since no bash-family shell reads one.
-    assert!(!field(&said, "G[").is_empty(), "`goofi` is not a command in the agent's shell: {said}");
-    // Named by its tail, not its whole path: an MSYS shell reports `/c/Users/x` for `C:\Users\x`.
-    // Containment rather than the leading seat, because a login profile may rebuild PATH over it.
+    // The SEAT, not the resolution: here the running binary is this test, and no `goofi` sits
+    // beside it to be found — that half is only true of the real binary. What the contract puts
+    // in the child either way is the running binary's own directory, first.
+    //
+    // Named by its tail, because an MSYS shell reports `/c/Users/x` for `C:\Users\x`; and by
+    // containment rather than the leading seat, because a login profile may rebuild PATH over it.
     let own = std::env::current_exe().unwrap();
     let own = own.parent().unwrap();
     let mut tail = own.components().rev().map(|c| c.as_os_str().to_string_lossy().into_owned());
     let (last, before) = (tail.next().unwrap(), tail.next().unwrap());
-    assert!(said.contains(&format!("{before}/{last}")),
+    assert!(field(&said, "P[").contains(&format!("{before}/{last}")),
             "goofi's own directory is not on the agent's PATH: {said}");
 
     // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
