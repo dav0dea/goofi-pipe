@@ -37,7 +37,10 @@ import { fileURLToPath } from 'node:url';
  * per-site strengths are not drift and the final audit ruled that reshape out of scope.
  */
 
-const LIB = fileURLToPath(new URL('..', import.meta.url));
+/** `/`-separated, because a `rel` is matched against literals written with one. */
+const slash = (p: string) => p.replaceAll('\\', '/');
+
+const LIB = slash(fileURLToPath(new URL('..', import.meta.url)));
 const APP_CSS = fileURLToPath(new URL('../../app.css', import.meta.url));
 
 /* Files whose raw **px** are exempt, each with the reason it stays in raw units. The exemption is
@@ -143,7 +146,7 @@ function svelteFiles(dir: string): string[] {
 	for (const entry of readdirSync(dir)) {
 		const p = join(dir, entry);
 		if (statSync(p).isDirectory()) out.push(...svelteFiles(p));
-		else if (entry.endsWith('.svelte')) out.push(p);
+		else if (entry.endsWith('.svelte')) out.push(slash(p));
 	}
 	return out.sort();
 }
