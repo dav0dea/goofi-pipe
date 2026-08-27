@@ -62,16 +62,16 @@ impl Goofi {
         Goofi { state, actor: "test".into(), patience: WAIT }
     }
 
-    /// Boot one whose `/data` sockets probe on a short clock.
+    /// Boot one whose `/data` sockets probe on a short clock. Through [`Goofi::with_mode`], so
+    /// the home wall stands here too.
     pub fn impatient() -> Goofi {
-        let mut state = AppState::new(false);
-        state.data_liveness = goofi_bridge::DataLiveness {
+        let mut g = Goofi::with_mode(false);
+        g.state.data_liveness = goofi_bridge::DataLiveness {
             ping_interval: Duration::from_millis(100),
             pong_deadline: Duration::from_millis(1000),
             send_timeout: Duration::from_millis(200),
         };
-        goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
-        Goofi { state, actor: "test".into(), patience: WAIT }
+        g
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
@@ -132,7 +132,7 @@ impl Goofi {
     pub async fn serve(&self) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        // As the CLI does: a `/mcp/<instance>` URL must name the process that answers it.
+        // As the CLI does: `local_url` derives from the address actually bound.
         self.state.set_bound(addr);
         let served = self.state.clone();
         tokio::spawn(async move { goofi_bridge::serve_app(listener, served, &[], false).await.unwrap() });

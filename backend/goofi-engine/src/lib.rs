@@ -18,7 +18,7 @@ pub mod subpatch;
 pub mod layout;
 
 pub mod command;
-pub use command::{Command, CommandHistory, ExprState, Outcome};
+pub use command::{open_batch, BatchScope, Command, CommandHistory, ExprState, Outcome};
 
 pub mod expr_rewrite;
 
@@ -887,15 +887,15 @@ impl Graph {
         scope: Option<Uid>,
     ) -> Result<Uid, String> {
         if let Some(u) = uid.filter(|u| self.nodes.contains_key(u)) {
-            return Err(format!("add_node: uid {} already in use", u.to_hex()));
+            return Err(format!("node add: uid {} already in use", u.to_hex()));
         }
         if let Some(s) = scope.filter(|s| !self.is_facade(*s)) {
-            return Err(format!("add_node: no such scope {s}"));
+            return Err(format!("node add: no such scope {s}"));
         }
         let (kind, base) = match subpatch::boundary_type(type_name) {
             Some((dir, dtype)) => {
                 if scope.is_none() {
-                    return Err("add_node: a boundary port needs a scope — it is a port OF a sub-patch".into());
+                    return Err("node add: a boundary port needs a scope — it is a port OF a sub-patch".into());
                 }
                 (Kind::Port(subpatch::Port { dir, dtype }), dir.name().to_string())
             }

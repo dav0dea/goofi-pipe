@@ -193,8 +193,7 @@ pub fn render(result: &Value) -> String {
     }
     if let Some(b64) = result.get("npy_b64").and_then(Value::as_str) {
         return format!(
-            "an ARRAY frame as NPY ({} base64 bytes) — pipe `goofi node snapshot …` for the \
-             raw bytes, or `--json` for the base64 with its meta",
+            "an ARRAY frame as NPY — {} base64 bytes in `npy_b64`, beside its `meta`",
             b64.len()
         );
     }

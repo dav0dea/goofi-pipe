@@ -47,14 +47,19 @@ pub(crate) fn agent_start(
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or("agent start: missing name")?;
-    let id = state.harnesses.spawn(
-        h,
-        &state.mount(),
-        &state.instance_id,
-        &term::parent_env(),
-        state.events.clone(),
-        state.history.clone(),
-    )?;
+    // The mount lock is held ACROSS the spawn, so a concurrent load's swap-and-delete cannot
+    // take the workspace out from under the shim write and the child's cwd.
+    let id = {
+        let mount = state.mount.lock().unwrap();
+        state.harnesses.spawn(
+            h,
+            &mount,
+            &state.instance_id,
+            &term::parent_env(),
+            state.events.clone(),
+            state.history.clone(),
+        )?
+    };
     events.push(event("harness_changed", state.harnesses.roster(&goofi_core::home::agents())));
     Ok(json!({ "instance_id": id }))
 }
@@ -106,31 +111,33 @@ pub(crate) fn compound(
     // A batch of reads alone never reaches the history: a Read is a no-op for undo, and the
     // actor's redo run must survive it.
     let writes = resolved.iter().any(|(op, _)| op.handler.is_write());
-    // The redo run is cleared UP FRONT so no step's own clearing can shift the mark. No step
-    // touches the dirty flag — only this settle does — so a refusal has nothing to restore.
-    let from = writes.then(|| {
-        let mut h = state.history.lock().unwrap();
-        h.clear_redo(actor);
-        h.len()
+    // The redo run is cleared UP FRONT, and the batch is a thread-local STAMP on the entries the
+    // steps make — never a position, which a peer's removal could shift. No step touches the
+    // dirty flag — only this settle does — so a refusal has nothing to restore.
+    let batch = writes.then(|| {
+        state.history.lock().unwrap().clear_redo(actor);
+        goofi_engine::open_batch()
     });
     let mut results = Vec::with_capacity(resolved.len());
     for (i, (op, arg)) in resolved.iter().enumerate() {
         match op.handler.run(state, arg, actor, events) {
             Ok(r) => results.push(r),
             Err(e) => {
-                // A compound is a UNIT, so a refused step takes back the ones that landed.
-                if let Some(from) = from {
+                // A compound is a UNIT, so a refused step takes back the ones that landed —
+                // and the events they queued name state the correction just took away.
+                if let Some(batch) = &batch {
                     let mut g = state.graph.lock().unwrap();
-                    state.history.lock().unwrap().rollback(&mut g, actor, from);
+                    state.history.lock().unwrap().rollback(&mut g, batch.id());
                     drop(g);
+                    events.clear();
                     resync_and_broadcast(state);
                 }
                 return Err(format!("compound: step {i} `{}` was refused: {e}", op.name));
             }
         }
     }
-    if let Some(from) = from {
-        state.history.lock().unwrap().coalesce(actor, from);
+    if let Some(batch) = &batch {
+        state.history.lock().unwrap().coalesce(actor, batch.id());
         resync_and_broadcast(state);
         events.extend(state.set_dirty(true));
     }
@@ -788,13 +795,9 @@ pub(crate) fn layout_panel_add(
     let beside = payload.get("beside").and_then(|v| v.as_str());
     let ratio = payload.get("ratio").and_then(|v| v.as_f64()).unwrap_or(0.5);
     match beside {
-        // Beside a target, dividing it — the drop on a panel's edge; the side defaults, as
-        // `split_panel` always did.
+        // Beside a target, dividing it — the drop on a panel's edge.
         Some(target) => {
-            let side = match payload.get("side").filter(|v| !v.is_null()) {
-                Some(_) => parse_side(payload, OP)?,
-                None => goofi_engine::layout::Side::Right,
-            };
+            let side = parse_side(payload, OP)?;
             let (plan, fresh) = g.arrangement().split_panel(target, side, ratio)?;
             let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
             let text = apply_layout(state, &mut g, actor, cmd)?;
@@ -839,10 +842,7 @@ pub(crate) fn layout_move(
         }
         // Beside a target, dividing it; the side defaults right, as a birth's does.
         (Some(target), None) => {
-            let side = match payload.get("side").filter(|v| !v.is_null()) {
-                Some(_) => parse_side(payload, OP)?,
-                None => goofi_engine::layout::Side::Right,
-            };
+            let side = parse_side(payload, OP)?;
             (g.arrangement().insert_at_panel(&entry, target, side, ratio)?, entry.clone())
         }
         // Inside a split, at an index — the drop into a container that exists.
@@ -1042,8 +1042,7 @@ pub(crate) fn global_list(
     Ok(inspect::globals(&g))
 }
 
-/// The open patch's identity AND its health. The error list was drawn under every
-/// `inspect_patch`, whichever scope was asked for, so it arrived again under each.
+/// The open patch's identity AND its health.
 pub(crate) fn session_status(
     state: &AppState,
     _payload: &Value,

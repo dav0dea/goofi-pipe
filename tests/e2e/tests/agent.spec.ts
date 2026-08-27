@@ -10,12 +10,12 @@ import { dismiss, spawnSh, stateOf } from '../lib/harness';
 /**
  * The agent panel, driven end to end against a real PTY.
  *
- * **Nothing here needs an agent harness installed.** The harness spawned is `_sh` — the hidden
- * test adapter Task 1 registered, a plain `/bin/sh`, the same `_`-prefixed idiom the node catalog
- * uses — so the terminal, the transcript and the whole detach/kill lifecycle are driven by a
- * binary every machine has. It is spawned over a raw `/control` socket because the panel's
- * launcher deliberately lists only DETECTED harnesses (`_`-prefixed ones are hidden from it), and
- * a client attaching to an instance it did not spawn is the production path a second tab takes.
+ * **Nothing here needs an agent harness installed.** The harness spawned is `_sh` — a config
+ * entry `globalSetup` writes into the scoped `GOOFI_HOME`, a plain `sh`, the same `_`-prefixed
+ * idiom the node catalog uses — so the terminal, the transcript and the whole detach/kill
+ * lifecycle are driven by a binary every machine has. It is spawned over a raw `/control` socket
+ * because the launcher never advertises a `_` entry, and a client attaching to an instance it
+ * did not spawn is the production path a second tab takes.
  *
  * The markers are spelled `goofi''markN`, which the shell's own echo shows verbatim and only the
  * CHILD prints joined — so no assertion below can pass on the line discipline repeating the input.
@@ -96,6 +96,15 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await expect(page.getByTestId('agent-terminal')).toBeVisible();
 		await say(page, 'mark42');
 
+		// Push the marker OUT of the server's 8 KB replay tail, so the reopened panel below can
+		// only show it through a Terminal that outlived the panel.
+		await page.getByTestId('agent-terminal').click();
+		await page.keyboard.type(
+			"i=0; while [ $i -lt 300 ]; do i=$((i+1)); echo XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX; done; echo goofi''burstend"
+		);
+		await page.keyboard.press('Enter');
+		await expect(page.getByTestId('agent-terminal')).toContainText('goofiburstend');
+
 		// Attaching a panel to an instance, and the instance itself, are both viewpoint: the choice
 		// never leaves this client, and the harness config lands beside the workspace, not in it.
 		expect(await unsaved(page), 'attaching an agent dirtied the patch').toBe(false);
@@ -131,6 +140,13 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 			await expect.poll(nodes, { message: 'one undo took back the whole stdin batch' }).toBe(before + 1);
 			execFileSync(BIN, ['undo'], { env });
 			await expect.poll(nodes).toBe(before);
+
+			// The client's OWN doors: the reserved `session list` word, under `--json`.
+			const rows = JSON.parse(execFileSync(BIN, ['session', 'list', '--json'], { env }).toString());
+			expect(
+				rows.find((r: { id: string }) => r.id === session.id),
+				'the reserved word answers the recorded sessions'
+			).toMatchObject({ state: 'live', current: true });
 		});
 
 		// Name it again: closing that panel really WAS authoring (the layout changed), so the dot it
@@ -152,11 +168,19 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await page.keyboard.press('Escape');
 		await expect(page.getByTestId('agent-close-dialog')).toBeHidden();
 
-		// …and reopening finds the transcript where it was. Nothing was replayed: the manager keeps
-		// no grid, so this can only be the Terminal object that outlived the panel.
+		// …and reopening finds the transcript where it was. The marker sits beyond the server's
+		// replay tail, so only the Terminal object that outlived the panel can still hold it —
+		// in scrollback, which Shift+PageUp reaches.
 		await splitRight(page);
 		await openAgentPanel(page);
-		await expect(page.getByTestId('agent-terminal')).toContainText('goofimark42');
+		await expect(page.getByTestId('agent-terminal')).toContainText('goofiburstend');
+		await page.getByTestId('agent-terminal').click();
+		await expect(async () => {
+			for (let i = 0; i < 4; i++) await page.keyboard.press('Shift+PageUp');
+			await expect(page.getByTestId('agent-terminal')).toContainText('goofimark42', {
+				timeout: 200
+			});
+		}).toPass({ timeout: 15_000, intervals: [200] });
 
 		// The TopBar chip is the door from outside the panel: it lists what is running, and choosing
 		// one raises the same question — this time answered with Kill.
@@ -166,7 +190,7 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await page.getByTestId('agent-kill').click();
 		// `gone`, not `exited`: a dead harness is dropped rather than kept, and the app asks the
 		// manager to drop it as soon as it sees the exit.
-		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toMatch(/exited|gone/);
+		await expect.poll(() => stateOf(page, id), { timeout: 15_000 }).toBe('gone');
 		threw = false;
 	} finally {
 		await handBack(page, id, threw);
@@ -297,11 +321,12 @@ test('a second view of one harness is live, and both views see the same stream',
 		await openAgentPanel(page);
 		await say(page, 'first');
 
-		// A second tab attaches to the SAME instance. Its terminal starts empty — history is
-		// deliberately per-tab (there is no server-side scrollback) — but it is live…
+		// A second tab attaches to the SAME instance and is handed the replay tail — the
+		// transcript so far — and the live stream after it…
 		await second.goto('/');
 		await second.waitForFunction(() => (window as any).goofi?.query.nodeTypes()?.length > 0);
 		await expect(second.getByTestId('agent-terminal')).toBeVisible();
+		await expect(second.getByTestId('agent-terminal')).toContainText('goofifirst');
 		await say(second, 'second');
 
 		// …and what it typed reaches the first view too, because one PTY has one stream and the

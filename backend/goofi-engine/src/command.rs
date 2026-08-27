@@ -179,7 +179,7 @@ impl Command {
             // Never silently rooted on a scope that is not there: the canvas draws one scope, so a
             // node placed in another is invisible exactly where the caller put it.
             Command::AddNode { scope: Some(s), .. } => {
-                g.is_facade(*s).then_some(()).ok_or_else(|| format!("add_node: no such scope {s}"))
+                g.is_facade(*s).then_some(()).ok_or_else(|| format!("node add: no such scope {s}"))
             }
             // A collapsed sub-patch facade is editable here (name/pos), so either kind counts.
             Command::EditNode { uid, .. } => {
@@ -625,6 +625,39 @@ struct HistoryEntry {
     toggle: Command,
     actor: String,
     undone: bool,
+    /// The batch whose step made this entry — a compound settles by this stamp, never by a
+    /// position another thread's removal can shift.
+    batch: Option<u64>,
+}
+
+std::thread_local! {
+    static OPEN_BATCH: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+static NEXT_BATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The batch stamp is thread-local because a compound's steps run the ordinary write arms on the
+/// compound's own thread — so a peer's entry, even under the SAME actor, can never carry it.
+pub struct BatchScope {
+    id: u64,
+}
+
+pub fn open_batch() -> BatchScope {
+    let id = NEXT_BATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OPEN_BATCH.set(Some(id));
+    BatchScope { id }
+}
+
+impl BatchScope {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for BatchScope {
+    fn drop(&mut self) {
+        OPEN_BATCH.set(None);
+    }
 }
 
 impl CommandHistory {
@@ -641,14 +674,13 @@ impl CommandHistory {
         // Record EVERY successful command, a forward no-op included: the client records one entry
         // per mutating RPC, so skipping one here desyncs the stacks and a later undo flips wrong.
         self.entries.retain(|e| !(e.actor == actor && e.undone));
-        self.entries.push(HistoryEntry { toggle: inverse, actor: actor.to_string(), undone: false });
+        self.entries.push(HistoryEntry {
+            toggle: inverse,
+            actor: actor.to_string(),
+            undone: false,
+            batch: OPEN_BATCH.get(),
+        });
         Ok(outcome)
-    }
-
-    /// Where this actor's next entry will land — the mark a [`coalesce`](Self::coalesce) or a
-    /// [`rollback`](Self::rollback) measures from.
-    pub fn len(&self) -> usize {
-        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -667,25 +699,30 @@ impl CommandHistory {
         self.entries.retain(|e| e.actor != actor);
     }
 
-    /// Fold everything this actor has added since `from` into ONE entry, so a compound RPC is a
-    /// single undo step. A peer's entry that landed in between is left exactly where it is.
-    pub fn coalesce(&mut self, actor: &str, from: usize) {
+    /// Fold everything `batch`'s steps added into ONE entry, so a compound RPC is a single undo
+    /// step. A peer's entry that landed in between is left exactly where it is.
+    pub fn coalesce(&mut self, actor: &str, batch: u64) {
         let mine: Vec<usize> =
-            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].actor == actor).collect();
+            (0..self.entries.len()).filter(|&i| self.entries[i].batch == Some(batch)).collect();
         if mine.len() < 2 {
             return;
         }
         // Newest first: each toggle is an inverse, and a Compound applies its children in order.
         let toggle =
             Command::Compound(mine.iter().rev().map(|&i| self.entries.remove(i).toggle).collect());
-        self.entries.push(HistoryEntry { toggle, actor: actor.to_string(), undone: false });
+        self.entries.push(HistoryEntry {
+            toggle,
+            actor: actor.to_string(),
+            undone: false,
+            batch: None,
+        });
     }
 
-    /// Undo and DISCARD everything this actor has added since `from` — what a compound does when
-    /// a later step is refused, so a failed call leaves no redo run either.
-    pub fn rollback(&mut self, g: &mut Graph, actor: &str, from: usize) {
+    /// Undo and DISCARD everything `batch`'s steps added — what a compound does when a later
+    /// step is refused, so a failed call leaves no redo run either.
+    pub fn rollback(&mut self, g: &mut Graph, batch: u64) {
         let mine: Vec<usize> =
-            (from.min(self.entries.len())..self.entries.len()).filter(|&i| self.entries[i].actor == actor).collect();
+            (0..self.entries.len()).filter(|&i| self.entries[i].batch == Some(batch)).collect();
         for &i in mine.iter().rev() {
             // Best-effort by necessity, exactly as `Compound`'s own unwind is.
             let _ = self.entries.remove(i).toggle.execute(g);
@@ -693,7 +730,7 @@ impl CommandHistory {
     }
 
     /// Drop the entire history (every actor's entries). Loading a patch fully resets the
-    /// actor — there is nothing to undo across a load — so the manager clears here.
+    /// session — there is nothing to undo across a load — so the manager clears here.
     pub fn clear(&mut self) {
         self.entries.clear();
     }

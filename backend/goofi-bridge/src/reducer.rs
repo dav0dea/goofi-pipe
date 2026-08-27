@@ -76,24 +76,16 @@ impl SlotReducers {
     ) -> &'a mut SlotReducer {
         let slots = Arc::downgrade(&self.inner);
         map.entry(key.clone()).or_insert_with(|| {
-            let specs = Arc::new(Mutex::new(HashMap::new()));
-            let (tx, _) = broadcast::channel(16);
-            let reductions = Arc::new(AtomicU64::new(0));
-            let gen = Arc::new(AtomicU64::new(0));
-            let latest = Arc::new(Mutex::new(None));
-            let stop = Arc::new(AtomicBool::new(false));
-            spawn_reducer(
-                key.clone(),
-                specs.clone(),
-                tx.clone(),
-                self.graph.clone(),
-                reductions.clone(),
-                gen.clone(),
-                latest.clone(),
-                stop.clone(),
-                slots,
-            );
-            SlotReducer { specs, tx, stop, reductions, gen, latest }
+            let reducer = SlotReducer {
+                specs: Arc::new(Mutex::new(HashMap::new())),
+                tx: broadcast::channel(16).0,
+                stop: Arc::new(AtomicBool::new(false)),
+                reductions: Arc::new(AtomicU64::new(0)),
+                gen: Arc::new(AtomicU64::new(0)),
+                latest: Arc::new(Mutex::new(None)),
+            };
+            spawn_reducer(key.clone(), &reducer, self.graph.clone(), slots);
+            reducer
         })
     }
 
@@ -191,18 +183,15 @@ fn open_feed(graph: &Mutex<Graph>, uid: Uid, slot: &str) -> Option<SlotFeed> {
 /// every ~16 ms take whatever the producer has published and — only when it emitted, a subscriber
 /// joined, or the spec union changed — reduce, encode once, and broadcast to all. The sweep is a
 /// sampling deadline, never a send cadence.
-#[allow(clippy::too_many_arguments)]
 fn spawn_reducer(
     key: SlotKey,
-    specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
-    tx: broadcast::Sender<Bytes>,
+    reducer: &SlotReducer,
     graph: Arc<Mutex<Graph>>,
-    reductions: Arc<AtomicU64>,
-    gen: Arc<AtomicU64>,
-    latest: Arc<Mutex<Option<goofi_core::Data>>>,
-    stop: Arc<AtomicBool>,
     slots: Weak<Mutex<HashMap<SlotKey, SlotReducer>>>,
 ) {
+    let (specs, tx) = (reducer.specs.clone(), reducer.tx.clone());
+    let (reductions, gen) = (reducer.reductions.clone(), reducer.gen.clone());
+    let (latest, stop) = (reducer.latest.clone(), reducer.stop.clone());
     let (uid, slot) = key.clone();
     std::thread::spawn(move || {
         let mut feed = open_feed(&graph, uid, &slot);

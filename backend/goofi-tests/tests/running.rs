@@ -57,7 +57,8 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     // The raw one-shot read: exactly the frame the node emitted, as NPY — no subscription, no
     // reduction, and refused by naming the real slots when the address is wrong.
     let why = g.refuse("node snapshot", j!({ "output": ep(hex(buf), "psd") }));
-    assert!(why.contains("no output slot `psd`") && why.contains("out"), "{why}");
+    // `it has:` anchors the real-slot list — a bare `out` also matches "output" in the same line.
+    assert!(why.contains("no output slot `psd`") && why.contains("it has: out"), "{why}");
     let snap = g.until("a 16-wide raw frame in the snapshot cache", |g| {
         Some(g.call("node snapshot", j!({ "output": ep(hex(buf), "out") })))
             .filter(|r| npy_f32s(&npy(r)).len() == 16)

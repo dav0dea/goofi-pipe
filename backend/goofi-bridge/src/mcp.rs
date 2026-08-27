@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 use crate::{phrase, AppState};
 
-/// The undo ACTOR every central MCP call runs as: the transport is stateless, so agents share
-/// one stack, which is still isolated from every human tab's.
+/// The undo ACTOR an MCP call runs as when it names none: the transport is stateless, so such
+/// agents share one stack, which is still isolated from every human tab's.
 const AGENT_ACTOR: &str = "mcp";
 
 /// The revision to claim when a client names none.
@@ -35,13 +35,14 @@ Drive goofi with command lines. Each entry in `commands` is one op: `<op> [--arg
 bash's own quoting rules. Call `op list` first — it answers every op with its arguments, its \
 result and its kind. A bool arg is `--x` or `--no-x`; a list arg repeats its flag; a `json` arg \
 takes one JSON string.\n\n\
-ONE command executes directly. SEVERAL execute as one batch and ONE undo step: every step must \
-be an undoable write, a refused step takes the whole batch back, and the reply is each step's \
-result in order. To wire nodes made in the same batch, choose their uids yourself with \
-`node add --member_uid`.";
+The reply is every command's result, in order, as one JSON list. SEVERAL commands execute as \
+one batch and ONE undo step: a step is a read or an undoable write — an effect runs alone — and \
+a refused step takes the whole batch back. To wire nodes made in the same batch, choose their \
+uids yourself with `node add --member_uid`. `actor` names your undo stack; calls that share it \
+share undo.";
 
-/// The tool list: one tool, whichever address serves it.
-pub fn tools() -> Vec<Value> {
+/// The tool list: the one tool.
+fn tools() -> Vec<Value> {
     vec![json!({
         "name": "goofi_exec",
         "description": DESCRIPTION,
@@ -52,6 +53,10 @@ pub fn tools() -> Vec<Value> {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "One command per entry: `<op> [--arg value …]`.",
+                },
+                "actor": {
+                    "type": "string",
+                    "description": "The undo stack these commands land in (default \"mcp\").",
                 },
             },
             "required": ["commands"],
@@ -66,7 +71,12 @@ fn tool_result(text: String, is_error: bool) -> Value {
 
 /// Run the one tool: parse every line first, then execute — one command directly, several as one
 /// compound, so a batch is one undo step and a refused step takes the others back.
-fn call_tool(state: &AppState, actor: &str, params: &Value) -> Value {
+fn call_tool(state: &AppState, params: &Value) -> Value {
+    let actor = params
+        .get("arguments")
+        .and_then(|a| a.get("actor"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(AGENT_ACTOR);
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or_default();
     if name != "goofi_exec" {
         return tool_result(format!("unknown tool `{name}` — this server has one: goofi_exec"), true);
@@ -81,17 +91,15 @@ fn call_tool(state: &AppState, actor: &str, params: &Value) -> Value {
         return tool_result("goofi_exec: `commands` is a non-empty list of command lines".into(), true);
     };
     match phrase::exec_lines(state, &lines, actor) {
-        Ok(results) => match &results[..] {
-            [one] => tool_result(phrase::render(one), false),
-            // The batch answers the BARE list of step results, in order.
-            many => {
-                let list = Value::Array(many.to_vec());
-                tool_result(
-                    serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()),
-                    false,
-                )
-            }
-        },
+        // ONE shape whatever the count — the list of results, in order — so no data is
+        // reachable at one arity and paraphrased at another.
+        Ok(results) => {
+            let list = Value::Array(results);
+            tool_result(
+                serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()),
+                false,
+            )
+        }
         Err(e) => tool_result(e, true),
     }
 }
@@ -108,11 +116,11 @@ fn rpc_error(id: Value, code: i64, message: String) -> Response {
 /// The central MCP endpoint — the address an external agent connects to. Registered with `post`,
 /// so axum answers the retired GET stream and DELETE teardown with the 405 the spec asks for.
 pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
-    serve(&state, AGENT_ACTOR, &body).await
+    serve(&state, &body).await
 }
 
-/// One JSON-RPC request, as the `"mcp"` undo actor.
-async fn serve(state: &AppState, actor: &str, body: &str) -> Response {
+/// One JSON-RPC request.
+async fn serve(state: &AppState, body: &str) -> Response {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
@@ -144,7 +152,12 @@ async fn serve(state: &AppState, actor: &str, body: &str) -> Response {
             }),
         ),
         "tools/list" => ok(id, json!({ "tools": tools() })),
-        "tools/call" => ok(id, call_tool(state, actor, &params)),
+        "tools/call" => {
+            // Off the async workers, as `/exec` is: a batch can hold the graph lock for seconds.
+            let state = state.clone();
+            let ran = tokio::task::spawn_blocking(move || call_tool(&state, &params)).await;
+            ok(id, ran.unwrap_or_else(|e| tool_result(format!("the exec task died: {e}"), true)))
+        }
         "ping" => ok(id, json!({})),
         method => rpc_error(id, -32601, format!("unknown method `{method}`")),
     }

@@ -62,11 +62,14 @@ async fn exec(addr: &str, path: &str, id: i64, commands: &[&str]) -> (String, bo
      result["isError"] == json!(true))
 }
 
-/// One command that must succeed.
+/// One command that must succeed, answering ITS result — the tool answers one shape whatever
+/// the count, the list of results, so this unwraps the one element.
 async fn ok_exec(addr: &str, id: i64, command: &str) -> String {
     let (text, err) = exec(addr, "/mcp", id, &[command]).await;
     assert!(!err, "`{command}` failed: {text}");
-    text
+    let list: Value = serde_json::from_str(&text).expect("the reply is the results list");
+    let one = list.as_array().filter(|l| l.len() == 1).unwrap_or_else(|| panic!("{text}"));
+    serde_json::to_string_pretty(&one[0]).expect("two strings")
 }
 
 
@@ -108,7 +111,7 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     let edited = ok_exec(&addr, 4, &line).await;
     assert!(edited.contains("7.5"), "the param came back as stored: {edited}");
     let patch = ok_exec(&addr, 5, "nodes inspect").await;
-    assert!(patch.contains(&uid), "a single-key text result renders as its text: {patch}");
+    assert!(patch.contains(&uid), "the diagram rides the result's `text`: {patch}");
 
     // Idempotence still SAYS which of the two happened.
     let missing = ok_exec(&addr, 6, "node remove --node aaaaaaaaaaaa").await;
@@ -317,25 +320,47 @@ async fn read_until(ws: &mut Ws, want: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_harness_spawns_carries_bytes_both_ways_and_is_reaped_with_the_code_it_chose() {
-    let (_g, addr, state) = start_server().await;
+    let (g, addr, state) = start_server().await;
     let (mut ctl, id, mut term) = harness(&addr, "_sh").await;
 
     // `6*7` is echoed input; only `42` can come from the child having run.
     term.send(Message::Binary(b"echo $((6*7))\n".to_vec().into())).await.unwrap();
     read_until(&mut term, "42").await;
 
+    // An edit under the shell's own actor, so the exit below can prove the stack dies with it.
+    g.client(&term::actor_of(&id)).call("node add", json!({ "type": "Oscillator" }));
+
     // `TAIL''MARK` is what the terminal echoes, so `TAILMARK` can only come from the child.
     term.send(Message::Binary(
         b"i=0; while [ $i -lt 400 ]; do i=$((i+1)); echo L$i; done; echo TAIL''MARK; exit 7\n".to_vec().into()))
         .await.unwrap();
+    // A second view attaches MID-BURST: replay meets live exactly once — a snapshot taken after
+    // the subscribe doubles a line, a gap between them loses one.
+    let (mut mid, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
     let seen = read_until(&mut term, "exit_code").await;
     assert!(seen.contains("L400"), "the burst was truncated");
     assert!(seen.contains("TAILMARK"), "the child's last line was dropped");
     assert!(seen.contains("\"exit_code\":7"), "the exit frame carries the code the child chose");
+    let seen = read_until(&mut mid, "exit_code").await;
+    assert_eq!(seen.matches("L200\r").count(), 1, "replay and live overlap or gap: {}", seen.len());
 
     let (mut late, _) = connect_async(format!("ws://{addr}/term/{id}")).await.unwrap();
     assert!(read_until(&mut late, "exit_code").await.contains("\"exit_code\":7"),
             "a late attach was told nothing");
+
+    // A shell that ends on its OWN loses its undo stack too — the reaper owns the drop, and its
+    // broadcast comes after it, so the exited event is the settled signal.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let ev = recv_text_by(&mut ctl, deadline).await;
+        if ev["event"] == json!("harness_changed")
+            && ev["payload"]["instances"][0]["state"] == json!("exited")
+        {
+            break;
+        }
+    }
+    assert_eq!(g.client(&term::actor_of(&id)).call("undo", json!({}))["changed"], json!(false),
+               "the self-exited shell's stack has something to undo");
 
     let roster = call(&mut ctl, 2, "agent list", json!({})).await;
     let inst = &roster["instances"][0];
@@ -438,12 +463,14 @@ async fn a_stop_asks_before_it_insists_and_reaps_a_harness_that_will_not_go() {
     read_until(&mut term, "armed").await;
     call(&mut ctl, 2, "agent stop", json!({ "instance": id })).await;
 
+    // Read BEFORE waiting on the trap: the ask is synchronous, and a slow echo can outlast
+    // the grace — after which `stopping` has already moved on.
+    let roster = call(&mut ctl, 3, "agent list", json!({})).await;
+    assert_eq!(roster["instances"][0]["state"], json!("stopping"), "{roster}");
+
     // The graceful ask is only OBSERVABLE where signals are; Windows refuses `taskkill` without `/F`.
     #[cfg(unix)]
     read_until(&mut term, "GOT-TERM").await;
-
-    let roster = call(&mut ctl, 3, "agent list", json!({})).await;
-    assert_eq!(roster["instances"][0]["state"], json!("stopping"), "{roster}");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -558,18 +585,18 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
                "the shim IS this very binary");
 
     // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
-    // The drop happens at the exit the reaper observes, so wait until the roster shows it.
+    // The reaper drops the stack and THEN broadcasts, so the exited event is the settled signal.
     let actor = term::actor_of(&id);
     g.client(&actor).call("node add", json!({ "type": "Oscillator" }));
     call(&mut ctl, 3, "agent stop", json!({ "instance": id })).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    for probe in 100.. {
-        let roster = call(&mut ctl, probe, "agent list", json!({})).await;
-        if roster["instances"][0]["state"] == json!("exited") {
+    loop {
+        let ev = recv_text_by(&mut ctl, deadline).await;
+        if ev["event"] == json!("harness_changed")
+            && ev["payload"]["instances"][0]["state"] == json!("exited")
+        {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "the child never exited: {roster}");
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(g.client(&actor).call("undo", json!({}))["changed"], json!(false),
                "the dropped stack has nothing to undo");
@@ -581,13 +608,12 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     call(&mut ctl2, 4, "session new", json!({})).await;
     let roster = call(&mut ctl2, 5, "agent list", json!({})).await;
     assert_eq!(roster["instances"], json!([]), "the replaced patch's harnesses stayed: {roster}");
-    assert!(read_until(&mut second, "exit_code").await.contains("exit_code"),
-            "the child outlived the patch that spawned it");
+    // `read_until` itself is the pin: no exit frame within its deadline panics.
+    read_until(&mut second, "exit_code").await;
     let (ok, err) = exec(&addr, "/mcp", 6, &["node add --type Buffer"]).await;
     assert!(!err, "replacing the patch closed the central endpoint too: {ok}");
 
     let (_ctl, _, mut left) = harness(&addr, "_sh").await;
     state.release_mount();
-    assert!(read_until(&mut left, "exit_code").await.contains("exit_code"),
-            "the harness outlived the goofi that spawned it");
+    read_until(&mut left, "exit_code").await; // no frame within its deadline panics
 }

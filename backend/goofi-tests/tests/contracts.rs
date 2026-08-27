@@ -246,7 +246,7 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
 
     let (_c, hello) = Client::connect(&g.serve().await).await;
     assert_eq!(hello["node_types"], g.call("library list", j!({}))["types"],
-               "hello embeds the same palette `list_nodes` answers");
+               "hello embeds the same palette `library list` answers");
     for dead in ["nodes", "links", "instances"] {
         assert!(hello.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
     }
@@ -335,7 +335,7 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
         assert!(want.starts_with('_'), "{want} would show in the palette");
     }
-    let palette = goofi_bridge::AppState::new(false).call("library list", j!({}), "t").unwrap();
+    let palette = Goofi::new().state.call("library list", j!({}), "t").unwrap();
     let listed: Vec<&str> = palette["types"].as_array().unwrap().iter()
         .map(|t| t["type"].as_str().unwrap()).collect();
     assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");

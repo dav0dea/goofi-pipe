@@ -43,6 +43,9 @@ use tokio::sync::broadcast;
 /// Where the development surfaces live. One literal, so the gate and the app agree on the prefix.
 pub const DEV_ROUTE_PREFIX: &str = "/dev/";
 
+/// The undo actor for a caller that names none — one shared stack, isolated from every named one.
+pub const DEFAULT_ACTOR: &str = "default";
+
 /// The built SPA as it ships: a URL path and its bytes, compiled into the binary. Empty when the
 /// crate was built without a frontend, which [`HEADLESS_BUILD`] says whether anyone asked for.
 pub type Spa = &'static [(&'static str, &'static [u8])];
@@ -84,10 +87,10 @@ pub struct AppState {
     /// Where the open patch lives on disk. Manager-owned rather than per tab, so it rides the
     /// snapshot every client connects with.
     save_path: Arc<Mutex<Option<String>>>,
-    /// The bound address — ONE owner for every local base url: the harness's MCP address and
-    /// the session file's `/exec` url both derive from it.
+    /// The bound address — ONE owner for every local base url: the session file's `/exec`
+    /// url derives from it.
     bound: Arc<Mutex<std::net::SocketAddr>>,
-    /// The spawned agent harnesses, their PTYs, and the detection cache.
+    /// The spawned agent harnesses and their PTYs.
     pub harnesses: Arc<term::Harnesses>,
 }
 
@@ -620,8 +623,13 @@ async fn exec_endpoint(State(state): State<AppState>, body: String) -> Response 
         .as_array()
         .map(|c| c.iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect())
         .unwrap_or_default();
-    let actor = req["actor"].as_str().unwrap_or("default").to_string();
-    match phrase::exec_lines(&state, &lines, &actor) {
+    let actor = req["actor"].as_str().unwrap_or(DEFAULT_ACTOR).to_string();
+    // Off the async workers: a batch can hold the graph lock for seconds (a `session load`
+    // provisions nodes), and the sockets must keep being polled meanwhile.
+    let ran = tokio::task::spawn_blocking(move || phrase::exec_lines(&state, &lines, &actor))
+        .await
+        .unwrap_or_else(|e| Err(format!("the exec task died: {e}")));
+    match ran {
         Ok(results) => {
             let entries: Vec<Value> = results
                 .iter()
@@ -907,11 +915,16 @@ fn parse_param_entry(
 }
 
 /// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two
-/// halves of one answer and two arguments can disagree.
+/// halves of one answer and two arguments can disagree; absent defaults right, and a present
+/// value that is not a side word is refused rather than defaulted.
 fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String> {
-    let raw = p.get("side").and_then(|v| v.as_str()).unwrap_or("right");
-    goofi_engine::layout::Side::parse(raw)
-        .ok_or_else(|| format!("{op}: side is `left`, `right`, `top` or `bottom`, not `{raw}`"))
+    match p.get("side").filter(|v| !v.is_null()) {
+        None => Ok(goofi_engine::layout::Side::Right),
+        Some(v) => v
+            .as_str()
+            .and_then(goofi_engine::layout::Side::parse)
+            .ok_or_else(|| format!("{op}: side is `left`, `right`, `top` or `bottom`, not {v}")),
+    }
 }
 
 /// An `endpoint` — `uid/slot`, split on the FIRST `/`. The slot half may itself be a port uid
@@ -963,7 +976,7 @@ fn bindable_node(g: &Graph, node: &str) -> bool {
 }
 
 /// Route a layout planner's per-entry writes through the command history as ONE undo step, and
-/// answer with the arrangement they produced, drawn as `inspect_layout` draws it.
+/// answer with the arrangement they produced, drawn as `layout inspect` draws it.
 fn apply_layout(
     state: &AppState,
     g: &mut Graph,
@@ -1015,8 +1028,8 @@ fn dispatch(state: &AppState, text: &str) -> Option<String> {
     let op = req.get("op")?.as_str()?.to_string();
     let payload = req.get("payload").cloned().unwrap_or_else(|| json!({}));
     // The ACTOR scopes the undo history — whose undo, where `GOOFI_SESSION` says which server.
-    // Absent ⇒ one shared "default" actor, so a caller that presents none still works.
-    let actor = req.get("actor").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    // Absent ⇒ the one shared actor, so a caller that presents none still works.
+    let actor = req.get("actor").and_then(|v| v.as_str()).unwrap_or(DEFAULT_ACTOR).to_string();
 
     let result = state.call(&op, payload, &actor);
     match id {
@@ -1255,17 +1268,18 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
             return;
         }
     };
-    // The address must NAME an output slot — of a leaf, a port or a facade alike. What is behind it
-    // is a separate question, asked again below, because a port with nothing wired yet is a real
-    // node with no data, exactly as a leaf nobody has connected is.
+    // The address must NAME an output slot — key or display label, resolved exactly as a
+    // snapshot's is — of a leaf, a port or a facade alike. What is behind it is a separate
+    // question, asked again below, because a port with nothing wired yet is a real node with no
+    // data, exactly as a leaf nobody has connected is.
     let named = {
         let g = state.graph.lock().unwrap();
-        vocab::output_slots(&g, uid).into_iter().any(|(key, _, _)| key == slot)
+        vocab::resolve_slot(&g, "data", uid, &slot).ok()
     };
-    if !named {
+    let Some(slot) = named else {
         let _ = tx.send(close(4004, "unknown node/slot")).await;
         return;
-    }
+    };
 
     // The SHARED per-slot reducer, keyed on the PHYSICAL slot: a viewer on a facade port, one on the
     // port inside the sub-patch and one on the leaf itself all coalesce onto the same one. Which

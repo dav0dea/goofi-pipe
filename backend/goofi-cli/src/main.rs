@@ -138,16 +138,6 @@ async fn serve_main(rest: Vec<String>) {
     std::process::exit(run(cli, python, state, shutdown_signal()).await);
 }
 
-/// What `goofi help` prints when NO server is running: the client's own summary — the op index
-/// lives on a server, so the full help does too.
-const LOCAL_HELP: &str = "goofi — no running server; a live one answers `help` in full.\n  \
-    goofi                  serve (flag-first argv serves too: --port, --headless, …)\n  \
-    goofi serve …          the same, spelled out\n  \
-    goofi session list     the recorded servers under $GOOFI_HOME/.goofi\n  \
-    goofi <phrase> …       run one op on the running server; `op list` is the index\n  \
-    goofi -                run stdin lines as ONE batch\n  \
-    goofi agent term <id>  attach an agent's terminal (not built yet)";
-
 /// Send lines to the resolved server and print each entry — decoded NPY bytes when the result
 /// carries them, the rendered text otherwise, or the raw JSON under `--json`.
 fn forward(lines: &[String], json: bool) -> i32 {
@@ -199,6 +189,10 @@ fn client_main(mut words: Vec<String>) -> i32 {
         (Some("session"), Some("list")) => return print_sessions(json),
         (Some("agent"), Some("term")) => {
             eprintln!("`agent term` is not built yet — the app's agent panel serves the terminal.");
+            return 1;
+        }
+        (Some("plugin"), _) => {
+            eprintln!("`plugin` is not built yet — the word is reserved for plugin ops.");
             return 1;
         }
         _ => {}
@@ -258,13 +252,25 @@ fn state_word(p: &goofi_client::Probed) -> &'static str {
 }
 
 /// `goofi help [words…]`: any LIVE session answers — help does not depend on which — and with
-/// none, the client's own one-screen summary. An unresponsive record must not stall the one
-/// command a stuck user reaches for.
+/// none, the COMPILED-IN registry answers through the same renderer, so there is one help text.
+/// An unresponsive record must not stall the one command a stuck user reaches for.
 fn help_main(rest: &[String]) -> i32 {
+    let mut rest = rest.to_vec();
+    take_json(&mut rest); // help is text; the flag is not a word to look up
     let rows = goofi_client::list();
     let Some(row) = rows.iter().find(|r| r.probed == goofi_client::Probed::Live) else {
-        println!("{LOCAL_HELP}");
-        return 0;
+        let words: Vec<String> = std::iter::once("help".to_string()).chain(rest.clone()).collect();
+        match goofi_bridge::phrase::help(&goofi_bridge::ops::table(false), &words) {
+            Some(h) => {
+                println!("no running server — the built-in index answers; `goofi serve` starts one.");
+                println!("{h}");
+                return 0;
+            }
+            None => {
+                eprintln!("nothing under `{}`", rest.join(" "));
+                return 1;
+            }
+        }
     };
     let words: Vec<&str> =
         std::iter::once("help").chain(rest.iter().map(String::as_str)).collect();
@@ -358,9 +364,11 @@ async fn run(
                 // Only a real server writes into the home: its record, and the config seed.
                 goofi_core::home::seed_config();
                 let _session = SessionFile::write(&state.instance_id, &state.local_url());
-                let url = format!("http://{addr}");
+                // The OPENABLE spelling, as the session file records it — `http://0.0.0.0` is
+                // not an address a browser can visit.
+                let url = state.local_url();
                 println!("goofi → {url}");
-                println!("  MCP endpoint → http://{addr}/mcp");
+                println!("  MCP endpoint → {url}/mcp");
                 let spa = if headless { &[][..] } else { SPA };
                 if headless {
                     println!("  headless: the API only, no app served");
@@ -388,7 +396,9 @@ async fn run(
             }
         }
     };
-    // The order is load-bearing: a node's thread releases its shared memory before the mount goes.
+    // The order is load-bearing: the agents leave before their workspace goes, and a node's
+    // thread releases its shared memory before the mount goes.
+    state.harnesses.reap_all(std::time::Duration::from_secs(5));
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code

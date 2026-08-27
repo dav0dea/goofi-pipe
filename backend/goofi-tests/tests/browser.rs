@@ -200,14 +200,16 @@ async fn the_app_is_served_out_of_the_binary_and_the_client_router_owns_the_rest
 
 /// The Origin/Host guard, asked of every route including the WebSocket upgrades. A drive-by guard,
 /// not authentication: a client with no `Origin` is not a browser and is served.
-const ROUTES: &[(&str, &str)] = &[
-    ("/control", "WS"),
-    ("/data/deadbeef/out", "WS"),
-    ("/term/no-such-instance", "WS"),
-    ("/mcp", "POST"),
-    ("/mcp/no-such-instance", "POST"),
+const ROUTES: &[(&str, &str, u16)] = &[
+    ("/control", "WS", 101),
+    ("/data/deadbeef/out", "WS", 101),
+    ("/term/no-such-instance", "WS", 101),
+    ("/mcp", "POST", 200),
+    // 400, not 200: `/exec` refuses the probe's empty body for its own reason, and that reason
+    // must stay distinguishable from the guard's 403.
+    ("/exec", "POST", 400),
     // The SPA is in this list so a route added later inherits the guard by construction.
-    ("/index.html", "GET"),
+    ("/index.html", "GET", 200),
 ];
 
 /// One request, hand-rolled: ONE guard answers both the HTTP and the WS question. `origin` and
@@ -243,8 +245,6 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
     let g = Goofi::new();
     let addr = host(&g.serve_spa(&[("index.html", b"<!doctype html>goofi")]).await).to_string();
     let port = addr.rsplit(':').next().unwrap().to_string();
-    // `served` rather than "not 403", so a route refusing for its own reasons cannot read as a pass.
-    let served = |m: &str| if m == "WS" { 101 } else { 200 };
 
     // (what the caller sends, the Host it sends it to, whether it is served, why)
     let rebound = format!("evil.example:{port}");
@@ -273,9 +273,11 @@ async fn every_route_answers_the_same_origin_question_the_same_way() {
     ];
 
     for (headers, sent_host, ok, why) in cases {
-        for (path, method) in ROUTES {
+        // The EXACT served status per route, never "not 403", so a route refusing for its own
+        // reasons cannot read as a pass.
+        for (path, method, served) in ROUTES {
             let got = ask(&addr, path, method, &headers, &sent_host).await;
-            let want = if ok { served(method) } else { 403 };
+            let want = if ok { *served } else { 403 };
             assert_eq!(got, want, "`{path}` answered {got} for [{headers:?}] — {why}");
         }
     }

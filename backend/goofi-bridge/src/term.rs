@@ -177,10 +177,12 @@ impl Harnesses {
         std::thread::spawn(move || {
             let mut child = child;
             let code = child.wait().map(|s| s.exit_code()).unwrap_or(1);
-            // A stack's lifetime follows its actor: dropped where the actor DIES, and BEFORE the
-            // exit shows, so an observer that sees `exited` sees the stack gone too.
-            history.lock().unwrap().drop_actor(&actor_of(&reaped));
+            // The exit is published FIRST — `wait` freed the pid, and the grace thread must see
+            // it before it can aim a kill at a recycled process group.
             inst.exit.send_replace(Some(code));
+            // A stack's lifetime follows its actor: dropped where the actor DIES, before the
+            // broadcast — so an observer of `harness_changed` sees the stack gone too.
+            history.lock().unwrap().drop_actor(&actor_of(&reaped));
             let _ =
                 events.send(crate::event("harness_changed", harnesses.roster(&goofi_core::home::agents())));
         });
@@ -205,6 +207,25 @@ impl Harnesses {
             if inst.exit_code().is_none() {
                 let _ = begin_stop(inst);
             }
+        }
+    }
+
+    /// Exit's teardown: ask every instance, wait to a CEILING, then insist — synchronously,
+    /// because `process::exit` destroys the grace threads `stop_all` would lean on.
+    pub fn reap_all(&self, ceiling: std::time::Duration) {
+        let taken = std::mem::take(&mut *self.instances.lock().unwrap());
+        for (_, inst) in &taken {
+            inst.stopping.store(true, Ordering::Relaxed);
+            let _ = signal(inst, crate::proc::request_stop);
+        }
+        let deadline = std::time::Instant::now() + ceiling;
+        while taken.iter().any(|(_, i)| i.exit_code().is_none())
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        for (_, inst) in &taken {
+            let _ = signal(inst, crate::proc::force_kill);
         }
     }
 }
