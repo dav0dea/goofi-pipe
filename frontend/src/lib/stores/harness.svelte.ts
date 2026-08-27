@@ -4,7 +4,7 @@ import { getControl } from '$lib/api/control';
 import type {
 	Control,
 	ControlEvent,
-	DetectedHarness,
+	AgentEntry,
 	HarnessInstanceInfo,
 	HarnessRoster
 } from '$lib/api/control';
@@ -20,7 +20,8 @@ export function harnessLabel(i: { harness: string; id: string }): string {
 
 export class HarnessStore {
 	instances = $state<HarnessInstanceInfo[]>([]);
-	detected = $state<DetectedHarness[]>([]);
+	agents = $state<AgentEntry[]>([]);
+	configError = $state<string | null>(null);
 	/** The instance a close was asked about, and the panel to close once it is answered. */
 	closing = $state<{ id: string; closePanel: string | null } | null>(null);
 	/** Mounted agent panels → the instance each shows. `undefined` has not chosen yet and
@@ -53,7 +54,8 @@ export class HarnessStore {
 		// The roster this store keeps is live-only: a dead agent is GONE, with no dismissal to ask.
 		for (const i of seen) if (i.state === 'exited') this.bury(i);
 		this.instances = seen.filter((i) => i.state !== 'exited');
-		this.detected = r?.detected ?? [];
+		this.agents = r?.agents ?? [];
+		this.configError = r?.config_error ?? null;
 		// An instance that LEFT the roster takes its terminal with it.
 		const known = new Set(this.instances.map((i) => i.id));
 		for (const id of liveTermSessions()) if (!known.has(id)) endTermSession(id);

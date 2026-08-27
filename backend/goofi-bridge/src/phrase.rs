@@ -185,10 +185,18 @@ fn parse_flags(op: &Op, words: &[String]) -> Result<Value, String> {
 }
 
 /// An op's answer as the text a caller reads: prose and bare strings verbatim, everything else
-/// pretty-printed.
+/// pretty-printed. A result carrying NPY is DATA, not text — the text form points at the pipe,
+/// and only the CLI's own renderer writes the bytes.
 pub fn render(result: &Value) -> String {
     if let Value::String(s) = result {
         return s.clone();
+    }
+    if let Some(b64) = result.get("npy_b64").and_then(Value::as_str) {
+        return format!(
+            "an ARRAY frame as NPY ({} base64 bytes) — pipe `goofi node snapshot …` for the \
+             raw bytes, or `--json` for the base64 with its meta",
+            b64.len()
+        );
     }
     match result.as_object() {
         Some(o) if o.len() == 1 => match o.get("text").and_then(|t| t.as_str()) {
@@ -250,6 +258,12 @@ pub fn help(ops: &[&Op], words: &[String]) -> Option<String> {
         .iter()
         .filter(|o| o.name.split(' ').next() == Some(first))
         .map(|o| format!("  {}", usage(o)))
+        .chain(
+            crate::ops::RESERVED
+                .iter()
+                .filter(|r| r.split(' ').next() == Some(first) && r.contains(' '))
+                .map(|r| format!("  `{r}` — the client's own door")),
+        )
         .collect();
     match near.is_empty() {
         true => Some(format!("nothing under `{}` — {}", target.join(" "), top_help(ops))),
@@ -272,7 +286,7 @@ fn top_help(ops: &[&Op]) -> String {
          groups: {} — `help <group>` lists one, `<phrase> --help` explains one op,\n\
          and `op list` answers the whole registry as data.\n\
          subjectless: {}.\n\
-         client commands: {} — and `goofi -` runs stdin lines as one batch.",
+         reserved words: {} — and `goofi -` runs stdin lines as one batch.",
         groups.join(", "),
         bare.join(", "),
         crate::ops::RESERVED.join(", "),

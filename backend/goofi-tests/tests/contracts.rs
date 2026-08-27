@@ -53,6 +53,10 @@ fn every_op_row_is_well_formed_and_reachable() {
                    "`{}` has an argument with no `name:type`: {:?}", op.name, op.args);
         for (arg, ty, _) in op.args() {
             assert!(ARG_TYPES.contains(&ty), "`{}`'s `{arg}` has unknown type `{ty}`", op.name);
+            // `--json` is client-consumed and `--help` server-intercepted, ANYWHERE on a line —
+            // an op declaring either would silently never receive it.
+            assert!(arg != "json" && arg != "help",
+                    "`{}` declares the reserved flag `--{arg}`", op.name);
         }
         assert!(!op.doc.is_empty() && !op.result.is_empty(), "`{}` is undocumented", op.name);
         assert!(op.positional <= op.args().count() && op.positional <= 2,

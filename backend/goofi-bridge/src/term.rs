@@ -1,7 +1,10 @@
-//! The harness plane: one PTY per spawned agent harness, and the MCP address goofi minted for it.
+//! The harness plane: one PTY per spawned agent, launched from the config list as a bash
+//! command line — no detection, no adapters. A command that cannot launch fails ON its PTY,
+//! where every agent already shows its output.
 //!
-//! The environment is inherited WHOLE, so the harness's own login and auth work; only the terminal
-//! contract is overlaid. Nothing here emulates a terminal, so history is lost on a page reload.
+//! The environment is inherited WHOLE, so the agent's own login and auth work; the terminal
+//! contract, `GOOFI_SESSION`/`GOOFI_ACTOR` and the `goofi` shim are overlaid. Nothing here
+//! emulates a terminal, so history is lost on a page reload.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -20,83 +23,17 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 /// instead would stall the child.
 const OUTPUT_BACKLOG: usize = 1024;
 
-/// One harness goofi knows how to launch: `{url}` expands to the minted address and `{file}` to
-/// the written config's path. A `_`-prefixed name is a TEST adapter, hidden from detection.
-struct Adapter {
-    name: &'static str,
-    bin: &'static str,
-    file: Option<(&'static str, &'static str)>,
-    args: &'static [&'static str],
-    env: &'static [(&'static str, &'static str)],
-}
-
-static ADAPTERS: &[Adapter] = &[
-    Adapter { name: "claude", bin: "claude", args: &["--mcp-config", "{file}"], env: &[],
-              file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
-    // Codex has no per-invocation config FILE: `-c` overrides one dotted key, parsed as TOML.
-    Adapter { name: "codex", bin: "codex", args: &["-c", "mcp_servers.goofi.url=\"{url}\""],
-              env: &[], file: None },
-    Adapter { name: "opencode", bin: "opencode", args: &[], env: &[("OPENCODE_CONFIG", "{file}")],
-              file: Some(("opencode.json",
-                          r#"{"mcp":{"goofi":{"type":"remote","url":"{url}","enabled":true}}}"#)) },
-    // The test adapter: a plain shell, writing the same config a real adapter does.
-    Adapter { name: "_sh", bin: "sh", args: &[], env: &[],
-              file: Some(("mcp.json", r#"{"mcpServers":{"goofi":{"type":"http","url":"{url}"}}}"#)) },
-    // One that reports the SIGTERM and refuses to leave. The loop matters: a bare `sleep` is a
-    // child of the same group and would die of the group signal.
-    Adapter { name: "_deaf", bin: "sh", env: &[], file: None,
-              args: &["-c", "trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done"] },
-];
-
-/// One installed harness binary: where it is, and what it calls itself.
-struct Detected {
-    name: &'static str,
-    path: PathBuf,
-    /// The binary's size+mtime, so a re-detect re-probes only a harness that was updated.
-    stamp: Option<crate::Stamp>,
-    version: Option<String>,
-}
-
-/// The spawned harnesses and the detection cache — the whole harness plane's state.
+/// The spawned agent instances — the whole harness plane's state.
 #[derive(Default)]
 pub struct Harnesses {
     /// In spawn order, which is the order the panel's switcher reads.
     instances: Mutex<Vec<(String, Arc<Instance>)>>,
-    detected: Mutex<Vec<Detected>>,
 }
 
 impl Harnesses {
-    /// Re-detect OFF the request path: detection can spawn for seconds. The roster answers from the
-    /// cache and converges by broadcast.
-    pub fn refresh_in_background(self: &Arc<Self>, events: broadcast::Sender<String>) {
-        let harnesses = self.clone();
-        std::thread::spawn(move || {
-            harnesses.refresh_detected();
-            let _ = events.send(crate::event("harness_changed", harnesses.roster()));
-        });
-    }
 
-    /// Re-resolve every harness binary, re-probing only the versions whose binary changed.
-    fn refresh_detected(&self) {
-        let path = std::env::var_os("PATH");
-        let shell = login_shell();
-        let mut found = Vec::new();
-        for a in ADAPTERS.iter().filter(|a| !a.name.starts_with('_')) {
-            let Some(bin) = resolve(a.bin, path.as_deref(), &shell) else { continue };
-            let stamp = stamp(&bin);
-            let cache = self.detected.lock().unwrap();
-            let cached = cache
-                .iter()
-                .find(|d| d.name == a.name && d.path == bin && d.stamp == stamp)
-                .and_then(|d| d.version.clone());
-            drop(cache);
-            let version = cached.or_else(|| probe_version(&bin));
-            found.push(Detected { name: a.name, path: bin, stamp, version });
-        }
-        *self.detected.lock().unwrap() = found;
-    }
-
-    /// The roster the snapshot seeds and `harness_changed` broadcasts — one shape for both.
+    /// The roster the snapshot seeds and `harness_changed` broadcasts — one shape for both: the
+    /// live instances, and the CONFIG's launchable list, `_`-test entries withheld.
     pub fn roster(&self) -> Value {
         let instances: Vec<Value> = self.instances.lock().unwrap().iter()
             .map(|(id, i)| {
@@ -114,16 +51,13 @@ impl Harnesses {
                 })
             })
             .collect();
-        let detected: Vec<Value> = self.detected.lock().unwrap().iter()
-            .map(|d| {
-                json!({
-                    "harness": d.name,
-                    "path": goofi_core::path::to_slash(&d.path),
-                    "version": d.version,
-                })
-            })
+        let (agents, config_error) = goofi_core::home::agents();
+        let agents: Vec<Value> = agents
+            .iter()
+            .filter(|a| !a.name.starts_with('_'))
+            .map(|a| json!({ "name": a.name, "command": a.command }))
             .collect();
-        json!({ "instances": instances, "detected": detected })
+        json!({ "instances": instances, "agents": agents, "config_error": config_error })
     }
 
     /// The instance behind a `/term` or `/mcp` path, if it is still on the roster.
@@ -131,49 +65,37 @@ impl Harnesses {
         self.instances.lock().unwrap().iter().find(|(k, _)| k == id).map(|(_, i)| i.clone())
     }
 
-    /// Whether `/mcp/<id>` still serves; false for an instance that is unknown, stopping or gone.
-    pub fn serves_mcp(&self, id: &str) -> bool {
-        self.get(id).is_some_and(|i| !i.stopping.load(Ordering::Relaxed) && i.exit_code().is_none())
-    }
-
-    /// Launch `harness` on a PTY with the patch workspace as its cwd, minting the MCP address it is
-    /// handed. `env` is the parent environment it inherits; the reaper announces the exit on
-    /// `events`, and the caller announces the spawn.
+    /// Launch the config entry named `agent` on a PTY with the patch workspace as its cwd. The
+    /// command runs under a LOGIN shell, so it resolves as the user's own terminal would, and a
+    /// command that cannot launch fails on the PTY itself. `env` is the parent environment it
+    /// inherits; the reaper announces the exit on `events`, the caller announces the spawn.
     pub fn spawn(
         self: &Arc<Self>,
-        harness: &str,
+        agent: &str,
         cwd: &Path,
-        base_url: &str,
+        session_id: &str,
         env: &[(OsString, OsString)],
         events: broadcast::Sender<String>,
     ) -> Result<String, String> {
-        let adapter = ADAPTERS.iter().find(|a| a.name == harness).ok_or_else(|| {
-            // The `_`-prefixed test adapters are spawnable but never advertised.
-            let have: Vec<&str> =
-                ADAPTERS.iter().map(|a| a.name).filter(|n| !n.starts_with('_')).collect();
-            format!("unknown harness `{harness}` — this build knows: {}", have.join(", "))
-        })?;
-        let bin = resolve(adapter.bin, std::env::var_os("PATH").as_deref(), &login_shell())
-            .ok_or_else(|| format!("`{}` is not installed", adapter.bin))?;
+        let (agents, _) = goofi_core::home::agents();
+        let command = agents
+            .iter()
+            .find(|a| a.name == agent)
+            .map(|a| a.command.clone())
+            .ok_or_else(|| {
+                // The `_`-prefixed test entries are spawnable but never advertised.
+                let have: Vec<&str> =
+                    agents.iter().map(|a| a.name.as_str()).filter(|n| !n.starts_with('_')).collect();
+                format!("unknown agent `{agent}` — the config offers: {}", have.join(", "))
+            })?;
         let id = crate::nonce_hex()[..12].to_string();
 
         let dir = config_dir(cwd, &id);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("harness config directory: {e}"))?;
-        let url = format!("{base_url}/mcp/{id}");
-        let mut file = String::new();
-        if let Some((name, body)) = adapter.file {
-            let at = dir.join(name);
-            std::fs::write(&at, body.replace("{url}", &url))
-                .map_err(|e| format!("harness config: {e}"))?;
-            file = at.to_string_lossy().into_owned();
-        }
-        let expand = |s: &str| s.replace("{url}", &url).replace("{file}", &file);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("agent config directory: {e}"))?;
+        write_shim(&dir)?;
 
         let pty = native_pty_system().openpty(PtySize::default()).map_err(|e| e.to_string())?;
-        let mut cmd = CommandBuilder::new(&bin);
-        for a in adapter.args {
-            cmd.arg(expand(a));
-        }
+        let mut cmd = shell_command(&command);
         cmd.cwd(cwd);
         // The parent environment, then the terminal contract ON TOP of it.
         for (k, v) in env {
@@ -184,10 +106,12 @@ impl Harnesses {
         if !parent_speaks_utf8(env) {
             cmd.env("LC_ALL", "C.UTF-8");
         }
-        for (k, v) in adapter.env {
-            cmd.env(k, expand(v));
-        }
-        let child = pty.slave.spawn_command(cmd).map_err(|e| format!("spawn {harness}: {e}"))?;
+        // How the shell finds ITS server: the id names the session file, the actor its undo
+        // stack, and the shim makes `goofi` this server's own binary whatever is installed.
+        cmd.env("GOOFI_SESSION", session_id);
+        cmd.env("GOOFI_ACTOR", actor_of(&id));
+        cmd.env("PATH", prepend_path(&dir, env));
+        let child = pty.slave.spawn_command(cmd).map_err(|e| format!("spawn {agent}: {e}"))?;
         // Closed here, or the master never sees EOF when the child exits and the drain blocks.
         drop(pty.slave);
         let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -197,7 +121,7 @@ impl Harnesses {
         let (eof, _) = watch::channel(false);
         let ended = eof.clone();
         let inst = Arc::new(Instance {
-            harness: harness.to_string(),
+            harness: agent.to_string(),
             pid: child.process_id(),
             writer: Mutex::new(writer),
             master: Mutex::new(pty.master),
@@ -435,39 +359,55 @@ fn signal(inst: &Instance, how: fn(u32) -> Result<(), String>) -> Result<(), Str
     how(inst.pid.ok_or("the harness reported no pid to signal")?)
 }
 
-/// Resolve `bin`: a plain `PATH` walk, then — only on a miss — a LOGIN shell's lookup, because a
-/// desktop-launched process inherits none of nvm's shims. `which_in_global` searches `path` ALONE,
-/// so nothing in the patch workspace can shadow the harness.
-fn resolve(bin: &str, path: Option<&OsStr>, shell: &str) -> Option<PathBuf> {
-    let found = |name: &OsStr| which::which_in_global(name, path).ok()?.next();
-    if let Some(direct) = found(OsStr::new(bin)) {
-        return Some(direct);
+/// The undo stack a spawned shell's ops land in — dropped with the instance, so a stopped
+/// agent's history goes with it.
+pub fn actor_of(id: &str) -> String {
+    format!("agent-{id}")
+}
+
+/// The agent's command line under the user's own shell, as their terminal would run it: a LOGIN
+/// shell on unix — nvm shims and profiles included — and `cmd /C` on Windows.
+fn shell_command(command: &str) -> CommandBuilder {
+    #[cfg(windows)]
+    {
+        let mut cmd = CommandBuilder::new("cmd");
+        cmd.args(["/C", command]);
+        cmd
     }
-    // `bin` is an `ADAPTERS` literal, never a caller's string, so nothing can escape the shell.
-    let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {bin}")]).output();
-    found(OsStr::new(answer(&String::from_utf8_lossy(&out.ok()?.stdout))?))
+    #[cfg(not(windows))]
+    {
+        let mut cmd =
+            CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
+        cmd.args(["-lc", command]);
+        cmd
+    }
 }
 
-/// What a login shell actually answered, out of everything its profile said first: the LAST
-/// non-empty line.
-fn answer(stdout: &str) -> Option<&str> {
-    stdout.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim)
+/// Lay the `goofi` shim — this very binary — into the instance's own config dir, so two servers
+/// of different builds cannot overwrite each other's.
+fn write_shim(dir: &Path) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| format!("the shim's target: {e}"))?;
+    #[cfg(windows)]
+    let done = std::fs::copy(&me, dir.join("goofi.exe")).map(|_| ());
+    #[cfg(not(windows))]
+    let done = match std::os::unix::fs::symlink(&me, dir.join("goofi")) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        other => other,
+    };
+    done.map_err(|e| format!("the goofi shim: {e}"))
 }
 
-fn stamp(p: &Path) -> Option<crate::Stamp> {
-    let m = std::fs::metadata(p).ok()?;
-    Some((m.len(), m.modified().ok()?))
-}
-
-/// What a harness calls itself; best-effort, and a binary that answers nothing is still listed.
-fn probe_version(bin: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin).arg("--version").output().ok()?;
-    let line = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
-    (!line.is_empty()).then_some(line)
-}
-
-fn login_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+/// The child's PATH with the shim dir FIRST. A login shell's profile may rebuild PATH over
+/// this; `GOOFI_SESSION` still names the server, so a globally installed `goofi` also lands.
+fn prepend_path(dir: &Path, env: &[(OsString, OsString)]) -> OsString {
+    let tail = env
+        .iter()
+        .find(|(k, _)| k == "PATH")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&tail)))
+        .unwrap_or(tail)
 }
 
 /// The environment a spawned harness inherits: goofi's own, whole.
@@ -550,38 +490,6 @@ mod tests {
         );
     }
 
-    /// A "shell" no platform has, so a resolution that still succeeds proves the direct walk rather
-    /// than the fallback.
-    const NO_SHELL: &str = "/goofi-no-such-shell";
-
-    /// The direct walk, driven against this test binary by its STEM, as an npm-installed
-    /// `claude.cmd` is typed.
-    #[test]
-    fn a_binary_is_found_by_the_name_a_caller_types_not_the_one_it_has_on_disk() {
-        let exe = std::env::current_exe().expect("this test binary's path");
-        let dir = exe.parent().expect("an absolute path").as_os_str().to_owned();
-        let stem = exe.file_stem().expect("a file name").to_string_lossy().into_owned();
-
-        let found = resolve(&stem, Some(&dir), NO_SHELL).expect("the test binary resolves by stem");
-
-        assert_eq!(
-            std::fs::canonicalize(&found).unwrap(),
-            std::fs::canonicalize(&exe).unwrap(),
-            "resolved {found:?}, wanted {exe:?}"
-        );
-        assert_eq!(resolve("goofi-not-a-real-binary", Some(&dir), NO_SHELL), None);
-    }
-
-    /// The other half of [`resolve`]: a binary the bare walk misses is found through a LOGIN shell.
-    #[cfg(unix)]
-    #[test]
-    fn a_binary_the_bare_path_lookup_misses_is_found_through_a_login_shell() {
-        let nothing = OsStr::new("/goofi-no-such-directory");
-        let found = resolve("sh", Some(nothing), "/bin/sh").expect("a login shell resolves `sh`");
-        assert!(found.ends_with("sh"), "{found:?}");
-        assert_eq!(resolve("goofi-not-a-real-binary", Some(nothing), "/bin/sh"), None);
-    }
-
     /// The arbitration, without a socket in the way: last writer wins, and a retraction or a
     /// departure falls back to the newest SURVIVING proposal.
     #[test]
@@ -599,12 +507,4 @@ mod tests {
         assert_eq!(s.leave(1), None, "the last view out leaves nobody speaking");
     }
 
-    /// …and it understands a login shell whose profile had something to say first.
-    #[test]
-    fn a_login_shell_that_greets_before_it_answers_is_still_understood() {
-        assert_eq!(answer("nvm: Now using node v22\n/usr/bin/claude\n"), Some("/usr/bin/claude"));
-        assert_eq!(answer("  /usr/bin/claude  \n"), Some("/usr/bin/claude"));
-        assert_eq!(answer("a banner\n\n"), Some("a banner"), "only EMPTY lines are skipped");
-        assert_eq!(answer("\n  \n"), None, "a shell that answered nothing resolves nothing");
-    }
 }

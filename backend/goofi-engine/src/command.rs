@@ -661,6 +661,12 @@ impl CommandHistory {
         self.entries.retain(|e| !(e.actor == actor && e.undone));
     }
 
+    /// Drop an actor's WHOLE stack — a stack's lifetime follows its actor, so a stopped agent's
+    /// history goes with it. The graph keeps every change; only the way back is gone.
+    pub fn drop_actor(&mut self, actor: &str) {
+        self.entries.retain(|e| e.actor != actor);
+    }
+
     /// Fold everything this actor has added since `from` into ONE entry, so a compound RPC is a
     /// single undo step. A peer's entry that landed in between is left exactly where it is.
     pub fn coalesce(&mut self, actor: &str, from: usize) {

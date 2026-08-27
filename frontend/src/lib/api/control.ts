@@ -141,17 +141,18 @@ export interface HarnessInstanceInfo {
 	exit_code?: number | null;
 }
 
-/** One harness binary found on this machine. */
-export interface DetectedHarness {
-	harness: string;
-	path: string;
-	version: string | null;
+/** One launchable agent — a config entry: a display name and its bash command line. */
+export interface AgentEntry {
+	name: string;
+	command: string;
 }
 
 /** The shape the snapshot seeds and `harness_changed` broadcasts. */
 export interface HarnessRoster {
 	instances: HarnessInstanceInfo[];
-	detected: DetectedHarness[];
+	agents: AgentEntry[];
+	/** Why a malformed config degraded to the default list, when it did. */
+	config_error?: string | null;
 }
 
 export type ControlEvent =

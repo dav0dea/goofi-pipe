@@ -42,6 +42,16 @@ impl Goofi {
     }
 
     fn with_mode(headless: bool) -> Goofi {
+        // Every test process is WALLED OFF from the real `~/.goofi` — a developer's own config
+        // or session records must not reach an assertion. A test that scoped its own home first
+        // keeps it.
+        static HOME: std::sync::Once = std::sync::Once::new();
+        HOME.call_once(|| {
+            if std::env::var_os("GOOFI_HOME").is_none() {
+                let dir = std::env::temp_dir().join(format!("goofi-test-home-{}", std::process::id()));
+                std::env::set_var("GOOFI_HOME", dir);
+            }
+        });
         let state = AppState::new(headless);
         goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
         Goofi { state, actor: "test".into(), patience: WAIT }

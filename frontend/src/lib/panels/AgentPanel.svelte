@@ -30,13 +30,13 @@
 			icon: 'bot' as const,
 			choose: () => hs.show(panelId, i.id)
 		})),
-		...hs.detected.map((d) => ({
-			id: `launch:${d.harness}`,
-			label: d.harness,
+		...hs.agents.map((a) => ({
+			id: `launch:${a.name}`,
+			label: a.name,
 			icon: 'bot' as const,
-			title: d.version ?? d.path,
-			testid: `agent-launch-${d.harness}`,
-			choose: () => void hs.launch(panelId, d.harness)
+			title: a.command,
+			testid: `agent-launch-${a.name}`,
+			choose: () => void hs.launch(panelId, a.name)
 		}))
 	]);
 
@@ -110,9 +110,9 @@
 			<EmptyState>
 				{#snippet title()}No agent running here{/snippet}
 				{#snippet hint()}
-					{hs.detected.length
-						? 'It runs in this patch workspace, editing the patch with you.'
-						: 'No agent harness found on PATH.'}
+					{hs.configError
+						? hs.configError
+						: 'It runs in this patch workspace, editing the patch with you.'}
 				{/snippet}
 				<ChoiceGrid {choices} />
 			</EmptyState>

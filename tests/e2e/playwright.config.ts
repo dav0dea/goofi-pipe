@@ -11,6 +11,9 @@ const PORT = BASE_PORT + Number(process.env.TEST_PARALLEL_INDEX ?? 0);
 export const BASE_URL = `http://127.0.0.1:${PORT}`;
 export const REPO_ROOT = path.resolve(__dirname, '../..');
 export const LOG_DIR = path.join(__dirname, 'test-results', 'backend');
+export const BIN = path.join(REPO_ROOT, 'target/debug/goofi');
+// The fleet's test-scoped home: session records and the test agent config land here.
+export const E2E_HOME = path.join(__dirname, 'test-results', 'goofi-home');
 
 // Half the cores, capped at 8, so a small machine scales DOWN rather than up; the other gate anyone
 // running this also runs is `cargo test --workspace`, and a suite that starves a build is a suite

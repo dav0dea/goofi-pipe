@@ -13,7 +13,7 @@ fn lines(cmds: &[&str]) -> Vec<String> {
 
 /// One entry's rendered text, for a command that must succeed.
 fn ok(url: &str, actor: &str, cmd: &str) -> String {
-    let entries = client::exec(url, &lines(&[cmd]), actor)
+    let entries = client::exec(url, &lines(&[cmd]), Some(actor))
         .unwrap_or_else(|e| panic!("`{cmd}` was refused: {e}"));
     entries.into_iter().next().map(|e| e.text).unwrap_or_default()
 }
@@ -60,7 +60,11 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     assert!(rows.iter().any(|r| r.session.id == "busy_peer" && r.probed == client::Probed::Unresponsive));
     let why = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap_err();
     assert!(why.contains("several") && why.contains("busy_peer") && why.contains(&id), "{why}");
-    // GOOFI_SESSION breaks the tie; `current` marks the row.
+    // GOOFI_SESSION breaks the tie; `current` marks the row — and one naming NOTHING is
+    // refused by pointing at the listing.
+    std::env::set_var("GOOFI_SESSION", "no_such_goofi");
+    let why = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap_err();
+    assert!(why.contains("no_such_goofi") && why.contains("session list"), "{why}");
     std::env::set_var("GOOFI_SESSION", &id);
     let rows = tokio::task::spawn_blocking(client::list).await.unwrap();
     assert!(rows.iter().any(|r| r.current && r.session.id == id), "{rows:?}");
@@ -80,7 +84,8 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     assert!(all.len() > 40, "the whole registry rides the index: {}", all.len());
     for phrase in &all {
         let text = ok(&url, "default", &format!("{phrase} --help"));
-        assert!(text.contains(phrase), "`{phrase} --help` explains itself: {text}");
+        assert!(text.contains(phrase) && text.contains("answers:"),
+                "`{phrase} --help` explains itself, result shape included: {text}");
     }
     // The reserved client set is pinned AS the list, and help teaches the door words.
     assert_eq!(
@@ -91,7 +96,7 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     assert!(top.contains("session list") && top.contains("node"), "{top}");
     let group = ok(&url, "default", "help node");
     assert!(group.contains("node param edit"), "a group listing: {group}");
-    let err = client::exec(&url, &lines(&["frobnicate"]), "default").unwrap_err();
+    let err = client::exec(&url, &lines(&["frobnicate"]), None).unwrap_err();
     assert!(err.contains("unknown op"), "{err}");
 
     // A param edit lands on the graph, and a multi-line batch is ONE step in ITS actor's stack.
@@ -107,7 +112,7 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
         "node add --type Buffer --name win",
         "node add --type Buffer --name sink",
     ]);
-    assert_eq!(client::exec(&url, &batch, "shell_a").unwrap().len(), 2);
+    assert_eq!(client::exec(&url, &batch, Some("shell_a")).unwrap().len(), 2);
     // Another actor's undo takes back ITS work, never shell_a's; bare shells share `default`.
     let d: serde_json::Value = serde_json::from_str(&ok(&url, "default", "node add --type Buffer")).unwrap();
     ok(&url, "default", "undo");
@@ -123,7 +128,7 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let npy = loop {
         let entries =
-            client::exec(&url, &lines(&[&format!("node snapshot {uid}/out")]), "default").unwrap();
+            client::exec(&url, &lines(&[&format!("node snapshot {uid}/out")]), None).unwrap();
         let bytes = client::rendered(&entries[0]);
         if bytes.starts_with(b"\x93NUMPY") {
             break bytes;

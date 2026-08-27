@@ -18,6 +18,21 @@ type Ws = tokio_tungstenite::WebSocketStream<
 
 async fn start_server() -> (Goofi, String, AppState) {
     let g = Goofi::new();
+    // The `_`-test agents are CONFIG entries now, written once into the test-scoped home the
+    // fixture minted — never advertised, exactly as a user's own test entry would be.
+    static CONFIG: std::sync::Once = std::sync::Once::new();
+    CONFIG.call_once(|| {
+        let at = goofi_core::home::config_file();
+        let _ = std::fs::create_dir_all(at.parent().unwrap());
+        std::fs::write(at, concat!(
+            "[[agents]]\nname = \"_sh\"\ncommand = \"sh\"\n\n",
+            // One that reports the SIGTERM and refuses to leave. The loop matters: a bare
+            // `sleep` is a child of the same group and would die of the group signal.
+            "[[agents]]\nname = \"_deaf\"\n",
+            "command = \"trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done\"\n\n",
+            "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n",
+        )).expect("the test config");
+    });
     let addr = host(&g.serve().await).to_string();
     let state = g.state.clone();
     (g, addr, state)
@@ -348,8 +363,11 @@ async fn a_harness_runs_unwatched_and_its_roster_survives_a_reconnect() {
     let instances = &hello["payload"]["harnesses"]["instances"];
     assert_eq!((&instances[0]["id"], &instances[0]["state"]), (&json!(id), &json!("running")),
                "the roster was not seeded: {hello}");
-    assert!(hello["payload"]["harnesses"]["detected"].is_array(),
-            "…and `detected` rides the same shape, so a joining tab can offer the launch buttons");
+    let agents = &hello["payload"]["harnesses"]["agents"];
+    assert!(agents.as_array().is_some_and(|a| a.iter()
+                .any(|e| e["name"] == "visible_probe" && e["command"] == "echo hi")),
+            "…and the CONFIG list rides the same shape, so a joining tab offers the buttons: {hello}");
+    assert!(!agents.to_string().contains("_sh"), "a `_` test entry is never advertised: {agents}");
     assert_eq!(hello["payload"]["unsaved_changes"], json!(false), "a spawn dirtied the patch");
 
     call(&mut later, 2, "agent stop", json!({ "instance": id })).await;
@@ -488,8 +506,8 @@ async fn several_views_of_one_terminal_agree_on_one_size() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_minted_address_serves_its_own_agent_and_dies_with_the_patch_that_spawned_it() {
-    let (_g, addr, state) = start_server().await;
+async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patch() {
+    let (g, addr, state) = start_server().await;
     let (mut ctl, id, mut term) = harness(&addr, "_sh").await;
 
     let mount = state.mount();
@@ -498,25 +516,36 @@ async fn a_minted_address_serves_its_own_agent_and_dies_with_the_patch_that_spaw
     assert!(agents.contains("goofi-pipe is a live"), "the orientation is the real one: {agents}");
     assert_eq!(std::fs::read_to_string(mount.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
 
-    let cfg = std::fs::read_to_string(term::config_dir(&mount, &id).join("mcp.json"))
-        .expect("the spawn wrote the harness's MCP config");
-    assert!(cfg.contains(&format!("/mcp/{id}")), "the config names the minted address: {cfg}");
-    assert!(cfg.contains(&format!("127.0.0.1:{}", addr.split(':').nth(1).unwrap())),
-            "the config names a URL that reaches this server: {cfg}");
+    // Identity travels in the ENVIRONMENT, and the shell itself answers what it was handed: the
+    // server's id, its own undo actor, and a `goofi` that IS this server's binary — the shim,
+    // first on PATH, laid in the instance's own config dir.
+    term.send(Message::Binary(
+        b"stty -echo; printf 'S[%s]A[%s]G[%s]EN''D\n' \
+          \"$GOOFI_SESSION\" \"$GOOFI_ACTOR\" \"$(command -v goofi)\"\n".to_vec().into()))
+        .await.unwrap();
+    let said = read_until(&mut term, "END").await;
+    assert!(said.contains(&format!("S[{}]", &*state.instance_id)), "{said}");
+    assert!(said.contains(&format!("A[{}]", term::actor_of(&id))), "{said}");
+    let shim = term::config_dir(&mount, &id).join("goofi");
+    assert!(said.contains(&format!("G[{}]", shim.display())), "{said}");
+    assert_eq!(std::fs::read_link(&shim).unwrap(), std::env::current_exe().unwrap(),
+               "the shim IS this very binary");
 
-    let path = format!("/mcp/{id}");
-    let (born, err) = exec(&addr, &path, 1, &["node add --type Oscillator"]).await;
-    assert!(!err, "the instance's own address serves its tools: {born}");
-    let (undone, _) = exec(&addr, "/mcp", 2, &["undo"]).await;
-    assert!(undone.contains("\"changed\": false"), "the central session undid another's: {undone}");
+    // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
+    let actor = term::actor_of(&id);
+    g.client(&actor).call("node add", json!({ "type": "Oscillator" }));
+    call(&mut ctl, 3, "agent stop", json!({ "instance": id })).await;
+    assert_eq!(g.client(&actor).call("undo", json!({}))["changed"], json!(false),
+               "the dropped stack has nothing to undo");
+    assert_eq!(g.call("session state", json!({}))["nodes"].as_object().map(|n| n.len()), Some(1),
+               "…and the graph keeps what the agent built");
 
-    call(&mut ctl, 3, "session new", json!({})).await;
-    let roster = call(&mut ctl, 4, "agent list", json!({})).await;
+    // Replacing the patch reaps the running agents, and the central /mcp stays open.
+    let (mut ctl2, _, mut second) = harness(&addr, "_sh").await;
+    call(&mut ctl2, 4, "session new", json!({})).await;
+    let roster = call(&mut ctl2, 5, "agent list", json!({})).await;
     assert_eq!(roster["instances"], json!([]), "the replaced patch's harnesses stayed: {roster}");
-    let (refused, err) = exec(&addr, &path, 5, &["node add --type Oscillator"]).await;
-    assert!(err, "a harness from the replaced patch still edited the new one: {refused}");
-    assert!(refused.contains(&id), "the refusal names the instance it refused: {refused}");
-    assert!(read_until(&mut term, "exit_code").await.contains("exit_code"),
+    assert!(read_until(&mut second, "exit_code").await.contains("exit_code"),
             "the child outlived the patch that spawned it");
     let (ok, err) = exec(&addr, "/mcp", 6, &["node add --type Buffer"]).await;
     assert!(!err, "replacing the patch closed the central endpoint too: {ok}");

@@ -30,19 +30,21 @@ const PROBE: Duration = Duration::from_secs(2);
 /// Generous: a `session load` provisions nodes, a `library refresh` restarts them.
 const EXEC: Duration = Duration::from_secs(300);
 
-/// Probe every recorded session, sweeping the definitively dead: a refused connection, an answer
-/// that is not goofi's, or an id the file contradicts. A timeout keeps its row.
+/// Probe every recorded session, sweeping the DEFINITIVELY dead: a refused connection, an
+/// answer that is not goofi's, or an id the file contradicts. A timeout — and every other local
+/// failure, a reset or an exhausted fd table included — keeps its row: only a definitive wrong
+/// answer may delete a record the server writes once in its life.
 pub fn list() -> Vec<Row> {
     let current = std::env::var("GOOFI_SESSION").ok();
     let mut rows = Vec::new();
     for s in home::sessions() {
         let probed = match probe(&s.url) {
-            Some(id) if id == s.id => Probed::Live,
-            Some(_) => {
+            Answered::Id(id) if id == s.id => Probed::Live,
+            Answered::Id(_) | Answered::NotGoofi => {
                 home::remove_session(&s.id);
                 continue;
             }
-            None => Probed::Unresponsive,
+            Answered::Silent => Probed::Unresponsive,
         };
         rows.push(Row { current: current.as_deref() == Some(&s.id), session: s, probed });
     }
@@ -81,27 +83,27 @@ pub struct Entry {
     pub text: String,
 }
 
-/// Send `lines` to `url`'s `/exec` as `actor`. One line executes directly, several are one
+/// Send `lines` to `url`'s `/exec`. `actor` names the undo stack when the caller has one —
+/// absent, the server's own `"default"` stands. One line executes directly, several are one
 /// batch; a refusal is the server's own message.
-pub fn exec(url: &str, lines: &[String], actor: &str) -> Result<Vec<Entry>, String> {
-    let body = json!({ "commands": lines, "actor": actor }).to_string();
-    let (status, reply) = http_post(url, "/exec", &body, EXEC)
+pub fn exec(url: &str, lines: &[String], actor: Option<&str>) -> Result<Vec<Entry>, String> {
+    let mut body = json!({ "commands": lines });
+    if let Some(actor) = actor {
+        body["actor"] = json!(actor);
+    }
+    let (status, reply) = http_post(url, "/exec", &body.to_string(), EXEC)
         .map_err(|e| format!("{url} did not answer: {e}"))?;
     let reply: Value =
         serde_json::from_str(&reply).map_err(|_| format!("{url} is not a goofi /exec door"))?;
-    match status {
-        200 => Ok(reply["results"]
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .map(|e| Entry {
-                        result: e["result"].clone(),
-                        text: e["text"].as_str().unwrap_or_default().to_string(),
-                    })
-                    .collect()
+    match (status, reply["results"].as_array()) {
+        (200, Some(entries)) => Ok(entries
+            .iter()
+            .map(|e| Entry {
+                result: e["result"].clone(),
+                text: e["text"].as_str().unwrap_or_default().to_string(),
             })
-            .unwrap_or_default()),
+            .collect()),
+        (200, None) => Err(format!("{url} is not a goofi /exec door")),
         _ => Err(reply["error"].as_str().unwrap_or("refused").to_string()),
     }
 }
@@ -120,24 +122,34 @@ pub fn rendered(entry: &Entry) -> Vec<u8> {
     out
 }
 
+/// What a probed url said about itself.
+enum Answered {
+    /// A goofi answered `session status` with this instance id.
+    Id(String),
+    /// Something DEFINITIVELY not this record's goofi answered — another program on the port, a
+    /// refused connection.
+    NotGoofi,
+    /// Nothing conclusive: a timeout, or a local failure that proves nothing about the server.
+    Silent,
+}
+
 /// Ask `url` who it is: `session status` through the same `/exec` door every command uses.
-/// `None` on a timeout; a refused connection or a non-goofi answer reads as a mismatch upstream.
-fn probe(url: &str) -> Option<String> {
-    let body = json!({ "commands": ["session status"], "actor": "default" }).to_string();
+fn probe(url: &str) -> Answered {
+    let body = json!({ "commands": ["session status"] }).to_string();
     match http_post(url, "/exec", &body, PROBE) {
         Ok((200, reply)) => serde_json::from_str::<Value>(&reply)
             .ok()
-            .and_then(|v| {
-                v["results"][0]["result"]["instance_id"].as_str().map(str::to_string)
-            })
-            .or(Some(String::new())),
-        Ok(_) => Some(String::new()),
-        Err(HttpErr::Timeout) => None,
-        Err(_) => Some(String::new()),
+            .and_then(|v| v["results"][0]["result"]["instance_id"].as_str().map(str::to_string))
+            .map(Answered::Id)
+            .unwrap_or(Answered::NotGoofi),
+        Ok(_) => Answered::NotGoofi,
+        Err(HttpErr::Refused) => Answered::NotGoofi,
+        Err(_) => Answered::Silent,
     }
 }
 
 enum HttpErr {
+    Refused,
     Timeout,
     Other(String),
 }
@@ -145,6 +157,7 @@ enum HttpErr {
 impl std::fmt::Display for HttpErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            HttpErr::Refused => write!(f, "refused the connection"),
             HttpErr::Timeout => write!(f, "timed out"),
             HttpErr::Other(e) => write!(f, "{e}"),
         }
@@ -157,7 +170,9 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
     let addr = host
         .parse::<std::net::SocketAddr>()
         .map_err(|_| HttpErr::Other(format!("`{url}` is not `http://ip:port`")))?;
-    let mut s = TcpStream::connect_timeout(&addr, timeout).map_err(io_err)?;
+    // The CONNECT is always short: a listener answers a SYN at once or not at all, and only the
+    // read may lawfully be slow (a `session load` provisions nodes).
+    let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(io_err)?;
     s.set_read_timeout(Some(timeout)).map_err(io_err)?;
     s.set_write_timeout(Some(timeout)).map_err(io_err)?;
     let head = format!(
@@ -183,6 +198,7 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
 
 fn io_err(e: std::io::Error) -> HttpErr {
     match e.kind() {
+        std::io::ErrorKind::ConnectionRefused => HttpErr::Refused,
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => HttpErr::Timeout,
         _ => HttpErr::Other(e.to_string()),
     }

@@ -20,7 +20,7 @@ type Row = [string, HarnessRoster['instances'][number]['state'], number?];
 
 const roster = (...ids: Row[]): HarnessRoster => ({
 	instances: ids.map(([id, state, exit_code]) => ({ id, harness: '_sh', state, exit_code })),
-	detected: [{ harness: 'claude', path: '/usr/bin/claude', version: 'claude 1.2.3' }]
+	agents: [{ name: 'claude', command: 'claude' }]
 });
 
 const hello = (h: HarnessRoster) =>
@@ -37,7 +37,7 @@ describe('the harness roster', () => {
 
 		ctl.emit(hello(roster(['a', 'running'])));
 		expect(h.instances.map((i) => i.id)).toEqual(['a']);
-		expect(h.detected[0].harness).toBe('claude');
+		expect(h.agents[0].name).toBe('claude');
 
 		// A dead harness is not part of the app's roster: it has no interactivity and no state left,
 		// so it is dropped rather than kept as a frozen screen (user, 2026-08-10).

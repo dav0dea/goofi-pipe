@@ -1,7 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BIN, E2E_HOME } from '../playwright.config';
 import { closeSplit, resetPatch, splitRight, waitForApp } from '../lib/app';
 import { dismiss, spawnSh, stateOf } from '../lib/harness';
 
@@ -105,6 +107,31 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 		await page.getByTestId('agent-detach').click();
 		await expect(page.locator('.panel')).toHaveCount(1);
 		expect(await stateOf(page, id), 'a detach killed the harness').toBe('running');
+
+		await test.step('the goofi CLI, argv to process, drives this same server', async () => {
+			const port = new URL(page.url()).port;
+			const dir = path.join(E2E_HOME, '.goofi', 'sessions');
+			const session = fs
+				.readdirSync(dir)
+				.map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+				.find((s) => s.url.endsWith(`:${port}`));
+			const env = { ...process.env, GOOFI_HOME: E2E_HOME, GOOFI_SESSION: session.id };
+			const nodes = async (): Promise<number> =>
+				page.evaluate(() => (window as any).goofi.query.graph().nodes.length);
+			const before = await nodes();
+			const born = execFileSync(
+				BIN,
+				['node', 'add', '--type', 'Oscillator', '--name', 'cli_born', '--json'],
+				{ env }
+			).toString();
+			expect(JSON.parse(born).name, 'the client round-trips argv to JSON').toBe('cli_born');
+			execFileSync(BIN, ['-'], { env, input: 'node add --type Buffer\nnode add --type Buffer\n' });
+			await expect.poll(nodes, { message: 'the CLI writes reached the replica' }).toBe(before + 3);
+			execFileSync(BIN, ['undo'], { env });
+			await expect.poll(nodes, { message: 'one undo took back the whole stdin batch' }).toBe(before + 1);
+			execFileSync(BIN, ['undo'], { env });
+			await expect.poll(nodes).toBe(before);
+		});
 
 		// Name it again: closing that panel really WAS authoring (the layout changed), so the dot it
 		// left is correct and has to be cleared before the next question can be asked of it.

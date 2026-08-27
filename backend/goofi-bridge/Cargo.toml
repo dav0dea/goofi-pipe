@@ -30,11 +30,6 @@ base64 = "0.22"
 shell-words = "1"
 # The PTY the agent harness runs on (wezterm's crate).
 portable-pty = "0.9"
-# What counts as an executable on THIS platform: the mode bits where those decide, `PATHEXT` where
-# that does. A harness npm installed is `claude.cmd` on Windows and `claude` everywhere else, and
-# the caller types the same one word for both.
-which = "8"
-
 # SIGTERM then SIGKILL, to the process GROUP: `portable_pty::ChildKiller` offers neither the
 # graceful phase nor any reach past the harness into what it spawned. Windows has no equivalent and
 # reaches for `taskkill` instead, so this is the one dependency that is genuinely one platform's —

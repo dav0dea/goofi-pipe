@@ -173,7 +173,7 @@ impl AppState {
     /// file's reader. Loopback whenever loopback listens (a wildcard or loopback bind); the
     /// bound address itself when `--bind` named one other interface, where loopback answers
     /// nothing.
-    pub fn mcp_url(&self) -> String {
+    pub fn local_url(&self) -> String {
         let a = *self.bound.lock().unwrap();
         match a.ip().is_unspecified() || a.ip().is_loopback() {
             true => format!("http://127.0.0.1:{}", a.port()),
@@ -295,8 +295,6 @@ fn routes(state: AppState) -> Router {
         // The CLI's door: the same lines, parse and batch semantics as `goofi_exec`.
         .route("/exec", post(exec_endpoint))
         .route("/mcp", post(mcp::endpoint))
-        // One address per spawned harness: identity is the ROUTE, so there is nothing to validate.
-        .route("/mcp/{instance}", post(mcp::instance_endpoint))
         // A spawned harness's terminal: binary frames are PTY bytes, text frames JSON control.
         .route("/term/{instance}", any(term_ws))
         .with_state(state)
@@ -495,11 +493,9 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The background workers a live server needs: the status-drain worker, and a primed harness
-/// detection cache so the first tab already has its launch buttons.
+/// The background workers a live server needs: the status-drain worker.
 pub fn spawn_workers(state: &AppState) {
     spawn_stats(state.graph.clone(), state.events.clone(), 2);
-    state.harnesses.refresh_in_background(state.events.clone());
 }
 
 pub async fn serve_app(

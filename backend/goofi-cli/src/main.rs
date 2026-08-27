@@ -81,10 +81,10 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
     Ok(cli)
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Bare or flag-first argv serves — what `cargo run` depends on. A bare WORD is a command for
-    // a running server, except the few the client itself owns (`ops::RESERVED`'s doors).
+    // a running server, except the few the client itself owns (`ops::RESERVED`'s doors). The
+    // client path is three blocking syscalls, so only the serve arm builds a runtime.
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let rest = match argv.first().map(String::as_str) {
         None => argv,
@@ -94,6 +94,14 @@ async fn main() {
         Some(first) if first.starts_with('-') => argv,
         Some(_) => std::process::exit(client_main(argv)),
     };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the serve runtime")
+        .block_on(serve_main(rest));
+}
+
+async fn serve_main(rest: Vec<String>) {
     let mut cli = match parse_args(rest.into_iter()) {
         Ok(cli) => cli,
         Err(e) => {
@@ -150,8 +158,8 @@ fn forward(lines: &[String], json: bool) -> i32 {
             return 1;
         }
     };
-    let actor = std::env::var("GOOFI_ACTOR").unwrap_or_else(|_| "default".into());
-    match goofi_client::exec(&target.url, lines, &actor) {
+    let actor = std::env::var("GOOFI_ACTOR").ok();
+    match goofi_client::exec(&target.url, lines, actor.as_deref()) {
         Ok(entries) => {
             use std::io::Write;
             let mut out = std::io::stdout().lock();
@@ -188,7 +196,7 @@ fn take_json(words: &mut Vec<String>) -> bool {
 fn client_main(mut words: Vec<String>) -> i32 {
     let json = take_json(&mut words);
     match (words.first().map(String::as_str), words.get(1).map(String::as_str)) {
-        (Some("session"), Some("list")) => return print_sessions(),
+        (Some("session"), Some("list")) => return print_sessions(json),
         (Some("agent"), Some("term")) => {
             eprintln!("`agent term` is not built yet — the app's agent panel serves the terminal.");
             return 1;
@@ -200,7 +208,12 @@ fn client_main(mut words: Vec<String>) -> i32 {
 
 /// `goofi -`: stdin lines as ONE batch — several ops, one undo step.
 fn client_stdin(rest: &[String]) -> i32 {
-    let json = rest.iter().any(|w| w == "--json");
+    let mut rest = rest.to_vec();
+    let json = take_json(&mut rest);
+    if let Some(stray) = rest.first() {
+        eprintln!("`goofi -` reads its commands from stdin — `{stray}` has no meaning here");
+        return 2;
+    }
     let lines: Vec<String> = std::io::stdin()
         .lines()
         .map_while(Result::ok)
@@ -209,34 +222,53 @@ fn client_stdin(rest: &[String]) -> i32 {
     forward(&lines, json)
 }
 
-fn print_sessions() -> i32 {
+fn print_sessions(json: bool) -> i32 {
     let rows = goofi_client::list();
+    if json {
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.session.id,
+                    "url": r.session.url,
+                    "state": state_word(&r.probed),
+                    "current": r.current,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
+        return 0;
+    }
     if rows.is_empty() {
         println!("no running goofi — start one with `goofi`");
         return 0;
     }
     for r in rows {
-        let state = match r.probed {
-            goofi_client::Probed::Live => "live",
-            goofi_client::Probed::Unresponsive => "unresponsive",
-        };
         let mark = if r.current { "  ← GOOFI_SESSION" } else { "" };
-        println!("{}  {}  {state}{mark}", r.session.id, r.session.url);
+        println!("{}  {}  {}{mark}", r.session.id, r.session.url, state_word(&r.probed));
     }
     0
 }
 
-/// `goofi help [words…]`: ANY live session answers — help does not depend on which — and with
-/// none, the client's own one-screen summary.
+fn state_word(p: &goofi_client::Probed) -> &'static str {
+    match p {
+        goofi_client::Probed::Live => "live",
+        goofi_client::Probed::Unresponsive => "unresponsive",
+    }
+}
+
+/// `goofi help [words…]`: any LIVE session answers — help does not depend on which — and with
+/// none, the client's own one-screen summary. An unresponsive record must not stall the one
+/// command a stuck user reaches for.
 fn help_main(rest: &[String]) -> i32 {
     let rows = goofi_client::list();
-    let Some(row) = rows.first() else {
+    let Some(row) = rows.iter().find(|r| r.probed == goofi_client::Probed::Live) else {
         println!("{LOCAL_HELP}");
         return 0;
     };
     let words: Vec<&str> =
         std::iter::once("help").chain(rest.iter().map(String::as_str)).collect();
-    match goofi_client::exec(&row.session.url, &[shell_words::join(words)], "default") {
+    match goofi_client::exec(&row.session.url, &[shell_words::join(words)], None) {
         Ok(entries) => {
             for e in &entries {
                 println!("{}", e.text);
@@ -305,7 +337,7 @@ async fn run(
         eprintln!("refusing to start: no app is compiled into this binary.");
         eprintln!(
             "  The app is compiled in, so building it is not enough — build it, then rebuild \
-             goofi-pipe:"
+             goofi:"
         );
         eprintln!("    npm install && npm run build   (in frontend/)");
         eprintln!("    cargo build");
@@ -323,7 +355,9 @@ async fn run(
                 // A spawned harness reaches MCP on loopback whatever `--bind` says; only the
                 // port, which `--port 0` makes knowable nowhere else, is handed over.
                 state.set_bound(addr);
-                let _session = SessionFile::write(&state.instance_id, &state.mcp_url());
+                // Only a real server writes into the home: its record, and the config seed.
+                goofi_core::home::seed_config();
+                let _session = SessionFile::write(&state.instance_id, &state.local_url());
                 let url = format!("http://{addr}");
                 println!("goofi → {url}");
                 println!("  MCP endpoint → http://{addr}/mcp");

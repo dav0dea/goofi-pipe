@@ -34,7 +34,6 @@ pub(crate) fn agent_list(
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    state.harnesses.refresh_in_background(state.events.clone());
     Ok(state.harnesses.roster())
 }
 
@@ -51,7 +50,7 @@ pub(crate) fn agent_start(
     let id = state.harnesses.spawn(
         h,
         &state.mount(),
-        &state.mcp_url(),
+        &state.instance_id,
         &term::parent_env(),
         state.events.clone(),
     )?;
@@ -65,9 +64,11 @@ pub(crate) fn agent_stop(
     _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    state
-        .harnesses
-        .stop(payload.get("instance").and_then(|v| v.as_str()).ok_or("agent stop: missing instance")?)?;
+    let id =
+        payload.get("instance").and_then(|v| v.as_str()).ok_or("agent stop: missing instance")?;
+    state.harnesses.stop(id)?;
+    // A stack's lifetime follows its actor: the stopped shell's history goes with it.
+    state.history.lock().unwrap().drop_actor(&term::actor_of(id));
     events.push(event("harness_changed", state.harnesses.roster()));
     Ok(json!({ "ok": true }))
 }

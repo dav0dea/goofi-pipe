@@ -108,23 +108,11 @@ fn rpc_error(id: Value, code: i64, message: String) -> Response {
 /// The central MCP endpoint — the address an external agent connects to. Registered with `post`,
 /// so axum answers the retired GET stream and DELETE teardown with the 405 the spec asks for.
 pub async fn endpoint(State(state): State<AppState>, body: String) -> Response {
-    serve(&state, AGENT_ACTOR, None, &body).await
+    serve(&state, AGENT_ACTOR, &body).await
 }
 
-/// The address `spawn_harness` minted for ONE harness. Identity is the route itself, so there is
-/// nothing to spoof and nothing to validate, and the undo actor follows the address.
-pub async fn instance_endpoint(
-    axum::extract::Path(id): axum::extract::Path<String>,
-    State(state): State<AppState>,
-    body: String,
-) -> Response {
-    let gone = !state.harnesses.serves_mcp(&id);
-    serve(&state, &id, gone.then_some(id.as_str()), &body).await
-}
-
-/// One JSON-RPC request, as the undo actor the address names. `gone` names an instance whose
-/// address has been dropped, and is answered rather than 404'd so a model can read the refusal.
-async fn serve(state: &AppState, actor: &str, gone: Option<&str>, body: &str) -> Response {
+/// One JSON-RPC request, as the `"mcp"` undo actor.
+async fn serve(state: &AppState, actor: &str, body: &str) -> Response {
     let req: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => return rpc_error(Value::Null, -32700, format!("parse error: {e}")),
@@ -140,18 +128,6 @@ async fn serve(state: &AppState, actor: &str, gone: Option<&str>, body: &str) ->
     };
     let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
     let method = req.get("method").and_then(|v| v.as_str()).unwrap_or_default();
-    if let Some(instance) = gone {
-        let why = format!(
-            "harness instance `{instance}` has been stopped, so this address no longer serves \
-             goofi's tools. The patch itself is unchanged and still reachable at /mcp."
-        );
-        // A call is refused as a tool ERROR, the only shape the model reads; anything else, which
-        // no model waits on, is a plain JSON-RPC error.
-        return match method {
-            "tools/call" => ok(id, tool_result(why, true)),
-            _ => rpc_error(id, -32001, why),
-        };
-    }
     match method {
         // Answered for a legacy client, never required of a modern one.
         "initialize" => ok(

@@ -265,10 +265,14 @@ saved with. A load extracts into a FRESH mount, parses, and only then swaps: gra
 or neither. A load restores the uids the patch was saved with, because everything keyed by uid
 that the load does not itself remap depends on it.
 
-**Identity is structural.** One MCP server per goofi instance, many addresses: a spawned harness
-is handed a URL goofi minted for it, so identity never travels through the agent and there is
-nothing to spoof. The Origin/Host allowlist covers every route including the WebSocket upgrades —
-a drive-by guard, not authentication; this app stays single-user and local by design.
+**Identity is structural.** A spawned agent's identity travels in its ENVIRONMENT, minted by
+goofi at the spawn: `GOOFI_SESSION` names the server, `GOOFI_ACTOR` names its own undo stack, and
+a per-instance `goofi` shim first on PATH is the running binary itself — so nothing is detected,
+nothing is templated, and there is nothing to spoof. What an agent can reach, every local process
+can already reach: `/exec` and `/mcp` extend the same trust `/control` always has, and a stopped
+agent's environment naming the server until the kill lands is that same trust, accepted. The
+Origin/Host allowlist covers every route including the WebSocket upgrades — a drive-by guard, not
+authentication; this app stays single-user and local by design.
 
 **The frontend is a replica, and its styling has one source.** Every colour, spacing, type and
 motion token lives in one `:root`; a component states its own layout, never another's. The
