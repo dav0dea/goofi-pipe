@@ -30,10 +30,10 @@ const PROBE: Duration = Duration::from_secs(2);
 /// Generous: a `session load` provisions nodes, a `library refresh` restarts them.
 const EXEC: Duration = Duration::from_secs(300);
 
-/// Probe every recorded session, sweeping the DEFINITIVELY dead: a refused connection, an
-/// answer that is not goofi's, or an id the file contradicts. A timeout — and every other local
-/// failure, a reset or an exhausted fd table included — keeps its row: only a definitive wrong
-/// answer may delete a record the server writes once in its life.
+/// Probe every recorded session, sweeping the DEFINITIVELY dead: an address nothing accepts on,
+/// an answer that is not goofi's, or an id the file contradicts. A timeout on the ANSWER — and
+/// every other local failure, a reset or an exhausted fd table included — keeps its row: only a
+/// definitive wrong answer may delete a record the server writes once in its life.
 pub fn list() -> Vec<Row> {
     let current = std::env::var("GOOFI_SESSION").ok();
     let mut rows = Vec::new();
@@ -143,13 +143,13 @@ fn probe(url: &str) -> Answered {
             .map(Answered::Id)
             .unwrap_or(Answered::NotGoofi),
         Ok(_) => Answered::NotGoofi,
-        Err(HttpErr::Refused) => Answered::NotGoofi,
+        Err(HttpErr::NoListener) => Answered::NotGoofi,
         Err(_) => Answered::Silent,
     }
 }
 
 enum HttpErr {
-    Refused,
+    NoListener,
     Timeout,
     Other(String),
 }
@@ -157,7 +157,7 @@ enum HttpErr {
 impl std::fmt::Display for HttpErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HttpErr::Refused => write!(f, "refused the connection"),
+            HttpErr::NoListener => write!(f, "nothing is listening"),
             HttpErr::Timeout => write!(f, "timed out"),
             HttpErr::Other(e) => write!(f, "{e}"),
         }
@@ -171,8 +171,11 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
         .parse::<std::net::SocketAddr>()
         .map_err(|_| HttpErr::Other(format!("`{url}` is not `http://ip:port`")))?;
     // The CONNECT is always short: a listener answers a SYN at once or not at all, and only the
-    // read may lawfully be slow (a `session load` provisions nodes).
-    let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(io_err)?;
+    // read may lawfully be slow (a `session load` provisions nodes). So a connect that fails at
+    // all means the address holds nothing — decided by the STAGE, never by the error kind, because
+    // Windows DROPS a SYN to a closed port where unix refuses it, and the kind then reads "timed
+    // out" for the one state that is definitively dead.
+    let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(|_| HttpErr::NoListener)?;
     s.set_read_timeout(Some(timeout)).map_err(io_err)?;
     s.set_write_timeout(Some(timeout)).map_err(io_err)?;
     let head = format!(
@@ -196,9 +199,9 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
     Ok((status, String::from_utf8_lossy(&raw[split + 4..]).into_owned()))
 }
 
+/// Everything AFTER the connect, where a slow answer is lawful and nothing is definitive.
 fn io_err(e: std::io::Error) -> HttpErr {
     match e.kind() {
-        std::io::ErrorKind::ConnectionRefused => HttpErr::Refused,
         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => HttpErr::Timeout,
         _ => HttpErr::Other(e.to_string()),
     }
