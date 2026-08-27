@@ -450,7 +450,12 @@ async fn a_harness_runs_in_the_patchs_workspace_with_the_terminal_contract_overl
     // Stated, not read from the suite's environment: an ambient value passes with no overlay at all.
     let env: Vec<(OsString, OsString)> = vec![
         ("TERM".into(), "dumb".into()), ("COLORTERM".into(), "no".into()),
-        ("LANG".into(), "C".into()), ("STATED_BY_THE_TEST".into(), "kept".into())];
+        // `LC_ALL` and not `LANG` alone: a spawn INHERITS goofi's own environment and the stated
+        // one is laid over it, so an ambient UTF-8 locale — the macOS runner has one — answers the
+        // question before `LANG` is ever reached, and the overlay under test correctly never runs.
+        // Stating the value that outranks every other is what makes this situation reachable.
+        ("LC_ALL".into(), "C".into()), ("LANG".into(), "C".into()),
+        ("STATED_BY_THE_TEST".into(), "kept".into())];
     let stated = state.harnesses
         .spawn("_sh", &state.mount(), "http://127.0.0.1:1", &env, state.events.clone(),
                state.history.clone())
