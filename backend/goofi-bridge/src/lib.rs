@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 /// keeps its pseudoconsole open past the child's death, so on Windows that end never comes.
 const EXIT_SETTLE: Duration = Duration::from_millis(250);
 
+/// How long a closing socket waits for the peer's own close before it drops the connection.
+const FAREWELL: Duration = Duration::from_millis(250);
+
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -720,6 +723,7 @@ async fn handle_control(socket: WebSocket, state: AppState) {
             },
         }
     }
+    farewell(tx, rx, 1000, "").await;
 }
 
 impl AppState {
@@ -1089,7 +1093,7 @@ struct TermControl {
 async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
     let (mut tx, mut rx) = socket.split();
     let Some(inst) = state.harnesses.get(&instance) else {
-        let _ = tx.send(close(4004, "unknown harness instance")).await;
+        farewell(tx, rx, 4004, "unknown harness instance").await;
         return;
     };
     // Attach snapshots the tail and subscribes as one step, so what the child wrote before this
@@ -1160,6 +1164,23 @@ async fn handle_term(socket: WebSocket, state: AppState, instance: String) {
         }
     }
     inst.leave(seat);
+    farewell(tx, rx, 1000, "").await;
+}
+
+/// How EVERY socket here ends: by the handshake, never by dropping. A dropped connection is
+/// RESET, and a reset discards what is still in flight — so a peer that was not reading at that
+/// moment loses the last frames, the exit code and a refusal's own close code most of all.
+async fn farewell(
+    mut tx: futures_util::stream::SplitSink<WebSocket, Message>,
+    mut rx: futures_util::stream::SplitStream<WebSocket>,
+    code: u16,
+    reason: &str,
+) {
+    if tx.send(close(code, reason)).await.is_err() {
+        return;
+    }
+    // The peer's own close is what says it read everything; the bound is for one that never sends it.
+    let _ = tokio::time::timeout(FAREWELL, async { while rx.next().await.is_some() {} }).await;
 }
 
 fn size_frame(cols: u16, rows: u16) -> Message {
@@ -1264,7 +1285,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     let uid = match Uid::from_hex(&node) {
         Some(u) => u,
         None => {
-            let _ = tx.send(close(4004, "bad node uid")).await;
+            farewell(tx, rx, 4004, "bad node uid").await;
             return;
         }
     };
@@ -1277,7 +1298,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
         vocab::resolve_slot(&g, "data", uid, &slot).ok()
     };
     let Some(slot) = named else {
-        let _ = tx.send(close(4004, "unknown node/slot")).await;
+        farewell(tx, rx, 4004, "unknown node/slot").await;
         return;
     };
 
@@ -1368,6 +1389,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     if let Some(k) = &key {
         state.reducers.unsubscribe(k, conn);
     }
+    farewell(tx, rx, 1000, "").await;
 }
 
 /// The physical `(node, slot)` a `/data` address stands for: a leaf is its own, and a port relays,
