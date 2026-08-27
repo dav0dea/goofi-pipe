@@ -84,9 +84,9 @@ pub struct AppState {
     /// Where the open patch lives on disk. Manager-owned rather than per tab, so it rides the
     /// snapshot every client connects with.
     save_path: Arc<Mutex<Option<String>>>,
-    /// Only the PORT: a harness is a CHILD of this process, so `127.0.0.1` is right whatever
-    /// `--bind` says.
-    mcp_port: Arc<std::sync::atomic::AtomicU16>,
+    /// The bound address — ONE owner for every local base url: the harness's MCP address and
+    /// the session file's `/exec` url both derive from it.
+    bound: Arc<Mutex<std::net::SocketAddr>>,
     /// The spawned agent harnesses, their PTYs, and the detection cache.
     pub harnesses: Arc<term::Harnesses>,
 }
@@ -159,21 +159,26 @@ impl AppState {
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
             save_path: Arc::new(Mutex::new(None)),
-            mcp_port: Arc::new(std::sync::atomic::AtomicU16::new(8000)),
+            bound: Arc::new(Mutex::new(([127, 0, 0, 1], 8000).into())),
             harnesses: Arc::new(term::Harnesses::default()),
         }
     }
 
     /// Point a spawned harness's MCP config at the port this server actually bound.
-    pub fn set_mcp_port(&self, port: u16) {
-        self.mcp_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    pub fn set_bound(&self, addr: std::net::SocketAddr) {
+        *self.bound.lock().unwrap() = addr;
     }
 
-    /// The base URL a spawned harness reaches this server's MCP surface at — see [`mcp_port`].
-    ///
-    /// [`mcp_port`]: AppState::mcp_port
-    fn mcp_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.mcp_port.load(std::sync::atomic::Ordering::Relaxed))
+    /// The base URL a LOCAL client reaches this server at — a spawned harness, the session
+    /// file's reader. Loopback whenever loopback listens (a wildcard or loopback bind); the
+    /// bound address itself when `--bind` named one other interface, where loopback answers
+    /// nothing.
+    pub fn mcp_url(&self) -> String {
+        let a = *self.bound.lock().unwrap();
+        match a.ip().is_unspecified() || a.ip().is_loopback() {
+            true => format!("http://127.0.0.1:{}", a.port()),
+            false => format!("http://{a}"),
+        }
     }
 
     /// Where the open patch lives on disk, if anywhere.
@@ -287,6 +292,8 @@ fn routes(state: AppState) -> Router {
                 .post(patchfile::upload)
                 .layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        // The CLI's door: the same lines, parse and batch semantics as `goofi_exec`.
+        .route("/exec", post(exec_endpoint))
         .route("/mcp", post(mcp::endpoint))
         // One address per spawned harness: identity is the ROUTE, so there is nothing to validate.
         .route("/mcp/{instance}", post(mcp::instance_endpoint))
@@ -599,6 +606,35 @@ fn restart_changed(g: &mut Graph, diff: &ScanDiff) {
     for uid in g.node_uids() {
         if g.type_name(uid).is_some_and(|t| diff.changed.iter().any(|c| c == t)) {
             let _ = g.restart_node(uid);
+        }
+    }
+}
+
+/// `POST /exec {commands, actor}` — the CLI's door, sharing the MCP tool's parse and batch
+/// semantics verbatim. Each entry answers its JSON and its rendered text, so the client prints
+/// without op knowledge; a refusal is one `{error}`, since a batch lands whole or not at all.
+async fn exec_endpoint(State(state): State<AppState>, body: String) -> Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let Ok(req) = serde_json::from_str::<Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "the body is JSON: {commands, actor}" })))
+            .into_response();
+    };
+    let lines: Vec<String> = req["commands"]
+        .as_array()
+        .map(|c| c.iter().map(|l| l.as_str().unwrap_or_default().to_string()).collect())
+        .unwrap_or_default();
+    let actor = req["actor"].as_str().unwrap_or("default").to_string();
+    match phrase::exec_lines(&state, &lines, &actor) {
+        Ok(results) => {
+            let entries: Vec<Value> = results
+                .iter()
+                .map(|r| json!({ "result": r, "text": phrase::render(r) }))
+                .collect();
+            axum::Json(json!({ "results": entries })).into_response()
+        }
+        Err(e) => {
+            (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": e }))).into_response()
         }
     }
 }

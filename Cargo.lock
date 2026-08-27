@@ -541,6 +541,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "goofi-client"
+version = "3.1.0"
+dependencies = [
+ "base64",
+ "goofi-core",
+ "serde_json",
+]
+
+[[package]]
 name = "goofi-codec"
 version = "3.1.0"
 dependencies = [
@@ -645,6 +654,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "goofi-bridge",
+ "goofi-client",
  "goofi-codec",
  "goofi-core",
  "goofi-engine",

@@ -14,6 +14,7 @@ embed = ["goofi-python/embed", "dep:pyo3"]
 
 [dependencies]
 goofi-bridge = { path = "../goofi-bridge" }
+goofi-client = { path = "../goofi-client" }
 goofi-core = { path = "../goofi-core" }
 goofi-codec = { path = "../goofi-codec" }
 goofi-engine = { path = "../goofi-engine" }

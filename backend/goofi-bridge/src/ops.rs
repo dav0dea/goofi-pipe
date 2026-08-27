@@ -267,6 +267,10 @@ pub static REGISTRY: &[Op] = &[
          result: "{ok: true}" },
 ];
 
+/// The phrases the CLIENT owns — `serve`, the door words, and the future `plugin` prefix. Never
+/// registrable, and prefix-free with the registry: the contracts invariant checks both together.
+pub static RESERVED: &[&str] = &["serve", "help", "session list", "agent term", "plugin"];
+
 /// The row for `name`, if the op exists.
 pub fn find(name: &str) -> Option<&'static Op> {
     REGISTRY.iter().find(|o| o.name == name)

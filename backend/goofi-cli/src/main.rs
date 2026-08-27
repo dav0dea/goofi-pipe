@@ -189,12 +189,8 @@ async fn run(
                 let addr = listener.local_addr().unwrap();
                 // A spawned harness reaches MCP on loopback whatever `--bind` says; only the
                 // port, which `--port 0` makes knowable nowhere else, is handed over.
-                state.set_mcp_port(addr.port());
-                // The session file records loopback for the same reason — its reader is local.
-                let _session = SessionFile::write(
-                    &state.instance_id,
-                    &format!("http://127.0.0.1:{}", addr.port()),
-                );
+                state.set_bound(addr);
+                let _session = SessionFile::write(&state.instance_id, &state.mcp_url());
                 let url = format!("http://{addr}");
                 println!("goofi-pipe → {url}");
                 println!("  MCP endpoint → http://{addr}/mcp");

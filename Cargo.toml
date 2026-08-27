@@ -13,6 +13,7 @@ members = [
     "backend/goofi-engine",
     "backend/goofi-view",
     "backend/goofi-bridge",
+    "backend/goofi-client",
     "backend/goofi-cli",
     "backend/goofi-tests",
 ]
@@ -32,6 +33,7 @@ default-members = [
     "backend/goofi-engine",
     "backend/goofi-view",
     "backend/goofi-bridge",
+    "backend/goofi-client",
     "backend/goofi-cli",
     "backend/goofi-tests",
 ]

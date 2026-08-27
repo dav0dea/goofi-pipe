@@ -80,26 +80,18 @@ fn call_tool(state: &AppState, actor: &str, params: &Value) -> Value {
     else {
         return tool_result("goofi_exec: `commands` is a non-empty list of command lines".into(), true);
     };
-    let mut parsed = Vec::with_capacity(lines.len());
-    for (i, line) in lines.iter().enumerate() {
-        match phrase::parse(state.ops(), line) {
-            Ok((op, payload)) => parsed.push((op, payload)),
-            Err(e) => return tool_result(format!("command {i}: {e}"), true),
-        }
-    }
-    if let [(op, payload)] = &parsed[..] {
-        return match state.call(op.name, payload.clone(), actor) {
-            Ok(result) => tool_result(phrase::render(&result), false),
-            Err(e) => tool_result(e, true),
-        };
-    }
-    let steps: Vec<Value> =
-        parsed.iter().map(|(op, payload)| json!({ "op": op.name, "payload": payload })).collect();
-    match state.call("compound", json!({ "ops": steps }), actor) {
-        // The batch answers the BARE list of step results, in order.
-        Ok(list) => {
-            tool_result(serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()), false)
-        }
+    match phrase::exec_lines(state, &lines, actor) {
+        Ok(results) => match &results[..] {
+            [one] => tool_result(phrase::render(one), false),
+            // The batch answers the BARE list of step results, in order.
+            many => {
+                let list = Value::Array(many.to_vec());
+                tool_result(
+                    serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()),
+                    false,
+                )
+            }
+        },
         Err(e) => tool_result(e, true),
     }
 }

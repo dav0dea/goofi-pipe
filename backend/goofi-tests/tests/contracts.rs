@@ -30,18 +30,24 @@ fn every_op_row_is_well_formed_and_reachable() {
     const ARG_TYPES: &[&str] = &["uid", "string", "float", "int", "bool", "float2", "json",
                                  "any", "param_addr", "endpoint", "panel_type",
                                  "uid[]", "string[]", "float[]", "json[]"];
+    // ONE bare namespace: the registry and the client's reserved phrases are prefix-free
+    // together, which is what lets `session list` sit beside `session status`.
+    let namespace: Vec<&str> =
+        REGISTRY.iter().map(|o| o.name).chain(goofi_bridge::ops::RESERVED.iter().copied()).collect();
     let mut seen = HashSet::new();
-    for op in REGISTRY {
-        assert!(seen.insert(op.name), "`{}` is declared twice", op.name);
-        let words: Vec<&str> = op.name.split(' ').collect();
+    for name in &namespace {
+        assert!(seen.insert(*name), "`{name}` is declared twice");
+        let words: Vec<&str> = name.split(' ').collect();
         assert!(!words.is_empty() && words.iter().all(|w| !w.is_empty()
                 && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')),
-                "`{}` is not space-joined [a-z0-9_]+ words", op.name);
-        for other in REGISTRY {
-            let shorter: Vec<&str> = other.name.split(' ').collect();
-            assert!(op.name == other.name || words.get(..shorter.len()) != Some(&shorter[..]),
-                    "`{}` is a word-prefix of `{}` and would swallow it", other.name, op.name);
+                "`{name}` is not space-joined [a-z0-9_]+ words");
+        for other in &namespace {
+            let shorter: Vec<&str> = other.split(' ').collect();
+            assert!(name == other || words.get(..shorter.len()) != Some(&shorter[..]),
+                    "`{other}` is a word-prefix of `{name}` and would swallow it");
         }
+    }
+    for op in REGISTRY {
         // The args schema is a STRING, so a typo in it would otherwise be a fact only at read time.
         assert_eq!(op.args().count(), op.args.split_whitespace().count(),
                    "`{}` has an argument with no `name:type`: {:?}", op.name, op.args);

@@ -198,3 +198,87 @@ pub fn render(result: &Value) -> String {
         _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
     }
 }
+
+/// One or several command lines, run as every line transport runs them — `goofi_exec`, `/exec`
+/// and `goofi -` share this door. A single line answers help when it asks for it, else executes
+/// directly; several lines run as ONE batch. A parse refusal names its command index.
+pub fn exec_lines(
+    state: &crate::AppState,
+    lines: &[String],
+    actor: &str,
+) -> Result<Vec<Value>, String> {
+    if lines.is_empty() {
+        return Err("`commands` is a non-empty list of command lines".into());
+    }
+    if let [line] = lines {
+        let words = split(line).map_err(|e| format!("command 0: {e}"))?;
+        if let Some(text) = help(state.ops(), &words) {
+            return Ok(vec![json!({ "text": text })]);
+        }
+        let (op, payload) = parse(state.ops(), line).map_err(|e| format!("command 0: {e}"))?;
+        return state.call(op.name, payload, actor).map(|r| vec![r]);
+    }
+    let mut steps = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let (op, payload) =
+            parse(state.ops(), line).map_err(|e| format!("command {i}: {e}"))?;
+        steps.push(json!({ "op": op.name, "payload": payload }));
+    }
+    match state.call("compound", json!({ "ops": steps }), actor)? {
+        Value::Array(results) => Ok(results),
+        other => Ok(vec![other]),
+    }
+}
+
+/// The help door: `help [words…]` or `<words…> --help`. `None` when the line is not asking.
+pub fn help(ops: &[&Op], words: &[String]) -> Option<String> {
+    let target: Vec<String> = match words.first().map(String::as_str) {
+        Some("help") => words[1..].to_vec(),
+        _ if words.iter().any(|w| w == "--help") => {
+            words.iter().filter(|w| *w != "--help").cloned().collect()
+        }
+        _ => return None,
+    };
+    if target.is_empty() {
+        return Some(top_help(ops));
+    }
+    if let Ok((op, _)) = resolve(ops, &target) {
+        return Some(op_help(op));
+    }
+    let first = target[0].as_str();
+    let near: Vec<String> = ops
+        .iter()
+        .filter(|o| o.name.split(' ').next() == Some(first))
+        .map(|o| format!("  {}", usage(o)))
+        .collect();
+    match near.is_empty() {
+        true => Some(format!("nothing under `{}` — {}", target.join(" "), top_help(ops))),
+        false => Some(format!("under `{first}`:\n{}", near.join("\n"))),
+    }
+}
+
+fn top_help(ops: &[&Op]) -> String {
+    let mut groups: Vec<&str> = Vec::new();
+    let mut bare: Vec<&str> = Vec::new();
+    for op in ops {
+        match op.name.split_once(' ') {
+            Some((first, _)) if !groups.contains(&first) => groups.push(first),
+            Some(_) => {}
+            None => bare.push(op.name),
+        }
+    }
+    format!(
+        "goofi speaks noun-first phrases.\n\
+         groups: {} — `help <group>` lists one, `<phrase> --help` explains one op,\n\
+         and `op list` answers the whole registry as data.\n\
+         subjectless: {}.\n\
+         client commands: {} — and `goofi -` runs stdin lines as one batch.",
+        groups.join(", "),
+        bare.join(", "),
+        crate::ops::RESERVED.join(", "),
+    )
+}
+
+fn op_help(op: &Op) -> String {
+    format!("{}\n\n{}\n\nanswers: {}", usage(op), op.doc(), op.result)
+}
