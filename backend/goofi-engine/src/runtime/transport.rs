@@ -408,6 +408,16 @@ pub fn reclaim_stale_resources() {
     });
 }
 
+/// Make the root iceoryx2 is configured for. It fills the layout in — `nodes/`, `services/` —
+/// but does not create the top directory, and on Windows nothing else does: every node then fails
+/// with `NodeCreationFailure::InternalError` on a machine whose temp has been cleaned. Making a
+/// directory the library goes on to own is not the same as reaching into one.
+fn ensure_root() {
+    if let Ok(root) = String::from_utf8(iox_config().global.root_path().as_bytes().to_vec()) {
+        let _ = std::fs::create_dir_all(root);
+    }
+}
+
 /// Where iceoryx2 keeps one directory per node. Read-only: goofi looks, and no longer reaches in
 /// to delete — that layout is iceoryx2's to keep.
 pub fn nodes_dir() -> Option<String> {
@@ -424,6 +434,7 @@ pub fn sweep_once() {
         // iceoryx2 logs at Info by default and reads `IOX2_LOG_LEVEL` only when asked. What Info
         // prints here is a multi-kilobyte dump per dropped doorbell datagram — §3.3's non-event.
         set_log_level_from_env_or(LogLevel::Error);
+        ensure_root();
         reclaim_stale_resources();
     });
 }
