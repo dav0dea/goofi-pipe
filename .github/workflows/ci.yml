@@ -74,7 +74,10 @@ jobs:
     - name: Provision (cargo run -p goofi-init)
       run: cargo run -p goofi-init
 
+    # Linux only: type checking has no platform. vitest below is a different matter — it WALKS
+    # the tree, and a `rel` built with `\` is how three of its guards failed on Windows alone.
     - name: Type-check (svelte-check + tsc strict)
+      if: runner.os == 'Linux'
       run: npm run check
       working-directory: frontend
 
@@ -99,24 +102,29 @@ jobs:
 
     # The e2e suite is its own npm package, and not part of building or running goofi — so it is
     # installed here rather than by goofi-init, which provisions what the two setup commands need.
+    # Linux only, and the whole e2e tail with it: a browser has no platform, and the half that
+    # does — the binary it drives — is what goofi-tests already proves on every runner above.
     - name: Install the e2e suite's dependencies
+      if: runner.os == 'Linux'
       run: npm install
       working-directory: tests/e2e
 
     # Every project is chromium — the touch and tablet ones are device descriptors, not other
     # engines.
     - name: Install Playwright's browser
+      if: runner.os == 'Linux'
       run: npx playwright install --with-deps chromium
       working-directory: tests/e2e
 
     - name: End-to-end (Playwright against the real binary)
+      if: runner.os == 'Linux'
       run: npm run e2e
       working-directory: tests/e2e
 
     # The report and the backends' own logs — a failure here is read from both: the assertion says
     # which spec, the log says what the server did.
     - uses: actions/upload-artifact@v7
-      if: failure()
+      if: failure() && runner.os == 'Linux'
       with:
         name: e2e-report-${{ matrix.os }}
         path: |

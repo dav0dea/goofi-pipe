@@ -367,7 +367,11 @@ one that drifts is the one nobody runs by hand. The clippy line is spelled `-- -
 "and this prints nothing" is not enforceable by reading, and clippy carries the rustc lints too, so
 that one command is the build-warning gate as well.
 **That one job runs on Linux AND Windows**, as a matrix rather than a second job, so there is still
-one list. The platform half of this codebase is real and none of it is visible from Linux: a ConPTY
+one list — minus two steps that provably cannot differ. `svelte-check` type-checks, and a type has
+no platform; Playwright drives a browser, and the half of it that IS platform-specific is the
+binary underneath, which `goofi-tests` already proves on every runner. **vitest is NOT in that
+set** and runs everywhere: its guards WALK THE TREE, and a `rel` built with `\` is how three of
+them failed on Windows while one of those quietly found nothing and passed. The platform half of this codebase is real and none of it is visible from Linux: a ConPTY
 that answers a cursor query and never reports EOF, a `cmd` launcher, `\` in every path a test
 compares, a `.pdb` two targets can collide on. Every one of those was found by hand, on a machine,
 after it had already shipped. Note what the warning gate still cannot hold: `-D warnings` is
