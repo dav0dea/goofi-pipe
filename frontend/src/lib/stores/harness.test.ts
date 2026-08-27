@@ -138,7 +138,7 @@ describe('the harness roster', () => {
 		expect(h.instanceFor('panel-1')).toBe(null);
 		expect(h.closing, 'answering the question closes it').toBe(null);
 		// `a` is free again, and this panel is the only one — so the auto-claim WOULD take it back on
-		// the next roster event, which is every detection sweep. Letting go has to be remembered.
+		// the next roster event, which is every roster change. Letting go has to be remembered.
 		ctl.emit({ event: 'harness_changed', payload: roster(['a', 'running']) });
 		expect(h.instanceFor('panel-1')).toBe(null);
 		// A panel that never chose still claims, so a harness spawned from anywhere lands somewhere.

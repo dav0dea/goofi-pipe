@@ -14,8 +14,7 @@ pub struct PanelType {
     pub icon: &'static str,
     /// Whether a node can be BOUND to this panel (`state.node`).
     pub accepts_node: bool,
-    /// What the panel shows. Short: these ride in `edit_panel`'s tool description, which a model
-    /// provider truncates at 2 KB.
+    /// What the panel shows, in a few words.
     pub doc: &'static str,
 }
 
@@ -33,7 +32,7 @@ pub enum Draws {
 pub struct ViewerKind {
     pub id: &'static str,
     pub draws: Draws,
-    /// What the kind shows. Same 2 KB budget as [`PanelType::doc`].
+    /// What the kind shows, in a few words.
     pub doc: &'static str,
 }
 
@@ -97,7 +96,7 @@ pub fn viewer_kind_ids() -> Vec<&'static str> {
     VIEWER_KINDS.iter().map(|k| k.id).collect()
 }
 
-/// The vocabularies as prose, for the tool description a model reads BEFORE it calls.
+/// The vocabularies as prose, for the op docs a caller reads BEFORE it calls.
 fn described(entries: impl Iterator<Item = (&'static str, &'static str)>) -> String {
     entries.map(|(id, doc)| format!("{id} ({doc})")).collect::<Vec<_>>().join("; ")
 }
@@ -214,7 +213,7 @@ pub fn typescript() -> String {
     )
 }
 
-/// The six as catalog entries, so a palette and `list_nodes` see one vocabulary of node types.
+/// The six as catalog entries, so a palette and `library list` see one vocabulary of node types.
 pub fn boundary_catalog() -> Vec<(String, String, Value)> {
     BOUNDARY_TYPES
         .iter()
@@ -298,7 +297,7 @@ pub fn check_viewers(
     Ok(())
 }
 
-/// Validate an `edit_panel` write against the vocabularies and the node it binds, BEFORE the layout
+/// Validate a `layout panel edit` write against the vocabularies and the node it binds, BEFORE the layout
 /// is planned. `bound` is the node the panel ENDS UP bound to, since a state write merges.
 pub fn check_panel(
     g: &goofi_engine::Graph,

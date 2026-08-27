@@ -77,7 +77,7 @@ tabs and panel ids the layout ops address; `goofi global list` says what an expr
 answers the param **as stored** — coerced to its declared type, so a fraction into an int comes
 back rounded; the declared min/max are the editor's range, not a clamp. `--expression
 "nd('other_node').sfreq"` — or `globals.x`, or `t` — binds instead of a literal; a bound param
-reads back as `expr: <source> → <value> (on)`, which is what this op takes. `node edit` is
+reads back as `expr: <source> → <value> (on)`, and `--expression` takes the source half. `node edit` is
 the node's own record — the rename, the move and the viewer write, any mix in one call and one
 undo.
 

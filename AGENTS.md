@@ -257,8 +257,8 @@ state an unconnected leaf is in — present, addressable, viewable, wireable, sa
 data. It is never absent, never an error, never a closed socket. Deleting the node behind a port
 leaves the port; a viewer opened before the wire stays open and starts drawing when the wire lands.
 What this cost, three times over: a port was DELETED when its target was, its `/data` socket was
-refused with a terminal close code that the client then made permanent, and `inspect_node` answered
-"no node" for the thing `add_node` had just returned.
+refused with a terminal close code that the client then made permanent, and `node state` answered
+"no node" for the thing `node add` had just returned.
 
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,

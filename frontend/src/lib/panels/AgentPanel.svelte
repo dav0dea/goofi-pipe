@@ -113,7 +113,7 @@
 					{hs.configError
 						? hs.configError
 						: hs.agents.length === 0
-							? 'The config lists no agents — add [[agents]] entries to ~/.goofi/config.toml.'
+							? 'The config lists no agents — add [[agents]] entries to config.toml in your goofi home.'
 							: 'It runs in this patch workspace, editing the patch with you.'}
 				{/snippet}
 				<ChoiceGrid {choices} />

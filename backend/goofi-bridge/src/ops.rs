@@ -115,10 +115,10 @@ pub static REGISTRY: &[Op] = &[
                silent save overwrites; `/patch.gfi` passes false, because the file a browser \
                upload came from lives on the user's machine and the staged copy this reads is \
                deleted immediately.",
-         result: "{ok: true}" },
+         result: "{ok: true, layout_warning: string | null}" },
     Op { name: "session new", handler: Effect(arms::session_new), args: "", positional: 0,
          doc: "Replace the open patch with the empty one, losing unsaved work. The undo history is cleared, so this cannot be taken back.",
-         result: "{ok: true}" },
+         result: "{ok: true, layout_warning: string | null}" },
     // -- node: one instance ----------------------------------------------------------------------
     Op { name: "node state", handler: Read(arms::node_state),
          args: "node:uid! slot:string params:bool error:bool", positional: 1,

@@ -138,7 +138,6 @@ pub fn errors(g: &Graph) -> Vec<Value> {
         .collect()
 }
 
-/// One param in the inline form an agent feeds straight back into `node param edit`.
 fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> String {
     use goofi_core::Param as P;
     let (value, ty) = match p {

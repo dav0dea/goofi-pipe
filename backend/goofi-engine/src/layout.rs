@@ -558,11 +558,15 @@ impl Layout {
         *self.at_mut(&p) = Node::Split { id, size: slot, axis, children };
     }
 
+    /// The refusal both re-homing doors give a tab id.
+    const TAB_IS_NOT_A_SUBTREE: &'static str =
+        "a tab is not a subtree — move it in the strip with `layout move --index` alone";
+
     /// Lift a subtree out for re-homing. Normally a [`Self::detach`] — but when it is its tab's
     /// ONLY root the TAB goes with it. The last tab never goes.
     fn take(&mut self, root: &str) -> Result<Node, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — move it in the strip with place_panel's `index` alone".into());
+            return Err(Self::TAB_IS_NOT_A_SUBTREE.into());
         }
         let Some((tab, at)) = self.path_of(root) else {
             return Err(format!("no such panel `{root}`"));
@@ -967,7 +971,7 @@ impl Layout {
         order_index: usize,
     ) -> Result<Layout, String> {
         if self.tab_index(root).is_some() {
-            return Err("a tab is not a subtree — move it in the strip with place_panel's `index` alone".into());
+            return Err(Self::TAB_IS_NOT_A_SUBTREE.into());
         }
         if self.node(root).is_none() {
             return Err(format!("no such panel `{root}`"));
