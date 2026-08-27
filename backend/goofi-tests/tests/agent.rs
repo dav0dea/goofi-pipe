@@ -25,13 +25,18 @@ async fn start_server() -> (Goofi, String, AppState) {
         let at = goofi_core::home::config_file();
         let _ = std::fs::create_dir_all(at.parent().unwrap());
         std::fs::write(at, concat!(
+            // Every entry that needs shell SYNTAX states `sh -c` itself, because the launcher
+            // shell is the user's own — `cmd /C` on Windows, which reads none of it.
             "[[agents]]\nname = \"_sh\"\ncommand = \"sh\"\n\n",
             // One that reports the SIGTERM and refuses to leave. The loop matters: a bare
             // `sleep` is a child of the same group and would die of the group signal.
+            // The handler is a FUNCTION so the whole line needs no `"`: portable-pty quotes an
+            // argument the way `CommandLineToArgvW` reads it, and `cmd` reads `\"` as two words.
             "[[agents]]\nname = \"_deaf\"\n",
-            "command = \"trap 'echo GOT-TERM' TERM; while :; do echo armed; sleep 0.2; done\"\n\n",
+            "command = \"sh -c 'got(){ echo GOT-TERM; }; trap got TERM; \
+             while :; do echo armed; sleep 0.2; done'\"\n\n",
             "[[agents]]\nname = \"visible_probe\"\ncommand = \"echo hi\"\n\n",
-            "[[agents]]\nname = \"_gone\"\ncommand = \"definitely-not-a-cmd-4712\"\n",
+            "[[agents]]\nname = \"_gone\"\ncommand = \"sh -c definitely-not-a-cmd-4712\"\n",
         )).expect("the test config");
     });
     let addr = host(&g.serve().await).to_string();
@@ -566,23 +571,25 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     assert_eq!(std::fs::read_to_string(mount.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
 
     // Identity travels in the ENVIRONMENT, and the shell itself answers what it was handed: the
-    // server's id, its own undo actor, and a `goofi` that IS this server's binary — the shim,
-    // first on PATH, laid in the instance's own config dir.
+    // server's id, its own undo actor, and a `goofi` that resolves — out of the directory the
+    // running binary sits in, which goofi puts on PATH.
     term.send(Message::Binary(
-        b"stty -echo; printf 'S[%s]A[%s]G[%s]EN''D\n' \
-          \"$GOOFI_SESSION\" \"$GOOFI_ACTOR\" \"$(command -v goofi)\"\n".to_vec().into()))
+        b"stty -echo; printf 'S[%s]A[%s]G[%s]P[%s]EN''D\n' \
+          \"$GOOFI_SESSION\" \"$GOOFI_ACTOR\" \"$(command -v goofi)\" \"$PATH\"\n".to_vec().into()))
         .await.unwrap();
     let said = read_until(&mut term, "END").await;
     assert!(said.contains(&format!("S[{}]", &*state.instance_id)), "{said}");
     assert!(said.contains(&format!("A[{}]", term::actor_of(&id))), "{said}");
-    // A login profile may rebuild PATH over the shim, so the pin is the word's TARGET, not
-    // its seat.
-    let word = std::path::PathBuf::from(field(&said, "G["));
-    let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-    assert_eq!(std::fs::canonicalize(&word).unwrap_or_default(), me, "{said}");
-    let shim = term::config_dir(&mount, &id).join("goofi");
-    assert_eq!(std::fs::read_link(&shim).unwrap(), std::env::current_exe().unwrap(),
-               "the shim IS this very binary");
+    // The word RESOLVES — the half a `.cmd` launcher failed, since no bash-family shell reads one.
+    assert!(!field(&said, "G[").is_empty(), "`goofi` is not a command in the agent's shell: {said}");
+    // Named by its tail, not its whole path: an MSYS shell reports `/c/Users/x` for `C:\Users\x`.
+    // Containment rather than the leading seat, because a login profile may rebuild PATH over it.
+    let own = std::env::current_exe().unwrap();
+    let own = own.parent().unwrap();
+    let mut tail = own.components().rev().map(|c| c.as_os_str().to_string_lossy().into_owned());
+    let (last, before) = (tail.next().unwrap(), tail.next().unwrap());
+    assert!(said.contains(&format!("{before}/{last}")),
+            "goofi's own directory is not on the agent's PATH: {said}");
 
     // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
     // The reaper drops the stack and THEN broadcasts, so the exited event is the settled signal.

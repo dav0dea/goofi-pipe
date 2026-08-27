@@ -3,9 +3,9 @@
 //! where every agent already shows its output.
 //!
 //! The environment is inherited WHOLE, so the agent's own login and auth work; the terminal
-//! contract, `GOOFI_SESSION`/`GOOFI_ACTOR` and the `goofi` shim are overlaid. Nothing here
-//! emulates a terminal; a bounded tail of output replays on attach, so a command that fails
-//! before any viewer arrives — or a page reload — still shows its words.
+//! contract, `GOOFI_SESSION`/`GOOFI_ACTOR` and goofi's own directory on PATH are overlaid.
+//! Nothing here emulates a terminal; a bounded tail of output replays on attach, so a command
+//! that fails before any viewer arrives — or a page reload — still shows its words.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -101,10 +101,6 @@ impl Harnesses {
             })?;
         let id = crate::nonce_hex()[..12].to_string();
 
-        let dir = config_dir(cwd, &id);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("agent config directory: {e}"))?;
-        write_shim(&dir)?;
-
         let pty = native_pty_system().openpty(PtySize::default()).map_err(|e| e.to_string())?;
         let mut cmd = shell_command(&command);
         cmd.cwd(cwd);
@@ -118,10 +114,10 @@ impl Harnesses {
             cmd.env("LC_ALL", "C.UTF-8");
         }
         // How the shell finds ITS server: the id names the session file, the actor its undo
-        // stack, and the shim makes `goofi` this server's own binary whatever is installed.
+        // stack, and the leading PATH entry makes `goofi` this server's own binary.
         cmd.env("GOOFI_SESSION", session_id);
         cmd.env("GOOFI_ACTOR", actor_of(&id));
-        cmd.env("PATH", prepend_path(&dir, env));
+        cmd.env("PATH", prepend_path(&own_dir()?, env));
         let child = pty.slave.spawn_command(cmd).map_err(|e| format!("spawn {agent}: {e}"))?;
         // Closed here, or the master never sees EOF when the child exits and the drain blocks.
         drop(pty.slave);
@@ -371,12 +367,6 @@ pub fn seed_orientation(mount: &Path) {
     }
 }
 
-/// Where one instance's config is written: BESIDE the workspace, since inside would pack the
-/// shim into every `.gfi` and dirty the patch merely for launching an agent.
-pub fn config_dir(mount: &Path, id: &str) -> PathBuf {
-    mount.parent().unwrap_or(mount).join("harness").join(id)
-}
-
 /// Answer ConPTY's cursor-position query, which BLOCKS the child until something replies — but only
 /// while no viewer is attached, since xterm.js gives the real position and a second reply is typed
 /// input.
@@ -444,24 +434,17 @@ fn shell_command(command: &str) -> CommandBuilder {
     }
 }
 
-/// Lay the `goofi` shim — this very binary — into the instance's own config dir, so two servers
-/// of different builds cannot overwrite each other's.
-fn write_shim(dir: &Path) -> Result<(), String> {
-    let me = std::env::current_exe().map_err(|e| format!("the shim's target: {e}"))?;
-    #[cfg(windows)]
-    let done = std::fs::write(dir.join("goofi.cmd"), format!("@\"{}\" %*\r\n", me.display()));
-    #[cfg(not(windows))]
-    let done = {
-        // Linked aside and renamed over, so a leftover always names the CURRENT binary.
-        let tmp = dir.join(".goofi.part");
-        let _ = std::fs::remove_file(&tmp);
-        std::os::unix::fs::symlink(&me, &tmp)
-            .and_then(|()| std::fs::rename(&tmp, dir.join("goofi")))
-    };
-    done.map_err(|e| format!("the goofi shim: {e}"))
+/// The directory `goofi` must resolve out of: the running binary's own. It is the binary ITSELF
+/// rather than a launcher laid beside it, because a launcher is a script and a script has a
+/// dialect — `cmd` reads no extensionless file and no bash-family shell reads a `.cmd`. Copying
+/// the binary instead is not open either: Windows loads a process's DLLs from the directory it
+/// runs out of, and `python3*.dll` sits beside this one.
+fn own_dir() -> Result<PathBuf, String> {
+    let me = std::env::current_exe().map_err(|e| format!("the running binary: {e}"))?;
+    me.parent().map(Path::to_path_buf).ok_or_else(|| "the running binary has no directory".into())
 }
 
-/// The child's PATH with the shim dir FIRST. A login shell's profile may rebuild PATH over
+/// The child's PATH with that directory FIRST. A login shell's profile may rebuild PATH over
 /// this; `GOOFI_SESSION` still names the server, so a globally installed `goofi` also lands.
 fn prepend_path(dir: &Path, env: &[(OsString, OsString)]) -> OsString {
     let tail = env
