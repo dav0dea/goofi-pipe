@@ -137,13 +137,13 @@ import goofi, os, sys
 payload = os.fdopen(os.dup(1), 'wb')
 os.dup2(2, 1)
 sys.stdout = sys.stderr
-payload.write(goofi.introspect(os.environ['GOOFI_INTROSPECT_PATH']).encode())
+payload.write(goofi.introspect(sys.argv[1]).encode())
 payload.close()
 ";
     let out = Command::new(python)
         .arg("-c")
         .arg(PROBE)
-        .env("GOOFI_INTROSPECT_PATH", path)
+        .arg(path)
         // A host `PYTHONPATH` must not shadow the probe interpreter's own goofi and deps.
         .env_remove("PYTHONPATH")
         .env_remove("PYTHONHOME")
