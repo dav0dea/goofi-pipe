@@ -10,10 +10,20 @@ on:
 #
 # The steps are also the fresh-clone path, in order — `goofi-init`, then cargo — so a clone that
 # needs a third command fails HERE rather than on a contributor's machine.
+#
+# One job, run on TWO machines. The list is the same list — a Windows gate that ran a subset would
+# be the second spelling this file exists to prevent — and it is a matrix rather than a second job
+# for that reason. It earns its minutes: the platform half of this codebase is real (ConPTY, a
+# `cmd` launcher, `\` in a path, a `.pdb` name) and none of it is visible from Linux. `fail-fast`
+# is off so one platform's failure still reports the other's.
 jobs:
   gates:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
     - uses: actions/checkout@v7
 
@@ -48,6 +58,13 @@ jobs:
       with:
         prefix-key: v1-rust
         cache-all-crates: true
+
+    # iceoryx2 builds its OS bindings with bindgen, which finds libclang by itself everywhere but
+    # here: the runner ships LLVM and does not name it.
+    - name: Name libclang (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
 
     # SETUP IS ONE COMMAND. It provisions both interpreters, installs the goofi wheel into each,
     # writes the cargo config that points pyo3 at the free-threaded one, and installs the
@@ -101,7 +118,7 @@ jobs:
     - uses: actions/upload-artifact@v7
       if: failure()
       with:
-        name: e2e-report
+        name: e2e-report-${{ matrix.os }}
         path: |
           tests/e2e/playwright-report/
           tests/e2e/test-results/

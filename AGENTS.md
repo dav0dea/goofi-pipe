@@ -267,8 +267,12 @@ that the load does not itself remap depends on it.
 
 **Identity is structural.** A spawned agent's identity travels in its ENVIRONMENT, minted by
 goofi at the spawn: `GOOFI_SESSION` names the server, `GOOFI_ACTOR` names its own undo stack, and
-a per-instance `goofi` shim first on PATH is the running binary itself — so nothing is detected,
-nothing is templated, and there is nothing to spoof. What an agent can reach, every local process
+the running binary's OWN DIRECTORY leads PATH, so `goofi` resolves to this very binary — nothing is
+detected, nothing is templated, and there is nothing to spoof. It is the directory rather than a
+launcher laid beside it, because a launcher is a script and a script has a dialect: a `goofi.cmd`
+is what `cmd` reads and what no bash-family shell will, so the agent that goofi most exists to
+serve found no `goofi` at all. Copying the binary somewhere neutral is not the way out either —
+Windows loads a process's DLLs from the directory it runs out of. What an agent can reach, every local process
 can already reach: `/exec` and `/mcp` extend the same trust `/control` always has, and a stopped
 agent's environment naming the server until the kill lands is that same trust, accepted. The
 Origin/Host allowlist covers every route including the WebSocket upgrades — a drive-by guard, not
@@ -362,6 +366,12 @@ the frontend's dependencies. It is the same list because a gate with two spellin
 one that drifts is the one nobody runs by hand. The clippy line is spelled `-- -D warnings` there:
 "and this prints nothing" is not enforceable by reading, and clippy carries the rustc lints too, so
 that one command is the build-warning gate as well.
+**That one job runs on Linux AND Windows**, as a matrix rather than a second job, so there is still
+one list. The platform half of this codebase is real and none of it is visible from Linux: a ConPTY
+that answers a cursor query and never reports EOF, a `cmd` launcher, `\` in every path a test
+compares, a `.pdb` two targets can collide on. Every one of those was found by hand, on a machine,
+after it had already shipped. Note what the warning gate still cannot hold: `-D warnings` is
+rustc's, and a CARGO warning — the `.pdb` collision was one — passes it silently.
 **TypeScript stays on 6.x.** 7 installs and `svelte-check` will run against it — with both versions
 side by side and a `--tsgo` flag — and it checks **66 files instead of 754** and reports success.
 A gate that silently covers a tenth of the app is worse than no gate. Re-try when svelte-check's
