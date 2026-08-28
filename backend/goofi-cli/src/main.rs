@@ -405,6 +405,7 @@ async fn run(
     let python = subproc_python.clone();
     state.scan_nodes = Arc::new(move |g, dir| register_routed(g, dir, &python));
     state.system_nodes = node_dirs(&extra_nodes, std::path::Path::new(DEFAULT_NODES_DIR).is_dir());
+    ensure_packages(&state.system_nodes, &subproc_python);
     let discovered = if state.system_nodes.is_empty() { Vec::new() } else { boot_scan(&state) };
 
     let code = if list_nodes {
@@ -571,6 +572,56 @@ fn point_embedded_python_at_its_venv() {
 
 #[cfg(not(feature = "python"))]
 fn point_embedded_python_at_its_venv() {}
+
+/// Every node directory's `requirements.txt`, checked against both interpreters before the scan
+/// imports anything. Nothing is installed unasked: a terminal is asked once, and anything else is
+/// told what will be unavailable and served through.
+#[cfg(feature = "python")]
+fn ensure_packages(dirs: &[PathBuf], subproc_python: &str) {
+    use std::io::IsTerminal;
+    let reqs = goofi_init::requirements_in(dirs);
+    if reqs.is_empty() {
+        return;
+    }
+    let root = goofi_init::repo_root();
+    let interpreters =
+        [goofi_init::venv_python(&root.join(goofi_init::FT_VENV)), Some(PathBuf::from(subproc_python))];
+    let mut lacking = Vec::new();
+    for py in interpreters.into_iter().flatten() {
+        let shown = py.strip_prefix(&root).unwrap_or(&py).display().to_string();
+        match goofi_init::missing_packages(&py, &reqs) {
+            Ok(missing) if missing.is_empty() => {}
+            Ok(missing) => {
+                eprintln!("  {shown} lacks {}", missing.join(", "));
+                lacking.push(py);
+            }
+            Err(e) => eprintln!("  could not check {shown}: {e}"),
+        }
+    }
+    if lacking.is_empty() {
+        return;
+    }
+    let from = reqs.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ");
+    if !std::io::stdin().is_terminal() {
+        eprintln!("  named by {from}; no terminal to ask, so those nodes will be unavailable");
+        return;
+    }
+    eprint!("  named by {from} — install now? [y/N] ");
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        eprintln!("  not installed; those nodes will be unavailable");
+        return;
+    }
+    for py in lacking {
+        if let Err(e) = goofi_init::install_packages(&py, &reqs) {
+            eprintln!("  {e}");
+        }
+    }
+}
+
+#[cfg(not(feature = "python"))]
+fn ensure_packages(_dirs: &[PathBuf], _subproc_python: &str) {}
 
 #[cfg(not(feature = "python"))]
 fn register_evaluator(_state: &AppState) {

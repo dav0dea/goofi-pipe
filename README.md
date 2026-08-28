@@ -60,8 +60,11 @@ and the result is headless for life, with no flag to remember at every run. `GOO
 
 The nodes this repo ships beyond the built-ins live in `node-bundles/`, one directory per
 bundle — `complexity` (the antropy measures) and `eeg` (playback, LSL, band power, FOOOF). A
-bundle is loaded like any node directory: `cargo run -- --extra-nodes node-bundles/eeg`. The
-library that installs one by name is `roadmap/library.md`.
+bundle is loaded like any node directory: `cargo run -- --extra-nodes node-bundles/eeg`. Each
+names the packages its nodes import in a `requirements.txt`; `goofi-init` installs the shipped
+bundles', and at startup goofi checks every scanned directory's against both interpreters — a
+terminal is asked before anything is installed, and without one the nodes are simply unavailable.
+The library that installs a bundle by name is `roadmap/library.md`.
 
 **When the backend is not on your machine,** the Save and Open dialogs each carry a
 second door — *Download a copy* and *Open from this computer…* — which pass the `.gfi`

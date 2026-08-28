@@ -23,10 +23,11 @@ anyone can install.
 
 ## Decisions
 
-**The unit is a bundle.** A bundle is a directory with a manifest beside its files: a name, a
-version, a description, the Python packages its nodes import, and the goofi version it was built
-against. It holds `nodes/` and, later, `panels/`. A bundle is the only thing that is installed,
-published or updated. There is no per-node install.
+**The unit is a bundle.** A bundle is a directory with a `requirements.txt` for the Python
+packages its nodes import — this exists today: checked against both interpreters at startup and
+installed only on a yes in the terminal — and a manifest beside its files: a name, a version, a
+description, and the goofi version it was built against. It holds `nodes/` and, later, `panels/`.
+A bundle is the only thing that is installed, published or updated. There is no per-node install.
 
 **Installed bundles live in `$GOOFI_HOME/.goofi/bundles/<name>/`**, one directory each, and the
 scan order becomes: the shipped tree, then each installed bundle, then this patch's own
@@ -120,8 +121,9 @@ testable through the one interface) or a peer channel (cheaper, weaker).
 
 ## Order of work
 
-1. **Done: `node-bundles/complexity` and `node-bundles/eeg`**, loaded with `--extra-nodes`, their
-   packages in the wheel's `nodes` extra, and one scenario per bundle in `goofi-tests`.
+1. **Done: `node-bundles/complexity` and `node-bundles/eeg`**, loaded with `--extra-nodes`, each
+   naming its packages in a `requirements.txt` that provisioning installs and startup checks, and
+   one scenario per bundle in `goofi-tests`.
 2. **The bundle manifest and the local half**: `library bundle install <path | git url>` into
    `.goofi/bundles/`, the scan order, the palette category, `list`, `update`, `remove`. The
    `.gfi` records `name@version`.

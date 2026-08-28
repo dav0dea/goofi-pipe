@@ -154,6 +154,30 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     }
 }
 
+#[test]
+fn every_bundle_names_its_packages_and_both_interpreters_hold_them() {
+    // Provisioning installs each bundle's `requirements.txt` and startup checks the same files, so
+    // a bundle without one, or an interpreter short of one, is what either would silently pass.
+    let root = goofi_init::repo_root();
+    let bundles = goofi_init::bundle_dirs(&root);
+    assert!(!bundles.is_empty(), "the repo ships bundles under node-bundles/");
+    for b in &bundles {
+        assert!(b.join("requirements.txt").is_file(), "{} names its packages", b.display());
+    }
+    let reqs = goofi_init::requirements_in(&bundles);
+    let gap = std::env::temp_dir().join(format!("goofi-gap-{}.txt", std::process::id()));
+    std::fs::write(&gap, "cowsay\n").unwrap();
+    for venv in [goofi_init::FT_VENV, goofi_init::GIL_VENV] {
+        let py = goofi_init::venv_python(&root.join(venv))
+            .unwrap_or_else(|| panic!("no {venv}: {}", goofi_init::RUN_ME));
+        let missing = goofi_init::missing_packages(&py, &reqs).expect("uv audits the interpreter");
+        assert!(missing.is_empty(), "{venv} lacks {missing:?}: {}", goofi_init::RUN_ME);
+        // The check can SEE a gap: naming what is absent takes the index, as the install would.
+        let missing = goofi_init::missing_packages(&py, std::slice::from_ref(&gap)).expect("uv resolves the gap");
+        assert!(missing.iter().any(|m| m.starts_with("cowsay==")), "{venv}: the gap is named: {missing:?}");
+    }
+}
+
 /// A python of the tier's own, spawned as the node tier spawns one: the embedding's
 /// `PYTHONHOME`/`PYTHONPATH` in this process would point a GIL interpreter at the free-threaded tree.
 fn python(py: &str, script: &str) -> std::process::Command {

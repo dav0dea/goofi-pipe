@@ -87,8 +87,15 @@ pub fn init(root: &Path) -> Result<(), String> {
     // The config BEFORE the wheels, so a failed wheel build still leaves a config a re-run can use.
     write_config(root, &ft)?;
 
+    // The bundles' packages every time, never gated on presence: a bundle added since the last
+    // run names new ones, and uv answers a satisfied list in milliseconds.
+    let reqs = requirements_in(&bundle_dirs(root));
     for (venv, py) in [(FT_VENV, &ft), (GIL_VENV, &gil)] {
         install_wheel(root, venv, py)?;
+        if !reqs.is_empty() {
+            println!("  installing the bundles' packages into {venv}");
+            install_packages(py, &reqs)?;
+        }
     }
 
     // Run every time, never gated on `node_modules`: no lockfile ships, so `npm install` IS the
@@ -174,12 +181,64 @@ fn install_wheel(root: &Path, venv: &str, py: &Path) -> Result<(), String> {
         .find(|p| p.extension().is_some_and(|x| x == "whl"))
         .ok_or_else(|| format!("maturin wrote no wheel into {}", out.display()))?;
 
-    // The `nodes` extra, so installing goofi is the whole of provisioning.
-    let spec = format!("{}[nodes]", wheel.display());
     run(
-        uv(["pip", "install", "--python"]).arg(py).arg("--force-reinstall").arg(&spec),
+        uv(["pip", "install", "--python"]).arg(py).arg("--force-reinstall").arg(&wheel),
         "install the goofi wheel",
     )
+}
+
+/// The bundles this repo ships: every directory under `node-bundles/`, sorted.
+pub fn bundle_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root.join("node-bundles"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// The `requirements.txt` each of `dirs` carries — what its nodes import beyond goofi's own.
+pub fn requirements_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    dirs.iter().map(|d| d.join("requirements.txt")).filter(|p| p.is_file()).collect()
+}
+
+fn pip_install(py: &Path, reqs: &[PathBuf], dry_run: bool) -> Command {
+    let mut cmd = uv(["pip", "install", "--python"]);
+    cmd.arg(py);
+    if dry_run {
+        cmd.arg("--dry-run");
+    }
+    for r in reqs {
+        cmd.arg("-r").arg(r);
+    }
+    cmd
+}
+
+fn names(reqs: &[PathBuf]) -> String {
+    reqs.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
+}
+
+/// What `py` lacks to satisfy `reqs`, as uv would install it. uv audits site-packages before it
+/// resolves anything, so a satisfied set answers in milliseconds and without the network.
+pub fn missing_packages(py: &Path, reqs: &[PathBuf]) -> Result<Vec<String>, String> {
+    if reqs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let out = pip_install(py, reqs, true).output().map_err(|e| format!("could not run uv: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return Err(format!("uv could not resolve {}: {}", names(reqs), text.trim()));
+    }
+    // ponytail: reads uv's dry-run listing; a `--format json` on `uv pip install` replaces this.
+    Ok(text.lines().filter_map(|l| l.strip_prefix(" + ")).map(str::to_string).collect())
+}
+
+/// Install `reqs` into `py`.
+pub fn install_packages(py: &Path, reqs: &[PathBuf]) -> Result<(), String> {
+    run(&mut pip_install(py, reqs, false), &format!("install {}", names(reqs)))
 }
 
 /// Does this interpreter hold THIS goofi? `introspect` separates the Rust wheel from the old Python
