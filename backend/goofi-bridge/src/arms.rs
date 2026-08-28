@@ -48,7 +48,7 @@ pub(crate) fn agent_start(
         .and_then(|v| v.as_str())
         .ok_or("agent start: missing name")?;
     // The mount lock is held ACROSS the spawn, so a concurrent load's swap-and-delete cannot
-    // take the workspace out from under the shim write and the child's cwd.
+    // take the workspace out from under the child's cwd.
     let id = {
         let mount = state.mount.lock().unwrap();
         state.harnesses.spawn(
