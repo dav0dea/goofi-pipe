@@ -4,16 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goofi_tests::{Goofi, Viewer, ep, hex, holds_within, j};
+use goofi_tests::{f32s, Goofi, Viewer, ep, hex, holds_within, j};
 
 // A wall-clock oracle needs a QUIET machine: a measuring test takes it alone (write), the rest
 // share it (read) — CI's two cores made parallel tests corrupt each other's time.
 static MACHINE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
-
-fn f32s(d: &goofi_core::Data) -> Vec<f32> {
-    let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
-    a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
-}
 
 /// A snapshot reply's NPY, decoded; empty when the reply holds none.
 fn npy(r: &serde_json::Value) -> Vec<u8> {

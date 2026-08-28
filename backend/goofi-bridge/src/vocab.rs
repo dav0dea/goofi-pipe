@@ -273,7 +273,12 @@ pub fn resolve_slot(
     Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
 }
 
-fn check_slot(g: &goofi_engine::Graph, op: &str, uid: goofi_engine::Uid, slot: &str) -> Result<(), String> {
+pub(crate) fn check_slot(
+    g: &goofi_engine::Graph,
+    op: &str,
+    uid: goofi_engine::Uid,
+    slot: &str,
+) -> Result<(), String> {
     resolve_slot(g, op, uid, slot).map(|_| ())
 }
 

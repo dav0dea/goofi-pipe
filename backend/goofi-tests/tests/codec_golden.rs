@@ -11,7 +11,7 @@ fn arr(shape: &[usize], buf: Vec<u8>, meta: Meta) -> Data {
     Data::array_f32(shape.to_vec(), buf, meta).unwrap()
 }
 
-fn f32s(vals: &[f32]) -> Vec<u8> {
+fn le_bytes(vals: &[f32]) -> Vec<u8> {
     vals.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
@@ -22,19 +22,19 @@ fn build_cases() -> Vec<(&'static str, Data)> {
     let meta_index = Meta::new().with_index(Some(42));
 
     let mut table = IndexMap::new();
-    table.insert("a".to_string(), arr(&[2], f32s(&[1.0, 2.0]), Meta::empty()));
+    table.insert("a".to_string(), arr(&[2], le_bytes(&[1.0, 2.0]), Meta::empty()));
     table.insert("b".to_string(), Data::string("x", Meta::empty()));
 
     vec![
-        ("f32_1d", arr(&[3], f32s(&[1.0, 2.0, 3.0]), Meta::empty())),
+        ("f32_1d", arr(&[3], le_bytes(&[1.0, 2.0, 3.0]), Meta::empty())),
         // 0-d scalar promotes to shape (1,)
-        ("scalar_0d", arr(&[], f32s(&[3.0]), Meta::empty())),
+        ("scalar_0d", arr(&[], le_bytes(&[3.0]), Meta::empty())),
         ("empty_array", arr(&[0], vec![], Meta::empty())),
         (
             "with_sfreq_channels",
-            arr(&[2, 3], f32s(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]), meta_sfreq_ch),
+            arr(&[2, 3], le_bytes(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]), meta_sfreq_ch),
         ),
-        ("with_index", arr(&[4], f32s(&[1.0, 2.0, 3.0, 4.0]), meta_index)),
+        ("with_index", arr(&[4], le_bytes(&[1.0, 2.0, 3.0, 4.0]), meta_index)),
         ("string", Data::string("hello world éà", Meta::empty())),
         ("string_empty", Data::string("", Meta::empty())),
         ("table", Data::table(table, Meta::empty())),

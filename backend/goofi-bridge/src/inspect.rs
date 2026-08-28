@@ -197,12 +197,7 @@ pub fn node(
     // and carries the port's display name beside it — so nothing here re-derives a label.
     let outputs = crate::vocab::output_slots(g, uid);
     if let Some(s) = slot {
-        if !outputs.iter().any(|(key, label, _)| label == s || key == s) {
-            return Err(format!(
-                "node state: `{type_name}` has no output slot `{s}` (it has: {})",
-                outputs.iter().map(|(_, l, _)| l.as_str()).collect::<Vec<_>>().join(", "),
-            ));
-        }
+        crate::vocab::check_slot(g, "node state", uid, s)?;
     }
 
     if want_params {
@@ -261,7 +256,7 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
         .ok_or_else(|| format!("library get: no node type `{ty}`"))?;
     let mut info = crate::schemas::node_type_info(
         manifest,
-        if g.is_patch_type(ty) { "patch" } else { "builtin" },
+        crate::schemas::source_of(g, ty),
     );
     // The type name is its file's CamelCased stem, so the path re-derives without a registry.
     let found = dirs.iter().find_map(|(dir, provenance)| {

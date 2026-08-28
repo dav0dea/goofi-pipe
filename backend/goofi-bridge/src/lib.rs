@@ -752,17 +752,16 @@ pub(crate) fn event(name: &str, payload: Value) -> String {
 /// the params whose ⟳ refresh just completed — it must be sent on EVERY outcome, a refresh that
 /// found nothing included, or the button spins on.
 fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> String {
-    event(
-        "state_update",
-        json!({
-            "node": peer.to_hex(),
-            "params": schemas::describe_node_params(g, peer),
-            "stage": g.node_stage(peer),
-            "error": g.last_error(peer),
-            "runtime": g.manifest(peer).map(|m| m.isolation.get().wire()),
-            "refreshed_params": refreshed.iter().map(|(g, n)| json!([g, n])).collect::<Vec<_>>(),
-        }),
-    )
+    let Value::Object(mut body) = schemas::runtime_json(g, peer) else {
+        unreachable!("runtime_json builds an object")
+    };
+    body.insert("node".into(), json!(peer.to_hex()));
+    body.insert("params".into(), schemas::describe_node_params(g, peer));
+    body.insert(
+        "refreshed_params".into(),
+        refreshed.iter().map(|(g, n)| json!([g, n])).collect(),
+    );
+    event("state_update", Value::Object(body))
 }
 
 fn parse_uid(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
@@ -814,23 +813,6 @@ fn parse_pos(v: &Value) -> Option<[f64; 2]> {
         return None;
     }
     Some([a[0].as_f64()?, a[1].as_f64()?])
-}
-
-/// A JSON merge patch applied in place: objects merge key by key, `null` deletes, anything else
-/// replaces.
-fn merge_json(target: &mut Value, patch: &Value) {
-    match (target, patch) {
-        (Value::Object(t), Value::Object(p)) => {
-            for (k, v) in p {
-                if v.is_null() {
-                    t.remove(k);
-                } else {
-                    merge_json(t.entry(k.clone()).or_insert(Value::Null), v);
-                }
-            }
-        }
-        (t, p) => *t = p.clone(),
-    }
 }
 
 /// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two
@@ -1292,15 +1274,13 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     farewell(tx, rx, 1000, "").await;
 }
 
-/// The physical `(node, slot)` a `/data` address stands for: a leaf is its own, and a port relays,
-/// so it is whatever is behind it. `None` while nothing is — a wait, never an error.
+/// The physical `(node, slot)` a `/data` address stands for — the engine's ONE wiring resolution.
+/// `None` while nothing is behind a port yet — a wait, never an error.
 fn stream_behind(g: &Graph, uid: Uid, slot: &str) -> Option<reducer::SlotKey> {
-    if g.manifest(uid).is_some() {
-        return Some((uid, slot.to_string()));
+    match g.stream(uid, slot) {
+        Some(goofi_engine::Stream::At(leaf, s)) => Some((leaf, s.to_string())),
+        _ => None,
     }
-    // A facade names one of its ports as the slot, which is this same question one level out.
-    let port = if g.stub(uid).is_some() { Some(uid) } else { Uid::from_hex(slot) };
-    port.and_then(|p| g.stub_stream(p)).map(|(leaf, s)| (leaf, s.to_string()))
 }
 
 /// The next frame, or a future that never finishes while nothing is behind the address yet — which

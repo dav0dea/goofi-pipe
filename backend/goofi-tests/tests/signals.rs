@@ -3,18 +3,8 @@
 //!
 //! DIMENSIONALITY is the property that spans the set, so the source emits a grid, not a vector.
 
-use goofi_core::{Data, Value};
-use goofi_tests::{j, Goofi};
-
-fn shape(d: &Data) -> Vec<usize> {
-    let Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
-    a.shape().to_vec()
-}
-
-fn f32s(d: &Data) -> Vec<f32> {
-    let Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
-    a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
-}
+use goofi_core::Data;
+use goofi_tests::{f32s, shape, j, Goofi};
 
 /// The bin carrying the most power, and its value.
 fn peak(d: &Data) -> (usize, f32) {

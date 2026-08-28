@@ -618,3 +618,84 @@ pub async fn tool(addr: &str, command: &str) -> String {
     assert_eq!(reply["result"]["isError"], json!(false), "`{command}` failed: {}", reply["result"]);
     reply["result"]["content"][0]["text"].as_str().unwrap().to_string()
 }
+
+/// One ARRAY frame's payload as f32s — the LE decode every scenario reads frames with.
+pub fn f32s(d: &goofi_core::Data) -> Vec<f32> {
+    let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
+    a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
+}
+
+/// An ARRAY frame's shape.
+pub fn shape(d: &goofi_core::Data) -> Vec<usize> {
+    let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
+    a.shape().to_vec()
+}
+
+/// A 1-D ARRAY frame over `values`, metadata-less.
+pub fn frame(values: &[f32]) -> goofi_core::Data {
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    goofi_core::Data::array_f32(vec![values.len()], bytes, goofi_core::Meta::empty()).unwrap()
+}
+
+/// Serializes a binary's Python-tier tests: every one of them spawns an interpreter.
+static TIER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The interpreter to spawn children with, plus the tier lock — held for the rest of the test.
+pub struct Tier {
+    pub py: String,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+/// A python with BOTH goofi and numpy, or a PANIC naming the fix — these never skip. The probe
+/// strips `PYTHONPATH` as the real child spawn does, so a host one cannot give a false negative.
+/// The venv location is goofi-init's — the one owner of the layout.
+pub fn require_python() -> Tier {
+    // A panicking test poisons the mutex; recover rather than cascade onto every sibling.
+    let _lock = TIER.lock().unwrap_or_else(|e| e.into_inner());
+    let venv = goofi_init::repo_root().join(goofi_init::GIL_VENV);
+    let cands = std::env::var("GOOFI_SUBPROC_TEST_PYTHON")
+        .into_iter()
+        .chain(goofi_init::venv_python(&venv).map(|p| p.to_string_lossy().into_owned()))
+        .chain(["python3".to_string(), "python".to_string()]);
+    for py in cands {
+        let ok = std::process::Command::new(&py)
+            .arg("-c")
+            .arg("import goofi, numpy")
+            .env_remove("PYTHONPATH")
+            .env_remove("PYTHONHOME")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            return Tier { py, _lock };
+        }
+    }
+    panic!(
+        "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, ./{}, python3, \
+         python). Run `cargo run -p goofi-init`, which creates the venvs and installs the goofi \
+         wheel into them.",
+        goofi_init::GIL_VENV
+    );
+}
+
+/// Write `source` into the patch's own node directory, probe it as the CLI's scan does, and
+/// register what comes back. Answers the type name the palette now offers.
+pub fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
+    let dir = g.state.mount().join("nodes");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(file);
+    std::fs::write(&path, source).unwrap();
+    match goofi_python::subproc::probe(&path, py) {
+        goofi_python::Discovery::Found(d) => {
+            let t = goofi_python::subproc::node_type_from(py, d);
+            let name = t.manifest.type_name.to_string();
+            g.register_dyn(t.manifest, t.factory);
+            name
+        }
+        goofi_python::Discovery::Unavailable { reason, .. } => {
+            panic!("{file} probed as unavailable: {reason}")
+        }
+        goofi_python::Discovery::Skip => panic!("{file} was not taken for a node file at all"),
+    }
+}

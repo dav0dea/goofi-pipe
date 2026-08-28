@@ -626,7 +626,7 @@ pub(crate) fn node_edit(
             let patch = viewer_entries_patch(entries)?;
             vocab::check_viewers(&g, uid, &patch)?;
             let mut whole = g.viewers(uid).cloned().ok_or("node edit: no such node")?;
-            merge_json(&mut whole, &Value::Object(patch));
+            crate::doc::apply_merge(&mut whole, &Value::Object(patch));
             Some(whole)
         }
         None => None,

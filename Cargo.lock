@@ -651,6 +651,7 @@ dependencies = [
  "goofi-codec",
  "goofi-core",
  "goofi-engine",
+ "goofi-init",
  "goofi-node",
  "goofi-nodes",
  "goofi-python",

@@ -138,7 +138,7 @@ fn output_slots(m: &NodeManifest) -> Value {
 }
 
 /// Where a palette row's type came from, for the add-menu badge: the open patch, or `builtin`.
-fn source_of(g: &Graph, type_name: &str) -> &'static str {
+pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     if g.is_patch_type(type_name) {
         "patch"
     } else {
@@ -204,17 +204,19 @@ pub fn catalog_types(g: &Graph) -> Value {
 pub fn runtime_overlay(g: &Graph) -> Value {
     let mut m = Map::new();
     for uid in g.all_uids() {
-        m.insert(
-            uid.to_hex(),
-            json!({
-                "stage": g.node_stage(uid),
-                "error": g.last_error(uid),
-                // Absent for a port and a facade, which run nowhere — as `stage` is for inspect.
-                "runtime": g.manifest(uid).map(|m| m.isolation.get().wire()),
-            }),
-        );
+        m.insert(uid.to_hex(), runtime_json(g, uid));
     }
     Value::Object(m)
+}
+
+/// The `{stage, error, runtime}` triple, ONE spelling for every wire site that carries it.
+/// `runtime` is absent for a port and a facade, which run nowhere — as `stage` is for inspect.
+pub(crate) fn runtime_json(g: &Graph, uid: Uid) -> Value {
+    json!({
+        "stage": g.node_stage(uid),
+        "error": g.last_error(uid),
+        "runtime": g.manifest(uid).map(|m| m.isolation.get().wire()),
+    })
 }
 
 /// The `hello` / `graph_replaced` payload: the session frame plus the truths the doc never holds.

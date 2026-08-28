@@ -6,7 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use goofi_core::{Data, Meta, Param, SlotType, Value};
+use goofi_core::{Param, SlotType};
+use goofi_tests::{f32s, frame};
 use goofi_engine::runtime::{
     door_service, iox_node, output_service, service_base, Control, ControlSink, Doorbell, Envelope,
     IoxNode, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime, ParamValue, Status,
@@ -51,20 +52,6 @@ static MANIFEST: NodeManifest = NodeManifest {
 
 fn manifest() -> &'static NodeManifest {
     &MANIFEST
-}
-
-fn frame(values: &[f32]) -> Data {
-    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-    Data::array_f32(vec![values.len()], bytes, Meta::empty()).unwrap()
-}
-
-fn values(frame: &Data) -> Vec<f32> {
-    match frame.value() {
-        Value::Array(store) => {
-            store.as_bytes().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
-        }
-        other => panic!("expected an array frame, got {other:?}"),
-    }
 }
 
 /// This run's service-name scope.
@@ -213,7 +200,7 @@ fn a_frame_reaches_a_wired_consumer_and_rings_its_slot() {
     let got = consumer.drain_inputs();
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].0.as_str(), got[0].1), ("in", 0), "slot, and its position in the wire order");
-    assert_eq!(values(&got[0].2), vec![1.0, 2.0, 3.0]);
+    assert_eq!(f32s(&got[0].2), vec![1.0, 2.0, 3.0]);
     assert!(consumer.drain_inputs().is_empty(), "a drained wire is empty");
 }
 
@@ -228,7 +215,7 @@ fn a_frame_larger_than_the_initial_slice_still_lands() {
     producer.publish("out", &frame(&big));
     let got = consumer.drain_inputs();
     assert_eq!(got.len(), 1, "the oversized frame was published and received");
-    assert_eq!(values(&got[0].2), big);
+    assert_eq!(f32s(&got[0].2), big);
 }
 
 #[test]
@@ -260,7 +247,7 @@ fn a_wire_the_new_set_still_names_keeps_what_it_is_holding() {
     consumer.wire_in("in", &[held, added]).unwrap();
     let got = consumer.drain_inputs();
     assert_eq!(got.len(), 1, "the second wire has nothing yet");
-    assert_eq!(values(&got[0].2), vec![1.0], "and the first still holds what it was sent");
+    assert_eq!(f32s(&got[0].2), vec![1.0], "and the first still holds what it was sent");
 }
 
 #[test]
@@ -314,7 +301,7 @@ fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
         "the cells are indexed by position in the set"
     );
     assert_eq!(
-        got.iter().map(|(_, _, frame)| values(frame)[0]).collect::<Vec<_>>(),
+        got.iter().map(|(_, _, frame)| f32s(frame)[0]).collect::<Vec<_>>(),
         (0..WIRES).rev().map(|i| if i == 0 { 100.0 } else { i as f32 }).collect::<Vec<f32>>(),
         "each cell holds its own producer's newest frame"
     );
