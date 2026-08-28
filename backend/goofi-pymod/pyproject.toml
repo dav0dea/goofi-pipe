@@ -15,12 +15,12 @@ requires-python = ">=3.8"
 # the package that defines it.
 dependencies = ["numpy"]
 
-# What the SHIPPED node files import, kept out of the package's own contract: goofi runs perfectly
-# well without antropy, and only the entropy nodes in `nodes/` need it. Provisioning installs
-# `goofi[nodes]`, so a fresh clone can run everything it ships without carrying scipy and numba
-# into every embedding of the library.
+# What the node files under `node-bundles/` import, kept out of the package's own contract: goofi
+# runs perfectly well without them, and only those nodes need them. Provisioning installs
+# `goofi[nodes]`, so a fresh clone can run everything it ships without carrying scipy, numba and
+# mne into every embedding of the library. A bundle manifest takes this over (roadmap/library.md).
 [project.optional-dependencies]
-nodes = ["antropy"]
+nodes = ["antropy", "mne", "pylsl", "specparam"]
 
 [tool.maturin]
 module-name = "goofi"

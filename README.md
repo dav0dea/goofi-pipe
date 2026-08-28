@@ -58,6 +58,11 @@ and the result is headless for life, with no flag to remember at every run. `GOO
 
 `./nodes/` is scanned whenever it exists; no flag turns it on or off.
 
+The nodes this repo ships beyond the built-ins live in `node-bundles/`, one directory per
+bundle — `complexity` (the antropy measures) and `eeg` (playback, LSL, band power, FOOOF). A
+bundle is loaded like any node directory: `cargo run -- --extra-nodes node-bundles/eeg`. The
+library that installs one by name is `roadmap/library.md`.
+
 **When the backend is not on your machine,** the Save and Open dialogs each carry a
 second door — *Download a copy* and *Open from this computer…* — which pass the `.gfi`
 through the browser rather than the backend. This is a copy out and a copy in: it leaves
