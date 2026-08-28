@@ -49,13 +49,16 @@ class Fooof(goofi.Node):
         aperiodic = np.full((rows.shape[0], len(ap_names)), np.nan)
         peaks = np.full((rows.shape[0], p.max_peaks, 3), np.nan)
         for i, row in enumerate(rows):
-            # A fit that overflows on the way to its answer, or fails, is a NaN row and not a log line.
+            # A fit that overflows on the way to its answer, or fails, is a NaN row and not a log line
+            # — and specparam reports its own failed fit as `has_model` unset, never as a raise.
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
+                warnings.simplefilter("ignore")
                 try:
                     model.fit(freqs, row, freq_range=freq_range)
                 except Exception:
                     continue
+            if not model.results.has_model:
+                continue
             aperiodic[i] = model.get_params("aperiodic")
             found = np.atleast_2d(model.get_params("peak"))
             if found.size:
