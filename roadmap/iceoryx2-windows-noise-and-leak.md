@@ -45,6 +45,23 @@ icacls C:\Temp\iceoryx2 /grant "%USERNAME%":(OI)(CI)F /T
 rmdir /s /q C:\Temp\iceoryx2
 ```
 
+## The race now fails tests, not just logs
+
+CI 2026-08-28 (run 33137431047, `subpatches` on windows-latest), two new signatures of the same
+`stat.rs:72` cleanup race, under nothing more than routine node churn in one process:
+
+- `PublishSubscribeCreateError(InternalFailure)` creating a node's `_sts` status service, right
+  after `SetFileSecurityA` `[ 2 ]` — the DACL write raced the file it was for. The node never
+  reports ready; the harness's `ready()` now fails fast wearing exactly this error, which is what
+  turned the former 90-second silent wedge into a diagnosis.
+- A hard PANIC in `iceoryx2-bb-posix` `Directory::new` — `"This should never happen!"`, dirfd
+  invalid on `<root>/nodes/<id>` — unwinding through the caller's thread. Not goofi's sweep: all
+  three automatic cleanup passes are off and `reclaim_stale_resources` had long finished; this is
+  the PAL enumerating under its own concurrent create/remove.
+
+Both are flake-grade (the identical commit passed the run before), so a red Windows job needs this
+file read before anything local is "fixed".
+
 ## Open
 
 - Whether goofi should reclaim the leak itself at startup rather than wait for upstream. It
@@ -53,3 +70,6 @@ rmdir /s /q C:\Temp\iceoryx2
   neighbours warn about, and a stale entry from a LIVE peer must never be swept.
 - Whether the noise deserves any local mitigation before a release lands. Stderr filtering is
   ruled out: a pipe-based filter DEADLOCKS the Python subprocess tier, which was measured.
+- Whether a bounded retry on service CREATE (any platform, no `cfg`) is boundary tolerance or
+  symptom-hiding. It would absorb the first signature and cannot absorb the second (a panic has
+  no retry), so it buys half a fix at most — parked until the upstream report lands an answer.

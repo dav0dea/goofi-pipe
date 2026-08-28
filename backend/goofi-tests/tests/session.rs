@@ -323,12 +323,14 @@ fn the_file_browser_answers_a_path_the_way_save_and_load_take_it() {
     for d in ["Zeta", "apples"] {
         std::fs::create_dir_all(tmp.path().join(d)).unwrap();
     }
-    // A name this platform accepts but UTF-8 cannot express; a lossy entry can collide with another.
+    // A name this platform accepts but UTF-8 cannot express; a lossy entry can collide with
+    // another. Best-effort: a filesystem that refuses the bytes (macOS, EILSEQ) has no
+    // undecodable names to filter, and Linux CI proves the filter either way.
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
         let bad = std::ffi::OsString::from_vec(b"bad\xff".to_vec()); // starts no valid sequence
-        std::fs::write(tmp.path().join(bad), b"x").unwrap();
+        let _ = std::fs::write(tmp.path().join(bad), b"x");
     }
 
     let here = to_slash(&canonical(tmp.path()).unwrap());
