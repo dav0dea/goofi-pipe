@@ -187,7 +187,7 @@ pub(crate) fn library_refresh(
         let mut g = state.graph.lock().unwrap();
         let (diff, _) = rescan(state, &mut g, &state.mount());
         restart_changed(&mut g, &diff);
-        events.push(node_types_event(&g));
+        events.push(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
         json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed })
     };
     resync_and_broadcast(state);
@@ -336,7 +336,7 @@ pub(crate) fn node_restart(
         let uid = parse_uid(&g, payload, "node")?;
         g.restart_node(uid)?;
         // Pushed at once, so the red border lifts on the click rather than on the sweep.
-        events.push(param_state_update(&g, uid));
+        events.push(param_state_update(&g, uid, &[]));
     }
     resync_and_broadcast(state);
     Ok(json!({ "ok": true }))
@@ -578,7 +578,7 @@ pub(crate) fn node_param_edit(
         .ok_or("node param edit: nothing to change")?;
     state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     // The runtime `expression_error` is doc-invisible, so echo the descriptor.
-    events.push(param_state_update(&g, uid));
+    events.push(param_state_update(&g, uid, &[]));
     Ok(json!({
         "value": g.params(uid)
             .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
@@ -642,7 +642,7 @@ pub(crate) fn node_edit(
     // The runtime `expression_error` is doc-invisible, so echo every referrer a rename rewrote.
     if let goofi_engine::Outcome::Nodes(referrers) = out {
         for r in referrers {
-            events.push(param_state_update(&g, r));
+            events.push(param_state_update(&g, r, &[]));
         }
     }
     Ok(json!({ "ok": true }))
@@ -1145,7 +1145,7 @@ fn load_patch(
                               state.harnesses.roster(&agents)),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
-        events.push(node_types_event(&g));
+        events.push(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
         if let Some(path) = from_path {
             events.push(event("save_path_changed", json!({ "save_path": path })));
         }

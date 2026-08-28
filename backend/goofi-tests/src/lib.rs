@@ -58,7 +58,7 @@ impl Goofi {
             std::env::set_var("SHELL", "/bin/sh");
         });
         let state = AppState::new(headless);
-        goofi_bridge::spawn_stats(state.graph.clone(), state.events.clone(), 2);
+        goofi_bridge::spawn_workers(&state);
         Goofi { state, actor: "test".into(), patience: WAIT }
     }
 

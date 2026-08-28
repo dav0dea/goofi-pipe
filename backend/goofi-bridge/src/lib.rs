@@ -288,9 +288,21 @@ fn stage_load(mount: &std::path::Path, payload: &Value) -> Result<(String, Optio
 /// is already on the router — a route added elsewhere would miss the [`origin`] guard.
 fn routes(state: AppState) -> Router {
     Router::new()
-        .route("/control", any(control_ws))
+        .route(
+            "/control",
+            any(|ws: WebSocketUpgrade, State(state): State<AppState>| async {
+                ws.on_upgrade(move |socket| handle_control(socket, state))
+            }),
+        )
         // One stream per (node, slot): each connection sends its viewers' ViewSpecs inband.
-        .route("/data/{node}/{slot}", any(data_ws))
+        .route(
+            "/data/{node}/{slot}",
+            any(|Path((node, slot)): Path<(String, String)>,
+                 ws: WebSocketUpgrade,
+                 State(state): State<AppState>| async {
+                ws.on_upgrade(move |socket| handle_data(socket, state, node, slot))
+            }),
+        )
         // The body limit is lifted: axum caps at 2 MB and a patch with a workspace is larger.
         .route(
             "/patch.gfi",
@@ -302,7 +314,14 @@ fn routes(state: AppState) -> Router {
         .route("/exec", post(exec_endpoint))
         .route("/mcp", post(mcp::endpoint))
         // A spawned harness's terminal: binary frames are PTY bytes, text frames JSON control.
-        .route("/term/{instance}", any(term_ws))
+        .route(
+            "/term/{instance}",
+            any(|Path(instance): Path<String>,
+                 ws: WebSocketUpgrade,
+                 State(state): State<AppState>| async {
+                ws.on_upgrade(move |socket| handle_term(socket, state, instance))
+            }),
+        )
         .with_state(state)
 }
 
@@ -333,14 +352,18 @@ fn error_transitions(
 /// draining is the RUNTIME's clock: it advances every wire's three-phase sequence, one per ack.
 const DRAIN_PERIOD: Duration = Duration::from_millis(1);
 
-/// The status-drain worker: take every node's reports, apply them to the graph, and broadcast the
-/// events that carry them at `hz`.
+/// How often the drained reports are broadcast — the event rate, distinct from the drain rate.
+const BROADCAST_PERIOD: Duration = Duration::from_millis(500);
+
+/// The background worker a live server needs — the status drain: take every node's reports, apply
+/// them to the graph, and broadcast the events that carry them.
 ///
 /// It must never `set_dirty(true)` — a node reporting its own state is not a user edit — and must
 /// FORGET a uid on removal, so a stale error cannot outlive its node.
-pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, hz: u64) {
+pub fn spawn_workers(state: &AppState) {
+    let (graph, events) = (state.graph.clone(), state.events.clone());
     std::thread::spawn(move || {
-        let period = Duration::from_secs_f64(1.0 / hz as f64);
+        let period = BROADCAST_PERIOD;
         let mut last_errors: HashMap<String, (u64, Option<String>)> = HashMap::new();
         // A node's stage changes on its own thread, with no RPC to ride on. It carries the error
         // too, because a facade HAS health and never reports one.
@@ -388,7 +411,7 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
                         .into_iter()
                         .filter(|(uid, _)| leaves.contains(uid))
                         .map(|(uid, key)| {
-                            param_state_update_refreshed(g, uid, &[(&key.group, &key.name)])
+                            param_state_update(g, uid, &[(&key.group, &key.name)])
                         })
                         .collect();
                     Some((rates, errs, expr_vals, stages, refreshed))
@@ -433,11 +456,6 @@ pub fn spawn_stats(graph: Arc<Mutex<Graph>>, events: broadcast::Sender<String>, 
 /// What the state sweep diffs per node: generation, stage, last error, and the tier it runs on.
 /// A change in any of them is one `node_stage` event.
 type NodeState = (u64, &'static str, Option<String>, Option<&'static str>);
-
-/// The API router, with no SPA.
-pub fn router(state: AppState) -> Router {
-    app(state, &[], false)
-}
 
 /// The full router, optionally serving the SPA on the fallback. `dev_routes` opens `/dev/*`, the
 /// development surfaces. The [`origin`] guard goes on LAST, so it wraps every route — the WebSocket
@@ -497,11 +515,6 @@ fn content_type(path: &str) -> &'static str {
         "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
-}
-
-/// The background workers a live server needs: the status-drain worker.
-pub fn spawn_workers(state: &AppState) {
-    spawn_stats(state.graph.clone(), state.events.clone(), 2);
 }
 
 pub async fn serve_app(
@@ -646,20 +659,10 @@ async fn exec_endpoint(State(state): State<AppState>, body: String) -> Response 
     }
 }
 
-async fn control_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| handle_control(socket, state))
-}
-
-async fn handle_control(socket: WebSocket, state: AppState) {
-    let (mut tx, mut rx) = socket.split();
-
-    // Subscribe BEFORE snapshotting the document: in the other order a peer's edit lands in
-    // neither, and the replica desyncs silently. A re-delivery is read as stale and skipped.
-    let mut events = state.events.subscribe();
-
-    // Answered BEFORE the graph lock is taken: these read the filesystem — the mount walk, the
-    // agents config — and no filesystem read may run while the status-drain worker waits on
-    // that lock.
+/// The two messages that seed (or re-seed) a control socket: the hello snapshot, then the whole
+/// document. The filesystem reads — the mount walk, the agents config — happen BEFORE the graph
+/// lock is taken, because no filesystem read may run while the status-drain worker waits on it.
+fn control_seeds(state: &AppState) -> (String, String) {
     let unsaved = state.is_dirty();
     let saved_at = state.save_path();
     let roster = state.harnesses.roster(&goofi_core::home::agents());
@@ -670,11 +673,21 @@ async fn handle_control(socket: WebSocket, state: AppState) {
             schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(), roster),
         )
     };
+    (hello, doc_state(state))
+}
+
+async fn handle_control(socket: WebSocket, state: AppState) {
+    let (mut tx, mut rx) = socket.split();
+
+    // Subscribe BEFORE snapshotting the document: in the other order a peer's edit lands in
+    // neither, and the replica desyncs silently. A re-delivery is read as stale and skipped.
+    let mut events = state.events.subscribe();
+
+    let (hello, doc) = control_seeds(&state);
     if tx.send(Message::Text(hello.into())).await.is_err() {
         return;
     }
-
-    if tx.send(Message::Text(doc_state(&state).into())).await.is_err() {
+    if tx.send(Message::Text(doc.into())).await.is_err() {
         return;
     }
 
@@ -701,21 +714,11 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 // Lagged past the shared ring, so both halves are re-seeded exactly as a fresh
                 // connection seeds them.
                 Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let unsaved = state.is_dirty(); // off the graph lock, as above
-                    let saved_at = state.save_path();
-                    let roster = state.harnesses.roster(&goofi_core::home::agents());
-                    let hello = {
-                        let g = state.graph.lock().unwrap();
-                        event(
-                            "hello",
-                            schemas::snapshot(&g, &state.instance_id, true, unsaved,
-                                              saved_at.as_deref(), roster),
-                        )
-                    };
+                    let (hello, doc) = control_seeds(&state);
                     if tx.send(Message::Text(hello.into())).await.is_err() {
                         break;
                     }
-                    if tx.send(Message::Text(doc_state(&state).into())).await.is_err() {
+                    if tx.send(Message::Text(doc.into())).await.is_err() {
                         break;
                     }
                 }
@@ -745,20 +748,10 @@ pub(crate) fn event(name: &str, payload: Value) -> String {
     json!({ "event": name, "payload": payload }).to_string()
 }
 
-/// The palette catalog changed — how a client that is already connected learns what `hello` would
-/// have told it.
-fn node_types_event(g: &Graph) -> String {
-    event("node_types", json!({ "types": schemas::catalog_types(g) }))
-}
-
-/// A per-node `state_update` event carrying a node's current params and error.
-fn param_state_update(g: &Graph, peer: Uid) -> String {
-    param_state_update_refreshed(g, peer, &[])
-}
-
-/// As [`param_state_update`], naming the params whose ⟳ refresh just completed. It must be sent on
-/// EVERY outcome, a refresh that found nothing included, or the button spins on.
-fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> String {
+/// A per-node `state_update` event carrying a node's current params and error. `refreshed` names
+/// the params whose ⟳ refresh just completed — it must be sent on EVERY outcome, a refresh that
+/// found nothing included, or the button spins on.
+fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> String {
     event(
         "state_update",
         json!({
@@ -1108,14 +1101,6 @@ fn resync_and_broadcast(state: &AppState) {
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }
 
-async fn term_ws(
-    Path(instance): Path<String>,
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_term(socket, state, instance))
-}
-
 /// The inband control a `/term` client sends; resize is the only one there is.
 #[derive(serde::Deserialize)]
 struct TermControl {
@@ -1224,14 +1209,6 @@ async fn farewell(
 
 fn size_frame(cols: u16, rows: u16) -> Message {
     Message::Text(json!({ "op": "size", "cols": cols, "rows": rows }).to_string().into())
-}
-
-async fn data_ws(
-    Path((node, slot)): Path<(String, String)>,
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> Response {
-    ws.on_upgrade(move |socket| handle_data(socket, state, node, slot))
 }
 
 /// The inband `{op:"view", specs:[…]}` a viewer sends to declare what it can draw. Latest-wins.
