@@ -816,37 +816,6 @@ fn parse_pos(v: &Value) -> Option<[f64; 2]> {
     Some([a[0].as_f64()?, a[1].as_f64()?])
 }
 
-/// The one params bag — `node add`'s birth entries and `node param edit` both fold into
-/// `{group: {param: value | {value, expression, mode, triggers}}}` — as one `EditParam` per entry.
-fn parse_params_bag(g: &Graph, uid: Uid, params: &Value) -> Result<Vec<goofi_engine::Command>, String> {
-    let groups = params.as_object().ok_or("params is {group: {param: …}}")?;
-    let mut cmds = Vec::new();
-    for (group, entries) in groups {
-        let entries =
-            entries.as_object().ok_or_else(|| format!("params.{group} is {{param: …}}"))?;
-        for (name, spec) in entries {
-            let existing = g
-                .params(uid)
-                .and_then(|p| goofi_node::param(&p, group, name).cloned())
-                .ok_or_else(|| format!("no param {group}.{name}"))?;
-            let cur = g.param_expression(uid, group, name);
-            let (value, expr) = parse_param_entry(&existing, cur, spec)
-                .map_err(|e| format!("params.{group}.{name}: {e}"))?;
-            if value.is_none() && expr.is_none() {
-                return Err(format!("params.{group}.{name} sets neither a value nor an expression"));
-            }
-            cmds.push(goofi_engine::Command::EditParam {
-                uid,
-                group: group.clone(),
-                name: name.clone(),
-                value,
-                expr,
-            });
-        }
-    }
-    Ok(cmds)
-}
-
 /// A JSON merge patch applied in place: objects merge key by key, `null` deletes, anything else
 /// replaces.
 fn merge_json(target: &mut Value, patch: &Value) {
@@ -862,72 +831,6 @@ fn merge_json(target: &mut Value, patch: &Value) {
         }
         (t, p) => *t = p.clone(),
     }
-}
-
-/// A CLI `--value` arrives as its raw string; the DECLARED type says what it meant.
-fn param_value(existing: &goofi_core::Param, v: &Value) -> goofi_core::Param {
-    let parsed = match (existing, v.as_str()) {
-        (goofi_core::Param::Str { .. }, _) | (_, None) => None,
-        (_, Some(s)) => serde_json::from_str::<Value>(s).ok(),
-    };
-    goofi_engine::param_from_json(existing, parsed.as_ref().unwrap_or(v), true)
-}
-
-/// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, mode, triggers}`.
-/// No param type is an object, so the two forms cannot be confused. An expression given without a
-/// mode turns the binding on, and a mode or trigger given alone edits the binding already there.
-fn parse_param_entry(
-    existing: &goofi_core::Param,
-    cur: Option<goofi_engine::ExprInfo>,
-    spec: &Value,
-) -> Result<(Option<goofi_core::Param>, Option<goofi_engine::ExprState>), String> {
-    let Some(o) = spec.as_object() else {
-        return Ok((Some(param_value(existing, spec)), None));
-    };
-    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "value" | "expression" | "mode" | "triggers")) {
-        return Err(format!("unknown field `{k}` — value, expression, mode, triggers"));
-    }
-    let value = o
-        .get("value")
-        .filter(|v| !v.is_null())
-        .map(|v| param_value(existing, v));
-    let mode = match o.get("mode").filter(|v| !v.is_null()) {
-        None => None,
-        Some(v) => match v.as_str() {
-            Some("expression") => Some(true),
-            Some("constant") => Some(false),
-            _ => return Err(format!("mode is `constant` or `expression`, not {v}")),
-        },
-    };
-    let source = o.get("expression").filter(|v| !v.is_null()).map(|v| {
-        v.as_str().map(str::to_string).ok_or_else(|| format!("expression is a string, not {v}"))
-    });
-    let triggers = match o.get("triggers").filter(|v| !v.is_null()) {
-        None => None,
-        Some(v) => Some(v.as_bool().ok_or_else(|| format!("triggers is a bool, not {v}"))?),
-    };
-    let expr = match (source, mode, triggers) {
-        (None, None, None) => None,
-        (source, mode, triggers) => {
-            // An expression given is an expression MEANT, so it binds without being told to; a mode
-            // or a trigger alone edits whatever binding is already there.
-            let default_enabled = match &source {
-                Some(_) => true,
-                None => cur.as_ref().is_some_and(|c| c.enabled),
-            };
-            let source = match source {
-                Some(s) => s?,
-                None => cur.as_ref().map(|c| c.source.clone()).unwrap_or_default(),
-            };
-            Some(goofi_engine::ExprState {
-                // An empty source is an UNBIND, so it cannot end up enabled.
-                enabled: mode.unwrap_or(default_enabled) && !source.is_empty(),
-                triggers: triggers.unwrap_or_else(|| cur.as_ref().is_some_and(|c| c.triggers_process)),
-                source,
-            })
-        }
-    };
-    Ok((value, expr))
 }
 
 /// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two

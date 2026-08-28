@@ -286,7 +286,7 @@ pub(crate) fn node_add(
     // into the doc.
     if let Some(entries) = payload.get("param").filter(|v| !v.is_null()) {
         let bag = param_entries_bag(entries).map_err(|e| format!("node add: {e}"))?;
-        for cmd in parse_params_bag(&g, uid, &bag).map_err(|e| format!("node add: {e}"))? {
+        for cmd in goofi_engine::param_commands(&g, uid, &bag).map_err(|e| format!("node add: {e}"))? {
             cmd.execute(&mut g).map_err(|e| format!("node add: {e}"))?;
         }
     }
@@ -572,7 +572,7 @@ pub(crate) fn node_param_edit(
         }
     }
     let bag = json!({ &group: { &name: entry } });
-    let cmd = parse_params_bag(&g, uid, &bag)
+    let cmd = goofi_engine::param_commands(&g, uid, &bag)
         .map_err(|e| format!("node param edit: {e}"))?
         .pop()
         .ok_or("node param edit: nothing to change")?;
