@@ -73,6 +73,11 @@ signatures of the same family:
 - `NodeCreationFailure::InternalError` creating the iceoryx2 node a test PROBE needs, and
   `PublishSubscribeOpenOrCreateError` opening a producer's output service.
 
+- Once, on run 33188891274: `thread 'goofi-Buffer' has overflowed its stack` —
+  `STATUS_STACK_OVERFLOW` in a NODE thread (a default 2 MB stack, and nothing of goofi's recurses)
+  while the `dirent.rs:66` records were streaming. Not diagnosed: it needs a Windows machine and a
+  backtrace, and a stack bump without one would be the symptom-hiding this file refuses.
+
 The sessions are not the cause and are not thinned for it: a real patch boots this many nodes.
 Until the upstream report lands, the Windows job is red on `bundles` and green on nothing less.
 
