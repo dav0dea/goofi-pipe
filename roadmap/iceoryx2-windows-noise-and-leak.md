@@ -62,6 +62,20 @@ CI 2026-08-28 (run 33137431047, `subpatches` on windows-latest), two new signatu
 Both are flake-grade (the identical commit passed the run before), so a red Windows job needs this
 file read before anything local is "fixed".
 
+CI 2026-08-28 again (runs 33187933365 and 33188420611, `bundles` on windows-latest): the bundle
+sessions boot EIGHT subprocess nodes at once, each with its own iceoryx2 node and a probe beside
+it, and that burst trips the race on nearly every run rather than one in several. Two more
+signatures of the same family:
+
+- `DeadNodeView` — `"Unable to acquire monitor cleaner since the Node is still alive"` — panicking
+  inside a Python CHILD interpreter (`pyo3_runtime.PanicException`), which the parent reads only as
+  `subprocess exited: exit code: 1` and the node wears as its error.
+- `NodeCreationFailure::InternalError` creating the iceoryx2 node a test PROBE needs, and
+  `PublishSubscribeOpenOrCreateError` opening a producer's output service.
+
+The sessions are not the cause and are not thinned for it: a real patch boots this many nodes.
+Until the upstream report lands, the Windows job is red on `bundles` and green on nothing less.
+
 ## Open
 
 - Whether goofi should reclaim the leak itself at startup rather than wait for upstream. It
