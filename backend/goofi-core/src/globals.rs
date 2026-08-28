@@ -105,9 +105,6 @@ impl GlobalStore {
         }
     }
 
-    pub fn is_system(&self, name: &str) -> bool {
-        self.system.contains(name)
-    }
     pub fn get(&self, name: &str) -> Option<&GlobalValue> {
         self.values.get(name)
     }

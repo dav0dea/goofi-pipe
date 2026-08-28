@@ -325,9 +325,6 @@ impl Meta {
     pub fn set_sfreq(&mut self, v: Option<f64>) {
         self.set(META_SFREQ, v.map_or(MetaValue::Null, MetaValue::Float));
     }
-    pub fn ufreq(&self) -> Option<f64> {
-        as_f64(self.0.get(META_UFREQ))
-    }
     pub fn set_ufreq(&mut self, v: Option<f64>) {
         self.set(META_UFREQ, v.map_or(MetaValue::Null, MetaValue::Float));
     }
@@ -359,10 +356,6 @@ impl Meta {
 
     pub fn with_sfreq(mut self, v: Option<f64>) -> Meta {
         self.set_sfreq(v);
-        self
-    }
-    pub fn with_ufreq(mut self, v: Option<f64>) -> Meta {
-        self.set_ufreq(v);
         self
     }
     pub fn with_index(mut self, v: Option<u64>) -> Meta {
@@ -555,12 +548,6 @@ impl<'a> Ndims<'a> {
 
     pub fn at_least(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
         self.check(|d| d >= n, &format!("at least {n} dimension(s)"))
-    }
-    pub fn at_most(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
-        self.check(|d| d <= n, &format!("at most {n} dimension(s)"))
-    }
-    pub fn exactly(self, n: usize) -> std::result::Result<&'a ArrayStore, String> {
-        self.check(|d| d == n, &format!("exactly {n} dimension(s)"))
     }
 }
 
