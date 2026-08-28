@@ -156,7 +156,7 @@ fn forward(lines: &[String], json: bool) -> i32 {
             for e in &entries {
                 let bytes = match json {
                     true => {
-                        let mut b = serde_json::to_string_pretty(&e.result)
+                        let mut b = serde_json::to_string_pretty(&e["result"])
                             .unwrap_or_default()
                             .into_bytes();
                         b.push(b'\n');
@@ -218,15 +218,17 @@ fn client_stdin(rest: &[String]) -> i32 {
 
 fn print_sessions(json: bool) -> i32 {
     let rows = goofi_client::list();
+    let current = std::env::var("GOOFI_SESSION").ok();
+    let current = |s: &goofi_core::home::Session| current.as_deref() == Some(&s.id);
     if json {
         let rows: Vec<serde_json::Value> = rows
             .iter()
-            .map(|r| {
+            .map(|(s, p)| {
                 serde_json::json!({
-                    "id": r.session.id,
-                    "url": r.session.url,
-                    "state": state_word(&r.probed),
-                    "current": r.current,
+                    "id": s.id,
+                    "url": s.url,
+                    "state": state_word(p),
+                    "current": current(s),
                 })
             })
             .collect();
@@ -237,9 +239,9 @@ fn print_sessions(json: bool) -> i32 {
         println!("no running goofi — start one with `goofi`");
         return 0;
     }
-    for r in rows {
-        let mark = if r.current { "  ← GOOFI_SESSION" } else { "" };
-        println!("{}  {}  {}{mark}", r.session.id, r.session.url, state_word(&r.probed));
+    for (s, p) in rows {
+        let mark = if current(&s) { "  ← GOOFI_SESSION" } else { "" };
+        println!("{}  {}  {}{mark}", s.id, s.url, state_word(&p));
     }
     0
 }
@@ -258,7 +260,7 @@ fn help_main(rest: &[String]) -> i32 {
     let mut rest = rest.to_vec();
     take_json(&mut rest); // help is text; the flag is not a word to look up
     let rows = goofi_client::list();
-    let Some(row) = rows.iter().find(|r| r.probed == goofi_client::Probed::Live) else {
+    let Some((live, _)) = rows.iter().find(|(_, p)| *p == goofi_client::Probed::Live) else {
         let words: Vec<String> = std::iter::once("help".to_string()).chain(rest.clone()).collect();
         match goofi_bridge::phrase::help(&goofi_bridge::ops::table(false), &words) {
             Some(h) => {
@@ -274,10 +276,10 @@ fn help_main(rest: &[String]) -> i32 {
     };
     let words: Vec<&str> =
         std::iter::once("help").chain(rest.iter().map(String::as_str)).collect();
-    match goofi_client::exec(&row.session.url, &[shell_words::join(words)], None) {
+    match goofi_client::exec(&live.url, &[shell_words::join(words)], None) {
         Ok(entries) => {
             for e in &entries {
-                println!("{}", e.text);
+                println!("{}", e["text"].as_str().unwrap_or_default());
             }
             0
         }

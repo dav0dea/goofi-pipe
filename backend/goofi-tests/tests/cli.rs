@@ -15,7 +15,7 @@ fn lines(cmds: &[&str]) -> Vec<String> {
 fn ok(url: &str, actor: &str, cmd: &str) -> String {
     let entries = client::exec(url, &lines(&[cmd]), Some(actor))
         .unwrap_or_else(|e| panic!("`{cmd}` was refused: {e}"));
-    entries.into_iter().next().map(|e| e.text).unwrap_or_default()
+    entries.into_iter().next().map(|e| e["text"].as_str().unwrap_or_default().to_string()).unwrap_or_default()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -57,17 +57,17 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     home::write_session("busy_peer", &mute_url);
     let rows = tokio::task::spawn_blocking(client::list).await.unwrap();
     assert_eq!(rows.len(), 2, "kept tentatively: {rows:?}");
-    assert!(rows.iter().any(|r| r.session.id == "busy_peer" && r.probed == client::Probed::Unresponsive));
+    assert!(rows.iter().any(|(s, p)| s.id == "busy_peer" && *p == client::Probed::Unresponsive));
     let why = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap_err();
     assert!(why.contains("several") && why.contains("busy_peer") && why.contains(&id), "{why}");
-    // GOOFI_SESSION breaks the tie; `current` marks the row — and one naming NOTHING is
-    // refused by pointing at the listing.
+    // GOOFI_SESSION breaks the tie — and one naming NOTHING is refused by pointing at
+    // the listing.
     std::env::set_var("GOOFI_SESSION", "no_such_goofi");
     let why = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap_err();
     assert!(why.contains("no_such_goofi") && why.contains("session list"), "{why}");
     std::env::set_var("GOOFI_SESSION", &id);
     let rows = tokio::task::spawn_blocking(client::list).await.unwrap();
-    assert!(rows.iter().any(|r| r.current && r.session.id == id), "{rows:?}");
+    assert!(rows.iter().any(|(s, _)| s.id == id), "{rows:?}");
     let target = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap();
     assert_eq!(target.id, id);
     home::remove_session("busy_peer");
