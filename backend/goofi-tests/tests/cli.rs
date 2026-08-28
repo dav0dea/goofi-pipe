@@ -90,7 +90,7 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     // The reserved client set is pinned AS the list, and help teaches the door words.
     assert_eq!(
         goofi_bridge::ops::RESERVED,
-        ["serve", "help", "session list", "agent term", "plugin"]
+        ["serve", "help", "session list", "agent term", "plugin", "completions"]
     );
     let top = ok(&url, "default", "help");
     assert!(top.contains("session list") && top.contains("node"), "{top}");
@@ -98,6 +98,21 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     assert!(group.contains("node param edit"), "a group listing: {group}");
     let err = client::exec(&url, &lines(&["frobnicate"]), None).unwrap_err();
     assert!(err.contains("unknown op"), "{err}");
+
+    // Completion is a vocabulary read: every candidate is `word<TAB>doc`, and the walk follows
+    // the phrase tree — groups with their own doc line, then an op's flags.
+    let complete = |line: &str| ok(&url, "default", &format!("op complete --line '{line}'"));
+    let top = complete("");
+    assert!(top.lines().any(|l| l.starts_with("node\t") && l.contains("one node instance")),
+            "a group word completes with its own doc: {top}");
+    let sub = complete("node ");
+    assert!(sub.lines().any(|l| l.starts_with("param\t")) && !sub.contains("session"),
+            "inside a group only its children answer: {sub}");
+    let flags = complete("node add --");
+    assert!(flags.contains("--type\t<string>, required") && flags.contains("--pos\t<float2>"),
+            "an op completes its flags, typed and marked: {flags}");
+    assert!(complete("node ad").lines().all(|l| l.starts_with("ad")),
+            "a partial word filters");
 
     // A param edit lands on the graph, and a multi-line batch is ONE step in ITS actor's stack.
     let born: serde_json::Value =
@@ -108,6 +123,10 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
         g.doc()["nodes"][&uid]["params"]["oscillator"]["sfreq"]["value"], 99.0,
         "the edit reached the graph"
     );
+    // …and completion turns LIVE: a `uid` position offers the patch's own nodes.
+    assert!(ok(&url, "default", "op complete --line 'node edit '")
+                .contains(&format!("{uid}\tosc (Oscillator)")),
+            "a uid position completes from the graph");
     let batch = lines(&[
         "node add --type Buffer --name win",
         "node add --type Buffer --name sink",

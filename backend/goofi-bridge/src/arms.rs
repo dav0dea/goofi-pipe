@@ -1255,3 +1255,17 @@ pub(crate) fn op_list(
         .collect();
     Ok(json!({ "ops": ops }))
 }
+
+pub(crate) fn op_complete(
+    state: &AppState,
+    payload: &Value,
+    _actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let line = payload.get("line").and_then(Value::as_str).unwrap_or_default();
+    let rows: Vec<String> = crate::phrase::complete(state.ops(), Some(state), line)
+        .into_iter()
+        .map(|(word, doc)| format!("{word}\t{doc}"))
+        .collect();
+    Ok(json!({ "text": rows.join("\n") }))
+}

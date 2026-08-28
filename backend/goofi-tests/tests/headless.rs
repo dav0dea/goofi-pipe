@@ -35,6 +35,11 @@ fn a_headless_server_serves_no_layout_op_and_carries_an_arrangement_through() {
     let Err(why) = phrase::resolve(full.state.ops(), &bad) else { panic!("frobnicate resolved") };
     assert!(why.contains("layout inspect") && !why.contains("headless"), "{why}");
 
+    // Completion agrees: the group word is offered on the full server and absent headless.
+    let offered = |g: &Goofi| phrase::complete(g.state.ops(), None, "").iter()
+        .any(|(w, _)| w == "layout");
+    assert!(offered(&full) && !offered(&g), "completion follows the served set");
+
     // A patch saved headless keeps the arrangement it arrived with, untouched — the whole
     // manifest survives BYTE-identical, so no layout machinery had to run to carry it.
     g.call("session load", j!({ "content": yaml }));

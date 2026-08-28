@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use goofi_bridge::ops::REGISTRY;
+use goofi_bridge::ops::registry;
 use goofi_bridge::{term, AppState};
 use goofi_tests::{host, http, Client, Goofi};
 use serde_json::{json, Value};
@@ -110,7 +110,7 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     // The index is an op like any other, and it carries what a caller derives a client from.
     let ops: Value = serde_json::from_str(&ok_exec(&addr, 2, "op list").await).unwrap();
     let ops = ops["ops"].as_array().expect("an ops list");
-    assert_eq!(ops.len(), REGISTRY.len(), "every registry row is in the index");
+    assert_eq!(ops.len(), registry().len(), "every registry row is in the index");
     let add = ops.iter().find(|o| o["op"] == json!("node add")).unwrap();
     assert_eq!(add["kind"], json!("write"));
     assert!(add["args"].as_str().is_some_and(|a| a.contains("type:string!")),

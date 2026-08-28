@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use goofi_bridge::ops::{find, typescript, REGISTRY};
+use goofi_bridge::ops::{find, registry, typescript};
 use goofi_bridge::vocab;
 use goofi_core::{Data, Meta, SlotType, Value as DataValue};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
@@ -33,7 +33,7 @@ fn every_op_row_is_well_formed_and_reachable() {
     // ONE bare namespace: the registry and the client's reserved phrases are prefix-free
     // together, which is what lets `session list` sit beside `session status`.
     let namespace: Vec<&str> =
-        REGISTRY.iter().map(|o| o.name).chain(goofi_bridge::ops::RESERVED.iter().copied()).collect();
+        registry().iter().map(|o| o.name).chain(goofi_bridge::ops::RESERVED.iter().copied()).collect();
     let mut seen = HashSet::new();
     for name in &namespace {
         assert!(seen.insert(*name), "`{name}` is declared twice");
@@ -47,7 +47,7 @@ fn every_op_row_is_well_formed_and_reachable() {
                     "`{other}` is a word-prefix of `{name}` and would swallow it");
         }
     }
-    for op in REGISTRY {
+    for op in registry() {
         // The args schema is a STRING, so a typo in it would otherwise be a fact only at read time.
         assert_eq!(op.args().count(), op.args.split_whitespace().count(),
                    "`{}` has an argument with no `name:type`: {:?}", op.name, op.args);
@@ -70,7 +70,7 @@ fn every_op_row_is_well_formed_and_reachable() {
 
     // A row with no dispatch arm answers `unknown op` while palette and tool list advertise it.
     let g = Goofi::new();
-    for op in REGISTRY {
+    for op in registry() {
         if let Err(e) = g.try_call(op.name, j!({})) {
             assert!(!e.contains(&format!("unknown op `{}`", op.name)),
                     "`{}` is in the registry but dispatch has no arm for it: {e}", op.name);

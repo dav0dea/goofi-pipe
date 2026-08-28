@@ -246,7 +246,7 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
 /// the REGISTRY is what proves no op slipped past without one.
 #[test]
 fn no_layout_undo_puts_back_a_slot_a_peer_has_since_built_over() {
-    let ops: Vec<&str> = goofi_bridge::ops::REGISTRY.iter()
+    let ops: Vec<&str> = goofi_bridge::ops::registry().iter()
         .filter(|o| o.handler.is_write() && o.name.starts_with("layout "))
         .map(|o| o.name)
         .collect();

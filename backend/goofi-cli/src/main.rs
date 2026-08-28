@@ -187,6 +187,8 @@ fn client_main(mut words: Vec<String>) -> i32 {
     let json = take_json(&mut words);
     match (words.first().map(String::as_str), words.get(1).map(String::as_str)) {
         (Some("session"), Some("list")) => return print_sessions(json),
+        (Some("completions"), shell) => return print_completions(shell),
+        (Some("op"), Some("complete")) => return complete_line(&words[2..]),
         (Some("agent"), Some("term")) => {
             eprintln!("`agent term` is not built yet — the app's agent panel serves the terminal.");
             return 1;
@@ -198,6 +200,63 @@ fn client_main(mut words: Vec<String>) -> i32 {
         _ => {}
     }
     forward(&[shell_words::join(words.iter().map(String::as_str))], json)
+}
+
+/// The completion callback: a running server answers with its LIVE vocabulary (its node uids,
+/// its types); with none, the compiled-in registry answers the static half — same fallback shape
+/// as [`help_main`]. Quiet on every failure: a completion must never print an error into a
+/// half-typed command line.
+fn complete_line(rest: &[String]) -> i32 {
+    let line = rest.first().map(String::as_str).unwrap_or_default();
+    if let Ok(target) = goofi_client::resolve_target() {
+        let cmd = shell_words::join(["op", "complete", line]);
+        if let Ok(entries) = goofi_client::exec(&target.url, &[cmd], None) {
+            if let Some(text) = entries.first().and_then(|e| e["text"].as_str()) {
+                println!("{text}");
+                return 0;
+            }
+        }
+    }
+    let ops = goofi_bridge::ops::table(false);
+    for (word, doc) in goofi_bridge::phrase::complete(&ops, None, line) {
+        println!("{word}\t{doc}");
+    }
+    0
+}
+
+/// `goofi completions zsh|bash` — the script that wires a shell's TAB to [`complete_line`]. The
+/// script holds NO vocabulary: every keystroke asks `goofi op complete`, so completions are as
+/// current as the server answering them.
+fn print_completions(shell: Option<&str>) -> i32 {
+    // zsh: `words` holds the current (partial) word last; joining keeps its emptiness, so the
+    // callback can tell `node<TAB>` from `node <TAB>`.
+    const ZSH: &str = r#"#compdef goofi
+_goofi() {
+	local -a cands lines
+	local line="${(j: :)${(@)words[2,$CURRENT]}}"
+	lines=("${(@f)$(command goofi op complete "$line" 2>/dev/null)}")
+	for l in "${lines[@]}"; do
+		[[ -n "$l" ]] && cands+=("${l%%$'\t'*}:${l#*$'\t'}")
+	done
+	(( ${#cands} )) && _describe -V goofi cands
+}
+compdef _goofi goofi"#;
+    const BASH: &str = r#"_goofi() {
+	local line="${COMP_LINE#* }"
+	[[ "$COMP_LINE" == *' '* ]] || line=""
+	local IFS=$'\n'
+	COMPREPLY=($(command goofi op complete "$line" 2>/dev/null | cut -f1))
+}
+complete -F _goofi goofi"#;
+    match shell {
+        Some("zsh") => println!("{ZSH}"),
+        Some("bash") => println!("{BASH}"),
+        _ => {
+            eprintln!("usage: goofi completions zsh|bash — eval it from your shell's rc file");
+            return 2;
+        }
+    }
+    0
 }
 
 /// `goofi -`: stdin lines as ONE batch — several ops, one undo step.

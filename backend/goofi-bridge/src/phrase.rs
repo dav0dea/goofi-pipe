@@ -4,7 +4,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::ops::Op;
+use crate::ops::{Entry, Op, TREE};
 
 /// A command line as bash would hand it to argv — same words, same quoting.
 pub fn split(line: &str) -> Result<Vec<String>, String> {
@@ -271,25 +271,180 @@ pub fn help(ops: &[&Op], words: &[String]) -> Option<String> {
 }
 
 fn top_help(ops: &[&Op]) -> String {
-    let mut groups: Vec<&str> = Vec::new();
+    let mut groups: Vec<String> = Vec::new();
     let mut bare: Vec<&str> = Vec::new();
-    for op in ops {
-        match op.name.split_once(' ') {
-            Some((first, _)) if !groups.contains(&first) => groups.push(first),
-            Some(_) => {}
-            None => bare.push(op.name),
+    for e in TREE {
+        match e {
+            Entry::Group(word, doc, _) if served(ops, "", e) => {
+                groups.push(format!("  {word} — {doc}"));
+            }
+            Entry::Group(..) => {}
+            Entry::Leaf(op) => bare.push(op.name),
         }
     }
     format!(
-        "goofi speaks noun-first phrases.\n\
-         groups: {} — `help <group>` lists one, `<phrase> --help` explains one op,\n\
-         and `op list` answers the whole registry as data.\n\
+        "goofi speaks noun-first phrases. `help <group>` lists one group,\n\
+         `<phrase> --help` explains one op, and `op list` answers the whole registry as data.\n\
+         groups:\n{}\n\
          subjectless: {}.\n\
          reserved words: {} — and `goofi -` runs stdin lines as one batch.",
-        groups.join(", "),
+        groups.join("\n"),
         bare.join(", "),
         crate::ops::RESERVED.join(", "),
     )
+}
+
+/// Whether anything under `entry` (at the phrase position `prefix`) is in the served set — how a
+/// headless server's listings drop the layout group without a second spelling of the mode.
+fn served(ops: &[&Op], prefix: &str, entry: &Entry) -> bool {
+    match entry {
+        Entry::Leaf(op) => {
+            let name = format!("{prefix}{}", op.name);
+            ops.iter().any(|o| o.name == name)
+        }
+        Entry::Group(word, _, _) => {
+            let below = format!("{prefix}{word} ");
+            ops.iter().any(|o| o.name.starts_with(&below))
+        }
+    }
+}
+
+/// An entry's completion doc: a group's own line, an op's first line capped to a candidate row.
+fn doc_line(entry: &Entry) -> String {
+    let line = match entry {
+        Entry::Group(_, doc, _) => doc,
+        Entry::Leaf(op) => op.doc.lines().next().unwrap_or_default(),
+    };
+    match line.char_indices().nth(100) {
+        Some((cut, _)) => {
+            let end = line[..cut].rfind(' ').unwrap_or(cut);
+            format!("{}…", &line[..end])
+        }
+        None => line.to_string(),
+    }
+}
+
+/// What can come NEXT on a partial command line, as `(word, doc)` candidates — the completion
+/// read behind `op complete`. The line's trailing word, unless the line ends in whitespace, is a
+/// partial that filters. `state` is where the LIVE candidates come from — a `uid` offers the
+/// patch's own nodes — and `None` (the offline client) still answers everything static.
+pub fn complete(
+    ops: &[&Op],
+    state: Option<&crate::AppState>,
+    line: &str,
+) -> Vec<(String, String)> {
+    let Ok(words) = shell_words::split(line) else { return Vec::new() };
+    let (done, partial) = match line.ends_with(char::is_whitespace) || words.is_empty() {
+        true => (&words[..], String::new()),
+        false => (&words[..words.len() - 1], words[words.len() - 1].clone()),
+    };
+    let mut children = TREE;
+    let mut prefix = String::new();
+    for (i, word) in done.iter().enumerate() {
+        match children.iter().find(|e| word_of(e) == word) {
+            Some(Entry::Group(w, _, kids)) => {
+                prefix.push_str(w);
+                prefix.push(' ');
+                children = kids;
+            }
+            Some(Entry::Leaf(leaf)) => {
+                let name = format!("{prefix}{}", leaf.name);
+                let Some(op) = ops.iter().find(|o| o.name == name) else { return Vec::new() };
+                return complete_args(op, &done[i + 1..], &partial, state);
+            }
+            None => return Vec::new(),
+        }
+    }
+    children
+        .iter()
+        .filter(|e| word_of(e).starts_with(&partial) && served(ops, &prefix, e))
+        .map(|e| (word_of(e).to_string(), doc_line(e)))
+        .collect()
+}
+
+fn word_of(entry: &Entry) -> &'static str {
+    match entry {
+        Entry::Group(word, ..) => word,
+        Entry::Leaf(op) => op.name,
+    }
+}
+
+/// Candidates once the op is named: a value for the flag just given, then the next positional's
+/// values beside the flags not yet spent.
+fn complete_args(
+    op: &Op,
+    given: &[String],
+    partial: &str,
+    state: Option<&crate::AppState>,
+) -> Vec<(String, String)> {
+    let decls: Vec<(&str, &str, bool)> = op.args().collect();
+    if let Some(key) = given.last().and_then(|w| w.strip_prefix("--")) {
+        let key = key.strip_prefix("no-").unwrap_or(key);
+        if let Some((_, ty, _)) = decls.iter().find(|(n, t, _)| *n == key && *t != "bool") {
+            return values_for(ty, state, partial);
+        }
+    }
+    let mut out = Vec::new();
+    let bare = given.iter().take_while(|w| !w.starts_with("--")).count();
+    if !partial.starts_with("--") {
+        if let Some((_, ty, _)) = decls.get(bare).filter(|_| bare < op.positional) {
+            out.extend(values_for(ty, state, partial));
+        }
+    }
+    for (name, ty, required) in &decls {
+        let spent = *ty != "bool"
+            && !ty.ends_with("[]")
+            && given.iter().any(|w| {
+                w.strip_prefix("--")
+                    .is_some_and(|f| f.split('=').next() == Some(*name))
+            });
+        if spent {
+            continue;
+        }
+        let doc = match (ty.strip_suffix("[]"), *ty, required) {
+            (_, "bool", _) => "flag; --no- negates".to_string(),
+            (Some(item), _, true) => format!("<{item}>, repeats, required"),
+            (Some(item), _, false) => format!("<{item}>, repeats"),
+            (None, ty, true) => format!("<{ty}>, required"),
+            (None, ty, false) => format!("<{ty}>"),
+        };
+        let flag = format!("--{name}");
+        if flag.starts_with(partial) {
+            out.push((flag, doc));
+        }
+    }
+    out
+}
+
+/// The live values a typed position can offer. Closed vocabularies answer always; the patch's own
+/// names need the server.
+fn values_for(ty: &str, state: Option<&crate::AppState>, partial: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = match ty.trim_end_matches("[]") {
+        "panel_type" => crate::vocab::PANEL_TYPES
+            .iter()
+            .map(|p| (p.id.to_string(), p.doc.to_string()))
+            .collect(),
+        "bool" => ["true", "false"].iter().map(|w| (w.to_string(), String::new())).collect(),
+        "uid" | "endpoint" => {
+            let Some(state) = state else { return Vec::new() };
+            let doc = state.doc.lock().unwrap().to_json();
+            let Some(nodes) = doc.get("nodes").and_then(Value::as_object) else {
+                return Vec::new();
+            };
+            nodes
+                .iter()
+                .map(|(uid, n)| {
+                    let name = n["name"].as_str().unwrap_or_default();
+                    let kind = n["type"].as_str().unwrap_or_default();
+                    (uid.clone(), format!("{name} ({kind})"))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    out.retain(|(w, _)| w.starts_with(partial));
+    out.sort();
+    out
 }
 
 fn op_help(op: &Op) -> String {
