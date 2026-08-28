@@ -631,10 +631,39 @@ impl Graph {
     /// "renamed, added, removed or restarted", stated once.
     fn rebind_naming(&mut self, name: &str) {
         let naming = self.bindings_where(|b| {
-            b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Node { name: n, slot, .. }
-                if n == name || slot.as_deref() == Some(name)))
+            b.terms.iter().any(|t| match t {
+                expr_rewrite::VarRef::Node { name: n, slot, .. } => {
+                    n == name || slot.as_deref() == Some(name)
+                }
+                expr_rewrite::VarRef::NodeParam { name: n, .. } => n == name,
+                _ => false,
+            })
         });
         self.rebind(&naming);
+    }
+
+    /// Re-resolve every binding that reads param `key` of `target` — through `nd('name').params`
+    /// or the target's own `me.params` — so an authored edit reaches its readers. Evaluation
+    /// results never come through here, so a chain of driven params cannot cascade.
+    fn invalidate_bindings_reading_param(&mut self, target: Uid, key: &ParamKey) {
+        let Some(target_name) = self.name(target).map(str::to_string) else { return };
+        let reading: Vec<(Uid, ParamKey)> = self
+            .leaves()
+            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (uid, k.clone(), b)))
+            .filter(|(consumer, _, b)| {
+                b.terms.iter().any(|t| match t {
+                    expr_rewrite::VarRef::NodeParam { name, group, param, .. } => {
+                        *name == target_name && *group == key.group && *param == key.name
+                    }
+                    expr_rewrite::VarRef::MeParam { group, param, .. } => {
+                        *consumer == target && *group == key.group && *param == key.name
+                    }
+                    _ => false,
+                })
+            })
+            .map(|(uid, k, _)| (uid, k))
+            .collect();
+        self.rebind(&reading);
     }
 
     /// Every binding matching a predicate, as `(node, param)` — the addressing `rebind` takes.
@@ -2058,6 +2087,7 @@ impl Graph {
         // The record has moved and the node has been told; nothing else happens here.
         // `on_param_changed` runs on the node's own thread, so its failure arrives as a fault.
         self.notify_param(uid, &key);
+        self.invalidate_bindings_reading_param(uid, &key);
         Ok(())
     }
 
@@ -2201,32 +2231,81 @@ impl Graph {
                 _ => None,
             })
             .collect();
+        // One shape for every stream reference, `me.out` included: a resolved wire plus an event id.
+        let stream = |var: &str, taken: &mut Vec<runtime::EventId>, resolved: Result<(Uid, &'static str), String>| match resolved {
+            Err(reason) => BoundVar::Missing { var: var.to_string(), reason },
+            Ok((producer, slot)) => match next_event_id(taken) {
+                None => BoundVar::Missing {
+                    var: var.to_string(),
+                    reason: "too many expression references on this node".to_string(),
+                },
+                Some(event_id) => {
+                    taken.push(event_id);
+                    BoundVar::Stream { var: var.to_string(), producer, slot, event_id }
+                }
+            },
+        };
+        let value = |var: &str, resolved: Result<Param, String>| match resolved {
+            Ok(value) => BoundVar::Value { var: var.to_string(), value },
+            Err(reason) => BoundVar::Missing { var: var.to_string(), reason },
+        };
         refs.iter()
             .map(|r| match r {
                 expr_rewrite::VarRef::Global { var, key } => match self.globals.get(key) {
-                    Some(value) => BoundVar::Value { var: var.clone(), value: global_as_param(value) },
+                    Some(v) => BoundVar::Value { var: var.clone(), value: global_as_param(v) },
                     None => BoundVar::Missing {
                         var: var.clone(),
                         reason: format!("global `{key}` is not defined"),
                     },
                 },
                 expr_rewrite::VarRef::Node { var, name, slot } => {
-                    match self.resolve_stream(name.as_str(), slot.as_deref()) {
-                        Err(reason) => BoundVar::Missing { var: var.clone(), reason },
-                        Ok((producer, slot)) => match next_event_id(&taken) {
-                            None => BoundVar::Missing {
-                                var: var.clone(),
-                                reason: "too many expression references on this node".to_string(),
-                            },
-                            Some(event_id) => {
-                                taken.push(event_id);
-                                BoundVar::Stream { var: var.clone(), producer, slot, event_id }
-                            }
-                        },
-                    }
+                    stream(var, &mut taken, self.resolve_stream(name, slot.as_deref()))
+                }
+                expr_rewrite::VarRef::MeOut { var, slot } => {
+                    stream(var, &mut taken, self.resolve_own_stream(consumer, slot.as_deref()))
+                }
+                expr_rewrite::VarRef::NodeParam { var, name, group, param } => {
+                    value(var, self.uid_by_name(name)
+                        .ok_or_else(|| format!("no node named `{name}`"))
+                        .and_then(|uid| self.param_value_of(uid, name, group, param)))
+                }
+                expr_rewrite::VarRef::MeParam { var, group, param } => {
+                    value(var, self.param_value_of(consumer, "me", group, param))
                 }
             })
             .collect()
+    }
+
+    /// This node's own output, for `me.out.slot` and bare `me` — a leaf's manifest is the slot
+    /// vocabulary.
+    fn resolve_own_stream(&self, uid: Uid, slot: Option<&str>) -> Result<(Uid, &'static str), String> {
+        let entry = self.leaf(uid).ok_or("`me` reads a running node")?;
+        let outputs = entry.manifest.outputs;
+        match slot {
+            Some(want) => outputs
+                .iter()
+                .find(|o| o.name == want)
+                .map(|o| (uid, o.name))
+                .ok_or_else(|| format!("this node has no output `{want}`")),
+            None if outputs.len() == 1 => Ok((uid, outputs[0].name)),
+            None if outputs.is_empty() => Err("this node has no outputs".to_string()),
+            None => Err("`me` is ambiguous: this node has multiple outputs; use `me.out.<slot>`"
+                .to_string()),
+        }
+    }
+
+    /// A param's EFFECTIVE value for an expression: the evaluated report when the param is
+    /// driven, else the authored record. `who` names the node in the error as the source spelled it.
+    fn param_value_of(&self, uid: Uid, who: &str, group: &str, name: &str) -> Result<Param, String> {
+        let entry = self
+            .leaf(uid)
+            .ok_or_else(|| format!("`{who}` holds no params: a port relays and a facade fronts"))?;
+        entry
+            .evaluated
+            .get(&ParamKey::new(group, name))
+            .cloned()
+            .or_else(|| goofi_node::param(&entry.params, group, name).cloned())
+            .ok_or_else(|| format!("`{who}` has no param `{group}/{name}`"))
     }
 
     /// The producer output a `nd('name')` term names, or why it names none. A bare reference to a
@@ -2248,7 +2327,7 @@ impl Graph {
             None if outputs.is_empty() => return Err(format!("node `{name}` has no outputs")),
             None => {
                 return Err(format!(
-                    "nd('{name}') is ambiguous: it has multiple outputs; use nd('{name}').slot"
+                    "nd('{name}') is ambiguous: it has multiple outputs; use nd('{name}').out.<slot>"
                 ))
             }
         };
@@ -3068,7 +3147,10 @@ impl Graph {
         let globals: Vec<Value> = self
             .globals
             .entries()
-            .map(|(name, value, _is_system)| {
+            // A locked global is the MACHINE's; writing it into a patch would carry one machine's
+            // path onto another.
+            .filter(|(_, _, _, locked)| !locked)
+            .map(|(name, value, _is_system, _)| {
                 let mut e = global_to_json(value); // {value, type}
                 if let Value::Object(ref mut m) = e {
                     m.insert("name".to_string(), Value::String(name.to_string()));

@@ -31,6 +31,7 @@
 		onSetExpression,
 		onRefresh,
 		refreshing = false,
+		selfName,
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
@@ -43,6 +44,8 @@
 		) => void;
 		onRefresh?: () => void;
 		refreshing?: boolean;
+		/** The node's display name, handed to the expression editor as `me`. */
+		selfName?: string;
 	} = $props();
 
 	const kind = $derived(controlKind(descriptor));
@@ -191,6 +194,7 @@
 			<div class="fx-region" bind:this={fxRegionEl}>
 				{#if multilineOpen}
 					<ExprEditor
+						{selfName}
 						multiline
 						value={descriptor.expression ?? ''}
 						error={descriptor.expression_error}
@@ -209,6 +213,7 @@
 				{:else}
 					<div class="fx-inline">
 						<ExprEditor
+							{selfName}
 							value={descriptor.expression ?? ''}
 							error={descriptor.expression_error}
 							onCommit={commitExpr}

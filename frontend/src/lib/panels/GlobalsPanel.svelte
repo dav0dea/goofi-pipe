@@ -84,7 +84,12 @@
 						<tr data-testid="global-row" data-name={gv.name} data-system={gv.system}>
 							<td class="c-name">
 								{#if gv.system}
-									<span class="sysname" title="System global — value editable, name locked">
+									<span
+										class="sysname"
+										title={gv.locked
+											? 'Machine global — the value is this machine\u2019s, read-only'
+											: 'System global — value editable, name locked'}
+									>
 										<span class="lock" aria-hidden="true">🔒</span>{gv.name}
 									</span>
 								{:else}
@@ -98,7 +103,9 @@
 								{/if}
 							</td>
 							<td class="c-val">
-								{#if gv.type === 'bool'}
+								{#if gv.locked}
+									<span class="ro-value" data-testid="global-value">{String(gv.value)}</span>
+								{:else if gv.type === 'bool'}
 									<Toggle
 										data-testid="global-value"
 										value={gv.value === true}
@@ -224,6 +231,13 @@
 		font-family: var(--font-mono);
 		color: var(--text);
 	}
+	.ro-value {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		color: var(--text-muted);
+		overflow-wrap: anywhere;
+	}
+
 	.lock {
 		font-size: var(--fs-micro);
 		filter: grayscale(1);

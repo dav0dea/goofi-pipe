@@ -444,6 +444,17 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     assert!(why.contains("already exists") && why.contains("global edit"), "{why}");
     assert_eq!(g.call("global edit", j!({ "name": "default_ufreq", "value": 12.5 }))["value"], 12.5);
 
+    // A LOCKED global is the machine's: the value refuses the edit the way the name refuses the
+    // remove, and what it holds is this machine's .goofi folder, not anything a patch said.
+    let home = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
+        .find(|e| e["name"] == "goofi_home").cloned().expect("goofi_home is seeded");
+    assert_eq!((&home["locked"], &home["type"]), (&j!(true), &j!("string")), "{home}");
+    assert_eq!(home["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));
+    let why = g.refuse("global edit", j!({ "name": "goofi_home", "value": "/tmp/elsewhere" }));
+    assert!(why.contains("read-only"), "{why}");
+    let why = g.refuse("global remove", j!({ "name": "goofi_home" }));
+    assert!(why.contains("system"), "{why}");
+
     let why = g.refuse("agent start", j!({ "name": "claude-code" }));
     assert!(why.contains("claude") && why.contains("codex"), "{why}");
 
@@ -459,7 +470,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         g.refuse(op, payload);
     }
 
-    // An expression reads a name as an ATTRIBUTE — `globals.gain`, `nd('sub').slot` — so a name
+    // An expression reads a name as an ATTRIBUTE — `globals.gain`, `nd('sub').out.slot` — so a name
     // Python cannot parse as one is refused, whatever makes it unparseable. The refusal says the
     // rule rather than the one character it caught.
     for bad in ["a'b", "a\\b", "a\"b", "a b-2", "nd()", "1st", "class", ""] {

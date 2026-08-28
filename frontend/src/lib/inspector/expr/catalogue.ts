@@ -6,11 +6,18 @@ export interface CatalogueSlot {
 	dtype: string;
 }
 
+export interface CatalogueGroup {
+	group: string;
+	names: string[];
+}
+
 export interface CatalogueNode {
 	/** The DISPLAY name, which is what `nd()` takes. */
 	name: string;
 	/** Output slots; the LENGTH is load-bearing — a multi-output node raises unless a slot is named. */
 	slots: CatalogueSlot[];
+	/** Param groups, what `.params.<group>.<param>` reads. Empty on a port or a facade. */
+	params: CatalogueGroup[];
 }
 
 export interface CatalogueGlobal {
@@ -21,6 +28,8 @@ export interface CatalogueGlobal {
 export interface ExprCatalogue {
 	nodes: CatalogueNode[];
 	globals: CatalogueGlobal[];
+	/** The editing node's own display name — what `me` reads. */
+	self?: string;
 }
 
 /** The live patch, read at the moment a completion is asked for. `g` is the store to read, so a
@@ -38,6 +47,10 @@ export function liveCatalogue(g: GraphStore = graph()): ExprCatalogue {
 				slots: Object.entries(n.output_slots).map(([key, dtype]) => ({
 					name: n.slot_labels?.[key] ?? key,
 					dtype
+				})),
+				params: Object.entries(n.params ?? {}).map(([group, names]) => ({
+					group,
+					names: Object.keys(names)
 				}))
 			}];
 		}),

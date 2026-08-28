@@ -139,13 +139,13 @@ pub static TREE: &[Entry] = &[
              result: "{meta, npy_b64} for ARRAY; {meta, value} for STRING/TABLE; {frame: null, reason} before the first cached frame" }),
         Leaf(Op { name: "add", handler: Write(arms::node_add),
              args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid param:json[]", positional: 1,
-             doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. Each `--param` is one birth param, self-addressed: `{\"name\": \"group/param\", …}` carrying `node param edit`'s fields — inside a JSON flag under bash, spell nested strings with ESCAPED double quotes (`\"nd(\\\"other\\\").sfreq\"`); a single-quoted `nd('x')` inside a single-quoted shell token loses its quotes silently. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
+             doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. Each `--param` is one birth param, self-addressed: `{\"name\": \"group/param\", …}` carrying `node param edit`'s fields — inside a JSON flag under bash, spell nested strings with ESCAPED double quotes (`\"nd(\\\"other\\\").out.sfreq\"`); a single-quoted `nd('x')` inside a single-quoted shell token loses its quotes silently. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
                    The boundary types (InArray/InString/InTable and the Out trio) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same ops — but it never runs, so it takes no params. To COPY a node rather than build one, read it with `nodes copy` and put it back with `nodes paste`.",
              result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." }),
         Leaf(Op { name: "edit", handler: Write(arms::node_edit),
              args: "node:uid! name:string pos:float2 viewer:json[]", positional: 1,
              doc: "Edit a node's own record: rename it, move it, set viewers — any of them, in one step and one undo. An omitted field is left alone. Params are `node param edit`'s. A sub-patch boundary port takes every field: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
-                   A `name` must be a legal Python identifier and not a keyword, for every kind of node. An expression reads a name as an ATTRIBUTE — a sub-patch's slot in `nd('chain').drain` — so one Python cannot parse there breaks every reference to it, and the rewrite that follows the NEXT rename can no longer find what it broke.\n\n\
+                   A `name` must be a legal Python identifier and not a keyword, for every kind of node. An expression reads a name as an ATTRIBUTE — a sub-patch's slot in `nd('chain').out.drain` — so one Python cannot parse there breaks every reference to it, and the rewrite that follows the NEXT rename can no longer find what it broke.\n\n\
                    Each `--viewer` is one slot's inline view, `{\"slot\": \"out\", \"kind\": …, \"settings\": …}`, merged slot by slot so only the slots named move; `{\"slot\": \"out\", \"clear\": true}` removes that slot's stored view. `kind` is one of: {viewer_kinds}.",
              result: "{ok: true}" }),
         Group("param", "one param of a node, addressed `group/param`", &[
@@ -153,7 +153,7 @@ pub static TREE: &[Entry] = &[
                  args: "node:uid! param:param_addr! value:string expression:string mode:string triggers:bool",
                  positional: 2,
                  doc: "Set ONE param, addressed `group/param`. `value` is coerced to the param's declared type — a fraction into an int rounds, a value of the wrong kind falls back to that type's zero; the declared min/max are the editor's range, NOT a clamp. `mode` is `constant`/`expression` and defaults to `expression` when an expression is given, so binding one is a single flag; an empty expression clears the binding, and a mode or trigger given alone edits the binding already there.\n\n\
-                       `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.",
+                       `triggers` defaults false, and that is almost always right: a binding re-evaluates on its own — when a referenced node emits, when a referenced param (`nd('x').params.<group>.<param>`, `me.params.…`) is edited, or on each of the node's own runs for a ref-less one — and the node reads the fresh value on its next normal run. `triggers: true` ALSO wakes the node's process() on every evaluation, making the reference its clock. Reach for it only when the node would otherwise not run (a trigger input with no wire into it) and you want the referenced node to drive it. Never on a ref-less expression (`t`, `globals.x`): that free-runs the node at its common.max_frequency.",
                  result: "{value, error} — the value as STORED, with its binding error if the expression did not compile." }),
             Leaf(Op { name: "refresh", handler: Effect(arms::node_param_refresh),
                  args: "node:uid! param:param_addr!", positional: 2,
@@ -198,14 +198,14 @@ pub static TREE: &[Entry] = &[
     ]),
     Group("global", "the patch globals — what an expression reads as `globals.x`", &[
         Leaf(Op { name: "list", handler: Read(arms::global_list), args: "", positional: 0,
-             doc: "Every patch global — what an expression can read and the global writes can set.",
-             result: "{globals: [{name, type, value, system: bool}]}" }),
+             doc: "Every patch global — what an expression can read and the global writes can set. A `locked` one (goofi_home) is the machine's: readable in expressions, never editable, never saved into a patch.",
+             result: "{globals: [{name, type, value, system: bool, locked: bool}]}" }),
         Leaf(Op { name: "add", handler: Write(arms::global_add),
              args: "name:string! type:string! value:any!", positional: 1,
              doc: "Create a patch global. `type` is one of float/int/bool/string; a name the patch already holds is refused — `global edit` changes one. To rename a global, compound an add of the new name with a remove of the old.",
              result: "{value} — the value as stored, type-coerced" }),
         Leaf(Op { name: "edit", handler: Write(arms::global_edit), args: "name:string! value:any!", positional: 1,
-             doc: "Change an existing global's value, type-coerced to the type it holds. The type is immutable, because every expression reading a global depends on it: re-typing is a remove and an add.",
+             doc: "Change an existing global's value, type-coerced to the type it holds. The type is immutable, because every expression reading a global depends on it: re-typing is a remove and an add. A locked global (goofi_home) refuses the edit: its value is the machine's.",
              result: "{value} — the value as stored, type-coerced" }),
         Leaf(Op { name: "remove", handler: Write(arms::global_remove), args: "name:string!", positional: 1,
              doc: "Delete a patch global. System globals cannot be deleted.",

@@ -76,8 +76,10 @@ tabs and panel ids the layout ops address; `goofi global list` says what an expr
 `name` is what `nd()` addresses a node by; `uid` is what every op takes. `node param edit`
 answers the param **as stored** — coerced to its declared type, so a fraction into an int comes
 back rounded; the declared min/max are the editor's range, not a clamp. `--expression
-"nd('other_node').sfreq"` — or `globals.x`, or `t` — binds instead of a literal; a bound param
-reads back as `expr: <source> → <value> (on)`, and `--expression` takes the source half. `node edit` is
+"nd('other_node').out.sfreq"` — or `globals.x`, or `t` — binds instead of a literal; a bound param
+reads back as `expr: <source> → <value> (on)`, and `--expression` takes the source half. A bare
+`nd('x')` is the single output; `.out.<slot>` names one of several; `nd('x').params.<group>.<param>`
+reads a param, re-read when it is edited; and `me` is this node in every position `nd('x')` has. `node edit` is
 the node's own record — the rename, the move and the viewer write, any mix in one call and one
 undo.
 

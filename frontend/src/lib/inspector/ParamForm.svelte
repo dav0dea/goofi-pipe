@@ -230,6 +230,7 @@
 					{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
 						<ParamField
 							{paramName}
+							selfName={node?.name}
 							{descriptor}
 							data-testid={`param-field-${paramName}`}
 							refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}

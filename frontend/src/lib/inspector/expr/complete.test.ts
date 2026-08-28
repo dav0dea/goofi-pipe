@@ -16,16 +16,25 @@ import type { ExprCatalogue } from './catalogue';
 
 const CAT: ExprCatalogue = {
 	nodes: [
-		{ name: 'oscillator0', slots: [{ name: 'out', dtype: 'array' }] },
-		{ name: 'buffer0', slots: [{ name: 'out', dtype: 'array' }] },
+		{
+			name: 'oscillator0',
+			slots: [{ name: 'out', dtype: 'array' }],
+			params: [
+				{ group: 'oscillator', names: ['frequency', 'amplitude'] },
+				{ group: 'common', names: ['autotrigger', 'max_frequency'] }
+			]
+		},
+		{ name: 'buffer0', slots: [{ name: 'out', dtype: 'array' }], params: [{ group: 'buffer', names: ['size', 'axis'] }] },
 		{
 			name: 'spectrum0',
 			slots: [
 				{ name: 'psd', dtype: 'array' },
 				{ name: 'freqs', dtype: 'array' }
-			]
+			],
+			params: []
 		}
 	],
+	self: 'buffer0',
 	globals: [
 		{ name: 'default_ufreq', type: 'float' },
 		{ name: 'gain', type: 'float' }
@@ -90,9 +99,9 @@ describe('nd() node names', () => {
 	});
 });
 
-// D-X10: the completer knows each node's arity from the store, so it can say what the engine will do
-// with the bare form — `_NdProxy._bare()` raises "is ambiguous" for a multi-output node — and steer
-// to `.slot` instead of leaving the user to discover the raise at eval time.
+// D-X10: the completer knows each node's arity from the store, so it can say what the engine will
+// do with the bare form — the graph refuses a bare multi-output reference as ambiguous — and steer
+// to `.out.<slot>` instead of leaving the user to discover the refusal at bind time.
 describe('output arity is surfaced, not left to the eval error (D-X10)', () => {
 	const byLabel = (doc: string) => {
 		const c = at(doc)!;
@@ -111,10 +120,12 @@ describe('output arity is surfaced, not left to the eval error (D-X10)', () => {
 		expect(e.detail).toMatch(/ambiguous/);
 	});
 
-	// "Prefer the `.slot` form" as behaviour rather than prose: accepting finishes the call, and for a
-	// multi-output node it leaves the caret on a dot so the slot list is the next thing that opens.
-	it('accepting finishes the call, and a multi-output node lands on the dot', () => {
-		expect(byLabel("nd('").get('spectrum0')!.apply, 'steers to .slot').toBe("spectrum0').");
+	// "Prefer the `.out.<slot>` form" as behaviour rather than prose: accepting finishes the call,
+	// and for a multi-output node it lands past `.out.` so the slot list is the next thing to open.
+	it('accepting finishes the call, and a multi-output node lands past .out.', () => {
+		expect(byLabel("nd('").get('spectrum0')!.apply, 'steers to .out.<slot>').toBe(
+			"spectrum0').out."
+		);
 		expect(byLabel("nd('").get('oscillator0')!.apply, 'usable bare — just close the call').toBe(
 			"oscillator0')"
 		);
@@ -125,7 +136,7 @@ describe('output arity is surfaced, not left to the eval error (D-X10)', () => {
 	it('closes only what is not written yet', () => {
 		const c = at("nd('a'", 5)!;
 		expect(new Map(entriesFor(c, CAT).map((o) => [o.label, o])).get('spectrum0')!.apply).toBe(
-			'spectrum0).'
+			'spectrum0).out.'
 		);
 	});
 
@@ -138,35 +149,56 @@ describe('output arity is surfaced, not left to the eval error (D-X10)', () => {
 	});
 });
 
-describe('nd(…). output slots', () => {
-	it('offers THAT node’s slots after the dot', () => {
-		expect(labels("nd('spectrum0').")).toEqual(['psd', 'freqs']);
-		expect(labels("nd('oscillator0').")).toEqual(['out']);
+describe('the reference paths: .out, .params, and me', () => {
+	it('offers the two namespaces after the reference', () => {
+		expect(labels("nd('spectrum0').")).toEqual(['out', 'params']);
+		expect(labels('me.')).toEqual(['out', 'params']);
+	});
+
+	it('offers THAT node’s slots after .out.', () => {
+		expect(labels("nd('spectrum0').out.")).toEqual(['psd', 'freqs']);
+		expect(labels("nd('oscillator0').out.")).toEqual(['out']);
 	});
 
 	it('carries the slot’s dtype as the detail', () => {
-		const c = at("nd('spectrum0').")!;
+		const c = at("nd('spectrum0').out.")!;
 		expect(entriesFor(c, CAT)[0].detail).toBe('array');
 	});
 
 	it('replaces a partially-typed slot name', () => {
-		const c = at("nd('spectrum0').p");
+		const c = at("nd('spectrum0').out.p");
 		expect(c?.kind).toBe('slot');
-		expect(c && [c.from, c.to]).toEqual([16, 17]);
-		expect(labels("nd('spectrum0').p")).toEqual(['psd', 'freqs']);
+		expect(c && [c.from, c.to]).toEqual([20, 21]);
+		expect(labels("nd('spectrum0').out.p")).toEqual(['psd', 'freqs']);
 	});
 
-	// One level further out is a slot's OWN attribute (`.data`, `.mean`) — the engine's, not ours.
+	it('offers the groups after .params. and the names one level deeper', () => {
+		expect(labels("nd('oscillator0').params.")).toEqual(['oscillator', 'common']);
+		expect(labels("nd('oscillator0').params.oscillator.")).toEqual(['frequency', 'amplitude']);
+	});
+
+	it('me reads the editing node’s own groups', () => {
+		expect(labels('me.params.')).toEqual(['buffer']);
+		expect(labels('me.params.buffer.')).toEqual(['size', 'axis']);
+		expect(labels('me.out.')).toEqual(['out']);
+	});
+
+	it('me offers nothing deeper without a self in the catalogue', () => {
+		const c = at('me.params.')!;
+		expect(entriesFor(c, { ...CAT, self: undefined }).map((o) => o.label)).toEqual([]);
+	});
+
+	// One level further out is the value's OWN attribute (`.data`, `.mean`) — the engine's, not ours.
 	it('stands down one level past the slot', () => {
-		expect(labels("nd('oscillator0').out.")).toEqual([]);
+		expect(labels("nd('oscillator0').out.out.")).toEqual([]);
 	});
 
 	it('stands down when the node name is not a literal it can read', () => {
 		expect(labels('nd(name).')).toEqual([]);
 	});
 
-	it('stands down for an unknown node name', () => {
-		expect(labels("nd('nope').")).toEqual([]);
+	it('stands down for an unknown node name after .out.', () => {
+		expect(labels("nd('nope').out.")).toEqual([]);
 	});
 });
 
@@ -205,7 +237,7 @@ describe('globals. and np.', () => {
 describe('the injected scope', () => {
 	it('offers the evaluator scope at a partially-typed name', () => {
 		const got = labels('n');
-		for (const name of ['nd', 't', 'np', 'globals', 'time', 'sin', 'pi']) {
+		for (const name of ['nd', 'me', 't', 'np', 'globals', 'time', 'sin', 'pi']) {
 			expect(got, `\`${name}\` is in the scope`).toContain(name);
 		}
 	});

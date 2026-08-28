@@ -17,6 +17,7 @@
 		placeholder = '',
 		testid,
 		autofocus = false,
+		selfName,
 		bindCommit
 	}: {
 		value: string;
@@ -30,6 +31,8 @@
 		/** Lands on the editable element. */
 		testid: string;
 		autofocus?: boolean;
+		/** The edited node's display name — what `me` completes against. */
+		selfName?: string;
 		/** Hands the owner a commit-now function (and `null` on teardown). */
 		bindCommit?: (commit: (() => void) | null) => void;
 	} = $props();
@@ -50,7 +53,7 @@
 			mounted = mod.createExprEditor(el, {
 				doc: value,
 				multiline: mode,
-				catalogue: liveCatalogue,
+				catalogue: () => ({ ...liveCatalogue(), self: selfName }),
 				onCommit: (v) => onCommit(v),
 				onCancel: () => onCancel(),
 				error,

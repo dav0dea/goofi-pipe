@@ -383,6 +383,40 @@ class Sleeper(goofi.Node):
     }
 
     #[test]
+    fn a_param_reference_reads_this_node_and_follows_its_edit() {
+        let g = Goofi::new();
+        g.state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(
+            goofi_python::inproc::PyExprEvaluator::new().expect("the evaluator constructs")));
+        let osc = g.add("Oscillator");
+        let probe = g.probe(osc, "out");
+        g.ready(osc);
+        g.set_param(osc, "oscillator", "frequency", 8.0);
+        // `me` is this node: the amplitude follows the node's OWN frequency param.
+        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
+            "expression": "me.params.oscillator.frequency / 4" }));
+        assert!(r["error"].is_null(), "{r}");
+        g.until("the amplitude to read 2 through `me`", |_| {
+            probe.latest().filter(|d| f32s(d).iter().any(|v| v.abs() > 1.5)).map(|_| ())
+        });
+        // An authored edit of the referenced param re-binds its reader.
+        g.set_param(osc, "oscillator", "frequency", 2.0);
+        g.until("the edit to re-evaluate the reader", |_| {
+            probe.latest().filter(|d| f32s(d).iter().all(|v| v.abs() < 0.9)).map(|_| ())
+        });
+        // The same reference across nodes, by name.
+        let osc2 = g.add("Oscillator");
+        let probe2 = g.probe(osc2, "out");
+        g.ready(osc2);
+        let name = g.doc()["nodes"][hex(osc)]["name"].as_str().unwrap().to_string();
+        let r = g.call("node param edit", j!({ "node": hex(osc2), "param": "oscillator/amplitude",
+            "expression": format!("nd('{name}').params.oscillator.frequency + 1") }));
+        assert!(r["error"].is_null(), "{r}");
+        g.until("the cross-node read to evaluate", |_| {
+            probe2.latest().filter(|d| f32s(d).iter().any(|v| v.abs() > 2.0)).map(|_| ())
+        });
+    }
+
+    #[test]
     fn the_patch_rate_global_re_rates_every_producer_at_once() {
         // `common.max_frequency` is BOUND to `globals.default_ufreq`, and a binding needs the evaluator.
         let g = Goofi::new();

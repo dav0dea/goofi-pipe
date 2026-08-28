@@ -493,19 +493,19 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
 
     // Naming one is by its PORT NAME: the facade's slots are called what its ports are called, so
     // both resolve and neither needs the uid the document keys them by.
-    assert!(bind("nd('subpatch0').sink").is_null(), "the first port names a slot");
-    assert!(bind("nd('subpatch0').other").is_null(), "and so does the second");
-    let unknown = bind("nd('subpatch0').nosuch");
+    assert!(bind("nd('subpatch0').out.sink").is_null(), "the first port names a slot");
+    assert!(bind("nd('subpatch0').out.other").is_null(), "and so does the second");
+    let unknown = bind("nd('subpatch0').out.nosuch");
     assert!(unknown.as_str().is_some_and(|e| e.contains("no output")),
             "a name no port wears is refused as a leaf's would be: {unknown}");
 
     // Renaming the SUB-PATCH follows into the expression, exactly as renaming a leaf or a port
     // does. Without it the binding survives only until the next re-resolve: the source still spells
     // a name nothing wears, so a reload raises an error on an expression the user never touched.
-    bind("nd('subpatch0').sink");
+    bind("nd('subpatch0').out.sink");
     g.call("node edit", j!({ "node": inst, "name": "chain" }));
     let followed = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
-    assert!(followed.contains("nd('chain').sink"), "the reference followed the sub-patch: {followed}");
+    assert!(followed.contains("nd('chain').out.sink"), "the reference followed the sub-patch: {followed}");
     assert!(!followed.contains("subpatch0"), "…and nothing still spells the old name: {followed}");
     assert!(!followed.contains("[error:"), "the binding stayed live across the rename: {followed}");
 
@@ -515,11 +515,11 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     // rename never looks past it.
     g.call("node edit", j!({ "node": outp, "name": "drain" }));
     let slot_moved = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
-    assert!(slot_moved.contains("nd('chain').drain"), "the reference followed the port: {slot_moved}");
+    assert!(slot_moved.contains("nd('chain').out.drain"), "the reference followed the port: {slot_moved}");
     assert!(!slot_moved.contains(".sink"), "…and nothing still spells the old slot: {slot_moved}");
     assert!(!slot_moved.contains("[error:"), "the binding stayed live across it: {slot_moved}");
 
-    // A display name is read as an ATTRIBUTE in an expression — `nd('chain').drain` — so a name
+    // A display name is read as an ATTRIBUTE in an expression — `nd('chain').out.drain` — so a name
     // Python cannot parse as one breaks every reference to it, and the rewrite that follows the
     // NEXT rename can no longer find what it broke. The name is refused instead, for every kind
     // of node: the namespace is one, so the rule on it is one.
@@ -541,13 +541,13 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     // The mirror case: a source spelling a slot no port wears YET heals when a rename gives a port
     // that name. Nobody re-edits the expression — the rename is what makes it resolvable, exactly
     // as it is for a node's own name.
-    let ahead = bind("nd('chain').tap");
+    let ahead = bind("nd('chain').out.tap");
     assert!(ahead.as_str().is_some_and(|e| e.contains("no output")),
             "a slot nothing wears is refused: {ahead}");
     g.call("node edit", j!({ "node": second, "name": "tap" }));
     let healed = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     assert!(!healed.contains("[error:"), "the rename resolved the waiting binding: {healed}");
-    bind("nd('chain').drain");
+    bind("nd('chain').out.drain");
 
     // …and it SURVIVES the round trip, which is where a source left spelling a dead name shows up.
     let dir = tempfile::tempdir().unwrap();
@@ -560,7 +560,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
         .find(|u| back.doc()["nodes"][u]["name"] == "buffer0")
         .expect("the member came back");
     let reloaded = back.call("node state", j!({ "node": loaded_buf }))["text"].as_str().unwrap().to_string();
-    assert!(reloaded.contains("nd('chain').drain"), "the saved source names the sub-patch: {reloaded}");
+    assert!(reloaded.contains("nd('chain').out.drain"), "the saved source names the sub-patch: {reloaded}");
     assert!(!reloaded.contains("[error:"), "and it resolves on load: {reloaded}");
 
     // A port's label lives in the ONE display-name namespace `nd()` reads, so it cannot shadow a

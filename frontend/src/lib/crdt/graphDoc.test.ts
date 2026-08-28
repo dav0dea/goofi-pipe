@@ -186,12 +186,14 @@ describe('graphDoc globals', () => {
 			...seedDoc(),
 			globals: {
 				default_ufreq: { value: 30, type: 'float', system: true },
+				goofi_home: { value: '/home/u/.goofi', type: 'string', system: true, locked: true },
 				subject: { value: 'P07', type: 'string', system: false }
 			}
 		};
 		expect(globalViews(doc)).toEqual([
-			{ name: 'default_ufreq', value: 30, type: 'float', system: true },
-			{ name: 'subject', value: 'P07', type: 'string', system: false }
+			{ name: 'default_ufreq', value: 30, type: 'float', system: true, locked: false },
+			{ name: 'goofi_home', value: '/home/u/.goofi', type: 'string', system: true, locked: true },
+			{ name: 'subject', value: 'P07', type: 'string', system: false, locked: false }
 		]);
 	});
 

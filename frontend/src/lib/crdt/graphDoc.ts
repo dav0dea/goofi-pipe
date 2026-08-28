@@ -212,6 +212,8 @@ export interface GlobalView {
 	type: GlobalType;
 	/** A system global (editable value, but never deletable/renamable). */
 	system: boolean;
+	/** A machine-owned global: the value is read-only too. */
+	locked: boolean;
 }
 
 /** All globals, in the document's key order (system-first, then user in creation order). */
@@ -225,7 +227,7 @@ export function globalViews(doc: Doc): GlobalView[] {
 			(typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') &&
 			(type === 'float' || type === 'int' || type === 'bool' || type === 'string')
 		) {
-			out.push({ name, value, type, system: g.system === true });
+			out.push({ name, value, type, system: g.system === true, locked: g.locked === true });
 		}
 	}
 	return out;

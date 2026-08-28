@@ -96,6 +96,14 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.call("session save", j!({ "path": path.to_string_lossy() }));
     g.call("session load", j!({ "path": path.to_string_lossy() }));
 
+    // A locked global is the machine's: the manifest never carries it, and the load re-derives it.
+    let manifest = g.call("session manifest", j!({}));
+    assert!(!manifest["yaml"].as_str().unwrap().contains("goofi_home"),
+            "a machine path in a patch file travels to the wrong machine");
+    let held = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
+        .find(|e| e["name"] == "goofi_home").cloned().unwrap();
+    assert_eq!(held["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));
+
     let snap = ev.next("graph_replaced");
     assert_eq!(snap["runtime"][hex(late)]["stage"], "creating",
                "the load rebuilt it at the uid it was saved with, and the snapshot caught it starting");

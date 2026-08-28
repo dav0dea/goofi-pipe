@@ -35,18 +35,30 @@ impl GlobalValue {
     }
 }
 
-/// A code-owned system global: editable, but never deletable or renamable.
+/// A code-owned system global: never deletable or renamable. A LOCKED one is not editable
+/// either — its value is the machine's, re-derived at every reassert, and a `.gfi` never
+/// carries it.
 pub struct GlobalDef {
     pub name: &'static str,
-    pub default: GlobalValue,
+    pub value: fn() -> GlobalValue,
     pub doc: &'static str,
+    pub locked: bool,
 }
 
-pub static SYSTEM_GLOBALS: &[GlobalDef] = &[GlobalDef {
-    name: "default_ufreq",
-    default: GlobalValue::Float(30.0),
-    doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
-}];
+pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
+    GlobalDef {
+        name: "default_ufreq",
+        value: || GlobalValue::Float(30.0),
+        doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
+        locked: false,
+    },
+    GlobalDef {
+        name: "goofi_home",
+        value: || GlobalValue::Str(crate::path::to_slash(&crate::home::dir())),
+        doc: "The .goofi folder, where goofi keeps its own files. The machine says where it is.",
+        locked: true,
+    },
+];
 
 /// Python's keywords, plus goofi's own namespace token `globals`. A regex reads each as an
 /// identifier and a parser does not, so a name that is one cannot be an attribute — which is the
@@ -82,6 +94,7 @@ pub fn is_valid_identifier(name: &str) -> bool {
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
     system: std::collections::HashSet<String>,
+    locked: std::collections::HashSet<String>,
 }
 
 impl Default for GlobalStore {
@@ -92,15 +105,25 @@ impl Default for GlobalStore {
 
 impl GlobalStore {
     pub fn new() -> GlobalStore {
-        let mut s = GlobalStore { values: IndexMap::new(), system: std::collections::HashSet::new() };
+        let mut s = GlobalStore {
+            values: IndexMap::new(),
+            system: std::collections::HashSet::new(),
+            locked: std::collections::HashSet::new(),
+        };
         s.reassert_system();
         s
     }
 
     /// Back-fill any missing system global with its default — on construction and after a load.
+    /// A LOCKED one is overwritten instead: its value is this machine's, never a file's.
     pub fn reassert_system(&mut self) {
         for def in SYSTEM_GLOBALS {
-            self.values.entry(def.name.to_string()).or_insert_with(|| def.default.clone());
+            if def.locked {
+                self.values.insert(def.name.to_string(), (def.value)());
+                self.locked.insert(def.name.to_string());
+            } else {
+                self.values.entry(def.name.to_string()).or_insert_with(def.value);
+            }
             self.system.insert(def.name.to_string());
         }
     }
@@ -112,13 +135,18 @@ impl GlobalStore {
         self.values.contains_key(name)
     }
 
-    /// Every global in order, tagged with whether it is a system global.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool)> {
-        self.values.iter().map(|(k, v)| (k.as_str(), v, self.system.contains(k)))
+    /// Every global in order, tagged with whether it is a system global and whether it is locked.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool, bool)> {
+        self.values
+            .iter()
+            .map(|(k, v)| (k.as_str(), v, self.system.contains(k), self.locked.contains(k)))
     }
 
     /// Set an EXISTING global, coercing to its declared type; errors when it does not exist.
     pub fn set(&mut self, name: &str, value: GlobalValue) -> Result<(), String> {
+        if self.locked.contains(name) {
+            return Err(format!("global `{name}` is read-only: its value is the machine's"));
+        }
         match self.values.get(name) {
             Some(existing) => {
                 let coerced = value.coerced_like(existing);

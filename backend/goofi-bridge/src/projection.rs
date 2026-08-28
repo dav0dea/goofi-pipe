@@ -67,10 +67,11 @@ pub fn of(g: &Graph) -> Value {
     // Known limitation: this Map is a BTreeMap, so a full mirror shows globals alphabetized until
     // the next live edit. A stable doc order needs an ordered globals shape.
     let mut globals = Map::new();
-    for (name, value, is_system) in g.globals().entries() {
+    for (name, value, is_system, locked) in g.globals().entries() {
         let mut entry = goofi_engine::global_to_json(value);
         if let Value::Object(m) = &mut entry {
             m.insert("system".into(), json!(is_system));
+            m.insert("locked".into(), json!(locked));
         }
         globals.insert(name.to_string(), entry);
     }

@@ -238,10 +238,11 @@ pub fn globals(g: &Graph) -> Value {
     let entries: Vec<Value> = g
         .globals()
         .entries()
-        .map(|(name, v, system)| {
+        .map(|(name, v, system, locked)| {
             let mut e = goofi_engine::global_to_json(v);
             e["name"] = json!(name);
             e["system"] = json!(system);
+            e["locked"] = json!(locked);
             e
         })
         .collect();
