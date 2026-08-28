@@ -11,30 +11,61 @@ pub fn split(line: &str) -> Result<Vec<String>, String> {
     shell_words::split(line).map_err(|e| format!("{e}"))
 }
 
-/// The op a word sequence names, against the rows THIS server serves: the FIRST complete
-/// registered phrase, walking left to right. Prefix-freedom over the registry makes the first
-/// match the only possible one, so min-length and longest-match coincide. Answers the op and how
-/// many words its phrase consumed.
+/// Where a word-by-word descent of the phrase tree ended — the one state machine under
+/// [`resolve`] and [`complete`].
+enum Stop {
+    /// The words named a leaf: its full phrase, and how many words it took.
+    Op(String, usize),
+    /// The words ran out inside a group: what can come next, and the phrase so far.
+    Children(&'static [Entry], String),
+    /// A word matched nothing at its level; the phrase walked before the miss.
+    Unknown(String),
+}
+
+fn walk(words: &[String]) -> Stop {
+    let mut children = TREE;
+    let mut prefix = String::new();
+    for (i, word) in words.iter().enumerate() {
+        match children.iter().find(|e| word_of(e) == word) {
+            Some(Entry::Group(w, _, kids)) => {
+                prefix.push_str(w);
+                prefix.push(' ');
+                children = kids;
+            }
+            Some(Entry::Leaf(op)) => return Stop::Op(format!("{prefix}{}", op.name), i + 1),
+            None => return Stop::Unknown(prefix),
+        }
+    }
+    Stop::Children(children, prefix)
+}
+
+/// The op a word sequence names, against the rows THIS server serves. Answers the op and how many
+/// words its phrase consumed. A refusal teaches: the served phrases under the words that DID
+/// match — and a phrase the tree spells that no row serves is the headless mode by construction,
+/// since layout is the one subtree a server withholds.
 pub fn resolve<'a>(ops: &[&'a Op], words: &[String]) -> Result<(&'a Op, usize), String> {
-    for n in 1..=words.len() {
-        let phrase = words[..n].join(" ");
-        if let Some(op) = ops.iter().find(|o| o.name == phrase) {
-            return Ok((op, n));
-        }
-    }
     let line = words.join(" ");
-    let first = words.first().map(String::as_str).unwrap_or_default();
-    let near: Vec<&str> =
-        ops.iter().map(|o| o.name).filter(|n| n.split(' ').next() == Some(first)).collect();
-    match (near.is_empty(), first) {
-        (true, "layout") => Err(format!(
-            "unknown op `{line}` — this server is headless, and the layout ops are not served"
-        )),
-        (true, _) => {
-            Err(format!("unknown op `{line}` — `op list` answers every op this server speaks"))
+    let prefix = match walk(words) {
+        Stop::Op(name, used) => match ops.iter().find(|o| o.name == name) {
+            Some(op) => return Ok((op, used)),
+            None => name,
+        },
+        Stop::Children(_, prefix) | Stop::Unknown(prefix) => prefix,
+    };
+    let near: Vec<&str> = match prefix.is_empty() {
+        true => Vec::new(),
+        false => ops.iter().map(|o| o.name).filter(|n| n.starts_with(&prefix)).collect(),
+    };
+    Err(match (near.is_empty(), prefix.is_empty()) {
+        // The tree spells the phrase and no row serves it: the withheld layout subtree.
+        (true, false) => {
+            format!("unknown op `{line}` — this server is headless, and the layout ops are not served")
         }
-        (false, _) => Err(format!("unknown op `{line}` — under `{first}`: {}", near.join(", "))),
-    }
+        (true, true) => {
+            format!("unknown op `{line}` — `op list` answers every op this server speaks")
+        }
+        _ => format!("unknown op `{line}` — under `{}`: {}", prefix.trim_end(), near.join(", ")),
+    })
 }
 
 /// One line, parsed against the registry: the phrase, then every argument as a flag the op's own
@@ -338,28 +369,18 @@ pub fn complete(
         true => (&words[..], String::new()),
         false => (&words[..words.len() - 1], words[words.len() - 1].clone()),
     };
-    let mut children = TREE;
-    let mut prefix = String::new();
-    for (i, word) in done.iter().enumerate() {
-        match children.iter().find(|e| word_of(e) == word) {
-            Some(Entry::Group(w, _, kids)) => {
-                prefix.push_str(w);
-                prefix.push(' ');
-                children = kids;
-            }
-            Some(Entry::Leaf(leaf)) => {
-                let name = format!("{prefix}{}", leaf.name);
-                let Some(op) = ops.iter().find(|o| o.name == name) else { return Vec::new() };
-                return complete_args(op, &done[i + 1..], &partial, state);
-            }
-            None => return Vec::new(),
-        }
+    match walk(done) {
+        Stop::Op(name, used) => match ops.iter().find(|o| o.name == name) {
+            Some(op) => complete_args(op, &done[used..], &partial, state),
+            None => Vec::new(),
+        },
+        Stop::Children(children, prefix) => children
+            .iter()
+            .filter(|e| word_of(e).starts_with(&partial) && served(ops, &prefix, e))
+            .map(|e| (word_of(e).to_string(), doc_line(e)))
+            .collect(),
+        Stop::Unknown(_) => Vec::new(),
     }
-    children
-        .iter()
-        .filter(|e| word_of(e).starts_with(&partial) && served(ops, &prefix, e))
-        .map(|e| (word_of(e).to_string(), doc_line(e)))
-        .collect()
 }
 
 fn word_of(entry: &Entry) -> &'static str {
