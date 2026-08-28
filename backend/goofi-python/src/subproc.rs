@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
-use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
+use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, ParamKey, Params};
 
 /// Unique iceoryx2 service-name base per spawned subprocess, so concurrent nodes never collide.
 static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -194,6 +194,14 @@ impl RemoteNode {
             p.shutdown();
         }
     }
+
+    /// One request to the child, spawning it first if need be; an IO failure drops the child so
+    /// the next request starts a fresh one.
+    fn ask(&mut self, frame: &[u8]) -> Result<goofi_codec::Response, String> {
+        let timeout = if self.proc.is_none() { COLD_START_TIMEOUT } else { TICK_TIMEOUT };
+        let resp = self.ensure().and_then(|r| r.roundtrip(frame, timeout)).inspect_err(|_| self.reset())?;
+        goofi_codec::decode_response(&resp)
+    }
 }
 
 impl Node for RemoteNode {
@@ -201,18 +209,8 @@ impl Node for RemoteNode {
         // Only the PRESENT slots cross the wire; the child rebuilds the declared kwarg set from `INPUTS`.
         let present: Vec<(&str, &Data)> =
             self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
-
-        let frame = goofi_codec::encode_request(p.groups(), &present);
-        let timeout = if self.proc.is_none() { COLD_START_TIMEOUT } else { TICK_TIMEOUT };
-        let resp = match self.ensure().and_then(|r| r.roundtrip(&frame, timeout)) {
-            Ok(r) => r,
-            Err(e) => {
-                self.reset();
-                return Err(e.into());
-            }
-        };
         // A node RAISE does not kill the child: its state is preserved and the error is instant.
-        match goofi_codec::decode_response(&resp).map_err(NodeError)? {
+        match self.ask(&goofi_codec::encode_request(p.groups(), &present)).map_err(NodeError)? {
             goofi_codec::Response::Slots(outs) => {
                 for (slot, data) in outs {
                     out.set(&slot, data);
@@ -220,6 +218,14 @@ impl Node for RemoteNode {
                 Ok(())
             }
             goofi_codec::Response::NodeError(msg) => Err(NodeError(msg)),
+            goofi_codec::Response::Options(_) => Err(NodeError("the child answered a tick with options".into())),
+        }
+    }
+
+    fn on_param_refreshed(&mut self, key: &ParamKey, p: &Params<'_>) -> Option<Vec<String>> {
+        match self.ask(&goofi_codec::encode_refresh_request(p.groups(), &key.group, &key.name)) {
+            Ok(goofi_codec::Response::Options(options)) => options,
+            _ => None,
         }
     }
 }

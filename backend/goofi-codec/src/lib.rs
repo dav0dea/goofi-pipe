@@ -345,30 +345,59 @@ pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, Str
     Ok(out)
 }
 
-/// Encode a request frame: `[u32 params_len][params msgpack][slots]`.
-pub fn encode_request(params: &ParamMap, slots: &[(&str, &Data)]) -> Vec<u8> {
+/// A decoded subprocess request, always carrying the node's live params: one tick, or the ⟳ on
+/// one string param.
+pub enum Request {
+    Process { params: ParamMap, slots: Vec<(String, Data)> },
+    Refresh { params: ParamMap, group: String, name: String },
+}
+
+fn encode_params(params: &ParamMap, out: &mut Vec<u8>) {
     let pbytes = rmp_serde::to_vec(params).expect("param serialize (Param derives Serialize)");
-    let mut out = Vec::new();
     out.extend_from_slice(&(pbytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&pbytes);
+}
+
+/// Encode a tick request: `[0][u32 params_len][params msgpack][slots]`.
+pub fn encode_request(params: &ParamMap, slots: &[(&str, &Data)]) -> Vec<u8> {
+    let mut out = vec![0u8];
+    encode_params(params, &mut out);
     encode_slots(slots, &mut out);
     out
 }
 
-/// Decode a request frame written by [`encode_request`].
-pub fn decode_request(buf: &[u8]) -> std::result::Result<(ParamMap, Vec<(String, Data)>), String> {
-    let mut cur = Cursor::new(buf);
+/// Encode a refresh request: `[1][u32 params_len][params msgpack][(group, name) msgpack]`.
+pub fn encode_refresh_request(params: &ParamMap, group: &str, name: &str) -> Vec<u8> {
+    let mut out = vec![1u8];
+    encode_params(params, &mut out);
+    out.extend_from_slice(&rmp_serde::to_vec(&(group, name)).expect("two strings"));
+    out
+}
+
+/// Decode a request frame written by [`encode_request`] or [`encode_refresh_request`].
+pub fn decode_request(buf: &[u8]) -> std::result::Result<Request, String> {
+    let (&tag, rest) = buf.split_first().ok_or("empty request frame")?;
+    let mut cur = Cursor::new(rest);
     let plen = cur.u32("params length")?;
     let pbytes = cur.take(plen, "params blob")?;
     let params: ParamMap = rmp_serde::from_slice(pbytes).map_err(|e| e.to_string())?;
-    let slots = decode_slots(cur.rest())?;
-    Ok((params, slots))
+    match tag {
+        0 => Ok(Request::Process { params, slots: decode_slots(cur.rest())? }),
+        1 => {
+            let (group, name): (String, String) =
+                rmp_serde::from_slice(cur.rest()).map_err(|e| e.to_string())?;
+            Ok(Request::Refresh { params, group, name })
+        }
+        other => Err(format!("unknown request tag {other}")),
+    }
 }
 
-/// A decoded subprocess response: the node's output slots, or a per-tick node error message.
+/// A decoded subprocess response: the node's output slots, a per-tick node error message, or
+/// a refreshed option list — `None` when the node had no answer and the param keeps its own.
 pub enum Response {
     Slots(Vec<(String, Data)>),
     NodeError(String),
+    Options(Option<Vec<String>>),
 }
 
 /// Encode an OK response: `[0][slots]`.
@@ -385,12 +414,20 @@ pub fn encode_error_response(msg: &str) -> Vec<u8> {
     out
 }
 
+/// Encode a refresh response: `[2][Option<Vec<String>> msgpack]`.
+pub fn encode_options_response(options: &Option<Vec<String>>) -> Vec<u8> {
+    let mut out = vec![2u8];
+    out.extend_from_slice(&rmp_serde::to_vec(options).expect("strings"));
+    out
+}
+
 /// Decode a response frame; the outer `Err` is a malformed frame, never a node-reported one.
 pub fn decode_response(buf: &[u8]) -> std::result::Result<Response, String> {
     let (&tag, rest) = buf.split_first().ok_or("empty response frame")?;
     match tag {
         0 => Ok(Response::Slots(decode_slots(rest)?)),
         1 => Ok(Response::NodeError(String::from_utf8_lossy(rest).into_owned())),
+        2 => Ok(Response::Options(rmp_serde::from_slice(rest).map_err(|e| e.to_string())?)),
         other => Err(format!("unknown response tag {other}")),
     }
 }

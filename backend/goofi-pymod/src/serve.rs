@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use goofi_codec::{decode_request, encode_error_response, encode_response};
+use goofi_codec::{decode_request, encode_error_response, encode_options_response, encode_response, Request};
 use goofi_core::{Data as CoreData, SrcDtype};
 use iceoryx2::prelude::*;
 use pyo3::prelude::*;
@@ -141,7 +141,12 @@ fn handle(
     did_setup: &mut bool,
     body: &[u8],
 ) -> PyResult<Vec<u8>> {
-    let (params, arrived) = decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let (params, arrived) = match decode_request(body).map_err(pyo3::exceptions::PyValueError::new_err)? {
+        Request::Process { params, slots } => (params, slots),
+        Request::Refresh { params, group, name } => {
+            return Ok(encode_options_response(&crate::exec::run_refresh(py, instance, &params, &group, &name)));
+        }
+    };
     // The wire carries only the slots that hold a frame; widen it back to every declared slot,
     // `None` where nothing arrived.
     let inputs: Vec<(&str, Option<&CoreData>)> = in_slots
