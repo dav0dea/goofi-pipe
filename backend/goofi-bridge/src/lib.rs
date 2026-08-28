@@ -39,7 +39,7 @@ use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use goofi_engine::{subpatch, Graph, Uid};
+use goofi_engine::{Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
@@ -765,22 +765,12 @@ fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> Strin
     )
 }
 
-/// A node reference as any caller may spell it: a uid, or the unique NAME the one namespace
-/// holds. An existing uid wins a hex-looking name; a well-formed uid that names nothing stays a
-/// uid, so an idempotent remove keeps its meaning.
-fn resolve_node(g: &goofi_engine::Graph, raw: &str) -> Option<Uid> {
-    match Uid::from_hex(raw) {
-        Some(uid) if g.exists(uid) => Some(uid),
-        hex => g.uid_by_name(raw).or(hex),
-    }
-}
-
 fn parse_uid(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
     let raw = payload
         .get(key)
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("missing/invalid uid `{key}`"))?;
-    resolve_node(g, raw)
+    g.resolve_ref(raw)
         .ok_or_else(|| format!("`{raw}` names no node — `{key}` takes a uid or a node's name"))
 }
 
@@ -795,7 +785,7 @@ fn parse_uid_opt(
         None => Ok(None),
         Some(v) => v
             .as_str()
-            .and_then(|s| resolve_node(g, s))
+            .and_then(|s| g.resolve_ref(s))
             .map(Some)
             .ok_or_else(|| format!("{op}: `{key}` names no node")),
     }
@@ -806,7 +796,7 @@ fn parse_uid_opt(
 fn parse_uid_list(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
     let arr = payload.get(key).and_then(|v| v.as_array()).ok_or_else(|| format!("missing {key}"))?;
     let uids: Vec<Uid> =
-        arr.iter().filter_map(|m| m.as_str().and_then(|s| resolve_node(g, s))).collect();
+        arr.iter().filter_map(|m| m.as_str().and_then(|s| g.resolve_ref(s))).collect();
     match uids.len() == arr.len() {
         true => Ok(uids),
         false => Err(format!("an entry in `{key}` names no node")),
@@ -965,7 +955,7 @@ fn parse_endpoint(
         p.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("{op}: missing {key}"))?;
     let (node, slot) =
         raw.split_once('/').ok_or_else(|| format!("{op}: `{key}` is `node/slot`, not `{raw}`"))?;
-    let uid = resolve_node(g, node)
+    let uid = g.resolve_ref(node)
         .ok_or_else(|| format!("{op}: `{node}` in `{key}` names no node"))?;
     Ok((uid, slot.to_string()))
 }
@@ -981,19 +971,10 @@ fn parse_link(
 }
 
 
-/// Translate a link endpoint that names a sub-patch FACADE into the port it names — a facade
-/// address IS its port. What is behind that port is the graph's own question, asked at plan time.
-fn resolve_link_endpoint(g: &goofi_engine::Graph, uid: Uid, slot: &str) -> (Uid, String) {
-    match g.is_facade(uid) && Uid::from_hex(slot).is_some_and(|p| g.stub(p).is_some()) {
-        true => (Uid::from_hex(slot).expect("checked"), subpatch::BOUNDARY_SLOT.to_string()),
-        false => (uid, slot.to_string()),
-    }
-}
-
 /// Resolve a link endpoint AND refuse one that names nothing wirable — the check a caller-initiated
 /// `add_link` gets and a REPLAY does not, since a replay must converge rather than wedge the stack.
 fn wirable_endpoint(g: &Graph, uid: Uid, slot: &str, which: &str) -> Result<(Uid, String), String> {
-    let (node, slot) = resolve_link_endpoint(g, uid, slot);
+    let (node, slot) = g.normalise(uid, slot);
     if g.wirable(node) {
         return Ok((node, slot));
     }

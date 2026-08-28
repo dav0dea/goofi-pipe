@@ -1254,8 +1254,9 @@ impl Graph {
         self.leaf(uid).map(|e| e.manifest.type_name)
     }
 
-    /// A facade address, folded one level onto the port it names. Everything else is itself.
-    fn normalise(&self, uid: Uid, slot: &str) -> (Uid, String) {
+    /// A facade address, folded one level onto the port it names. Everything else is itself. What
+    /// is BEHIND that port is a separate question ([`Graph::stream`]), asked at plan time.
+    pub fn normalise(&self, uid: Uid, slot: &str) -> (Uid, String) {
         match self.is_facade(uid) {
             true => match Uid::from_hex(slot) {
                 Some(port) if self.stub(port).is_some() => (port, subpatch::BOUNDARY_SLOT.to_string()),
@@ -2204,6 +2205,16 @@ impl Graph {
     /// Resolve a node display name to its uid — `nd('name')` and the CLI's name spelling alike.
     pub fn uid_by_name(&self, name: &str) -> Option<Uid> {
         self.named().find(|(_, n)| *n == name).map(|(u, _)| u)
+    }
+
+    /// A node reference as any caller may spell it: a uid, or the unique display name. An
+    /// existing uid wins a hex-looking name; a well-formed uid that names nothing stays a uid, so
+    /// an idempotent remove keeps its meaning.
+    pub fn resolve_ref(&self, raw: &str) -> Option<Uid> {
+        match Uid::from_hex(raw) {
+            Some(uid) if self.exists(uid) => Some(uid),
+            hex => self.uid_by_name(raw).or(hex),
+        }
     }
 
     /// Resolve an output slot name to its `&'static` manifest name.

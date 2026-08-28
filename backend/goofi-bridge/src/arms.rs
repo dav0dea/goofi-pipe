@@ -383,8 +383,8 @@ pub(crate) fn link_remove(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let (a, so, b, si) = parse_link(&g, payload, "link remove")?;
-    let (a, so) = resolve_link_endpoint(&g, a, &so);
-    let (b, si) = resolve_link_endpoint(&g, b, &si);
+    let (a, so) = g.normalise(a, &so);
+    let (b, si) = g.normalise(b, &si);
     // Idempotent for the same reason `remove_node` is, and answered the same way.
     let existed = g.has_link(a, &so, b, &si);
     state.history.lock().unwrap().apply(
