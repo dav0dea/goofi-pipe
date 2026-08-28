@@ -93,6 +93,16 @@ mod tests {
         // the fixture reports every stop a success while the child sleeps on.
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        // Deaf to the ask, as a harness saving its session is: only then does the insist meet a
+        // LIVE child, where a departing one answers EPERM on macOS. Set before exec, so it cannot race.
+        // SAFETY: `signal` is async-signal-safe, the one requirement between fork and exec.
+        #[cfg(unix)]
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut cmd, || {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                Ok(())
+            });
+        }
         cmd.spawn().expect("spawn the sleeping child")
     }
 
