@@ -118,10 +118,12 @@ test.describe('the control socket', () => {
 				await expect
 					.poll(async () => (await backendDoc(page)).nodes[osc].params.oscillator.amplitude.value)
 					.toBeCloseTo(0.42, 5);
-				expect(
-					(await nodeParams(page, osc))?.oscillator?.amplitude?.value,
-					'and the replica reads what the manager holds, not what it sent'
-				).toBeCloseTo(0.42, 5);
+				// Polled: the manager's delta reaches the replica by broadcast, after its own reply.
+				await expect
+					.poll(async () => (await nodeParams(page, osc))?.oscillator?.amplitude?.value, {
+						message: 'and the replica reads what the manager holds, not what it sent'
+					})
+					.toBeCloseTo(0.42, 5);
 			});
 
 			await test.step('an expression carries its flags across, not only its source', async () => {
