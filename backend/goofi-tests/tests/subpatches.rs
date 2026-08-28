@@ -806,10 +806,17 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     g.call("link add", j!({ "from": ep(hex(src), "out"), "to": ep(&inst, &port) }));
     g.until("a frame to cross the boundary", |_| at_mid.latest());
 
-    // Cutting the outer cable stops it, through the same door.
+    // Cutting the outer cable stops it, through the same door. The cut reaches the node OFF the
+    // graph lock, so a frame already in flight may still land — the baseline is taken from settled
+    // state: re-read until one whole settle window passes with no frame.
+    let stopped = |what: &str| {
+        g.until(what, |g| {
+            let n = at_mid.count();
+            g.stays(|_| at_mid.count() == n).then_some(())
+        });
+    };
     g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(&inst, &port) }));
-    let seen = at_mid.count();
-    assert!(g.stays(|_| at_mid.count() == seen), "the cut stopped the stream: {seen}");
+    stopped("the stream to stop after the cut");
 
     // Re-wire, then nest the whole sub-patch one level deeper. The chain of ports lengthens and the
     // frames must still arrive — a relay walk that stops at the first hop fails here.
@@ -830,9 +837,7 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     // it drops ends on a PORT, and a re-plan aimed at a port re-plans nothing by itself — what has
     // to be reached is the leaf behind it.
     g.call("node remove", j!({ "node": hex(src) }));
-    let after_src = at_mid.count();
-    assert!(g.stays(|_| at_mid.count() == after_src),
-            "deleting the source stopped the stream: {after_src}");
+    stopped("the stream to stop after the source left");
 
     // Feed it again, then delete the PORT itself. A port relays, so its removal has to end the
     // relay — dropping its cables without re-planning leaves the member behind it subscribed to a
@@ -844,7 +849,5 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     assert!(g.until("frames from the second source", |_| (at_mid.count() > refed).then_some(true)),
             "the sub-patch takes a new feed on the same port");
     g.call("node remove", j!({ "node": port }));
-    let after_port = at_mid.count();
-    assert!(g.stays(|_| at_mid.count() == after_port),
-            "the port's deletion stopped the stream: {after_port}");
+    stopped("the stream to stop after the port left");
 }
