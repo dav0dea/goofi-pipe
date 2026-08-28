@@ -9,9 +9,10 @@ user**, not chosen unilaterally.
 Eight nodes, and each one was added to prove a seam rather than to fill a category:
 
 - **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`.
-- **Python** — `LempelZiv`, `PermutationEntropy`, `SpectralEntropy`, `DetrendedFluctuation`, in
-  `nodes/`. All four are complexity measures over `[C, T]`, and all four exist because the
-  subprocess tier had to be proved against real packages that hold the GIL.
+- **Python** — none in `nodes/`. `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
+  `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
+  because the subprocess tier had to be proved against real packages that hold the GIL; they now
+  live in `node-bundles/complexity/` (see `library.md`).
 
 `Filter` is the first evidence that the rule below pays: it is ONE node with a `mode` param of
 four options, where the old implementation had a node for each.
@@ -39,6 +40,19 @@ already compose to, and is this genuinely outside that span?"
 - **More spectral work**, now that `Psd` and `Filter` stand: envelopes, coherence, time-frequency.
   Each is a test of whether the span already covers it.
 
+## The shipped nodes, made more expressive
+
+The eight that ship each prove a seam, and their params are the minimum that proved it. Two are
+already known to be short, and each is a param design rather than a new node:
+
+- **`Buffer` sizes in samples only.** A window a user thinks of as "two seconds" or "the last
+  thirty updates" is a size to recompute by hand at every rate change. The size wants a unit —
+  samples, seconds against the frame's `sfreq`, or updates against the node's `ufreq` — with the
+  count derived, so a rate change moves the window and not the patch.
+- **`Psd` exposes a window taper and nothing else.** Averaging over sub-windows (Welch), the
+  resolution, a frequency range to keep, and a log or linear scale are the choices every reading
+  of a spectrum makes, and each one is made downstream today or not at all.
+
 ## Authoring constraints that shape the library
 
 - A node's tier is NOT selectable — one probe per file routes it, and the routing is by whether its
@@ -52,7 +66,7 @@ already compose to, and is this genuinely outside that span?"
 
 ## Open questions
 
-- Where the line falls between a built-in node and a marketplace node (see `node-marketplace.md`).
+- Where the line falls between a built-in node and a bundle node (see `library.md`).
 - Whether the shipped library is Rust-first (fast, compiled in) or Python-first (editable, the
   thing a user can fork) — and how a user's edit to a shipped node is meant to work.
 - What decides that a node is written in Rust. Today it is "the four that had to be fast", which is
