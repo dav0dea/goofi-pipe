@@ -125,87 +125,88 @@ fn typed(op: &Op, key: &str, ty: &str, raw: String) -> Result<Value, String> {
     }
 }
 
-/// Flags → payload, mechanically from the args schema: a bool is `--x` / `--no-x` and sends its
-/// key only when given; a list-typed arg repeats; every other flag's value is the NEXT word,
-/// whatever it looks like, or inline via `--flag=value`.
-fn parse_flags(op: &Op, words: &[String]) -> Result<Value, String> {
-    let decls: Vec<(&str, &str, bool)> = op.args().collect();
-    let mut payload = Map::new();
-    let mut i = 0;
-    // Leading bare words fill the op's positional args, in declaration order; a list-typed
-    // positional is variadic and takes every bare word up to the first flag. Each positional
-    // stays reachable as a flag too, so the sugar never hides a spelling.
-    for (name, ty, _) in decls.iter().take(op.positional) {
-        if words.get(i).is_none_or(|w| w.starts_with("--")) {
-            break;
-        }
-        match ty.strip_suffix("[]") {
-            Some(item) => {
-                let mut list = Vec::new();
-                while let Some(w) = words.get(i).filter(|w| !w.starts_with("--")) {
-                    list.push(typed(op, name, item, w.clone())?);
-                    i += 1;
-                }
-                payload.insert(name.to_string(), Value::Array(list));
-            }
-            None => {
-                payload.insert(name.to_string(), typed(op, name, ty, words[i].clone())?);
-                i += 1;
-            }
-        }
-    }
+/// Where a scan of an op's argument words rests — what the NEXT word may be. The one grammar
+/// under [`parse_flags`] and [`complete_args`]: the parser folds the emitted values, completion
+/// reads the resting state.
+enum Expect<'a> {
+    /// `--name` was given and its value is pending.
+    Value(&'static str, &'static str),
+    /// Between words: a flag, or this declared arg as a positional while they are still open.
+    Open(Option<&'a (&'static str, &'static str, bool)>),
+}
+
+/// Step through `words` against the op's args schema, emitting each `(decl name, typed value)`.
+/// Leading bare words fill the positionals in declaration order — a list-typed one is variadic,
+/// and the first flag closes them. Each positional stays reachable as a flag too, so the sugar
+/// never hides a spelling; a bool is `--x` / `--no-x`; any value can ride inline as `--flag=v`.
+fn scan<'a>(
+    op: &Op,
+    decls: &'a [(&'static str, &'static str, bool)],
+    words: &[String],
+    emit: &mut dyn FnMut(&'static str, Value) -> Result<(), String>,
+) -> Result<Expect<'a>, String> {
+    let fail = |msg: String| format!("{}: {msg} — {}", op.name, usage(op));
+    let (mut pos, mut open, mut i) = (0, true, 0);
     while i < words.len() {
         let word = &words[i];
         i += 1;
         let Some(flag) = word.strip_prefix("--") else {
-            return Err(format!("{}: unexpected `{word}` — {}", op.name, usage(op)));
+            let Some((name, ty, _)) = decls.get(pos).filter(|_| open && pos < op.positional)
+            else {
+                return Err(fail(format!("unexpected `{word}`")));
+            };
+            emit(name, typed(op, name, ty.trim_end_matches("[]"), word.clone())?)?;
+            pos += usize::from(!ty.ends_with("[]"));
+            continue;
         };
+        open = false;
         let (mut key, inline) = match flag.split_once('=') {
             Some((k, v)) => (k, Some(v.to_string())),
             None => (flag, None),
         };
-        let negated = match key.strip_prefix("no-") {
+        let mut negated = false;
+        if let Some(bare) = key.strip_prefix("no-") {
             // `--no-x` only where `x` is a declared bool: an op's own `no-…` name stays reachable.
-            Some(bare) if decls.iter().any(|(n, t, _)| *n == bare && *t == "bool") => {
-                key = bare;
-                true
+            if decls.iter().any(|(n, t, _)| *n == bare && *t == "bool") {
+                (key, negated) = (bare, true);
             }
-            _ => false,
-        };
+        }
         let Some((name, ty, _)) = decls.iter().find(|(n, ..)| *n == key) else {
-            return Err(format!("{}: no flag `--{key}` — {}", op.name, usage(op)));
+            return Err(fail(format!("no flag `--{key}`")));
         };
-        if *ty == "bool" {
-            if inline.is_some() {
-                return Err(format!("{}: `--{key}` is a flag and takes no value", op.name));
+        match (*ty, inline, words.get(i)) {
+            ("bool", Some(_), _) => {
+                return Err(format!("{}: `--{key}` is a flag and takes no value", op.name))
             }
-            payload.insert(name.to_string(), Value::Bool(!negated));
-            continue;
-        }
-        let raw = match inline {
-            Some(v) => v,
-            None => {
-                let Some(next) = words.get(i) else {
-                    return Err(format!("{}: `--{key}` needs a value — {}", op.name, usage(op)));
-                };
+            ("bool", None, _) => emit(name, Value::Bool(!negated))?,
+            (ty, Some(v), _) => emit(name, typed(op, key, ty.trim_end_matches("[]"), v)?)?,
+            (ty, None, Some(next)) => {
                 i += 1;
-                next.clone()
+                emit(name, typed(op, key, ty.trim_end_matches("[]"), next.clone())?)?;
             }
-        };
-        match ty.strip_suffix("[]") {
-            Some(item) => {
-                let v = typed(op, key, item, raw)?;
-                match payload.entry(name.to_string()).or_insert_with(|| json!([])) {
-                    Value::Array(list) => list.push(v),
-                    _ => unreachable!("a list flag only ever inserts an array"),
-                }
-            }
-            None => {
-                if payload.insert(name.to_string(), typed(op, key, ty, raw)?).is_some() {
-                    return Err(format!("{}: `{key}` was given twice", op.name));
-                }
-            }
+            (ty, None, None) => return Ok(Expect::Value(name, ty)),
         }
+    }
+    Ok(Expect::Open(decls.get(pos).filter(|_| open && pos < op.positional)))
+}
+
+/// A command line's argument words as the payload the socket envelope would carry.
+fn parse_flags(op: &Op, words: &[String]) -> Result<Value, String> {
+    let decls: Vec<(&str, &str, bool)> = op.args().collect();
+    let mut payload = Map::new();
+    let mut put = |name: &'static str, v: Value| {
+        if decls.iter().any(|(n, t, _)| *n == name && t.ends_with("[]")) {
+            match payload.entry(name.to_string()).or_insert_with(|| json!([])) {
+                Value::Array(list) => list.push(v),
+                _ => unreachable!("a list arg only ever inserts an array"),
+            }
+        } else if payload.insert(name.to_string(), v).is_some() {
+            return Err(format!("{}: `{name}` was given twice", op.name));
+        }
+        Ok(())
+    };
+    if let Expect::Value(name, _) = scan(op, &decls, words, &mut put)? {
+        return Err(format!("{}: `--{name}` needs a value — {}", op.name, usage(op)));
     }
     for (name, _, required) in &decls {
         if *required && !payload.contains_key(*name) {
@@ -390,8 +391,8 @@ fn word_of(entry: &Entry) -> &'static str {
     }
 }
 
-/// Candidates once the op is named: a value for the flag just given, then the next positional's
-/// values beside the flags not yet spent.
+/// Candidates once the op is named, read off [`scan`]'s resting state: a value for the flag just
+/// given, or the open positional's values beside the flags not yet spent.
 fn complete_args(
     op: &Op,
     given: &[String],
@@ -399,27 +400,20 @@ fn complete_args(
     state: Option<&crate::AppState>,
 ) -> Vec<(String, String)> {
     let decls: Vec<(&str, &str, bool)> = op.args().collect();
-    if let Some(key) = given.last().and_then(|w| w.strip_prefix("--")) {
-        let key = key.strip_prefix("no-").unwrap_or(key);
-        if let Some((_, ty, _)) = decls.iter().find(|(n, t, _)| *n == key && *t != "bool") {
-            return values_for(ty, state, partial);
-        }
-    }
-    let mut out = Vec::new();
-    let bare = given.iter().take_while(|w| !w.starts_with("--")).count();
-    if !partial.starts_with("--") {
-        if let Some((_, ty, _)) = decls.get(bare).filter(|_| bare < op.positional) {
-            out.extend(values_for(ty, state, partial));
-        }
-    }
+    let mut spent: Vec<&str> = Vec::new();
+    let mut note = |name: &'static str, _: Value| {
+        spent.push(name);
+        Ok(())
+    };
+    let positional = match scan(op, &decls, given, &mut note) {
+        Ok(Expect::Value(_, ty)) => return values_for(ty, state, partial),
+        Ok(Expect::Open(p)) => p.filter(|_| !partial.starts_with("--")),
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<(String, String)> =
+        positional.map(|(_, ty, _)| values_for(ty, state, partial)).unwrap_or_default();
     for (name, ty, required) in &decls {
-        let spent = *ty != "bool"
-            && !ty.ends_with("[]")
-            && given.iter().any(|w| {
-                w.strip_prefix("--")
-                    .is_some_and(|f| f.split('=').next() == Some(*name))
-            });
-        if spent {
+        if spent.contains(name) && *ty != "bool" && !ty.ends_with("[]") {
             continue;
         }
         let doc = match (ty.strip_suffix("[]"), *ty, required) {
@@ -445,7 +439,6 @@ fn values_for(ty: &str, state: Option<&crate::AppState>, partial: &str) -> Vec<(
             .iter()
             .map(|p| (p.id.to_string(), p.doc.to_string()))
             .collect(),
-        "bool" => ["true", "false"].iter().map(|w| (w.to_string(), String::new())).collect(),
         "uid" | "endpoint" => {
             let Some(state) = state else { return Vec::new() };
             let doc = state.doc.lock().unwrap().to_json();
