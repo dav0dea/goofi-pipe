@@ -108,12 +108,19 @@ export function exprContext(state: EditorState, pos: number): ExprContext | null
 	return null;
 }
 
-/** The evaluator's injected scope (`expr.rs`'s `eval` globals). */
+/** The evaluator's injected scope (`expr.rs`'s `eval` globals): goofi's own four names, then
+ * `time()` and `from math import *` — the common slice of math's namespace, since the full list
+ * lives Python-side and only eval is authoritative. */
 const SCOPE: Completion[] = [
 	{ label: 'nd', type: 'function', detail: "node reference — nd('name')", boost: 1 },
 	{ label: 't', type: 'variable', detail: 'seconds since start', boost: 1 },
 	{ label: 'np', type: 'namespace', detail: 'numpy', boost: 1 },
-	{ label: 'globals', type: 'namespace', detail: 'patch globals — globals.key', boost: 1 }
+	{ label: 'globals', type: 'namespace', detail: 'patch globals — globals.key', boost: 1 },
+	{ label: 'time', type: 'function', detail: 'wall-clock seconds — time()', boost: 1 },
+	...'sin cos tan asin acos atan atan2 sinh cosh tanh exp expm1 log log2 log10 sqrt hypot floor ceil fabs fmod copysign degrees radians'
+		.split(' ')
+		.map((label) => ({ label, type: 'function', detail: 'math' })),
+	...'pi e tau inf nan'.split(' ').map((label) => ({ label, type: 'constant', detail: 'math' }))
 ];
 
 /** One node-name entry; a multi-output node steers to a `.slot`, since bare use of one raises. */

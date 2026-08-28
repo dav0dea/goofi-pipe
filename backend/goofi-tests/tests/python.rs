@@ -477,5 +477,15 @@ class Sleeper(goofi.Node):
         g.call("global edit", j!({ "name": "default_ufreq", "value": 60.0 }));
         g.until("every producer to be re-rated by one global edit",
                 |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
+
+        // The evaluator's namespace: `math`'s names and `time()` are simply there, beside `np`.
+        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
+            "expression": "2 * sin(pi / 2) + exp(0) * (1 if time() > 0 else 0)" }));
+        assert!(r["error"].is_null(), "the namespace compiles: {r}");
+        // The doc keeps the STORED value; the evaluated one shows in `node state`'s text.
+        // Observed in the output, where an amplitude IS observable: a ±1 sine cannot cross 2.
+        g.until("math and time to evaluate into the output's swing", |_| {
+            probe.latest().filter(|d| f32s(d).iter().any(|v| v.abs() > 2.0)).map(|_| ())
+        });
     }
 }

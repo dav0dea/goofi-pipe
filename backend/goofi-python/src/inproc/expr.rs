@@ -11,15 +11,23 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule, PyString};
 
 /// The Python harness. The graph has already rewritten every `nd(..)` and `globals.*` term into a
-/// generated variable, so the expression is plain numpy math over ordinary locals.
+/// generated variable, so the expression is plain math over ordinary locals — with `np`, `math`'s
+/// whole namespace and `time()` simply there. ONE dict as eval's globals, deliberately: a split
+/// globals/locals pair breaks name lookup inside comprehensions. Locals land last, so a node
+/// named `sin` shadows math's.
 const EVAL_SRC: &str = r#"
 import numpy as np
+from math import *
+from time import time
+
+__goofi_scope = {k: v for k, v in globals().items() if not k.startswith("__")}
 
 def __goofi_compile(source):
     return compile(source, "<goofi-expr>", "eval")
 
 def __goofi_eval(code, locals_, t):
-    ns = {"t": t, "np": np}
+    ns = dict(__goofi_scope)
+    ns["t"] = t
     ns.update(locals_)
     return eval(code, ns)
 "#;
