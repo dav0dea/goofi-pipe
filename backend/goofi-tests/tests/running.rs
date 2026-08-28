@@ -119,8 +119,17 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     g.set_param(osc, "oscillator", "sfreq", 1000.0);
     g.set_param(osc, "common", "max_frequency", 200.0);
     runs(Duration::from_millis(300)); // let the new cap take hold before the window that judges it
+    // The floor is the MACHINE's, not a constant: the pacer spends one sleep per period, so what
+    // a 5 ms sleep costs here bounds any cap — macOS CI rounds it to ~16 ms and tops out near 60.
+    let t0 = Instant::now();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let paceable = (40_000u128 / t0.elapsed().as_millis().max(1)).min(200) as u64;
     let fast = runs(Duration::from_millis(1000));
-    assert!((185..=201).contains(&fast), "a 200 Hz cap delivered {fast} frames in a second");
+    assert!(fast <= 201, "a 200 Hz cap delivered {fast} frames in a second — OVER the cap");
+    assert!(fast >= paceable * 85 / 100,
+            "a 200 Hz cap delivered {fast} frames in a second, where this machine paces {paceable}");
 }
 
 #[test]
