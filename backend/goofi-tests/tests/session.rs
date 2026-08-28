@@ -196,9 +196,10 @@ fn dirty(g: &Goofi) -> bool {
     g.call("session status", j!({}))["dirty"] == true
 }
 
-/// A path as goofi spells it back: `/` on every platform, whatever the platform itself spells.
+/// A path as goofi spells it back: canonical and `/`-separated, the same resolution a save
+/// applies — so an OS shorthand for the same file (a Windows 8.3 name) still compares equal.
 fn spelled(p: &std::path::Path) -> String {
-    goofi_core::path::to_slash(p)
+    goofi_core::path::to_slash(&goofi_core::path::canonical(p).unwrap())
 }
 
 #[test]
@@ -356,8 +357,8 @@ fn the_file_browser_answers_a_path_the_way_save_and_load_take_it() {
     assert_eq!(list(Some(&tmp.path().join("patch.gfi").to_string_lossy()))["path"], here);
 
     // The frontend omits `path` on the first open; a cleared input sends "".
-    let home = std::env::var("HOME").expect("HOME is set in the test environment");
-    let home = to_slash(&canonical(std::path::Path::new(&home)).unwrap_or_else(|_| home.into()));
+    let home = std::env::home_dir().expect("a home directory in the test environment");
+    let home = to_slash(&canonical(&home).unwrap_or_else(|_| home.clone()));
     assert_eq!(list(None)["path"].as_str().unwrap(), home);
     assert_eq!(list(Some("")), list(None));
     assert_eq!(list(Some("~"))["path"].as_str().unwrap(), home, "a leading tilde expands");
