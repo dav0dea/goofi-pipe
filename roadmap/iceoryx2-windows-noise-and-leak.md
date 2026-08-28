@@ -81,6 +81,11 @@ signatures of the same family:
 The sessions are not the cause and are not thinned for it: a real patch boots this many nodes.
 Until the upstream report lands, the Windows job is red on `bundles` and green on nothing less.
 
+Not only Windows: on Linux (2026-08-28, local), `what_a_crash_left_behind_is_gone_by_the_next_start`
+left the dead child's node directories standing ONCE in a full `transport` target run and never
+when run alone — the sweep enumerating under a sibling test's concurrent node churn, which is the
+same shape as the PAL race above with a quieter failure. Flake-grade; undiagnosed past that.
+
 ## Open
 
 - Whether goofi should reclaim the leak itself at startup rather than wait for upstream. It
