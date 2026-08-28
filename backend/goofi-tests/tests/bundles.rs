@@ -65,6 +65,9 @@ fn the_complexity_bundle_reduces_the_time_axis_and_leaves_the_channels_alone() {
     let buf = g.add("Buffer");
     g.set_param(buf, "buffer", "size", 256);
     g.link(src, "out", buf, "data");
+    // The window fills BEFORE a node is wired: a growing one answers, and answers differently.
+    let window = g.probe(buf, "out");
+    g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![3, 256]));
 
     // All PROBED AND WIRED AT ONCE, one interpreter per file, as a real scan does — so the
     // ceiling below covers the node boots rather than the probes.
@@ -119,6 +122,9 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     g.set_param(osc, "oscillator", "frequency", 8.0);
     g.set_param(buf, "buffer", "size", 256);
     g.link(osc, "out", buf, "data");
+    // Every oracle below is for a FULL window: a growing one holds fewer cycles, or one cut short.
+    let window = g.probe(buf, "out");
+    g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![256]));
 
     let (g, py) = (&g, &py.py);
     let nodes: Vec<_> = std::thread::scope(|s| {
@@ -147,8 +153,7 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     });
 
     for (ty, node, probe, range) in nodes {
-        // A full window: a partial one reads as a lower frequency.
-        let d = first_frame(g, &ty, node, &probe, |d| shape(d) == vec![1] && f32s(d)[0] > 0.0);
+        let d = first_frame(g, &ty, node, &probe, |d| shape(d) == vec![1]);
         let v = f32s(&d)[0];
         assert!(range.contains(&v), "{ty} of an 8 Hz sine is {v}, outside {range:?}");
     }
