@@ -1,4 +1,4 @@
-"""EEGPlayback — replays a recording as a live stream, through mne's `read_raw`.
+"""EegPlayback — replays a recording as a live stream, through mne's `read_raw`.
 
 Any format mne reads: FIF, EDF, BDF, BrainVision, and the rest. Each tick emits the samples the
 wall clock has passed since the last one, so the stream runs at the recording's own rate. The
@@ -12,7 +12,7 @@ import numpy as np
 import goofi
 
 
-class EEGPlayback(goofi.Node):
+class EegPlayback(goofi.Node):
     """Replay an EEG recording at its own rate, as if it were live."""
 
     OUTPUTS = {"out": goofi.DataType.ARRAY}

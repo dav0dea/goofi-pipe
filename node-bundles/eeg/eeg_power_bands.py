@@ -1,4 +1,4 @@
-"""EEGPowerBands — the power in each EEG band, from a spectrum.
+"""EegPowerBands — the power in each EEG band, from a spectrum.
 
 Takes a `Psd` frame: `[.., F]` with the frequencies on its last axis, and answers `[.., bands]`
 with the band names on that axis. Power is the density integrated over the band, so it does not
@@ -11,7 +11,7 @@ import goofi
 BANDS = ["delta", "theta", "alpha", "beta", "gamma"]
 
 
-class EEGPowerBands(goofi.Node):
+class EegPowerBands(goofi.Node):
     """Band power per channel: delta to gamma, absolute or as a share of the whole spectrum."""
 
     INPUTS = {"psd": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

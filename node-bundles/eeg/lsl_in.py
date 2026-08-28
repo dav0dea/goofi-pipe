@@ -1,4 +1,4 @@
-"""LSLIn — receives a Lab Streaming Layer stream, as `[channels, samples]` per tick.
+"""LslIn — receives a Lab Streaming Layer stream, as `[channels, samples]` per tick.
 
 The stream is resolved in the background and connected the moment it appears, so the node may
 be added before the device is on: it stays silent until then, and it reconnects on its own if
@@ -10,7 +10,7 @@ import pylsl
 import goofi
 
 
-class LSLIn(goofi.Node):
+class LslIn(goofi.Node):
     """Receive an LSL stream: [channels, samples] per tick, with its labels and rate."""
 
     OUTPUTS = {"out": goofi.DataType.ARRAY}
