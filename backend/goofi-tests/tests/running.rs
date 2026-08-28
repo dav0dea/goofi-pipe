@@ -6,6 +6,10 @@ use std::time::{Duration, Instant};
 
 use goofi_tests::{Goofi, Viewer, ep, hex, holds_within, j};
 
+// A wall-clock oracle needs a QUIET machine: a measuring test takes it alone (write), the rest
+// share it (read) — CI's two cores made parallel tests corrupt each other's time.
+static MACHINE: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 fn f32s(d: &goofi_core::Data) -> Vec<f32> {
     let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
     a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
@@ -30,6 +34,7 @@ fn npy_f32s(bytes: &[u8]) -> Vec<f32> {
 
 #[test]
 fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
+    let _machine = MACHINE.blocking_read();
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
@@ -83,6 +88,7 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
 
 #[test]
 fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
+    let _machine = MACHINE.blocking_write();
     // Counting emitted frames is the only way to see a cap: a stated value reads correct anyway.
     let g = Goofi::new();
     let osc = g.add("Oscillator");
@@ -119,6 +125,7 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
 
 #[test]
 fn each_way_a_node_can_fail_is_reported_and_none_of_them_stops_the_patch() {
+    let _machine = MACHINE.blocking_read();
     // Containment: `setup` runs under the graph mutex the bridge unwraps, so a panic must not poison it.
     let g = Goofi::new();
     let bad = g.add("_TestFail");
@@ -144,6 +151,7 @@ fn each_way_a_node_can_fail_is_reported_and_none_of_them_stops_the_patch() {
 
 #[test]
 fn a_required_input_refuses_to_run_on_a_hole_and_says_so() {
+    let _machine = MACHINE.blocking_read();
     // A `required` slot lets `process` read it unconditionally, which is worth something only if
     // the runtime enforces the refusal.
     let g = Goofi::new();
@@ -196,6 +204,7 @@ impl goofi_node::Node for Flaky {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
+    let _machine = MACHINE.read().await;
     // A rebirth publishes under a NEW service name, so a stale subscriber never errors, it just stops.
     let g = Goofi::new();
     let builds = Arc::new(AtomicUsize::new(0));
@@ -227,6 +236,7 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_draw() {
+    let _machine = MACHINE.read().await;
     let g = Goofi::new();
     let base = g.serve().await;
     let osc = g.add("Oscillator");
@@ -352,6 +362,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_that_stops_answering_is_reclaimed_and_a_merely_slow_one_is_not() {
+    let _machine = MACHINE.write().await;
     // The hard half is the second one: a viewer on a slow link must not be mistaken for a dead one.
     let g = Goofi::impatient();
     let base = g.serve().await;
@@ -379,6 +390,7 @@ async fn a_viewer_that_stops_answering_is_reclaimed_and_a_merely_slow_one_is_not
 
 #[test]
 fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
+    let _machine = MACHINE.blocking_write();
     // A node observes its halt flag only BETWEEN runs, so exit waits to a CEILING, never a join.
     let g = Goofi::new();
     let slow = g.add("_TestSlow");
@@ -460,6 +472,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
 
 #[test]
 fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
+    let _machine = MACHINE.blocking_read();
     // Options live in runtime state, never the doc, so they reach a client only through the status echo.
     let g = Goofi::new();
     let picker = g.add("_TestPicker");

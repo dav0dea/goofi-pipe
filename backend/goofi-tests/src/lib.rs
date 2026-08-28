@@ -68,7 +68,8 @@ impl Goofi {
         let mut g = Goofi::with_mode(false);
         g.state.data_liveness = goofi_bridge::DataLiveness {
             ping_interval: Duration::from_millis(100),
-            pong_deadline: Duration::from_millis(1000),
+            // Wide enough that a CI runner's scheduling stall cannot read as a dead peer.
+            pong_deadline: Duration::from_millis(3000),
             send_timeout: Duration::from_millis(200),
         };
         g
@@ -263,12 +264,22 @@ impl Goofi {
         true
     }
 
-    /// Wait until a node reports `Ready`: a `Control` sent before that is lost.
+    /// Wait until a node reports `Ready`: a `Control` sent before that is lost. A node that files
+    /// an error instead fails NOW, wearing that error — a timeout would bury the diagnosis.
     #[track_caller]
     pub fn ready(&self, node: Uid) {
-        self.until(&format!("{node} to report ready"), |g| {
-            (g.stage(node) == "ready").then_some(())
-        });
+        let deadline = Instant::now() + self.patience;
+        loop {
+            match self.stage(node).as_str() {
+                "ready" => return,
+                "error" => panic!("{node} failed instead of reporting ready: {}",
+                                  self.error(node).unwrap_or_default()),
+                stage if Instant::now() >= deadline => {
+                    panic!("timed out waiting for {node} to report ready (stage: {stage})")
+                }
+                _ => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
     }
 
     /// A node's runtime stage, as the status-drain worker filed it.
