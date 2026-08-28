@@ -229,30 +229,44 @@ fn complete_line(rest: &[String]) -> i32 {
 /// current as the server answering them.
 fn print_completions(shell: Option<&str>) -> i32 {
     // zsh: `words` holds the current (partial) word last; joining keeps its emptiness, so the
-    // callback can tell `node<TAB>` from `node <TAB>`.
-    const ZSH: &str = r#"#compdef goofi
+    // callback can tell `node<TAB>` from `node <TAB>`. compinit is bootstrapped when the rc file
+    // has not run it yet — `compdef` does not exist before it has.
+    const ZSH: &str = r#"# goofi completion — add to ~/.zshrc:  eval "$(goofi completions zsh)"
 _goofi() {
 	local -a cands lines
 	local line="${(j: :)${(@)words[2,$CURRENT]}}"
-	lines=("${(@f)$(command goofi op complete "$line" 2>/dev/null)}")
+	lines=("${(@f)$("__GOOFI__" op complete "$line" 2>/dev/null)}")
 	for l in "${lines[@]}"; do
 		[[ -n "$l" ]] && cands+=("${l%%$'\t'*}:${l#*$'\t'}")
 	done
 	(( ${#cands} )) && _describe -V goofi cands
 }
-compdef _goofi goofi"#;
-    const BASH: &str = r#"_goofi() {
+if ! typeset -f compdef >/dev/null; then
+	autoload -Uz compinit
+	compinit
+fi
+compdef _goofi goofi "__GOOFI__""#;
+    const BASH: &str = r#"# goofi completion — add to ~/.bashrc:  eval "$(goofi completions bash)"
+_goofi() {
 	local line="${COMP_LINE#* }"
 	[[ "$COMP_LINE" == *' '* ]] || line=""
 	local IFS=$'\n'
-	COMPREPLY=($(command goofi op complete "$line" 2>/dev/null | cut -f1))
+	COMPREPLY=($("__GOOFI__" op complete "$line" 2>/dev/null | cut -f1))
 }
-complete -F _goofi goofi"#;
+complete -F _goofi goofi "__GOOFI__""#;
+    // The script pins THIS binary's path: a dev shell has no `goofi` on PATH, and the eval
+    // re-resolves on every shell start, so an installed binary pins its installed path.
+    let me = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "goofi".into());
     match shell {
-        Some("zsh") => println!("{ZSH}"),
-        Some("bash") => println!("{BASH}"),
+        Some("zsh") => println!("{}", ZSH.replace("__GOOFI__", &me)),
+        Some("bash") => println!("{}", BASH.replace("__GOOFI__", &me)),
         _ => {
-            eprintln!("usage: goofi completions zsh|bash — eval it from your shell's rc file");
+            eprintln!(
+                "usage: goofi completions zsh|bash — register with\n  eval \"$(goofi completions zsh)\"\nin the shell or its rc file"
+            );
             return 2;
         }
     }
