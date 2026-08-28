@@ -57,14 +57,16 @@ pub struct IntParam {
     pub max: i64,
     #[pyo3(get)]
     pub doc: Option<String>,
+    #[pyo3(get)]
+    pub expression: Option<String>,
 }
 
 #[pymethods]
 impl IntParam {
     #[new]
-    #[pyo3(signature = (default, min, max, doc=None))]
-    fn new(default: i64, min: i64, max: i64, doc: Option<String>) -> IntParam {
-        IntParam { default, min, max, doc }
+    #[pyo3(signature = (default, min, max, doc=None, expression=None))]
+    fn new(default: i64, min: i64, max: i64, doc: Option<String>, expression: Option<String>) -> IntParam {
+        IntParam { default, min, max, doc, expression }
     }
 }
 
@@ -78,14 +80,16 @@ pub struct FloatParam {
     pub max: f64,
     #[pyo3(get)]
     pub doc: Option<String>,
+    #[pyo3(get)]
+    pub expression: Option<String>,
 }
 
 #[pymethods]
 impl FloatParam {
     #[new]
-    #[pyo3(signature = (default, min, max, doc=None))]
-    fn new(default: f64, min: f64, max: f64, doc: Option<String>) -> FloatParam {
-        FloatParam { default, min, max, doc }
+    #[pyo3(signature = (default, min, max, doc=None, expression=None))]
+    fn new(default: f64, min: f64, max: f64, doc: Option<String>, expression: Option<String>) -> FloatParam {
+        FloatParam { default, min, max, doc, expression }
     }
 }
 
@@ -95,14 +99,16 @@ pub struct BoolParam {
     pub default: bool,
     #[pyo3(get)]
     pub doc: Option<String>,
+    #[pyo3(get)]
+    pub expression: Option<String>,
 }
 
 #[pymethods]
 impl BoolParam {
     #[new]
-    #[pyo3(signature = (default, doc=None))]
-    fn new(default: bool, doc: Option<String>) -> BoolParam {
-        BoolParam { default, doc }
+    #[pyo3(signature = (default, doc=None, expression=None))]
+    fn new(default: bool, doc: Option<String>, expression: Option<String>) -> BoolParam {
+        BoolParam { default, doc, expression }
     }
 }
 
@@ -116,13 +122,15 @@ pub struct StringParam {
     pub refresh: bool,
     #[pyo3(get)]
     pub doc: Option<String>,
+    #[pyo3(get)]
+    pub expression: Option<String>,
 }
 
 #[pymethods]
 impl StringParam {
     #[new]
-    #[pyo3(signature = (default, options=None, refresh=false, doc=None))]
-    fn new(default: String, options: Option<Vec<String>>, refresh: bool, doc: Option<String>) -> StringParam {
-        StringParam { default, options: options.unwrap_or_default(), refresh, doc }
+    #[pyo3(signature = (default, options=None, refresh=false, doc=None, expression=None))]
+    fn new(default: String, options: Option<Vec<String>>, refresh: bool, doc: Option<String>, expression: Option<String>) -> StringParam {
+        StringParam { default, options: options.unwrap_or_default(), refresh, doc, expression }
     }
 }

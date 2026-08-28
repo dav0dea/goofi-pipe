@@ -42,6 +42,9 @@ pub struct Param {
     /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// A default expression binding, live from birth — `me.params.…`, `globals.…` and the rest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
     #[serde(flatten)]
     pub spec: ParamSpec,
 }

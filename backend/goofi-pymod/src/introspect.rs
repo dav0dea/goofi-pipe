@@ -81,8 +81,8 @@ fn params(d: &Bound<'_, PyAny>) -> PyResult<Vec<Param>> {
     for (group, names) in d.cast::<PyDict>()?.iter() {
         let group: String = group.extract()?;
         for (name, descr) in names.cast::<PyDict>()?.iter() {
-            let (spec, doc) = param_spec(&descr)?;
-            out.push(Param { group: group.clone(), name: name.extract()?, doc, spec });
+            let (spec, doc, expression) = param_spec(&descr)?;
+            out.push(Param { group: group.clone(), name: name.extract()?, doc, expression, spec });
         }
     }
     Ok(out)
@@ -97,26 +97,27 @@ enum ParamDescr<'py> {
     Str(Bound<'py, StringParam>),
 }
 
-/// The kind-specific spec plus the kind-independent `doc=` help text.
-fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>)> {
+/// The kind-specific spec plus the kind-independent `doc=` and `expression=` texts.
+fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>, Option<String>)> {
     Ok(match descr.extract::<ParamDescr>()? {
         ParamDescr::Int(p) => {
             let p = p.borrow();
-            (ParamSpec::Int { default: p.default, min: p.min, max: p.max }, p.doc.clone())
+            (ParamSpec::Int { default: p.default, min: p.min, max: p.max }, p.doc.clone(), p.expression.clone())
         }
         ParamDescr::Float(p) => {
             let p = p.borrow();
-            (ParamSpec::Float { default: p.default, min: p.min, max: p.max }, p.doc.clone())
+            (ParamSpec::Float { default: p.default, min: p.min, max: p.max }, p.doc.clone(), p.expression.clone())
         }
         ParamDescr::Bool(p) => {
             let p = p.borrow();
-            (ParamSpec::Bool { default: p.default }, p.doc.clone())
+            (ParamSpec::Bool { default: p.default }, p.doc.clone(), p.expression.clone())
         }
         ParamDescr::Str(p) => {
             let p = p.borrow();
             (
                 ParamSpec::Str { default: p.default.clone(), options: p.options.clone(), refresh: p.refresh },
                 p.doc.clone(),
+                p.expression.clone(),
             )
         }
     })
