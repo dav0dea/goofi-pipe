@@ -244,12 +244,10 @@ pub fn globals(g: &Graph) -> Value {
         .globals()
         .entries()
         .map(|(name, v, system)| {
-            json!({
-                "name": name,
-                "type": v.type_tag(),
-                "value": goofi_engine::global_to_json(v)["value"],
-                "system": system,
-            })
+            let mut e = goofi_engine::global_to_json(v);
+            e["name"] = json!(name);
+            e["system"] = json!(system);
+            e
         })
         .collect();
     json!({ "globals": entries })

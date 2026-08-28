@@ -5,8 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arc_swap::ArcSwap;
-use goofi_core::globals::GlobalsSnapshot;
 use goofi_core::{Data, Param};
 use goofi_node::{
     ExprEvaluator, Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params,
@@ -120,9 +118,6 @@ pub struct NodeRuntime {
     /// Shared with the graph: the node EVALUATES, the graph COMPILES, so the authoring RPC can
     /// answer with a real compile error. `None` ⇒ every bound param falls back to its literal.
     evaluator: Option<Arc<dyn ExprEvaluator>>,
-    /// The patch globals as the node reads them (§5.2): a lock-free handle onto the graph's record,
-    /// re-read before each run so `process` sees an edit on its next run rather than never.
-    globals: Arc<ArcSwap<GlobalsSnapshot>>,
     /// The graph's clock origin, so `NodeCtx::now` is seconds-since-start on every node's thread
     /// rather than seconds-since-this-node's-birth.
     started: Instant,
@@ -172,7 +167,6 @@ pub struct NodeRuntime {
 /// Everything a node's thread needs that is the GRAPH's rather than the node's.
 pub struct NodeEnv {
     pub evaluator: Option<Arc<dyn ExprEvaluator>>,
-    pub globals: Arc<ArcSwap<GlobalsSnapshot>>,
     pub started: Instant,
 }
 
@@ -180,11 +174,7 @@ impl NodeEnv {
     /// The environment of a node that belongs to no graph — what a test driving a [`NodeRuntime`]
     /// directly gets.
     pub fn detached() -> NodeEnv {
-        NodeEnv {
-            evaluator: None,
-            globals: Arc::new(ArcSwap::from_pointee(GlobalsSnapshot::default())),
-            started: Instant::now(),
-        }
+        NodeEnv { evaluator: None, started: Instant::now() }
     }
 }
 
@@ -200,15 +190,11 @@ impl NodeRuntime {
     ) -> NodeRuntime {
         let effective = goofi_node::with_common(params, manifest);
         let run_policy = RunPolicy::from_params(&effective);
-        let mut ctx = NodeCtx::new();
-        // `setup` latches the globals as of birth; `process` re-reads them before every run.
-        ctx.globals = (**env.globals.load()).clone();
         let mut runtime = NodeRuntime {
             manifest,
             node,
             transport,
             evaluator: env.evaluator,
-            globals: env.globals,
             started: env.started,
             trigger_pending: false,
             run_policy,
@@ -220,7 +206,7 @@ impl NodeRuntime {
             bindings: IndexMap::new(),
             inputs: manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect(),
             multi_wires: manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect(),
-            ctx,
+            ctx: NodeCtx::new(),
             index_counters: HashMap::new(),
             ufreq_meter: UfreqMeter::default(),
             last_ufreq_report: None,
@@ -613,9 +599,7 @@ impl NodeRuntime {
             }));
             return;
         }
-        // Live globals and the graph's clock for `process`; `setup` latched the globals at birth.
         self.ctx.now = self.started.elapsed().as_secs_f64();
-        self.ctx.globals = (**self.globals.load()).clone();
         let multis = self.materialize_multis();
         let mut outputs = self.manifest.output_buffer();
         let result = {

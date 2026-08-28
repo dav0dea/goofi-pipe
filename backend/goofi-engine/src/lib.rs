@@ -4,8 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
-
 use goofi_core::Param;
 use goofi_node::{
     ExprMode, NodeCtx, NodeManifest, ParamGroups, ParamKey,
@@ -221,33 +219,19 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: b
     }
 }
 
-/// A global as `{value, type}` — the shape in the `.gfi` and the doc. The tag is what preserves
-/// float-vs-int through JSON's whole-float normalization.
+/// A global as `{value, type}` — the shape in the `.gfi` and the doc.
 pub fn global_to_json(v: &goofi_core::globals::GlobalValue) -> serde_json::Value {
-    use goofi_core::globals::GlobalValue;
-    use serde_json::json;
-    let value = match v {
-        GlobalValue::Float(x) => json!(x),
-        GlobalValue::Int(x) => json!(x),
-        GlobalValue::Bool(x) => json!(x),
-        GlobalValue::Str(s) => json!(s),
-    };
-    json!({ "value": value, "type": v.type_tag() })
+    serde_json::to_value(v).expect("a scalar enum serializes")
 }
 
-/// The inverse of [`global_to_json`]; `None` if malformed.
+/// The inverse of [`global_to_json`]; `None` if malformed. Type-directed on purpose: a fraction
+/// offered to an `int` global rounds instead of failing.
 pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals::GlobalValue> {
     use goofi_core::globals::GlobalValue;
-    let value = entry.get("value")?;
-    match entry.get("type").and_then(|t| t.as_str())? {
-        "float" => Some(GlobalValue::Float(value.as_f64()?)),
-        "int" => Some(GlobalValue::Int(
-            value.as_i64().or_else(|| value.as_f64().map(|f| f.round() as i64))?,
-        )),
-        "bool" => Some(GlobalValue::Bool(value.as_bool()?)),
-        "string" => Some(GlobalValue::Str(value.as_str()?.to_string())),
+    serde_json::from_value(entry.clone()).ok().or_else(|| match entry.get("type")?.as_str()? {
+        "int" => Some(GlobalValue::Int(entry.get("value")?.as_f64()?.round() as i64)),
         _ => None,
-    }
+    })
 }
 
 /// A factory that can capture runtime state — a Python class handle, a device descriptor — which
@@ -391,9 +375,6 @@ pub struct Graph {
     scope_of: HashMap<Uid, Option<Uid>>,
     /// Patch-scoped globals, system ones seeded and re-asserted by every `clear`/load.
     globals: goofi_core::globals::GlobalStore,
-    /// The lock-free view every node thread holds. Re-published by every mutator, which is why
-    /// `globals` is written ONLY through [`Graph::globals_mut`].
-    globals_record: Arc<ArcSwap<goofi_core::globals::GlobalsSnapshot>>,
     /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
     /// flight, and every uid's birth generation.
     wire: runtime::plan::WirePlanner,
@@ -470,9 +451,6 @@ impl Graph {
             evaluator: None,
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
-            globals_record: Arc::new(ArcSwap::from_pointee(
-                goofi_core::globals::GlobalStore::new().snapshot(),
-            )),
             wire: runtime::plan::WirePlanner::default(),
             bind_keys: Vec::new(),
             instance: runtime::service_instance(),
@@ -499,33 +477,22 @@ impl Graph {
         self.wire.reset_channels();
     }
 
-    /// The authoritative globals store — its `entries()`/`snapshot()` serve the CRDT mirror, the
-    /// `.gfi`, and (via `snapshot()`) expression eval + node setup/process.
+    /// The authoritative globals store — `entries()` serves the CRDT mirror and the `.gfi`, and an
+    /// expression binding resolves through `get`.
     pub fn globals(&self) -> &goofi_core::globals::GlobalStore {
         &self.globals
     }
 
-    /// Apply one global change (`None` = remove; a system delete is refused). Every binding that
-    /// READS this global is re-resolved and re-sent — a global's value is shipped inline.
+    /// Apply one global change (`None` = remove; a system delete is refused; a NEW global lands at
+    /// ordered position `at` — a delete/rename undo re-adds at the original slot). Every binding
+    /// that READS this global is re-resolved and re-sent — a global's value is shipped inline.
     pub fn apply_global_change(
         &mut self,
         name: &str,
         value: Option<goofi_core::globals::GlobalValue>,
+        at: Option<usize>,
     ) -> Result<(), String> {
-        self.globals_mut(|g| g.apply_change(name, value))?;
-        self.invalidate_bindings_reading(name);
-        Ok(())
-    }
-
-    /// Re-add a previously-removed user global at its ORIGINAL ordered position — the
-    /// position-preserving inverse of a delete/rename (order feeds the `.gfi`, mirror, and panel).
-    pub fn insert_global_at(
-        &mut self,
-        name: &str,
-        value: goofi_core::globals::GlobalValue,
-        at: usize,
-    ) -> Result<(), String> {
-        self.globals_mut(|g| g.add_at(name, value, at))?;
+        self.globals.apply_change(name, value, at)?;
         self.invalidate_bindings_reading(name);
         Ok(())
     }
@@ -1020,7 +987,6 @@ impl Graph {
             .and_then(|(transport, channel)| {
                 let env = runtime::NodeEnv {
                     evaluator: self.evaluator.clone(),
-                    globals: self.globals_record.clone(),
                     started: self.start,
                 };
                 // The join handle is dropped on purpose: holding one would tempt a caller into
@@ -1114,14 +1080,6 @@ impl Graph {
         self.leaf(uid).map(|e| e.params.clone())
     }
 
-
-    /// Write the globals store and re-publish the node-side view. The ONE writer, so the two can
-    /// never drift — a store mutated anywhere else would leave every node reading the old values.
-    fn globals_mut(&mut self, edit: impl FnOnce(&mut goofi_core::globals::GlobalStore) -> Result<(), String>) -> Result<(), String> {
-        let out = edit(&mut self.globals);
-        self.globals_record.store(Arc::new(self.globals.snapshot()));
-        out
-    }
 
     /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')`, and the referrer uids
     /// come back so the bridge can rebroadcast them. The rewrite happens only on success.
@@ -2761,11 +2719,7 @@ impl Graph {
         self.refreshed.clear();
         // Globals are patch CONTENT, so a load starts from a fresh seeded store; `dyn_types` is
         // catalog and stays.
-        self.globals_mut(|g| {
-            *g = goofi_core::globals::GlobalStore::new();
-            Ok(())
-        })
-        .expect("re-seeding cannot fail");
+        self.globals = goofi_core::globals::GlobalStore::new();
         // The node clock belongs to the PATCH: one loaded an hour in must compute what it would
         // have at boot. Safe only because every reader of this clock was dropped just above.
         self.start = Instant::now();
@@ -3058,7 +3012,7 @@ impl Graph {
                 if let (Some(name), Some(value)) =
                     (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
                 {
-                    let _ = self.globals_mut(|g| g.apply_change(name, Some(value)));
+                    let _ = self.globals.apply_change(name, Some(value), None);
                 }
             }
         }

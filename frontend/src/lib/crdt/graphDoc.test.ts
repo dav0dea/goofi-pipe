@@ -8,7 +8,6 @@ import {
 	facadeFaces,
 	docParams,
 	globalViews,
-	isValidGlobalName,
 	isValidIdentifier,
 	arrangementTabs,
 	type Doc
@@ -196,24 +195,23 @@ describe('graphDoc globals', () => {
 		]);
 	});
 
-	it('validates global names like the Rust identifier rule', () => {
-		expect(isValidGlobalName('default_ufreq')).toBe(true);
-		expect(isValidGlobalName('_x1')).toBe(true);
-		expect(isValidGlobalName('')).toBe(false);
-		expect(isValidGlobalName('1x')).toBe(false);
-		expect(isValidGlobalName('a b')).toBe(false);
-		expect(isValidGlobalName('a.b')).toBe(false);
-		expect(isValidGlobalName('globals')).toBe(false);
-		// A keyword passes the character rule and fails the parser, and both namespaces are read as
-		// an ATTRIBUTE in an expression — `globals.gain`, `nd('chain').drain` — so both refuse one.
+	it('validates names like the Rust identifier rule', () => {
+		expect(isValidIdentifier('default_ufreq')).toBe(true);
+		expect(isValidIdentifier('_x1')).toBe(true);
+		expect(isValidIdentifier('')).toBe(false);
+		expect(isValidIdentifier('1x')).toBe(false);
+		expect(isValidIdentifier('a b')).toBe(false);
+		expect(isValidIdentifier('a.b')).toBe(false);
+		// A keyword passes the character rule and fails the parser, and every namespace is read as
+		// an ATTRIBUTE in an expression — `globals.gain`, `nd('chain').drain` — so all refuse one.
 		expect(isValidIdentifier('drain')).toBe(true);
 		expect(isValidIdentifier('class')).toBe(false);
 		expect(isValidIdentifier('None')).toBe(false);
 		expect(isValidIdentifier('nd()')).toBe(false);
 		expect(isValidIdentifier("it's")).toBe(false);
-		expect(isValidGlobalName('lambda')).toBe(false);
-		// …and `globals` is legal as a NODE name; it is only the globals namespace that reserves it.
-		expect(isValidIdentifier('globals')).toBe(true);
+		expect(isValidIdentifier('lambda')).toBe(false);
+		// `globals` is goofi's own namespace token, reserved for globals AND node names alike.
+		expect(isValidIdentifier('globals')).toBe(false);
 	});
 
 	/* The arrangement parser. It reads a tree straight into the shape the panel system draws, so it

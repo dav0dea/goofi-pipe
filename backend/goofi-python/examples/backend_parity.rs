@@ -91,7 +91,7 @@ type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, window: Duration) -> (f64, bool) {
     let mut g = Graph::new();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
-    g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6))).unwrap();
+    g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
     g.register_dyn_type(manifest, factory);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();

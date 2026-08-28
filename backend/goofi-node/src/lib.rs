@@ -212,8 +212,6 @@ impl<'a> Outputs<'a> {
 pub struct NodeCtx {
     /// Monotonic seconds since the PATCH began — one clock across every node thread.
     pub now: f64,
-    /// The patch globals as of this run; empty for a node run outside a graph.
-    pub globals: goofi_core::globals::GlobalsSnapshot,
 }
 
 impl NodeCtx {

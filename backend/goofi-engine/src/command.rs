@@ -403,17 +403,9 @@ impl Command {
 
             Command::EditGlobal { name, value, at } => {
                 let old = g.globals().get(&name).cloned();
-                let old_index = g.globals().index_of(&name);
-                let was_delete = value.is_none();
-                match (&value, at) {
-                    // Re-add at a captured slot (the inverse of a delete/rename) — preserve order.
-                    (Some(v), Some(i)) if !g.globals().contains(&name) => {
-                        g.insert_global_at(&name, v.clone(), i)?;
-                    }
-                    _ => g.apply_global_change(&name, value)?,
-                }
                 // A delete's inverse re-adds at the removed index; add/edit inverses carry no slot.
-                let inv_at = if was_delete { old_index } else { None };
+                let inv_at = if value.is_none() { g.globals().index_of(&name) } else { None };
+                g.apply_global_change(&name, value, at)?;
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
             }
 

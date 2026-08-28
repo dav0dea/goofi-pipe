@@ -3,7 +3,7 @@
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { isValidGlobalName, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
+	import { isValidIdentifier, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 	import {
 		Button,
 		Icon,
@@ -25,7 +25,7 @@
 	let newName = $state('');
 	let newType = $state<GlobalType>('float');
 	const nameTaken = $derived(globals.some((gv) => gv.name === newName));
-	const canAdd = $derived(isValidGlobalName(newName) && !nameTaken);
+	const canAdd = $derived(isValidIdentifier(newName) && !nameTaken);
 
 	function zeroFor(type: GlobalType): number | string | boolean {
 		return type === 'bool' ? false : type === 'string' ? '' : 0;
@@ -160,7 +160,7 @@
 				/>
 				<Button size="sm" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</Button>
 			</div>
-			{#if newName && !isValidGlobalName(newName)}
+			{#if newName && !isValidIdentifier(newName)}
 				<div class="hint bad">Not a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
 			{:else if nameTaken}
 				<div class="hint bad">A global named “{newName}” already exists.</div>
