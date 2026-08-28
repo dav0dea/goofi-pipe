@@ -201,7 +201,7 @@ pub(crate) fn nodes_copy(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
-    let uids = parse_uid_list(payload, "nodes")?;
+    let uids = parse_uid_list(&g, payload, "nodes")?;
     Ok(json!({ "doc": g.fragment(&g.subtree_of(&uids)) }))
 }
 
@@ -219,10 +219,7 @@ pub(crate) fn nodes_paste(
         .map(|v| parse_pos(v).ok_or("nodes paste: pos is [x, y]"))
         .transpose()?
         .unwrap_or([0.0, 0.0]);
-    let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
-        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("nodes paste: malformed inst_id")?),
-        None => None,
-    };
+    let scope = parse_uid_opt(&g, payload, "inst_id", "nodes paste")?;
     let (cmd, rename) = g.import_fragment(doc, scope, offset)?;
     state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     for uid in rename.values() {
@@ -268,10 +265,7 @@ pub(crate) fn node_add(
         .unwrap_or([0.0, 0.0]);
     // Never silently rooted on a bad `inst_id`: the canvas draws only the entered scope, so a
     // rooted node would be invisible exactly where the user placed it.
-    let scope = match payload.get("inst_id").filter(|v| !v.is_null()) {
-        Some(v) => Some(v.as_str().and_then(Uid::from_hex).ok_or("node add: malformed inst_id")?),
-        None => None,
-    };
+    let scope = parse_uid_opt(&g, payload, "inst_id", "node add")?;
     // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node, so an
     // undo→redo restores them without threading them through the command.
     let cmd = goofi_engine::Command::AddNode {
@@ -320,7 +314,7 @@ pub(crate) fn node_remove(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let uid = parse_uid(payload, "node")?;
+    let uid = parse_uid(&g, payload, "node")?;
     // The command is idempotent, so a uid naming nothing succeeds; the reply says which of the
     // two happened.
     let existed = g.exists(uid);
@@ -339,7 +333,7 @@ pub(crate) fn node_restart(
 ) -> Result<Value, String> {
     {
         let mut g = state.graph.lock().unwrap();
-        let uid = parse_uid(payload, "node")?;
+        let uid = parse_uid(&g, payload, "node")?;
         g.restart_node(uid)?;
         // Pushed at once, so the red border lifts on the click rather than on the sweep.
         events.push(param_state_update(&g, uid));
@@ -355,7 +349,7 @@ pub(crate) fn link_add(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let (a, so, b, si) = parse_link(payload, "link add")?;
+    let (a, so, b, si) = parse_link(&g, payload, "link add")?;
     let (a, so) = wirable_endpoint(&g, a, &so, "from")?;
     let (b, si) = wirable_endpoint(&g, b, &si, "to")?;
     state.history.lock().unwrap().apply(
@@ -388,7 +382,7 @@ pub(crate) fn link_remove(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let (a, so, b, si) = parse_link(payload, "link remove")?;
+    let (a, so, b, si) = parse_link(&g, payload, "link remove")?;
     let (a, so) = resolve_link_endpoint(&g, a, &so);
     let (b, si) = resolve_link_endpoint(&g, b, &si);
     // Idempotent for the same reason `remove_node` is, and answered the same way.
@@ -411,7 +405,7 @@ pub(crate) fn node_param_refresh(
 ) -> Result<Value, String> {
     {
         let mut g = state.graph.lock().unwrap();
-        let uid = parse_uid(payload, "node")?;
+        let uid = parse_uid(&g, payload, "node")?;
         let (group, name) = parse_param_addr(payload, "node param refresh")?;
         g.refresh_param(uid, &group, &name)?;
     }
@@ -470,7 +464,7 @@ pub(crate) fn node_snapshot(
     // BEHIND it, and one with nothing behind it yet is the unwired state, never an error.
     let key = {
         let g = state.graph.lock().unwrap();
-        let (uid, slot) = parse_endpoint(payload, "node snapshot", "output")?;
+        let (uid, slot) = parse_endpoint(&g, payload, "node snapshot", "output")?;
         if !g.exists(uid) {
             return Err(format!("node snapshot: no node {}", uid.to_hex()));
         }
@@ -569,7 +563,7 @@ pub(crate) fn node_param_edit(
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let uid = parse_uid(payload, "node")?;
+    let uid = parse_uid(&g, payload, "node")?;
     let (group, name) = parse_param_addr(payload, "node param edit")?;
     let mut entry = serde_json::Map::new();
     for key in ["value", "expression", "mode", "triggers"] {
@@ -600,7 +594,7 @@ pub(crate) fn node_edit(
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let uid = parse_uid(payload, "node")?;
+    let uid = parse_uid(&g, payload, "node")?;
     let name = payload.get("name").and_then(|v| v.as_str()).map(str::to_string);
     // The rename command tolerates a collision as a no-op so a stale replay converges; the
     // user-facing error therefore belongs here, at the forward RPC.
@@ -967,7 +961,7 @@ pub(crate) fn nodes_group(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let uids = parse_uid_list(payload, "nodes")?;
+    let uids = parse_uid_list(&g, payload, "nodes")?;
     let pos = payload
         .get("pos")
         .filter(|v| !v.is_null())
@@ -993,7 +987,7 @@ pub(crate) fn nodes_ungroup(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
-    let inst = parse_uid(payload, "subpatch")?;
+    let inst = parse_uid(&g, payload, "subpatch")?;
     state
         .history
         .lock()
@@ -1009,12 +1003,7 @@ pub(crate) fn nodes_inspect(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
-    let scope = match payload.get("scope").filter(|v| !v.is_null()) {
-        Some(v) => {
-            Some(v.as_str().and_then(Uid::from_hex).ok_or("nodes inspect: malformed scope")?)
-        }
-        None => None,
-    };
+    let scope = parse_uid_opt(&g, payload, "scope", "nodes inspect")?;
     Ok(json!({ "text": inspect::patch(&g, scope)? }))
 }
 
@@ -1025,7 +1014,7 @@ pub(crate) fn node_state(
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
-    let uid = parse_uid(payload, "node")?;
+    let uid = parse_uid(&g, payload, "node")?;
     let want = |k: &str| payload.get(k).and_then(|v| v.as_bool()).unwrap_or(true);
     let slot = payload.get("slot").and_then(|v| v.as_str());
     let text = inspect::node(&g, uid, slot, want("params"), want("error"))?;

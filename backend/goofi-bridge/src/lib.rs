@@ -772,22 +772,51 @@ fn param_state_update_refreshed(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]
     )
 }
 
-fn parse_uid(payload: &Value, key: &str) -> Result<Uid, String> {
-    payload
+/// A node reference as any caller may spell it: a uid, or the unique NAME the one namespace
+/// holds. An existing uid wins a hex-looking name; a well-formed uid that names nothing stays a
+/// uid, so an idempotent remove keeps its meaning.
+fn resolve_node(g: &goofi_engine::Graph, raw: &str) -> Option<Uid> {
+    match Uid::from_hex(raw) {
+        Some(uid) if g.exists(uid) => Some(uid),
+        hex => g.uid_by_name(raw).or(hex),
+    }
+}
+
+fn parse_uid(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
+    let raw = payload
         .get(key)
         .and_then(|v| v.as_str())
-        .and_then(Uid::from_hex)
-        .ok_or_else(|| format!("missing/invalid uid `{key}`"))
+        .ok_or_else(|| format!("missing/invalid uid `{key}`"))?;
+    resolve_node(g, raw)
+        .ok_or_else(|| format!("`{raw}` names no node — `{key}` takes a uid or a node's name"))
+}
+
+/// An OPTIONAL node reference: absent is `None`, present must resolve.
+fn parse_uid_opt(
+    g: &goofi_engine::Graph,
+    payload: &Value,
+    key: &str,
+    op: &str,
+) -> Result<Option<Uid>, String> {
+    match payload.get(key).filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| resolve_node(g, s))
+            .map(Some)
+            .ok_or_else(|| format!("{op}: `{key}` names no node")),
+    }
 }
 
 /// A required uid ARRAY, refused whole rather than silently short: a caller that named one bad
 /// uid asked for a batch that is not the one it would get.
-fn parse_uid_list(payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
+fn parse_uid_list(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
     let arr = payload.get(key).and_then(|v| v.as_array()).ok_or_else(|| format!("missing {key}"))?;
-    let uids: Vec<Uid> = arr.iter().filter_map(|m| m.as_str().and_then(Uid::from_hex)).collect();
+    let uids: Vec<Uid> =
+        arr.iter().filter_map(|m| m.as_str().and_then(|s| resolve_node(g, s))).collect();
     match uids.len() == arr.len() {
         true => Ok(uids),
-        false => Err(format!("malformed uid in `{key}`")),
+        false => Err(format!("an entry in `{key}` names no node")),
     }
 }
 
@@ -931,20 +960,30 @@ fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String>
     }
 }
 
-/// An `endpoint` — `uid/slot`, split on the FIRST `/`. The slot half may itself be a port uid
-/// (wiring a facade from outside), so it is never validated here.
-fn parse_endpoint(p: &Value, op: &str, key: &str) -> Result<(Uid, String), String> {
+/// An `endpoint` — `node/slot`, split on the FIRST `/`, the node half a uid or a name. The slot
+/// half may itself be a port uid (wiring a facade from outside), so it is never validated here.
+fn parse_endpoint(
+    g: &goofi_engine::Graph,
+    p: &Value,
+    op: &str,
+    key: &str,
+) -> Result<(Uid, String), String> {
     let raw =
         p.get(key).and_then(|v| v.as_str()).ok_or_else(|| format!("{op}: missing {key}"))?;
-    let (uid, slot) =
-        raw.split_once('/').ok_or_else(|| format!("{op}: `{key}` is `uid/slot`, not `{raw}`"))?;
-    let uid = Uid::from_hex(uid).ok_or_else(|| format!("{op}: malformed uid in `{key}`"))?;
+    let (node, slot) =
+        raw.split_once('/').ok_or_else(|| format!("{op}: `{key}` is `node/slot`, not `{raw}`"))?;
+    let uid = resolve_node(g, node)
+        .ok_or_else(|| format!("{op}: `{node}` in `{key}` names no node"))?;
     Ok((uid, slot.to_string()))
 }
 
-fn parse_link(p: &Value, op: &str) -> Result<(Uid, String, Uid, String), String> {
-    let (node_out, slot_out) = parse_endpoint(p, op, "from")?;
-    let (node_in, slot_in) = parse_endpoint(p, op, "to")?;
+fn parse_link(
+    g: &goofi_engine::Graph,
+    p: &Value,
+    op: &str,
+) -> Result<(Uid, String, Uid, String), String> {
+    let (node_out, slot_out) = parse_endpoint(g, p, op, "from")?;
+    let (node_in, slot_in) = parse_endpoint(g, p, op, "to")?;
     Ok((node_out, slot_out, node_in, slot_in))
 }
 

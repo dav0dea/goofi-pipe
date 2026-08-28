@@ -123,15 +123,31 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
         g.doc()["nodes"][&uid]["params"]["oscillator"]["sfreq"]["value"], 99.0,
         "the edit reached the graph"
     );
-    // …and completion turns LIVE: a `uid` position offers the patch's own nodes.
+    // …and completion turns LIVE: a `uid` position offers the patch's own nodes, by the NAME a
+    // human types, with the uid riding in the doc column.
     assert!(ok(&url, "default", "op complete --line 'node edit '")
-                .contains(&format!("{uid}\tosc (Oscillator)")),
+                .contains(&format!("osc\t(Oscillator) {uid}")),
             "a uid position completes from the graph");
+    // A node reference is the uid OR the unique name — resolved server-side, in the one
+    // namespace nd() reads, so every transport takes both and the endpoint's node half follows.
+    ok(&url, "names", "node param edit osc oscillator/sfreq --value 55");
+    assert_eq!(
+        g.doc()["nodes"][&uid]["params"]["oscillator"]["sfreq"]["value"], 55.0,
+        "the name reached the same node"
+    );
+    let why = client::exec(&url, &lines(&["node state nosuch"]), None).unwrap_err();
+    assert!(why.contains("names no node"), "{why}");
     let batch = lines(&[
         "node add --type Buffer --name win",
         "node add --type Buffer --name sink",
     ]);
     assert_eq!(client::exec(&url, &batch, Some("shell_a")).unwrap().len(), 2);
+    // Both halves of a wire spelled by name, made and taken back — the round-trip proves both
+    // endpoint spellings resolve to the same wire.
+    ok(&url, "names", "link add osc/out win/data");
+    let gone: serde_json::Value =
+        serde_json::from_str(&ok(&url, "names", "link remove osc/out win/data")).unwrap();
+    assert_eq!(gone["removed"], true, "the named wire was there to remove");
     // Another actor's undo takes back ITS work, never shell_a's; bare shells share `default`.
     let d: serde_json::Value = serde_json::from_str(&ok(&url, "default", "node add --type Buffer")).unwrap();
     ok(&url, "default", "undo");

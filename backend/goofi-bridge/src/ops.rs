@@ -11,8 +11,9 @@ pub struct Op {
     /// re-mirror are all READ off this kind, never declared beside it.
     pub handler: Handler,
     /// The params schema: space-separated `name:type`, `!` marking a required one. Types are
-    /// `uid`, `string`, `float`, `int`, `bool`, `float2`, `json`, `any`, `param_addr`,
-    /// `endpoint`, `panel_type`, and `[]` for a list.
+    /// `uid` (a node's uid, or its unique name), `string`, `float`, `int`, `bool`, `float2`,
+    /// `json`, `any`, `param_addr`, `endpoint` (`node/slot`, the node half a uid or a name),
+    /// `panel_type`, and `[]` for a list.
     pub args: &'static str,
     /// How many of the LEADING declared args a command line takes as positionals (0..=2). A
     /// list-typed positional is variadic; every positional stays reachable as a flag too.

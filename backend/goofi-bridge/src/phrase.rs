@@ -445,12 +445,14 @@ fn values_for(ty: &str, state: Option<&crate::AppState>, partial: &str) -> Vec<(
             let Some(nodes) = doc.get("nodes").and_then(Value::as_object) else {
                 return Vec::new();
             };
+            // The NAME is the candidate — it is what a human types — and the uid rides in the
+            // doc column; both spellings resolve.
             nodes
                 .iter()
                 .map(|(uid, n)| {
                     let name = n["name"].as_str().unwrap_or_default();
                     let kind = n["type"].as_str().unwrap_or_default();
-                    (uid.clone(), format!("{name} ({kind})"))
+                    (name.to_string(), format!("({kind}) {uid}"))
                 })
                 .collect()
         }

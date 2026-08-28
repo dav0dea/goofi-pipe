@@ -2201,8 +2201,8 @@ impl Graph {
             .collect()
     }
 
-    /// Resolve a node display name to its uid (for `nd('name')` references).
-    fn uid_by_name(&self, name: &str) -> Option<Uid> {
+    /// Resolve a node display name to its uid — `nd('name')` and the CLI's name spelling alike.
+    pub fn uid_by_name(&self, name: &str) -> Option<Uid> {
         self.named().find(|(_, n)| *n == name).map(|(u, _)| u)
     }
 
