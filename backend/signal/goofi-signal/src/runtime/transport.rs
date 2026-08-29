@@ -10,13 +10,9 @@ use iceoryx2::prelude::*;
 use goofi_core::Data;
 use goofi_node::NodeManifest;
 use goofi_transport::{
-    control_service, data_service, door_service, event_service, message_service, output_service,
-    publisher, service_base, status_service, ByteService, EventService, INITIAL_SLICE,
-    MESSAGE_SLICE,
-};
-pub use goofi_transport::{
-    iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, sweep_once,
-    ByteSubscriber, Doorbell, IoxNode,
+    control_service, data_service, door_service, event_service, iox_node, message_service,
+    output_service, publisher, service_base, status_service, ByteService, ByteSubscriber,
+    Doorbell, EventService, IoxNode, INITIAL_SLICE, MESSAGE_SLICE,
 };
 
 use super::wire::{ControlSink, Envelope, EventId, ServiceName, Transport, WireStatus};

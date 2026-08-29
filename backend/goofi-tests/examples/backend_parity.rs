@@ -1,7 +1,7 @@
 //! Backend-parity benchmark: the same `x*2+1` workload through native Rust, in-process FT Python
 //! and subprocess Python, in one engine.
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
-//!     cargo run -p goofi-python --features embed --example backend_parity --release
+//!     cargo run -p goofi-tests --features embed --example backend_parity --release
 //! GOOFI_SUBPROC_PYTHON names an iceoryx2-capable interpreter for the subprocess tier.
 
 use std::time::{Duration, Instant};
@@ -85,7 +85,7 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
     let mut g = goofi_bridge::fresh_graph();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
-    goofi_bridge::signal_engine(&mut g).register_dyn_type(manifest, factory, &BENCH_TIER);
+    goofi_bridge::register_dyn_type(&mut g, manifest, factory, &BENCH_TIER);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();

@@ -547,6 +547,27 @@ pub fn signal_engine(g: &mut Graph) -> &mut goofi_signal::SignalEngine {
         .expect("the `signal` registration is the signal engine")
 }
 
+/// Register a runtime type AND clear its greyed row — the one owner of that pairing: a name must
+/// never hold a live registration and an unavailable row at once.
+pub fn register_dyn_type(
+    g: &mut Graph,
+    manifest: &'static goofi_node::NodeManifest,
+    factory: goofi_signal::discover::NodeFactory,
+    tier: &'static goofi_node::IsolationCell,
+) -> goofi_signal::Registration {
+    let r = signal_engine(g).register_dyn_type(manifest, factory, tier);
+    if r != goofi_signal::Registration::Refused {
+        g.forget_unavailable(manifest.type_name);
+    }
+    r
+}
+
+/// Forget a runtime type from BOTH registries — the registry and the greyed overlay.
+pub fn remove_dyn_type(g: &mut Graph, type_name: &str) -> bool {
+    let had = signal_engine(g).remove_dyn_type(type_name);
+    g.forget_unavailable(type_name) || had
+}
+
 /// One output slot's data service name — the resolver over the graph's own birth facts. Also the
 /// `/data` plane's subscribe address.
 pub fn output_service_of(g: &Graph, uid: goofi_graph::Uid, slot: &str) -> String {
@@ -642,8 +663,7 @@ pub fn rescan(
     }
     diff.removed = prev.keys().filter(|n| !found.contains_key(*n)).cloned().collect();
     for name in &diff.removed {
-        signal_engine(g).remove_dyn_type(name);
-        g.forget_unavailable(name);
+        remove_dyn_type(g, name);
     }
     *prev = found;
     (diff, outcomes)

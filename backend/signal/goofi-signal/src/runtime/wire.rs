@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 
 pub use goofi_node::EventId;
 
-/// An iceoryx2 service name — a wire's identity, which is why slot messages carry no source uid.
-pub type ServiceName = String;
+pub use goofi_transport::ServiceName;
 
 /// The generated name of an expression variable (`__v0`), minted by the graph's rewrite (§5.3).
 pub type VarName = String;

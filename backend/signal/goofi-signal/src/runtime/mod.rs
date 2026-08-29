@@ -49,12 +49,8 @@ pub(crate) mod plan;
 mod transport;
 mod wire;
 
-pub use mailbox::{Binding, Mailbox};
-pub use goofi_transport::{door_service, output_service, service_base};
-pub use transport::{
-    iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, sweep_once,
-    ByteSubscriber, Doorbell, IoxNode, IoxTransport, NodeChannel,
-};
+use mailbox::Binding;
+pub use transport::{IoxTransport, NodeChannel};
 pub use wire::{
     Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
     Var, VarName, WireStatus,

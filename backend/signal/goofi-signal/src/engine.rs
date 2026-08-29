@@ -328,15 +328,15 @@ fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<(Uid, &'static str)
 /// One output slot's data service name, from the view's birth facts.
 fn output_service_in(view: &GraphView<'_>, uid: Uid, slot: &str) -> Option<runtime::ServiceName> {
     let node = view.nodes.get(&uid)?;
-    Some(runtime::output_service(
-        &runtime::service_base(view.instance, uid, node.generation),
+    Some(goofi_transport::output_service(
+        &goofi_transport::service_base(view.instance, uid, node.generation),
         slot,
     ))
 }
 
 fn door_of(view: &GraphView<'_>, uid: Uid) -> Option<runtime::ServiceName> {
     let node = view.nodes.get(&uid)?;
-    Some(runtime::door_service(&runtime::service_base(view.instance, uid, node.generation)))
+    Some(goofi_transport::door_service(&goofi_transport::service_base(view.instance, uid, node.generation)))
 }
 
 /// A resolved variable as the NODE sees it: a service name rather than a uid, because a node
@@ -410,7 +410,7 @@ impl Engine for SignalEngine {
         };
         let manifest = self.find_entry(type_name).expect("resolved above").manifest;
         let halt = Arc::new(runtime::Halt::default());
-        let base = runtime::service_base(&self.instance, uid, generation);
+        let base = goofi_transport::service_base(&self.instance, uid, generation);
         let started = runtime::IoxTransport::create(&self.instance, uid, generation, manifest)
             .and_then(|transport| Ok((transport, runtime::NodeChannel::open(&base)?)))
             .and_then(|(transport, channel)| {

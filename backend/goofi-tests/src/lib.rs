@@ -166,11 +166,7 @@ impl Goofi {
         factory: goofi_signal::discover::NodeFactory,
         tier: &'static goofi_node::IsolationCell,
     ) {
-        let mut g = self.state.graph.lock().unwrap();
-        let r = goofi_bridge::signal_engine(&mut g).register_dyn_type(manifest, factory, tier);
-        if r != goofi_signal::Registration::Refused {
-            g.forget_unavailable(manifest.type_name);
-        }
+        goofi_bridge::register_dyn_type(&mut self.state.graph.lock().unwrap(), manifest, factory, tier);
     }
 
     /// The LEAF node uids in the replicated projection, sorted. One map carries every entity, so

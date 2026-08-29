@@ -25,7 +25,4 @@ goofi_pymod = { path = "../goofi-pymod", package = "goofi-pymod", features = ["h
 pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
 
 [dev-dependencies]
-# The shared `_Test*` node library. A dev-dependency only: it flips the feature on for test
-# builds, and a release build never sees it.
-goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
 indexmap = "2"

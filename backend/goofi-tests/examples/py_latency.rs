@@ -1,6 +1,6 @@
 //! Latency + concurrency-scaling probe for the in-process Python node path.
 //!   PYO3_PYTHON=<python3.14t> LD_LIBRARY_PATH=<base>/lib PYTHONPATH=<ft-sp> \
-//!     cargo run -p goofi-python --features embed --example py_latency --release
+//!     cargo run -p goofi-tests --features embed --example py_latency --release
 use std::time::{Duration, Instant};
 
 use goofi_core::globals::GlobalValue;
@@ -38,7 +38,7 @@ fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     let mut g = goofi_bridge::fresh_graph();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
-    goofi_bridge::signal_engine(&mut g).register_dyn_type(
+    goofi_bridge::register_dyn_type(&mut g, 
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
         &PY_TIER,

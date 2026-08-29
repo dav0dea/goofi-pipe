@@ -56,23 +56,29 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
 }
 
 /// A param's declared help text; a node's own declaration wins over the owning engine's
-/// universal one.
-fn param_doc(g: &Graph, m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> {
+/// universal one — resolved once per node by the caller, not once per param.
+fn param_doc(
+    m: &NodeManifest,
+    universal: &[goofi_node::ParamDecl],
+    group: &str,
+    name: &str,
+) -> Option<&'static str> {
     m.params
         .iter()
         .copied()
-        .chain(g.universal_decls_of(m.type_name))
+        .chain(universal.iter().copied())
         .find(|d| d.group == group && d.name == name)
         .and_then(|d| d.doc)
 }
 
 /// Type-level params for the palette, and the projection param tooltips are rendered from.
 pub fn describe_params(g: &Graph, p: &ParamGroups, m: &NodeManifest) -> Value {
+    let universal = g.universal_decls_of(m.type_name);
     let mut groups = Map::new();
     for (gname, grp) in p {
         let mut names = Map::new();
         for (n, param) in grp {
-            names.insert(n.clone(), describe_param(param, None, param_doc(g, m, gname, n)));
+            names.insert(n.clone(), describe_param(param, None, param_doc(m, &universal, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -84,12 +90,13 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
     let (Some(params), Some(m)) = (g.params(uid), g.manifest(uid)) else {
         return Value::Object(Map::new());
     };
+    let universal = g.universal_decls_of(m.type_name);
     let mut groups = Map::new();
     for (gname, group) in &*params {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
-            let mut v = describe_param(param, expr.as_ref(), param_doc(g, m, gname, n));
+            let mut v = describe_param(param, expr.as_ref(), param_doc(m, &universal, gname, n));
             if let (Param::Str { .. }, Some(live)) = (param, g.refreshed_options(uid, gname, n)) {
                 v["options"] = json!(live);
             }

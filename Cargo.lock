@@ -630,7 +630,6 @@ dependencies = [
  "goofi-codec",
  "goofi-core",
  "goofi-node",
- "goofi-nodes",
  "goofi-pymod",
  "goofi-signal",
  "iceoryx2",

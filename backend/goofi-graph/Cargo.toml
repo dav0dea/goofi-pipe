@@ -4,9 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# The op authority for the MODEL, and nothing else: it depends on goofi-node alone among the
-# goofi crates, so the boundary is enforced by this manifest — the graph provably never computes
-# a service name or touches an endpoint.
+# The op authority for the MODEL, and nothing else. Nothing above goofi-node — goofi-core and
+# goofi-node alone, never goofi-transport or an engine — so the boundary is enforced by this
+# manifest: the graph provably never computes a service name or touches an endpoint.
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }

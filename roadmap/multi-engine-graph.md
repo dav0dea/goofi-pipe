@@ -14,8 +14,8 @@ and execution stay graph-side, shared across engines, once. The graph holds what
 persists: nodes, names, positions, links, params-as-record, bindings-as-authored, scopes, layout,
 globals, viewpoint — plus two process-lifetime birth facts the resolver needs: the `instance`
 scope and every uid's generation. It routes each op's PROPAGATION to the engine that owns the
-node, through one trait. It depends on `goofi-node` alone — NOT on `goofi-transport` — so the
-boundary is enforced by its manifest, not discipline: the graph provably never computes a service
+node, through one trait. It depends on nothing above `goofi-node` — `goofi-core` and `goofi-node` alone, never
+`goofi-transport` or an engine — so the boundary is enforced by its manifest, not discipline: the graph provably never computes a service
 name or touches an endpoint; it only carries the resolver's inputs in `GraphView`.
 
 **An engine** (`goofi-signal`, later `goofi-audio`, `goofi-graphics`) is the authority for RUNTIME
@@ -75,7 +75,8 @@ removal derived from absence-in-the-view would be the engine-observes-the-graph 
 rejects. Rename's `nd()` source rewrite stays on the op path; only its re-resolution rides settle.
 `drain` stays a PULL — the bridge's drain worker calls it through a Graph method, woken by the
 report-side notify; a single-threaded engine queues statuses on its own thread and hands them
-over. The signal engine receives `instance` and the evaluator at construction; `clear()`'s clock
+over. The signal engine receives `instance` at construction, and the evaluator through the
+`set_evaluator` door; `clear()`'s clock
 reset reaches every engine through the trait's `reset_clock`, a default no-op for an engine with
 no patch time. Engines are registered at the composition root — `goofi-bridge`'s `fresh_graph`,
 the ONE boot path the CLI and the test harness share: it links `goofi-nodes` and anchors its
@@ -238,9 +239,10 @@ moved behind that door — common params are signal scheduling semantics an audi
 have). The runtime type REGISTRY is the signal engine's own surface, reached by the scan through
 `as_any_mut`; the graph keeps only the unavailable overlay and the provenance (`patch_types`),
 and orders the restarts the diff names. Still open: the stamp baseline and the diff computation
-sit on the bridge's rescan path rather than beside the scanner engine-side, and a trait-level
-scan-diff report waits for a second engine that scans — a door with one implementor is
-speculation.
+sit on the bridge's rescan path rather than beside the scanner engine-side — `library get`'s
+Python source-file resolution (`discover::camel`) rides there too, and moves engine-side with it
+— and a trait-level scan-diff report waits for a second engine that scans; a door with one
+implementor is speculation.
 
 **One stage vocabulary, one health projection.** All engines share
 `creating/setup/ready/error(derived)`; a synchronous engine simply never emits some stages (its
@@ -281,9 +283,11 @@ and deliberately stays iceoryx2-free, which one merged crate could honor only by
 feature split that IS the two crates.
 
 Later engines land as `backend/audio/`, `backend/graphics/`. Dependency direction: the graph
-looks down at `goofi-node` alone; engines look down at `goofi-node` and `goofi-transport`; the
-bridge additionally reaches `goofi-transport` for its reducer's subscribers; neither graph nor
-engine sees the other's internals; `goofi-cli` is the composition root and sees everything.
+looks down at `goofi-core` and `goofi-node` alone; engines look down at `goofi-node` and
+`goofi-transport`; the bridge additionally reaches `goofi-transport` for its reducer's
+subscribers; neither graph nor engine sees the other's internals. `goofi-bridge`'s `fresh_graph`
+is the engine-composition root; `goofi-cli` composes what only a process start holds — the
+evaluator, the scan seam — and sees everything.
 
 **No rename rides along.** "Type", "catalog" and today's identifiers stand; uniformity is the
 bar, not new vocabulary — where two words exist for one thing, unify to the incumbent.
@@ -308,8 +312,8 @@ control half is the engine's own main-thread side behind this trait — not a `N
 thread — and its dependency floor becomes `goofi-core` + `goofi-node` + `goofi-transport`
 (none of which carries iceoryx2 threads or tokio into the DSP path, so the block-callback
 testability claim survives); graphics loses its two stale sentences (the "CRDT doc", and the
-archive as the reason the wire name is fixed — the true anchor is the engine tag on manifests
-and the dtype vocabulary).
+archive as the reason the wire name is fixed — the true anchor is the engine's registered id,
+which library advertises the type, and the dtype vocabulary).
 
 ## The order decided
 
@@ -321,8 +325,8 @@ and the dtype vocabulary).
    `GraphView`, and the signal engine extracted behind it.
 3. DONE — Carve the crates and the directory hierarchy: `goofi-transport` (the shared plane),
    `goofi-signal` under `backend/signal/` beside the Python family, and `goofi-engine` renamed
-   `goofi-graph`, whose manifest holds the boundary — among the goofi crates it depends on
-   `goofi-node` alone. `tests/transport.rs` re-pointed in the same commit.
+   `goofi-graph`, whose manifest holds the boundary — nothing above `goofi-node`.
+   `tests/transport.rs` re-pointed in the same commit.
 4. The delete list, riding wherever it touches.
 
 Each step a green checkpoint.

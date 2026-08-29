@@ -8,8 +8,7 @@ use iceoryx2::config::Config;
 use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
 
-use goofi_node::Uid;
-pub use goofi_node::EventId;
+use goofi_node::{EventId, Uid};
 
 /// An iceoryx2 service name — a wire's identity, which is why slot messages carry no source uid.
 pub type ServiceName = String;

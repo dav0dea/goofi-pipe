@@ -208,8 +208,8 @@ millisecond and the audio thread takes the new plan inside one block.
 - Per-edge buffer copies never become measurable: suppressing them never made a block faster at any
   chain length. The cost of separate linear memories is page-walk pressure, not copying.
 - `PyExprEvaluator::eval`: 509 ns for one scalar variable (≈245 bindings per core at 8 kHz), ~4.6 µs
-  fixed overhead for any array variable regardless of size, 77 µs for a 1 MiB frame. See
-  `backend/goofi-python/examples/expr_rate.rs`.
+  fixed overhead for any array variable regardless of size, 77 µs for a 1 MiB frame. Measured with
+  a one-off harness that was not kept; the numbers stand as recorded.
 
 ## Reviewed, so it is not re-argued (2026-08-25)
 
@@ -276,8 +276,6 @@ survey from primary sources. Both landed on keep.
   period is always `GetDevicePeriod()` whatever is requested, so `BufferSize::Fixed` is a lie there
   and the floor is ~10 ms. `IAudioClient3` reaches 2.66 ms and cpal does not use it. ASIO needs the
   Steinberg SDK, which went GPLv3-or-proprietary in 2025, so it is not shippable in one binary.
-- **goofi has no CI on Windows or macOS**, while `goofi-init` already carries Windows code nothing has
-  ever compiled. The cross-platform constraint is currently unenforced.
 - **macOS signing**, which costs nothing today and arrives with the first notarized release. Apple's
   documented answer for a plugin host is `com.apple.security.cs.disable-library-validation`; Ardour,
   Surge, VCV Rack, ossia score, Pure Data and BespokeSynth all ship it. A locally compiled node is

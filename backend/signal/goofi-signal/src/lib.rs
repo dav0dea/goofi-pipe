@@ -199,7 +199,7 @@ impl RunPolicy {
 
 /// One universal `common` param, as a function of the manifest it is added to. It may read the
 /// manifest's static shape, but never `m.params` for a `common` key — that is a half-built world.
-pub type CommonDecl = fn(&NodeManifest) -> ParamDecl;
+type CommonDecl = fn(&NodeManifest) -> ParamDecl;
 
 /// Run on the node's own schedule instead of waiting for an input frame; defaults to `m.producer`.
 fn autotrigger(m: &NodeManifest) -> ParamDecl {
@@ -253,7 +253,7 @@ fn frequency_mode(_: &NodeManifest) -> ParamDecl {
 }
 
 /// The universal `common` scheduling group; a fourth param is added here and nowhere else.
-pub static COMMON_DECLS: &[CommonDecl] = &[autotrigger, max_frequency, frequency_mode];
+static COMMON_DECLS: &[CommonDecl] = &[autotrigger, max_frequency, frequency_mode];
 
 pub fn common_decls(m: &NodeManifest) -> impl Iterator<Item = ParamDecl> + '_ {
     COMMON_DECLS.iter().map(move |d| d(m))

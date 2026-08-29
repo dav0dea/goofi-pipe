@@ -15,8 +15,9 @@ goofi-core = { path = "../goofi-core" }
 # Client argv re-quoted into the ONE line /exec parses — the same word rules bash used.
 shell-words = "1"
 serde_json = "1"
-# Direct, for the node-registration vocabulary (`Registration`) the tier routing below reads.
+# `Graph`, the type the scan seam's signature names.
 goofi-graph = { path = "../goofi-graph" }
+# The node-registration vocabulary (`Registration`) the tier routing below reads.
 goofi-signal = { path = "../signal/goofi-signal" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # BOTH Python node tiers + the param-expression evaluator. ON by default: `cargo run -p

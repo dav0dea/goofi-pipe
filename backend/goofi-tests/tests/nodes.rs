@@ -51,7 +51,7 @@ fn stub_scan(g: &mut Graph, dir: &Path) -> Vec<ScannedType> {
             type_name: name,
             tier: Tier::InProcess,
             stamp: std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().unwrap())),
-            registration: goofi_bridge::signal_engine(g).register_dyn_type(manifest, Box::new(move |_| Box::new(Emit(value))), &goofi_node::NATIVE),
+            registration: goofi_bridge::register_dyn_type(g, manifest, Box::new(move |_| Box::new(Emit(value))), &goofi_node::NATIVE),
         });
     }
     out

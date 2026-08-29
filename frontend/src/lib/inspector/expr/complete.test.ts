@@ -230,7 +230,7 @@ describe('globals. and np.', () => {
 	});
 });
 
-/* The names the evaluator injects (`backend/goofi-python/src/inproc/expr.rs`) are the scope, and
+/* The names the evaluator injects (`backend/signal/goofi-python/src/inproc/expr.rs`) are the scope, and
  * nothing else in the app tells the user they exist. Offering them at a variable position is both
  * the most useful completion here AND the observable proof of the "trick": our entries and Python's
  * own keywords/builtins are collected for the SAME cursor, so they can only arrive in one popup. */
