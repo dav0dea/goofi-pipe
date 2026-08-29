@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 pub enum Probed {
     /// It answered `session status` with the id its file claims.
     Live,
-    /// It did not answer in time — a busy server, kept tentatively.
+    /// Not judged: a busy server, or a shell whose sandbox blocks the connect — kept tentatively.
     Unresponsive,
 }
 
@@ -97,7 +97,8 @@ pub fn rendered(entry: &Value) -> Vec<u8> {
 /// Ask the recorded server who it is, through the same `/exec` door every command uses. `None` is
 /// DEFINITIVE — nothing accepts on the address, something not goofi answered, or the id
 /// contradicts the file — and only that sweeps a record the server writes once in its life. A
-/// timeout, and every other post-connect failure, proves nothing and keeps the row.
+/// timeout, a connect blocked on the caller's own side, and every other non-definitive failure
+/// prove nothing and keep the row.
 fn probe(s: &Session) -> Option<Probed> {
     let body = json!({ "commands": ["session status"] }).to_string();
     match http_post(&s.url, "/exec", &body, PROBE) {
@@ -141,11 +142,24 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
         .parse::<std::net::SocketAddr>()
         .map_err(|_| HttpErr::After(format!("`{url}` is not `http://ip:port`")))?;
     // The CONNECT is always short: a listener answers a SYN at once or not at all, and only the
-    // read may lawfully be slow (a `session load` provisions nodes). So a connect that fails at
-    // all means the address holds nothing — decided by the STAGE, never by the error kind, because
-    // Windows DROPS a SYN to a closed port where unix refuses it, and the kind then reads "timed
-    // out" for the one state that is definitively dead.
-    let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(|_| HttpErr::NoListener)?;
+    // read may lawfully be slow (a `session load` provisions nodes). So a connect that fails
+    // means the address holds nothing — by STAGE, never by error kind, because Windows DROPS a
+    // SYN to a closed port and the kind then reads "timed out" for the one definitively dead
+    // state. The exception is the unreachable/refused-by-policy family: the caller's OWN side
+    // (an agent harness sandboxes shells with no network by default) said "I cannot even ask",
+    // which proves nothing about the server and must never sweep its record.
+    let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(|e| {
+        use std::io::ErrorKind as K;
+        match e.kind() {
+            K::PermissionDenied | K::NetworkUnreachable | K::HostUnreachable
+            | K::AddrNotAvailable => HttpErr::After(
+                "the connect was blocked on this side — a sandboxed shell does this; \
+                 retry with network access allowed"
+                    .into(),
+            ),
+            _ => HttpErr::NoListener,
+        }
+    })?;
     s.set_read_timeout(Some(timeout)).map_err(after)?;
     s.set_write_timeout(Some(timeout)).map_err(after)?;
     let req = format!(

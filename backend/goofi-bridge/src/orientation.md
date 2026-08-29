@@ -8,7 +8,8 @@ types and viewer kinds are enumerated by the op that takes them.
 
 You drive goofi with the `goofi` command in this shell — it is already on your PATH, pointed at
 THIS server, and your ops land in your own undo stack: `undo`/`redo` are yours alone and never
-touch the human's. One op is one line, `goofi <op> [--arg value …]`; `goofi op list` answers
+touch the human's. It reaches the server over local TCP, so run `goofi` with network access
+allowed — a sandbox that blocks the network blocks every op. One op is one line, `goofi <op> [--arg value …]`; `goofi op list` answers
 every op with its arguments and result, `goofi help <group>` lists a group, `--help` on any op
 explains it, and `--json` answers the raw JSON for `jq`. Several ops become ONE undo step through
 stdin:

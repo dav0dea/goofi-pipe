@@ -50,6 +50,23 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
         "the impostor and the dead record were swept; the live one stays"
     );
 
+    // A connect the caller's OWN side blocks (a sandboxed agent shell) proves nothing about the
+    // server: the record survives the probe, still resolves, and the exec failure names the
+    // sandbox instead of declaring no goofi runs. The broadcast address is the portable stand-in —
+    // every platform refuses it on the caller's side.
+    home::write_session("sandbox_jailed", "http://255.255.255.255:1");
+    let rows = tokio::task::spawn_blocking(client::list).await.unwrap();
+    assert!(
+        rows.iter().any(|(s, p)| s.id == "sandbox_jailed" && *p == client::Probed::Unresponsive),
+        "kept tentatively, never swept: {rows:?}"
+    );
+    std::env::set_var("GOOFI_SESSION", "sandbox_jailed");
+    let target = tokio::task::spawn_blocking(client::resolve_target).await.unwrap().unwrap();
+    let why = client::exec(&target.url, &lines(&["session status"]), None).unwrap_err();
+    assert!(why.contains("sandbox"), "the failure names the real cause: {why}");
+    std::env::remove_var("GOOFI_SESSION");
+    home::remove_session("sandbox_jailed");
+
     // A listener that never answers is INCONCLUSIVE: kept, listed unresponsive — and now the
     // bare resolution is ambiguous and says so by naming both.
     let mute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
