@@ -878,7 +878,9 @@ impl Graph {
     /// node — the `.gfi` load folds the saved values in before building. Normalization is the
     /// owning engine's: a caller may hand over a partial group, and the engine's universal groups
     /// are its own to declare.
-    fn default_params_of(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
+    /// The record a fresh instance would start from — the owning engine's normalization, which
+    /// is also what the palette renders for the type.
+    pub fn default_params_of(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
         let (id, _) = self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
         self.engines()
             .find(|e| e.id() == id)

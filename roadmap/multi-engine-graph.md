@@ -56,6 +56,13 @@ decisions-from-unsettled-state:
     library() -> ...          // the engine's node classes, advertised on request
     shutdown()
 
+Three defaulted doors landed beside these: `reset_clock` (a clear moved the patch origin),
+`set_evaluator` (shared with every engine that evaluates bindings on its own thread), and
+`universal_decls` (the engine's own universal group as DECLARATIONS — `with_common` moved behind
+`normalize_params` for values, and the palette's tooltips read declarations through this). Plus
+`as_any_mut`: the composition root's reach to a concrete engine's own surface — the runtime type
+registry stays signal-concrete rather than growing trait vocabulary for one engine.
+
 Create and remove stay explicit, because a birth mints a generation and is not derivable from
 settled state — and `insert` carries that graph-minted generation, plus type identity the engine
 resolves against its OWN library; never a build closure, which is signal vocabulary no other
@@ -70,9 +77,11 @@ rejects. Rename's `nd()` source rewrite stays on the op path; only its re-resolu
 report-side notify; a single-threaded engine queues statuses on its own thread and hands them
 over. The signal engine receives `instance` and the evaluator at construction; `clear()`'s clock
 reset reaches every engine through the trait's `reset_clock`, a default no-op for an engine with
-no patch time. Engines are registered at the composition root — which is `goofi-cli`: it links
-`goofi-nodes`, constructs the signal engine (which carries the inventory linker anchor and the
-boot reclaim sweep), and passes the engine set to `Graph::new(engines)`. A type's engine is WHICH
+no patch time. Engines are registered at the composition root — `goofi-bridge`'s `fresh_graph`,
+the ONE boot path the CLI and the test harness share: it links `goofi-nodes` and anchors its
+inventory, constructs the signal engine (whose construction carries the boot reclaim sweep), and
+registers it first on a bare `Graph::new()`. A bare graph is a MODEL — it serializes, and runs
+nothing. A type's engine is WHICH
 library advertises it — no tag field exists anywhere; two libraries claiming one name resolve to
 the first registered advertiser, signal first. Adding an engine is one line there plus its
 library; nothing engine-specific enters the graph.
@@ -186,9 +195,10 @@ compilation read only model state, and compiling at the RPC is what returns a re
 fresh caller. Engine-side, re-derived at settle and keyed by `(uid, ParamKey)`, are wire
 resolution, `bind_id` and `bind_keys` — the planner's own `Copy` index, stripped from the
 graph-side record. Event-id ALLOCATION stays on the graph's binding-edit op path (the 65..=128
-free list reads only graph state), the ids ride `GraphView` beside the bindings — a foreign
-producer engine must read a consumer's doorbell ids to ring them — and `EventId` itself lives in
-`goofi-transport` with the doorbell machinery.
+free list reads only graph state), and the ids ride `GraphView` beside the bindings — a foreign
+producer engine must read a consumer's doorbell ids to ring them. `EventId` itself lives in the
+shared seam (`goofi-node`), NOT in `goofi-transport` as first planned: `BoundVar` and `GraphView`
+carry it, and the transport already imports `Uid` from the seam — the reverse edge would cycle.
 
 **`GraphView` presents port-resolved leaf-to-leaf edges**, computed once by the graph at the
 settle point; a port with nothing behind it resolves to NO edge, which IS the open-port answer,
@@ -223,11 +233,14 @@ under `signal/` on disk unchanged).
 **Each engine owns its library, and the rescan seam moves with it.** The signal engine runs the
 Python probe and the `inventory` enumeration; audio enumerates CLAP plugins; each advertises
 through `library()`. The graph keeps the one merged view the palette reads, and normalizes a
-caller's partial params against what the owning engine's library entry declares (today's
-`with_common` moves behind that door — common params are signal scheduling semantics an audio
-node will not have). The rescan flow has one owner: the stamp baseline and the diff sit beside
-the scanner, engine-side; the engine reports a scan diff through the trait; the graph applies
-provenance (`patch_types`) and orders the restarts the diff names.
+caller's partial params against what the owning engine's library entry declares (`with_common`
+moved behind that door — common params are signal scheduling semantics an audio node will not
+have). The runtime type REGISTRY is the signal engine's own surface, reached by the scan through
+`as_any_mut`; the graph keeps only the unavailable overlay and the provenance (`patch_types`),
+and orders the restarts the diff names. Still open: the stamp baseline and the diff computation
+sit on the bridge's rescan path rather than beside the scanner engine-side, and a trait-level
+scan-diff report waits for a second engine that scans — a door with one implementor is
+speculation.
 
 **One stage vocabulary, one health projection.** All engines share
 `creating/setup/ready/error(derived)`; a synchronous engine simply never emits some stages (its
@@ -258,8 +271,9 @@ names — the hierarchy lives on disk):
       signal/
         goofi-signal, goofi-python, goofi-pymod, goofi-nodes
 
-`goofi-codec` stays its own crate, below `goofi-transport`, which depends on it. Considered and
-rejected: merging the two. The codec is a FORMAT contract — pinned by a golden, mirrored by the
+`goofi-codec` stays its own crate, beside `goofi-transport` — the extracted machinery moves
+bytes and rings doorbells, so the transport ended up codec-free; the engines and the bridge
+encode, and each depends on the codec itself. Considered and rejected: merging the two. The codec is a FORMAT contract — pinned by a golden, mirrored by the
 frontend's TS decoder, and carrying the subprocess tier's `Request`/`Response` protocol — where
 the transport is a mechanism that changes with iceoryx2; and the pymod wheel proves the seam:
 its `extension-module` build uses codec + iceoryx2 while its FT-host rlib build uses the codec
@@ -305,10 +319,10 @@ and the dtype vocabulary).
 2. DONE — Introduce the trait + the settle point with `Touched`, still one crate, suite green:
    the settle point, the `Touched` plane, the `WireStatus` nesting, the `Engine` trait with
    `GraphView`, and the signal engine extracted behind it.
-3. Carve the crates and the directory hierarchy — then almost purely a file move, with
-   `tests/transport.rs` renamed and re-pointed in the same commit (it drives the whole
-   `runtime::` surface by name, which the carve splits across `goofi-transport` and
-   `goofi-signal`).
+3. DONE — Carve the crates and the directory hierarchy: `goofi-transport` (the shared plane),
+   `goofi-signal` under `backend/signal/` beside the Python family, and `goofi-engine` renamed
+   `goofi-graph`, whose manifest holds the boundary — among the goofi crates it depends on
+   `goofi-node` alone. `tests/transport.rs` re-pointed in the same commit.
 4. The delete list, riding wherever it touches.
 
 Each step a green checkpoint.

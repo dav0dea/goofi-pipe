@@ -55,23 +55,24 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
     Value::Object(m)
 }
 
-/// A param's declared help text; a node's own declaration wins over the universal `common` one.
-fn param_doc(m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> {
+/// A param's declared help text; a node's own declaration wins over the owning engine's
+/// universal one.
+fn param_doc(g: &Graph, m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> {
     m.params
         .iter()
         .copied()
-        .chain(goofi_signal::common_decls(m))
+        .chain(g.universal_decls_of(m.type_name))
         .find(|d| d.group == group && d.name == name)
         .and_then(|d| d.doc)
 }
 
 /// Type-level params for the palette, and the projection param tooltips are rendered from.
-pub fn describe_params(p: &ParamGroups, m: &NodeManifest) -> Value {
+pub fn describe_params(g: &Graph, p: &ParamGroups, m: &NodeManifest) -> Value {
     let mut groups = Map::new();
-    for (gname, g) in p {
+    for (gname, grp) in p {
         let mut names = Map::new();
-        for (n, param) in g {
-            names.insert(n.clone(), describe_param(param, None, param_doc(m, gname, n)));
+        for (n, param) in grp {
+            names.insert(n.clone(), describe_param(param, None, param_doc(g, m, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -88,7 +89,7 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
-            let mut v = describe_param(param, expr.as_ref(), param_doc(m, gname, n));
+            let mut v = describe_param(param, expr.as_ref(), param_doc(g, m, gname, n));
             if let (Param::Str { .. }, Some(live)) = (param, g.refreshed_options(uid, gname, n)) {
                 v["options"] = json!(live);
             }
@@ -150,7 +151,7 @@ pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     }
 }
 
-pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
+pub fn node_type_info(g: &Graph, m: &NodeManifest, source: &str) -> Value {
     json!({
         "type": m.type_name,
         "source": source,
@@ -162,8 +163,8 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
         "input_slots": input_slots(m),
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),
-        // The same universal `common` group instances carry, so palette and instance agree.
-        "params": describe_params(&goofi_signal::with_common(m.default_params(), m), m),
+        // The owning engine's own normalization, so palette and instance agree.
+        "params": describe_params(g, &g.default_params_of(m.type_name, None).unwrap_or_default(), m),
     })
 }
 
@@ -175,7 +176,7 @@ pub fn catalog_types(g: &Graph) -> Value {
         .into_iter()
         .filter(|m| !m.type_name.starts_with('_'))
         .map(|m| {
-            (m.category.to_string(), m.type_name.to_string(), node_type_info(m, source_of(g, m.type_name)))
+            (m.category.to_string(), m.type_name.to_string(), node_type_info(g, m, source_of(g, m.type_name)))
         })
         .collect();
     // Node files that exist but cannot load are listed too, greyed and with the reason.

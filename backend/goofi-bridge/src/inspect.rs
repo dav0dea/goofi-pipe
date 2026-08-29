@@ -255,10 +255,7 @@ pub fn globals(g: &Graph) -> Value {
 pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
     let manifest =
         g.type_manifest(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
-    let mut info = crate::schemas::node_type_info(
-        manifest,
-        crate::schemas::source_of(g, ty),
-    );
+    let mut info = crate::schemas::node_type_info(g, manifest, crate::schemas::source_of(g, ty));
     // The type name is its file's CamelCased stem, so the path re-derives without a registry.
     let found = dirs.iter().find_map(|(dir, provenance)| {
         let entries = std::fs::read_dir(dir).ok()?;
