@@ -3,7 +3,7 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
@@ -45,15 +45,17 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 static INPUTS: &[SlotDecl] = &[];
 
 inventory::submit! {
-    NodeManifest {
-        type_name: "_TestConst",
-        category: "test",
-        doc: "constant float32 array source (value+length) — hidden test/bench scaffolding.",
-        inputs: INPUTS,
-        outputs: OUTPUTS,
-        params: PARAMS,
+    NodeClass {
+        manifest: NodeManifest {
+            type_name: "_TestConst",
+            category: "test",
+            doc: "constant float32 array source (value+length) — hidden test/bench scaffolding.",
+            inputs: INPUTS,
+            outputs: OUTPUTS,
+            params: PARAMS,
+            producer: true,
+        },
         isolation: &goofi_node::NATIVE,
-        producer: true,
         factory: default_factory::<TestConst>,
     }
 }

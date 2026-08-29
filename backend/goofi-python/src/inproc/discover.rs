@@ -50,6 +50,7 @@ pub fn build_routed(
 /// A discovered Python node type, ready to register into a `Graph`.
 pub struct PyNodeType {
     pub manifest: &'static NodeManifest,
+    pub isolation: &'static goofi_node::IsolationCell,
     pub factory: NodeFactory,
 }
 
@@ -72,7 +73,7 @@ fn py_type_from_discovered(path: &Path, d: Discovered) -> PyNodeType {
     let source = std::fs::read_to_string(path).unwrap_or_default();
     let factory: NodeFactory =
         Box::new(move |_p| build_py_node(&source, in_slots.clone(), out_slots.clone()));
-    PyNodeType { manifest, factory }
+    PyNodeType { manifest, isolation: d.isolation, factory }
 }
 
 #[cfg(test)]

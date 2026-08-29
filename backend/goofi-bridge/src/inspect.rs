@@ -183,12 +183,8 @@ pub fn node(
         .ok_or_else(|| format!("node state: no node `{}`", uid.to_hex()))?;
     // A port and a facade never run, so they wear no tier and reach no stage; everything else a
     // read says about a node, they answer.
-    let runtime = match g.manifest(uid) {
-        Some(m) => format!(
-            ", {}, stage {}",
-            m.isolation.get().wire(),
-            g.node_stage(uid),
-        ),
+    let runtime = match g.node_tier(uid) {
+        Some(tier) => format!(", {}, stage {}", tier.wire(), g.node_stage(uid)),
         None => String::new(),
     };
     let mut out =
@@ -273,8 +269,9 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
             })?;
         Some((path, *provenance))
     });
-    info["language"] = json!(manifest.isolation.get().language());
-    info["tier"] = json!(manifest.isolation.get().wire());
+    let tier = g.type_tier(ty);
+    info["language"] = json!(tier.map(goofi_node::Isolation::language));
+    info["tier"] = json!(tier.map(goofi_node::Isolation::wire));
     info["provenance"] = json!(match &found {
         Some((_, p)) => *p,
         None => "compiled in — no source file; copy a python node into the patch workspace to modify one",

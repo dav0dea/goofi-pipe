@@ -244,6 +244,7 @@ use goofi_node::{Isolation, NodeManifest};
 /// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
 pub struct SubprocNodeType {
     pub manifest: &'static NodeManifest,
+    pub isolation: &'static goofi_node::IsolationCell,
     pub factory: NodeFactory,
 }
 
@@ -267,7 +268,7 @@ fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType 
     let factory: NodeFactory = Box::new(move |_p| {
         Box::new(RemoteNode::new(&python, &source, in_slots.clone())) as Box<dyn Node>
     });
-    SubprocNodeType { manifest, factory }
+    SubprocNodeType { manifest, isolation: d.isolation, factory }
 }
 
 #[cfg(test)]

@@ -153,7 +153,7 @@ fn never() -> Box<dyn goofi_node::Node> {
 const fn manifest(type_name: &'static str, inputs: &'static [SlotDecl],
                   params: &'static [ParamDecl], producer: bool) -> NodeManifest {
     NodeManifest { type_name, category: "test", doc: "a catalog fixture", inputs, outputs: OUT,
-                   params, isolation: &goofi_node::NATIVE, producer, factory: never }
+                   params, producer }
 }
 static SOURCE: NodeManifest = manifest("MyPyThing", &[], &[], true);
 static MULTI_IN: &[SlotDecl] = &[
@@ -183,10 +183,10 @@ fn row(g: &Goofi, type_name: &str) -> Value {
 fn a_palette_row_carries_everything_a_client_renders_a_node_from() {
     // Registering a type is boot-time configuration, and there is no op for "a type that failed to load".
     let g = Goofi::new();
-    g.register_dyn(&SOURCE, Box::new(|_| never()));
-    g.register_dyn(&TRANSFORM, Box::new(|_| never()));
-    g.register_dyn(&DOCUMENTED, Box::new(|_| never()));
-    g.register_dyn(&OVERRIDES_COMMON, Box::new(|_| never()));
+    g.register_dyn(&SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
+    g.register_dyn(&TRANSFORM, Box::new(|_| never()), &goofi_node::NATIVE);
+    g.register_dyn(&DOCUMENTED, Box::new(|_| never()), &goofi_node::NATIVE);
+    g.register_dyn(&OVERRIDES_COMMON, Box::new(|_| never()), &goofi_node::NATIVE);
 
     // The two fixtures differ only in the `producer` flag, and it decides who paces the node.
     assert_eq!(row(&g, "MyPyThing")["params"]["common"]["autotrigger"]["value"], true,
@@ -217,7 +217,7 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
     {
         let mut graph = g.state.graph.lock().unwrap();
         graph.register_unavailable("PsdScipy".into(), "scipy".into());
-        graph.register_dyn_type(&SOURCE, Box::new(|_| never()));
+        graph.register_dyn_type(&SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
         // Provenance is the only thing the scan knows that the catalog cannot re-derive, greyed rows too.
         graph.set_patch_types(["MyPyThing".to_string(), "PsdScipy".to_string()].into());
     }

@@ -64,9 +64,6 @@ static OUT: &[OutputDecl] = &[OutputDecl {
     kind: goofi_core::SlotType::Array,
 }];
 static NO_PARAMS: &[ParamDecl] = &[];
-fn stub_factory() -> Box<dyn Node> {
-    unreachable!("dyn types build via their registered factory")
-}
 static NATIVE_M: NodeManifest = manifest("bench_native");
 static FTPY_M: NodeManifest = manifest("bench_ftpy");
 static SUBPY_M: NodeManifest = manifest("bench_subpy");
@@ -78,9 +75,7 @@ const fn manifest(type_name: &'static str) -> NodeManifest {
         inputs: IN,
         outputs: OUT,
         params: NO_PARAMS,
-        isolation: &BENCH_TIER,
         producer: false,
-        factory: stub_factory,
     }
 }
 
@@ -92,7 +87,7 @@ fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, 
     let mut g = Graph::new();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
-    g.register_dyn_type(manifest, factory);
+    g.register_dyn_type(manifest, factory, &BENCH_TIER);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();

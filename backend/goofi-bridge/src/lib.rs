@@ -404,7 +404,7 @@ pub fn spawn_workers(state: &AppState) {
                         }
                         // The tier rides the TRANSITION channel, not the snapshot alone: a node
                         // added after connecting is in no snapshot, and a demotion changes it live.
-                        let tier = g.manifest(u).map(|m| m.isolation.get().wire());
+                        let tier = g.node_tier(u).map(goofi_node::Isolation::wire);
                         stages.push((hex, (generation, g.node_stage(u), err, tier)));
                     }
                     let refreshed: Vec<String> = refreshed

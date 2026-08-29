@@ -265,13 +265,11 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
         inputs: &[],
         outputs: OUT,
         params: &[],
-        isolation: &BOOM_TIER,
         producer: true,
-        factory: || unreachable!("a catalog read never instantiates"),
     };
 
     let g = Goofi::new();
-    g.register_dyn(&BOOM, Box::new(|_| unreachable!()));
+    g.register_dyn(&BOOM, Box::new(|_| unreachable!()), &BOOM_TIER);
     // The patch's OWN node directory, which is where the arm looks first.
     let nodes = g.state.mount().join("nodes");
     std::fs::create_dir_all(&nodes).unwrap();

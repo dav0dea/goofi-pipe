@@ -347,14 +347,13 @@ class Sleeper(goofi.Node):
         static SLEEPY: goofi_node::NodeManifest = goofi_node::NodeManifest {
             type_name: "Sleeper", category: "python", doc: "sleeps 150 ms per run",
             inputs: IN, outputs: OUT, params: &[],
-            isolation: &SLEEPY_TIER, producer: false,
-            factory: || unreachable!("a dyn type is built by its registered factory"),
+            producer: false,
         };
 
         let g = Goofi::new();
         g.register_dyn(&SLEEPY, Box::new(|_| {
             Box::new(PyNode::from_source(SLEEPER, vec!["data"], vec!["out"]).expect("PyNode"))
-        }));
+        }), &SLEEPY_TIER);
         let src = g.add("_TestCounter");
 
         // ONE sleeper first, to learn what a single 150 ms run costs on THIS machine.

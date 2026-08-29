@@ -739,14 +739,14 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
     for (path, probed) in paths.iter().zip(probes) {
         let (type_name, tier, registration) = match probed {
             Probed::InProcess(d) => {
-                // Registered ROUTED: the manifest's `isolation` decides the tier at every build, so
+                // Registered ROUTED: the type's tier cell decides the tier at every build, so
                 // the runtime GIL tripwire demoting it is all a re-route takes.
                 let t = goofi_python::routed_node_type(d, subproc_python);
-                (t.manifest.type_name.to_string(), Tier::InProcess, g.register_dyn_type(t.manifest, t.factory))
+                (t.manifest.type_name.to_string(), Tier::InProcess, g.register_dyn_type(t.manifest, t.factory, t.isolation))
             }
             Probed::Subprocess(d) => {
                 let t = goofi_python::subproc::node_type_from(subproc_python, d);
-                (t.manifest.type_name.to_string(), Tier::Subprocess, g.register_dyn_type(t.manifest, t.factory))
+                (t.manifest.type_name.to_string(), Tier::Subprocess, g.register_dyn_type(t.manifest, t.factory, t.isolation))
             }
             // Registered WITH the reason, so the palette explains itself instead of omitting it.
             Probed::Unavailable { type_name, reason } => {
@@ -929,9 +929,7 @@ mod tests {
         inputs: &[],
         outputs: &[],
         params: &[],
-        isolation: &goofi_node::NATIVE,
         producer: true,
-        factory: || unreachable!("built by the registered factory"),
     };
 
     #[tokio::test]
@@ -942,7 +940,7 @@ mod tests {
         {
             let mut g = graph.lock().unwrap();
             let flag = released.clone();
-            g.register_dyn_type(&TRACKED, Box::new(move |_| Box::new(Tracked(flag.clone()))));
+            g.register_dyn_type(&TRACKED, Box::new(move |_| Box::new(Tracked(flag.clone()))), &goofi_node::NATIVE);
             g.add_node("_TestTracked", None).expect("a test node");
         }
         // An already-resolved shutdown takes the same path ctrl-C does; port 0 binds ephemerally.

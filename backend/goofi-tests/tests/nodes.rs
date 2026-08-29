@@ -45,15 +45,13 @@ fn stub_scan(g: &mut Graph, dir: &Path) -> Vec<ScannedType> {
             inputs: &[],
             outputs: OUT,
             params: &[],
-            isolation: &goofi_node::NATIVE,
             producer: true,
-            factory: || unreachable!("a scanned type is built by its registered factory"),
         }));
         out.push(ScannedType {
             type_name: name,
             tier: Tier::InProcess,
             stamp: std::fs::metadata(&path).ok().map(|m| (m.len(), m.modified().unwrap())),
-            registration: g.register_dyn_type(manifest, Box::new(move |_| Box::new(Emit(value)))),
+            registration: g.register_dyn_type(manifest, Box::new(move |_| Box::new(Emit(value))), &goofi_node::NATIVE),
         });
     }
     out

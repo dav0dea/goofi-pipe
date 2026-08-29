@@ -215,7 +215,7 @@ pub(crate) fn runtime_json(g: &Graph, uid: Uid) -> Value {
     json!({
         "stage": g.node_stage(uid),
         "error": g.last_error(uid),
-        "runtime": g.manifest(uid).map(|m| m.isolation.get().wire()),
+        "runtime": g.node_tier(uid).map(goofi_node::Isolation::wire),
     })
 }
 

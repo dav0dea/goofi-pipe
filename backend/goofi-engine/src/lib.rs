@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_node::{
-    ExprMode, NodeCtx, NodeManifest, ParamGroups, ParamKey,
+    ExprMode, Isolation, IsolationCell, NodeCtx, NodeManifest, ParamGroups, ParamKey,
 };
 use indexmap::IndexMap;
 
@@ -99,6 +99,9 @@ enum Kind {
 /// The state only a RUNNING node has.
 struct Leaf {
     manifest: &'static NodeManifest,
+    /// The type's tier cell, captured at birth — shared per type, so a runtime demotion of a
+    /// Python type reads through here too.
+    tier: &'static IsolationCell,
     host: NodeHost,
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
     params: Arc<ParamGroups>,
@@ -347,9 +350,10 @@ pub use goofi_node::discover::NodeFactory;
 /// [`runtime::NodeBuild`].
 type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
 
-/// A runtime-registered type. Its `manifest.factory` is never called — `factory` is.
+/// A runtime-registered type: the build half a [`goofi_node::NodeClass`] carries for a built-in.
 struct DynType {
     manifest: &'static NodeManifest,
+    isolation: &'static IsolationCell,
     factory: SharedFactory,
 }
 
@@ -697,6 +701,7 @@ impl Graph {
         &mut self,
         manifest: &'static NodeManifest,
         factory: NodeFactory,
+        tier: &'static IsolationCell,
     ) -> Registration {
         let name = manifest.type_name;
         if goofi_node::find(name).is_some() {
@@ -706,7 +711,7 @@ impl Graph {
         // A name that loads now is not unloadable any more: leaving the greyed row standing would
         // give one name two palette rows.
         self.unavailable.remove(name);
-        match self.dyn_types.insert(name, DynType { manifest, factory: Arc::from(factory) }) {
+        match self.dyn_types.insert(name, DynType { manifest, isolation: tier, factory: Arc::from(factory) }) {
             Some(_) => Registration::Replaced,
             None => Registration::Added,
         }
@@ -879,6 +884,18 @@ impl Graph {
         self.leaf(uid).map(|e| e.manifest)
     }
 
+    /// The tier `uid`'s instance runs on — a leaf alone wears one.
+    pub fn node_tier(&self, uid: Uid) -> Option<Isolation> {
+        self.leaf(uid).map(|e| e.tier.get())
+    }
+
+    /// A TYPE's tier: the compile-time catalog, else a runtime-registered type.
+    pub fn type_tier(&self, type_name: &str) -> Option<Isolation> {
+        goofi_node::find_class(type_name)
+            .map(|c| c.isolation.get())
+            .or_else(|| self.dyn_types.get(type_name).map(|dt| dt.isolation.get()))
+    }
+
     /// Derived fresh on read, so a binding that recovers on a node which never runs again still
     /// clears. Initialization failure wins, then a process error, then the smallest errored key.
     pub fn last_error(&self, uid: Uid) -> Option<&str> {
@@ -951,19 +968,19 @@ impl Graph {
         &self,
         type_name: &str,
         params: Option<ParamGroups>,
-    ) -> Result<(&'static NodeManifest, ParamGroups, runtime::NodeBuild), String> {
+    ) -> Result<(&'static NodeManifest, &'static IsolationCell, ParamGroups, runtime::NodeBuild), String> {
         let p = match params {
             // Supplied params still get `common` NORMALIZED: a caller may hand over a partial
             // group, and the type decides a missing key's default.
             Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?),
             None => self.default_params_of(type_name)?,
         };
-        if let Some(m) = goofi_node::find(type_name) {
-            let f = m.factory;
-            Ok((m, p, Box::new(move |_| f())))
+        if let Some(c) = goofi_node::find_class(type_name) {
+            let f = c.factory;
+            Ok((&c.manifest, c.isolation, p, Box::new(move |_| f())))
         } else if let Some(dt) = self.dyn_types.get(type_name) {
             let f = dt.factory.clone();
-            Ok((dt.manifest, p, Box::new(move |p| f(p))))
+            Ok((dt.manifest, dt.isolation, p, Box::new(move |p| f(p))))
         } else {
             Err(self.reject_type(type_name))
         }
@@ -1005,10 +1022,10 @@ impl Graph {
                 // A leaf is the only kind with a manifest, so it is the only one that can seed the
                 // default expressions its type declares.
                 let seed = params.is_none();
-                let (manifest, params, build) = self.build_node(type_name, params)?;
+                let (manifest, tier, params, build) = self.build_node(type_name, params)?;
                 let uid = self.claim(uid);
                 let born = self.pick_name(name, &manifest.type_name.to_lowercase(), None);
-                self.insert_node_at(uid, born.clone(), manifest, build, params);
+                self.insert_node_at(uid, born.clone(), manifest, tier, build, params);
                 if seed {
                     self.seed_default_expressions(uid, manifest);
                 }
@@ -1074,6 +1091,7 @@ impl Graph {
         uid: Uid,
         name: String,
         manifest: &'static NodeManifest,
+        tier: &'static IsolationCell,
         build: runtime::NodeBuild,
         params: ParamGroups,
     ) {
@@ -1086,6 +1104,7 @@ impl Graph {
             NodeEntry {
                 kind: Kind::Leaf(Box::new(Leaf {
                     manifest,
+                    tier,
                     host,
                     params: Arc::new(params),
                     bindings: HashMap::new(),
@@ -2005,7 +2024,7 @@ impl Graph {
         }
         // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
-        let (manifest, params, build) = self.build_node(type_name, Some(params))?;
+        let (manifest, tier, params, build) = self.build_node(type_name, Some(params))?;
 
         // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
         // generation bump the reborn node re-opens names its predecessor's ports still hold.
@@ -2017,6 +2036,7 @@ impl Graph {
             // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with
             // the instance: keeping the old one leaves the graph describing a node not running.
             entry.manifest = manifest;
+            entry.tier = tier;
             entry.host = host;
         }
         // The corpse's channel goes with it, and BEFORE the new generation reports `Ready`: while
@@ -3245,12 +3265,12 @@ impl Graph {
             let ty = rec["type"].as_str().unwrap();
             // Folded in BEFORE construction, since `insert_node` runs `setup()`.
             let params = self.record_params(ty, rec)?;
-            let (manifest, params, build) = self.build_node(ty, Some(params))?;
+            let (manifest, tier, params, build) = self.build_node(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
             let uid = idmap[old];
             let name = self.fresh_name(&manifest.type_name.to_lowercase());
-            self.insert_node_at(uid, name, manifest, build, params);
+            self.insert_node_at(uid, name, manifest, tier, build, params);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
             }

@@ -39,25 +39,26 @@ mod pyinit {
 pub(crate) use pyinit::attach;
 
 
-/// A discovered Python type registered as ONE type whose factory reads
-/// [`goofi_node::NodeManifest::isolation`] at build time. That field is the only thing that
-/// decides the tier, so demoting a type is a single write and the next `restart_node` honours it.
+/// A discovered Python type registered as ONE type whose factory reads the type's tier cell at
+/// build time. That cell is the only thing that decides the tier, so demoting a type is a single
+/// write and the next `restart_node` honours it.
 #[cfg(feature = "embed")]
 pub fn routed_node_type(d: Discovered, subproc_python: &str) -> inproc::PyNodeType {
     let manifest = d.manifest;
+    let tier = d.isolation;
     let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
     let out_slots: Vec<&'static str> = manifest.outputs.iter().map(|o| o.name).collect();
     let source = std::fs::read_to_string(&d.source).unwrap_or_default();
     let python = subproc_python.to_string();
     let factory: goofi_node::discover::NodeFactory = Box::new(move |_p| {
-        match manifest.isolation.get() {
+        match tier.get() {
             goofi_node::Isolation::Subprocess => {
                 Box::new(subproc::RemoteNode::new(&python, &source, in_slots.clone()))
                     as Box<dyn goofi_node::Node>
             }
             // A native tier cannot reach here: this factory only ever backs a discovered file.
-            _ => inproc::build_routed(&source, in_slots.clone(), out_slots.clone(), manifest.isolation),
+            _ => inproc::build_routed(&source, in_slots.clone(), out_slots.clone(), tier),
         }
     });
-    inproc::PyNodeType { manifest, factory }
+    inproc::PyNodeType { manifest, isolation: tier, factory }
 }

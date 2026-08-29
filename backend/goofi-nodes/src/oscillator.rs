@@ -4,7 +4,7 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{
-    default_factory, ExprDecl, ExprMode, Inputs,  Node, NodeCtx, NodeManifest,
+    default_factory, ExprDecl, ExprMode, Inputs,  Node, NodeClass, NodeCtx, NodeManifest,
     NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, ParamSpec, Params,
 };
 use std::f64::consts::{PI, TAU};
@@ -167,15 +167,17 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 inventory::submit! {
-    NodeManifest {
-        type_name: "Oscillator",
-        category: "inputs",
-        doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
-        inputs: &[],
-        outputs: OUTPUTS,
-        params: PARAMS,
+    NodeClass {
+        manifest: NodeManifest {
+            type_name: "Oscillator",
+            category: "inputs",
+            doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
+            inputs: &[],
+            outputs: OUTPUTS,
+            params: PARAMS,
+            producer: true,
+        },
         isolation: &goofi_node::NATIVE,
-        producer: true,
         factory: default_factory::<Oscillator>,
     }
 }

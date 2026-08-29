@@ -3,7 +3,7 @@
 
 use goofi_core::{resolve_axis, Data, SlotType};
 use goofi_node::{
-    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 
@@ -205,15 +205,17 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 inventory::submit! {
-    NodeManifest {
-        type_name: "Filter",
-        category: "signal",
-        doc: "Streaming Butterworth bandpass/lowpass/highpass/notch along one axis, shape unchanged.",
-        inputs: INPUTS,
-        outputs: OUTPUTS,
-        params: PARAMS,
+    NodeClass {
+        manifest: NodeManifest {
+            type_name: "Filter",
+            category: "signal",
+            doc: "Streaming Butterworth bandpass/lowpass/highpass/notch along one axis, shape unchanged.",
+            inputs: INPUTS,
+            outputs: OUTPUTS,
+            params: PARAMS,
+            producer: false,
+        },
         isolation: &goofi_node::NATIVE,
-        producer: false,
         factory: default_factory::<Filter>,
     }
 }

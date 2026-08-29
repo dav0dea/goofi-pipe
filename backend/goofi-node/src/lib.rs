@@ -578,7 +578,7 @@ pub struct OutputDecl {
     pub kind: SlotType,
 }
 
-/// Static, declarative node metadata, registered at compile time via `inventory`.
+/// Static, declarative node metadata — plain data, shared by every engine.
 pub struct NodeManifest {
     pub type_name: &'static str,
     pub category: &'static str,
@@ -587,12 +587,9 @@ pub struct NodeManifest {
     pub outputs: &'static [OutputDecl],
     /// Declared params; the runtime `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
-    pub isolation: &'static IsolationCell,
     /// This type is a SOURCE: it makes frames on its own schedule, so `common.autotrigger` and the
     /// carried `globals.default_ufreq` expression both default on.
     pub producer: bool,
-    /// Build a default instance, type-erased.
-    pub factory: fn() -> Box<dyn Node>,
 }
 
 impl NodeManifest {
@@ -604,12 +601,25 @@ impl NodeManifest {
     }
 }
 
-inventory::collect!(NodeManifest);
+/// A compile-time node registration via `inventory`: the shared manifest plus the build half —
+/// the factory and the tier cell — which are the engine's business rather than the manifest's.
+pub struct NodeClass {
+    pub manifest: NodeManifest,
+    pub isolation: &'static IsolationCell,
+    /// Build a default instance, type-erased.
+    pub factory: fn() -> Box<dyn Node>,
+}
+
+inventory::collect!(NodeClass);
 
 pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
-    inventory::iter::<NodeManifest>()
+    inventory::iter::<NodeClass>().map(|c| &c.manifest)
 }
 
 pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
-    catalog().find(|m| m.type_name == type_name)
+    find_class(type_name).map(|c| &c.manifest)
+}
+
+pub fn find_class(type_name: &str) -> Option<&'static NodeClass> {
+    inventory::iter::<NodeClass>().find(|c| c.manifest.type_name == type_name)
 }

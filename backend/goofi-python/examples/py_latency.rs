@@ -22,9 +22,6 @@ static PY_OUT: &[OutputDecl] = &[OutputDecl {
     kind: goofi_core::SlotType::Array,
 }];
 static PY_PARAMS: &[ParamDecl] = &[];
-fn py_stub_factory() -> Box<dyn Node> {
-    unreachable!()
-}
 static PY_TIER: IsolationCell = IsolationCell::new(Isolation::InProcess);
 static PY_MANIFEST: NodeManifest = NodeManifest {
     type_name: "PyNode",
@@ -33,9 +30,7 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
     inputs: PY_IN,
     outputs: PY_OUT,
     params: PY_PARAMS,
-    isolation: &PY_TIER,
     producer: false,
-    factory: py_stub_factory,
 };
 
 fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
@@ -45,6 +40,7 @@ fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     g.register_dyn_type(
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
+        &PY_TIER,
     );
     let osc = g.add_node("_TestConst", None).unwrap();
     g.update_param(osc, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();

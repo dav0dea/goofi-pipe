@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, Meta, SlotType};
 use goofi_node::{
-    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl,
 };
 
@@ -26,8 +26,8 @@ static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
 static OUT_ARRAY: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 static NO_PARAMS: &[ParamDecl] = &[];
 
-/// Builds a test-category manifest; a test in any crate can build one too.
-pub const fn manifest(
+/// Builds a test-category registration.
+pub const fn class(
     type_name: &'static str,
     doc: &'static str,
     inputs: &'static [SlotDecl],
@@ -35,16 +35,18 @@ pub const fn manifest(
     params: &'static [ParamDecl],
     producer: bool,
     factory: fn() -> Box<dyn Node>,
-) -> NodeManifest {
-    NodeManifest {
-        type_name,
-        category: "test",
-        doc,
-        inputs,
-        outputs,
-        params,
+) -> NodeClass {
+    NodeClass {
+        manifest: NodeManifest {
+            type_name,
+            category: "test",
+            doc,
+            inputs,
+            outputs,
+            params,
+            producer,
+        },
         isolation: &goofi_node::NATIVE,
-        producer,
         factory,
     }
 }
@@ -60,7 +62,7 @@ impl Node for Echo {
     }
 }
 inventory::submit! {
-    manifest("_TestEcho", "passes its input straight through", IN_ARRAY, OUT_ARRAY, NO_PARAMS, false, default_factory::<Echo>)
+    class("_TestEcho", "passes its input straight through", IN_ARRAY, OUT_ARRAY, NO_PARAMS, false, default_factory::<Echo>)
 }
 
 static SINK_PARAMS: &[ParamDecl] = &[ParamDecl {
@@ -79,7 +81,7 @@ impl Node for Sink {
     }
 }
 inventory::submit! {
-    manifest("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false, default_factory::<Sink>)
+    class("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false, default_factory::<Sink>)
 }
 
 #[derive(Default)]
@@ -90,7 +92,7 @@ impl Node for Failing {
     }
 }
 inventory::submit! {
-    manifest("_TestFail", "process always errors", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Failing>)
+    class("_TestFail", "process always errors", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Failing>)
 }
 
 #[derive(Default)]
@@ -101,7 +103,7 @@ impl Node for Panicking {
     }
 }
 inventory::submit! {
-    manifest("_TestPanic", "process panics", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Panicking>)
+    class("_TestPanic", "process panics", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Panicking>)
 }
 
 #[derive(Default)]
@@ -116,7 +118,7 @@ impl Node for SetupFail {
     }
 }
 inventory::submit! {
-    manifest("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<SetupFail>)
+    class("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<SetupFail>)
 }
 
 /// Sleeps far past the shutdown ceiling, so a teardown that JOINED would hang instead of returning.
@@ -129,7 +131,7 @@ impl Node for Slow {
     }
 }
 inventory::submit! {
-    manifest("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Slow>)
+    class("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Slow>)
 }
 
 /// Emits how many times it has run, as a length-1 array.
@@ -146,7 +148,7 @@ impl Node for Counter {
     }
 }
 inventory::submit! {
-    manifest("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true, default_factory::<Counter>)
+    class("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true, default_factory::<Counter>)
 }
 
 /// The same, but its input is REQUIRED.
@@ -164,7 +166,7 @@ impl Node for RequiredCounter {
     }
 }
 inventory::submit! {
-    manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false, default_factory::<RequiredCounter>)
+    class("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false, default_factory::<RequiredCounter>)
 }
 
 /// A `[3, 4]` frame — the only source here that is not a vector. Each row rises, offset by a round
@@ -195,7 +197,7 @@ impl Node for Grid {
     }
 }
 inventory::submit! {
-    manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Grid>)
+    class("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Grid>)
 }
 
 /// Process-wide, because the answer must CHANGE between scans for a test to tell them apart.
@@ -224,7 +226,7 @@ impl Node for Picker {
     }
 }
 inventory::submit! {
-    manifest("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false, default_factory::<Picker>)
+    class("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false, default_factory::<Picker>)
 }
 
 /// The same declaration with NO hook behind it, so the ⟳ spinner runs to its safety timeout.
@@ -236,5 +238,5 @@ impl Node for MutePicker {
     }
 }
 inventory::submit! {
-    manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false, default_factory::<MutePicker>)
+    class("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false, default_factory::<MutePicker>)
 }

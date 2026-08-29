@@ -38,11 +38,7 @@ pub fn leak_manifest(
     type_name: String,
     intro: &probe::Introspection,
     category: &'static str,
-    isolation: Isolation,
 ) -> &'static NodeManifest {
-    fn stub() -> Box<dyn Node> {
-        unreachable!("a discovered node is built by its registered factory, not manifest.factory")
-    }
     let inputs: Vec<SlotDecl> = intro
         .inputs
         .iter()
@@ -71,9 +67,7 @@ pub fn leak_manifest(
         inputs: Box::leak(inputs.into_boxed_slice()),
         outputs: Box::leak(outputs.into_boxed_slice()),
         params: Box::leak(params.into_boxed_slice()),
-        isolation: IsolationCell::leak(isolation),
         producer: intro.producer,
-        factory: stub,
     }))
 }
 
@@ -111,10 +105,12 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A discovered Python node type: its manifest plus the routing flag (`gil_safe` → in-process).
+/// A discovered Python node type: its manifest, its tier cell — leaked per type, and written at
+/// runtime when a node re-enables the GIL — plus the routing flag (`gil_safe` → in-process).
 #[derive(Clone)]
 pub struct Discovered {
     pub manifest: &'static NodeManifest,
+    pub isolation: &'static IsolationCell,
     pub gil_safe: bool,
     pub source: PathBuf,
 }
@@ -186,9 +182,10 @@ pub fn discover_one(
     }
     match probe_introspect(path, python) {
         Ok(intro) => {
-            let manifest = leak_manifest(camel(stem), &intro, category, isolation);
+            let manifest = leak_manifest(camel(stem), &intro, category);
             Discovery::Found(Discovered {
                 manifest,
+                isolation: IsolationCell::leak(isolation),
                 gil_safe: intro.gil_safe,
                 source: path.to_path_buf(),
             })

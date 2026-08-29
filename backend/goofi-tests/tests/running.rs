@@ -182,9 +182,7 @@ static FLAKY: goofi_node::NodeManifest = goofi_node::NodeManifest {
     inputs: &[],
     outputs: &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }],
     params: &[],
-    isolation: &goofi_node::NATIVE,
     producer: true,
-    factory: || unreachable!("a dyn type is built by its registered factory"),
 };
 
 /// Its frames carry WHICH instance emitted them; a per-instance run count cannot say.
@@ -214,7 +212,7 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
     let builds = Arc::new(AtomicUsize::new(0));
     g.register_dyn(&FLAKY, Box::new(move |_| {
         Box::new(Flaky { generation: builds.fetch_add(1, Ordering::SeqCst) as f32, n: 0.0 })
-    }));
+    }), &goofi_node::NATIVE);
     let base = g.serve().await;
     let uid = g.add("_TestFlaky");
     // Paced, so the run count steps in ones: an uncapped producer laps its own viewer.
@@ -427,13 +425,12 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     static SLOW_BUILD: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "_TestSlowBuild", category: "test", doc: "takes 700 ms to construct",
         inputs: SLOW_IN, outputs: SLOW_OUT, params: &[],
-        isolation: &goofi_node::NATIVE, producer: false,
-        factory: || unreachable!("a dyn type is built by its registered factory"),
+        producer: false,
     };
     g.register_dyn(&SLOW_BUILD, Box::new(|_| {
         std::thread::sleep(Duration::from_millis(700));
         Box::new(Echo)
-    }));
+    }), &goofi_node::NATIVE);
 
     let src = g.add("_TestCounter");
     let t0 = Instant::now();

@@ -45,9 +45,7 @@ static MANIFEST: NodeManifest = NodeManifest {
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: &[],
-    isolation: &goofi_node::NATIVE,
     producer: false,
-    factory: default_factory::<Passthrough>,
 };
 
 fn manifest() -> &'static NodeManifest {
@@ -150,7 +148,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     let transport = Arc::new(IoxTransport::create(&instance(), Uid(4), 0, manifest()).unwrap());
     let mut node = NodeRuntime::new(
         manifest(),
-        (manifest().factory)(),
+        default_factory::<Passthrough>(),
         manifest().default_params(),
         transport.clone(),
         NodeEnv::detached(),

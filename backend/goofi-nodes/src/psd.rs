@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use goofi_core::{Axis, Coord, Data, SlotType};
 use goofi_node::{
-    default_factory, Inputs,  Node, NodeCtx, NodeManifest, NodeResult, OutputDecl,
+    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
     Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
 };
 use rustfft::{num_complex::Complex32, FftPlanner};
@@ -126,15 +126,17 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 inventory::submit! {
-    NodeManifest {
-        type_name: "Psd",
-        category: "signal",
-        doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
-        inputs: INPUTS,
-        outputs: OUTPUTS,
-        params: PARAMS,
+    NodeClass {
+        manifest: NodeManifest {
+            type_name: "Psd",
+            category: "signal",
+            doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
+            inputs: INPUTS,
+            outputs: OUTPUTS,
+            params: PARAMS,
+            producer: false,
+        },
         isolation: &goofi_node::NATIVE,
-        producer: false,
         factory: default_factory::<Psd>,
     }
 }

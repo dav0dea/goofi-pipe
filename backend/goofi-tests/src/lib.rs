@@ -162,8 +162,9 @@ impl Goofi {
         &self,
         manifest: &'static goofi_node::NodeManifest,
         factory: goofi_node::discover::NodeFactory,
+        tier: &'static goofi_node::IsolationCell,
     ) {
-        self.state.graph.lock().unwrap().register_dyn_type(manifest, factory);
+        self.state.graph.lock().unwrap().register_dyn_type(manifest, factory, tier);
     }
 
     /// The LEAF node uids in the replicated projection, sorted. One map carries every entity, so
@@ -690,7 +691,7 @@ pub fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
         goofi_python::Discovery::Found(d) => {
             let t = goofi_python::subproc::node_type_from(py, d);
             let name = t.manifest.type_name.to_string();
-            g.register_dyn(t.manifest, t.factory);
+            g.register_dyn(t.manifest, t.factory, t.isolation);
             name
         }
         goofi_python::Discovery::Unavailable { reason, .. } => {
