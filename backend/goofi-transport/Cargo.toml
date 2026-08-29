@@ -1,0 +1,15 @@
+[package]
+name = "goofi-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goofi-node = { path = "../goofi-node" }
+
+# The cross-engine plane, at the version the Python child links — the two open the same services
+# over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this is a
+# caret requirement, as in the other crates that already depend on it).
+iceoryx2 = "0.9.3"
+# One line: the random scope a graph's service names live in.
+getrandom = "0.4"

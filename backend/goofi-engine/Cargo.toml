@@ -9,6 +9,7 @@ goofi-core = { path = "../goofi-core" }
 # The GOOF frame is what a data service carries, exactly as the subprocess tier already sends it.
 goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
+goofi-transport = { path = "../goofi-transport" }
 goofi-nodes = { path = "../goofi-nodes" }
 
 # The async runtime's transport, at the version the Python child links — the two open the same

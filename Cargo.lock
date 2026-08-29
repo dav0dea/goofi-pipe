@@ -575,6 +575,7 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-nodes",
+ "goofi-transport",
  "iceoryx2",
  "indexmap",
  "rmp-serde",
@@ -666,6 +667,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.30.0",
+]
+
+[[package]]
+name = "goofi-transport"
+version = "3.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "goofi-node",
+ "iceoryx2",
 ]
 
 [[package]]

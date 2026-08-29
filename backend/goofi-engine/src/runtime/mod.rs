@@ -52,10 +52,10 @@ mod transport;
 mod wire;
 
 pub use mailbox::{Binding, Mailbox};
+pub use goofi_transport::{door_service, output_service, service_base};
 pub use transport::{
-    door_service, iox_node, nodes_dir, open_output_subscriber, output_service,
-    reclaim_stale_resources, service_base, sweep_once, ByteSubscriber, Doorbell, IoxNode,
-    IoxTransport, NodeChannel,
+    iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, sweep_once,
+    ByteSubscriber, Doorbell, IoxNode, IoxTransport, NodeChannel,
 };
 /// Only the graph mints a scope, and it is in this crate.
 pub(crate) use transport::service_instance;
