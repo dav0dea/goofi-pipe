@@ -456,8 +456,8 @@ test.describe('the control socket', () => {
 			await test.step('both tabs and the manager hold ONE document', async () => {
 				const truth = await backendNodes(page);
 				expect(truth.sort()).toEqual([mine, theirs].sort());
-				expect(await replicaNodes(page)).toEqual(truth);
-				expect(await replicaNodes(other)).toEqual(truth);
+				await expect.poll(() => replicaNodes(page)).toEqual(truth);
+				await expect.poll(() => replicaNodes(other)).toEqual(truth);
 			});
 
 			await test.step('an undo here takes back MY node, and leaves the peer’s standing', async () => {
