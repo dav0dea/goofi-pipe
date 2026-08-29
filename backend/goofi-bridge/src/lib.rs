@@ -962,7 +962,9 @@ fn doc_state(state: &AppState) -> String {
 /// Re-project the authoritative graph into the document and broadcast the delta, after an RPC
 /// mutates the graph. The projection is built WHOLE, so a stale leaf converges too.
 fn resync_and_broadcast(state: &AppState) {
-    let g = state.graph.lock().unwrap();
+    let mut g = state.graph.lock().unwrap();
+    // The settle point: one delivery per batch, before the projection, from settled state.
+    g.settle();
     let mut doc = state.doc.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }

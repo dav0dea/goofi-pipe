@@ -481,6 +481,15 @@ pub enum Stream {
     Open(Uid),
 }
 
+/// One thing a batch of ops changed, recorded by the op path for the settle that follows. The
+/// delivery half of a write is deferred so one batch yields ONE decision, from settled state.
+enum Touched {
+    /// A consumer input — possibly a port — whose wire set may have moved.
+    Slot(Uid, &'static str),
+    /// A param whose value or binding moved and must reach its node.
+    Param(Uid, ParamKey),
+}
+
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
@@ -523,6 +532,8 @@ pub struct Graph {
     /// Params whose options a node has re-enumerated since anyone looked. Options are the one
     /// thing a node reports that the doc has no field for, so the worker must be TOLD to echo them.
     refreshed: Vec<(Uid, ParamKey)>,
+    /// What the current batch changed and [`Self::settle`] has not yet delivered.
+    touched: Vec<Touched>,
 }
 
 impl Default for Graph {
@@ -591,6 +602,7 @@ impl Graph {
             bind_keys: Vec::new(),
             instance: runtime::service_instance(),
             refreshed: Vec::new(),
+            touched: Vec::new(),
         }
     }
 
@@ -611,6 +623,8 @@ impl Graph {
         // its own, and the wire planner keeps a SECOND handle on it.
         self.nodes.clear();
         self.wire.reset_channels();
+        // Whatever the batch touched addressed nodes this clear destroyed.
+        self.touched.clear();
     }
 
     /// The authoritative globals store — `entries()` serves the CRDT mirror and the `.gfi`, and an
@@ -2014,7 +2028,7 @@ impl Graph {
         self.links
             .retain(|l| l.node_out != uid && l.node_in != uid);
         for l in dropped.iter().filter(|l| l.node_in != uid) {
-            self.replan_behind(l.node_in, l.slot_in);
+            self.touched.push(Touched::Slot(l.node_in, l.slot_in));
         }
         self.rebind_ports();
         Ok(())
@@ -2219,9 +2233,9 @@ impl Graph {
             bind_error: error,
         };
         if let Some(e) = self.leaf_mut(uid) {
-            e.bindings.insert(key, binding);
+            e.bindings.insert(key.clone(), binding);
         }
-        self.replan_binding(uid, bind_id);
+        self.notify_param(uid, &key);
         Ok(())
     }
 
@@ -2237,10 +2251,9 @@ impl Graph {
     }
 
     /// Storing the record is only HALF of a param edit: a parked node is never rung by a bare
-    /// pointer swap. ONE re-plan per edit — a second `begin` cancels the first mid-sequence.
+    /// pointer swap. The delivery is recorded here and runs at [`Self::settle`], once per batch.
     fn notify_param(&mut self, uid: Uid, key: &ParamKey) {
-        let bind_id = self.bind_id(uid, key);
-        self.replan_binding(uid, bind_id);
+        self.touched.push(Touched::Param(uid, key.clone()));
     }
 
     /// This PARAM's index into [`Self::bind_keys`]. Keyed by param, not by binding, because the
@@ -2541,7 +2554,7 @@ impl Graph {
                 .retain(|l| !(l.node_in == node_in && l.slot_in == slot_in));
         }
         self.links.push(new);
-        self.replan_behind(node_in, slot_in);
+        self.touched.push(Touched::Slot(node_in, slot_in));
         self.rebind_ports();
         Ok(())
     }
@@ -2576,7 +2589,7 @@ impl Graph {
             return Err("no such link".into());
         }
         if let Some(slot_in) = self.resolve_input(node_in, slot_in) {
-            self.replan_behind(node_in, slot_in);
+            self.touched.push(Touched::Slot(node_in, slot_in));
         }
         self.rebind_ports();
         Ok(())
@@ -2658,6 +2671,11 @@ impl Graph {
         let key = (uid, slot);
         let desired = self.desired_wires(key);
         let previous = self.wire.planned(key);
+        // An In set that did not move carries nothing — a batch that ends where it started says
+        // nothing. A Bind sequence still runs: its phase 2 IS the param delivery, wires or not.
+        if matches!(slot, runtime::plan::Slot::In(_)) && desired == previous {
+            return;
+        }
         let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
         let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
         self.wire.begin(key, desired, removed, added);
@@ -2669,6 +2687,29 @@ impl Graph {
     pub fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
         if let Some(key) = self.wire.ack(seq, ok) {
             self.advance_wire(key);
+        }
+    }
+
+    /// Deliver what the batch changed: one decision per touched item, from settled state, each
+    /// item once however often the batch touched it. Free when nothing was.
+    pub fn settle(&mut self) {
+        let touched = std::mem::take(&mut self.touched);
+        let mut slots = HashSet::new();
+        let mut params = HashSet::new();
+        for t in touched {
+            match t {
+                Touched::Slot(uid, slot) => {
+                    if slots.insert((uid, slot)) {
+                        self.replan_behind(uid, slot);
+                    }
+                }
+                Touched::Param(uid, key) => {
+                    if params.insert((uid, key.clone())) {
+                        let bind_id = self.bind_id(uid, &key);
+                        self.replan_binding(uid, bind_id);
+                    }
+                }
+            }
         }
     }
 
@@ -2698,6 +2739,9 @@ impl Graph {
                 }
             }
         }
+        // A direct driver has no bridge to settle for it, and the spec's drain-side settle lands
+        // a delivery that arrived between ops.
+        self.settle();
         applied
     }
 
@@ -2937,6 +2981,8 @@ impl Graph {
         // The channels addressed nodes that no longer exist; the generations stay, because they are
         // what keeps whatever is born at those uids next clear of what just died.
         self.wire.reset_channels();
+        // Whatever the batch touched addressed nodes this clear destroyed.
+        self.touched.clear();
         // …and the binding ids went with the sequences that named them.
         self.bind_keys.clear();
         // An un-echoed refresh names a node the patch no longer holds — and a load restores uids,
