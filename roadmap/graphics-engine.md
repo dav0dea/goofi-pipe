@@ -27,10 +27,11 @@ The four answers, in build order:
 
 ## Locked decisions
 
-- **One graph, one document, two engines.** Same uid space, commands, history, CRDT doc, `.gfi`,
-  palette, sub-patch scopes and panels. What differs is only WHERE a node executes.
+- **One graph, one document, two engines.** Same uid space, commands, history, plain-JSON doc,
+  `.gfi`, palette, sub-patch scopes and panels. What differs is only WHERE a node executes.
 - **The wire name is `graphics`**, not `video` — this engine is compute, geometry and distance
-  fields, and video describes one output. It lands in `.gfi` files, so it is fixed now.
+  fields, and video describes one output. It is fixed now by the engine tag on manifests and the
+  dtype vocabulary; the archive records nothing about engines.
 - **UX cost is proportional to compute cost.** Free reinterpretation is invisible; cheap GPU-side
   conversion is automatic but measured; a **clock crossing gets an explicit bridge node**.
 - **Every graphics preview is a server-rendered image stream**, atlas-composited into one encoded
@@ -41,7 +42,8 @@ The four answers, in build order:
 - **The render thread never takes the graph mutex.** Lock-free queues drained at frame boundaries.
 - **Link legality is enforced by DTYPE**, and engine homogeneity follows by construction: only a
   bridge node may declare a slot of a foreign engine's dtype, so a pure graphics node cannot be
-  wired to a signal node at all.
+  wired to a signal node at all. A bridge node's foreign-dtype edge IS the cross-engine edge
+  multi-engine-graph.md's derived-name flow carries.
 - **No Python tier, ever. No second UI stack.** No second undo system, layout engine, workspace,
   panel registry or control protocol.
 - **Shadertoy compatibility is dropped as an architectural constraint** — a clean engine beats

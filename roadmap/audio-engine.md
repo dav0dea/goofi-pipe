@@ -39,9 +39,11 @@ the COM lifecycle, bus/param/state plumbing and threading rules are ours to writ
 CLAP arm first and alone; the VST3 arm lands later behind the same dispatch, and `clap-wrapper`
 carries goofi nodes OUT to VST3 DAWs in the meantime.
 
-**One node, two halves.** An audio node is a `Kind::Leaf` in the one node map. Its existing
-`NodeRuntime` thread is the CONTROL half — params, `nd()` bindings, health, the `/data` scope tap —
-and the CLAP plugin is the DSP half. **The control half owns everything that touches the OS; the
+**One node, two halves.** An audio node is a `Kind::Leaf` in the one node map. The engine's own
+main-thread side, behind the multi-engine trait, is the CONTROL half — params arrive as trait
+propagation, health leaves through the drain queue, the `/data` scope tap is the `SlotFeed` ring
+arm below — and the CLAP plugin is the DSP half. (This supersedes the earlier `NodeRuntime`
+sentence: `NodeRuntime` is signal author machinery, signal-private after the split.) **The control half owns everything that touches the OS; the
 kernel owns arithmetic.** A sample file, a MIDI port, a device name: all resolved on the control
 half, which hands the kernel a buffer. This is CLAP's own `[main-thread]` / `[audio-thread]` split,
 and `clack` encodes it in the type system — `PluginInstance` is `!Send`, `StartedPluginAudioProcessor`
@@ -87,6 +89,12 @@ on ARRIVAL, so the eval rate is the source's rate and the audio thread only read
 **Audio-rate modulation is a CABLE, not a param.** Anything that must glide at audio rate takes a CV
 input port and a slew node in front of it. This is the modular convention and it is why the engine
 needs no host-imposed parameter ramp.
+
+**An in-order signal→audio crossing is a BRIDGE node this engine owns.** A signal array that must
+land as ordered samples — sonification, sample playback — enters through an audio-engine node with
+a signal-dtype input slot, whose cross-engine edge derives a deeper subscriber buffer as part of
+its service config (multi-engine-graph.md locks the convention). Modulation is not this: it
+crosses as `nd()` at control rate, above.
 
 **No host-side ramp in the first version.** CLAP has no per-frame slope; smoothing is the node's own.
 `globals.default_param_fade` is therefore the value a node template reads, not a ramp the host
@@ -276,6 +284,7 @@ survey from primary sources. Both landed on keep.
   kernel reads as timestamped events, which is CLAP's event model already.
 - **Whether goofi should run as a plugin inside a DAW.** Deliberately not recorded as an item: the
   cross-engine modulation that motivates this engine needs the signal plane, which a stripped plugin
-  build would not have, so it may be a different product. One constraint is kept for free — the audio
-  crate depends on `goofi-core` and nothing above it, so it can be driven by an external block
-  callback, which is also what a test needs.
+  build would not have, so it may be a different product. One constraint is kept — the audio crate
+  depends on `goofi-core`, `goofi-node` and `goofi-transport` and nothing above them (none carries
+  iceoryx2 threads or tokio into the DSP path), so it can be driven by an external block callback,
+  which is also what a test needs.
