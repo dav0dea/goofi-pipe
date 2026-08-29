@@ -503,7 +503,7 @@ dependencies = [
  "getrandom 0.4.3",
  "goofi-codec",
  "goofi-core",
- "goofi-engine",
+ "goofi-graph",
  "goofi-init",
  "goofi-node",
  "goofi-nodes",
@@ -526,7 +526,7 @@ dependencies = [
  "goofi-bridge",
  "goofi-client",
  "goofi-core",
- "goofi-engine",
+ "goofi-graph",
  "goofi-init",
  "goofi-node",
  "goofi-python",
@@ -570,19 +570,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "goofi-engine"
+name = "goofi-graph"
 version = "3.1.0"
 dependencies = [
  "getrandom 0.4.3",
- "goofi-codec",
  "goofi-core",
  "goofi-node",
- "goofi-nodes",
- "goofi-signal",
- "goofi-transport",
- "iceoryx2",
  "indexmap",
- "rmp-serde",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -671,7 +665,7 @@ dependencies = [
  "goofi-client",
  "goofi-codec",
  "goofi-core",
- "goofi-engine",
+ "goofi-graph",
  "goofi-init",
  "goofi-node",
  "goofi-nodes",

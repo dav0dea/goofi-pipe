@@ -348,8 +348,8 @@ class Double(goofi.Node):
             cands.push(p);
         }
         // Both venv layouts, because on Windows `python3` is a Store-advert alias that never fails.
-        cands.push(format!("{}/../../.gfivenv/bin/python", env!("CARGO_MANIFEST_DIR")));
-        cands.push(format!("{}/../../.gfivenv/Scripts/python.exe", env!("CARGO_MANIFEST_DIR")));
+        cands.push(format!("{}/../../../.gfivenv/bin/python", env!("CARGO_MANIFEST_DIR")));
+        cands.push(format!("{}/../../../.gfivenv/Scripts/python.exe", env!("CARGO_MANIFEST_DIR")));
         cands.push("python3".to_string());
         cands.push("python".to_string());
         for cand in cands {

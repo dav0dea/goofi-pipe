@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use goofi_core::{Param, SlotType};
 use goofi_tests::{f32s, frame};
-use goofi_engine::Uid;
+use goofi_graph::Uid;
 use goofi_signal::runtime::{
     Control, ControlSink, Envelope, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime,
     ParamValue, Status, Transport, WireStatus,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, HEADLESS_BUILD, SPA};
-use goofi_engine::Graph;
+use goofi_graph::Graph;
 use goofi_signal::Registration;
 
 /// The shipped node directory, scanned whenever it exists.

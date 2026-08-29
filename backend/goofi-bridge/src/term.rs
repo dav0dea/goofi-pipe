@@ -80,7 +80,7 @@ impl Harnesses {
         session_id: &str,
         env: &[(OsString, OsString)],
         events: broadcast::Sender<String>,
-        history: Arc<Mutex<goofi_engine::CommandHistory>>,
+        history: Arc<Mutex<goofi_graph::CommandHistory>>,
     ) -> Result<String, String> {
         let (agents, _) = goofi_core::home::agents();
         let command = agents
@@ -358,7 +358,7 @@ pub fn seed_orientation(mount: &Path) {
     for (name, body) in [
         ("AGENTS.md", ORIENTATION),
         ("CLAUDE.md", "@AGENTS.md\n"),
-        (goofi_engine::archive::IGNORE_FILE, goofi_engine::archive::DEFAULT_IGNORE),
+        (goofi_graph::archive::IGNORE_FILE, goofi_graph::archive::DEFAULT_IGNORE),
     ] {
         let at = mount.join(name);
         if !at.exists() {
@@ -511,9 +511,9 @@ mod tests {
     #[test]
     fn a_new_workspace_is_seeded_with_the_packaging_ignore_list() {
         let tmp = tempfile::tempdir().expect("a temp dir");
-        let at = tmp.path().join(goofi_engine::archive::IGNORE_FILE);
+        let at = tmp.path().join(goofi_graph::archive::IGNORE_FILE);
         seed_orientation(tmp.path());
-        assert_eq!(std::fs::read_to_string(&at).unwrap(), goofi_engine::archive::DEFAULT_IGNORE);
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), goofi_graph::archive::DEFAULT_IGNORE);
 
         // …and a list its author has made their own is never seeded over.
         std::fs::write(&at, "*.wav\n").unwrap();

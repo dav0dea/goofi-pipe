@@ -134,7 +134,7 @@ fn a_refused_load_leaves_the_open_patch_exactly_as_it_was() {
     std::fs::create_dir(&packed).unwrap();
     std::fs::write(packed.join("intruder.txt"), b"from the refused archive").unwrap();
     let bad = dir.path().join("bad.gfi");
-    goofi_engine::archive::write_gfi(&bad, "this: is: not: a patch", &packed).unwrap();
+    goofi_graph::archive::write_gfi(&bad, "this: is: not: a patch", &packed).unwrap();
     for target in [dir.path().join("absent.gfi"), junk, bad] {
         g.refuse("session load", j!({ "path": target.to_string_lossy() }));
     }
@@ -229,7 +229,7 @@ fn only_a_patch_with_a_file_behind_it_keeps_a_name_and_every_tab_is_told_which()
     assert_eq!(save_path(&g).as_deref(), Some(spelled(&path).as_str()));
     // Readable only through `read_gfi` — a bare-YAML write would leave it "not a zip archive".
     let dest = dir.path().join("unpacked");
-    let manifest = goofi_engine::archive::read_gfi(&path, &dest).unwrap();
+    let manifest = goofi_graph::archive::read_gfi(&path, &dest).unwrap();
     assert!(manifest.contains("Oscillator"), "the manifest is the serialized patch: {manifest}");
     assert!(dest.is_dir(), "the workspace tree rides along, empty or not");
 
@@ -255,7 +255,7 @@ fn a_save_packs_the_live_mount_refuses_to_pack_into_it_and_never_truncates_a_goo
     let target = tmp.path().join("patch.gfi");
     goofi_bridge::save_archive(&target, "version: 7\n", &mount).unwrap();
     let dest = tmp.path().join("unpacked");
-    assert_eq!(goofi_engine::archive::read_gfi(&target, &dest).unwrap(), "version: 7\n");
+    assert_eq!(goofi_graph::archive::read_gfi(&target, &dest).unwrap(), "version: 7\n");
     assert_eq!(std::fs::read(dest.join("agent.md")).unwrap(), b"notes", "the LIVE mount is packed");
 
     // The workspace walk fails after the first zip entry is written. It sits OUTSIDE the target's

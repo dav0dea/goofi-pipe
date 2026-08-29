@@ -1,6 +1,6 @@
 //! The read ops an agent uses to see what it built: a scope as a diagram, a node as a page of text.
 
-use goofi_engine::{Graph, Uid};
+use goofi_graph::{Graph, Uid};
 use serde_json::{json, Value};
 
 /// A uid as a mermaid node id: mermaid ids may not start with a digit, hence the leading `n`.
@@ -138,7 +138,7 @@ pub fn errors(g: &Graph) -> Vec<Value> {
         .collect()
 }
 
-fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> String {
+fn param_line(p: &goofi_core::Param, expr: Option<&goofi_graph::ExprInfo>) -> String {
     use goofi_core::Param as P;
     let (value, ty) = match p {
         P::Float { value, vmin, vmax } => (format!("{value}"), format!("float {vmin}..{vmax}")),
@@ -165,7 +165,7 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_engine::ExprInfo>) -> S
 /// rather than runs — whatever is behind it. `slot` names a facade's port by uid.
 fn behind(g: &Graph, uid: Uid, slot: &str) -> Uid {
     match g.stream(uid, slot) {
-        Some(goofi_engine::Stream::At(leaf, _)) => leaf,
+        Some(goofi_graph::Stream::At(leaf, _)) => leaf,
         _ => uid,
     }
 }
@@ -241,7 +241,7 @@ pub fn globals(g: &Graph) -> Value {
         .globals()
         .entries()
         .map(|(name, v, system, locked)| {
-            let mut e = goofi_engine::global_to_json(v);
+            let mut e = goofi_graph::global_to_json(v);
             e["name"] = json!(name);
             e["system"] = json!(system);
             e["locked"] = json!(locked);
@@ -290,7 +290,7 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
     Ok(info)
 }
 
-use goofi_engine::layout::{Layout, Node};
+use goofi_graph::layout::{Layout, Node};
 
 /// One node's line in the arrangement tree, and its children under it.
 fn layout_line(n: &Node, depth: usize, out: &mut String) {

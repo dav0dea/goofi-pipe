@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use goofi_engine::{Graph, Uid};
+use goofi_graph::{Graph, Uid};
 use goofi_view::ViewSpec;
 use tokio::sync::broadcast;
 

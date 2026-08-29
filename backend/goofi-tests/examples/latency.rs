@@ -1,10 +1,10 @@
 //! Ad-hoc latency probe (not a test): rough end-to-end cost of a small native graph and GOOF
-//! encode throughput. Run: cargo run -p goofi-engine --example latency --release
+//! encode throughput. Run: cargo run -p goofi-tests --example latency --release
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_tests::OutputProbe;
-use goofi_engine::Graph;
+use goofi_graph::Graph;
 
 fn main() {
     let mut g = goofi_bridge::fresh_graph();

@@ -39,7 +39,7 @@ use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use goofi_engine::{Graph, Uid};
+use goofi_graph::{Graph, Uid};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
@@ -70,7 +70,7 @@ pub struct AppState {
     /// One reduction per active (node, slot), fanned out to every viewer.
     pub reducers: reducer::SlotReducers,
     /// The central per-session command history. Locked AFTER `graph`, BEFORE `doc`.
-    pub history: Arc<Mutex<goofi_engine::CommandHistory>>,
+    pub history: Arc<Mutex<goofi_graph::CommandHistory>>,
     /// Liveness policy for `/data` sockets, injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
@@ -148,7 +148,7 @@ impl AppState {
         // the seed itself.
         let mount = new_mount();
         term::seed_orientation(&mount);
-        let workspace_baseline = goofi_engine::archive::fingerprint(&mount);
+        let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
         AppState {
             graph,
             events,
@@ -157,7 +157,7 @@ impl AppState {
             doc: Arc::new(Mutex::new(doc)),
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
-            history: Arc::new(Mutex::new(goofi_engine::CommandHistory::new())),
+            history: Arc::new(Mutex::new(goofi_graph::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
             scan_nodes: Arc::new(|_, _| Vec::new()),
             system_nodes: Vec::new(),
@@ -246,7 +246,7 @@ pub fn save_archive(target: &std::path::Path, manifest: &str, mount: &std::path:
         s.push(format!(".tmp-{}", nonce_hex()));
         s
     });
-    let packed = goofi_engine::archive::write_gfi(&tmp, manifest, mount)
+    let packed = goofi_graph::archive::write_gfi(&tmp, manifest, mount)
         .and_then(|()| std::fs::rename(&tmp, target).map_err(|e| format!("{}: {e}", target.display())));
     if packed.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -265,7 +265,7 @@ fn stage_load(mount: &std::path::Path, payload: &Value) -> Result<(String, Optio
         }
         // Expand `~` exactly as the browser does — the two must agree on what a path means.
         let path = fsbrowse::resolve(p);
-        let manifest = goofi_engine::archive::read_gfi(std::path::Path::new(&path), mount)
+        let manifest = goofi_graph::archive::read_gfi(std::path::Path::new(&path), mount)
             .map_err(|e| format!("session load failed: {e}"))?;
         // Whether this file becomes the patch's home — the target a later silent Save overwrites.
         let adopt = payload.get("adopt").and_then(Value::as_bool).unwrap_or(true);
@@ -549,7 +549,7 @@ pub fn signal_engine(g: &mut Graph) -> &mut goofi_signal::SignalEngine {
 
 /// One output slot's data service name — the resolver over the graph's own birth facts. Also the
 /// `/data` plane's subscribe address.
-pub fn output_service_of(g: &Graph, uid: goofi_engine::Uid, slot: &str) -> String {
+pub fn output_service_of(g: &Graph, uid: goofi_graph::Uid, slot: &str) -> String {
     goofi_transport::output_service(
         &goofi_transport::service_base(g.instance(), uid, g.node_generation(uid)),
         slot,
@@ -768,7 +768,7 @@ impl AppState {
     /// AND a workspace, and the workspace half is walked on ask rather than watched.
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(std::sync::atomic::Ordering::Relaxed)
-            || goofi_engine::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
+            || goofi_graph::archive::fingerprint(&self.mount()) != *self.workspace_baseline.lock().unwrap()
     }
 
     /// Set the dirty flag, returning an `unsaved_changes` event only when it actually changed.
@@ -798,7 +798,7 @@ fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> Strin
     event("state_update", Value::Object(body))
 }
 
-fn parse_uid(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
+fn parse_uid(g: &goofi_graph::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
     let raw = payload
         .get(key)
         .and_then(|v| v.as_str())
@@ -809,7 +809,7 @@ fn parse_uid(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Uid,
 
 /// An OPTIONAL node reference: absent is `None`, present must resolve.
 fn parse_uid_opt(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     payload: &Value,
     key: &str,
     op: &str,
@@ -826,7 +826,7 @@ fn parse_uid_opt(
 
 /// A required uid ARRAY, refused whole rather than silently short: a caller that named one bad
 /// uid asked for a batch that is not the one it would get.
-fn parse_uid_list(g: &goofi_engine::Graph, payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
+fn parse_uid_list(g: &goofi_graph::Graph, payload: &Value, key: &str) -> Result<Vec<Uid>, String> {
     let arr = payload.get(key).and_then(|v| v.as_array()).ok_or_else(|| format!("missing {key}"))?;
     let uids: Vec<Uid> =
         arr.iter().filter_map(|m| m.as_str().and_then(|s| g.resolve_ref(s))).collect();
@@ -852,12 +852,12 @@ fn parse_pos(v: &Value) -> Option<[f64; 2]> {
 /// Which side of a target a newcomer lands on. ONE argument, because an axis and a half are two
 /// halves of one answer and two arguments can disagree; absent defaults right, and a present
 /// value that is not a side word is refused rather than defaulted.
-fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String> {
+fn parse_side(p: &Value, op: &str) -> Result<goofi_graph::layout::Side, String> {
     match p.get("side").filter(|v| !v.is_null()) {
-        None => Ok(goofi_engine::layout::Side::Right),
+        None => Ok(goofi_graph::layout::Side::Right),
         Some(v) => v
             .as_str()
-            .and_then(goofi_engine::layout::Side::parse)
+            .and_then(goofi_graph::layout::Side::parse)
             .ok_or_else(|| format!("{op}: side is `left`, `right`, `top` or `bottom`, not {v}")),
     }
 }
@@ -865,7 +865,7 @@ fn parse_side(p: &Value, op: &str) -> Result<goofi_engine::layout::Side, String>
 /// An `endpoint` — `node/slot`, split on the FIRST `/`, the node half a uid or a name. The slot
 /// half may itself be a port uid (wiring a facade from outside), so it is never validated here.
 fn parse_endpoint(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     p: &Value,
     op: &str,
     key: &str,
@@ -880,7 +880,7 @@ fn parse_endpoint(
 }
 
 fn parse_link(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     p: &Value,
     op: &str,
 ) -> Result<(Uid, String, Uid, String), String> {
@@ -917,7 +917,7 @@ fn apply_layout(
     state: &AppState,
     g: &mut Graph,
     actor: &str,
-    cmd: goofi_engine::Command,
+    cmd: goofi_graph::Command,
 ) -> Result<Value, String> {
     state.history.lock().unwrap().apply(g, actor, cmd)?;
     Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
@@ -1314,7 +1314,7 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
 /// `None` while nothing is behind a port yet — a wait, never an error.
 fn stream_behind(g: &Graph, uid: Uid, slot: &str) -> Option<reducer::SlotKey> {
     match g.stream(uid, slot) {
-        Some(goofi_engine::Stream::At(leaf, s)) => Some((leaf, s.to_string())),
+        Some(goofi_graph::Stream::At(leaf, s)) => Some((leaf, s.to_string())),
         _ => None,
     }
 }

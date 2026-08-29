@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
 use goofi_tests::OutputProbe;
-use goofi_engine::Graph;
+use goofi_graph::Graph;
 use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 use goofi_signal::Node;
 use goofi_python::inproc::PyNode;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use goofi_bridge::{ScannedType, Tier};
 use goofi_core::{Data, Meta};
-use goofi_engine::Graph;
+use goofi_graph::Graph;
 use goofi_node::{NodeManifest, OutputDecl, Params};
 use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 use goofi_tests::{j, Goofi, OutputProbe};

@@ -133,7 +133,7 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
         }
     }
     // The engine mints panel entries of its own, each naming a type as a bare string.
-    for ty in [goofi_engine::layout::DEFAULT_PANEL_TYPE, goofi_engine::layout::EMPTY_PANEL_TYPE] {
+    for ty in [goofi_graph::layout::DEFAULT_PANEL_TYPE, goofi_graph::layout::EMPTY_PANEL_TYPE] {
         assert!(vocab::panel_type(ty).is_some(), "`{ty}` is not a declared panel type");
     }
     // A kind's ViewSpec has to accept everything its component draws, or the frame is filtered out.

@@ -26,8 +26,8 @@ impl ExprEvaluator for Always {
     fn release(&self, _id: BindingId) {}
 }
 
-fn uid(hex: &str) -> goofi_engine::Uid {
-    goofi_engine::Uid::from_hex(hex).expect("a uid")
+fn uid(hex: &str) -> goofi_graph::Uid {
+    goofi_graph::Uid::from_hex(hex).expect("a uid")
 }
 
 fn group(g: &Goofi, members: &[String]) -> String {

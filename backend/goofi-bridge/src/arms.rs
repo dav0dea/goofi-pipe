@@ -119,7 +119,7 @@ pub(crate) fn compound(
         // Held on the GRAPH, because the drain is another thread: without the hold, its
         // settle can deliver this compound's intermediates between two steps.
         state.graph.lock().unwrap().hold_settle();
-        goofi_engine::open_batch()
+        goofi_graph::open_batch()
     });
     let mut results = Vec::with_capacity(resolved.len());
     for (i, (op, arg)) in resolved.iter().enumerate() {
@@ -258,7 +258,7 @@ pub(crate) fn node_add(
         if !goofi_core::globals::is_valid_identifier(&name) {
             return Err(format!(
                 "node add: `{name}` is not a legal name: {}",
-                goofi_engine::NAME_RULE
+                goofi_graph::NAME_RULE
             ));
         }
     }
@@ -273,7 +273,7 @@ pub(crate) fn node_add(
     let scope = parse_uid_opt(&g, payload, "inst_id", "node add")?;
     // Inline params are applied AFTER: RemoveNode's inverse captures the LIVE node, so an
     // undo→redo restores them without threading them through the command.
-    let cmd = goofi_engine::Command::AddNode {
+    let cmd = goofi_graph::Command::AddNode {
         type_name: ty,
         pos,
         uid: restore,
@@ -284,14 +284,14 @@ pub(crate) fn node_add(
         scope,
     };
     let uid = match state.history.lock().unwrap().apply(&mut g, actor, cmd)? {
-        goofi_engine::Outcome::Uid(u) => u,
+        goofi_graph::Outcome::Uid(u) => u,
         _ => return Err("node add: no uid returned".into()),
     };
     // Applied UNDER THE GRAPH LOCK, so the node is born configured before the resync mirrors it
     // into the doc.
     if let Some(entries) = payload.get("param").filter(|v| !v.is_null()) {
         let bag = param_entries_bag(entries).map_err(|e| format!("node add: {e}"))?;
-        for cmd in goofi_engine::param_commands(&g, uid, &bag).map_err(|e| format!("node add: {e}"))? {
+        for cmd in goofi_graph::param_commands(&g, uid, &bag).map_err(|e| format!("node add: {e}"))? {
             cmd.execute(&mut g).map_err(|e| format!("node add: {e}"))?;
         }
     }
@@ -323,7 +323,7 @@ pub(crate) fn node_remove(
     // The command is idempotent, so a uid naming nothing succeeds; the reply says which of the
     // two happened.
     let existed = g.exists(uid);
-    let cmd = goofi_engine::Command::RemoveNode { uid };
+    let cmd = goofi_graph::Command::RemoveNode { uid };
     state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
     Ok(json!({ "removed": existed }))
 }
@@ -360,7 +360,7 @@ pub(crate) fn link_add(
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::AddLink {
+        goofi_graph::Command::AddLink {
             node_out: a,
             slot_out: so.clone(),
             node_in: b,
@@ -395,7 +395,7 @@ pub(crate) fn link_remove(
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
+        goofi_graph::Command::RemoveLink { node_out: a, slot_out: so, node_in: b, slot_in: si },
     )?;
     Ok(json!({ "removed": existed }))
 }
@@ -577,7 +577,7 @@ pub(crate) fn node_param_edit(
         }
     }
     let bag = json!({ &group: { &name: entry } });
-    let cmd = goofi_engine::param_commands(&g, uid, &bag)
+    let cmd = goofi_graph::param_commands(&g, uid, &bag)
         .map_err(|e| format!("node param edit: {e}"))?
         .pop()
         .ok_or("node param edit: nothing to change")?;
@@ -587,7 +587,7 @@ pub(crate) fn node_param_edit(
     Ok(json!({
         "value": g.params(uid)
             .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-            .map(|p| goofi_engine::param_value_json(&p, true)),
+            .map(|p| goofi_graph::param_value_json(&p, true)),
         "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
     }))
 }
@@ -614,7 +614,7 @@ pub(crate) fn node_edit(
         return Err(format!(
             "node edit: `{}` is not a legal name: {}",
             name.unwrap_or_default(),
-            goofi_engine::NAME_RULE
+            goofi_graph::NAME_RULE
         ));
     }
     let pos = payload
@@ -642,10 +642,10 @@ pub(crate) fn node_edit(
     let out = state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::EditNode { uid, name, pos, viewers },
+        goofi_graph::Command::EditNode { uid, name, pos, viewers },
     )?;
     // The runtime `expression_error` is doc-invisible, so echo every referrer a rename rewrote.
-    if let goofi_engine::Outcome::Nodes(referrers) = out {
+    if let goofi_graph::Outcome::Nodes(referrers) = out {
         for r in referrers {
             events.push(param_state_update(&g, r, &[]));
         }
@@ -717,7 +717,7 @@ pub(crate) fn layout_tab_edit(
     let tab = parse_str(payload, "tab")?.to_string();
     let name = parse_str(payload, "name")?;
     let writes = g.arrangement().rename_tab(&tab, name)?;
-    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutContents { writes })
+    apply_layout(state, &mut g, actor, goofi_graph::Command::LayoutContents { writes })
 }
 
 /// Edit a PANEL's content: its type, its state, or both — one call, one undo.
@@ -754,7 +754,7 @@ pub(crate) fn layout_panel_edit(
         .and_then(Uid::from_hex);
     vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
     let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
-    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutContents { writes })
+    apply_layout(state, &mut g, actor, goofi_graph::Command::LayoutContents { writes })
 }
 
 /// Set the shares of ALL of a SPLIT's children at once — what a resize drag commits.
@@ -779,7 +779,7 @@ pub(crate) fn layout_split_edit(
     // re-plans it under this same lock.
     g.arrangement().resize_split(&split, &fractions)?;
     apply_layout(state, &mut g, actor,
-                 goofi_engine::Command::LayoutResizeSplit { split, fractions })
+                 goofi_graph::Command::LayoutResizeSplit { split, fractions })
 }
 
 /// A fresh empty panel: beside a target, or on a new tab of its own.
@@ -798,7 +798,7 @@ pub(crate) fn layout_panel_add(
         Some(target) => {
             let side = parse_side(payload, OP)?;
             let (plan, fresh) = g.arrangement().split_panel(target, side, ratio)?;
-            let cmd = goofi_engine::Command::LayoutBirth { plan, born: fresh.clone() };
+            let cmd = goofi_graph::Command::LayoutBirth { plan, born: fresh.clone() };
             let text = apply_layout(state, &mut g, actor, cmd)?;
             let tab = g.arrangement().tab_of(&fresh).unwrap_or_default();
             Ok(json!({ "id": fresh, "tab": tab, "text": text["text"] }))
@@ -808,7 +808,7 @@ pub(crate) fn layout_panel_add(
             let name = payload.get("name").and_then(|v| v.as_str());
             let index = payload.get("index").and_then(|v| v.as_u64()).map(|i| i as usize);
             let (plan, tab) = g.arrangement().add_tab(name, index, None)?;
-            let cmd = goofi_engine::Command::LayoutBirth { plan, born: tab.clone() };
+            let cmd = goofi_graph::Command::LayoutBirth { plan, born: tab.clone() };
             let text = apply_layout(state, &mut g, actor, cmd)?;
             // The root panel's id, which a caller cannot otherwise know.
             let id = g.arrangement().root_of(&tab).unwrap_or_default();
@@ -851,7 +851,7 @@ pub(crate) fn layout_move(
         (None, None) if is_tab => {
             let at = index.ok_or(format!("{OP}: a tab moves to an `--index` in the strip"))?;
             g.arrangement().reorder_tab(&entry, at)?;
-            let cmd = goofi_engine::Command::LayoutReorderTab { tab: entry.clone(), to_index: at };
+            let cmd = goofi_graph::Command::LayoutReorderTab { tab: entry.clone(), to_index: at };
             let text = apply_layout(state, &mut g, actor, cmd)?;
             return Ok(json!({ "id": entry, "tab": entry, "text": text["text"] }));
         }
@@ -860,13 +860,13 @@ pub(crate) fn layout_move(
         (None, None) => {
             let name = payload.get("name").and_then(|v| v.as_str());
             let (plan, tab) = g.arrangement().add_tab(name, index, Some(&entry))?;
-            let cmd = goofi_engine::Command::LayoutMove {
+            let cmd = goofi_graph::Command::LayoutMove {
                 plan: Some(plan), root: entry.clone(), home: None };
             let text = apply_layout(state, &mut g, actor, cmd)?;
             return Ok(json!({ "id": entry, "tab": tab, "text": text["text"] }));
         }
     };
-    let cmd = goofi_engine::Command::LayoutMove { plan: Some(plan), root: placed.clone(), home: None };
+    let cmd = goofi_graph::Command::LayoutMove { plan: Some(plan), root: placed.clone(), home: None };
     let text = apply_layout(state, &mut g, actor, cmd)?;
     let tab = g.arrangement().tab_of(&placed).unwrap_or_default();
     Ok(json!({ "id": placed, "tab": tab, "text": text["text"] }))
@@ -887,7 +887,7 @@ pub(crate) fn layout_remove(
         Some(_) => g.arrangement().remove_tab(&panel)?,
         None => g.arrangement().remove_subtree(&panel)?,
     };
-    apply_layout(state, &mut g, actor, goofi_engine::Command::LayoutClose { born: panel })
+    apply_layout(state, &mut g, actor, goofi_graph::Command::LayoutClose { born: panel })
 }
 
 /// Create a global. Every expression reading one depends on its TYPE, so the type is declared
@@ -905,15 +905,15 @@ pub(crate) fn global_add(
     }
     let ty = parse_str(payload, "type")?;
     let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global add: missing value")?;
-    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+    let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
         .ok_or_else(|| format!("global add: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None },
     )?;
     // As STORED: the conversion is type-directed, so a fraction into an int rounds.
-    Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
+    Ok(json!({ "value": goofi_graph::global_to_json(&value)["value"] }))
 }
 
 pub(crate) fn global_edit(
@@ -924,20 +924,20 @@ pub(crate) fn global_edit(
 ) -> Result<Value, String> {
     let mut g = state.graph.lock().unwrap();
     let name = parse_str(payload, "name")?.to_string();
-    let held = g.globals().get(&name).map(goofi_engine::global_to_json);
+    let held = g.globals().get(&name).map(goofi_graph::global_to_json);
     let Some(held) = held else {
         return Err(format!("global edit: no global `{name}` — `global add` creates one"));
     };
     let ty = held["type"].as_str().unwrap_or_default().to_string();
     let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global edit: missing value")?;
-    let value = goofi_engine::global_from_json(&json!({ "value": val, "type": ty }))
+    let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
         .ok_or_else(|| format!("global edit: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None },
     )?;
-    Ok(json!({ "value": goofi_engine::global_to_json(&value)["value"] }))
+    Ok(json!({ "value": goofi_graph::global_to_json(&value)["value"] }))
 }
 
 pub(crate) fn global_remove(
@@ -954,7 +954,7 @@ pub(crate) fn global_remove(
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::EditGlobal { name, value: None, at: None },
+        goofi_graph::Command::EditGlobal { name, value: None, at: None },
     )?;
     Ok(json!({ "removed": true }))
 }
@@ -976,10 +976,10 @@ pub(crate) fn nodes_group(
     let out = state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_engine::Command::Group { members: uids, pos, restore: None },
+        goofi_graph::Command::Group { members: uids, pos, restore: None },
     )?;
     let inst = match out {
-        goofi_engine::Outcome::Uid(u) => u,
+        goofi_graph::Outcome::Uid(u) => u,
         _ => return Err("nodes group: no scope uid returned".into()),
     };
     Ok(json!({ "inst_id": inst.to_hex() }))
@@ -997,7 +997,7 @@ pub(crate) fn nodes_ungroup(
         .history
         .lock()
         .unwrap()
-        .apply(&mut g, actor, goofi_engine::Command::Expand { scope: inst })?;
+        .apply(&mut g, actor, goofi_graph::Command::Expand { scope: inst })?;
     Ok(json!({ "ok": true }))
 }
 
@@ -1088,7 +1088,7 @@ pub(crate) fn session_save(
     let mount = state.mount();
     // Sampled BEFORE the pack: baselining after would call a file written during the zip packed
     // either way, which is the direction that LOSES an edit.
-    let packed = goofi_engine::archive::fingerprint(&mount);
+    let packed = goofi_graph::archive::fingerprint(&mount);
     save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
     // Announced UNCONDITIONALLY, not on the flag's transition: a patch dirtied solely by a file
     // in the mount leaves the flag already false, so no transition comes.
@@ -1137,7 +1137,7 @@ fn load_patch(
         // `read_gfi` restores no mtimes, so without a baseline taken HERE a patch would be dirty
         // from the moment it finished loading.
         *state.workspace_baseline.lock().unwrap() =
-            goofi_engine::archive::fingerprint(&state.mount());
+            goofi_graph::archive::fingerprint(&state.mount());
         // A load fully resets the session: there is nothing to undo across it.
         state.history.lock().unwrap().clear();
         events.extend(state.set_dirty(false));

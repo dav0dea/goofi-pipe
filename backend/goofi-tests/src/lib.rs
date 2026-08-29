@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use goofi_bridge::AppState;
 use serde_json::{json, Value};
 
-pub use goofi_engine::Uid;
+pub use goofi_graph::Uid;
 
 mod probe;
 pub use probe::OutputProbe;
@@ -176,13 +176,13 @@ impl Goofi {
     /// The LEAF node uids in the replicated projection, sorted. One map carries every entity, so
     /// which kind a record is is a question about its type.
     pub fn nodes(&self) -> Vec<String> {
-        self.records(|ty| ty != goofi_engine::subpatch::SCOPE_TYPE
-            && goofi_engine::subpatch::boundary_type(ty).is_none())
+        self.records(|ty| ty != goofi_graph::subpatch::SCOPE_TYPE
+            && goofi_graph::subpatch::boundary_type(ty).is_none())
     }
 
     /// The live sub-patch facades, sorted.
     pub fn instances(&self) -> Vec<String> {
-        self.records(|ty| ty == goofi_engine::subpatch::SCOPE_TYPE)
+        self.records(|ty| ty == goofi_graph::subpatch::SCOPE_TYPE)
     }
 
     /// The boundary ports of one scope, in the order the doc carries them.
@@ -191,7 +191,7 @@ impl Goofi {
         let Some(nodes) = doc["nodes"].as_object() else { return vec![] };
         nodes
             .iter()
-            .filter(|(_, n)| n["scope"] == scope && goofi_engine::subpatch::boundary_type(n["type"].as_str().unwrap_or("")).is_some())
+            .filter(|(_, n)| n["scope"] == scope && goofi_graph::subpatch::boundary_type(n["type"].as_str().unwrap_or("")).is_some())
             .map(|(u, _)| u.clone())
             .collect()
     }

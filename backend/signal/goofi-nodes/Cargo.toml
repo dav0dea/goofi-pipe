@@ -10,9 +10,9 @@ license.workspace = true
 test-nodes = []
 
 [dependencies]
-goofi-core = { path = "../goofi-core" }
-goofi-node = { path = "../goofi-node" }
-goofi-signal = { path = "../signal/goofi-signal" }
+goofi-core = { path = "../../goofi-core" }
+goofi-node = { path = "../../goofi-node" }
+goofi-signal = { path = "../goofi-signal" }
 indexmap = "2"
 inventory = "0.3"
 rustfft = "6.4.1"

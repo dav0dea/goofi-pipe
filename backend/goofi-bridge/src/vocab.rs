@@ -1,8 +1,8 @@
 //! The panel-type and viewer-kind vocabularies — the one place each word is declared, and the
 //! source the frontend's module is generated from. The BEHAVIOUR keyed off a word stays client-side.
 
-use goofi_engine::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
-use goofi_engine::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES, SCOPE_TYPE};
+use goofi_graph::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
+use goofi_graph::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES, SCOPE_TYPE};
 use serde_json::{json, Value};
 
 /// One panel type — what a layout entry's `panel_type` may say.
@@ -246,7 +246,7 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
 
 /// A node's OUTPUT slots as `(key, label, dtype-name)`. The graph owns this — which slots a thing
 /// exposes is a fact about the graph, not a vocabulary — so this is the one read, widened.
-pub fn output_slots(g: &goofi_engine::Graph, uid: goofi_engine::Uid) -> Vec<(String, String, &'static str)> {
+pub fn output_slots(g: &goofi_graph::Graph, uid: goofi_graph::Uid) -> Vec<(String, String, &'static str)> {
     g.output_slots(uid).into_iter().map(|(k, l, d)| (k, l, d.name())).collect()
 }
 
@@ -260,9 +260,9 @@ fn check(op: &str, field: &str, word: &str, valid: Vec<&'static str>) -> Result<
 
 /// Resolve a slot word — key or display label — to the KEY, refusing by naming the real ones.
 pub fn resolve_slot(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     op: &str,
-    uid: goofi_engine::Uid,
+    uid: goofi_graph::Uid,
     slot: &str,
 ) -> Result<String, String> {
     let slots = output_slots(g, uid);
@@ -274,9 +274,9 @@ pub fn resolve_slot(
 }
 
 pub(crate) fn check_slot(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     op: &str,
-    uid: goofi_engine::Uid,
+    uid: goofi_graph::Uid,
     slot: &str,
 ) -> Result<(), String> {
     resolve_slot(g, op, uid, slot).map(|_| ())
@@ -285,8 +285,8 @@ pub(crate) fn check_slot(
 /// Validate a `node edit` viewer patch — `--viewer` entries already folded to `{slot: view}`. A
 /// uid naming no node is left alone, because the engine's own write refuses it by name.
 pub fn check_viewers(
-    g: &goofi_engine::Graph,
-    uid: goofi_engine::Uid,
+    g: &goofi_graph::Graph,
+    uid: goofi_graph::Uid,
     viewers: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
     const OP: &str = "node edit";
@@ -305,10 +305,10 @@ pub fn check_viewers(
 /// Validate a `layout panel edit` write against the vocabularies and the node it binds, BEFORE the layout
 /// is planned. `bound` is the node the panel ENDS UP bound to, since a state write merges.
 pub fn check_panel(
-    g: &goofi_engine::Graph,
+    g: &goofi_graph::Graph,
     ty: Option<&str>,
     state: Option<&Value>,
-    bound: Option<goofi_engine::Uid>,
+    bound: Option<goofi_graph::Uid>,
 ) -> Result<(), String> {
     const OP: &str = "layout panel edit";
     if let Some(t) = ty {

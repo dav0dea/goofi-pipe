@@ -1,28 +1,19 @@
 [package]
-name = "goofi-engine"
+name = "goofi-graph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The op authority for the MODEL, and nothing else: it depends on goofi-node alone among the
+# goofi crates, so the boundary is enforced by this manifest — the graph provably never computes
+# a service name or touches an endpoint.
 [dependencies]
 goofi-core = { path = "../goofi-core" }
-# The GOOF frame is what a data service carries, exactly as the subprocess tier already sends it.
-goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
-goofi-transport = { path = "../goofi-transport" }
-goofi-signal = { path = "../signal/goofi-signal" }
-goofi-nodes = { path = "../goofi-nodes" }
 
-# The async runtime's transport, at the version the Python child links — the two open the same
-# services over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this
-# is a caret requirement, as in the two crates that already depend on it).
-iceoryx2 = "0.9.3"
 # One line: the random scope a graph's service names live in.
 getrandom = "0.4"
 indexmap = "2"
-
-# Control and status travel msgpack-encoded, so the thread and subprocess cases are one codec.
-rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
@@ -31,4 +22,3 @@ walkdir = "2"
 # feature is what would make a repack differ); `deflate-flate2-zlib-rs` is the one deflate
 # spelling that selects a backend without dragging in zopfli.
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-

@@ -167,7 +167,7 @@ fn install_wheel(root: &Path, venv: &str, py: &Path) -> Result<(), String> {
             .arg("-o")
             .arg(&out)
             .arg("-m")
-            .arg(root.join("backend").join("goofi-pymod").join("Cargo.toml"))
+            .arg(root.join("backend").join("signal").join("goofi-pymod").join("Cargo.toml"))
             // Run from OUTSIDE the repo, or maturin's nested cargo picks `.cargo/config.toml` up
             // and builds against the free-threaded interpreter's home. Hence the absolute paths.
             .current_dir(std::env::temp_dir()),

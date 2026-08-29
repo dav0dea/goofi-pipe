@@ -18,17 +18,17 @@ goofi-client = { path = "../goofi-client" }
 goofi-core = { path = "../goofi-core" }
 goofi-init = { path = "../goofi-init" }
 goofi-codec = { path = "../goofi-codec" }
-goofi-engine = { path = "../goofi-engine" }
+goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
 goofi-node = { path = "../goofi-node" }
 goofi-transport = { path = "../goofi-transport" }
 goofi-view = { path = "../goofi-view" }
 # The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release
 # build of goofi-nodes leaves them out entirely.
-goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
+goofi-nodes = { path = "../signal/goofi-nodes", features = ["test-nodes"] }
 # The manager side of both Python tiers. `subproc` is unconditional — it only SPAWNS an
 # interpreter — so its suite runs in the default build.
-goofi-python = { path = "../goofi-python" }
+goofi-python = { path = "../signal/goofi-python" }
 # The embed-only suites drive the interpreter directly (module hygiene, bootstrap order).
 pyo3 = { version = "0.29", features = ["auto-initialize"], optional = true }
 serde_json = "1"

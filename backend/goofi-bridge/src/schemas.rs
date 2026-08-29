@@ -2,7 +2,7 @@
 //! These are the wire contract: co-edit the frontend when a field or shape changes.
 
 use goofi_core::Param;
-use goofi_engine::{ExprInfo, Graph, Uid};
+use goofi_graph::{ExprInfo, Graph, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
@@ -12,7 +12,7 @@ pub const PROTOCOL_VERSION: i64 = 3;
 /// which the runtime [`Param`] cannot carry.
 pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
-    m.insert("value".into(), goofi_engine::param_value_json(p, true));
+    m.insert("value".into(), goofi_graph::param_value_json(p, true));
     m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
     m.insert(
         "refreshable".into(),
@@ -106,7 +106,7 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     for (group, name, p) in g.expression_values(uid) {
         let entry = groups.entry(group.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(names) = entry {
-            names.insert(name.to_string(), goofi_engine::param_value_json(p, true));
+            names.insert(name.to_string(), goofi_graph::param_value_json(p, true));
         }
     }
     Value::Object(groups)
@@ -118,7 +118,7 @@ pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
         params
             .iter()
             .map(|(gname, group)| {
-                let names = group.iter().map(|(n, p)| (n.clone(), goofi_engine::param_value_json(p, true)));
+                let names = group.iter().map(|(n, p)| (n.clone(), goofi_graph::param_value_json(p, true)));
                 (gname.clone(), Value::Object(names.collect()))
             })
             .collect(),

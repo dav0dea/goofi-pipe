@@ -1,6 +1,6 @@
 //! One JSON projection of the engine `Graph` — exactly the shape of the control-plane document.
 
-use goofi_engine::Graph;
+use goofi_graph::Graph;
 use serde_json::{json, Map, Value};
 
 /// `g`'s whole control-plane state, in the shape a `.gfi` holds it: one node map carrying leaves,
@@ -25,7 +25,7 @@ pub fn of(g: &Graph) -> Value {
                 let mut gmap = Map::new();
                 for (pname, p) in pg {
                     let mut entry = Map::new();
-                    entry.insert("value".into(), goofi_engine::param_value_json(p, true));
+                    entry.insert("value".into(), goofi_graph::param_value_json(p, true));
                     if let Some(e) = g.param_expression(uid, group, pname) {
                         entry.insert(
                             "expr".into(),
@@ -68,7 +68,7 @@ pub fn of(g: &Graph) -> Value {
     // the next live edit. A stable doc order needs an ordered globals shape.
     let mut globals = Map::new();
     for (name, value, is_system, locked) in g.globals().entries() {
-        let mut entry = goofi_engine::global_to_json(value);
+        let mut entry = goofi_graph::global_to_json(value);
         if let Value::Object(m) = &mut entry {
             m.insert("system".into(), json!(is_system));
             m.insert("locked".into(), json!(locked));

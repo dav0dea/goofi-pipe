@@ -12,7 +12,7 @@ name = "goofi_pymod"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-goofi-core = { path = "../goofi-core" }
+goofi-core = { path = "../../goofi-core" }
 indexmap = "2"
 pyo3 = { version = "0.29", optional = true }
 # serde<->PyObject: pythonizes the meta map to/from a Python dict (with pyo3, so gated).
@@ -21,7 +21,7 @@ serde_json = "1"
 # The `goofi.serve` subprocess child loop (wheel only): the shared request/response
 # frame codec + the Rust iceoryx2 transport. Enabled by `extension-module`, NOT `host`
 # — the FT-host rlib never runs serve, so it stays free of iceoryx2.
-goofi-codec = { path = "../goofi-codec", optional = true }
+goofi-codec = { path = "../../goofi-codec", optional = true }
 iceoryx2 = { version = "0.9.3", optional = true }
 
 [features]

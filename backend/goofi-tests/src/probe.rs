@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Data;
 
-use goofi_engine::{Graph, Uid};
+use goofi_graph::{Graph, Uid};
 use goofi_transport::{iox_node, IoxNode};
 
 /// How long a wait may take before it is a failure. Generous on purpose.

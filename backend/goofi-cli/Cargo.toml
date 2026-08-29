@@ -16,7 +16,7 @@ goofi-core = { path = "../goofi-core" }
 shell-words = "1"
 serde_json = "1"
 # Direct, for the node-registration vocabulary (`Registration`) the tier routing below reads.
-goofi-engine = { path = "../goofi-engine" }
+goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # BOTH Python node tiers + the param-expression evaluator. ON by default: `cargo run -p
@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 # it, so `cargo run` needs no env vars. The build script only CHECKS that this happened — it
 # cannot provision, because cargo reads that config once, at startup. Build a pure-native binary
 # (no Python, no interpreter needed) with `--no-default-features`.
-goofi-python = { path = "../goofi-python", optional = true }
+goofi-python = { path = "../signal/goofi-python", optional = true }
 # The venv layout and the interpreter lookup, shared with `cargo run -p goofi-init` so the binary's
 # default and that command's output are one definition rather than two that can drift.
 goofi-init = { path = "../goofi-init" }
