@@ -128,6 +128,17 @@ describe('node lifecycle stage', () => {
 		// A stage event with no runtime at all must leave the known tier alone, not blank it.
 		fc.emit({ event: 'node_stage', payload: { node: 'n1', stage: 'ready', error: null } });
 		expect(g.nodeById('n1')?.runtime).toBe('subprocess');
+
+		// The status worker's sweep can win the lock race and announce a node BEFORE the doc delta
+		// that materializes it. The plane pushes each transition once, so the outrun report must
+		// wait for the seed — dropped, a fast node wedges at the seed's `creating` guess for good.
+		fc.emit({
+			event: 'node_stage',
+			payload: { node: 'n2', stage: 'ready', error: null, runtime: 'in-process' }
+		});
+		d.node('n2', 'PSD', 'psd1', [0, 0]);
+		expect(g.nodeById('n2')?.stage, 'the outrun ready seeded the late node').toBe('ready');
+		expect(g.nodeById('n2')?.runtime).toBe('in-process');
 	});
 
 	it('state_update carries the error and applies it (a healthy respawn clears the stale chip)', () => {

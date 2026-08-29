@@ -77,9 +77,16 @@ export class GraphStore {
 	/** instance_id of the manager we last hydrated from; a change is a fresh session, not a reconnect. */
 	private _lastInstanceId: string | null = null;
 
-	/** Per-node runtime for nodes the snapshot named but the doc has not yet materialized. One-shot:
-	 * `_seedRuntime` takes its entry, so a later node at the same uid seeds fresh. */
+	/** Per-node runtime for nodes the runtime planes named but the doc has not yet materialized.
+	 * One-shot: `_seedRuntime` takes its entry, so a later node at the same uid seeds fresh. */
 	private _snapshotRuntime: GraphSnapshot['runtime'] = {};
+
+	/** Hold a runtime plane's report for a node still to materialize — the stage and error planes
+	 * ride their own channel in no defined order against the doc, so a report outrunning the doc
+	 * is routine, and dropping it would wedge the seed's `creating` guess for good. */
+	private _stashRuntime(uid: string, rt: GraphSnapshot['runtime'][string]): void {
+		this._snapshotRuntime[uid] = { ...this._snapshotRuntime[uid], ...rt };
+	}
 
 	/** The control client (injectable for tests; defaults to the live WS one). */
 	private ctl: Control;
@@ -226,7 +233,6 @@ export class GraphStore {
 				break;
 			}
 			case 'node_stage': {
-				// Discrete stage transitions the state plane cannot carry — today only a bootstrap error.
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
 					t.stage = ev.payload.stage;
@@ -234,6 +240,14 @@ export class GraphStore {
 					// The tier arrives here as well as on the snapshot: a node added after connecting
 					// is in no snapshot, and a GIL demotion moves it while the session is live.
 					if (ev.payload.runtime !== undefined) t.runtime = ev.payload.runtime ?? undefined;
+				} else {
+					// The stage plane pushes each transition ONCE, so one outrun by its node's own
+					// doc delta is stashed for the seed, never dropped.
+					this._stashRuntime(ev.payload.node, {
+						stage: ev.payload.stage,
+						error: ev.payload.error,
+						runtime: ev.payload.runtime ?? undefined
+					});
 				}
 				break;
 			}
@@ -261,6 +275,7 @@ export class GraphStore {
 				// A REPORT, so only a node that RUNS raises one — a facade's health rides `node_stage`.
 				const t = this.nodeById(ev.payload.node);
 				if (t) t.error = ev.payload.error;
+				else this._stashRuntime(ev.payload.node, { error: ev.payload.error });
 				if (ev.payload.error)
 					consoleStore().ingestError(ev.payload.node, ev.payload.error, Date.now());
 				break;
