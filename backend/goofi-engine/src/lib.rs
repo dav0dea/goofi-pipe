@@ -391,9 +391,6 @@ struct ExprBinding {
     /// The rewrite's variable list BEFORE resolution — a variable that failed to resolve no longer
     /// says what it was looking for, and that is what a new node or global has to re-resolve.
     terms: Vec<expr_rewrite::VarRef>,
-    /// This binding's identity in the wire planner, stable across a rebind — its index into
-    /// [`Graph::bind_keys`].
-    bind_id: usize,
     /// Why the GRAPH could not bind this source. Written by `set_expression` and nowhere else — it
     /// describes the SOURCE, so it outlives any one instance.
     bind_error: Option<String>,
@@ -492,12 +489,13 @@ pub struct Graph {
     /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
     /// flight, and every uid's birth generation.
     wire: runtime::plan::WirePlanner,
-    /// Every `(node, param)` ever bound, so the planner can name a binding by index and keep a
-    /// `Copy` key. Append-only: an unbind's own sequence still has to name the binding it removed.
-    bind_keys: Vec<(Uid, ParamKey)>,
     /// What service names are scoped by. Random, not the bridge's instance id: a service name has
     /// to be unique on the MACHINE, across this process's own graphs and every stale record.
     instance: String,
+    /// Every uid's birth generation, bumped on EVERY birth and never reset — it keeps a reborn
+    /// node's service names clear of its predecessor's, whose teardown does not block. Survives
+    /// `clear()` and `load_doc`; never enters the archive.
+    generations: HashMap<Uid, u64>,
     /// Params whose options a node has re-enumerated since anyone looked. Options are the one
     /// thing a node reports that the doc has no field for, so the worker must be TOLD to echo them.
     refreshed: Vec<(Uid, ParamKey)>,
@@ -571,8 +569,8 @@ impl Graph {
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
             wire: runtime::plan::WirePlanner::default(),
-            bind_keys: Vec::new(),
             instance: runtime::service_instance(),
+            generations: HashMap::new(),
             refreshed: Vec::new(),
             touched: Vec::new(),
             open_batches: 0,
@@ -781,7 +779,7 @@ impl Graph {
     /// Which node INSTANCE this uid holds: bumped on every birth, so a report from the node born at
     /// a uid is distinguishable from its predecessor's last one.
     pub fn node_generation(&self, uid: Uid) -> u64 {
-        self.wire.generation(uid)
+        self.generation(uid)
     }
 
     /// The flat arrangement — pages, splits and panels. Reads plan against this; writes go through
@@ -1111,7 +1109,7 @@ impl Graph {
     ) {
         // This IS the birth §3.1 counts, whichever door it came through — a fresh add, a restart,
         // an undo of a delete, a load.
-        let generation = self.wire.bump_generation(uid);
+        let generation = self.bump_generation(uid);
         let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
         self.nodes.insert(
             uid,
@@ -2041,7 +2039,7 @@ impl Graph {
 
         // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
         // generation bump the reborn node re-opens names its predecessor's ports still hold.
-        let generation = self.wire.bump_generation(uid);
+        let generation = self.bump_generation(uid);
         let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
 
         {
@@ -2162,7 +2160,6 @@ impl Graph {
         if goofi_node::param(&self.nodes[&uid].leaf().expect("a leaf").params, group, name).is_none() {
             return Err(format!("no such param `{group}/{name}`"));
         }
-        let bind_id = self.bind_id(uid, &key);
         // The scan runs even for a DISABLED binding, because `terms` is what a later rename or
         // globals edit re-resolves against. What it does not get is variables, a handle, a target.
         let scanned = expr_rewrite::rewrite(source);
@@ -2201,7 +2198,6 @@ impl Graph {
             rewritten,
             vars,
             terms,
-            bind_id,
             bind_error: error,
         };
         if let Some(e) = self.leaf_mut(uid) {
@@ -2226,19 +2222,6 @@ impl Graph {
     /// pointer swap. The delivery is recorded here and runs at [`Self::settle`], once per batch.
     fn notify_param(&mut self, uid: Uid, key: &ParamKey) {
         self.touched.push(Touched::Param(uid, key.clone()));
-    }
-
-    /// This PARAM's index into [`Self::bind_keys`]. Keyed by param, not by binding, because the
-    /// channel outlives any one binding on it. Append-only, cleared only by a whole-graph `clear`.
-    fn bind_id(&mut self, uid: Uid, key: &ParamKey) -> usize {
-        if let Some(b) = self.leaf(uid).and_then(|e| e.bindings.get(key)) {
-            return b.bind_id;
-        }
-        if let Some(at) = self.bind_keys.iter().position(|(u, k)| *u == uid && k == key) {
-            return at;
-        }
-        self.bind_keys.push((uid, key.clone()));
-        self.bind_keys.len() - 1
     }
 
     /// Resolve a rewrite's variables against the graph: a producer output, a global's value, or the
@@ -2572,7 +2555,7 @@ impl Graph {
     fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
         self.wire.attach(uid, sink);
         for (consumer, slot) in self.slots_touching(uid) {
-            self.wire.forget_planned((consumer, slot));
+            self.wire.forget_planned(&(consumer, slot.clone()));
             self.replan(consumer, slot);
         }
     }
@@ -2589,21 +2572,20 @@ impl Graph {
                 }
             }
         }
-        // Every param channel spoken on for `uid`, bound or not: an add answers before the
-        // barrier lifts, so an add-then-edit pair falls inside the window.
-        for (at, (owner, _)) in self.bind_keys.iter().enumerate() {
-            let key = (*owner, runtime::plan::Slot::Bind(at));
-            if *owner == uid && !slots.contains(&key) {
+        // Every channel spoken on for `uid`, bound or not: an add answers before the barrier
+        // lifts, so an add-then-edit pair falls inside the window. The planner's own record.
+        for key in self.wire.keys_for(uid) {
+            if !slots.contains(&key) {
                 slots.push(key);
             }
         }
         // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
         // the same re-plan its input slots get — both ends of one.
         for (consumer, entry) in self.leaves() {
-            for binding in entry.bindings.values() {
+            for (bkey, binding) in entry.bindings.iter() {
                 let touches = consumer == uid
                     || binding.vars.iter().filter_map(BoundVar::wire).any(|(p, _)| p == uid);
-                let key = (consumer, runtime::plan::Slot::Bind(binding.bind_id));
+                let key = (consumer, runtime::plan::Slot::Bind(bkey.clone()));
                 if touches && !slots.contains(&key) {
                     slots.push(key);
                 }
@@ -2623,8 +2605,20 @@ impl Graph {
         runtime::door_service(&self.service_base_of(uid))
     }
 
+    /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than
+    /// the last for every rebirth.
+    fn bump_generation(&mut self, uid: Uid) -> u64 {
+        let next = self.generations.get(&uid).map_or(0, |g| g + 1);
+        self.generations.insert(uid, next);
+        next
+    }
+
+    fn generation(&self, uid: Uid) -> u64 {
+        self.generations.get(&uid).copied().unwrap_or(0)
+    }
+
     fn service_base_of(&self, uid: Uid) -> String {
-        runtime::service_base(&self.instance, uid, self.wire.generation(uid))
+        runtime::service_base(&self.instance, uid, self.generation(uid))
     }
 
     /// Plan an input slot's full desired wire set and run the three-phase sequence (§4). Every link
@@ -2635,22 +2629,22 @@ impl Graph {
 
     /// The same for an expression binding (§5.3), keyed by the binding's id rather than its
     /// `ParamKey`, so an unbind can still be planned after the binding itself is gone.
-    fn replan_binding(&mut self, uid: Uid, bind_id: usize) {
-        self.replan(uid, runtime::plan::Slot::Bind(bind_id));
+    fn replan_binding(&mut self, uid: Uid, key: ParamKey) {
+        self.replan(uid, runtime::plan::Slot::Bind(key));
     }
 
     fn replan(&mut self, uid: Uid, slot: runtime::plan::Slot) {
         let key = (uid, slot);
-        let desired = self.desired_wires(key);
-        let previous = self.wire.planned(key);
+        let desired = self.desired_wires(&key);
+        let previous = self.wire.planned(&key);
         // An In set that did not move carries nothing — a batch that ends where it started says
         // nothing. A Bind sequence still runs: its phase 2 IS the param delivery, wires or not.
-        if matches!(slot, runtime::plan::Slot::In(_)) && desired == previous {
+        if matches!(key.1, runtime::plan::Slot::In(_)) && desired == previous {
             return;
         }
         let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
         let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
-        self.wire.begin(key, desired, removed, added);
+        self.wire.begin(key.clone(), desired, removed, added);
         self.advance_wire(key);
     }
 
@@ -2695,8 +2689,7 @@ impl Graph {
                         continue;
                     }
                     if params.insert((uid, key.clone())) {
-                        let bind_id = self.bind_id(uid, &key);
-                        self.replan_binding(uid, bind_id);
+                        self.replan_binding(uid, key);
                     }
                 }
             }
@@ -2808,9 +2801,9 @@ impl Graph {
     /// Walk the phases until one has something to send. A phase with no recipients is skipped rather
     /// than sent empty, or the sequence would park on an ack for a message that says nothing.
     fn advance_wire(&mut self, key: runtime::plan::SlotKey) {
-        while let Some(phase) = self.wire.step(key) {
-            let messages = self.compose_wire(key, phase);
-            if self.wire.dispatch(key, messages) {
+        while let Some(phase) = self.wire.step(&key) {
+            let messages = self.compose_wire(&key, phase);
+            if self.wire.dispatch(&key, messages) {
                 return;
             }
         }
@@ -2820,13 +2813,13 @@ impl Graph {
     /// carries the sequence's own `desired`, which must not shift under it.
     fn compose_wire(
         &self,
-        key: runtime::plan::SlotKey,
+        key: &runtime::plan::SlotKey,
         phase: runtime::plan::Phase,
     ) -> Vec<(Uid, runtime::Control)> {
         match phase {
             // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is — an input slot's full
             // service set, or a binding's whole re-resolved expression. Both are declarative.
-            runtime::plan::Phase::Apply => match key.1 {
+            runtime::plan::Phase::Apply => match &key.1 {
                 runtime::plan::Slot::In(slot) => {
                     let services = self
                         .wire
@@ -2836,7 +2829,7 @@ impl Graph {
                         .collect();
                     vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), services })]
                 }
-                runtime::plan::Slot::Bind(id) => self.compose_set_param(key.0, id).into_iter().collect(),
+                runtime::plan::Slot::Bind(k) => self.compose_set_param(key.0, k).into_iter().collect(),
             },
             runtime::plan::Phase::Shrink | runtime::plan::Phase::Grow => self
                 .wire
@@ -2852,11 +2845,7 @@ impl Graph {
 
     /// The `SetParam` a binding's phase 2 carries: the rewritten source while the binding stands,
     /// and the param's LITERAL once it does not, which is what says the binding is gone.
-    fn compose_set_param(&self, uid: Uid, bind_id: usize) -> Option<(Uid, runtime::Control)> {
-        let (owner, key) = self.bind_keys.get(bind_id)?;
-        if *owner != uid {
-            return None;
-        }
+    fn compose_set_param(&self, uid: Uid, key: &ParamKey) -> Option<(Uid, runtime::Control)> {
         let entry = self.leaf(uid)?;
         let value = match entry.bindings.get(key).filter(|b| b.live()) {
             Some(b) => runtime::ParamValue::Expr {
@@ -2892,15 +2881,15 @@ impl Graph {
 
     /// Every producer a consumer subscription feeds from, in wire order — `links` order for an input
     /// slot, variable order for a binding. A slot with no event id yields nothing.
-    fn desired_wires(&self, key: runtime::plan::SlotKey) -> Vec<runtime::plan::Wire> {
-        match key.1 {
+    fn desired_wires(&self, key: &runtime::plan::SlotKey) -> Vec<runtime::plan::Wire> {
+        match &key.1 {
             runtime::plan::Slot::In(slot) => {
                 if self.input_event_id(key.0, slot).is_none() {
                     return Vec::new();
                 }
                 self.links
                     .iter()
-                    .filter(|l| l.node_in == key.0 && l.slot_in == slot)
+                    .filter(|l| l.node_in == key.0 && l.slot_in == *slot)
                     .filter_map(|l| match self.stream(l.node_out, l.slot_out)? {
                         Stream::At(u, s) => Some((u, s)),
                         // Nothing behind the port yet: no wire to plan, and no error either.
@@ -2908,18 +2897,13 @@ impl Graph {
                     })
                     .collect()
             }
-            runtime::plan::Slot::Bind(id) => self
-                .binding_of(key.0, id)
+            runtime::plan::Slot::Bind(k) => self
+                .leaf(key.0)
+                .and_then(|e| e.bindings.get(k))
                 .filter(|b| b.live())
                 .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
                 .unwrap_or_default(),
         }
-    }
-
-    /// The binding a planner id names, if it still exists.
-    fn binding_of(&self, uid: Uid, bind_id: usize) -> Option<&ExprBinding> {
-        let (owner, key) = self.bind_keys.get(bind_id)?;
-        (*owner == uid).then(|| self.leaf(uid)?.bindings.get(key)).flatten()
     }
 
     /// Every doorbell one output slot rings, with the event id that says why the far node woke — the
@@ -2930,17 +2914,17 @@ impl Graph {
         let wired = self
             .sinks(producer, slot)
             .into_iter()
-            .filter(|(n, s)| !self.wire.unapplied((*n, runtime::plan::Slot::In(s)), (producer, slot)))
+            .filter(|(n, s)| !self.wire.unapplied(&(*n, runtime::plan::Slot::In(s)), (producer, slot)))
             .filter_map(|(n, s)| Some((self.door_of(n), self.input_event_id(n, s)?)))
             .collect::<Vec<_>>()
             .into_iter();
         let bound = self.leaves().flat_map(|(consumer, entry)| {
-            entry.bindings.values().filter(|b| b.live()).flat_map(move |b| {
+            entry.bindings.iter().filter(|(_, b)| b.live()).flat_map(move |(bkey, b)| {
                 b.vars
                     .iter()
                     .filter(move |v| v.wire() == Some((producer, slot)))
                     .filter(move |_| {
-                        !self.wire.unapplied((consumer, runtime::plan::Slot::Bind(b.bind_id)), (producer, slot))
+                        !self.wire.unapplied(&(consumer, runtime::plan::Slot::Bind(bkey.clone())), (producer, slot))
                     })
                     .filter_map(move |v| match v {
                         BoundVar::Stream { event_id, .. } => Some((self.door_of(consumer), *event_id)),
@@ -2973,8 +2957,6 @@ impl Graph {
         self.wire.reset_channels();
         // Whatever the batch touched addressed nodes this clear destroyed.
         self.touched.clear();
-        // …and the binding ids went with the sequences that named them.
-        self.bind_keys.clear();
         // An un-echoed refresh names a node the patch no longer holds — and a load restores uids,
         // so that number can come back and the echo be read as an answer nobody asked for.
         self.refreshed.clear();

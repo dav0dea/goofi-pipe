@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use goofi_node::ParamKey;
+
 use super::wire::{Control, ControlSink, Envelope};
 use crate::Uid;
 
@@ -13,10 +15,10 @@ pub(crate) type Wire = (Uid, &'static str);
 
 /// What a consumer subscribes THROUGH. An expression binding attaches through the same three
 /// phases as a link, so the planner is keyed by subscription rather than by input slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Slot {
     In(&'static str),
-    Bind(usize),
+    Bind(ParamKey),
 }
 
 /// The consumer subscription a sequence is about.
@@ -45,16 +47,13 @@ impl Sequence {
     }
 }
 
-/// The graph's end of the wire plane: who to talk to, what each slot was last told, what is in
-/// flight, and the birth generation of every uid this graph has ever held.
+/// The graph's end of the wire plane: who to talk to, what each slot was last told, and what is in
+/// flight.
 #[derive(Default)]
 pub(crate) struct WirePlanner {
     /// One per live node. A uid with no channel is not addressable — its messages are dropped and
     /// never awaited, so a partially attached graph converges instead of stalling.
     sinks: HashMap<Uid, Arc<dyn ControlSink>>,
-    /// Bumped on EVERY birth at a uid and never reset: it keeps a reborn node's service names
-    /// clear of its predecessor's, whose teardown does not block.
-    generations: HashMap<Uid, u64>,
     sequences: HashMap<SlotKey, Sequence>,
     /// seq → the sequence waiting on it, and the ONLY record of what is outstanding: a phase is
     /// complete when no entry here still names its slot.
@@ -100,18 +99,6 @@ impl WirePlanner {
         }
     }
 
-    /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than the
-    /// last for every rebirth.
-    pub(crate) fn bump_generation(&mut self, uid: Uid) -> u64 {
-        let next = self.generations.get(&uid).map_or(0, |g| g + 1);
-        self.generations.insert(uid, next);
-        next
-    }
-
-    pub(crate) fn generation(&self, uid: Uid) -> u64 {
-        self.generations.get(&uid).copied().unwrap_or(0)
-    }
-
     /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces. The sink
     /// OWNS the graph's end of that node's services, so it is released here or not at all;
     /// [`Self::pending`] survives, since a rebirth is the same node.
@@ -129,7 +116,7 @@ impl WirePlanner {
         self.pending.retain(|(to, _)| *to != uid);
     }
 
-    /// Drop every channel and everything in flight, keeping the generations.
+    /// Drop every channel and everything in flight.
     pub(crate) fn reset_channels(&mut self) {
         self.sinks.clear();
         self.sequences.clear();
@@ -151,39 +138,45 @@ impl WirePlanner {
             .unwrap_or_default();
         let added: Vec<Wire> =
             desired.iter().copied().filter(|w| added.contains(w) || carried.contains(w)).collect();
-        self.abandon(key);
-        self.planned.insert(key, desired);
+        self.abandon(&key);
+        self.planned.insert(key.clone(), desired);
         self.sequences.insert(key, Sequence { removed, added, phase: None });
     }
 
     /// Forget a slot's sequence, everything it was waiting on, and the base that sequence moved to.
     /// The base goes back because one claiming MORE than the node holds leaves a producer that is
     /// never told to ring this consumer, which no later edit repairs.
-    fn abandon(&mut self, key: SlotKey) {
-        self.sequences.remove(&key);
-        self.awaiting.retain(|_, waiting| *waiting != key);
+    fn abandon(&mut self, key: &SlotKey) {
+        self.sequences.remove(key);
+        self.awaiting.retain(|_, waiting| waiting != key);
         self.forget_planned(key);
     }
 
     /// What this slot was last planned to hold — the set a change is diffed against.
-    pub(crate) fn planned(&self, key: SlotKey) -> Vec<Wire> {
-        self.planned.get(&key).cloned().unwrap_or_default()
+    pub(crate) fn planned(&self, key: &SlotKey) -> Vec<Wire> {
+        self.planned.get(key).cloned().unwrap_or_default()
     }
 
     /// Forget what a slot was planned to hold, so the next plan runs against nothing.
-    pub(crate) fn forget_planned(&mut self, key: SlotKey) {
-        self.planned.remove(&key);
+    pub(crate) fn forget_planned(&mut self, key: &SlotKey) {
+        self.planned.remove(key);
+    }
+
+    /// Every planner key ever planned for `uid` and not since forgotten — the record of the
+    /// channels spoken on, which is what an attach re-plans.
+    pub(crate) fn keys_for(&self, uid: Uid) -> Vec<SlotKey> {
+        self.planned.keys().filter(|(owner, _)| *owner == uid).cloned().collect()
     }
 
     /// Whether `key`'s in-flight sequence is still ABOUT to subscribe `wire`. A producer must not
     /// be told to ring it until then (§4).
-    pub(crate) fn unapplied(&self, key: SlotKey, wire: Wire) -> bool {
-        self.sequences.get(&key).is_some_and(|s| s.unapplied() && s.added.contains(&wire))
+    pub(crate) fn unapplied(&self, key: &SlotKey, wire: Wire) -> bool {
+        self.sequences.get(key).is_some_and(|s| s.unapplied() && s.added.contains(&wire))
     }
 
     /// Move to the next phase, or finish the sequence and answer `None`.
-    pub(crate) fn step(&mut self, key: SlotKey) -> Option<Phase> {
-        let sequence = self.sequences.get_mut(&key)?;
+    pub(crate) fn step(&mut self, key: &SlotKey) -> Option<Phase> {
+        let sequence = self.sequences.get_mut(key)?;
         let next = match sequence.phase {
             None => Some(Phase::Shrink),
             Some(Phase::Shrink) => Some(Phase::Apply),
@@ -192,15 +185,15 @@ impl WirePlanner {
         };
         sequence.phase = next;
         if next.is_none() {
-            self.sequences.remove(&key);
+            self.sequences.remove(key);
         }
         next
     }
 
     /// The recipients of one phase: the producers that lost this consumer, or the ones that gained
     /// it. Phase 2 addresses the consumer itself, which the caller already knows.
-    pub(crate) fn recipients(&self, key: SlotKey, phase: Phase) -> Vec<Wire> {
-        let Some(sequence) = self.sequences.get(&key) else { return Vec::new() };
+    pub(crate) fn recipients(&self, key: &SlotKey, phase: Phase) -> Vec<Wire> {
+        let Some(sequence) = self.sequences.get(key) else { return Vec::new() };
         match phase {
             Phase::Shrink => sequence.removed.clone(),
             Phase::Grow => sequence.added.clone(),
@@ -210,19 +203,19 @@ impl WirePlanner {
 
     /// The full desired set of the sequence in flight on this slot — the planned base itself, which
     /// only [`Self::begin`] writes.
-    pub(crate) fn desired(&self, key: SlotKey) -> Vec<Wire> {
+    pub(crate) fn desired(&self, key: &SlotKey) -> Vec<Wire> {
         self.planned(key)
     }
 
     /// Send one phase's messages and start awaiting their acks. Answers whether anything is now
     /// awaited — a phase with nothing to say must not park on an ack that never comes.
-    pub(crate) fn dispatch(&mut self, key: SlotKey, messages: Vec<(Uid, Control)>) -> bool {
+    pub(crate) fn dispatch(&mut self, key: &SlotKey, messages: Vec<(Uid, Control)>) -> bool {
         let mut waiting = false;
         for (uid, control) in messages {
             let Some(sink) = self.sinks.get(&uid).cloned() else { continue };
             self.next_seq += 1;
             let seq = self.next_seq;
-            self.awaiting.insert(seq, key);
+            self.awaiting.insert(seq, key.clone());
             waiting = true;
             sink.send(Envelope { seq, control });
         }
@@ -234,10 +227,9 @@ impl WirePlanner {
     pub(crate) fn ack(&mut self, seq: u64, ok: Result<(), String>) -> Option<SlotKey> {
         let key = self.awaiting.remove(&seq)?;
         if ok.is_err() {
-            self.abandon(key);
+            self.abandon(&key);
             return None;
         }
         (!self.awaiting.values().any(|waiting| *waiting == key)).then_some(key)
     }
 }
-
