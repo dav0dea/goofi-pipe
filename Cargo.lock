@@ -508,6 +508,7 @@ dependencies = [
  "goofi-node",
  "goofi-nodes",
  "goofi-signal",
+ "goofi-transport",
  "goofi-view",
  "libc",
  "portable-pty",
@@ -634,7 +635,6 @@ version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
- "goofi-engine",
  "goofi-node",
  "goofi-nodes",
  "goofi-pymod",
@@ -648,10 +648,15 @@ dependencies = [
 name = "goofi-signal"
 version = "3.1.0"
 dependencies = [
+ "goofi-codec",
  "goofi-core",
  "goofi-node",
+ "goofi-transport",
+ "iceoryx2",
  "indexmap",
  "inventory",
+ "rmp-serde",
+ "serde",
  "serde_json",
 ]
 
@@ -672,6 +677,7 @@ dependencies = [
  "goofi-nodes",
  "goofi-python",
  "goofi-signal",
+ "goofi-transport",
  "goofi-view",
  "indexmap",
  "inventory",
@@ -689,7 +695,6 @@ dependencies = [
 name = "goofi-transport"
 version = "3.1.0"
 dependencies = [
- "getrandom 0.4.3",
  "goofi-node",
  "iceoryx2",
 ]

@@ -139,7 +139,7 @@ impl AppState {
             .unwrap_or(0);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        let graph_val = Graph::new();
+        let graph_val = fresh_graph();
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
         let graph = Arc::new(Mutex::new(graph_val));
@@ -526,6 +526,36 @@ pub async fn serve_app(
     axum::serve(listener, app(state, spa, dev_routes)).await
 }
 
+/// The composed graph the app boots: the model plus the signal engine, registered first. The
+/// one anchor that makes the linker keep goofi-nodes' inventory registrations lives here, at the
+/// composition root.
+pub fn fresh_graph() -> Graph {
+    let _ = goofi_nodes::native_node_count();
+    let mut g = Graph::new();
+    let signal = goofi_signal::SignalEngine::new(
+        g.instance().to_string(),
+        g.patch_start(),
+        g.drain_waker(),
+    );
+    g.register_engine(Box::new(signal));
+    g
+}
+
+/// The signal engine registered in `g` — the composition root's reach to its concrete doors.
+pub fn signal_engine(g: &mut Graph) -> &mut goofi_signal::SignalEngine {
+    goofi_signal::SignalEngine::of(g.engine_mut("signal").expect("the signal engine is registered"))
+        .expect("the `signal` registration is the signal engine")
+}
+
+/// One output slot's data service name — the resolver over the graph's own birth facts. Also the
+/// `/data` plane's subscribe address.
+pub fn output_service_of(g: &Graph, uid: goofi_engine::Uid, slot: &str) -> String {
+    goofi_transport::output_service(
+        &goofi_transport::service_base(g.instance(), uid, g.node_generation(uid)),
+        slot,
+    )
+}
+
 /// Every node type name visible in the catalog — all engines' libraries plus the unavailable
 /// overlay, `_`-prefixed test nodes hidden.
 pub fn catalog_type_names(g: &Graph) -> Vec<String> {
@@ -555,7 +585,7 @@ pub struct ScannedType {
     pub type_name: String,
     pub tier: Tier,
     pub stamp: Option<Stamp>,
-    pub registration: goofi_engine::Registration,
+    pub registration: goofi_signal::Registration,
 }
 
 /// The node-discovery seam: scan ONE directory and report what it registered. Injected by the CLI,
@@ -590,7 +620,7 @@ pub fn rescan(
         }
         for t in (state.scan_nodes)(g, &dir) {
             // A refused name never reaches the palette, so it must not enter the index either.
-            if t.registration != goofi_engine::Registration::Refused {
+            if t.registration != goofi_signal::Registration::Refused {
                 if is_patch {
                     patch_types.insert(t.type_name.clone());
                 }
@@ -612,7 +642,8 @@ pub fn rescan(
     }
     diff.removed = prev.keys().filter(|n| !found.contains_key(*n)).cloned().collect();
     for name in &diff.removed {
-        g.remove_dyn_type(name);
+        signal_engine(g).remove_dyn_type(name);
+        g.forget_unavailable(name);
     }
     *prev = found;
     (diff, outcomes)

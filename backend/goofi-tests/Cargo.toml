@@ -21,6 +21,7 @@ goofi-codec = { path = "../goofi-codec" }
 goofi-engine = { path = "../goofi-engine" }
 goofi-signal = { path = "../signal/goofi-signal" }
 goofi-node = { path = "../goofi-node" }
+goofi-transport = { path = "../goofi-transport" }
 goofi-view = { path = "../goofi-view" }
 # The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release
 # build of goofi-nodes leaves them out entirely.
@@ -39,6 +40,16 @@ tokio = { version = "1", features = ["sync", "rt", "net", "time", "io-util"] }
 # The `Client` below IS a WebSocket client — the transport suite's half of the harness.
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
+
+# The latency probes and the parity benchmark live here, beside the OutputProbe they drive; the
+# Python two need the embedded interpreter, so they skip unless `embed` is on.
+[[example]]
+name = "py_latency"
+required-features = ["embed"]
+
+[[example]]
+name = "backend_parity"
+required-features = ["embed"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }

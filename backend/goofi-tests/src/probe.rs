@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Data;
 
-use crate::runtime::{iox_node, IoxNode};
-use crate::{Graph, Uid};
+use goofi_engine::{Graph, Uid};
+use goofi_transport::{iox_node, IoxNode};
 
 /// How long a wait may take before it is a failure. Generous on purpose.
 const WAIT: Duration = Duration::from_secs(5);
@@ -18,7 +18,7 @@ const POLL: Duration = Duration::from_millis(1);
 
 /// A subscriber on one output slot — a viewer, with no privileged path into the node (§7).
 pub struct OutputProbe {
-    subscriber: crate::runtime::ByteSubscriber,
+    subscriber: goofi_transport::ByteSubscriber,
     /// The newest frame seen so far. Kept because the subscriber's queue is one deep and
     /// latest-wins.
     latest: std::cell::RefCell<Option<Data>>,
@@ -40,8 +40,9 @@ impl OutputProbe {
             manifest.type_name,
         );
         let node = iox_node().expect("an iceoryx2 node for the probe");
-        let subscriber = crate::runtime::open_output_subscriber(&node, &g.output_service_of(uid, slot))
-            .expect("a subscriber on the producer's output service");
+        let subscriber =
+            goofi_transport::open_output_subscriber(&node, &goofi_bridge::output_service_of(g, uid, slot))
+                .expect("a subscriber on the producer's output service");
         OutputProbe { _node: node, subscriber, latest: std::cell::RefCell::new(None), seen: std::cell::Cell::new(0) }
     }
 

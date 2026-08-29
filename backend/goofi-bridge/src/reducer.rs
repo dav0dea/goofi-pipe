@@ -159,11 +159,11 @@ pub const REHOME_INTERVAL: Duration = Duration::from_secs(1);
 /// One end of a slot's data service: the subscriber, its iceoryx2 node, and the service name it
 /// was opened on.
 struct SlotFeed {
-    subscriber: goofi_engine::runtime::ByteSubscriber,
+    subscriber: goofi_transport::ByteSubscriber,
     service: String,
     /// Declared LAST: fields drop in order, and a node dropped before its subscriber cannot remove
     /// its own directory.
-    _node: goofi_engine::runtime::IoxNode,
+    _node: goofi_transport::IoxNode,
 }
 
 /// Open a subscriber on `(uid, slot)`'s current output service, or `None` while the node is not
@@ -172,10 +172,10 @@ fn open_feed(graph: &Mutex<Graph>, uid: Uid, slot: &str) -> Option<SlotFeed> {
     let service = {
         let g = graph.lock().unwrap();
         g.manifest(uid)?;
-        g.output_service_of(uid, slot)
+        crate::output_service_of(&g, uid, slot)
     };
-    let node = goofi_engine::runtime::iox_node().ok()?;
-    let subscriber = goofi_engine::runtime::open_output_subscriber(&node, &service).ok()?;
+    let node = goofi_transport::iox_node().ok()?;
+    let subscriber = goofi_transport::open_output_subscriber(&node, &service).ok()?;
     Some(SlotFeed { _node: node, subscriber, service })
 }
 
@@ -207,7 +207,7 @@ fn spawn_reducer(
                 rehomed = std::time::Instant::now();
                 let current = {
                     let g = graph.lock().unwrap();
-                    g.manifest(uid).map(|_| g.output_service_of(uid, &slot))
+                    g.manifest(uid).map(|_| crate::output_service_of(&g, uid, &slot))
                 };
                 let Some(current) = current else {
                     // The node left the graph: the reducer's ONE death.

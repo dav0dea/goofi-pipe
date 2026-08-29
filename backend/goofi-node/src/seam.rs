@@ -2,13 +2,17 @@
 //! The graph looks down at this and nothing engine-specific; an engine looks down at this and the
 //! transport, and never at the graph.
 
+use std::any::Any;
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 
-use crate::{BindingId, IsolationCell, NodeManifest, ParamGroups, ParamKey, Status, Uid};
+use crate::{
+    BindingId, ExprEvaluator, IsolationCell, NodeManifest, ParamDecl, ParamGroups, ParamKey,
+    Status, Uid,
+};
 
 /// A doorbell id: `0` is a control message, `1..=64` the index of an input slot in
 /// `manifest.inputs`, `65..=128` an expression channel the graph allocated at bind time.
@@ -156,6 +160,11 @@ pub trait Engine: Send {
     fn dirty(&self) -> bool;
     /// Every node class this engine can build, advertised on request.
     fn library(&self) -> Vec<LibraryEntry>;
+    /// The universal params this engine adds to every one of its nodes — declarations, so the
+    /// palette's tooltips and the default-expression seeding read one door. Empty by default.
+    fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {
+        Vec::new()
+    }
     /// The record a fresh instance of `type_name` starts from: the declared defaults plus this
     /// engine's own universal groups, with `supplied` values folded in.
     fn normalize_params(
@@ -181,5 +190,11 @@ pub trait Engine: Send {
     fn request(&mut self, uid: Uid, request: Request);
     /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
     fn reset_clock(&mut self, _origin: Instant) {}
+    /// The graph's expression evaluator, shared with every engine that evaluates `nd()` bindings
+    /// on its own thread. No-op for an engine that never does.
+    fn set_evaluator(&mut self, _evaluator: Arc<dyn ExprEvaluator>) {}
+    /// The composition root's door to an engine's CONCRETE surface — a runtime type registry, a
+    /// device enumeration. Everything generic stays on this trait.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     fn shutdown(&mut self);
 }

@@ -7,6 +7,16 @@ license.workspace = true
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
+goofi-transport = { path = "../../goofi-transport" }
+# The GOOF frame is what a data service carries, exactly as the subprocess tier already sends it.
+goofi-codec = { path = "../../goofi-codec" }
+
+# The async runtime's transport, at the version the Python child links — the two open the same
+# services over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together.
+iceoryx2 = "0.9.3"
+# Control and status travel msgpack-encoded, so the thread and subprocess cases are one codec.
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
 
 indexmap = "2"
 inventory = "0.3"

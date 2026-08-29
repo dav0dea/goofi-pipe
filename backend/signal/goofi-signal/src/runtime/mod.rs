@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use goofi_core::{Data, Param};
 use goofi_node::{ExprEvaluator, NodeManifest, ParamGroups, ParamKey, Params};
-use goofi_signal::{Inputs, Node, NodeCtx, Outputs, RunPolicy};
+use crate::{Inputs, Node, NodeCtx, Outputs, RunPolicy};
 pub use goofi_node::NodeFault;
 
 /// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
@@ -55,8 +55,6 @@ pub use transport::{
     iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, sweep_once,
     ByteSubscriber, Doorbell, IoxNode, IoxTransport, NodeChannel,
 };
-/// Only the graph mints a scope, and it is in this crate.
-pub(crate) use transport::service_instance;
 pub use wire::{
     Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
     Var, VarName, WireStatus,
@@ -204,7 +202,7 @@ impl NodeRuntime {
         transport: Arc<dyn Transport>,
         env: NodeEnv,
     ) -> NodeRuntime {
-        let effective = goofi_signal::with_common(params, manifest);
+        let effective = crate::with_common(params, manifest);
         let run_policy = RunPolicy::from_params(&effective);
         let mut runtime = NodeRuntime {
             manifest,

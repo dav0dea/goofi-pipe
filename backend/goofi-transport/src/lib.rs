@@ -48,14 +48,6 @@ pub const MESSAGE_SLICE: usize = 1024;
 /// The pool a data publisher starts with; `PowerOfTwo` grows it for a larger frame.
 pub const INITIAL_SLICE: usize = 64 * 1024;
 
-/// A fresh service-name scope for one graph. Random rather than a pid, which is reused — and every
-/// builder here is `open_or_create`, so a recycled pid would silently JOIN a stale service.
-pub fn service_instance() -> String {
-    let mut bytes = [0u8; 8];
-    getrandom::fill(&mut bytes).expect("the OS random source");
-    format!("{:016x}", u64::from_be_bytes(bytes))
-}
-
 /// The name every service of one node is derived from: `<instance>_<uid>_<gen>`. `gen` is bumped on
 /// EVERY birth, because teardown never blocks and a rebirth would else race its predecessor.
 pub fn service_base(instance: &str, uid: Uid, gen: u64) -> String {

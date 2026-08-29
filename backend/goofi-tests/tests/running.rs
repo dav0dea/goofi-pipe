@@ -228,9 +228,9 @@ async fn a_restart_recovers_a_node_and_the_viewer_follows_it_to_its_new_home() {
 
     let mut v = Viewer::open(&base, &hex(uid), "out").await;
     assert_eq!(f32s(&v.decoded().await)[0], 1.0, "the stream is live on the recovered generation");
-    let before = g.state.graph.lock().unwrap().output_service_of(uid, "out");
+    let before = goofi_bridge::output_service_of(&g.state.graph.lock().unwrap(), uid, "out");
     g.call("node restart", j!({ "node": hex(uid) }));
-    assert_ne!(g.state.graph.lock().unwrap().output_service_of(uid, "out"), before,
+    assert_ne!(goofi_bridge::output_service_of(&g.state.graph.lock().unwrap(), uid, "out"), before,
                "a rebirth is a new name");
     // For up to one rehome interval the reducer is still listening on the dead name.
     v.until(|d| f32s(d)[0] == 2.0).await;

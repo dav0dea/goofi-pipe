@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use goofi_core::{Param, SlotType};
 use goofi_tests::{f32s, frame};
-use goofi_engine::runtime::{
-    door_service, iox_node, output_service, service_base, Control, ControlSink, Doorbell, Envelope,
-    IoxNode, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime, ParamValue, Status,
-    Transport, WireStatus,
-};
 use goofi_engine::Uid;
+use goofi_signal::runtime::{
+    Control, ControlSink, Envelope, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime,
+    ParamValue, Status, Transport, WireStatus,
+};
+use goofi_transport::{door_service, iox_node, output_service, service_base, Doorbell, IoxNode};
 use goofi_node::{NodeManifest, OutputDecl, ParamKey, Params, SlotDecl};
 use goofi_signal::{default_factory, Inputs, Node, NodeCtx, NodeResult, Outputs};
 
@@ -322,7 +322,7 @@ fn crash_helper() {
 fn what_a_crash_left_behind_is_gone_by_the_next_start() {
     // A killed process drops NOTHING, so its node directories and shared memory stay allocated.
     let dirs = || -> std::collections::HashSet<String> {
-        std::fs::read_dir(goofi_engine::runtime::nodes_dir().expect("the nodes directory"))
+        std::fs::read_dir(goofi_transport::nodes_dir().expect("the nodes directory"))
             .into_iter()
             .flatten()
             .flatten()
@@ -357,7 +357,7 @@ fn what_a_crash_left_behind_is_gone_by_the_next_start() {
     let _ = std::process::Command::new("kill").args(["-9", &child.id().to_string()]).status();
     let _ = child.wait();
 
-    goofi_engine::runtime::reclaim_stale_resources();
+    goofi_transport::reclaim_stale_resources();
     let left: Vec<&String> = ids.iter().filter(|id| dirs().contains(*id)).collect();
     assert!(left.is_empty(), "the sweep left {left:?} standing, for every later start to walk again");
 }

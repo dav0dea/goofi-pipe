@@ -15,12 +15,12 @@ use goofi_transport::{
     MESSAGE_SLICE,
 };
 pub use goofi_transport::{
-    iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, service_instance,
-    sweep_once, ByteSubscriber, Doorbell, IoxNode,
+    iox_node, nodes_dir, open_output_subscriber, reclaim_stale_resources, sweep_once,
+    ByteSubscriber, Doorbell, IoxNode,
 };
 
 use super::wire::{ControlSink, Envelope, EventId, ServiceName, Transport, WireStatus};
-use crate::Uid;
+use goofi_node::Uid;
 
 type BytePublisher = goofi_transport::BytePublisher;
 

@@ -9,6 +9,67 @@ use goofi_node::{ExprDecl, ExprMode, IsolationCell};
 use indexmap::IndexMap;
 
 pub mod discover;
+mod engine;
+pub mod runtime;
+
+pub use engine::{Registration, SignalEngine};
+
+impl SignalEngine {
+    /// The concrete engine behind a graph's `"signal"` registration — the composition root's
+    /// door to signal-only surface, such as the runtime type registry.
+    pub fn of(engine: &mut dyn goofi_node::Engine) -> Option<&mut SignalEngine> {
+        engine.as_any_mut().downcast_mut()
+    }
+}
+
+/// How long a node waits between retries of a failed initialization — a free-running producer would
+/// otherwise retry tens of times a second. Only a WAKE is paced: a param edit is a user asking.
+const SETUP_RETRY_INTERVAL: f64 = 1.0;
+
+fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
+}
+
+fn fold_panic(panicked: String) -> NodeResult {
+    Err(NodeError(panicked))
+}
+
+fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        format!("panic: {s}")
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        format!("panic: {s}")
+    } else {
+        "panic in node".to_string()
+    }
+}
+
+/// Seed a fresh instance: replay every declared param, then run `setup` — a panic in either is
+/// the node's boot error, never an unwind through the caller's lock.
+pub(crate) fn seed_node(
+    node: &mut dyn Node,
+    params: &ParamGroups,
+    ctx: &mut NodeCtx,
+) -> Option<String> {
+    let mut last_error = None;
+    for (group, entries) in params {
+        if group == "common" {
+            continue;
+        }
+        for (name, value) in entries {
+            let key = ParamKey::new(group.as_str(), name.as_str());
+            if let Err(e) = guard_lifecycle(|| node.on_param_changed(&key, value)).unwrap_or_else(fold_panic) {
+                last_error.get_or_insert(e.0);
+            }
+        }
+    }
+    let started =
+        guard_lifecycle(|| node.setup(ctx, &Params::new(params))).unwrap_or_else(fold_panic);
+    if let Err(e) = started {
+        last_error.get_or_insert(e.0);
+    }
+    last_error
+}
 
 /// A signal node's failure, propagated to the health plane rather than panicking.
 #[derive(Debug, Clone)]

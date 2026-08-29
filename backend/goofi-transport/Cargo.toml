@@ -11,5 +11,3 @@ goofi-node = { path = "../goofi-node" }
 # over the shared 0.9.3 ABI, and `Cargo.lock` is what actually holds them together (this is a
 # caret requirement, as in the other crates that already depend on it).
 iceoryx2 = "0.9.3"
-# One line: the random scope a graph's service names live in.
-getrandom = "0.4"

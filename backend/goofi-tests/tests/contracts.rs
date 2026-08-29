@@ -217,7 +217,7 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
     {
         let mut graph = g.state.graph.lock().unwrap();
         graph.register_unavailable("PsdScipy".into(), "scipy".into());
-        graph.register_dyn_type(&SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
+        goofi_bridge::signal_engine(&mut graph).register_dyn_type(&SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
         // Provenance is the only thing the scan knows that the catalog cannot re-derive, greyed rows too.
         graph.set_patch_types(["MyPyThing".to_string(), "PsdScipy".to_string()].into());
     }

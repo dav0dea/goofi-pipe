@@ -7,8 +7,10 @@ use futures_util::{SinkExt, StreamExt};
 use goofi_bridge::AppState;
 use serde_json::{json, Value};
 
-pub use goofi_engine::testing::OutputProbe;
 pub use goofi_engine::Uid;
+
+mod probe;
+pub use probe::OutputProbe;
 pub use serde_json::json as j;
 
 /// How long [`Goofi::until`] waits before it calls a condition unmet. Only a FAILING assertion
@@ -164,7 +166,11 @@ impl Goofi {
         factory: goofi_signal::discover::NodeFactory,
         tier: &'static goofi_node::IsolationCell,
     ) {
-        self.state.graph.lock().unwrap().register_dyn_type(manifest, factory, tier);
+        let mut g = self.state.graph.lock().unwrap();
+        let r = goofi_bridge::signal_engine(&mut g).register_dyn_type(manifest, factory, tier);
+        if r != goofi_signal::Registration::Refused {
+            g.forget_unavailable(manifest.type_name);
+        }
     }
 
     /// The LEAF node uids in the replicated projection, sorted. One map carries every entity, so

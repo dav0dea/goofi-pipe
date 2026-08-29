@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, HEADLESS_BUILD, SPA};
-use goofi_engine::{Graph, Registration};
+use goofi_engine::Graph;
+use goofi_signal::Registration;
 
 /// The shipped node directory, scanned whenever it exists.
 const DEFAULT_NODES_DIR: &str = "nodes";
@@ -736,6 +737,15 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
         });
     }
 
+    // A registration that lands clears the greyed row, and a probe failure displaces a stale
+    // runtime type before recording why — the latest scan is the answer either way.
+    let register = |g: &mut Graph, manifest, factory, isolation| {
+        let r = goofi_bridge::signal_engine(g).register_dyn_type(manifest, factory, isolation);
+        if r != Registration::Refused {
+            g.forget_unavailable(manifest.type_name);
+        }
+        r
+    };
     let mut found = Vec::new();
     for (path, probed) in paths.iter().zip(probes) {
         let (type_name, tier, registration) = match probed {
@@ -743,14 +753,15 @@ fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<Scann
                 // Registered ROUTED: the type's tier cell decides the tier at every build, so
                 // the runtime GIL tripwire demoting it is all a re-route takes.
                 let t = goofi_python::routed_node_type(d, subproc_python);
-                (t.manifest.type_name.to_string(), Tier::InProcess, g.register_dyn_type(t.manifest, t.factory, t.isolation))
+                (t.manifest.type_name.to_string(), Tier::InProcess, register(g, t.manifest, t.factory, t.isolation))
             }
             Probed::Subprocess(d) => {
                 let t = goofi_python::subproc::node_type_from(subproc_python, d);
-                (t.manifest.type_name.to_string(), Tier::Subprocess, g.register_dyn_type(t.manifest, t.factory, t.isolation))
+                (t.manifest.type_name.to_string(), Tier::Subprocess, register(g, t.manifest, t.factory, t.isolation))
             }
             // Registered WITH the reason, so the palette explains itself instead of omitting it.
             Probed::Unavailable { type_name, reason } => {
+                goofi_bridge::signal_engine(g).remove_dyn_type(&type_name);
                 let registration = if g.register_unavailable(type_name.clone(), reason.clone()) {
                     Registration::Added
                 } else {
@@ -931,7 +942,7 @@ mod tests {
         {
             let mut g = graph.lock().unwrap();
             let flag = released.clone();
-            g.register_dyn_type(&TRACKED, Box::new(move |_| Box::new(Tracked(flag.clone()))), &goofi_node::NATIVE);
+            goofi_bridge::signal_engine(&mut g).register_dyn_type(&TRACKED, Box::new(move |_| Box::new(Tracked(flag.clone()))), &goofi_node::NATIVE);
             g.add_node("_TestTracked", None).expect("a test node");
         }
         // An already-resolved shutdown takes the same path ctrl-C does; port 0 binds ephemerally.

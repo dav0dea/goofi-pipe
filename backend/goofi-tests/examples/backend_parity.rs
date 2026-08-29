@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::globals::GlobalValue;
 use goofi_core::{Data, Param, Value};
-use goofi_engine::testing::OutputProbe;
+use goofi_tests::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, Params, SlotDecl};
 use goofi_signal::{Inputs, Node, NodeCtx, NodeResult, Outputs};
@@ -82,10 +82,10 @@ type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 /// Fan `n` nodes off one _TestConst and measure the rate each sustains, counted from
 /// `meta["index"]`, plus whether every error channel stayed clean.
 fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, window: Duration) -> (f64, bool) {
-    let mut g = Graph::new();
+    let mut g = goofi_bridge::fresh_graph();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
-    g.register_dyn_type(manifest, factory, &BENCH_TIER);
+    goofi_bridge::signal_engine(&mut g).register_dyn_type(manifest, factory, &BENCH_TIER);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "value", Param::float(0.5, -1e9, 1e9)).unwrap();
     g.update_param(src, "constant", "length", Param::int(len, 1, 10_000_000)).unwrap();

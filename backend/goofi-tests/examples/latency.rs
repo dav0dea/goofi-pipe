@@ -3,11 +3,11 @@
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
-use goofi_engine::testing::OutputProbe;
+use goofi_tests::OutputProbe;
 use goofi_engine::Graph;
 
 fn main() {
-    let mut g = Graph::new();
+    let mut g = goofi_bridge::fresh_graph();
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "length", Param::int(256, 1, 1_000_000)).unwrap();
     let buf = g.add_node("Buffer", None).unwrap();

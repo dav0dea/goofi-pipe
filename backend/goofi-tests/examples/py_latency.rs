@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
-use goofi_engine::testing::OutputProbe;
+use goofi_tests::OutputProbe;
 use goofi_engine::Graph;
 use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
 use goofi_signal::Node;
@@ -35,10 +35,10 @@ static PY_MANIFEST: NodeManifest = NodeManifest {
 };
 
 fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
-    let mut g = Graph::new();
+    let mut g = goofi_bridge::fresh_graph();
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
-    g.register_dyn_type(
+    goofi_bridge::signal_engine(&mut g).register_dyn_type(
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
         &PY_TIER,

@@ -542,7 +542,7 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
 
     // Injected: a node's own `Status::ParamValues` is this event's only producer.
     let mut ev = g.events();
-    g.state.graph.lock().unwrap().apply_status(consumer, goofi_engine::runtime::Status::ParamValues {
+    g.state.graph.lock().unwrap().apply_status(consumer, goofi_node::Status::ParamValues {
         evaluated: vec![(goofi_node::ParamKey::new("common", "max_frequency"),
                          goofi_core::Param::float(3.0, 0.0, 100.0))],
     });

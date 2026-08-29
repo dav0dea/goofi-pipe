@@ -5,8 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
-use goofi_node::{BindingView, BoundVar, DrainWaker, Edge, Engine, ExprMode, GraphView, Isolation, IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamGroups, ParamKey, Request, Touched};
-use goofi_signal::NodeCtx;
+use goofi_node::{
+    BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, ExprMode, GraphView, Isolation,
+    IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamDecl, ParamGroups, ParamKey,
+    Request, Status, Touched,
+};
 use indexmap::IndexMap;
 
 pub mod archive;
@@ -18,13 +21,6 @@ pub mod command;
 pub use command::{open_batch, BatchScope, Command, CommandHistory, ExprState, Outcome};
 
 pub mod expr_rewrite;
-
-/// Public because a host needs the wire vocabulary: service names, [`runtime::Status`] to drain,
-pub mod runtime;
-pub mod testing;
-
-mod signal;
-pub use signal::SignalEngine;
 
 pub use goofi_node::Uid;
 
@@ -146,27 +142,6 @@ struct Link {
     slot_out: &'static str,
     node_in: Uid,
     slot_in: &'static str,
-}
-
-/// Every entry point into a node's own code goes through here: a node is third-party, and an
-/// unguarded panic costs its thread silently and for good.
-fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
-}
-
-/// So a panic and a returned error travel the one channel a caller already handles.
-fn fold_panic(panicked: String) -> goofi_signal::NodeResult {
-    Err(goofi_signal::NodeError(panicked))
-}
-
-fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = p.downcast_ref::<&str>() {
-        format!("panic: {s}")
-    } else if let Some(s) = p.downcast_ref::<String>() {
-        format!("panic: {s}")
-    } else {
-        "panic in node".to_string()
-    }
 }
 
 /// A param's value as JSON, and the one definition of it — the inverse of [`param_from_json`].
@@ -322,22 +297,6 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
     })
 }
 
-/// A factory that can capture runtime state — a Python class handle, a device descriptor — which
-/// a bare `fn` pointer cannot close over. One definition, shared with every discovery backend.
-pub use goofi_signal::discover::NodeFactory;
-
-/// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the CALLER
-/// can tell a rescan's refresh from two node files claiming one name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Registration {
-    /// The name was free; the type entered the registry.
-    Added,
-    /// A runtime type of that name was already registered and has been replaced.
-    Replaced,
-    /// A built-in owns the name; the registry is unchanged.
-    Refused,
-}
-
 /// A param bound to an expression, graph-side. Everything below `source` is DERIVED, and
 /// re-derived whenever it or a name the graph resolves changes.
 struct ExprBinding {
@@ -424,11 +383,9 @@ pub struct Graph {
     scope_of: HashMap<Uid, Option<Uid>>,
     /// Patch-scoped globals, system ones seeded and re-asserted by every `clear`/load.
     globals: goofi_core::globals::GlobalStore,
-    /// The signal engine — always present, and reached concretely for its signal-only doors
-    /// (the evaluator, the Python type registry). Every generic path goes through the trait.
-    signal: SignalEngine,
-    /// Engines registered beside it — reached only through the trait.
-    extra_engines: Vec<Box<dyn Engine>>,
+    /// The registered engines, signal first, reached only through the trait. Registered at the
+    /// composition root, so an empty set is a bare MODEL — it serializes, and runs nothing.
+    engines: Vec<Box<dyn Engine>>,
     /// Shared with every engine and the drain worker: a report notifies, the worker parks on it.
     waker: Arc<DrainWaker>,
     /// What service names are scoped by. Random, not the bridge's instance id: a service name has
@@ -480,24 +437,25 @@ fn global_as_param(value: &goofi_core::globals::GlobalValue) -> Param {
     }
 }
 
+/// A fresh service-name scope for one graph — the resolver input the graph owns and mints.
+/// Random rather than a pid, which is reused, and a recycled scope would JOIN stale services.
+fn mint_instance() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("the OS random source");
+    format!("{:016x}", u64::from_be_bytes(bytes))
+}
+
 /// The lowest free doorbell id in the expression range, or `None` when a node has spent all 64.
-fn next_event_id(taken: &[runtime::EventId]) -> Option<runtime::EventId> {
+fn next_event_id(taken: &[EventId]) -> Option<EventId> {
     (65..=128).find(|id| !taken.contains(id))
 }
 
 impl Graph {
     pub fn new() -> Graph {
-        // The ONE anchor that makes the linker keep goofi-nodes' inventory registrations.
-        let _ = goofi_nodes::native_node_count();
-        // What a crashed run left, reclaimed at startup rather than by whoever opens the first
-        // port — which used to be the user's first add (see `runtime::sweep_once`).
-        runtime::sweep_once();
-        let instance = runtime::service_instance();
         let waker = Arc::new(DrainWaker::default());
         let start = Instant::now();
         Graph {
-            signal: SignalEngine::new(instance.clone(), start, waker.clone()),
-            extra_engines: Vec::new(),
+            engines: Vec::new(),
             waker,
             nodes: IndexMap::new(),
             links: Vec::new(),
@@ -511,7 +469,7 @@ impl Graph {
             evaluator: None,
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
-            instance,
+            instance: mint_instance(),
             generations: HashMap::new(),
             refreshed: Vec::new(),
             touched: Vec::new(),
@@ -522,8 +480,7 @@ impl Graph {
     /// Stop every node and WAIT for each to release its shared memory. The waiting is why this is
     /// not what `clear()` does: only a process about to EXIT has no "a moment later".
     pub fn shutdown(&mut self) {
-        self.signal.shutdown();
-        for e in &mut self.extra_engines {
+        for e in self.engines_mut() {
             e.shutdown();
         }
         self.nodes.clear();
@@ -637,13 +594,15 @@ impl Graph {
     /// startup; without it, expression bindings are stored but not evaluated.
     pub fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
         self.evaluator = Some(evaluator.clone());
-        self.signal.set_evaluator(evaluator);
+        for e in self.engines_mut() {
+            e.set_evaluator(evaluator.clone());
+        }
     }
 
-    /// Register another engine beside the signal one. Its library joins the merged view, and its
+    /// Register an engine, signal first by convention. Its library joins the merged view, and its
     /// nodes ride every generic path — the trait is the whole integration.
     pub fn register_engine(&mut self, engine: Box<dyn Engine>) {
-        self.extra_engines.push(engine);
+        self.engines.push(engine);
     }
 
     /// What every engine and the drain worker share: a node report notifies it, the worker parks
@@ -653,20 +612,17 @@ impl Graph {
     }
 
     fn engines(&self) -> impl Iterator<Item = &dyn Engine> {
-        std::iter::once(&self.signal as &dyn Engine)
-            .chain(self.extra_engines.iter().map(|e| e.as_ref() as &dyn Engine))
+        self.engines.iter().map(|e| e.as_ref() as &dyn Engine)
     }
 
     fn engines_mut(&mut self) -> impl Iterator<Item = &mut dyn Engine> {
-        std::iter::once(&mut self.signal as &mut dyn Engine)
-            .chain(self.extra_engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine))
+        self.engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine)
     }
 
-    fn engine_mut(&mut self, id: &str) -> Option<&mut dyn Engine> {
-        if id == self.signal.id() {
-            return Some(&mut self.signal as &mut dyn Engine);
-        }
-        self.extra_engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
+    /// One registered engine, by id — how the composition root reaches a concrete door through
+    /// [`Engine::as_any_mut`].
+    pub fn engine_mut(&mut self, id: &str) -> Option<&mut dyn Engine> {
+        self.engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
     }
 
     /// The one merged view the palette reads: every engine's library, in registration order.
@@ -683,10 +639,7 @@ impl Graph {
     /// which IS the engine the type belongs to. Two libraries claiming one name resolve to the
     /// FIRST advertiser, signal first — a decided outcome, not an accident.
     fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
-        if let Some(entry) = self.signal.find_entry(type_name) {
-            return Some((self.signal.id(), entry));
-        }
-        self.extra_engines.iter().find_map(|e| {
+        self.engines().find_map(|e| {
             e.library()
                 .into_iter()
                 .find(|l| l.manifest.type_name == type_name)
@@ -694,28 +647,20 @@ impl Graph {
         })
     }
 
-    /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name is
-    /// REFUSED and another runtime type's is REPLACED, because a rescan re-registers what it finds.
-    pub fn register_dyn_type(
-        &mut self,
-        manifest: &'static NodeManifest,
-        factory: NodeFactory,
-        isolation: &'static IsolationCell,
-    ) -> Registration {
-        // A name that loads now is not unloadable any more: leaving the greyed row standing would
-        // give one name two palette rows.
-        let registration = self.signal.register_dyn_type(manifest, factory, isolation);
-        if registration != Registration::Refused {
-            self.unavailable.remove(manifest.type_name);
-        }
-        registration
+    /// The universal param group the owning engine adds to every one of its nodes — the palette
+    /// and the default-expression seeding read declarations through this one door.
+    pub fn universal_decls_of(&self, type_name: &str) -> Vec<ParamDecl> {
+        let Some((id, entry)) = self.library_entry(type_name) else { return Vec::new() };
+        self.engines()
+            .find(|e| e.id() == id)
+            .map(|e| e.universal_decls(entry.manifest))
+            .unwrap_or_default()
     }
 
-    /// Forget a runtime type — a rescan whose file has vanished. ONE door for both registries. Live
-    /// instances are untouched: removal stops the next `add_node` and the load gate, nothing more.
-    pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
-        let had_dyn = self.signal.remove_dyn_type(type_name);
-        self.unavailable.remove(type_name).is_some() || had_dyn
+    /// Forget the unavailable row for a type that now resolves — a registration's caller clears
+    /// it, or the greyed row would give one name two palette rows.
+    pub fn forget_unavailable(&mut self, type_name: &str) -> bool {
+        self.unavailable.remove(type_name).is_some()
     }
 
     /// Whether a type name resolves to either the compile-time catalog or a
@@ -789,13 +734,12 @@ impl Graph {
         self.viewpoint = viewpoint;
     }
 
-    /// Record a type that could not be loaded, and why. Refused when a BUILT-IN owns the name; a
-    /// runtime type of that name is displaced, since the latest scan is the answer.
+    /// Record a type that could not be loaded, and why. Refused while any engine's library still
+    /// advertises the name — the scanner displaces a stale runtime type BEFORE recording it.
     pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
-        if goofi_signal::find(&type_name).is_some() {
+        if self.library_entry(&type_name).is_some() {
             return false;
         }
-        self.signal.remove_dyn_type(type_name.as_str());
         self.unavailable.insert(type_name, reason);
         true
     }
@@ -1028,10 +972,12 @@ impl Graph {
         if self.evaluator.is_none() {
             return;
         }
-        // The manifest's own declarations win over the universal `common` group, as they do on
-        // the value side. Read through `common_decls`, the one place `producer` is interpreted.
+        // The manifest's own declarations win over the engine's universal group, as they do on
+        // the value side.
         let declared = manifest.params.iter().map(|d| (d.group, d.name, d.expression));
-        let universal = goofi_signal::common_decls(manifest)
+        let universal = self
+            .universal_decls_of(manifest.type_name)
+            .into_iter()
             .filter(|d| !manifest.params.iter().any(|o| o.group == d.group && o.name == d.name))
             .map(|d| (d.group, d.name, d.expression))
             .collect::<Vec<_>>();
@@ -2154,7 +2100,7 @@ impl Graph {
     /// Resolve a rewrite's variables against the graph: a producer output, a global's value, or the
     /// reason neither was found. Event ids come from §3.2's `65..=128` budget, lowest free first.
     fn resolve_vars(&self, consumer: Uid, key: &ParamKey, refs: &[expr_rewrite::VarRef]) -> Vec<BoundVar> {
-        let mut taken: Vec<runtime::EventId> = self
+        let mut taken: Vec<EventId> = self
             .leaf(consumer)
             .into_iter()
             .flat_map(|e| e.bindings.iter().filter(|(k, _)| *k != key))
@@ -2165,7 +2111,7 @@ impl Graph {
             })
             .collect();
         // One shape for every stream reference, `me.out` included: a resolved wire plus an event id.
-        let stream = |var: &str, taken: &mut Vec<runtime::EventId>, resolved: Result<(Uid, &'static str), String>| match resolved {
+        let stream = |var: &str, taken: &mut Vec<EventId>, resolved: Result<(Uid, &'static str), String>| match resolved {
             Err(reason) => BoundVar::Missing { var: var.to_string(), reason },
             Ok((producer, slot)) => match next_event_id(taken) {
                 None => BoundVar::Missing {
@@ -2465,10 +2411,15 @@ impl Graph {
         Ok(())
     }
 
-    /// One output slot's data service name — the whole of a wire's identity, which is why a slot
-    /// message carries names and never a source uid. Also the `/data` plane's subscribe address.
-    pub fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
-        runtime::output_service(&self.service_base_of(uid), slot)
+    /// The resolver input every service name is scoped by. The graph MINTS it and carries it;
+    /// deriving a name from it is `goofi-transport`'s, which the graph never links.
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+
+    /// The patch clock origin engines compute `NodeCtx::now` from.
+    pub fn patch_start(&self) -> Instant {
+        self.start
     }
     /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than
     /// the last for every rebirth.
@@ -2480,10 +2431,6 @@ impl Graph {
 
     fn generation(&self, uid: Uid) -> u64 {
         self.generations.get(&uid).copied().unwrap_or(0)
-    }
-
-    fn service_base_of(&self, uid: Uid) -> String {
-        runtime::service_base(&self.instance, uid, self.generation(uid))
     }
 
     /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
@@ -2538,10 +2485,9 @@ impl Graph {
         let edges = self.resolved_edges();
         let rings: HashMap<&'static str, bool> =
             self.engines().map(|e| (e.id(), e.doorbell_driven())).collect();
-        let Graph { nodes, generations, instance, signal, extra_engines, .. } = self;
+        let Graph { nodes, generations, instance, engines, .. } = self;
         let view = build_view(nodes, generations, instance, &edges, &rings);
-        signal.settle(&view, &touched);
-        for e in extra_engines.iter_mut() {
+        for e in engines.iter_mut() {
             e.settle(&view, &touched);
         }
     }
@@ -2567,11 +2513,10 @@ impl Graph {
     pub fn drain_status(&mut self) -> usize {
         let mut applied = 0;
         {
-            let Graph { nodes, refreshed, signal, extra_engines, .. } = self;
+            let Graph { nodes, refreshed, engines, .. } = self;
             let mut apply =
-                |uid: Uid, status: runtime::Status| apply_status_to(nodes, refreshed, uid, status);
-            applied += signal.drain(&mut apply);
-            for e in extra_engines.iter_mut() {
+                |uid: Uid, status: Status| apply_status_to(nodes, refreshed, uid, status);
+            for e in engines.iter_mut() {
                 applied += e.drain(&mut apply);
             }
         }
@@ -2582,7 +2527,7 @@ impl Graph {
     }
 
     /// Apply one health report — the drain's door, public so a test can inject one.
-    pub fn apply_status(&mut self, uid: Uid, status: runtime::Status) {
+    pub fn apply_status(&mut self, uid: Uid, status: Status) {
         apply_status_to(&mut self.nodes, &mut self.refreshed, uid, status);
     }
 
@@ -3097,15 +3042,15 @@ fn apply_status_to(
     nodes: &mut IndexMap<Uid, NodeEntry>,
     refreshed: &mut Vec<(Uid, ParamKey)>,
     uid: Uid,
-    status: runtime::Status,
+    status: Status,
 ) {
     let Some(entry) = nodes.get_mut(&uid).and_then(NodeEntry::leaf_mut) else { return };
     match status {
-        runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
-        runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
+        Status::Stage { stage } => entry.health.stage = stage.as_str(),
+        Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
         // The options are the node's answer to a refresh (§8.5). They land in the health
         // OVERLAY, never a reply or the record: the RPC that asked has already returned.
-        runtime::Status::RefreshOptions { key, options } => {
+        Status::RefreshOptions { key, options } => {
             if let Some(options) = options {
                 entry.health.options.insert(key.clone(), options);
             }
@@ -3113,7 +3058,7 @@ fn apply_status_to(
             // lifts its spinner off the echo. A node with no hook for the param answers `None`.
             refreshed.push((uid, key));
         }
-        runtime::Status::Fault { fault } => match fault {
+        Status::Fault { fault } => match fault {
             // A clean run clears Setup/Process/Boot together and never touches a binding
             // error, which only that binding evaluating successfully clears (§6).
             None => {
@@ -3125,7 +3070,7 @@ fn apply_status_to(
         },
         // One record for what the instance reported, bound param or not. On the binding it would
         // outlive the instance, since a reborn node has nothing to announce clearing.
-        runtime::Status::BindingErrors { errors } => {
+        Status::BindingErrors { errors } => {
             for (key, msg) in errors {
                 match msg {
                     Some(msg) => {
@@ -3137,7 +3082,7 @@ fn apply_status_to(
                 }
             }
         }
-        runtime::Status::ParamValues { evaluated } => {
+        Status::ParamValues { evaluated } => {
             entry.health.evaluated = evaluated.into_iter().collect();
         }
     }
@@ -3209,35 +3154,4 @@ fn entry_error(e: &Leaf) -> Option<&str> {
         .min_by(|a, b| a.0.cmp(b.0))
         .map(|(_, s)| s)
 }
-
-pub(crate) fn seed_node(
-    node: &mut dyn goofi_signal::Node,
-    params: &ParamGroups,
-    ctx: &mut NodeCtx,
-) -> Option<String> {
-    let mut last_error = None;
-    for (group, entries) in params {
-        if group == "common" {
-            continue;
-        }
-        for (name, value) in entries {
-            let key = ParamKey::new(group.as_str(), name.as_str());
-            if let Err(e) = guard_lifecycle(|| node.on_param_changed(&key, value)).unwrap_or_else(fold_panic) {
-                last_error.get_or_insert(e.0);
-            }
-        }
-    }
-    // A panic in `setup` is this node's boot error, exactly as a returned `Err` is. Unguarded it
-    // unwound through `Graph::add_node` and out through the graph lock the caller was holding.
-    let started =
-        guard_lifecycle(|| node.setup(ctx, &goofi_node::Params::new(params))).unwrap_or_else(fold_panic);
-    if let Err(e) = started {
-        last_error.get_or_insert(e.0);
-    }
-    last_error
-}
-
-/// How long a node waits between retries of a failed initialization — a free-running producer would
-/// otherwise retry tens of times a second. Only a WAKE is paced: a param edit is a user asking.
-const SETUP_RETRY_INTERVAL: f64 = 1.0;
 

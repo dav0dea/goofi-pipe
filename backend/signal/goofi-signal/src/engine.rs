@@ -17,6 +17,18 @@ use crate::runtime::{
 /// it leaves behind is what [`runtime::reclaim_stale_resources`] takes on the next startup.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
+/// Whether a runtime type registration was added, replaced, or refused — so a caller can tell a
+/// rescan's refresh from two node files claiming one name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registration {
+    /// The name was free; the type entered the registry.
+    Added,
+    /// A runtime type of that name was already registered and has been replaced.
+    Replaced,
+    /// A built-in owns the name; the registry is unchanged.
+    Refused,
+}
+
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
 /// `insert` answers and *addressable* only once it reports Ready.
 struct NodeHost {
@@ -45,10 +57,10 @@ impl Drop for NodeHost {
     }
 }
 
-/// A [`crate::NodeFactory`] shared with the node's own thread, which is where the build happens.
-type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_signal::Node> + Send + Sync>;
+/// A [`crate::discover::NodeFactory`] shared with the node's own thread, which is where the build happens.
+type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn crate::Node> + Send + Sync>;
 
-/// A runtime-registered type: the build half a [`goofi_signal::NodeClass`] carries for a built-in.
+/// A runtime-registered type: the build half a [`crate::NodeClass`] carries for a built-in.
 struct DynType {
     manifest: &'static NodeManifest,
     isolation: &'static IsolationCell,
@@ -72,6 +84,9 @@ pub struct SignalEngine {
 
 impl SignalEngine {
     pub fn new(instance: String, started: Instant, waker: Arc<DrainWaker>) -> SignalEngine {
+        // What a crashed run left, reclaimed at engine construction rather than by whoever opens
+        // the first port — which used to be the user's first add.
+        goofi_transport::sweep_once();
         SignalEngine {
             instance,
             evaluator: None,
@@ -85,27 +100,23 @@ impl SignalEngine {
         }
     }
 
-    pub fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
-        self.evaluator = Some(evaluator);
-    }
-
     /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name
     /// is REFUSED and another runtime type's is REPLACED, because a rescan re-registers what it
     /// finds. Answers whether it was added, replaced, or refused.
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
-        factory: crate::NodeFactory,
+        factory: crate::discover::NodeFactory,
         isolation: &'static IsolationCell,
-    ) -> crate::Registration {
+    ) -> Registration {
         let name = manifest.type_name;
-        if goofi_signal::find(name).is_some() {
+        if crate::find(name).is_some() {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
-            return crate::Registration::Refused;
+            return Registration::Refused;
         }
         match self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }) {
-            Some(_) => crate::Registration::Replaced,
-            None => crate::Registration::Added,
+            Some(_) => Registration::Replaced,
+            None => Registration::Added,
         }
     }
 
@@ -114,7 +125,7 @@ impl SignalEngine {
     }
 
     pub fn find_entry(&self, type_name: &str) -> Option<LibraryEntry> {
-        if let Some(c) = goofi_signal::find_class(type_name) {
+        if let Some(c) = crate::find_class(type_name) {
             return Some(LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
         }
         self.dyn_types
@@ -360,7 +371,7 @@ impl Engine for SignalEngine {
     }
 
     fn library(&self) -> Vec<LibraryEntry> {
-        let builtin = goofi_signal::classes()
+        let builtin = crate::classes()
             .map(|c| LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
         let dynamic = self
             .dyn_types
@@ -378,7 +389,7 @@ impl Engine for SignalEngine {
             .find_entry(type_name)
             .ok_or_else(|| format!("no node type `{type_name}` in the signal library"))?;
         let base = supplied.unwrap_or_else(|| entry.manifest.default_params());
-        Ok(goofi_signal::with_common(base, entry.manifest))
+        Ok(crate::with_common(base, entry.manifest))
     }
 
     fn insert(
@@ -388,7 +399,7 @@ impl Engine for SignalEngine {
         generation: u64,
         params: &ParamGroups,
     ) -> Option<String> {
-        let build: runtime::NodeBuild = if let Some(c) = goofi_signal::find_class(type_name) {
+        let build: runtime::NodeBuild = if let Some(c) = crate::find_class(type_name) {
             let f = c.factory;
             Box::new(move |_| f())
         } else if let Some(dt) = self.dyn_types.get(type_name) {
@@ -498,6 +509,19 @@ impl Engine for SignalEngine {
     /// Every node born after computes from the new origin.
     fn reset_clock(&mut self, origin: Instant) {
         self.started = origin;
+    }
+
+    fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
+        self.evaluator = Some(evaluator);
+    }
+
+    /// The `common` scheduling group: signal semantics, added to every signal node.
+    fn universal_decls(&self, manifest: &'static NodeManifest) -> Vec<goofi_node::ParamDecl> {
+        crate::common_decls(manifest).collect()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 
     /// Stop every node and WAIT for each to release its shared memory — a ceiling, because only a

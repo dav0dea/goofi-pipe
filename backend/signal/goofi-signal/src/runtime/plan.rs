@@ -8,7 +8,7 @@ use std::sync::Arc;
 use goofi_node::ParamKey;
 
 use super::wire::{Control, ControlSink, Envelope};
-use crate::Uid;
+use goofi_node::Uid;
 
 /// The producer end of a wire: a node and one of its output slots.
 pub(crate) type Wire = (Uid, &'static str);

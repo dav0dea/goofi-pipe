@@ -16,6 +16,10 @@ goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
 goofi-engine = { path = "../goofi-engine" }
 goofi-signal = { path = "../signal/goofi-signal" }
+goofi-transport = { path = "../goofi-transport" }
+# The native node library, linked here at the composition root — `fresh_graph`'s anchor is what
+# keeps its inventory registrations out of the linker's dead-code pass.
+goofi-nodes = { path = "../goofi-nodes" }
 goofi-view = { path = "../goofi-view" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
@@ -39,7 +43,6 @@ portable-pty = "0.9"
 libc = "0.2"
 
 [dev-dependencies]
-# The shared `_Test*` node library. A dev-dependency only: it flips the feature on for test builds,
-# and a release build never sees it. The link edge itself comes via goofi-engine.
+# Flips the `_Test*` fixtures on for test builds only; a release build never sees them.
 goofi-nodes = { path = "../goofi-nodes", features = ["test-nodes"] }
 tempfile = "3"
