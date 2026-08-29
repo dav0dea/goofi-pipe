@@ -213,6 +213,16 @@ and the first-hand RPC path gates on a precondition instead.
 an entry back into the slot it held resurrects what the forward op promoted away, on top of
 whatever a peer has since built there.
 
+**The graph is the model's authority, and every engine stands behind one trait.** `goofi-graph`
+holds what a patch IS and depends on nothing above `goofi-node`; an engine owns its nodes'
+runtime, health, library and within-engine transport, and registers at one composition root
+(`goofi-bridge`'s `fresh_graph`). Propagation is settled-state: ops record what they touched, and
+one settle per batch hands every engine the same port-resolved view. Cross-engine data rides
+`goofi-transport` — derived iceoryx2 names, latest-wins by decree, rendezvous by
+`open_or_create`, never a protocol between engines. A scheduled engine drains its boundary at its
+own tick; only a doorbell-driven consumer is ever rung. Two skeleton scheduled engines in the
+suite pin the whole seam.
+
 **There is no tick.** Every node owns one thread and schedules itself, waking for a control
 message, a frame on an input, or its own rate cap elapsing. Frames travel node to node over
 shared memory, never through the graph — so no node runs under the graph mutex and no user action

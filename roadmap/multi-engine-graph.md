@@ -333,7 +333,12 @@ which library advertises the type, and the dtype vocabulary).
    dead required-slot guards now surface instead of silently returning, and `_replaceSnapshot`
    lost its unread parameter.
 
-Each step a green checkpoint.
+Each step was a green checkpoint, and each was followed by a three-lens audit whose findings are
+folded in above. The readiness claim is PINNED: `goofi-tests/tests/engines.rs` registers two
+skeleton scheduled engines — audio- and graphics-shaped, each publishing static data at its own
+fixed tick — and walks the whole seam through the one op surface: the merged palette, birth and
+health, a viewer on a foreign slot, data crossing both directions, `nd()` modulation landing
+latest-wins, a rebirth with a fresh generation, and teardown.
 
 ## What this deletes
 
