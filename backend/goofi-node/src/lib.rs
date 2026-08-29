@@ -6,6 +6,35 @@ use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
 pub mod discover;
+pub mod seam;
+pub use seam::{
+    BindingView, BoundVar, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView, Request,
+    Touched,
+};
+
+/// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Uid(pub u64);
+
+impl Uid {
+    pub fn to_hex(self) -> String {
+        format!("{:012x}", self.0)
+    }
+    /// Exactly 12 hex, nothing wider: bounding the domain is what makes `next_uid`'s `+ 1` total
+    /// at every site rather than checked at each one.
+    pub fn from_hex(s: &str) -> Option<Uid> {
+        if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        u64::from_str_radix(s, 16).ok().map(Uid)
+    }
+}
+
+impl std::fmt::Display for Uid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
 
 /// Defines a `pub struct $name(pub String)` error newtype with its Display / Error / `From` impls.
 macro_rules! string_error {

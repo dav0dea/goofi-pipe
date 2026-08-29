@@ -7,9 +7,7 @@ use goofi_core::{Data, Param};
 use goofi_node::ParamKey;
 use serde::{Deserialize, Serialize};
 
-/// Why a node woke (spec §3.2): `0` is a control message, `1..=64` the index of an input slot in
-/// `manifest.inputs`, `65..=128` an `nd()` channel the graph allocated at bind time.
-pub type EventId = u8;
+pub use goofi_node::EventId;
 
 /// An iceoryx2 service name — a wire's identity, which is why slot messages carry no source uid.
 pub type ServiceName = String;

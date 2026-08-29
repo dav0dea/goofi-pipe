@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_node::{
-    ExprMode, Isolation, IsolationCell, NodeCtx, NodeManifest, ParamGroups, ParamKey,
+    ExprMode, Isolation, IsolationCell, NodeCtx, NodeManifest, ParamGroups, ParamKey, Touched,
 };
 use indexmap::IndexMap;
 
@@ -24,29 +24,7 @@ pub mod expr_rewrite;
 pub mod runtime;
 pub mod testing;
 
-/// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Uid(pub u64);
-
-impl Uid {
-    pub fn to_hex(self) -> String {
-        format!("{:012x}", self.0)
-    }
-    /// Exactly 12 hex, nothing wider: bounding the domain is what makes `next_uid`'s `+ 1` total
-    /// at every site rather than checked at each one.
-    pub fn from_hex(s: &str) -> Option<Uid> {
-        if s.len() != 12 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        u64::from_str_radix(s, 16).ok().map(Uid)
-    }
-}
-
-impl std::fmt::Display for Uid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
+pub use goofi_node::Uid;
 
 /// One literal for the writer, the reader and the refusal message, so a bump cannot leave the
 /// message lying about what this build reads. It moves when a format change has to reject an
@@ -479,15 +457,6 @@ pub enum Stream {
     At(Uid, &'static str),
     /// The port the walk stopped at, because nothing feeds it yet.
     Open(Uid),
-}
-
-/// One thing a batch of ops changed, recorded by the op path for the settle that follows. The
-/// delivery half of a write is deferred so one batch yields ONE decision, from settled state.
-enum Touched {
-    /// A consumer input — possibly a port — whose wire set may have moved.
-    Slot(Uid, &'static str),
-    /// A param whose value or binding moved and must reach its node.
-    Param(Uid, ParamKey),
 }
 
 pub struct Graph {
