@@ -170,8 +170,9 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
 /// The `list_nodes` palette catalog, sorted by (category, type), compile-time and runtime types
 /// alike. Hidden test nodes (`_`-prefixed) are excluded.
 pub fn catalog_types(g: &Graph) -> Value {
-    let mut items: Vec<(String, String, Value)> = goofi_node::catalog()
-        .chain(g.dyn_type_manifests())
+    let mut items: Vec<(String, String, Value)> = g
+        .library_manifests()
+        .into_iter()
         .filter(|m| !m.type_name.starts_with('_'))
         .map(|m| {
             (m.category.to_string(), m.type_name.to_string(), node_type_info(m, source_of(g, m.type_name)))

@@ -92,11 +92,6 @@ impl SignalEngine {
         self.evaluator = Some(evaluator);
     }
 
-    /// The patch clock was reset by a `clear`: every node born after computes from the new origin.
-    pub fn reset_clock(&mut self, start: Instant) {
-        self.started = start;
-    }
-
     /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name
     /// is REFUSED and another runtime type's is REPLACED, because a rescan re-registers what it
     /// finds. Answers whether it was added, replaced, or refused.
@@ -119,10 +114,6 @@ impl SignalEngine {
 
     pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
         self.dyn_types.remove(type_name).is_some()
-    }
-
-    pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
-        self.dyn_types.values().map(|dt| dt.manifest).collect()
     }
 
     pub fn find_entry(&self, type_name: &str) -> Option<LibraryEntry> {
@@ -158,6 +149,11 @@ impl SignalEngine {
     }
 
     fn replan(&mut self, view: &GraphView<'_>, key: SlotKey) {
+        // Engines FILTER the whole-graph view: this engine plans only subscriptions its own
+        // nodes hold; a foreign consumer's engine drains its boundary at its own clock.
+        if view.nodes.get(&key.0).is_none_or(|n| n.engine != self.id()) {
+            return;
+        }
         let desired = desired_wires(view, &key);
         let previous = self.wire.planned(&key);
         // An In set that did not move carries nothing — a batch that ends where it started says
@@ -167,6 +163,9 @@ impl SignalEngine {
         }
         let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
         let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
+        // A begin cancels the key's previous sequence — and any ack collected for it, or a stale
+        // deferred advance would step the NEW sequence past a phase nobody acked.
+        self.pending_advance.retain(|k| k != &key);
         self.wire.begin(key.clone(), desired, removed, added);
         self.advance(view, key);
     }
@@ -439,9 +438,8 @@ impl Engine for SignalEngine {
     }
 
     fn settle(&mut self, view: &GraphView<'_>, touched: &[Touched]) {
-        // Readies first: an attach re-plans from an EMPTY base — a rebirth changes no desired
-        // set, so only forgetting the planned base can express it — and what it begins must not
-        // be clobbered by this batch's own touches.
+        // Readies first: an attach re-plans from an EMPTY base, and what it begins must not be
+        // clobbered by this batch's own touches.
         for uid in std::mem::take(&mut self.pending_ready) {
             for key in self.keys_touching(view, uid) {
                 self.wire.forget_planned(&key);
@@ -498,6 +496,11 @@ impl Engine for SignalEngine {
                 self.wire.send(uid, runtime::Control::RefreshParam { key });
             }
         }
+    }
+
+    /// Every node born after computes from the new origin.
+    fn reset_clock(&mut self, origin: Instant) {
+        self.started = origin;
     }
 
     /// Stop every node and WAIT for each to release its shared memory — a ceiling, because only a

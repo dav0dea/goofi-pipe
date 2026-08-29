@@ -99,20 +99,13 @@ impl WirePlanner {
         }
     }
 
-    /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces. The sink
-    /// OWNS the graph's end of that node's services, so it is released here or not at all;
-    /// [`Self::pending`] survives, since a rebirth is the same node.
-    pub(crate) fn detach(&mut self, uid: Uid) {
+    /// Forget ONE node the graph destroyed — a removal, or the corpse a restart replaces. The
+    /// sink OWNS the graph's end of that node's services, so it is released here or not at all.
+    pub(crate) fn forget(&mut self, uid: Uid) {
         self.sinks.remove(&uid);
         self.sequences.retain(|(consumer, _), _| *consumer != uid);
         self.awaiting.retain(|_, (consumer, _)| *consumer != uid);
         self.planned.retain(|(consumer, _), _| *consumer != uid);
-    }
-
-    /// [`Self::detach`], plus the queue: the node at this uid is RETIRED rather than reborn, so
-    /// anything still held for it addresses nobody.
-    pub(crate) fn forget(&mut self, uid: Uid) {
-        self.detach(uid);
         self.pending.retain(|(to, _)| *to != uid);
     }
 

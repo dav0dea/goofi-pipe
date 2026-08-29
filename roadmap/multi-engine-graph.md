@@ -61,19 +61,21 @@ settled state — and `insert` carries that graph-minted generation, plus type i
 resolves against its OWN library; never a build closure, which is signal vocabulary no other
 engine can name. There is NO restart method: a restart is graph-side record work (the param fold,
 the orphan-link prune, the rebind) plus trait-level remove+insert with a fresh generation — and
-the remove half of a restart keeps the engine's pending request queue, because a rebirth is the
-same node, where a true remove purges it (today's detach/forget split, kept). `clear` is N
+remove purges the engine's pending request queue for that uid, restart included: a held request
+addresses an INSTANCE, and the instance a rebirth makes never asked for it. `clear` is N
 explicit removes plus ONE settle; `load` is clear plus N explicit inserts plus one settle — a
 removal derived from absence-in-the-view would be the engine-observes-the-graph mirror this file
 rejects. Rename's `nd()` source rewrite stays on the op path; only its re-resolution rides settle.
-`drain` stays a PULL — the bridge's existing 1 ms sweep calls it through a Graph method; a
-single-threaded engine queues statuses on its own thread and hands them over. The signal engine
-receives `instance`, the evaluator and the patch clock origin at construction; `clear()`'s clock
-reset reaches engines as part of the settle that follows it. Engines are registered at the
-composition root — which is `goofi-cli`: it links `goofi-nodes`, constructs the signal engine
-(which carries the inventory linker anchor and the boot reclaim sweep), and passes the engine set
-to `Graph::new(engines)`, keyed by the engine tag on the manifest. Adding an engine is one line
-there plus tagged manifests; nothing engine-specific enters the graph.
+`drain` stays a PULL — the bridge's drain worker calls it through a Graph method, woken by the
+report-side notify; a single-threaded engine queues statuses on its own thread and hands them
+over. The signal engine receives `instance` and the evaluator at construction; `clear()`'s clock
+reset reaches every engine through the trait's `reset_clock`, a default no-op for an engine with
+no patch time. Engines are registered at the composition root — which is `goofi-cli`: it links
+`goofi-nodes`, constructs the signal engine (which carries the inventory linker anchor and the
+boot reclaim sweep), and passes the engine set to `Graph::new(engines)`. A type's engine is WHICH
+library advertises it — no tag field exists anywhere; two libraries claiming one name resolve to
+the first registered advertiser, signal first. Adding an engine is one line there plus its
+library; nothing engine-specific enters the graph.
 
 **Settle carries a touched set, because a settled view has no delta.** Link, unlink and topology
 collapse into settle bare — the signal planner's `planned` map is already their diff base. Param
@@ -189,12 +191,13 @@ producer engine must read a consumer's doorbell ids to ring them — and `EventI
 `goofi-transport` with the doorbell machinery.
 
 **`GraphView` presents port-resolved leaf-to-leaf edges**, computed once by the graph at the
-settle point, with "open port" as an explicit answer (today's `Stream::Open`) — never raw links,
+settle point; a port with nothing behind it resolves to NO edge, which IS the open-port answer,
+because a slot message carries the full desired set and absence empties it — never raw links,
 or every engine re-implements the relay walk and the three copies drift; a cross-engine edge
 cannot even be CLASSIFIED from a link that ends at an engine-less port. Its nodes carry the Leaf
 record INCLUDING the derived binding state (rewritten source, resolved vars with event ids,
 compiled id, trigger flag) — "bindings-as-authored" must not be read as source-strings-only —
-plus engine tags, generations, `instance`, and per-slot event-id inputs (an input slot's id is
+plus each node's engine id, generations, `instance`, and per-slot event-id inputs (an input slot's id is
 its manifest position). The patch clock origin is NOT a settle input: it rides the explicit
 insert path, as today's spawn does.
 
@@ -203,16 +206,17 @@ LANDED in step 1 — two fields came OFF `NodeManifest`: `factory` and `isolatio
 engine's business — each engine's library maps a type name to its own factory and tier, and
 `library()` advertises the tier as plain data so the bridge keeps its `node state` display.
 Without that strip the split could not compile: the shared manifest named `Box<dyn Node>` and
-`IsolationCell`, both of which move up. The inventory unit is now `NodeClass`. Stays in `goofi-node` (shared): the stripped manifest +
-slot decls (gaining the engine tag, landed with a constructor or default so the many struct
-literals do not each need a hand edit), `Uid`, the param vocabulary (`ParamGroups`, `ParamKey`,
+`IsolationCell`, both of which move up. The inventory unit is now `NodeClass`. Stays in
+`goofi-node` (shared): the stripped manifest + slot decls (NO engine tag was added — which
+library advertises a type is its engine), `Uid`, the param vocabulary (`ParamGroups`, `ParamKey`,
 `ParamDecl`, `ParamSpec`, `Params`), the expression vocabulary (`ExprDecl`, `BindingId`,
 `Compiled`, `EvalCtx`, `ExprEvaluator`, the scanners), plus the seam: the `Engine` trait,
 `GraphView`, `Touched`, `Request`, and the six-variant health `Status` with
 `NodeStage`/`NodeFault`. Moves to `goofi-signal`: the `Node` trait and factories
 (`setup()`/`process()` is the SIGNAL author contract — a CLAP plugin never implements it),
-`Inputs`/`Outputs`, `RunPolicy` and the common decls, `Isolation`, `WireStatus`, and all of
-`discover.rs`. Ripple: `goofi-nodes` and `goofi-python` depend on `goofi-signal` — which is
+`Inputs`/`Outputs`, `RunPolicy` and the common decls, `WireStatus`, and all of `discover.rs`.
+`Isolation` and `IsolationCell` stay shared after all: the seam's `LibraryEntry` carries the live
+tier cell, so the bridge's `node state` reads one door for every engine. Ripple: `goofi-nodes` and `goofi-python` depend on `goofi-signal` — which is
 honest, they are signal nodes; the pymod does not (it imports nothing from `goofi-node` and stays
 under `signal/` on disk unchanged).
 
@@ -233,7 +237,7 @@ known-vs-addressable, and each engine gates its own dispatch.
 
 **A settle point, and it is the prerequisite** (LANDED, step 2 first half). Inline re-planning is
 gone: ops record `Touched` and `Graph::settle` — a public method — delivers each item once, from
-settled state. `resync_and_broadcast` calls it after every write op, and the 1 ms drain worker
+settled state. `resync_and_broadcast` calls it after every write op, and the drain worker
 calls it after applying statuses, so a re-plan that needs settled state lands without waiting for
 an edit. The In-slot short-circuit landed with it, scoped to the wire plane (param delivery rides
 `Touched`, not the wire diff, so the short-circuit cannot silence it). Two rules the build
@@ -298,9 +302,9 @@ and the dtype vocabulary).
 1. DONE — Split `Leaf` by writer (Health as construction-then-drain), fix the `RefreshOptions`
    record-write via the options overlay, and strip `factory`/`isolation` off `NodeManifest` —
    all in place.
-2. Introduce the trait + the settle point with `Touched`, still one crate, suite green. The
-   settle point, the `Touched` plane and the `WireStatus` nesting are DONE; the trait, its
-   `GraphView` and the engine extraction remain.
+2. DONE — Introduce the trait + the settle point with `Touched`, still one crate, suite green:
+   the settle point, the `Touched` plane, the `WireStatus` nesting, the `Engine` trait with
+   `GraphView`, and the signal engine extracted behind it.
 3. Carve the crates and the directory hierarchy — then almost purely a file move, with
    `tests/transport.rs` renamed and re-pointed in the same commit (it drives the whole
    `runtime::` surface by name, which the carve splits across `goofi-transport` and

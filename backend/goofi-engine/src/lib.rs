@@ -660,6 +660,11 @@ impl Graph {
             .chain(self.extra_engines.iter().map(|e| e.as_ref() as &dyn Engine))
     }
 
+    fn engines_mut(&mut self) -> impl Iterator<Item = &mut dyn Engine> {
+        std::iter::once(&mut self.signal as &mut dyn Engine)
+            .chain(self.extra_engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine))
+    }
+
     fn engine_mut(&mut self, id: &str) -> Option<&mut dyn Engine> {
         if id == self.signal.id() {
             return Some(&mut self.signal as &mut dyn Engine);
@@ -667,8 +672,19 @@ impl Graph {
         self.extra_engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
     }
 
+    /// The one merged view the palette reads: every engine's library, in registration order.
+    pub fn library_manifests(&self) -> Vec<&'static NodeManifest> {
+        self.engines().flat_map(|e| e.library()).map(|l| l.manifest).collect()
+    }
+
+    /// The manifest `type_name` resolves to, from whichever engine's library advertises it.
+    pub fn type_manifest(&self, type_name: &str) -> Option<&'static NodeManifest> {
+        self.library_entry(type_name).map(|(_, l)| l.manifest)
+    }
+
     /// The library entry `type_name` resolves to, and the id of the engine that advertised it —
-    /// which IS the engine the type belongs to.
+    /// which IS the engine the type belongs to. Two libraries claiming one name resolve to the
+    /// FIRST advertiser, signal first — a decided outcome, not an accident.
     fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
         if let Some(entry) = self.signal.find_entry(type_name) {
             return Some((self.signal.id(), entry));
@@ -802,14 +818,6 @@ impl Graph {
     /// else — built-ins and the shipped node directory alike — reads as shipped.
     pub fn is_patch_type(&self, type_name: &str) -> bool {
         self.patch_types.contains(type_name)
-    }
-
-    /// The manifests of all runtime-registered node types, sorted by type name; the compile-time
-    /// catalog is enumerated separately via `goofi_node::catalog`.
-    pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
-        let mut ms: Vec<&'static NodeManifest> = self.signal.dyn_type_manifests();
-        ms.sort_by_key(|m| m.type_name);
-        ms
     }
 
     pub fn node_count(&self) -> usize {
@@ -1955,10 +1963,8 @@ impl Graph {
             self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
         let params = self.default_params_of(type_name, Some(params))?;
 
-        // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
-        // generation bump the reborn node re-opens names its predecessor's ports still hold.
-        // The engine's remove halts the corpse and forgets its wires BEFORE the new generation
-        // reports `Ready`; while a corpse stands addressable, messages reach dead services.
+        // A restart is a BIRTH at this uid: without the generation bump the reborn node re-opens
+        // names the corpse's ports still hold, and remove halts the corpse before the new Ready.
         let old_engine = self.leaf(uid).map(|e| e.engine).expect("looked up above");
         let generation = self.bump_generation(uid);
         if let Some(e) = self.engine_mut(old_engine) {
@@ -2484,8 +2490,6 @@ impl Graph {
     }
 
     /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
-    /// 1 ms drain cannot deliver the batch's intermediates.
-    /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
     /// drain cannot deliver the batch's intermediates.
     pub fn hold_settle(&mut self) {
         self.open_batches += 1;
@@ -2620,7 +2624,10 @@ impl Graph {
         // The node clock belongs to the PATCH: one loaded an hour in must compute what it would
         // have at boot. Safe only because every reader of this clock was dropped just above.
         self.start = Instant::now();
-        self.signal.reset_clock(self.start);
+        let start = self.start;
+        for e in self.engines_mut() {
+            e.reset_clock(start);
+        }
     }
 
     /// Take the name a RESTORE asks for. It goes through the same gate a create does, so an

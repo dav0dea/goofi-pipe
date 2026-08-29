@@ -526,11 +526,14 @@ pub async fn serve_app(
     axum::serve(listener, app(state, spa, dev_routes)).await
 }
 
-/// Native node type names visible in the catalog, `_`-prefixed test nodes hidden.
-pub fn catalog_type_names() -> Vec<String> {
-    goofi_node::catalog()
+/// Every node type name visible in the catalog — all engines' libraries plus the unavailable
+/// overlay, `_`-prefixed test nodes hidden.
+pub fn catalog_type_names(g: &Graph) -> Vec<String> {
+    g.library_manifests()
+        .into_iter()
         .filter(|m| !m.type_name.starts_with('_'))
         .map(|m| m.type_name.to_string())
+        .chain(g.unavailable_types().map(|(name, _)| name.to_string()))
         .collect()
 }
 

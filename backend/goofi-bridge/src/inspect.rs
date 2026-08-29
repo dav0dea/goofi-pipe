@@ -253,10 +253,8 @@ pub fn globals(g: &Graph) -> Value {
 
 /// `library get`: a node type's text where it has one, and its provenance either way.
 pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
-    let native = goofi_node::find(ty);
-    let manifest = native
-        .or_else(|| g.dyn_type_manifests().into_iter().find(|m| m.type_name == ty))
-        .ok_or_else(|| format!("library get: no node type `{ty}`"))?;
+    let manifest =
+        g.type_manifest(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
     let mut info = crate::schemas::node_type_info(
         manifest,
         crate::schemas::source_of(g, ty),

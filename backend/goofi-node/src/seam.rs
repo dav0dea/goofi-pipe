@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 
@@ -105,11 +105,14 @@ pub struct GraphView<'a> {
 
 impl GraphView<'_> {
     /// A consumer input slot's desired producers, in wire order.
-    pub fn wires_into(&self, uid: Uid, slot: &str) -> impl Iterator<Item = (Uid, &'static str)> + '_ {
-        let want = (uid, slot.to_string());
+    pub fn wires_into<'s>(
+        &'s self,
+        uid: Uid,
+        slot: &'s str,
+    ) -> impl Iterator<Item = (Uid, &'static str)> + 's {
         self.edges
             .iter()
-            .filter(move |e| e.consumer.0 == want.0 && e.consumer.1 == want.1)
+            .filter(move |e| e.consumer.0 == uid && e.consumer.1 == slot)
             .map(|e| e.producer)
     }
 }
@@ -176,5 +179,7 @@ pub trait Engine: Send {
     /// Hand over every queued health report. A pull: the caller owns the pace.
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize;
     fn request(&mut self, uid: Uid, request: Request);
+    /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
+    fn reset_clock(&mut self, _origin: Instant) {}
     fn shutdown(&mut self);
 }

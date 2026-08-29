@@ -406,11 +406,12 @@ async fn run(
     state.scan_nodes = Arc::new(move |g, dir| register_routed(g, dir, &python));
     state.system_nodes = node_dirs(&extra_nodes, std::path::Path::new(DEFAULT_NODES_DIR).is_dir());
     ensure_packages(&state.system_nodes, &subproc_python);
-    let discovered = if state.system_nodes.is_empty() { Vec::new() } else { boot_scan(&state) };
+    if !state.system_nodes.is_empty() {
+        boot_scan(&state);
+    }
 
     let code = if list_nodes {
-        let mut names = goofi_bridge::catalog_type_names();
-        names.extend(discovered);
+        let names = goofi_bridge::catalog_type_names(&state.graph.lock().unwrap());
         println!("{} node types: {}", names.len(), names.join(", "));
         0
     // An arm of this chain rather than an early `return`: only the tail of this function gives
@@ -776,41 +777,31 @@ const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node disc
 
 /// The boot scan, reported. It runs the bridge's own `rescan`, so the baseline the first refresh
 /// diffs against IS this scan.
-fn boot_scan(state: &AppState) -> Vec<String> {
+fn boot_scan(state: &AppState) {
     let (found, dirs) = {
         let mut g = state.graph.lock().unwrap();
         let patch = state.mount();
         (goofi_bridge::rescan(state, &mut g, &patch).1, state.system_nodes.clone())
     };
     let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
-    let mut names = Vec::new();
     for t in found {
         if !note_registration(&t.type_name, t.registration) {
             continue;
         }
-        let tier = match &t.tier {
-            Tier::InProcess => {
-                n_in += 1;
-                "in-proc"
-            }
-            Tier::Subprocess => {
-                n_sub += 1;
-                "subproc"
-            }
+        match &t.tier {
+            Tier::InProcess => n_in += 1,
+            Tier::Subprocess => n_sub += 1,
             Tier::Unavailable(reason) => {
                 eprintln!("  node `{}` unavailable: {reason}", t.type_name);
                 n_bad += 1;
-                "unavailable"
             }
-        };
-        names.push(format!("{} ({tier})", t.type_name));
+        }
     }
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
     let from = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ");
     println!(
         "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
     );
-    names
 }
 
 // The suite lives in `goofi-tests`; a binary has no lib target for it to reach into.
