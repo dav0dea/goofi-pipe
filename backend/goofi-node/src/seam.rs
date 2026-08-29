@@ -3,10 +3,12 @@
 //! transport, and never at the graph.
 
 use std::collections::HashMap;
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use goofi_core::Param;
 
-use crate::{BindingId, NodeManifest, ParamGroups, ParamKey, Status, Uid};
+use crate::{BindingId, IsolationCell, NodeManifest, ParamGroups, ParamKey, Status, Uid};
 
 /// A doorbell id: `0` is a control message, `1..=64` the index of an input slot in
 /// `manifest.inputs`, `65..=128` an expression channel the graph allocated at bind time.
@@ -23,6 +25,46 @@ pub enum BoundVar {
     /// The graph could not resolve it: an unknown node, a slot that does not exist, an ambiguous
     /// bare `nd()` on a multi-output producer, a global that is not defined.
     Missing { var: String, reason: String },
+}
+
+impl BoundVar {
+    /// The producer wire a stream variable subscribes, `None` for the other kinds.
+    pub fn wire(&self) -> Option<(Uid, &'static str)> {
+        match self {
+            BoundVar::Stream { producer, slot, .. } => Some((*producer, slot)),
+            _ => None,
+        }
+    }
+}
+
+/// Wakes the status drain the moment any engine has something to hand over — the alternative to a
+/// poll-to-discover. Every node report notifies; the worker parks on it between paced duties.
+#[derive(Default)]
+pub struct DrainWaker {
+    woke: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl DrainWaker {
+    pub fn notify(&self) {
+        *self.woke.lock().unwrap() = true;
+        self.cv.notify_one();
+    }
+
+    /// Park until a notify or `timeout`, and consume the wake either way.
+    pub fn wait_timeout(&self, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut woke = self.woke.lock().unwrap();
+        while !*woke {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let (guard, _) = self.cv.wait_timeout(woke, left).unwrap();
+            woke = guard;
+        }
+        *woke = false;
+    }
 }
 
 /// One port-resolved leaf-to-leaf edge, in link order — which IS a multi input's wire order.
@@ -93,7 +135,8 @@ pub enum Request {
 #[derive(Clone, Copy)]
 pub struct LibraryEntry {
     pub manifest: &'static NodeManifest,
-    pub tier: &'static str,
+    /// The display tier's live cell — a Python type's runtime demotion reads through it.
+    pub isolation: &'static IsolationCell,
 }
 
 /// An engine: the runtime authority for its nodes. The graph applies every op to the MODEL and
@@ -105,6 +148,9 @@ pub trait Engine: Send {
     /// Whether this engine's nodes wake on doorbells. A scheduled engine drains its boundary
     /// subscribers before each tick instead, and a producer facing it rings nothing.
     fn doorbell_driven(&self) -> bool;
+    /// Whether this engine's drain marked work only a settle can finish — a Ready it collected,
+    /// an ack that completed a phase. What makes the memo rule honest.
+    fn dirty(&self) -> bool;
     /// Every node class this engine can build, advertised on request.
     fn library(&self) -> Vec<LibraryEntry>;
     /// The record a fresh instance of `type_name` starts from: the declared defaults plus this

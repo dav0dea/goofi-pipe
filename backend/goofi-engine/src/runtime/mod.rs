@@ -11,6 +11,39 @@ use goofi_node::{
     RunPolicy,
 };
 pub use goofi_node::NodeFault;
+
+/// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
+/// worker polling to discover one.
+pub struct WakingTransport {
+    pub inner: Arc<dyn Transport>,
+    pub waker: Arc<goofi_node::DrainWaker>,
+}
+
+impl Transport for WakingTransport {
+    fn wait(&self, timeout: Option<Duration>) -> Vec<EventId> {
+        self.inner.wait(timeout)
+    }
+    fn drain_control(&self) -> Vec<Envelope> {
+        self.inner.drain_control()
+    }
+    fn wire_in(&self, slot: &str, services: &[ServiceName]) -> Result<(), String> {
+        self.inner.wire_in(slot, services)
+    }
+    fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String> {
+        self.inner.wire_out(slot, targets)
+    }
+    fn drain_inputs(&self) -> Vec<(String, usize, Data)> {
+        self.inner.drain_inputs()
+    }
+    fn publish(&self, slot: &str, frame: &Data) {
+        self.inner.publish(slot, frame)
+    }
+    fn report(&self, status: WireStatus) {
+        self.inner.report(status);
+        self.waker.notify();
+    }
+}
+
 use indexmap::IndexMap;
 
 mod mailbox;

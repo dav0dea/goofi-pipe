@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_node::{
-    ExprMode, Isolation, IsolationCell, NodeCtx, NodeManifest, ParamGroups, ParamKey, Touched,
+    BindingView, BoundVar, DrainWaker, Edge, Engine, ExprMode, GraphView, Isolation,
+    IsolationCell, LibraryEntry, NodeCtx, NodeManifest, NodeView, ParamGroups, ParamKey, Request,
+    Touched,
 };
 use indexmap::IndexMap;
 
@@ -24,6 +26,9 @@ pub mod expr_rewrite;
 pub mod runtime;
 pub mod testing;
 
+mod signal;
+pub use signal::SignalEngine;
+
 pub use goofi_node::Uid;
 
 /// One literal for the writer, the reader and the refusal message, so a bump cannot leave the
@@ -34,34 +39,6 @@ const MANIFEST_VERSION: i64 = 1;
 /// What a name has to be, said once — it is the tail of every refusal about one.
 pub const NAME_RULE: &str =
     "a letter or _ then letters, digits or _, and not a Python keyword — an expression reads a name as an attribute";
-
-/// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
-/// `add_node` answers and *addressable* only once it reports [`runtime::Status::Ready`].
-struct NodeHost {
-    /// A flag rather than a `Control::Terminate`, because a node removed before it was
-    /// addressable has no sink to receive one.
-    halt: Arc<runtime::Halt>,
-    /// `None` when the services could not be created: the node then exists carrying its boot
-    /// error and nothing else.
-    channel: Option<Arc<runtime::NodeChannel>>,
-}
-
-impl NodeHost {
-    /// Never joined here: the thread may be inside a long `process()`, and both callers hold the
-    /// graph mutex.
-    fn signal_stop(&self) {
-        self.halt.stop();
-        if let Some(channel) = &self.channel {
-            channel.wake();
-        }
-    }
-}
-
-impl Drop for NodeHost {
-    fn drop(&mut self) {
-        self.signal_stop();
-    }
-}
 
 /// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
 /// so it carries a thread and params; a facade and a port do not, so they carry neither.
@@ -81,7 +58,8 @@ struct Leaf {
     /// The type's cell, captured at birth — shared per type, so a runtime demotion of a Python
     /// type reads through here too.
     isolation: &'static IsolationCell,
-    host: NodeHost,
+    /// The id of the engine whose library resolved this node's type — its runtime authority.
+    engine: &'static str,
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
     params: Arc<ParamGroups>,
     /// The graph resolves each binding's references and ships it; the NODE evaluates it.
@@ -351,17 +329,6 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
 /// a bare `fn` pointer cannot close over. One definition, shared with every discovery backend.
 pub use goofi_node::discover::NodeFactory;
 
-/// A [`NodeFactory`] shared with the node's own thread, which is where the build happens — see
-/// [`runtime::NodeBuild`].
-type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
-
-/// A runtime-registered type: the build half a [`goofi_node::NodeClass`] carries for a built-in.
-struct DynType {
-    manifest: &'static NodeManifest,
-    isolation: &'static IsolationCell,
-    factory: SharedFactory,
-}
-
 /// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the CALLER
 /// can tell a rescan's refresh from two node files claiming one name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,30 +371,6 @@ impl ExprBinding {
     }
 }
 
-/// One resolved expression variable. The wire projection ([`runtime::Var`]) keeps the service name
-/// and drops the uid — a node addresses a producer by service; the graph re-plans by uid.
-#[derive(Clone, Debug)]
-enum BoundVar {
-    /// A producer's output slot, and the doorbell id it rings this consumer with. The event-id
-    /// budget is `65..=128`, so a node holds at most 64 of these.
-    Stream { var: String, producer: Uid, slot: &'static str, event_id: runtime::EventId },
-    /// A `globals.*` read, resolved and shipped inline — a globals edit re-sends the binding.
-    Value { var: String, value: Param },
-    /// The graph could not resolve it: an unknown node, a slot that does not exist, an ambiguous
-    /// bare `nd()` on a multi-output producer, a global that is not defined.
-    Missing { var: String, reason: String },
-}
-
-impl BoundVar {
-    /// The producer wire this variable subscribes to, if it resolved to one.
-    fn wire(&self) -> Option<runtime::plan::Wire> {
-        match self {
-            BoundVar::Stream { producer, slot, .. } => Some((*producer, *slot)),
-            _ => None,
-        }
-    }
-}
-
 /// [`ExprBinding`] projected for the bridge and the `.gfi`.
 pub struct ExprInfo {
     pub source: String,
@@ -460,8 +403,6 @@ pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
     next_uid: u64,
-    /// Types registered at runtime. Survives `clear()`/`load_doc`: catalog, not content.
-    dyn_types: HashMap<&'static str, DynType>,
     /// The panel arrangement, held FLAT — the fifth doc root. Every mutation is an ordinary
     /// command, so the layout has exactly one projection, as nodes and links do.
     arrangement: layout::Layout,
@@ -486,9 +427,13 @@ pub struct Graph {
     scope_of: HashMap<Uid, Option<Uid>>,
     /// Patch-scoped globals, system ones seeded and re-asserted by every `clear`/load.
     globals: goofi_core::globals::GlobalStore,
-    /// The async runtime's wire plane: each live node's control channel, the per-slot sequence in
-    /// flight, and every uid's birth generation.
-    wire: runtime::plan::WirePlanner,
+    /// The signal engine — always present, and reached concretely for its signal-only doors
+    /// (the evaluator, the Python type registry). Every generic path goes through the trait.
+    signal: SignalEngine,
+    /// Engines registered beside it — reached only through the trait.
+    extra_engines: Vec<Box<dyn Engine>>,
+    /// Shared with every engine and the drain worker: a report notifies, the worker parks on it.
+    waker: Arc<DrainWaker>,
     /// What service names are scoped by. Random, not the bridge's instance id: a service name has
     /// to be unique on the MACHINE, across this process's own graphs and every stale record.
     instance: String,
@@ -511,10 +456,6 @@ impl Default for Graph {
         Self::new()
     }
 }
-
-/// A CEILING, not a join: a wedged node must not be able to wedge the exit. What one that misses
-/// it leaves behind is what [`runtime::reclaim_stale_resources`] takes on the next startup.
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 impl Drop for Graph {
     /// A node's transport is owned by its own thread and releases its segments when it DROPS, so
@@ -554,22 +495,26 @@ impl Graph {
         // What a crashed run left, reclaimed at startup rather than by whoever opens the first
         // port — which used to be the user's first add (see `runtime::sweep_once`).
         runtime::sweep_once();
+        let instance = runtime::service_instance();
+        let waker = Arc::new(DrainWaker::default());
+        let start = Instant::now();
         Graph {
+            signal: SignalEngine::new(instance.clone(), start, waker.clone()),
+            extra_engines: Vec::new(),
+            waker,
             nodes: IndexMap::new(),
             links: Vec::new(),
             next_uid: 1,
-            dyn_types: HashMap::new(),
             unavailable: std::collections::BTreeMap::new(),
             patch_types: std::collections::HashSet::new(),
             arrangement: layout::Layout::default(),
             arrangement_warning: None,
             viewpoint: serde_json::Value::Null,
-            start: Instant::now(),
+            start,
             evaluator: None,
             scope_of: HashMap::new(),
             globals: goofi_core::globals::GlobalStore::new(),
-            wire: runtime::plan::WirePlanner::default(),
-            instance: runtime::service_instance(),
+            instance,
             generations: HashMap::new(),
             refreshed: Vec::new(),
             touched: Vec::new(),
@@ -580,21 +525,11 @@ impl Graph {
     /// Stop every node and WAIT for each to release its shared memory. The waiting is why this is
     /// not what `clear()` does: only a process about to EXIT has no "a moment later".
     pub fn shutdown(&mut self) {
-        for (_, leaf) in self.leaves() {
-            leaf.host.signal_stop();
+        self.signal.shutdown();
+        for e in &mut self.extra_engines {
+            e.shutdown();
         }
-        let deadline = Instant::now() + SHUTDOWN_WAIT;
-        while self.leaves().any(|(_, l)| !l.host.halt.released()) {
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        // The graph's OWN end of each node goes here too: `NodeChannel` holds an iceoryx2 node of
-        // its own, and the wire planner keeps a SECOND handle on it.
         self.nodes.clear();
-        self.wire.reset_channels();
-        // Whatever the batch touched addressed nodes this clear destroyed.
         self.touched.clear();
     }
 
@@ -704,7 +639,46 @@ impl Graph {
     /// Inject the param-expression evaluator (pyo3, from goofi-python). Wired by the CLI at
     /// startup; without it, expression bindings are stored but not evaluated.
     pub fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
-        self.evaluator = Some(evaluator);
+        self.evaluator = Some(evaluator.clone());
+        self.signal.set_evaluator(evaluator);
+    }
+
+    /// Register another engine beside the signal one. Its library joins the merged view, and its
+    /// nodes ride every generic path — the trait is the whole integration.
+    pub fn register_engine(&mut self, engine: Box<dyn Engine>) {
+        self.extra_engines.push(engine);
+    }
+
+    /// What every engine and the drain worker share: a node report notifies it, the worker parks
+    /// on it between paced duties — the alternative to a poll-to-discover.
+    pub fn drain_waker(&self) -> Arc<DrainWaker> {
+        self.waker.clone()
+    }
+
+    fn engines(&self) -> impl Iterator<Item = &dyn Engine> {
+        std::iter::once(&self.signal as &dyn Engine)
+            .chain(self.extra_engines.iter().map(|e| e.as_ref() as &dyn Engine))
+    }
+
+    fn engine_mut(&mut self, id: &str) -> Option<&mut dyn Engine> {
+        if id == self.signal.id() {
+            return Some(&mut self.signal as &mut dyn Engine);
+        }
+        self.extra_engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
+    }
+
+    /// The library entry `type_name` resolves to, and the id of the engine that advertised it —
+    /// which IS the engine the type belongs to.
+    fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
+        if let Some(entry) = self.signal.find_entry(type_name) {
+            return Some((self.signal.id(), entry));
+        }
+        self.extra_engines.iter().find_map(|e| {
+            e.library()
+                .into_iter()
+                .find(|l| l.manifest.type_name == type_name)
+                .map(|l| (e.id(), l))
+        })
     }
 
     /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name is
@@ -715,31 +689,26 @@ impl Graph {
         factory: NodeFactory,
         isolation: &'static IsolationCell,
     ) -> Registration {
-        let name = manifest.type_name;
-        if goofi_node::find(name).is_some() {
-            eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
-            return Registration::Refused;
-        }
         // A name that loads now is not unloadable any more: leaving the greyed row standing would
         // give one name two palette rows.
-        self.unavailable.remove(name);
-        match self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }) {
-            Some(_) => Registration::Replaced,
-            None => Registration::Added,
+        let registration = self.signal.register_dyn_type(manifest, factory, isolation);
+        if registration != Registration::Refused {
+            self.unavailable.remove(manifest.type_name);
         }
+        registration
     }
 
     /// Forget a runtime type — a rescan whose file has vanished. ONE door for both registries. Live
     /// instances are untouched: removal stops the next `add_node` and the load gate, nothing more.
     pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
-        let had_dyn = self.dyn_types.remove(type_name).is_some();
+        let had_dyn = self.signal.remove_dyn_type(type_name);
         self.unavailable.remove(type_name).is_some() || had_dyn
     }
 
     /// Whether a type name resolves to either the compile-time catalog or a
     /// runtime-registered type.
     fn known_type(&self, type_name: &str) -> bool {
-        goofi_node::find(type_name).is_some() || self.dyn_types.contains_key(type_name)
+        self.library_entry(type_name).is_some()
     }
 
     /// The ONE phrasing for a rejected type, shared by `build_node` and the load gate. An
@@ -813,7 +782,7 @@ impl Graph {
         if goofi_node::find(&type_name).is_some() {
             return false;
         }
-        self.dyn_types.remove(type_name.as_str());
+        self.signal.remove_dyn_type(type_name.as_str());
         self.unavailable.insert(type_name, reason);
         true
     }
@@ -838,8 +807,7 @@ impl Graph {
     /// The manifests of all runtime-registered node types, sorted by type name; the compile-time
     /// catalog is enumerated separately via `goofi_node::catalog`.
     pub fn dyn_type_manifests(&self) -> Vec<&'static NodeManifest> {
-        let mut ms: Vec<&'static NodeManifest> =
-            self.dyn_types.values().map(|dt| dt.manifest).collect();
+        let mut ms: Vec<&'static NodeManifest> = self.signal.dyn_type_manifests();
         ms.sort_by_key(|m| m.type_name);
         ms
     }
@@ -901,11 +869,9 @@ impl Graph {
         self.leaf(uid).map(|e| e.isolation.get())
     }
 
-    /// A TYPE's tier: the compile-time catalog, else a runtime-registered type.
+    /// A TYPE's tier, from whichever engine's library advertises it.
     pub fn type_tier(&self, type_name: &str) -> Option<Isolation> {
-        goofi_node::find_class(type_name)
-            .map(|c| c.isolation.get())
-            .or_else(|| self.dyn_types.get(type_name).map(|dt| dt.isolation.get()))
+        self.library_entry(type_name).map(|(_, l)| l.isolation.get())
     }
 
     /// Derived fresh on read, so a binding that recovers on a node which never runs again still
@@ -959,43 +925,16 @@ impl Graph {
             None => self.mint(),
         }
     }
-
-    /// The manifest for `type_name` — the compile-time catalog, else a runtime-registered type.
-    fn manifest_of(&self, type_name: &str) -> Result<&'static NodeManifest, String> {
-        goofi_node::find(type_name)
-            .or_else(|| self.dyn_types.get(type_name).map(|dt| dt.manifest))
-            .ok_or_else(|| self.reject_type(type_name))
-    }
-
     /// The params a fresh instance of `type_name` starts from, resolved WITHOUT constructing the
-    /// node — the `.gfi` load folds the saved values in before building.
-    fn default_params_of(&self, type_name: &str) -> Result<ParamGroups, String> {
-        let m = self.manifest_of(type_name)?;
-        Ok(goofi_node::with_common(m.default_params(), m))
-    }
-
-    /// Construct (but do not insert) a node by type name — the shared front half of `add_node` and
-    /// `add_node_at`.
-    fn build_node(
-        &self,
-        type_name: &str,
-        params: Option<ParamGroups>,
-    ) -> Result<(&'static NodeManifest, &'static IsolationCell, ParamGroups, runtime::NodeBuild), String> {
-        let p = match params {
-            // Supplied params still get `common` NORMALIZED: a caller may hand over a partial
-            // group, and the type decides a missing key's default.
-            Some(p) => goofi_node::with_common(p, self.manifest_of(type_name)?),
-            None => self.default_params_of(type_name)?,
-        };
-        if let Some(c) = goofi_node::find_class(type_name) {
-            let f = c.factory;
-            Ok((&c.manifest, c.isolation, p, Box::new(move |_| f())))
-        } else if let Some(dt) = self.dyn_types.get(type_name) {
-            let f = dt.factory.clone();
-            Ok((dt.manifest, dt.isolation, p, Box::new(move |p| f(p))))
-        } else {
-            Err(self.reject_type(type_name))
-        }
+    /// node — the `.gfi` load folds the saved values in before building. Normalization is the
+    /// owning engine's: a caller may hand over a partial group, and the engine's universal groups
+    /// are its own to declare.
+    fn default_params_of(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
+        let (id, _) = self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
+        self.engines()
+            .find(|e| e.id() == id)
+            .expect("the entry named it")
+            .normalize_params(type_name, supplied)
     }
 
     /// Instantiate a node by type name (compile-time catalog or a runtime-registered type).
@@ -1034,10 +973,13 @@ impl Graph {
                 // A leaf is the only kind with a manifest, so it is the only one that can seed the
                 // default expressions its type declares.
                 let seed = params.is_none();
-                let (manifest, isolation, params, build) = self.build_node(type_name, params)?;
+                let (engine, entry) =
+                    self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
+                let params = self.default_params_of(type_name, params)?;
                 let uid = self.claim(uid);
-                let born = self.pick_name(name, &manifest.type_name.to_lowercase(), None);
-                self.insert_node_at(uid, born.clone(), manifest, isolation, build, params);
+                let born = self.pick_name(name, &entry.manifest.type_name.to_lowercase(), None);
+                self.insert_node_at(uid, born.clone(), engine, entry, params);
+                let manifest = entry.manifest;
                 if seed {
                     self.seed_default_expressions(uid, manifest);
                 }
@@ -1096,28 +1038,29 @@ impl Graph {
         }
     }
 
-    /// Where a node gets its manager-side thread. The transport is created HERE because it is the
-    /// one step whose failure has nowhere to report to; everything after it is off the graph lock.
+    /// Where a node gets its runtime instance. This IS the birth §3.1 counts, whichever door it
+    /// came through — a fresh add, a restart, an undo of a delete, a load.
     fn insert_node_at(
         &mut self,
         uid: Uid,
         name: String,
-        manifest: &'static NodeManifest,
-        isolation: &'static IsolationCell,
-        build: runtime::NodeBuild,
+        engine: &'static str,
+        entry: LibraryEntry,
         params: ParamGroups,
     ) {
-        // This IS the birth §3.1 counts, whichever door it came through — a fresh add, a restart,
-        // an undo of a delete, a load.
         let generation = self.bump_generation(uid);
-        let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
+        let type_name = entry.manifest.type_name;
+        let boot_error = self
+            .engine_mut(engine)
+            .expect("the library entry named it")
+            .insert(uid, type_name, generation, &params);
         self.nodes.insert(
             uid,
             NodeEntry {
                 kind: Kind::Leaf(Box::new(Leaf {
-                    manifest,
-                    isolation,
-                    host,
+                    manifest: entry.manifest,
+                    isolation: entry.isolation,
+                    engine,
                     params: Arc::new(params),
                     bindings: HashMap::new(),
                     health: Health::born(boot_error),
@@ -1127,37 +1070,6 @@ impl Graph {
                 viewers: serde_json::json!({}),
             },
         );
-    }
-
-    /// Create one node's services, open the graph's end of them, and start its thread. A node whose
-    /// services failed is still INSERTED, holding its place and saying why it is not running.
-    fn spawn_host(
-        &self,
-        uid: Uid,
-        generation: u64,
-        manifest: &'static NodeManifest,
-        build: runtime::NodeBuild,
-        params: &ParamGroups,
-    ) -> (NodeHost, Option<String>) {
-        let halt = Arc::new(runtime::Halt::default());
-        let base = runtime::service_base(&self.instance, uid, generation);
-        let started = runtime::IoxTransport::create(&self.instance, uid, generation, manifest)
-            .and_then(|transport| Ok((transport, runtime::NodeChannel::open(&base)?)))
-            .and_then(|(transport, channel)| {
-                let env = runtime::NodeEnv {
-                    evaluator: self.evaluator.clone(),
-                    started: self.start,
-                };
-                // The join handle is dropped on purpose: holding one would tempt a caller into
-                // joining under the graph mutex while the node is inside a long `process()`.
-                runtime::spawn(manifest, build, params.clone(), Arc::new(transport), env, halt.clone())
-                    .map(|_| channel)
-                    .map_err(|e| format!("could not start the node's thread: {e}"))
-            });
-        match started {
-            Ok(channel) => (NodeHost { halt, channel: Some(Arc::new(channel)) }, None),
-            Err(e) => (NodeHost { halt, channel: None }, Some(e)),
-        }
     }
 
     /// Every display name in the patch with the uid wearing it — leaves, sub-patch facades and
@@ -1979,7 +1891,11 @@ impl Graph {
         self.release_entry_bindings(&removed);
         // The planner holds its OWN handle on this node's channel, which is the graph's end of its
         // services. `forget` rather than `detach`: this uid is retired, so nothing queued applies.
-        self.wire.forget(uid);
+        if let Some(engine) = removed.leaf().map(|l| l.engine) {
+            if let Some(e) = self.engine_mut(engine) {
+                e.remove(uid);
+            }
+        }
         // §5.3: every binding that referenced this node by name is now unresolvable and must be
         // told so — a variable naming a dead producer's service is one the node waits on forever.
         let name = removed.name.clone();
@@ -2023,7 +1939,7 @@ impl Graph {
         let held = entry.params.clone();
         // Fold what the node HAS onto what its type declares NOW: only the saved VALUE carries
         // over — bounds, options and variant are the edited file's to state.
-        let mut params = self.default_params_of(type_name)?;
+        let mut params = self.default_params_of(type_name, None)?;
         for (group, held) in &*held {
             let Some(g) = params.get_mut(group) else { continue };
             for (name, value) in held {
@@ -2033,27 +1949,31 @@ impl Graph {
                 }
             }
         }
-        // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
+        // Resolve BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
-        let (manifest, isolation, params, build) = self.build_node(type_name, Some(params))?;
+        let (engine, lib) =
+            self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
+        let params = self.default_params_of(type_name, Some(params))?;
 
         // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
         // generation bump the reborn node re-opens names its predecessor's ports still hold.
+        // The engine's remove halts the corpse and forgets its wires BEFORE the new generation
+        // reports `Ready`; while a corpse stands addressable, messages reach dead services.
+        let old_engine = self.leaf(uid).map(|e| e.engine).expect("looked up above");
         let generation = self.bump_generation(uid);
-        let (host, boot_error) = self.spawn_host(uid, generation, manifest, build, &params);
-
-        {
-            let entry = self.leaf_mut(uid).expect("looked up above");
-            // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with
-            // the instance: keeping the old one leaves the graph describing a node not running.
-            entry.manifest = manifest;
-            entry.isolation = isolation;
-            entry.host = host;
+        if let Some(e) = self.engine_mut(old_engine) {
+            e.remove(uid);
         }
-        // The corpse's channel goes with it, and BEFORE the new generation reports `Ready`: while
-        // it stands, the reborn node reads as addressable and messages reach dead services.
-        self.wire.detach(uid);
+        let boot_error = self
+            .engine_mut(engine)
+            .expect("the library entry named it")
+            .insert(uid, type_name, generation, &params);
         let entry = self.leaf_mut(uid).expect("looked up above");
+        // The MANIFEST goes with the instance: keeping the old one leaves the graph describing a
+        // node not running.
+        entry.manifest = lib.manifest;
+        entry.isolation = lib.isolation;
+        entry.engine = engine;
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
         entry.params = Arc::new(params);
@@ -2123,7 +2043,11 @@ impl Graph {
         if !matches!(param, Param::Str { refresh: true, .. }) {
             return Err(format!("param `{group}.{name}` is not refreshable"));
         }
-        self.wire.send(uid, runtime::Control::RefreshParam { key: ParamKey::new(group, name) });
+        let engine = self.leaf(uid).map(|e| e.engine).expect("checked above");
+        let key = ParamKey::new(group, name);
+        if let Some(e) = self.engine_mut(engine) {
+            e.request(uid, Request::RefreshParam { key });
+        }
         Ok(())
     }
 
@@ -2514,18 +2438,6 @@ impl Graph {
         Ok(())
     }
 
-    /// Re-plan the real consumers a wire change reaches. For a leaf that is the slot itself; for a
-    /// PORT it is every leaf input past it, because a port carries no plan of its own.
-    fn replan_behind(&mut self, node_in: Uid, slot_in: &'static str) {
-        if self.leaf(node_in).is_some() {
-            self.replan_slot(node_in, slot_in);
-            return;
-        }
-        for (n, s) in self.sinks(node_in, subpatch::BOUNDARY_SLOT) {
-            self.replan_slot(n, s);
-        }
-    }
-
     pub fn remove_link(
         &mut self,
         node_out: Uid,
@@ -2550,61 +2462,11 @@ impl Graph {
         Ok(())
     }
 
-    /// The birth barrier landing: on [`runtime::Status::Ready`], never at birth. Attaching RE-PLANS
-    /// every slot this node touches, from an EMPTY base, since its earlier messages were dropped.
-    fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
-        self.wire.attach(uid, sink);
-        for (consumer, slot) in self.slots_touching(uid) {
-            self.wire.forget_planned(&(consumer, slot.clone()));
-            self.replan(consumer, slot);
-        }
-    }
-
-    /// Every consumer subscription whose wiring names `uid`, named once however many wires it has —
-    /// the input slots it consumes on and feeds, and the bindings on either end.
-    fn slots_touching(&self, uid: Uid) -> Vec<runtime::plan::SlotKey> {
-        let mut slots: Vec<runtime::plan::SlotKey> = Vec::new();
-        for link in self.links.iter().filter(|l| l.node_in == uid || l.node_out == uid) {
-            for (n, s) in self.sinks(link.node_out, link.slot_out) {
-                let key = (n, runtime::plan::Slot::In(s));
-                if !slots.contains(&key) {
-                    slots.push(key);
-                }
-            }
-        }
-        // Every channel spoken on for `uid`, bound or not: an add answers before the barrier
-        // lifts, so an add-then-edit pair falls inside the window. The planner's own record.
-        for key in self.wire.keys_for(uid) {
-            if !slots.contains(&key) {
-                slots.push(key);
-            }
-        }
-        // §5.3: an expression reference is a link, so a node becoming addressable owes its bindings
-        // the same re-plan its input slots get — both ends of one.
-        for (consumer, entry) in self.leaves() {
-            for (bkey, binding) in entry.bindings.iter() {
-                let touches = consumer == uid
-                    || binding.vars.iter().filter_map(BoundVar::wire).any(|(p, _)| p == uid);
-                let key = (consumer, runtime::plan::Slot::Bind(bkey.clone()));
-                if touches && !slots.contains(&key) {
-                    slots.push(key);
-                }
-            }
-        }
-        slots
-    }
-
     /// One output slot's data service name — the whole of a wire's identity, which is why a slot
     /// message carries names and never a source uid. Also the `/data` plane's subscribe address.
     pub fn output_service_of(&self, uid: Uid, slot: &str) -> runtime::ServiceName {
         runtime::output_service(&self.service_base_of(uid), slot)
     }
-
-    /// One node's doorbell service name.
-    pub(crate) fn door_of(&self, uid: Uid) -> runtime::ServiceName {
-        runtime::door_service(&self.service_base_of(uid))
-    }
-
     /// The generation of the node about to be born at `uid`: 0 for a first birth, one more than
     /// the last for every rebirth.
     fn bump_generation(&mut self, uid: Uid) -> u64 {
@@ -2621,43 +2483,10 @@ impl Graph {
         runtime::service_base(&self.instance, uid, self.generation(uid))
     }
 
-    /// Plan an input slot's full desired wire set and run the three-phase sequence (§4). Every link
-    /// change comes through here: the consumer's new set is simply the new producer.
-    pub(crate) fn replan_slot(&mut self, uid: Uid, slot: &'static str) {
-        self.replan(uid, runtime::plan::Slot::In(slot));
-    }
-
-    /// The same for an expression binding (§5.3), keyed by the binding's id rather than its
-    /// `ParamKey`, so an unbind can still be planned after the binding itself is gone.
-    fn replan_binding(&mut self, uid: Uid, key: ParamKey) {
-        self.replan(uid, runtime::plan::Slot::Bind(key));
-    }
-
-    fn replan(&mut self, uid: Uid, slot: runtime::plan::Slot) {
-        let key = (uid, slot);
-        let desired = self.desired_wires(&key);
-        let previous = self.wire.planned(&key);
-        // An In set that did not move carries nothing — a batch that ends where it started says
-        // nothing. A Bind sequence still runs: its phase 2 IS the param delivery, wires or not.
-        if matches!(key.1, runtime::plan::Slot::In(_)) && desired == previous {
-            return;
-        }
-        let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
-        let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
-        self.wire.begin(key.clone(), desired, removed, added);
-        self.advance_wire(key);
-    }
-
-    /// Answer one node's ack — the status-drain worker's door into the sequence. Completing a phase
-    /// is the only thing that starts the next one.
-    fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
-        if let Some(key) = self.wire.ack(seq, ok) {
-            self.advance_wire(key);
-        }
-    }
-
     /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
     /// 1 ms drain cannot deliver the batch's intermediates.
+    /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
+    /// drain cannot deliver the batch's intermediates.
     pub fn hold_settle(&mut self) {
         self.open_batches += 1;
     }
@@ -2672,114 +2501,88 @@ impl Graph {
         if self.open_batches > 0 {
             return;
         }
-        let touched = std::mem::take(&mut self.touched);
-        let mut slots = HashSet::new();
-        let mut params = HashSet::new();
-        for t in touched {
+        let raw = std::mem::take(&mut self.touched);
+        if raw.is_empty() && !self.engines().any(|e| e.dirty()) {
+            return;
+        }
+        // Port consumers expand to the leaf inputs behind them, a node the batch also removed is
+        // owed nothing, and each item is delivered once however often the batch touched it.
+        let mut touched: Vec<Touched> = Vec::new();
+        for t in raw {
             match t {
                 Touched::Slot(uid, slot) => {
-                    if slots.insert((uid, slot)) {
-                        self.replan_behind(uid, slot);
+                    let sinks: Vec<(Uid, &'static str)> = if self.leaf(uid).is_some() {
+                        vec![(uid, slot)]
+                    } else {
+                        self.sinks(uid, subpatch::BOUNDARY_SLOT)
+                    };
+                    for (n, sl) in sinks {
+                        let t = Touched::Slot(n, sl);
+                        if !touched.contains(&t) {
+                            touched.push(t);
+                        }
                     }
                 }
                 Touched::Param(uid, key) => {
-                    // A node the batch also removed is owed nothing: remove purged the planner,
-                    // and settle must not repopulate it.
                     if self.leaf(uid).is_none() {
                         continue;
                     }
-                    if params.insert((uid, key.clone())) {
-                        self.replan_binding(uid, key);
+                    let t = Touched::Param(uid, key);
+                    if !touched.contains(&t) {
+                        touched.push(t);
                     }
                 }
             }
+        }
+        let edges = self.resolved_edges();
+        let rings: HashMap<&'static str, bool> =
+            self.engines().map(|e| (e.id(), e.doorbell_driven())).collect();
+        let Graph { nodes, generations, instance, signal, extra_engines, .. } = self;
+        let view = build_view(nodes, generations, instance, &edges, &rings);
+        signal.settle(&view, &touched);
+        for e in extra_engines.iter_mut() {
+            e.settle(&view, &touched);
         }
     }
 
-    /// The status-drain worker's engine-side half: take every waiting report and apply it.
-    /// Answers how many landed, so a caller can tell a quiet graph from one it stopped hearing.
-    pub fn drain_status(&mut self) -> usize {
-        let channels: Vec<(Uid, Arc<runtime::NodeChannel>)> = self
-            .leaves()
-            .filter_map(|(uid, e)| e.host.channel.clone().map(|c| (uid, c)))
-            .collect();
-        let mut applied = 0;
-        for (uid, channel) in channels {
-            for status in channel.drain_status() {
-                applied += 1;
-                match status {
-                    // An ack is the PLANNER's, and it must still land after the node it came from
-                    // is gone — or a sequence parks forever on a message nobody will answer.
-                    runtime::WireStatus::Ack { seq, ok } => self.wire_ack(seq, ok),
-                    // …and Ready is what makes a node addressable; the sink it attaches is the
-                    // graph's, not the entry's. Neither is health, so neither leaves this plane.
-                    runtime::WireStatus::Ready => {
-                        if let Some(channel) = self.leaf(uid).and_then(|e| e.host.channel.clone()) {
-                            self.attach_control_sink(uid, channel);
-                        }
-                    }
-                    runtime::WireStatus::Health(status) => self.apply_status(uid, status),
+    /// Every leaf-to-leaf wire, ports resolved away, in link order — which IS a multi input's
+    /// wire order. Computed once per settle, so no engine re-implements the relay walk.
+    fn resolved_edges(&self) -> Vec<Edge> {
+        self.links
+            .iter()
+            .filter(|l| self.leaf(l.node_in).is_some())
+            .filter_map(|l| match self.stream(l.node_out, l.slot_out)? {
+                Stream::At(u, s) => {
+                    Some(Edge { producer: (u, s), consumer: (l.node_in, l.slot_in) })
                 }
+                Stream::Open(_) => None,
+            })
+            .collect()
+    }
+
+    /// The status-drain worker's engine-side half: take every engine's waiting reports and
+    /// apply the health plane. Answers how many landed, so a caller can tell a quiet graph from
+    /// one it stopped hearing.
+    pub fn drain_status(&mut self) -> usize {
+        let mut applied = 0;
+        {
+            let Graph { nodes, refreshed, signal, extra_engines, .. } = self;
+            let mut apply =
+                |uid: Uid, status: runtime::Status| apply_status_to(nodes, refreshed, uid, status);
+            applied += signal.drain(&mut apply);
+            for e in extra_engines.iter_mut() {
+                applied += e.drain(&mut apply);
             }
         }
-        // A direct driver has no bridge to settle for it, and the spec's drain-side settle lands
-        // a delivery that arrived between ops.
+        // A direct driver has no bridge to settle for it, and the drain-side settle lands what
+        // the drain marked pending.
         self.settle();
         applied
     }
 
-    /// Apply one health report. Every variant is a TRANSITION the node stamped itself, so nothing
-    /// diffs.
+    /// Apply one health report — the drain's door, public so a test can inject one.
     pub fn apply_status(&mut self, uid: Uid, status: runtime::Status) {
-        // Set by the `RefreshOptions` arm and drained after the match: `entry` holds a mutable
-        // borrow of `self` for the whole of it, so the queue cannot be pushed to from inside.
-        let mut refreshed: Option<ParamKey> = None;
-        let Some(entry) = self.leaf_mut(uid) else { return };
-        match status {
-            runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
-            runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
-            // The options are the node's answer to a refresh (§8.5). They land in the health
-            // OVERLAY, never a reply or the record: the RPC that asked has already returned.
-            runtime::Status::RefreshOptions { key, options } => {
-                if let Some(options) = options {
-                    entry.health.options.insert(key.clone(), options);
-                }
-                // Queued whether or not there were any: this IS the answer to a ⟳, and the client
-                // lifts its spinner off the echo. A node with no hook for the param answers `None`.
-                refreshed = Some(key);
-            }
-            runtime::Status::Fault { fault } => match fault {
-                // A clean run clears Setup/Process/Boot together and never touches a binding
-                // error, which only that binding evaluating successfully clears (§6).
-                None => {
-                    entry.health.setup_error = None;
-                    entry.health.last_error = None;
-                }
-                Some(runtime::NodeFault::Setup { msg, .. }) => entry.health.setup_error = Some(msg),
-                Some(runtime::NodeFault::Process { msg, .. }) => entry.health.last_error = Some(msg),
-            },
-            // One record for what the instance reported, bound param or not. On the binding it would
-            // outlive the instance, since a reborn node has nothing to announce clearing.
-            runtime::Status::BindingErrors { errors } => {
-                for (key, msg) in errors {
-                    match msg {
-                        Some(msg) => {
-                            entry.health.param_errors.insert(key, msg);
-                        }
-                        None => {
-                            entry.health.param_errors.shift_remove(&key);
-                        }
-                    }
-                }
-            }
-            runtime::Status::ParamValues { evaluated } => {
-                entry.health.evaluated = evaluated.into_iter().collect();
-            }
-        }
-        if let Some(key) = refreshed {
-            self.refreshed.push((uid, key));
-        }
-        self.stamp_error_onset(uid);
+        apply_status_to(&mut self.nodes, &mut self.refreshed, uid, status);
     }
 
     /// The params whose options were re-enumerated since the last call — the worker's cue to echo
@@ -2787,161 +2590,6 @@ impl Graph {
     pub fn take_refreshed(&mut self) -> Vec<(Uid, ParamKey)> {
         std::mem::take(&mut self.refreshed)
     }
-
-    /// Stamp when this node's error first read the way it does now. Derived from [`entry_error`], so
-    /// all three kinds are stamped by one rule and the stamp cannot outlive its error.
-    fn stamp_error_onset(&mut self, uid: Uid) {
-        let Some(e) = self.leaf_mut(uid) else { return };
-        let current = entry_error(e);
-        if e.health.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
-            e.health.error_since = current.map(|m| (m.to_string(), Instant::now()));
-        }
-    }
-
-    /// Walk the phases until one has something to send. A phase with no recipients is skipped rather
-    /// than sent empty, or the sequence would park on an ack for a message that says nothing.
-    fn advance_wire(&mut self, key: runtime::plan::SlotKey) {
-        while let Some(phase) = self.wire.step(&key) {
-            let messages = self.compose_wire(&key, phase);
-            if self.wire.dispatch(&key, messages) {
-                return;
-            }
-        }
-    }
-
-    /// One phase's messages. The `OutSlot` phases are built from the graph as it stands NOW; `Apply`
-    /// carries the sequence's own `desired`, which must not shift under it.
-    fn compose_wire(
-        &self,
-        key: &runtime::plan::SlotKey,
-        phase: runtime::plan::Phase,
-    ) -> Vec<(Uid, runtime::Control)> {
-        match phase {
-            // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is — an input slot's full
-            // service set, or a binding's whole re-resolved expression. Both are declarative.
-            runtime::plan::Phase::Apply => match &key.1 {
-                runtime::plan::Slot::In(slot) => {
-                    let services = self
-                        .wire
-                        .desired(key)
-                        .iter()
-                        .map(|(uid, slot)| self.output_service_of(*uid, slot))
-                        .collect();
-                    vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), services })]
-                }
-                runtime::plan::Slot::Bind(k) => self.compose_set_param(key.0, k).into_iter().collect(),
-            },
-            runtime::plan::Phase::Shrink | runtime::plan::Phase::Grow => self
-                .wire
-                .recipients(key, phase)
-                .into_iter()
-                .map(|(uid, slot)| {
-                    let targets = self.out_targets(uid, slot);
-                    (uid, runtime::Control::OutSlot { slot: slot.to_string(), targets })
-                })
-                .collect(),
-        }
-    }
-
-    /// The `SetParam` a binding's phase 2 carries: the rewritten source while the binding stands,
-    /// and the param's LITERAL once it does not, which is what says the binding is gone.
-    fn compose_set_param(&self, uid: Uid, key: &ParamKey) -> Option<(Uid, runtime::Control)> {
-        let entry = self.leaf(uid)?;
-        let value = match entry.bindings.get(key).filter(|b| b.live()) {
-            Some(b) => runtime::ParamValue::Expr {
-                source: b.rewritten.clone(),
-                vars: b.vars.iter().map(|v| self.wire_var(v)).collect(),
-                trigger: b.triggers_process,
-                // The graph compiled it, the node evaluates it (§2.1) — one handle, so the two ends
-                // can never be evaluating different source.
-                id: b.id,
-            },
-            None => {
-                runtime::ParamValue::Literal(goofi_node::param(&entry.params, &key.group, &key.name)?.clone())
-            }
-        };
-        Some((uid, runtime::Control::SetParam { key: key.clone(), value }))
-    }
-
-    /// A resolved variable as the NODE sees it: a service name rather than a uid, because a node
-    /// addresses a producer by service and cannot resolve anything for itself (§5.3).
-    fn wire_var(&self, var: &BoundVar) -> runtime::Var {
-        match var {
-            BoundVar::Stream { var, producer, slot, event_id } => runtime::Var::Stream {
-                name: var.clone(),
-                service: self.output_service_of(*producer, slot),
-                event_id: *event_id,
-            },
-            BoundVar::Value { var, value } => runtime::Var::Value { name: var.clone(), value: value.clone() },
-            BoundVar::Missing { var, reason } => {
-                runtime::Var::Missing { name: var.clone(), reason: reason.clone() }
-            }
-        }
-    }
-
-    /// Every producer a consumer subscription feeds from, in wire order — `links` order for an input
-    /// slot, variable order for a binding. A slot with no event id yields nothing.
-    fn desired_wires(&self, key: &runtime::plan::SlotKey) -> Vec<runtime::plan::Wire> {
-        match &key.1 {
-            runtime::plan::Slot::In(slot) => {
-                if self.input_event_id(key.0, slot).is_none() {
-                    return Vec::new();
-                }
-                self.links
-                    .iter()
-                    .filter(|l| l.node_in == key.0 && l.slot_in == *slot)
-                    .filter_map(|l| match self.stream(l.node_out, l.slot_out)? {
-                        Stream::At(u, s) => Some((u, s)),
-                        // Nothing behind the port yet: no wire to plan, and no error either.
-                        Stream::Open(_) => None,
-                    })
-                    .collect()
-            }
-            runtime::plan::Slot::Bind(k) => self
-                .leaf(key.0)
-                .and_then(|e| e.bindings.get(k))
-                .filter(|b| b.live())
-                .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
-                .unwrap_or_default(),
-        }
-    }
-
-    /// Every doorbell one output slot rings, with the event id that says why the far node woke — the
-    /// UNION of its wire consumers and its expression subscribers (§5.3).
-    fn out_targets(&self, producer: Uid, slot: &'static str) -> Vec<(runtime::ServiceName, runtime::EventId)> {
-        // The ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence has
-        // not applied this wire is not a subscriber yet, which is what the phases prevent.
-        let wired = self
-            .sinks(producer, slot)
-            .into_iter()
-            .filter(|(n, s)| !self.wire.unapplied(&(*n, runtime::plan::Slot::In(s)), (producer, slot)))
-            .filter_map(|(n, s)| Some((self.door_of(n), self.input_event_id(n, s)?)))
-            .collect::<Vec<_>>()
-            .into_iter();
-        let bound = self.leaves().flat_map(|(consumer, entry)| {
-            entry.bindings.iter().filter(|(_, b)| b.live()).flat_map(move |(bkey, b)| {
-                b.vars
-                    .iter()
-                    .filter(move |v| v.wire() == Some((producer, slot)))
-                    .filter(move |_| {
-                        !self.wire.unapplied(&(consumer, runtime::plan::Slot::Bind(bkey.clone())), (producer, slot))
-                    })
-                    .filter_map(move |v| match v {
-                        BoundVar::Stream { event_id, .. } => Some((self.door_of(consumer), *event_id)),
-                        _ => None,
-                    })
-            })
-        });
-        wired.chain(bound).collect()
-    }
-
-    /// An input slot's event id: its position in the manifest's inputs, past `EventId(0)`, which is
-    /// the control channel's (§3.2). `None` beyond the 64 ids the budget gives input slots.
-    fn input_event_id(&self, uid: Uid, slot: &str) -> Option<runtime::EventId> {
-        let at = self.leaf(uid)?.manifest.inputs.iter().position(|s| s.name == slot)?;
-        (at < 64).then_some(at as runtime::EventId + 1)
-    }
-
     /// Remove all nodes and links.
     pub fn clear(&mut self) {
         // Release each node's compiled expression handles before dropping them (load_doc
@@ -2949,13 +2597,19 @@ impl Graph {
         for e in self.nodes.values() {
             self.release_entry_bindings(e);
         }
+        // N explicit removes, then the nodes wholesale — a removal derived from absence would be
+        // the engine-observes-the-graph mirror the seam rejects.
+        let removed: Vec<(Uid, &'static str)> = self.leaves().map(|(u, l)| (u, l.engine)).collect();
+        for (uid, engine) in removed {
+            if let Some(e) = self.engine_mut(engine) {
+                e.remove(uid);
+            }
+        }
         self.nodes.clear();
         self.links.clear();
         self.scope_of.clear();
-        // The channels addressed nodes that no longer exist; the generations stay, because they are
-        // what keeps whatever is born at those uids next clear of what just died.
-        self.wire.reset_channels();
-        // Whatever the batch touched addressed nodes this clear destroyed.
+        // Whatever the batch touched addressed nodes this clear destroyed; the generations stay,
+        // keeping whatever is born at those uids next clear of what just died.
         self.touched.clear();
         // An un-echoed refresh names a node the patch no longer holds — and a load restores uids,
         // so that number can come back and the echo be read as an answer nobody asked for.
@@ -2966,6 +2620,7 @@ impl Graph {
         // The node clock belongs to the PATCH: one loaded an hour in must compute what it would
         // have at boot. Safe only because every reader of this clock was dropped just above.
         self.start = Instant::now();
+        self.signal.reset_clock(self.start);
     }
 
     /// Take the name a RESTORE asks for. It goes through the same gate a create does, so an
@@ -3061,7 +2716,7 @@ impl Graph {
     /// The params a record asks for, folded over the type's defaults. NON-seeding, because a
     /// restore must not re-synthesize a binding the user had unbound.
     fn record_params(&self, ty: &str, rec: &serde_json::Value) -> Result<ParamGroups, String> {
-        let mut params = self.default_params_of(ty)?;
+        let mut params = self.default_params_of(ty, None)?;
         let Some(groups) = rec.get("params").and_then(|v| v.as_object()) else { return Ok(params) };
         for (group, names) in groups {
             let (Some(nm), Some(g)) = (names.as_object(), params.get_mut(group)) else { continue };
@@ -3293,12 +2948,13 @@ impl Graph {
             let ty = rec["type"].as_str().unwrap();
             // Folded in BEFORE construction, since `insert_node` runs `setup()`.
             let params = self.record_params(ty, rec)?;
-            let (manifest, isolation, params, build) = self.build_node(ty, Some(params))?;
+            let (engine, entry) = self.library_entry(ty).ok_or_else(|| self.reject_type(ty))?;
+            let params = self.default_params_of(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
             let uid = idmap[old];
-            let name = self.fresh_name(&manifest.type_name.to_lowercase());
-            self.insert_node_at(uid, name, manifest, isolation, build, params);
+            let name = self.fresh_name(&entry.manifest.type_name.to_lowercase());
+            self.insert_node_at(uid, name, engine, entry, params);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
             }
@@ -3431,8 +3087,106 @@ fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
         .unwrap_or([0.0, 0.0])
 }
 
-/// One node's current error, derived fresh from the places one can arise. A free function so
-/// [`Graph::stamp_error_onset`] can read it while holding a `&mut NodeEntry`.
+/// The health plane's one mutator: apply one report off any engine's drain. A free function so
+/// the drain can hold the engines and the node map apart.
+fn apply_status_to(
+    nodes: &mut IndexMap<Uid, NodeEntry>,
+    refreshed: &mut Vec<(Uid, ParamKey)>,
+    uid: Uid,
+    status: runtime::Status,
+) {
+    let Some(entry) = nodes.get_mut(&uid).and_then(NodeEntry::leaf_mut) else { return };
+    match status {
+        runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
+        runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
+        // The options are the node's answer to a refresh (§8.5). They land in the health
+        // OVERLAY, never a reply or the record: the RPC that asked has already returned.
+        runtime::Status::RefreshOptions { key, options } => {
+            if let Some(options) = options {
+                entry.health.options.insert(key.clone(), options);
+            }
+            // Queued whether or not there were any: this IS the answer to a ⟳, and the client
+            // lifts its spinner off the echo. A node with no hook for the param answers `None`.
+            refreshed.push((uid, key));
+        }
+        runtime::Status::Fault { fault } => match fault {
+            // A clean run clears Setup/Process/Boot together and never touches a binding
+            // error, which only that binding evaluating successfully clears (§6).
+            None => {
+                entry.health.setup_error = None;
+                entry.health.last_error = None;
+            }
+            Some(goofi_node::NodeFault::Setup { msg, .. }) => entry.health.setup_error = Some(msg),
+            Some(goofi_node::NodeFault::Process { msg, .. }) => entry.health.last_error = Some(msg),
+        },
+        // One record for what the instance reported, bound param or not. On the binding it would
+        // outlive the instance, since a reborn node has nothing to announce clearing.
+        runtime::Status::BindingErrors { errors } => {
+            for (key, msg) in errors {
+                match msg {
+                    Some(msg) => {
+                        entry.health.param_errors.insert(key, msg);
+                    }
+                    None => {
+                        entry.health.param_errors.shift_remove(&key);
+                    }
+                }
+            }
+        }
+        runtime::Status::ParamValues { evaluated } => {
+            entry.health.evaluated = evaluated.into_iter().collect();
+        }
+    }
+    // Stamp when the error first read the way it does now — re-stamped only when the message
+    // changes, so the instant is its onset.
+    let current = entry_error(entry).map(str::to_string);
+    if entry.health.error_since.as_ref().map(|(m, _)| m.as_str()) != current.as_deref() {
+        entry.health.error_since = current.map(|m| (m, Instant::now()));
+    }
+}
+
+/// The settled view, borrowed from the one model — built at the settle point and nowhere else.
+fn build_view<'a>(
+    nodes: &'a IndexMap<Uid, NodeEntry>,
+    generations: &HashMap<Uid, u64>,
+    instance: &'a str,
+    edges: &'a [Edge],
+    rings: &HashMap<&'static str, bool>,
+) -> GraphView<'a> {
+    let nodes = nodes
+        .iter()
+        .filter_map(|(uid, e)| {
+            let leaf = e.leaf()?;
+            let bindings = leaf
+                .bindings
+                .iter()
+                .map(|(key, b)| BindingView {
+                    key,
+                    rewritten: &b.rewritten,
+                    vars: &b.vars,
+                    trigger: b.triggers_process,
+                    id: b.id,
+                    live: b.live(),
+                })
+                .collect();
+            Some((
+                *uid,
+                NodeView {
+                    engine: leaf.engine,
+                    generation: generations.get(uid).copied().unwrap_or(0),
+                    rings: rings.get(leaf.engine).copied().unwrap_or(true),
+                    manifest: leaf.manifest,
+                    params: leaf.params.as_ref(),
+                    bindings,
+                },
+            ))
+        })
+        .collect();
+    GraphView { instance, edges, nodes }
+}
+
+/// One node's current error, derived fresh from the places one can arise. A free function so the
+/// status drain can read it while holding a `&mut NodeEntry`.
 fn entry_error(e: &Leaf) -> Option<&str> {
     // Initialization failure outranks a process error, and is the only thing that CAN be true
     // beside one: if `setup` failed, `process` never ran.

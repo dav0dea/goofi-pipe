@@ -348,11 +348,8 @@ fn error_transitions(
     changed
 }
 
-/// How often the worker takes what the nodes reported — deliberately NOT the event rate, because
-/// draining is the RUNTIME's clock: it advances every wire's three-phase sequence, one per ack.
-const DRAIN_PERIOD: Duration = Duration::from_millis(1);
-
-/// How often the drained reports are broadcast — the event rate, distinct from the drain rate.
+/// How often the drained reports are broadcast — the event rate, distinct from the drain, which
+/// is EVENT-WOKEN: a node's report notifies the waker, so nothing polls to discover one.
 const BROADCAST_PERIOD: Duration = Duration::from_millis(500);
 
 /// The background worker a live server needs — the status drain: take every node's reports, apply
@@ -363,6 +360,7 @@ const BROADCAST_PERIOD: Duration = Duration::from_millis(500);
 pub fn spawn_workers(state: &AppState) {
     let (graph, events) = (state.graph.clone(), state.events.clone());
     std::thread::spawn(move || {
+        let waker = graph.lock().unwrap().drain_waker();
         let period = BROADCAST_PERIOD;
         let mut last_errors: HashMap<String, (u64, Option<String>)> = HashMap::new();
         // A node's stage changes on its own thread, with no RPC to ride on. It carries the error
@@ -370,7 +368,9 @@ pub fn spawn_workers(state: &AppState) {
         let mut last_stages: HashMap<String, NodeState> = HashMap::new();
         let mut next_broadcast = Instant::now() + period;
         loop {
-            std::thread::sleep(DRAIN_PERIOD);
+            // Parked until a report lands or the broadcast pace comes due — pacing, not polling.
+            let wait = next_broadcast.saturating_duration_since(Instant::now()).min(period);
+            waker.wait_timeout(wait);
             let due = Instant::now() >= next_broadcast;
             let collected = {
                 let mut g = graph.lock().unwrap();

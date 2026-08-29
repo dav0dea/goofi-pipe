@@ -8,8 +8,8 @@ use indexmap::IndexMap;
 pub mod discover;
 pub mod seam;
 pub use seam::{
-    BindingView, BoundVar, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView, Request,
-    Touched,
+    BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
+    Request, Touched,
 };
 
 /// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
@@ -643,7 +643,11 @@ pub struct NodeClass {
 inventory::collect!(NodeClass);
 
 pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
-    inventory::iter::<NodeClass>().map(|c| &c.manifest)
+    classes().map(|c| &c.manifest)
+}
+
+pub fn classes() -> impl Iterator<Item = &'static NodeClass> {
+    inventory::iter::<NodeClass>()
 }
 
 pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
