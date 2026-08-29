@@ -4,8 +4,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BASE_PORT, BIN, E2E_HOME, LOG_DIR, REPO_ROOT } from './playwright.config';
 
-const SHM = '/dev/shm';
-
 type Backend = { child: ChildProcess; port: number; log: string };
 
 /**
@@ -18,28 +16,18 @@ type Backend = { child: ChildProcess; port: number; log: string };
  * contract intact rather than weakening it — a worker still owns its backend alone, so every
  * intra-worker ordering assumption survives; only a cross-worker one would not, and the suite has none.
  *
- * Two things move here because a fleet cannot do them per instance:
- *  · **the stale-`iox2` sweep**. It used to ride the `webServer` command; with N instances that is
- *    instance N deleting instance M's LIVE segments mid-run. It runs once, before the first spawn.
- *  · **backend stdout**. `webServer: { stdout: 'pipe' }` interleaved it into the report; N of those
- *    would be unreadable even if Playwright offered it. Each backend gets its own log file instead,
- *    and the directory is announced at start so a red test still has somewhere to look.
+ * There is deliberately NO `/dev/shm/iox2*` sweep here. Unlinking a same-user tmpfs file never
+ * fails, so a JS sweep cannot tell a corpse from a LIVE sibling's segment — it once severed a
+ * running dev server's wires, silently, killing every wire made after it. The fleet's own boots
+ * reclaim what the last run's SIGKILL left, through iceoryx2, which knows dead from alive.
+ *
+ * Backend stdout also moves here: `webServer: { stdout: 'pipe' }` interleaved it into the report;
+ * N of those would be unreadable even if Playwright offered it. Each backend gets its own log file
+ * instead, and the directory is announced at start so a red test still has somewhere to look.
  */
 export default async function spawnFleet(config: FullConfig): Promise<() => Promise<void>> {
 	if (!fs.existsSync(BIN))
 		throw new Error(`${BIN} is missing — \`npm run build:backend\` builds it and the SPA it serves`);
-	// Stale segments only: nothing of ours is running yet, which is precisely why this belongs here
-	// and cannot belong to an instance. A segment some other process owns is not ours to delete —
-	// and not ours to collide with either, since iceoryx2 service names are pid-scoped.
-	if (fs.existsSync(SHM))
-		for (const f of fs.readdirSync(SHM).filter((n) => n.startsWith('iox2'))) {
-			try {
-				fs.rmSync(path.join(SHM, f));
-			} catch {
-				/* another process's segment */
-			}
-		}
-
 	fs.mkdirSync(LOG_DIR, { recursive: true });
 	// A test-scoped `GOOFI_HOME`, wiped up front: the fleet's session files and the test agent
 	// config land here, never in the runner's real home. The fleet dies by SIGKILL, so the files

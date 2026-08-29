@@ -406,7 +406,12 @@ when none can import goofi. They never skip, and nothing in the suite is `#[igno
 
 `/dev/shm/iox2_*` is not a leak, and two reviews have now misread it as one. The count PEAKS
 during a run and settles back, because every node releases its shared memory when it drops. Delete
-those files by hand only to get a clean measurement, never as a fix. Relatedly: **a struct that
+those files by hand only to get a clean measurement, never as a fix — and NEVER from a script:
+unlinking a same-user tmpfs file always succeeds, mapped or not, so no sweep can tell a corpse from
+a live sibling's segment. The e2e harness had one, and every suite run severed each OTHER goofi on
+the machine: its existing wires kept flowing on their mappings while every wire made after landed
+on recreated, empty backing — no error, node green, data dead. Reclaim goes through iceoryx2
+(`reclaim_stale_resources`, at every boot), which knows dead from alive; nothing else deletes. Relatedly: **a struct that
 owns an iceoryx2 node beside its ports must declare the node LAST**, because Rust drops fields in
 declaration order and a node dropped first cannot remove its own directory.
 
