@@ -3,7 +3,7 @@
 
 use serde_json::{Map, Value};
 
-use goofi_tests::{Goofi, ep, hex, j};
+use goofi_tests::{f32s, Goofi, ep, hex, j};
 
 /// The arrangement flattened to an id-keyed map with a `parent` on each node.
 fn entries(g: &Goofi) -> Map<String, Value> {
@@ -111,6 +111,25 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
         let why = g.refuse("compound", j!({ "ops": [{ "op": bad }] }));
         assert!(why.contains("not a step"), "`{bad}`: {why}");
     }
+    // A batch's deliveries settle ONCE: a compound editing one param twice lands on the node as a
+    // single write, carrying the final value. The meter counts `on_param_changed` calls.
+    let meter = g.add("_TestParamWrites");
+    let mprobe = g.probe(meter, "out");
+    g.link(osc, "out", meter, "in");
+    let base = g.until("the meter to settle after init", |_| {
+        mprobe.latest().map(|d| f32s(&d)[0])
+    });
+    g.call("compound", j!({ "ops": [
+        { "op": "node param edit", "payload": { "node": hex(meter), "param": "control/value", "value": 1.0 } },
+        { "op": "node param edit", "payload": { "node": hex(meter), "param": "control/value", "value": 2.0 } },
+    ] }));
+    g.until("exactly one more delivery, carrying the final value", |g| {
+        let n = f32s(&mprobe.latest()?)[0];
+        (n >= base + 1.0).then(|| {
+            assert_eq!(n, base + 1.0, "two edits in one batch settled as one write");
+            assert_eq!(g.doc()["nodes"][hex(meter)]["params"]["control"]["value"]["value"], j!(2.0));
+        })
+    });
     let scope = g.call("nodes group", j!({ "nodes": [hex(osc), hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let built = g.doc();
@@ -123,7 +142,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["participant"].is_null() && g.doc()["globals"]["subj"].is_null());
-    assert_eq!(steps, 10, "one step per command — a compound and a three-field node edit are each ONE");
+    assert_eq!(steps, 13, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");

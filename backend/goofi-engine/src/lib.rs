@@ -534,6 +534,9 @@ pub struct Graph {
     refreshed: Vec<(Uid, ParamKey)>,
     /// What the current batch changed and [`Self::settle`] has not yet delivered.
     touched: Vec<Touched>,
+    /// Raised while a multi-step batch is mid-flight, so the drain-side settle cannot deliver its
+    /// intermediates. On the GRAPH, not a thread-local: the drain is another thread.
+    open_batches: u32,
 }
 
 impl Default for Graph {
@@ -603,6 +606,7 @@ impl Graph {
             instance: runtime::service_instance(),
             refreshed: Vec::new(),
             touched: Vec::new(),
+            open_batches: 0,
         }
     }
 
@@ -721,7 +725,7 @@ impl Graph {
     }
 
     /// Re-run `set_expression` on each of these bindings from its AUTHORED source — the one
-    /// operation that re-derives the rewrite, the variables, the handle and the wire plan together.
+    /// operation that re-derives the rewrite, the variables and the handle, and records delivery.
     fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
         for (uid, key) in bindings {
             let Some(b) = self.leaf(*uid).and_then(|e| e.bindings.get(key)) else { continue };
@@ -964,7 +968,7 @@ impl Graph {
     }
 
     /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The
-    /// clock restarts when the message changes, so a node cycling through failures reads young.
+    /// clock restarts when the message changes and at every rebirth, so it never outlives an instance.
     pub fn error_age(&self, uid: Uid) -> Option<Duration> {
         let (_, since) = self.leaf(uid)?.health.error_since.as_ref()?;
         Some(since.elapsed())
@@ -1274,7 +1278,6 @@ impl Graph {
         self.leaf(uid)?.health.options.get(&ParamKey::new(group, name)).map(Vec::as_slice)
     }
 
-
     /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')`, and the referrer uids
     /// come back so the bridge can rebroadcast them. The rewrite happens only on success.
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
@@ -1317,17 +1320,17 @@ impl Graph {
                 }
             }
         }
-        let mut touched: Vec<Uid> = Vec::new();
+        let mut referrers: Vec<Uid> = Vec::new();
         for (ruid, key, src, enabled, triggers) in edits {
             if self.set_expression(ruid, &key.group, &key.name, &src, enabled, triggers).is_ok()
-                && !touched.contains(&ruid)
+                && !referrers.contains(&ruid)
             {
-                touched.push(ruid);
+                referrers.push(ruid);
             }
         }
         // Expressions live only on the live flat nodes now (no def templates) — the loop above has
         // already followed the rename into every one.
-        touched
+        referrers
     }
 
     pub fn set_node_pos(&mut self, uid: Uid, pos: [f64; 2]) -> Result<(), String> {
@@ -2136,8 +2139,8 @@ impl Graph {
         if self.nodes[&uid].leaf().expect("a leaf").bindings.get(&key).is_some_and(|b| b.enabled) {
             self.unbind(uid, &key);
         }
-        // The record has moved and the node has been told; nothing else happens here.
-        // `on_param_changed` runs on the node's own thread, so its failure arrives as a fault.
+        // The record has moved and the delivery is recorded for settle; nothing else happens
+        // here. `on_param_changed` runs on the node's own thread, so its failure arrives as a fault.
         self.notify_param(uid, &key);
         self.invalidate_bindings_reading_param(uid, &key);
         Ok(())
@@ -2597,7 +2600,7 @@ impl Graph {
 
     /// The birth barrier landing: on [`runtime::Status::Ready`], never at birth. Attaching RE-PLANS
     /// every slot this node touches, from an EMPTY base, since its earlier messages were dropped.
-    pub fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
+    fn attach_control_sink(&mut self, uid: Uid, sink: Arc<dyn runtime::ControlSink>) {
         self.wire.attach(uid, sink);
         for (consumer, slot) in self.slots_touching(uid) {
             self.wire.forget_planned((consumer, slot));
@@ -2684,15 +2687,28 @@ impl Graph {
 
     /// Answer one node's ack — the status-drain worker's door into the sequence. Completing a phase
     /// is the only thing that starts the next one.
-    pub fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
+    fn wire_ack(&mut self, seq: u64, ok: Result<(), String>) {
         if let Some(key) = self.wire.ack(seq, ok) {
             self.advance_wire(key);
         }
     }
 
+    /// A multi-step batch is opening: hold every settle until [`Self::release_settle`], so the
+    /// 1 ms drain cannot deliver the batch's intermediates.
+    pub fn hold_settle(&mut self) {
+        self.open_batches += 1;
+    }
+
+    pub fn release_settle(&mut self) {
+        self.open_batches = self.open_batches.saturating_sub(1);
+    }
+
     /// Deliver what the batch changed: one decision per touched item, from settled state, each
     /// item once however often the batch touched it. Free when nothing was.
     pub fn settle(&mut self) {
+        if self.open_batches > 0 {
+            return;
+        }
         let touched = std::mem::take(&mut self.touched);
         let mut slots = HashSet::new();
         let mut params = HashSet::new();
@@ -2704,6 +2720,11 @@ impl Graph {
                     }
                 }
                 Touched::Param(uid, key) => {
+                    // A node the batch also removed is owed nothing: remove purged the planner,
+                    // and settle must not repopulate it.
+                    if self.leaf(uid).is_none() {
+                        continue;
+                    }
                     if params.insert((uid, key.clone())) {
                         let bind_id = self.bind_id(uid, &key);
                         self.replan_binding(uid, bind_id);

@@ -116,6 +116,9 @@ pub(crate) fn compound(
     // dirty flag — only this settle does — so a refusal has nothing to restore.
     let batch = writes.then(|| {
         state.history.lock().unwrap().clear_redo(actor);
+        // Held on the GRAPH, because the 1 ms drain is another thread: without the hold, its
+        // settle can deliver this compound's intermediates between two steps.
+        state.graph.lock().unwrap().hold_settle();
         goofi_engine::open_batch()
     });
     let mut results = Vec::with_capacity(resolved.len());
@@ -128,6 +131,7 @@ pub(crate) fn compound(
                 if let Some(batch) = &batch {
                     let mut g = state.graph.lock().unwrap();
                     state.history.lock().unwrap().rollback(&mut g, batch.id());
+                    g.release_settle();
                     drop(g);
                     events.clear();
                     resync_and_broadcast(state);
@@ -138,6 +142,7 @@ pub(crate) fn compound(
     }
     if let Some(batch) = &batch {
         state.history.lock().unwrap().coalesce(actor, batch.id());
+        state.graph.lock().unwrap().release_settle();
         resync_and_broadcast(state);
         events.extend(state.set_dirty(true));
     }

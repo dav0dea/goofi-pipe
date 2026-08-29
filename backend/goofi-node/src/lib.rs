@@ -358,7 +358,7 @@ pub trait Node: Send {
     // fails partway must release what it acquired before returning `Err`.
 }
 
-/// The generic node factory the manifest stores: a default instance, type-erased.
+/// The generic node factory a [`NodeClass`] registers: a default instance, type-erased.
 pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
     Box::new(T::default())
 }
@@ -534,7 +534,8 @@ impl Isolation {
     }
 }
 
-/// A manifest's [`Isolation`], writable through the `&'static NodeManifest` everything else holds.
+/// A type's [`Isolation`], shared by its `NodeClass`/`DynType` registration and captured by
+/// each running node at birth.
 /// It is interior-mutable for one reason: a Python node that re-enables the GIL at RUNTIME is only
 /// discovered to be subprocess-bound after its import already passed the probe, and demoting the
 /// type is what the next `restart_node` reads.

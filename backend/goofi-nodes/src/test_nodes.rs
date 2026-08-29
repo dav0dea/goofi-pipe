@@ -151,6 +151,27 @@ inventory::submit! {
     class("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true, default_factory::<Counter>)
 }
 
+/// Emits how many param writes the engine DELIVERED — the settle dedup's own meter. Not a
+/// producer, so no seeded binding can move the count between a test's reads.
+#[derive(Default)]
+struct ParamWrites {
+    writes: u64,
+}
+impl Node for ParamWrites {
+    fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        let bytes = (self.writes as f32).to_le_bytes().to_vec();
+        o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);
+        Ok(())
+    }
+    fn on_param_changed(&mut self, _k: &ParamKey, _v: &goofi_core::Param) -> NodeResult {
+        self.writes += 1;
+        Ok(())
+    }
+}
+inventory::submit! {
+    class("_TestParamWrites", "emits how many param writes were delivered", IN_ARRAY, OUT_ARRAY, SINK_PARAMS, false, default_factory::<ParamWrites>)
+}
+
 /// The same, but its input is REQUIRED.
 #[derive(Default)]
 struct RequiredCounter {

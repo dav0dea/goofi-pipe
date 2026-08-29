@@ -95,6 +95,14 @@ variants — the two-vocabularies cost this file rejects): the signal wire proto
 `WireStatus { Ack { seq, ok }, Ready, Health(Status) }` inside `goofi-signal`, and the shared
 `Status` in `goofi-node` keeps only the six health variants.
 
+**Nothing polls to discover; a clock only paces.** Cross-engine delivery is latest-wins
+everywhere — engines do not run in sync, so a queue between them lies about time; the one
+exception stays the explicit in-order bridge node. A consumer draining at its OWN clock — a
+scheduled engine's tick, the `/data` reducer's frame pace — is pacing, not polling. The status
+plane's 1 ms sweep is a poll-to-discover and becomes event-woken: a node's report also rings a
+graph-side door, so the drain wakes on arrival (the stage broadcast keeps its 500 ms pace — that
+is pacing). The trait's `drain` stays a pull; only the caller's wake becomes a notification.
+
 **The Ready re-plan is engine-internal, and the no-op memo has two gates.** On draining a `Ready`,
 the signal engine forgets the planned base for every touched slot and re-dispatches from its own
 stored desired sets — from an EMPTY base, because a `Wire` carries no generation, so a rebirth
@@ -141,9 +149,9 @@ lost: generations are PROCESS-LIFETIME — bumped on every birth at a uid, survi
 names), and never entering the archive. This also answers how an audio node's viewer learns about
 a restart: the same way every viewer does, through the generation in the derived name.
 
-**Node state splits by WRITER, and each half is single-writer.** The mirror across the thread (or
-process) boundary is unavoidable; principle 8 permits exactly one shape for it — a strictly
-one-way projection. `Leaf` today mixes both directions in one struct:
+**Node state splits by WRITER, and each half is single-writer** (LANDED, step 1). The mirror
+across the thread (or process) boundary is unavoidable; principle 8 permits exactly one shape for
+it — a strictly one-way projection. `Leaf` carries the two planes apart:
 
 - The RECORD (`manifest`, `params`, `bindings`) stays on the graph's `Leaf`: op-written,
   graph-owned, what the `.gfi` persists.
@@ -153,8 +161,10 @@ one-way projection. `Leaf` today mixes both directions in one struct:
   REPLACES the node's Health with a fresh one whose only non-default field is insert's inline
   boot error, and the engine's `drain` is the only MUTATOR of an existing Health thereafter. A
   fresh struct has no corpse numbers to clear, so the reborn-node inspector defect stays fixed by
-  construction. The known violation dies here: `apply_status` writes the persisted param record
-  on `RefreshOptions` — see the request door below.
+  construction. The known violation died here: the `RefreshOptions` answer no longer writes the
+  persisted param record — see the request door below. Accepted cost of birth-as-construction: a
+  rebirth resets the error-onset clock, so a standing error — a surviving binding error included —
+  reads young after a restart.
 - `host` leaves `Leaf` entirely, behind the signal engine, along with `wire` and `spawn_host`.
 
 **Imperative requests have one door: `request(uid, Request)`.** A refresh is a one-time
@@ -163,8 +173,9 @@ explicit. `RefreshParam` is the first variant (goofi-signal implements it as tod
 `wire.send`); the audio engine's `refresh: true` device params are the known second user. The
 ANSWER arrives through drain long after the RPC returned, and its home is the drain-written
 plane: a refreshable `Str` param's live options are an OVERLAY beside Health, keyed by ParamKey —
-`describe_node_params` and the doc projection read the record overlaid with it, the `refreshed`
-echo queue moves to the same plane, and the drain never writes the record.
+`describe_node_params` and `node state` read the record overlaid with it (the DOCUMENT
+deliberately has no options field; the state-update echo is how options reach a client), the
+`refreshed` echo queue lives on the same plane, and the drain never writes the record.
 
 **The binding machinery cuts at resolution.** `ExprBinding` holds both halves today, so the cut is
 named: graph-side (op-written, projection-read) are the authored `source`/`enabled`/
@@ -187,12 +198,12 @@ plus engine tags, generations, `instance`, and per-slot event-id inputs (an inpu
 its manifest position). The patch clock origin is NOT a settle input: it rides the explicit
 insert path, as today's spawn does.
 
-**`goofi-node` splits into the shared vocabulary and the signal author contract.** First, two
-fields come OFF `NodeManifest` before anything moves: `factory` and `isolation` are the signal
+**`goofi-node` splits into the shared vocabulary and the signal author contract.** First — and
+LANDED in step 1 — two fields came OFF `NodeManifest`: `factory` and `isolation` are the signal
 engine's business — each engine's library maps a type name to its own factory and tier, and
 `library()` advertises the tier as plain data so the bridge keeps its `node state` display.
-Without that strip the split cannot compile: the shared manifest would name `Box<dyn Node>` and
-`IsolationCell`, both of which move up. Stays in `goofi-node` (shared): the stripped manifest +
+Without that strip the split could not compile: the shared manifest named `Box<dyn Node>` and
+`IsolationCell`, both of which move up. The inventory unit is now `NodeClass`. Stays in `goofi-node` (shared): the stripped manifest +
 slot decls (gaining the engine tag, landed with a constructor or default so the many struct
 literals do not each need a hand edit), `Uid`, the param vocabulary (`ParamGroups`, `ParamKey`,
 `ParamDecl`, `ParamSpec`, `Params`), the expression vocabulary (`ExprDecl`, `BindingId`,
@@ -220,15 +231,17 @@ provenance (`patch_types`) and orders the restarts the diff names.
 error path holds). Addressability is engine-internal: the graph stops tracking
 known-vs-addressable, and each engine gates its own dispatch.
 
-**A settle point, and it is the prerequisite.** There is none today: `add_link` re-plans inline
-per link, `load_doc` calls `add_link` in a loop, `remove_node` re-plans per dropped link. For a
-synchronous engine that is N topological sorts per load, every intermediate a graph nobody asked
-for. Settle is a public Graph method: `resync_and_broadcast` calls it after every write op, and
-the 1 ms drain worker calls it after applying statuses, so a re-plan that needs settled state
-lands without waiting for an edit. One fix it needs: `replan` always calls `wire.begin` and
-dispatches phase 2 even when the desired set is unchanged — one short-circuit, one line, scoped
-to the wire plane (param delivery rides `Touched`, not the wire diff, so the short-circuit cannot
-silence it).
+**A settle point, and it is the prerequisite** (LANDED, step 2 first half). Inline re-planning is
+gone: ops record `Touched` and `Graph::settle` — a public method — delivers each item once, from
+settled state. `resync_and_broadcast` calls it after every write op, and the 1 ms drain worker
+calls it after applying statuses, so a re-plan that needs settled state lands without waiting for
+an edit. The In-slot short-circuit landed with it, scoped to the wire plane (param delivery rides
+`Touched`, not the wire diff, so the short-circuit cannot silence it). Two rules the build
+surfaced, both landed: the drain-side settle must NOT deliver while an op batch is open — the
+batch marker lives on the graph (`hold_settle`/`release_settle`), because the drain is another
+thread and a thread-local cannot guard it — and a `Touched` entry naming a node the batch also
+removed is dropped at settle, never delivered: remove purged the planner, and settle must not
+repopulate it.
 
 **The crates are carved NOW** — this supersedes the earlier "not yet": the moment the trait
 exists, the boundary has something real to forbid, and the manifest is the enforcement. The
@@ -282,10 +295,12 @@ and the dtype vocabulary).
 
 ## The order decided
 
-1. Split `Leaf` by writer (Health as construction-then-drain), fix the `RefreshOptions`
+1. DONE — Split `Leaf` by writer (Health as construction-then-drain), fix the `RefreshOptions`
    record-write via the options overlay, and strip `factory`/`isolation` off `NodeManifest` —
    all in place.
-2. Introduce the trait + the settle point with `Touched`, still one crate, suite green.
+2. Introduce the trait + the settle point with `Touched`, still one crate, suite green. The
+   settle point, the `Touched` plane and the `WireStatus` nesting are DONE; the trait, its
+   `GraphView` and the engine extraction remain.
 3. Carve the crates and the directory hierarchy — then almost purely a file move, with
    `tests/transport.rs` renamed and re-pointed in the same commit (it drives the whole
    `runtime::` surface by name, which the carve splits across `goofi-transport` and
