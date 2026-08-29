@@ -325,8 +325,7 @@ impl NodeRuntime {
         };
         self.publish_stage();
         if let Some(options) = &options {
-            // The record moves too, so the next `serialize` and inspector read agree with what was
-            // just reported.
+            // The node's OWN copies move too, so its next build and `RunPolicy` read fresh.
             if let Some(Param::Str { options: slot, .. }) =
                 self.literals.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
             {

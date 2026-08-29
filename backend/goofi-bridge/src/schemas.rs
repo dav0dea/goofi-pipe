@@ -89,7 +89,7 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
             let mut v = describe_param(param, expr.as_ref(), param_doc(m, gname, n));
-            if let Some(live) = g.refreshed_options(uid, gname, n) {
+            if let (Param::Str { .. }, Some(live)) = (param, g.refreshed_options(uid, gname, n)) {
                 v["options"] = json!(live);
             }
             names.insert(n.clone(), v);

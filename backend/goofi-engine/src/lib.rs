@@ -100,9 +100,9 @@ enum Kind {
 /// reports.
 struct Leaf {
     manifest: &'static NodeManifest,
-    /// The type's tier cell, captured at birth — shared per type, so a runtime demotion of a
-    /// Python type reads through here too.
-    tier: &'static IsolationCell,
+    /// The type's cell, captured at birth — shared per type, so a runtime demotion of a Python
+    /// type reads through here too.
+    isolation: &'static IsolationCell,
     host: NodeHost,
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
     params: Arc<ParamGroups>,
@@ -728,7 +728,7 @@ impl Graph {
         &mut self,
         manifest: &'static NodeManifest,
         factory: NodeFactory,
-        tier: &'static IsolationCell,
+        isolation: &'static IsolationCell,
     ) -> Registration {
         let name = manifest.type_name;
         if goofi_node::find(name).is_some() {
@@ -738,7 +738,7 @@ impl Graph {
         // A name that loads now is not unloadable any more: leaving the greyed row standing would
         // give one name two palette rows.
         self.unavailable.remove(name);
-        match self.dyn_types.insert(name, DynType { manifest, isolation: tier, factory: Arc::from(factory) }) {
+        match self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }) {
             Some(_) => Registration::Replaced,
             None => Registration::Added,
         }
@@ -913,7 +913,7 @@ impl Graph {
 
     /// The tier `uid`'s instance runs on — a leaf alone wears one.
     pub fn node_tier(&self, uid: Uid) -> Option<Isolation> {
-        self.leaf(uid).map(|e| e.tier.get())
+        self.leaf(uid).map(|e| e.isolation.get())
     }
 
     /// A TYPE's tier: the compile-time catalog, else a runtime-registered type.
@@ -1049,10 +1049,10 @@ impl Graph {
                 // A leaf is the only kind with a manifest, so it is the only one that can seed the
                 // default expressions its type declares.
                 let seed = params.is_none();
-                let (manifest, tier, params, build) = self.build_node(type_name, params)?;
+                let (manifest, isolation, params, build) = self.build_node(type_name, params)?;
                 let uid = self.claim(uid);
                 let born = self.pick_name(name, &manifest.type_name.to_lowercase(), None);
-                self.insert_node_at(uid, born.clone(), manifest, tier, build, params);
+                self.insert_node_at(uid, born.clone(), manifest, isolation, build, params);
                 if seed {
                     self.seed_default_expressions(uid, manifest);
                 }
@@ -1118,7 +1118,7 @@ impl Graph {
         uid: Uid,
         name: String,
         manifest: &'static NodeManifest,
-        tier: &'static IsolationCell,
+        isolation: &'static IsolationCell,
         build: runtime::NodeBuild,
         params: ParamGroups,
     ) {
@@ -1131,7 +1131,7 @@ impl Graph {
             NodeEntry {
                 kind: Kind::Leaf(Box::new(Leaf {
                     manifest,
-                    tier,
+                    isolation,
                     host,
                     params: Arc::new(params),
                     bindings: HashMap::new(),
@@ -2051,7 +2051,7 @@ impl Graph {
         }
         // Construct BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
-        let (manifest, tier, params, build) = self.build_node(type_name, Some(params))?;
+        let (manifest, isolation, params, build) = self.build_node(type_name, Some(params))?;
 
         // A restart is a BIRTH at this uid and the corpse's teardown does not block: without the
         // generation bump the reborn node re-opens names its predecessor's ports still hold.
@@ -2063,7 +2063,7 @@ impl Graph {
             // Replacing the host halts the corpse's thread without waiting. The MANIFEST goes with
             // the instance: keeping the old one leaves the graph describing a node not running.
             entry.manifest = manifest;
-            entry.tier = tier;
+            entry.isolation = isolation;
             entry.host = host;
         }
         // The corpse's channel goes with it, and BEFORE the new generation reports `Ready`: while
@@ -2073,9 +2073,8 @@ impl Graph {
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
         entry.params = Arc::new(params);
-        // The whole health is REBORN (§4, §6.2): the corpse's stage, errors, rate and evaluated
-        // values describe an instance that no longer exists, and a fresh struct has nothing of the
-        // corpse's to show. `boot_error` is this birth's own.
+        // The whole health is REBORN (§4, §6.2): the corpse's reports describe an instance that
+        // no longer exists, and a fresh struct has nothing of the corpse's to show.
         entry.health = Health::born(boot_error);
         // `bindings` are left untouched — their compiled handles may only be dropped through
         // `release_entry_bindings`, and `bind_error` describes a SOURCE this rebirth did not touch.
@@ -2716,9 +2715,8 @@ impl Graph {
             runtime::Status::Ack { .. } | runtime::Status::Ready => {}
             runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
             runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
-            // The options are the node's answer to a refresh (§8.5), and they land in the health
-            // OVERLAY rather than in a reply or the record: the RPC that asked has already
-            // returned, and the drain never writes the record.
+            // The options are the node's answer to a refresh (§8.5). They land in the health
+            // OVERLAY, never a reply or the record: the RPC that asked has already returned.
             runtime::Status::RefreshOptions { key, options } => {
                 if let Some(options) = options {
                     entry.health.options.insert(key.clone(), options);
@@ -3281,12 +3279,12 @@ impl Graph {
             let ty = rec["type"].as_str().unwrap();
             // Folded in BEFORE construction, since `insert_node` runs `setup()`.
             let params = self.record_params(ty, rec)?;
-            let (manifest, tier, params, build) = self.build_node(ty, Some(params))?;
+            let (manifest, isolation, params, build) = self.build_node(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
             let uid = idmap[old];
             let name = self.fresh_name(&manifest.type_name.to_lowercase());
-            self.insert_node_at(uid, name, manifest, tier, build, params);
+            self.insert_node_at(uid, name, manifest, isolation, build, params);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
             }
