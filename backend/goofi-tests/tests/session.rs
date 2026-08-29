@@ -46,6 +46,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     // a port's inner wire is a link like any other.
     let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     let saved: serde_json::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+    assert_eq!(saved["goofi"], env!("CARGO_PKG_VERSION"), "the manifest names its writer");
     assert!(saved["root"].get("scopes").is_none(), "no block of its own for the structure");
     let recs = saved["root"]["nodes"].as_object().unwrap();
     assert_eq!(recs[&outer]["type"], "SubPatch", "the facade is a node record: {:?}", recs[&outer]);
@@ -138,6 +139,11 @@ fn a_refused_load_leaves_the_open_patch_exactly_as_it_was() {
     for target in [dir.path().join("absent.gfi"), junk, bad] {
         g.refuse("session load", j!({ "path": target.to_string_lossy() }));
     }
+    // Valid YAML from a FUTURE goofi: the version gate refuses, and the refusal names the writer.
+    let future = dir.path().join("future.gfi");
+    goofi_graph::archive::write_gfi(&future, "version: 99\ngoofi: \"9.9.9\"\nroot: {}", &packed).unwrap();
+    let refusal = g.refuse("session load", j!({ "path": future.to_string_lossy() }));
+    assert!(refusal.contains("written by goofi 9.9.9"), "the writer is named: {refusal}");
 
     assert_eq!(g.doc(), before, "the open patch is untouched");
     assert_eq!(g.state.mount(), mount, "on the mount it was already using");

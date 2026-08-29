@@ -2664,8 +2664,6 @@ impl Graph {
             let (Some(nm), Some(g)) = (names.as_object(), params.get_mut(group)) else { continue };
             for (name, val) in nm {
                 if let Some(existing) = g.get_mut(name) {
-                    // Never fire a trigger on a restore: a persisted or hand-edited value must not
-                    // trip the node's trigger as the patch opens.
                     *existing = param_from_json(existing, val);
                 }
             }
@@ -2819,7 +2817,7 @@ impl Graph {
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
     }
 
-    /// Replace the graph from a `.gfi` v7 manifest. Node types are validated before the current
+    /// Replace the graph from a `.gfi` manifest. Node types are validated before the current
     /// graph is torn down (a rejected load is a no-op).
     pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
@@ -2833,10 +2831,10 @@ impl Graph {
                 let writer = doc
                     .get("goofi")
                     .and_then(|v| v.as_str())
-                    .map(|w| format!(", written by goofi {w}"))
+                    .map(|w| format!(" — the file was written by goofi {w}"))
                     .unwrap_or_default();
                 return Err(format!(
-                    "unsupported .gfi version (this build reads version {MANIFEST_VERSION}{writer})"
+                    "unsupported .gfi version (this build reads version {MANIFEST_VERSION}){writer}"
                 ));
             }
         };
