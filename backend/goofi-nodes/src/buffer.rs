@@ -2,10 +2,8 @@
 //! The rank never changes.
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
-use goofi_node::{
-    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
-};
+use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
+use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
 
 #[derive(Default)]
 struct Buffer {

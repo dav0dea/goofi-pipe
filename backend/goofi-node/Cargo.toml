@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 indexmap = "2"
-inventory = "0.3"
 # `ParamKey` derives Serialize/Deserialize — it addresses a param over the async runtime's wire.
 serde = { version = "1", features = ["derive"] }
 # Only `serde_json::from_str` is used here (the probe schema's Deserialize impl comes from goofi-core).

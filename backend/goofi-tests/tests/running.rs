@@ -190,12 +190,12 @@ struct Flaky {
     generation: f32,
     n: f32,
 }
-impl goofi_node::Node for Flaky {
-    fn setup(&mut self, _c: &mut goofi_node::NodeCtx, _p: &goofi_node::Params<'_>) -> goofi_node::NodeResult {
+impl goofi_signal::Node for Flaky {
+    fn setup(&mut self, _c: &mut goofi_signal::NodeCtx, _p: &goofi_node::Params<'_>) -> goofi_signal::NodeResult {
         if self.generation == 0.0 { Err("the device did not open".into()) } else { Ok(()) }
     }
-    fn process(&mut self, _i: &goofi_node::Inputs<'_>, o: &mut goofi_node::Outputs<'_>,
-               _c: &mut goofi_node::NodeCtx, _p: &goofi_node::Params<'_>) -> goofi_node::NodeResult {
+    fn process(&mut self, _i: &goofi_signal::Inputs<'_>, o: &mut goofi_signal::Outputs<'_>,
+               _c: &mut goofi_signal::NodeCtx, _p: &goofi_node::Params<'_>) -> goofi_signal::NodeResult {
         self.n += 1.0;
         let mut body = self.generation.to_le_bytes().to_vec();
         body.extend_from_slice(&self.n.to_le_bytes());
@@ -407,10 +407,10 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     // A Python node's build EXECUTES its module, so the honest fixture is the dyn seam a discovered
     // node arrives through, not a trivial native factory.
     struct Echo;
-    impl goofi_node::Node for Echo {
-        fn process(&mut self, i: &goofi_node::Inputs<'_>, o: &mut goofi_node::Outputs<'_>,
-                   _: &mut goofi_node::NodeCtx, _: &goofi_node::Params<'_>)
-                   -> goofi_node::NodeResult {
+    impl goofi_signal::Node for Echo {
+        fn process(&mut self, i: &goofi_signal::Inputs<'_>, o: &mut goofi_signal::Outputs<'_>,
+                   _: &mut goofi_signal::NodeCtx, _: &goofi_node::Params<'_>)
+                   -> goofi_signal::NodeResult {
             if let Some(d) = i.get("in") {
                 o.set("out", d.clone());
             }

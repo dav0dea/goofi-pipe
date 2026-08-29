@@ -15,6 +15,7 @@ embed = ["dep:pyo3", "dep:goofi_pymod"]
 [dependencies]
 goofi-core = { path = "../goofi-core" }
 goofi-node = { path = "../goofi-node" }
+goofi-signal = { path = "../signal/goofi-signal" }
 # The subprocess transport: `goofi-codec` request/response frames over iceoryx2 shared memory,
 # the Rust crate on BOTH ends (the child runs `goofi.serve` from the abi3 wheel, same 0.9.3 ABI).
 goofi-codec = { path = "../goofi-codec" }

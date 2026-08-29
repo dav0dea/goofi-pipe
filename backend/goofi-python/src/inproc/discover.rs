@@ -3,8 +3,9 @@
 
 use std::path::Path;
 
-use goofi_node::discover::{discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
-use goofi_node::{Inputs, Isolation, Node, NodeCtx, NodeError, NodeManifest, NodeResult, Outputs, Params};
+use goofi_signal::discover::{discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
+use goofi_node::{Isolation, NodeManifest, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 
 use super::PyNode;
 

@@ -13,5 +13,5 @@ mod test_source;
 
 /// Force-links this crate's node registrations, and reports how many are registered.
 pub fn native_node_count() -> usize {
-    goofi_node::catalog().count()
+    goofi_signal::catalog().count()
 }

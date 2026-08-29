@@ -60,7 +60,7 @@ fn param_doc(m: &NodeManifest, group: &str, name: &str) -> Option<&'static str> 
     m.params
         .iter()
         .copied()
-        .chain(goofi_node::common_decls(m))
+        .chain(goofi_signal::common_decls(m))
         .find(|d| d.group == group && d.name == name)
         .and_then(|d| d.doc)
 }
@@ -163,7 +163,7 @@ pub fn node_type_info(m: &NodeManifest, source: &str) -> Value {
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),
         // The same universal `common` group instances carry, so palette and instance agree.
-        "params": describe_params(&goofi_node::with_common(m.default_params(), m), m),
+        "params": describe_params(&goofi_signal::with_common(m.default_params(), m), m),
     })
 }
 

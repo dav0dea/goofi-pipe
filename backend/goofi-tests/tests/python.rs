@@ -215,7 +215,8 @@ mod inproc {
     use super::*;
     use goofi_tests::hex;
     use goofi_core::{Data, Meta, Param, Value};
-    use goofi_node::{Inputs, Node, NodeCtx, Outputs, ParamGroups, Params};
+    use goofi_node::{ParamGroups, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, Outputs};
     use goofi_python::inproc::PyNode;
     use goofi_python::subproc::RemoteNode;
     use indexmap::IndexMap;
@@ -223,7 +224,7 @@ mod inproc {
     /// Run one node once with the named input and params, reading back `out`. Below the graph:
     /// what is compared is the MARSHALLING.
     fn once(node: &mut dyn Node, input: Option<Data>, params: &ParamGroups)
-        -> (goofi_node::NodeResult, Option<Data>) {
+        -> (goofi_signal::NodeResult, Option<Data>) {
         let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         inmap.insert("data", input);
         let inp = Inputs::new(&inmap);

@@ -6,10 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goofi_node::{
-    BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest,
-    ParamGroups, ParamKey, Request, Status, Touched, Uid,
-};
+use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest, ParamGroups, ParamKey, Request, Status, Touched, Uid};
 
 use crate::runtime::{
     self,
@@ -49,9 +46,9 @@ impl Drop for NodeHost {
 }
 
 /// A [`crate::NodeFactory`] shared with the node's own thread, which is where the build happens.
-type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_node::Node> + Send + Sync>;
+type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_signal::Node> + Send + Sync>;
 
-/// A runtime-registered type: the build half a [`goofi_node::NodeClass`] carries for a built-in.
+/// A runtime-registered type: the build half a [`goofi_signal::NodeClass`] carries for a built-in.
 struct DynType {
     manifest: &'static NodeManifest,
     isolation: &'static IsolationCell,
@@ -102,7 +99,7 @@ impl SignalEngine {
         isolation: &'static IsolationCell,
     ) -> crate::Registration {
         let name = manifest.type_name;
-        if goofi_node::find(name).is_some() {
+        if goofi_signal::find(name).is_some() {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
             return crate::Registration::Refused;
         }
@@ -117,7 +114,7 @@ impl SignalEngine {
     }
 
     pub fn find_entry(&self, type_name: &str) -> Option<LibraryEntry> {
-        if let Some(c) = goofi_node::find_class(type_name) {
+        if let Some(c) = goofi_signal::find_class(type_name) {
             return Some(LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
         }
         self.dyn_types
@@ -363,7 +360,7 @@ impl Engine for SignalEngine {
     }
 
     fn library(&self) -> Vec<LibraryEntry> {
-        let builtin = goofi_node::classes()
+        let builtin = goofi_signal::classes()
             .map(|c| LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
         let dynamic = self
             .dyn_types
@@ -381,7 +378,7 @@ impl Engine for SignalEngine {
             .find_entry(type_name)
             .ok_or_else(|| format!("no node type `{type_name}` in the signal library"))?;
         let base = supplied.unwrap_or_else(|| entry.manifest.default_params());
-        Ok(goofi_node::with_common(base, entry.manifest))
+        Ok(goofi_signal::with_common(base, entry.manifest))
     }
 
     fn insert(
@@ -391,7 +388,7 @@ impl Engine for SignalEngine {
         generation: u64,
         params: &ParamGroups,
     ) -> Option<String> {
-        let build: runtime::NodeBuild = if let Some(c) = goofi_node::find_class(type_name) {
+        let build: runtime::NodeBuild = if let Some(c) = goofi_signal::find_class(type_name) {
             let f = c.factory;
             Box::new(move |_| f())
         } else if let Some(dt) = self.dyn_types.get(type_name) {

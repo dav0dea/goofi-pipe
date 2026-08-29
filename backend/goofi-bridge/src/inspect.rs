@@ -269,7 +269,7 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
                 p.extension().is_some_and(|e| e == "py")
                     && p.file_stem()
                         .and_then(|s| s.to_str())
-                        .is_some_and(|s| goofi_node::discover::camel(s) == ty)
+                        .is_some_and(|s| goofi_signal::discover::camel(s) == ty)
             })?;
         Some((path, *provenance))
     });

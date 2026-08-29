@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use iceoryx2::prelude::*;
 
 use goofi_core::Data;
-use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs, ParamKey, Params};
+use goofi_node::{ParamKey, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 
 /// Unique iceoryx2 service-name base per spawned subprocess, so concurrent nodes never collide.
 static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -238,7 +239,7 @@ impl Drop for RemoteNode {
 
 use std::path::Path;
 
-use goofi_node::discover::{Discovered, NodeFactory};
+use goofi_signal::discover::{Discovered, NodeFactory};
 use goofi_node::{Isolation, NodeManifest};
 
 /// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
@@ -252,7 +253,7 @@ use crate::Discovery;
 
 /// Probe one file for this tier, reporting all three outcomes.
 pub fn probe(path: &Path, python: &str) -> Discovery {
-    goofi_node::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
+    goofi_signal::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
 }
 
 /// Turn a probe-[`Discovered`] into a [`SubprocNodeType`], without a second spawn.

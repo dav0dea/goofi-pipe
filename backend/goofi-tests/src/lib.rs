@@ -161,7 +161,7 @@ impl Goofi {
     pub fn register_dyn(
         &self,
         manifest: &'static goofi_node::NodeManifest,
-        factory: goofi_node::discover::NodeFactory,
+        factory: goofi_signal::discover::NodeFactory,
         tier: &'static goofi_node::IsolationCell,
     ) {
         self.state.graph.lock().unwrap().register_dyn_type(manifest, factory, tier);

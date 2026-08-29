@@ -4,10 +4,8 @@
 use std::sync::Arc;
 
 use goofi_core::{Axis, Coord, Data, SlotType};
-use goofi_node::{
-    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
-};
+use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
+use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
 use rustfft::{num_complex::Complex32, FftPlanner};
 
 struct Psd {

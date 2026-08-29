@@ -15,6 +15,7 @@ goofi-core = { path = "../goofi-core" }
 goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
 goofi-engine = { path = "../goofi-engine" }
+goofi-signal = { path = "../signal/goofi-signal" }
 goofi-view = { path = "../goofi-view" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }

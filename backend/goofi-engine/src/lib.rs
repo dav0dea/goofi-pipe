@@ -5,11 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
-use goofi_node::{
-    BindingView, BoundVar, DrainWaker, Edge, Engine, ExprMode, GraphView, Isolation,
-    IsolationCell, LibraryEntry, NodeCtx, NodeManifest, NodeView, ParamGroups, ParamKey, Request,
-    Touched,
-};
+use goofi_node::{BindingView, BoundVar, DrainWaker, Edge, Engine, ExprMode, GraphView, Isolation, IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamGroups, ParamKey, Request, Touched};
+use goofi_signal::NodeCtx;
 use indexmap::IndexMap;
 
 pub mod archive;
@@ -158,8 +155,8 @@ fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
 }
 
 /// So a panic and a returned error travel the one channel a caller already handles.
-fn fold_panic(panicked: String) -> goofi_node::NodeResult {
-    Err(goofi_node::NodeError(panicked))
+fn fold_panic(panicked: String) -> goofi_signal::NodeResult {
+    Err(goofi_signal::NodeError(panicked))
 }
 
 fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
@@ -327,7 +324,7 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
 
 /// A factory that can capture runtime state — a Python class handle, a device descriptor — which
 /// a bare `fn` pointer cannot close over. One definition, shared with every discovery backend.
-pub use goofi_node::discover::NodeFactory;
+pub use goofi_signal::discover::NodeFactory;
 
 /// What one [`Graph::register_dyn_type`] call did. The three are kept apart because only the CALLER
 /// can tell a rescan's refresh from two node files claiming one name.
@@ -795,7 +792,7 @@ impl Graph {
     /// Record a type that could not be loaded, and why. Refused when a BUILT-IN owns the name; a
     /// runtime type of that name is displaced, since the latest scan is the answer.
     pub fn register_unavailable(&mut self, type_name: String, reason: String) -> bool {
-        if goofi_node::find(&type_name).is_some() {
+        if goofi_signal::find(&type_name).is_some() {
             return false;
         }
         self.signal.remove_dyn_type(type_name.as_str());
@@ -1034,7 +1031,7 @@ impl Graph {
         // The manifest's own declarations win over the universal `common` group, as they do on
         // the value side. Read through `common_decls`, the one place `producer` is interpreted.
         let declared = manifest.params.iter().map(|d| (d.group, d.name, d.expression));
-        let universal = goofi_node::common_decls(manifest)
+        let universal = goofi_signal::common_decls(manifest)
             .filter(|d| !manifest.params.iter().any(|o| o.group == d.group && o.name == d.name))
             .map(|d| (d.group, d.name, d.expression))
             .collect::<Vec<_>>();
@@ -3214,7 +3211,7 @@ fn entry_error(e: &Leaf) -> Option<&str> {
 }
 
 pub(crate) fn seed_node(
-    node: &mut dyn goofi_node::Node,
+    node: &mut dyn goofi_signal::Node,
     params: &ParamGroups,
     ctx: &mut NodeCtx,
 ) -> Option<String> {

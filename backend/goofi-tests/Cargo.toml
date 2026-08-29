@@ -19,6 +19,7 @@ goofi-core = { path = "../goofi-core" }
 goofi-init = { path = "../goofi-init" }
 goofi-codec = { path = "../goofi-codec" }
 goofi-engine = { path = "../goofi-engine" }
+goofi-signal = { path = "../signal/goofi-signal" }
 goofi-node = { path = "../goofi-node" }
 goofi-view = { path = "../goofi-view" }
 # The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release

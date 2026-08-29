@@ -2,10 +2,8 @@
 //! Stateful rather than per-frame: a filter restarted on each block would ring at every boundary.
 
 use goofi_core::{resolve_axis, Data, SlotType};
-use goofi_node::{
-    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
-};
+use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
+use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
 
 /// One second-order section, normalized so `a0 == 1`.
 #[derive(Clone, Copy, Default)]

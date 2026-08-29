@@ -9,8 +9,8 @@ use std::sync::Arc;
 use goofi_bridge::{ScannedType, Tier};
 use goofi_core::{Data, Meta};
 use goofi_engine::Graph;
-use goofi_node::{Inputs, Node, NodeCtx, NodeError, NodeManifest, NodeResult, OutputDecl,
-                 Outputs, Params};
+use goofi_node::{NodeManifest, OutputDecl, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 use goofi_tests::{j, Goofi, OutputProbe};
 
 static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
@@ -35,7 +35,7 @@ fn stub_scan(g: &mut Graph, dir: &Path) -> Vec<ScannedType> {
         if path.extension().and_then(|e| e.to_str()) != Some("py") {
             continue;
         }
-        let name = goofi_node::discover::camel(&path.file_stem().unwrap().to_string_lossy());
+        let name = goofi_signal::discover::camel(&path.file_stem().unwrap().to_string_lossy());
         let value: f32 =
             std::fs::read_to_string(&path).unwrap_or_default().trim().parse().unwrap_or(0.0);
         let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {

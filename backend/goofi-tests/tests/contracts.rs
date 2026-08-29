@@ -147,7 +147,7 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
 }
 
 static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
-fn never() -> Box<dyn goofi_node::Node> {
+fn never() -> Box<dyn goofi_signal::Node> {
     unreachable!("the catalog never instantiates")
 }
 const fn manifest(type_name: &'static str, inputs: &'static [SlotDecl],
@@ -310,8 +310,8 @@ fn a_malformed_frame_is_refused_rather_than_trusted() {
 fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
     // Cheap and evaluator-free: a typo'd `globals.defualt_ufreq` compiles, binds, then errors on every
     // instance. Read AS EACH TYPE SEES IT, since a declaration may condition on the manifest.
-    let decls = goofi_node::catalog().flat_map(|m| {
-        m.params.iter().copied().chain(goofi_node::common_decls(m)).map(move |d| (m.type_name, d))
+    let decls = goofi_signal::catalog().flat_map(|m| {
+        m.params.iter().copied().chain(goofi_signal::common_decls(m)).map(move |d| (m.type_name, d))
     });
     for (owner, decl) in decls {
         let Some(expr) = decl.expression else { continue };
@@ -329,7 +329,7 @@ fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
 fn every_test_node_is_registered_and_hidden_from_the_palette() {
     // Both or neither: registering without the `_` prefix ships a product node, and the prefix
     // without registration is invisible to the tests it exists for.
-    let names: Vec<&str> = goofi_node::catalog().map(|m| m.type_name).collect();
+    let names: Vec<&str> = goofi_signal::catalog().map(|m| m.type_name).collect();
     for want in ["_TestEcho", "_TestSink", "_TestFail", "_TestPanic", "_TestSetupFail", "_TestSlow",
                  "_TestCounter", "_TestRequired", "_TestPicker", "_TestMute", "_TestConst"] {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");

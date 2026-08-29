@@ -2,10 +2,8 @@
 
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
-use goofi_node::{
-    default_factory, Inputs,  Node, NodeClass, NodeCtx, NodeManifest, NodeResult, OutputDecl,
-    Outputs, ParamDecl, ParamSpec, Params, SlotDecl,
-};
+use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
+use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
 
 #[derive(Default)]
 struct TestConst;

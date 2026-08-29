@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, SrcDtype};
-use goofi_node::{Inputs, Isolation, IsolationCell, Node, NodeCtx, NodeError, NodeResult, Outputs, Params};
+use goofi_node::{Isolation, IsolationCell, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 

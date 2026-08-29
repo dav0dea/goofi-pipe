@@ -17,6 +17,7 @@ shell-words = "1"
 serde_json = "1"
 # Direct, for the node-registration vocabulary (`Registration`) the tier routing below reads.
 goofi-engine = { path = "../goofi-engine" }
+goofi-signal = { path = "../signal/goofi-signal" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 # BOTH Python node tiers + the param-expression evaluator. ON by default: `cargo run -p
 # goofi-init` creates a repo-local `.gfivenv-ft` and the `.cargo/config.toml` that points pyo3 at

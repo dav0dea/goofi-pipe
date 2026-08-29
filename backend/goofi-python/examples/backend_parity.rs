@@ -10,10 +10,8 @@ use goofi_core::globals::GlobalValue;
 use goofi_core::{Data, Param, Value};
 use goofi_engine::testing::OutputProbe;
 use goofi_engine::Graph;
-use goofi_node::{
-    Inputs, Isolation, IsolationCell, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs, ParamDecl,
-    ParamGroups, Params, SlotDecl,
-};
+use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, Params, SlotDecl};
+use goofi_signal::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 use goofi_python::inproc::PyNode;
 use goofi_python::subproc::RemoteNode;
 

@@ -897,14 +897,14 @@ mod tests {
 
     /// A node that records its own destruction, on the node's own thread.
     struct Tracked(Arc<std::sync::atomic::AtomicBool>);
-    impl goofi_node::Node for Tracked {
+    impl goofi_signal::Node for Tracked {
         fn process(
             &mut self,
-            _i: &goofi_node::Inputs<'_>,
-            _o: &mut goofi_node::Outputs<'_>,
-            _c: &mut goofi_node::NodeCtx,
+            _i: &goofi_signal::Inputs<'_>,
+            _o: &mut goofi_signal::Outputs<'_>,
+            _c: &mut goofi_signal::NodeCtx,
             _p: &goofi_node::Params<'_>,
-        ) -> goofi_node::NodeResult {
+        ) -> goofi_signal::NodeResult {
             Ok(())
         }
     }

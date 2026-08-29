@@ -14,10 +14,8 @@ use goofi_engine::runtime::{
     Transport, WireStatus,
 };
 use goofi_engine::Uid;
-use goofi_node::{
-    default_factory, Inputs, Node, NodeCtx, NodeManifest, NodeResult, OutputDecl, Outputs,
-    ParamKey, Params, SlotDecl,
-};
+use goofi_node::{NodeManifest, OutputDecl, ParamKey, Params, SlotDecl};
+use goofi_signal::{default_factory, Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 /// Long enough that a park is a real park, short enough that a broken retention fails fast.
 const MS200: Duration = Duration::from_millis(200);

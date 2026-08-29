@@ -4,7 +4,12 @@
 use goofi_core::probe;
 use goofi_core::SlotType;
 
-use crate::{Isolation, IsolationCell, Node, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec, SlotDecl};
+use goofi_node::{
+    Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, ParamSpec,
+    SlotDecl,
+};
+
+use crate::Node;
 
 /// Builds a fresh boxed instance of a runtime-discovered node type from its params.
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
@@ -93,9 +98,9 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
         group: leak_str(&p.group),
         name: leak_str(&p.name),
         spec,
-        expression: p.expression.as_deref().map(|src| crate::ExprDecl {
+        expression: p.expression.as_deref().map(|src| goofi_node::ExprDecl {
             source: leak_str(src),
-            mode: crate::ExprMode::On,
+            mode: goofi_node::ExprMode::On,
             trigger: false,
         }),
         doc: p.doc.as_deref().map(leak_str),

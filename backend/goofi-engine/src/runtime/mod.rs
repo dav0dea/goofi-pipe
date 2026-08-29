@@ -6,10 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use goofi_core::{Data, Param};
-use goofi_node::{
-    ExprEvaluator, Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params,
-    RunPolicy,
-};
+use goofi_node::{ExprEvaluator, NodeManifest, ParamGroups, ParamKey, Params};
+use goofi_signal::{Inputs, Node, NodeCtx, Outputs, RunPolicy};
 pub use goofi_node::NodeFault;
 
 /// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
@@ -206,7 +204,7 @@ impl NodeRuntime {
         transport: Arc<dyn Transport>,
         env: NodeEnv,
     ) -> NodeRuntime {
-        let effective = goofi_node::with_common(params, manifest);
+        let effective = goofi_signal::with_common(params, manifest);
         let run_policy = RunPolicy::from_params(&effective);
         let mut runtime = NodeRuntime {
             manifest,
