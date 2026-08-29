@@ -201,7 +201,13 @@ pub fn node(
         for (group, names) in g.params(uid).iter().flat_map(|p| p.iter()) {
             for (name, p) in names {
                 let expr = g.param_expression(uid, group, name);
-                out.push_str(&format!("  {group}.{name} = {}\n", param_line(p, expr.as_ref())));
+                let mut shown = p.clone();
+                if let (goofi_core::Param::Str { options, .. }, Some(live)) =
+                    (&mut shown, g.refreshed_options(uid, group, name))
+                {
+                    *options = Some(live.to_vec());
+                }
+                out.push_str(&format!("  {group}.{name} = {}\n", param_line(&shown, expr.as_ref())));
             }
         }
     }

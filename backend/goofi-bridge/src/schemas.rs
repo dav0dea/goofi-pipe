@@ -88,7 +88,11 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
         let mut names = Map::new();
         for (n, param) in group {
             let expr = g.param_expression(uid, gname, n);
-            names.insert(n.clone(), describe_param(param, expr.as_ref(), param_doc(m, gname, n)));
+            let mut v = describe_param(param, expr.as_ref(), param_doc(m, gname, n));
+            if let Some(live) = g.refreshed_options(uid, gname, n) {
+                v["options"] = json!(live);
+            }
+            names.insert(n.clone(), v);
         }
         groups.insert(gname.clone(), Value::Object(names));
     }

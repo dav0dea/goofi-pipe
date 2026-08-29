@@ -96,7 +96,8 @@ enum Kind {
     Port(subpatch::Port),
 }
 
-/// The state only a RUNNING node has.
+/// The state only a RUNNING node has: the RECORD the ops write, and the health its instance
+/// reports.
 struct Leaf {
     manifest: &'static NodeManifest,
     /// The type's tier cell, captured at birth — shared per type, so a runtime demotion of a
@@ -107,12 +108,12 @@ struct Leaf {
     params: Arc<ParamGroups>,
     /// The graph resolves each binding's references and ships it; the NODE evaluates it.
     bindings: HashMap<ParamKey, ExprBinding>,
-    /// What the node last reported evaluating its bindings to. Kept apart from `params` so a
-    /// broken binding still has the authored literal to fall back to.
-    evaluated: IndexMap<ParamKey, Param>,
-    /// Every error THIS INSTANCE reported, by param. It dies with the instance, where
-    /// `ExprBinding::bind_error` survives because the source does.
-    param_errors: IndexMap<ParamKey, String>,
+    health: Health,
+}
+
+/// What the running instance reports about itself — a one-way projection with two writers by
+/// construction: a BIRTH replaces the whole struct, and the status drain mutates it after.
+struct Health {
     /// `Some` when INITIALIZATION failed — the param replay and `setup()` together, which are one
     /// unit. Not `last_error`, which a later process failure would overwrite.
     setup_error: Option<String>,
@@ -125,6 +126,32 @@ struct Leaf {
     stage: &'static str,
     /// The same number the node stamps as `meta["ufreq"]`. `None` until it has emitted twice.
     ufreq: Option<f64>,
+    /// What the node last reported evaluating its bindings to. Kept apart from `params` so a
+    /// broken binding still has the authored literal to fall back to.
+    evaluated: IndexMap<ParamKey, Param>,
+    /// Every error THIS INSTANCE reported, by param. It dies with the instance, where
+    /// `ExprBinding::bind_error` survives because the source does.
+    param_errors: IndexMap<ParamKey, String>,
+    /// A refreshable `Str` param's re-enumerated options — the overlay a projection reads over
+    /// the record's declared options. The answer to a ⟳ lands here, never in the record.
+    options: IndexMap<ParamKey, Vec<String>>,
+}
+
+impl Health {
+    /// A birth's whole health: fresh, so a reborn node cannot show its predecessor's numbers,
+    /// carrying the one fact only the birth knows — whether its services came up.
+    fn born(boot_error: Option<String>) -> Health {
+        Health {
+            setup_error: boot_error,
+            last_error: None,
+            error_since: None,
+            stage: "creating",
+            ufreq: None,
+            evaluated: IndexMap::new(),
+            param_errors: IndexMap::new(),
+            options: IndexMap::new(),
+        }
+    }
 }
 
 /// One entry in the ONE node map: a leaf, a sub-patch facade or a boundary port. Everything an op
@@ -752,16 +779,16 @@ impl Graph {
         };
         // A `process()` raise is deliberately NOT folded in: the stage says whether the node has an
         // instance behind it, and what its last run did is the ERROR, which rides its own field.
-        if entry.setup_error.is_some() {
+        if entry.health.setup_error.is_some() {
             return "error";
         }
-        entry.stage
+        entry.health.stage
     }
 
     /// The node's current measured update frequency (Hz), as it last reported it. `None` until it
     /// has been measured (≥2 emits).
     pub fn node_ufreq(&self, uid: Uid) -> Option<f64> {
-        self.leaf(uid).and_then(|e| e.ufreq)
+        self.leaf(uid).and_then(|e| e.health.ufreq)
     }
 
     /// Which node INSTANCE this uid holds: bumped on every birth, so a report from the node born at
@@ -925,7 +952,7 @@ impl Graph {
     /// How long this node's CURRENT error has been standing, or `None` when it is healthy. The
     /// clock restarts when the message changes, so a node cycling through failures reads young.
     pub fn error_age(&self, uid: Uid) -> Option<Duration> {
-        let (_, since) = self.leaf(uid)?.error_since.as_ref()?;
+        let (_, since) = self.leaf(uid)?.health.error_since.as_ref()?;
         Some(since.elapsed())
     }
 
@@ -1108,13 +1135,7 @@ impl Graph {
                     host,
                     params: Arc::new(params),
                     bindings: HashMap::new(),
-                    evaluated: IndexMap::new(),
-                    param_errors: IndexMap::new(),
-                    setup_error: boot_error,
-                    last_error: None,
-                    error_since: None,
-                    stage: "creating",
-                    ufreq: None,
+                    health: Health::born(boot_error),
                 })),
                 name,
                 pos: [0.0, 0.0],
@@ -1231,6 +1252,12 @@ impl Graph {
     /// cheap, and a `&` would borrow the whole graph for as long as the caller held it.
     pub fn params(&self, uid: Uid) -> Option<Arc<ParamGroups>> {
         self.leaf(uid).map(|e| e.params.clone())
+    }
+
+    /// A param's re-enumerated options where the instance has answered a refresh — the overlay a
+    /// projection reads over the record's declared options. Never persisted; dies with the instance.
+    pub fn refreshed_options(&self, uid: Uid, group: &str, name: &str) -> Option<&[String]> {
+        self.leaf(uid)?.health.options.get(&ParamKey::new(group, name)).map(Vec::as_slice)
     }
 
 
@@ -2046,18 +2073,10 @@ impl Graph {
         // A swap, not a new record: the graph's readers hold this very handle, so replacing it
         // would leave them reading the corpse's params.
         entry.params = Arc::new(params);
-        // A fresh generation boots healthy and reports its own state; the corpse's error and stage
-        // describe a node that no longer exists (§4). `boot_error` is this birth's own.
-        entry.setup_error = boot_error;
-        entry.last_error = None;
-        entry.stage = "creating";
-        entry.ufreq = None;
-        // The evaluated values are the CORPSE's report (§6.2): leaving them would let the inspector
-        // preview a dead node's numbers until the new one reports its own.
-        entry.evaluated.clear();
-        // …and so are the errors it reported, which is what keeps a healthy reborn node from
-        // drawing the corpse's: it starts with an empty map, so it has nothing to announce clearing.
-        entry.param_errors.clear();
+        // The whole health is REBORN (§4, §6.2): the corpse's stage, errors, rate and evaluated
+        // values describe an instance that no longer exists, and a fresh struct has nothing of the
+        // corpse's to show. `boot_error` is this birth's own.
+        entry.health = Health::born(boot_error);
         // `bindings` are left untouched — their compiled handles may only be dropped through
         // `release_entry_bindings`, and `bind_error` describes a SOURCE this rebirth did not touch.
 
@@ -2321,6 +2340,7 @@ impl Graph {
             .leaf(uid)
             .ok_or_else(|| format!("`{who}` holds no params: a port relays and a facade fronts"))?;
         entry
+            .health
             .evaluated
             .get(&ParamKey::new(group, name))
             .cloned()
@@ -2373,7 +2393,7 @@ impl Graph {
             triggers_process: b.triggers_process,
             // Derived rather than stored: the graph could not bind it, or the node could not
             // evaluate it, and a binding the graph refused is never shipped for the node to judge.
-            error: b.bind_error.clone().or_else(|| entry.param_errors.get(&key).cloned()),
+            error: b.bind_error.clone().or_else(|| entry.health.param_errors.get(&key).cloned()),
         })
     }
 
@@ -2399,6 +2419,7 @@ impl Graph {
             return Vec::new();
         };
         entry
+            .health
             .evaluated
             .iter()
             .filter(|(key, _)| entry.bindings.get(key).is_some_and(|b| b.enabled))
@@ -2693,19 +2714,14 @@ impl Graph {
             // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
             // the bridge locks with `.lock().unwrap()`, so a panic here would poison the control plane.
             runtime::Status::Ack { .. } | runtime::Status::Ready => {}
-            runtime::Status::Stage { stage } => entry.stage = stage.as_str(),
-            runtime::Status::Ufreq { hz } => entry.ufreq = Some(hz),
-            // The options are the node's answer to a refresh (§8.5), and they land in the RECORD
-            // rather than in a reply: the RPC that asked has already returned.
+            runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
+            runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
+            // The options are the node's answer to a refresh (§8.5), and they land in the health
+            // OVERLAY rather than in a reply or the record: the RPC that asked has already
+            // returned, and the drain never writes the record.
             runtime::Status::RefreshOptions { key, options } => {
                 if let Some(options) = options {
-                    edit_params(entry, |p| {
-                        if let Some(Param::Str { options: slot, .. }) =
-                            p.get_mut(&key.group).and_then(|g| g.get_mut(&key.name))
-                        {
-                            *slot = Some(options);
-                        }
-                    });
+                    entry.health.options.insert(key.clone(), options);
                 }
                 // Queued whether or not there were any: this IS the answer to a ⟳, and the client
                 // lifts its spinner off the echo. A node with no hook for the param answers `None`.
@@ -2715,11 +2731,11 @@ impl Graph {
                 // A clean run clears Setup/Process/Boot together and never touches a binding
                 // error, which only that binding evaluating successfully clears (§6).
                 None => {
-                    entry.setup_error = None;
-                    entry.last_error = None;
+                    entry.health.setup_error = None;
+                    entry.health.last_error = None;
                 }
-                Some(runtime::NodeFault::Setup { msg, .. }) => entry.setup_error = Some(msg),
-                Some(runtime::NodeFault::Process { msg, .. }) => entry.last_error = Some(msg),
+                Some(runtime::NodeFault::Setup { msg, .. }) => entry.health.setup_error = Some(msg),
+                Some(runtime::NodeFault::Process { msg, .. }) => entry.health.last_error = Some(msg),
             },
             // One record for what the instance reported, bound param or not. On the binding it would
             // outlive the instance, since a reborn node has nothing to announce clearing.
@@ -2727,16 +2743,16 @@ impl Graph {
                 for (key, msg) in errors {
                     match msg {
                         Some(msg) => {
-                            entry.param_errors.insert(key, msg);
+                            entry.health.param_errors.insert(key, msg);
                         }
                         None => {
-                            entry.param_errors.shift_remove(&key);
+                            entry.health.param_errors.shift_remove(&key);
                         }
                     }
                 }
             }
             runtime::Status::ParamValues { evaluated } => {
-                entry.evaluated = evaluated.into_iter().collect();
+                entry.health.evaluated = evaluated.into_iter().collect();
             }
         }
         if let Some(key) = refreshed {
@@ -2756,8 +2772,8 @@ impl Graph {
     fn stamp_error_onset(&mut self, uid: Uid) {
         let Some(e) = self.leaf_mut(uid) else { return };
         let current = entry_error(e);
-        if e.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
-            e.error_since = current.map(|m| (m.to_string(), Instant::now()));
+        if e.health.error_since.as_ref().map(|(m, _)| m.as_str()) != current {
+            e.health.error_since = current.map(|m| (m.to_string(), Instant::now()));
         }
     }
 
@@ -3408,10 +3424,10 @@ fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
 fn entry_error(e: &Leaf) -> Option<&str> {
     // Initialization failure outranks a process error, and is the only thing that CAN be true
     // beside one: if `setup` failed, `process` never ran.
-    if let Some(err) = e.setup_error.as_deref() {
+    if let Some(err) = e.health.setup_error.as_deref() {
         return Some(err);
     }
-    if let Some(err) = e.last_error.as_deref() {
+    if let Some(err) = e.health.last_error.as_deref() {
         return Some(err);
     }
     // Both param-keyed error records, ordered by key together, so which record an error landed in
@@ -3419,7 +3435,7 @@ fn entry_error(e: &Leaf) -> Option<&str> {
     e.bindings
         .iter()
         .filter_map(|(k, b)| b.bind_error.as_deref().map(|s| (k, s)))
-        .chain(e.param_errors.iter().map(|(k, m)| (k, m.as_str())))
+        .chain(e.health.param_errors.iter().map(|(k, m)| (k, m.as_str())))
         .min_by(|a, b| a.0.cmp(b.0))
         .map(|(_, s)| s)
 }
