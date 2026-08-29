@@ -7,8 +7,6 @@ use goofi_core::{Data, Param};
 use goofi_node::ParamKey;
 use serde::{Deserialize, Serialize};
 
-use super::NodeFault;
-
 /// Why a node woke (spec §3.2): `0` is a control message, `1..=64` the index of an input slot in
 /// `manifest.inputs`, `65..=128` an `nd()` channel the graph allocated at bind time.
 pub type EventId = u8;
@@ -93,54 +91,27 @@ impl Var {
     }
 }
 
-/// Where a node is in its own lifecycle. Two variants rather than the projection's four:
-/// `creating` is the GRAPH's and `error` is derived from the fault.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NodeStage {
-    Setup,
-    Ready,
-}
+pub use goofi_node::{NodeStage, Status};
 
-impl NodeStage {
-    /// The projection the editor draws.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            NodeStage::Setup => "setup",
-            NodeStage::Ready => "ready",
-        }
-    }
-}
-
-/// What a node tells the graph about itself. Every variant is a TRANSITION, so the status-drain
-/// worker needs no diffing.
+/// What the signal node's wire carries up: the async handshake plus the shared health vocabulary.
+/// `Ack` and `Ready` are this engine's own and never cross the engine seam — the drain consumes
+/// them and hands the graph only [`Status`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Status {
+pub enum WireStatus {
     /// The answer to one [`Envelope`], keyed by its `seq` — what orders a wire change's phases.
     Ack { seq: u64, ok: Result<(), String> },
     /// This node's own end of its services exists and it is listening. §4's birth barrier: pub/sub
     /// has no history, so the graph addresses nothing before this arrives.
     Ready,
-    Fault { fault: Option<NodeFault> },
-    /// Where the node is in its own lifecycle. The graph's `error` stage is DERIVED from a fault
-    /// and is never reported here.
-    Stage { stage: NodeStage },
-    /// The node's measured update rate (`meta["ufreq"]`) — a measurement, so it alone is paced, at
-    /// [`super::UFREQ_REPORT_MS`].
-    Ufreq { hz: f64 },
-    /// The answer to [`Control::RefreshParam`]; `None` when the node implements no hook for it.
-    RefreshOptions { key: ParamKey, options: Option<Vec<String>> },
-    /// Per-binding errors, `None` where one cleared.
-    BindingErrors { errors: Vec<(ParamKey, Option<String>)> },
-    /// The evaluated values of the node's bound params — the sparse projection, never the record.
-    ParamValues { evaluated: Vec<(ParamKey, Param)> },
+    Health(Status),
 }
 
-impl Status {
+impl WireStatus {
     /// Infallible for these shapes, as [`Envelope::encode`] is and for the same reason.
     pub fn encode(&self) -> Vec<u8> {
         rmp_serde::to_vec(self).unwrap_or_default()
     }
-    pub fn decode(bytes: &[u8]) -> Result<Status, String> {
+    pub fn decode(bytes: &[u8]) -> Result<WireStatus, String> {
         rmp_serde::from_slice(bytes).map_err(|e| format!("status decode: {e}"))
     }
 }
@@ -162,7 +133,7 @@ pub trait Transport: Send + Sync {
     /// Emit a frame on an output slot, to every consumer of that slot at once.
     fn publish(&self, slot: &str, frame: &Data);
     /// Report a transition to the graph.
-    fn report(&self, status: Status);
+    fn report(&self, status: WireStatus);
 }
 
 /// The graph's end of ONE node's control channel: it hands over an [`Envelope`] and rings that

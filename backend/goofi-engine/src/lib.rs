@@ -2682,37 +2682,33 @@ impl Graph {
         let mut applied = 0;
         for (uid, channel) in channels {
             for status in channel.drain_status() {
-                self.apply_status(uid, status);
                 applied += 1;
+                match status {
+                    // An ack is the PLANNER's, and it must still land after the node it came from
+                    // is gone — or a sequence parks forever on a message nobody will answer.
+                    runtime::WireStatus::Ack { seq, ok } => self.wire_ack(seq, ok),
+                    // …and Ready is what makes a node addressable; the sink it attaches is the
+                    // graph's, not the entry's. Neither is health, so neither leaves this plane.
+                    runtime::WireStatus::Ready => {
+                        if let Some(channel) = self.leaf(uid).and_then(|e| e.host.channel.clone()) {
+                            self.attach_control_sink(uid, channel);
+                        }
+                    }
+                    runtime::WireStatus::Health(status) => self.apply_status(uid, status),
+                }
             }
         }
         applied
     }
 
-    /// Apply one report. Every variant is a TRANSITION the node stamped itself, so nothing diffs.
+    /// Apply one health report. Every variant is a TRANSITION the node stamped itself, so nothing
+    /// diffs.
     pub fn apply_status(&mut self, uid: Uid, status: runtime::Status) {
-        // An ack is the PLANNER's, not an entry's, and it must still land after the node it came
-        // from is gone — or a sequence parks forever on a message nobody will answer.
-        if let runtime::Status::Ack { seq, ok } = status {
-            self.wire_ack(seq, ok);
-            return;
-        }
-        // …and so is `Ready`: it is what makes a node addressable, and the sink it attaches is the
-        // graph's, not the entry's.
-        if matches!(status, runtime::Status::Ready) {
-            if let Some(channel) = self.leaf(uid).and_then(|e| e.host.channel.clone()) {
-                self.attach_control_sink(uid, channel);
-            }
-            return;
-        }
         // Set by the `RefreshOptions` arm and drained after the match: `entry` holds a mutable
         // borrow of `self` for the whole of it, so the queue cannot be pushed to from inside.
         let mut refreshed: Option<ParamKey> = None;
         let Some(entry) = self.leaf_mut(uid) else { return };
         match status {
-            // Consumed above. An inert arm rather than an `unreachable!`: this runs under the mutex
-            // the bridge locks with `.lock().unwrap()`, so a panic here would poison the control plane.
-            runtime::Status::Ack { .. } | runtime::Status::Ready => {}
             runtime::Status::Stage { stage } => entry.health.stage = stage.as_str(),
             runtime::Status::Ufreq { hz } => entry.health.ufreq = Some(hz),
             // The options are the node's answer to a refresh (§8.5). They land in the health

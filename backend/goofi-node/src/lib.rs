@@ -623,3 +623,55 @@ pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
 pub fn find_class(type_name: &str) -> Option<&'static NodeClass> {
     inventory::iter::<NodeClass>().find(|c| c.manifest.type_name == type_name)
 }
+
+/// Where a node is in its own lifecycle. Two variants rather than the projection's four:
+/// `creating` is the GRAPH's and `error` is derived from the fault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NodeStage {
+    Setup,
+    Ready,
+}
+
+impl NodeStage {
+    /// The projection the editor draws.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeStage::Setup => "setup",
+            NodeStage::Ready => "ready",
+        }
+    }
+}
+
+/// What is wrong with a node. Wall-clock `f64` rather than an `Instant`, because a fault is
+/// reported over the wire.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum NodeFault {
+    Setup { msg: String, since: f64, last_attempt: f64 },
+    Process { msg: String, since: f64 },
+}
+
+impl NodeFault {
+    pub fn msg(&self) -> &str {
+        match self {
+            NodeFault::Setup { msg, .. } | NodeFault::Process { msg, .. } => msg,
+        }
+    }
+}
+
+/// What a node reports about its own health — the vocabulary every engine shares, and the only
+/// thing a status drain hands the graph. Every variant is a TRANSITION, so nothing diffs.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Status {
+    /// Where the node is in its own lifecycle. The graph's `error` stage is DERIVED from a fault
+    /// and is never reported here.
+    Stage { stage: NodeStage },
+    Fault { fault: Option<NodeFault> },
+    /// The node's measured update rate (`meta["ufreq"]`) — a measurement, so it alone is paced.
+    Ufreq { hz: f64 },
+    /// The answer to a refresh request; `None` when the node implements no hook for it.
+    RefreshOptions { key: ParamKey, options: Option<Vec<String>> },
+    /// Per-binding errors, `None` where one cleared.
+    BindingErrors { errors: Vec<(ParamKey, Option<String>)> },
+    /// The evaluated values of the node's bound params — the sparse projection, never the record.
+    ParamValues { evaluated: Vec<(ParamKey, Param)> },
+}

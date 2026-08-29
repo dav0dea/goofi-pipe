@@ -11,7 +11,7 @@ use iceoryx2::prelude::*;
 use goofi_core::Data;
 use goofi_node::NodeManifest;
 
-use super::wire::{ControlSink, Envelope, EventId, ServiceName, Status, Transport};
+use super::wire::{ControlSink, Envelope, EventId, ServiceName, Transport, WireStatus};
 use crate::Uid;
 
 /// The service variant every goofi port uses. `ipc_threadsafe` (rather than `ipc`) is what makes
@@ -309,7 +309,7 @@ impl Transport for IoxTransport {
         }
     }
 
-    fn report(&self, status: Status) {
+    fn report(&self, status: WireStatus) {
         let bytes = status.encode();
         if let Ok(sample) = self.status.loan_slice_uninit(bytes.len()) {
             let _ = sample.write_from_slice(&bytes).send();
@@ -347,10 +347,10 @@ impl NodeChannel {
     }
 
     /// Every transition the node has reported since the last drain, in order.
-    pub fn drain_status(&self) -> Vec<Status> {
+    pub fn drain_status(&self) -> Vec<WireStatus> {
         let mut out = Vec::new();
         while let Ok(Some(sample)) = self.status.receive() {
-            if let Ok(status) = Status::decode(sample.payload()) {
+            if let Ok(status) = WireStatus::decode(sample.payload()) {
                 out.push(status);
             }
         }

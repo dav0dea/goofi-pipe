@@ -11,7 +11,7 @@ use goofi_tests::{f32s, frame};
 use goofi_engine::runtime::{
     door_service, iox_node, output_service, service_base, Control, ControlSink, Doorbell, Envelope,
     IoxNode, IoxTransport, NodeChannel, NodeEnv, NodeFault, NodeRuntime, ParamValue, Status,
-    Transport,
+    Transport, WireStatus,
 };
 use goofi_engine::Uid;
 use goofi_node::{
@@ -58,7 +58,7 @@ fn instance() -> String {
 }
 
 /// Status is asynchronous by design, so a test waits for it with a deadline rather than reading once.
-fn status_within(channel: &NodeChannel, timeout: Duration) -> Vec<Status> {
+fn status_within(channel: &NodeChannel, timeout: Duration) -> Vec<WireStatus> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         let got = channel.drain_status();
@@ -167,7 +167,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
 
     node.run_once();
     assert!(node.next_wake().is_some(), "the node applied what it was sent and re-paced");
-    assert_eq!(status_within(&channel, MS200), vec![Status::Ack { seq: 41, ok: Ok(()) }]);
+    assert_eq!(status_within(&channel, MS200), vec![WireStatus::Ack { seq: 41, ok: Ok(()) }]);
 
     // The ack carries the VERDICT, not a receipt: the graph abandons a refused sequence.
     channel.send(Envelope {
@@ -177,12 +177,12 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     node.run_once();
     assert_eq!(
         status_within(&channel, MS200),
-        vec![Status::Ack { seq: 42, ok: Err("no output slot `nope`".to_string()) }]
+        vec![WireStatus::Ack { seq: 42, ok: Err("no output slot `nope`".to_string()) }]
     );
 
     let fault = NodeFault::Process { msg: "boom".to_string(), since: 12.5 };
-    transport.report(Status::Fault { fault: Some(fault.clone()) });
-    assert_eq!(status_within(&channel, MS200), vec![Status::Fault { fault: Some(fault) }]);
+    transport.report(WireStatus::Health(Status::Fault { fault: Some(fault.clone()) }));
+    assert_eq!(status_within(&channel, MS200), vec![WireStatus::Health(Status::Fault { fault: Some(fault) })]);
 }
 
 #[test]

@@ -10,6 +10,7 @@ use goofi_node::{
     ExprEvaluator, Inputs, Node, NodeCtx, NodeManifest, Outputs, ParamGroups, ParamKey, Params,
     RunPolicy,
 };
+pub use goofi_node::NodeFault;
 use indexmap::IndexMap;
 
 mod mailbox;
@@ -27,7 +28,7 @@ pub use transport::{
 pub(crate) use transport::service_instance;
 pub use wire::{
     Control, ControlSink, Envelope, EventId, NodeStage, ParamValue, ServiceName, Status, Transport,
-    Var, VarName,
+    Var, VarName, WireStatus,
 };
 
 /// The scheduling namespace. A `common.*` param decides *when* a node runs, so it is resolved
@@ -92,22 +93,6 @@ fn expr_wire_key(slot: &str) -> Option<ParamKey> {
     let rest = slot.strip_prefix("expr:")?;
     let (group, name) = rest.split_once(':')?;
     Some(ParamKey::new(group, name))
-}
-
-/// What is wrong with a node. Wall-clock `f64` rather than [`Instant`], because a fault is
-/// reported over the wire.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum NodeFault {
-    Setup { msg: String, since: f64, last_attempt: f64 },
-    Process { msg: String, since: f64 },
-}
-
-impl NodeFault {
-    pub fn msg(&self) -> &str {
-        match self {
-            NodeFault::Setup { msg, .. } | NodeFault::Process { msg, .. } => msg,
-        }
-    }
 }
 
 /// One node, its scheduling state, and its faults.
@@ -217,8 +202,8 @@ impl NodeRuntime {
         };
         // §4's birth barrier: the graph addresses nothing until this lands. Sent before `setup()`
         // runs, so a `setup` that fails at birth still has somewhere to report to.
-        runtime.transport.report(Status::Ready);
-        runtime.transport.report(Status::Stage { stage: NodeStage::Setup });
+        runtime.transport.report(WireStatus::Ready);
+        runtime.transport.report(WireStatus::Health(Status::Stage { stage: NodeStage::Setup }));
         runtime.initialize();
         runtime.publish_stage();
         runtime
@@ -230,7 +215,7 @@ impl NodeRuntime {
         let next = if self.initialized { NodeStage::Ready } else { NodeStage::Setup };
         if next != self.stage {
             self.stage = next;
-            self.transport.report(Status::Stage { stage: next });
+            self.transport.report(WireStatus::Health(Status::Stage { stage: next }));
         }
     }
 
@@ -308,7 +293,7 @@ impl NodeRuntime {
                     Ok(())
                 }
             };
-            transport.report(Status::Ack { seq, ok });
+            transport.report(WireStatus::Ack { seq, ok });
         }
     }
 
@@ -337,7 +322,7 @@ impl NodeRuntime {
                 *slot = Some(options.clone());
             }
         }
-        self.transport.report(Status::RefreshOptions { key, options });
+        self.transport.report(WireStatus::Health(Status::RefreshOptions { key, options }));
     }
 
     /// Apply a slot's new wire set to the node's OWN cells: a surviving wire keeps its frame, and a
@@ -527,7 +512,7 @@ impl NodeRuntime {
     /// is no longer told about is one it would otherwise preview for ever.
     fn report_param_values(&mut self) {
         let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        self.transport.report(Status::ParamValues { evaluated });
+        self.transport.report(WireStatus::Health(Status::ParamValues { evaluated }));
     }
 
     /// Run the param hook, recording a rejection or a panic as that binding's error — a node is
@@ -562,7 +547,7 @@ impl NodeRuntime {
         if errors.is_empty() {
             return;
         }
-        self.transport.report(Status::BindingErrors { errors });
+        self.transport.report(WireStatus::Health(Status::BindingErrors { errors }));
     }
 
     fn literal(&self, key: &ParamKey) -> Option<Param> {
@@ -665,7 +650,7 @@ impl NodeRuntime {
             return;
         }
         self.last_ufreq_report = Some(now);
-        self.transport.report(Status::Ufreq { hz });
+        self.transport.report(WireStatus::Health(Status::Ufreq { hz }));
     }
 
     /// The initialization gate (D3): a node whose `setup()` failed is UNINITIALIZED, so nothing
@@ -730,7 +715,7 @@ impl NodeRuntime {
             return;
         }
         self.fault = next;
-        self.transport.report(Status::Fault { fault: self.fault.clone() });
+        self.transport.report(WireStatus::Health(Status::Fault { fault: self.fault.clone() }));
     }
 
     /// Run the node until it is halted — the body of its manager-side thread (§2). One loop for
