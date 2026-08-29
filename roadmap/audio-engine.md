@@ -84,7 +84,9 @@ restart, which the crossfade-on-swap already covers.
 
 **`nd()` evaluates in the host and lands as `clap_event_param_value` at control rate.** Measured:
 2.15 ns per event marginal, so a thousand modulated params cost 0.33% of a block. Bindings evaluate
-on ARRIVAL, so the eval rate is the source's rate and the audio thread only reads the latest value.
+on ARRIVAL, so the eval rate is the source's rate and the audio thread only reads the latest value —
+and for a cross-engine source, arrival is the pre-tick boundary drain, so the eval rate is capped
+at the block rate.
 
 **Audio-rate modulation is a CABLE, not a param.** Anything that must glide at audio rate takes a CV
 input port and a slew node in front of it. This is the modular convention and it is why the engine

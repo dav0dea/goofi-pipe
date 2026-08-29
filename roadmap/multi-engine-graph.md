@@ -116,6 +116,16 @@ the signal plane's own deliberate no-replay rule, inherited, not worsened. The i
 three-phase planner survives unchanged INSIDE `goofi-signal` — it is the async engine's private
 mechanism.
 
+**Boundary delivery follows the consumer's clock, and no engine-level door exists.** A scheduled
+engine has no doorbells: before each tick it drains every boundary subscriber and applies the
+latest values to what they feed, so every tick runs against the freshest cross-engine state — a
+consumer-side door does not exist for it, and a producer facing it rings nothing. An async
+consumer (signal) keeps its per-node door: a scheduled producer engine publishes under the
+derived name and rings the consumer node's OWN doorbell with the event id `GraphView` carries,
+exactly as a signal producer would — no intermediate engine proxy channel, no re-publish through
+one. The producer's ring decision is one engine-tag branch on the settled edge, and the per-node
+naming scheme is the only one the resolver needs.
+
 **A cross-engine edge is latest-wins by decree.** An in-order crossing — the sample-carrying
 signal-to-audio path — is an explicit BRIDGE node owned by the scheduled engine, generalizing
 graphics-engine.md's clock-crossing decision to every scheduled engine; its edge's service config
@@ -231,6 +241,14 @@ names — the hierarchy lives on disk):
       signal/
         goofi-signal, goofi-python, goofi-pymod, goofi-nodes
 
+`goofi-codec` stays its own crate, below `goofi-transport`, which depends on it. Considered and
+rejected: merging the two. The codec is a FORMAT contract — pinned by a golden, mirrored by the
+frontend's TS decoder, and carrying the subprocess tier's `Request`/`Response` protocol — where
+the transport is a mechanism that changes with iceoryx2; and the pymod wheel proves the seam:
+its `extension-module` build uses codec + iceoryx2 while its FT-host rlib build uses the codec
+and deliberately stays iceoryx2-free, which one merged crate could honor only by growing the
+feature split that IS the two crates.
+
 Later engines land as `backend/audio/`, `backend/graphics/`. Dependency direction: the graph
 looks down at `goofi-node` alone; engines look down at `goofi-node` and `goofi-transport`; the
 bridge additionally reaches `goofi-transport` for its reducer's subscribers; neither graph nor
@@ -299,14 +317,6 @@ does not die.
 
 ## Open questions
 
-- How a producer treats a SCHEDULED consumer's doorbell. Today a door is strictly per node and
-  event ids are per-node manifest positions; the plan gives a scheduled engine one endpoint set
-  per engine, where those ids would collide on a shared door. Either a scheduled consumer has no
-  doorbell and its engine drains boundary subscribers at block rate (then the ring-the-doorbells
-  sentence gains an engine-tag branch, and cross-engine binding eval becomes block-rate), or the
-  engine has one engine-wide door with its own event-id convention, recorded in the resolver
-  keyed by engine tag. Decide before `goofi-transport` is carved — the resolver's shape depends
-  on it.
 - The `library()` return shape — the entries carry manifest, factory, tier and defaults; the
   scan-diff report rides the same door; the exact types are the build's to price.
 - `slots_touching` is O(N × (links + bindings)) and runs once per node reaching `Ready`. Nobody
