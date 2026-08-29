@@ -10,7 +10,7 @@ import type {
 } from '$lib/api/types';
 
 // The pure descriptor → control discriminant (spec §2, D-N2). First-match over the descriptor:
-// expression_enabled wins over type; numeric = float|int; a trigger bool is a button; a plain bool
+// expression_enabled wins over type; numeric = float|int; a plain bool
 // is a toggle; a string with options OR that is refreshable is a select (an empty-but-refreshable
 // list still gets a dropdown so its ⟳ re-scan survives); a plain string is text; anything else is
 // unknown. Kept pure + unit-tested so ParamField is a thin switch and the mapping is one SSOT.
@@ -43,7 +43,6 @@ const boolParam = (over: Partial<BoolParam> = {}): BoolParam => ({
 	...base,
 	type: 'bool',
 	value: false,
-	trigger: false,
 	...over
 });
 const stringParam = (over: Partial<StringParam> = {}): StringParam => ({
@@ -64,11 +63,6 @@ describe('controlKind', () => {
 	it('maps float and int to numeric', () => {
 		expect(controlKind(floatParam())).toBe('numeric');
 		expect(controlKind(intParam())).toBe('numeric');
-	});
-
-	it('maps a trigger bool to trigger and a plain bool to toggle', () => {
-		expect(controlKind(boolParam({ trigger: true }))).toBe('trigger');
-		expect(controlKind(boolParam({ trigger: false }))).toBe('toggle');
 	});
 
 	it('maps a string with a non-empty options list to select', () => {
@@ -98,7 +92,7 @@ describe('controlKind', () => {
 
 	it('lets expression_enabled override every other type', () => {
 		expect(controlKind(intParam({ expression_enabled: true }))).toBe('expression');
-		expect(controlKind(boolParam({ trigger: true, expression_enabled: true }))).toBe('expression');
+		expect(controlKind(boolParam({ expression_enabled: true }))).toBe('expression');
 		expect(controlKind(stringParam({ options: ['a'], expression_enabled: true }))).toBe('expression');
 		expect(controlKind(unknownParam({ expression_enabled: true }))).toBe('expression');
 	});

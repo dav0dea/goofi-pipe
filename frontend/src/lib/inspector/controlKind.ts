@@ -4,7 +4,6 @@ import type { ParamDescriptor } from '$lib/api/types';
 export type ControlKind =
 	| 'expression'
 	| 'numeric'
-	| 'trigger'
 	| 'toggle'
 	| 'select'
 	| 'text'
@@ -17,7 +16,7 @@ export function controlKind(descriptor: ParamDescriptor): ControlKind {
 		case 'int':
 			return 'numeric';
 		case 'bool':
-			return descriptor.trigger ? 'trigger' : 'toggle';
+			return 'toggle';
 		case 'string':
 			return (descriptor.options?.length ?? 0) > 0 || descriptor.refreshable ? 'select' : 'text';
 		default:

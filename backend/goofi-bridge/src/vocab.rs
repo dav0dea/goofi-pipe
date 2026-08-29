@@ -229,7 +229,6 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
                 json!({
                     "type": name,
                     "source": "builtin",
-                    "pillar": "signal",
                     "category": "boundary",
                     "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
                     "available": true,

@@ -136,7 +136,7 @@ export class GraphStore {
 
 	/** Apply a wholesale snapshot, returning whether it came from a NEW backend session — which is
 	 * what a same-session reconnect must not look like. */
-	private _replaceSnapshot(snap: GraphSnapshot, wholesale: boolean): boolean {
+	private _replaceSnapshot(snap: GraphSnapshot): boolean {
 		// A `hello` always carries the palette; `graph_replaced` never does — the `node_types` event
 		// is what re-announces it there.
 		if (snap.node_types?.length) this.nodeTypes = snap.node_types;
@@ -198,7 +198,7 @@ export class GraphStore {
 		switch (ev.event) {
 			case 'hello': {
 				// Not wholesale: a `hello` is also what a transient reconnect delivers.
-				const fresh = this._replaceSnapshot(ev.payload, false);
+				const fresh = this._replaceSnapshot(ev.payload);
 				this.hadHello = true;
 				if (fresh) {
 					// A NEW session mints uids from 1 again, so the stale replica must fall NOW,
@@ -211,7 +211,7 @@ export class GraphStore {
 				break;
 			}
 			case 'graph_replaced':
-				this._replaceSnapshot(ev.payload, true);
+				this._replaceSnapshot(ev.payload);
 				this._onWholesaleLoad();
 				break;
 			case 'state_update': {

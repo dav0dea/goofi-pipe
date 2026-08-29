@@ -45,7 +45,7 @@ impl Node for Psd {
         _c: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult {
-        let Some(d) = inp.get("data") else { return Ok(()) };
+        let d = inp.get("data").ok_or("`data` is required")?;
         let a = d.assert_ndims().at_least(1)?;
         let shape = a.shape();
         let n = *shape.last().expect("at_least(1) rejects a rank-0 array");

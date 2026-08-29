@@ -25,7 +25,7 @@ pub fn of(g: &Graph) -> Value {
                 let mut gmap = Map::new();
                 for (pname, p) in pg {
                     let mut entry = Map::new();
-                    entry.insert("value".into(), goofi_graph::param_value_json(p, true));
+                    entry.insert("value".into(), goofi_graph::param_value_json(p));
                     if let Some(e) = g.param_expression(uid, group, pname) {
                         entry.insert(
                             "expr".into(),

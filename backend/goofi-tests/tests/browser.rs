@@ -26,7 +26,6 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     // Bumped in lockstep with `frontend/src/lib/api/control.ts`; a literal here on purpose.
     assert_eq!(hello["protocol_version"], 3);
     assert!(hello["instance_id"].is_string());
-    assert_eq!(hello["pillars"], j!(["signal"]), "the backend advertises what it hosts");
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
 
     let types = c.call("library list", j!({})).await["types"].as_array().cloned().unwrap();

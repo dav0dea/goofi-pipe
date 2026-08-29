@@ -12,7 +12,7 @@ pub const PROTOCOL_VERSION: i64 = 3;
 /// which the runtime [`Param`] cannot carry.
 pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
-    m.insert("value".into(), goofi_graph::param_value_json(p, true));
+    m.insert("value".into(), goofi_graph::param_value_json(p));
     m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
     m.insert(
         "refreshable".into(),
@@ -38,11 +38,6 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
         }
         Param::Bool { .. } => {
             m.insert("type".into(), json!("bool"));
-            m.insert("trigger".into(), json!(false));
-        }
-        Param::Trigger { .. } => {
-            m.insert("type".into(), json!("bool"));
-            m.insert("trigger".into(), json!(true));
         }
         Param::Str { options, .. } => {
             m.insert("type".into(), json!("string"));
@@ -114,7 +109,7 @@ pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     for (group, name, p) in g.expression_values(uid) {
         let entry = groups.entry(group.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(names) = entry {
-            names.insert(name.to_string(), goofi_graph::param_value_json(p, true));
+            names.insert(name.to_string(), goofi_graph::param_value_json(p));
         }
     }
     Value::Object(groups)
@@ -126,7 +121,7 @@ pub fn param_value_map(params: &goofi_node::ParamGroups) -> Value {
         params
             .iter()
             .map(|(gname, group)| {
-                let names = group.iter().map(|(n, p)| (n.clone(), goofi_graph::param_value_json(p, true)));
+                let names = group.iter().map(|(n, p)| (n.clone(), goofi_graph::param_value_json(p)));
                 (gname.clone(), Value::Object(names.collect()))
             })
             .collect(),
@@ -162,7 +157,6 @@ pub fn node_type_info(g: &Graph, m: &NodeManifest, source: &str) -> Value {
     json!({
         "type": m.type_name,
         "source": source,
-        "pillar": "signal",
         "category": m.category,
         "doc": m.doc,
         "available": true,
@@ -194,7 +188,6 @@ pub fn catalog_types(g: &Graph) -> Value {
             json!({
                 "type": name,
                 "source": source_of(g, name),
-                "pillar": "signal",
                 "category": "unavailable",
                 "doc": format!("This node could not be loaded: {reason}"),
                 "available": false,
@@ -244,7 +237,6 @@ pub fn snapshot(
 ) -> Value {
     let mut snap = json!({
         "instance_id": instance_id,
-        "pillars": ["signal"],
         "runtime": runtime_overlay(g),
         // Seeded for the same reason the runtime overlay is: `harness_changed` pushes transitions.
         "harnesses": harnesses,

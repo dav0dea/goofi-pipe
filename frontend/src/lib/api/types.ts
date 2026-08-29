@@ -31,7 +31,6 @@ export interface IntParam extends BaseParam {
 export interface BoolParam extends BaseParam {
 	type: 'bool';
 	value: boolean;
-	trigger: boolean;
 }
 
 export interface StringParam extends BaseParam {

@@ -74,14 +74,13 @@ fn data_to_py(py: Python<'_>, d: &Data) -> PyResult<Py<PyAny>> {
     }
 }
 
-/// Convert a resolved `Param` to a native Python scalar; a `Trigger` reads as its `fired` bool.
+/// Convert a resolved `Param` to a native Python scalar.
 fn param_to_py(py: Python<'_>, p: &Param) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObject;
     Ok(match p {
         Param::Float { value, .. } => value.into_pyobject(py)?.into_any().unbind(),
         Param::Int { value, .. } => value.into_pyobject(py)?.into_any().unbind(),
         Param::Bool { value } => value.into_pyobject(py)?.to_owned().into_any().unbind(),
-        Param::Trigger { fired } => fired.into_pyobject(py)?.to_owned().into_any().unbind(),
         Param::Str { value, .. } => PyString::new(py, value).into_any().unbind(),
     })
 }
@@ -120,7 +119,6 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
             Ok(Param::Int { value: v.round() as i64, vmin: *vmin, vmax: *vmax })
         }
         Param::Bool { .. } => Ok(Param::Bool { value: to_scalar::<bool>(result, "bool")? }),
-        Param::Trigger { .. } => Ok(Param::Trigger { fired: to_scalar::<bool>(result, "bool")? }),
         Param::Str { options, refresh, .. } => {
             let v: String = result.extract().map_err(|_| "expression result is not a string".to_string())?;
             Ok(Param::Str { value: v, options: options.clone(), refresh: *refresh })

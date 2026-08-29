@@ -327,7 +327,11 @@ which library advertises the type, and the dtype vocabulary).
    `goofi-signal` under `backend/signal/` beside the Python family, and `goofi-engine` renamed
    `goofi-graph`, whose manifest holds the boundary — nothing above `goofi-node`.
    `tests/transport.rs` re-pointed in the same commit.
-4. The delete list, riding wherever it touches.
+4. DONE — The delete list: the five `pillar` literals went, the manifest gained
+   `goofi: "<version>"` read before the version gate, `Param::Trigger` and `fire_triggers` died
+   end to end (the frontend's trigger control kind and `Trigger` primitive with them), the three
+   dead required-slot guards now surface instead of silently returning, and `_replaceSnapshot`
+   lost its unread parameter.
 
 Each step a green checkpoint.
 

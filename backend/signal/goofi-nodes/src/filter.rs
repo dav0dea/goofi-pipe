@@ -70,7 +70,7 @@ impl Node for Filter {
         _c: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult {
-        let Some(d) = inp.get("data") else { return Ok(()) };
+        let d = inp.get("data").ok_or("`data` is required")?;
         let a = d.assert_ndims().at_least(1)?;
         let axis = resolve_axis(p.i64("filter", "axis").unwrap_or(-1), a.ndim())?;
         let sfreq = d.meta().sfreq().ok_or(

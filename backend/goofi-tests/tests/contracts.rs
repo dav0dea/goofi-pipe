@@ -198,7 +198,6 @@ fn a_palette_row_carries_everything_a_client_renders_a_node_from() {
                 &common["frequency_mode"]["type"]), (&j!("float"), &j!("bool"), &j!("string")));
     assert_eq!(row(&g, "MultiThing")["input_multi"], j!(["many"]));
     assert_eq!(row(&g, "MyPyThing")["input_multi"], j!([]));
-    assert_eq!(row(&g, "MyPyThing")["pillar"], "signal");
 
     // A tooltip is rendered from the CATALOG descriptor, so a node that redeclares a `common.*`
     // param owns its help text too.

@@ -587,7 +587,7 @@ pub(crate) fn node_param_edit(
     Ok(json!({
         "value": g.params(uid)
             .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
-            .map(|p| goofi_graph::param_value_json(&p, true)),
+            .map(|p| goofi_graph::param_value_json(&p)),
         "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
     }))
 }

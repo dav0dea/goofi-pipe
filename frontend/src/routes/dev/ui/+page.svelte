@@ -12,7 +12,6 @@
 		Slider,
 		Select,
 		TextInput,
-		Trigger,
 		Toggle,
 		Tabs,
 		Disclosure,
@@ -69,7 +68,6 @@
 	let textDecimal = $state('3.14');
 	let textSearch = $state('');
 	let textPath = $state('/home/user/patch.gfi');
-	let triggerCount = $state(0);
 	let toggled = $state(false);
 
 	const tabItems: TabItem[] = [
@@ -343,14 +341,6 @@
 				<TextInput value={textPath} onChange={(v) => (textPath = v)} inputmode="path" data-testid="ui-text-path" />
 			</Field>
 			<span class="readout" data-testid="ui-text-committed">{textText}</span>
-		</div>
-	</section>
-
-	<section>
-		<h2>Trigger</h2>
-		<div class="form">
-			<Trigger onclick={() => (triggerCount += 1)} data-testid="ui-trigger">reset</Trigger>
-			<span class="readout" data-testid="ui-trigger-count">{triggerCount}</span>
 		</div>
 	</section>
 

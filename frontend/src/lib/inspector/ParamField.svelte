@@ -12,7 +12,6 @@
 		Slider,
 		NumberInput,
 		Toggle,
-		Trigger,
 		Select,
 		TextInput,
 		Icon,
@@ -247,8 +246,6 @@
 			<!-- SOFT bounds → Slider only; the NumberInput is UNBOUNDED (the engine does not clamp on set). -->
 			<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />
 			<NumberInput value={num.value} onChange={onCommit} {step} scrub data-testid="param-number" />
-		{:else if kind === 'trigger'}
-			<Trigger onclick={() => onCommit(true)} data-testid="param-trigger">{paramName}</Trigger>
 		{:else if kind === 'toggle'}
 			<Toggle value={Boolean(descriptor.value)} onChange={onCommit} data-testid="param-toggle" />
 		{:else if kind === 'select'}

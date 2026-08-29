@@ -14,7 +14,6 @@ export { default as Slider } from './Slider.svelte';
 export { default as Select } from './Select.svelte';
 export { default as TextInput } from './TextInput.svelte';
 export { MODE_ATTRS } from './inputMode';
-export { default as Trigger } from './Trigger.svelte';
 export { default as Toggle } from './Toggle.svelte';
 
 export { TabStrip as Tabs } from 'panelty';

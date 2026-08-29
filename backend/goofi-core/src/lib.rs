@@ -611,10 +611,6 @@ pub enum Param {
         /// Whether the UI's ⟳ button makes the node re-enumerate `options` via `on_param_refreshed`.
         refresh: bool,
     },
-    /// Momentary trigger; the graph clears `fired` by writing the param, not by a read-and-clear.
-    Trigger {
-        fired: bool,
-    },
 }
 
 impl Param {
@@ -654,7 +650,6 @@ impl Param {
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Param::Bool { value } => Some(*value),
-            Param::Trigger { fired } => Some(*fired),
             _ => None,
         }
     }

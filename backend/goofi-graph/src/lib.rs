@@ -145,21 +145,18 @@ struct Link {
 }
 
 /// A param's value as JSON, and the one definition of it — the inverse of [`param_from_json`].
-/// `fire_triggers` differs by caller: a PERSISTED value must never record a trigger as fired.
-pub fn param_value_json(p: &Param, fire_triggers: bool) -> serde_json::Value {
+pub fn param_value_json(p: &Param) -> serde_json::Value {
     use serde_json::json;
     match p {
         Param::Float { value, .. } => json!(value),
         Param::Int { value, .. } => json!(value),
         Param::Bool { value } => json!(value),
-        Param::Trigger { fired } => json!(fire_triggers && *fired),
         Param::Str { value, .. } => json!(value),
     }
 }
 
-/// Coerce a JSON scalar into a `Param` of `existing`'s type, keeping its bounds. `fire_triggers` is
-/// `false` on a `.gfi` load: a persisted value must never trip a node's trigger on the way in.
-pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: bool) -> Param {
+/// Coerce a JSON scalar into a `Param` of `existing`'s type, keeping its bounds.
+pub fn param_from_json(existing: &Param, v: &serde_json::Value) -> Param {
     match existing {
         Param::Float { vmin, vmax, .. } => Param::Float { value: v.as_f64().unwrap_or(0.0), vmin: *vmin, vmax: *vmax },
         Param::Int { vmin, vmax, .. } => Param::Int {
@@ -168,7 +165,6 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value, fire_triggers: b
             vmax: *vmax,
         },
         Param::Bool { .. } => Param::Bool { value: v.as_bool().unwrap_or(false) },
-        Param::Trigger { .. } => Param::Trigger { fired: fire_triggers && v.as_bool().unwrap_or(false) },
         Param::Str { options, refresh, .. } => Param::Str {
             value: v.as_str().unwrap_or("").to_string(),
             options: options.clone(),
@@ -219,7 +215,7 @@ fn coerced_value(existing: &Param, v: &serde_json::Value) -> Param {
         (Param::Str { .. }, _) | (_, None) => None,
         (_, Some(s)) => serde_json::from_str::<serde_json::Value>(s).ok(),
     };
-    param_from_json(existing, parsed.as_ref().unwrap_or(v), true)
+    param_from_json(existing, parsed.as_ref().unwrap_or(v))
 }
 
 /// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, mode, triggers}`.
@@ -1893,8 +1889,7 @@ impl Graph {
             let Some(g) = params.get_mut(group) else { continue };
             for (name, value) in held {
                 if let Some(slot) = g.get_mut(name) {
-                    // `fire_triggers: false` — a rescan must not trip a node's trigger.
-                    *slot = param_from_json(slot, &param_value_json(value, false), false);
+                    *slot = param_from_json(slot, &param_value_json(value));
                 }
             }
         }
@@ -2617,7 +2612,7 @@ impl Graph {
             if let Some(leaf) = e.leaf() {
                 for (group, names) in &*leaf.params.clone() {
                     let gmap: Map<String, Value> =
-                        names.iter().map(|(n, p)| (n.clone(), param_value_json(p, false))).collect();
+                        names.iter().map(|(n, p)| (n.clone(), param_value_json(p))).collect();
                     params.insert(group.clone(), Value::Object(gmap));
                 }
                 // Persist expression bindings (sorted for a stable diff) — else a save/load
@@ -2671,7 +2666,7 @@ impl Graph {
                 if let Some(existing) = g.get_mut(name) {
                     // Never fire a trigger on a restore: a persisted or hand-edited value must not
                     // trip the node's trigger as the patch opens.
-                    *existing = param_from_json(existing, val, false);
+                    *existing = param_from_json(existing, val);
                 }
             }
         }
@@ -2810,7 +2805,7 @@ impl Graph {
             .collect();
         let mut doc = json!({
             "version": MANIFEST_VERSION,
-            "pillar_default": "signal",
+            "goofi": env!("CARGO_PKG_VERSION"),
             "globals": Value::Array(globals),
             "root": root,
         });
@@ -2834,9 +2829,15 @@ impl Graph {
                 (root.and_then(|r| r.get("nodes")), root.and_then(|r| r.get("links")))
             }
             _ => {
+                // `goofi:` is read BEFORE the gate refuses, so the refusal can name the writer.
+                let writer = doc
+                    .get("goofi")
+                    .and_then(|v| v.as_str())
+                    .map(|w| format!(", written by goofi {w}"))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "unsupported .gfi version (this build reads version {MANIFEST_VERSION})"
-                ))
+                    "unsupported .gfi version (this build reads version {MANIFEST_VERSION}{writer})"
+                ));
             }
         };
         let nodes = nodes_v.and_then(|v| v.as_object()).ok_or("missing `nodes`")?;

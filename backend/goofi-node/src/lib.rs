@@ -119,7 +119,6 @@ pub enum ParamSpec {
     Int { default: i64, min: i64, max: i64 },
     Bool { default: bool },
     Str { default: &'static str, options: &'static [&'static str], refresh: bool },
-    Trigger,
 }
 
 impl ParamSpec {
@@ -134,7 +133,6 @@ impl ParamSpec {
                     .then(|| options.iter().map(|s| s.to_string()).collect()),
                 refresh,
             },
-            ParamSpec::Trigger => Param::Trigger { fired: false },
         }
     }
 }

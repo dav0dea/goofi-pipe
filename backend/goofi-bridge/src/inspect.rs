@@ -144,7 +144,6 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_graph::ExprInfo>) -> St
         P::Float { value, vmin, vmax } => (format!("{value}"), format!("float {vmin}..{vmax}")),
         P::Int { value, vmin, vmax } => (format!("{value}"), format!("int {vmin}..{vmax}")),
         P::Bool { value } => (format!("{value}"), "bool".to_string()),
-        P::Trigger { fired } => (format!("{fired}"), "trigger".to_string()),
         P::Str { value, options: Some(o), .. } => {
             (format!("\"{value}\""), format!("string one of [{}]", o.join(", ")))
         }

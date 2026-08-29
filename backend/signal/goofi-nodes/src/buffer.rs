@@ -21,7 +21,7 @@ impl Node for Buffer {
         _c: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult {
-        let Some(d) = inp.get("data") else { return Ok(()) };
+        let d = inp.get("data").ok_or("`data` is required")?;
         let size = p.i64("buffer", "size").unwrap_or(1000).max(1) as usize;
         let a = d.assert_ndims().at_least(1)?;
         let axis = resolve_axis(p.i64("buffer", "axis").unwrap_or(-1), a.ndim())?;
