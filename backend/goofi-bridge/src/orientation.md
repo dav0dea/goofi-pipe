@@ -62,6 +62,9 @@ It answers an ARRAY slot's latest frame as NPY on stdout (STRING and TABLE answe
 facade or boundary port resolves to the stream behind it. The first ask on a never-watched slot opens its feed and answers null; ask
 again after the node's next emit. A monitor is a loop over it. `goofi layout inspect` names the
 tabs and panel ids the layout ops address; `goofi global list` says what an expression can read.
+Design layout in the tab that is open — a new tab hides your work behind a click, so add one only
+when the human asks for one. And you are often ON that layout yourself: an agent terminal is a
+panel, so mind the one the human watches you through.
 
 ## Building
 
