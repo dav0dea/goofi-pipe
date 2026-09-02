@@ -258,18 +258,13 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
     let manifest =
         g.type_manifest(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
     let mut info = crate::schemas::node_type_info(g, manifest, crate::schemas::source_of(g, ty));
-    // The type name is its file's CamelCased stem, so the path re-derives without a registry.
+    // The file names the type, so the path re-derives without a registry.
     let found = dirs.iter().find_map(|(dir, provenance)| {
         let entries = std::fs::read_dir(dir).ok()?;
         let path = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .find(|p| {
-                p.extension().is_some_and(|e| e == "py")
-                    && p.file_stem()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|s| goofi_signal::discover::camel(s) == ty)
-            })?;
+            .find(|p| goofi_node::type_name_of(p).as_deref() == Some(ty))?;
         Some((path, *provenance))
     });
     let tier = g.type_tier(ty);

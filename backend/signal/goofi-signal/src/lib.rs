@@ -6,7 +6,6 @@ use goofi_node::{param, NodeManifest, ParamDecl, ParamGroups, ParamKey, Params, 
 use goofi_node::{ExprDecl, ExprMode, IsolationCell};
 use goofi_signal_sdk::{Node, NodeCtx, NodeError, NodeResult};
 
-pub mod discover;
 mod engine;
 pub mod runtime;
 

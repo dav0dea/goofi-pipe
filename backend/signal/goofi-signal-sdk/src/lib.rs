@@ -4,7 +4,7 @@
 use std::fmt;
 
 use goofi_core::{Data, Param};
-use goofi_node::{ParamKey, Params};
+use goofi_node::{ParamGroups, ParamKey, Params};
 use indexmap::IndexMap;
 
 /// A signal node's failure, propagated to the health plane rather than panicking.
@@ -30,6 +30,9 @@ impl From<&str> for NodeError {
 }
 
 pub type NodeResult = std::result::Result<(), NodeError>;
+
+/// Builds a fresh boxed instance of a runtime-registered node type from its params.
+pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
 /// The per-run input view; the two maps are keyed disjointly, so a slot is single XOR multi.
 pub struct Inputs<'a> {

@@ -106,7 +106,7 @@ impl SignalEngine {
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
-        factory: crate::discover::NodeFactory,
+        factory: goofi_signal_sdk::NodeFactory,
         isolation: &'static IsolationCell,
     ) -> Registration {
         let name = manifest.type_name;

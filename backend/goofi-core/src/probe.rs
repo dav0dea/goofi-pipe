@@ -7,6 +7,9 @@ pub struct Introspection {
     pub gil_safe: bool,
     #[serde(default)]
     pub doc: String,
+    /// The palette category the node declares; absent, the scan's default for its folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// Whether the node makes frames on its own schedule rather than in answer to an input.
     /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default)]

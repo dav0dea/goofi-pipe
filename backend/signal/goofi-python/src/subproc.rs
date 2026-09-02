@@ -239,7 +239,8 @@ impl Drop for RemoteNode {
 
 use std::path::Path;
 
-use goofi_signal::discover::{Discovered, NodeFactory};
+use crate::Discovered;
+use goofi_signal_sdk::NodeFactory;
 use goofi_node::{Isolation, NodeManifest};
 
 /// A discovered subprocess node type, ready to `register_dyn_type` into a Graph.
@@ -253,7 +254,7 @@ use crate::Discovery;
 
 /// Probe one file for this tier, reporting all three outcomes.
 pub fn probe(path: &Path, python: &str) -> Discovery {
-    goofi_signal::discover::discover_one(path, python, "subprocess", Isolation::Subprocess)
+    crate::discover_one(path, python, "subprocess", Isolation::Subprocess)
 }
 
 /// Turn a probe-[`Discovered`] into a [`SubprocNodeType`], without a second spawn.

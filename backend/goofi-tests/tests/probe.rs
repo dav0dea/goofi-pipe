@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use goofi_signal::discover::{discover_one, probe_introspect, Discovery};
+use goofi_python::{discover_one, probe_introspect, Discovery};
 use goofi_node::Isolation;
 
 /// The first interpreter that can `import goofi`: an override, the repo's venvs, then the system one.

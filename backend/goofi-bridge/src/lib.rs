@@ -553,7 +553,7 @@ pub fn signal_engine(g: &mut Graph) -> &mut goofi_signal::SignalEngine {
 pub fn register_dyn_type(
     g: &mut Graph,
     manifest: &'static goofi_node::NodeManifest,
-    factory: goofi_signal::discover::NodeFactory,
+    factory: goofi_signal_sdk::NodeFactory,
     tier: &'static goofi_node::IsolationCell,
 ) -> goofi_signal::Registration {
     let r = signal_engine(g).register_dyn_type(manifest, factory, tier);

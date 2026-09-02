@@ -16,6 +16,7 @@ goofi-codec = { path = "../goofi-codec" }
 goofi-node = { path = "../goofi-node" }
 goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
+goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
 goofi-transport = { path = "../goofi-transport" }
 # The native node library, linked here at the composition root — `fresh_graph`'s anchor is what
 # keeps its inventory registrations out of the linker's dead-code pass.

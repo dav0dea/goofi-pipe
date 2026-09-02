@@ -5,7 +5,9 @@ use std::fmt;
 use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
+pub mod describe;
 pub mod seam;
+pub use describe::{leak_manifest, type_name_of};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Request, Touched,

@@ -508,6 +508,7 @@ dependencies = [
  "goofi-node",
  "goofi-nodes",
  "goofi-signal",
+ "goofi-signal-sdk",
  "goofi-transport",
  "goofi-view",
  "libc",
@@ -633,11 +634,11 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-pymod",
- "goofi-signal",
  "goofi-signal-sdk",
  "iceoryx2",
  "indexmap",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

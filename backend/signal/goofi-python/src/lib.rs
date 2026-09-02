@@ -7,7 +7,8 @@ pub mod subproc;
 #[cfg(feature = "embed")]
 pub mod inproc;
 
-pub use goofi_signal::discover::{Discovered, Discovery};
+pub mod discover;
+pub use discover::{discover_one, probe_introspect, Discovered, Discovery};
 
 /// Registers the `goofi` module into the inittab, which must happen BEFORE the interpreter
 /// initializes — so every Python entry point in this crate attaches through [`attach`].
@@ -50,7 +51,7 @@ pub fn routed_node_type(d: Discovered, subproc_python: &str) -> inproc::PyNodeTy
     let out_slots: Vec<&'static str> = manifest.outputs.iter().map(|o| o.name).collect();
     let source = std::fs::read_to_string(&d.source).unwrap_or_default();
     let python = subproc_python.to_string();
-    let factory: goofi_signal::discover::NodeFactory = Box::new(move |_p| {
+    let factory: goofi_signal_sdk::NodeFactory = Box::new(move |_p| {
         match tier.get() {
             goofi_node::Isolation::Subprocess => {
                 Box::new(subproc::RemoteNode::new(&python, &source, in_slots.clone()))

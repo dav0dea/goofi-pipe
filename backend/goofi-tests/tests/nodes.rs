@@ -35,7 +35,7 @@ fn stub_scan(g: &mut Graph, dir: &Path) -> Vec<ScannedType> {
         if path.extension().and_then(|e| e.to_str()) != Some("py") {
             continue;
         }
-        let name = goofi_signal::discover::camel(&path.file_stem().unwrap().to_string_lossy());
+        let name = goofi_node::type_name_of(&path).unwrap();
         let value: f32 =
             std::fs::read_to_string(&path).unwrap_or_default().trim().parse().unwrap_or(0.0);
         let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {

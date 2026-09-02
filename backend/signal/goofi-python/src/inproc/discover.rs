@@ -3,7 +3,8 @@
 
 use std::path::Path;
 
-use goofi_signal::discover::{discover_one as probe_discover_one, Discovered, Discovery, NodeFactory};
+use crate::{discover_one as probe_discover_one, Discovered, Discovery};
+use goofi_signal_sdk::NodeFactory;
 use goofi_node::{Isolation, NodeManifest, Params};
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 
