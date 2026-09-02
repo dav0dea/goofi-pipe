@@ -206,6 +206,11 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
         .find(|v| v["type"] == "Twice").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
+    // The greyed row keeps the SHAPE it last loaded, because the canvas draws a node's slots and
+    // params from it: the instance is still running and still wired, and a row with no slots
+    // erased it from every open tab while its data kept flowing.
+    assert_eq!(row["output_slots"], j!({ "out": "ARRAY" }), "the greyed row keeps its slots: {row}");
+    assert!(row["params"].as_object().is_some_and(|p| !p.is_empty()), "and its params: {row}");
     let why = g.refuse("node add", j!({ "type": "Twice" }));
     assert!(why.contains("unavailable"), "{why}");
     emits(&g, live, 3.0);

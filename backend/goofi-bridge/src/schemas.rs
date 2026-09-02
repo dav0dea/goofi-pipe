@@ -183,22 +183,30 @@ pub fn catalog_types(g: &Graph) -> Value {
             (m.category.to_string(), m.type_name.to_string(), node_type_info(g, m, source_of(g, m.type_name)))
         })
         .collect();
-    // Node files that exist but cannot load are listed too, greyed and with the reason.
-    items.extend(g.unavailable_types().map(|(name, reason)| {
+    // Node files that exist but cannot load are listed too, greyed and with the reason — carrying
+    // the shape they last had, because the instances born from it are still running and wired.
+    let greyed: Vec<(String, String)> = g
+        .unavailable_types()
+        .map(|(name, reason)| (name.to_string(), reason.to_string()))
+        .collect();
+    items.extend(greyed.into_iter().map(|(name, reason)| {
+        let last = g.last_manifest(&name);
         (
             "unavailable".to_string(),
-            name.to_string(),
+            name.clone(),
             json!({
                 "type": name,
-                "source": source_of(g, name),
+                "source": source_of(g, &name),
                 "category": "unavailable",
                 "doc": format!("This node could not be loaded: {reason}"),
                 "available": false,
                 "missing_deps": [reason],
-                "input_slots": {},
-                "input_multi": [],
-                "output_slots": {},
-                "params": {},
+                "input_slots": last.map_or_else(|| json!({}), input_slots),
+                "input_multi": last.map_or_else(|| json!([]), input_multi),
+                "output_slots": last.map_or_else(|| json!({}), output_slots),
+                "params": last.map_or_else(|| json!({}), |m| {
+                    describe_params(g, &g.default_params_of(m.type_name, None).unwrap_or_default(), m)
+                }),
             }),
         )
     }));

@@ -321,16 +321,9 @@ impl Engine for SignalEngine {
             .collect()
     }
 
-    fn normalize_params(
-        &self,
-        type_name: &str,
-        supplied: Option<ParamGroups>,
-    ) -> Result<ParamGroups, String> {
-        let entry = self
-            .find_entry(type_name)
-            .ok_or_else(|| format!("no node type `{type_name}` in the signal library"))?;
-        let base = supplied.unwrap_or_else(|| entry.manifest.default_params());
-        Ok(crate::with_common(base, entry.manifest))
+    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
+        let base = supplied.unwrap_or_else(|| manifest.default_params());
+        crate::with_common(base, manifest)
     }
 
     fn insert(

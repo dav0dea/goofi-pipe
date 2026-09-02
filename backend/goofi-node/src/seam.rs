@@ -207,13 +207,10 @@ pub trait Engine: Send {
     fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {
         Vec::new()
     }
-    /// The record a fresh instance of `type_name` starts from: the declared defaults plus this
-    /// engine's own universal groups, with `supplied` values folded in.
-    fn normalize_params(
-        &self,
-        type_name: &str,
-        supplied: Option<ParamGroups>,
-    ) -> Result<ParamGroups, String>;
+    /// The record a fresh instance of `manifest` starts from: its declared defaults plus this
+    /// engine's own universal groups, with `supplied` values folded in. By MANIFEST, not by name,
+    /// so a type the library no longer answers for can still say what its live nodes hold.
+    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups;
     /// Birth at `uid`, with the graph-minted generation. `Some` carries a boot error: the node
     /// then exists holding its place and saying why it is not running.
     fn insert(

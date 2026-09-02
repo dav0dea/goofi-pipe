@@ -166,15 +166,8 @@ impl Engine for Skeleton {
         vec![LibraryEntry { manifest: self.class, isolation: &goofi_node::NATIVE }]
     }
 
-    fn normalize_params(
-        &self,
-        type_name: &str,
-        supplied: Option<ParamGroups>,
-    ) -> Result<ParamGroups, String> {
-        if type_name != self.class.type_name {
-            return Err(format!("no node type `{type_name}` in the {} library", self.id));
-        }
-        Ok(supplied.unwrap_or_else(|| self.class.default_params()))
+    fn normalize_params(&self, manifest: &'static goofi_node::NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
+        supplied.unwrap_or_else(|| manifest.default_params())
     }
 
     fn insert(

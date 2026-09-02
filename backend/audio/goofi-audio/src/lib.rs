@@ -585,17 +585,12 @@ impl Engine for AudioEngine {
         }
     }
 
-    fn normalize_params(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
-        let manifest = self
-            .classes
-            .get(type_name)
-            .map(|c| c.manifest)
-            .ok_or_else(|| format!("no node type `{type_name}` in the audio library"))?;
+    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
         let mut params = manifest.default_params();
         for (group, entries) in supplied.into_iter().flatten() {
             params.entry(group).or_default().extend(entries);
         }
-        Ok(params)
+        params
     }
 
     fn insert(&mut self, uid: Uid, type_name: &str, generation: u64, params: &ParamGroups) -> Option<String> {

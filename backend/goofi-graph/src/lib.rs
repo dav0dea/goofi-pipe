@@ -373,6 +373,14 @@ pub enum Stream {
     Open(Uid),
 }
 
+/// A type the palette greys: why, and what it last resolved to. The manifest is kept because the
+/// instances already born from it are still running and still wired — a row with no slots would
+/// erase them from every canvas while the data still flows.
+struct Greyed {
+    reason: String,
+    last: Option<(&'static str, &'static NodeManifest)>,
+}
+
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
@@ -388,7 +396,7 @@ pub struct Graph {
     viewpoint: serde_json::Value,
     /// Types that exist on disk but cannot load here → why. Greyed in the palette, so a node
     /// needing an uninstalled dependency explains itself instead of silently not existing.
-    unavailable: std::collections::BTreeMap<String, String>,
+    unavailable: std::collections::BTreeMap<String, Greyed>,
     /// The types that came from the open patch's workspace — the one thing about a type that only
     /// the scan can know. Re-derived wholesale by each scan.
     patch_types: std::collections::HashSet<String>,
@@ -671,11 +679,8 @@ impl Graph {
     /// The universal param group the owning engine adds to every one of its nodes — the palette
     /// and the default-expression seeding read declarations through this one door.
     pub fn universal_decls_of(&self, type_name: &str) -> Vec<ParamDecl> {
-        let Some((id, entry)) = self.library_entry(type_name) else { return Vec::new() };
-        self.engines()
-            .find(|e| e.id() == id)
-            .map(|e| e.universal_decls(entry.manifest))
-            .unwrap_or_default()
+        let Some((id, manifest)) = self.owner_of(type_name) else { return Vec::new() };
+        self.engines().find(|e| e.id() == id).map(|e| e.universal_decls(manifest)).unwrap_or_default()
     }
 
     /// Forget the unavailable row for a type that now resolves — a registration's caller clears
@@ -687,6 +692,7 @@ impl Graph {
     /// Scan `root/nodes_<engine>` for every engine, and keep the greyed overlay in step with what
     /// each registered: a name holds a registration or a reason, never both.
     pub fn scan_root(&mut self, root: &std::path::Path) -> Vec<goofi_node::ScannedType> {
+        let held = self.held_manifests();
         let mut out = Vec::new();
         for engine in &mut self.engines {
             let dir = root.join(goofi_node::folder_of(engine.id()));
@@ -694,18 +700,27 @@ impl Graph {
                 out.extend(engine.scan(&dir));
             }
         }
-        self.note_scanned(&out);
+        self.note_scanned(&out, &held);
         out
     }
 
     /// What the engines find on their own account, after every root.
     pub fn scan_own(&mut self) -> Vec<goofi_node::ScannedType> {
+        let held = self.held_manifests();
         let out: Vec<_> = self.engines.iter_mut().flat_map(|e| e.scan_own()).collect();
-        self.note_scanned(&out);
+        self.note_scanned(&out, &held);
         out
     }
 
-    fn note_scanned(&mut self, out: &[goofi_node::ScannedType]) {
+    /// What every name resolved to before a scan displaced it — the last good manifest a greyed
+    /// row keeps, so a node still running on it keeps its slots and its params.
+    fn held_manifests(&self) -> HashMap<String, (&'static str, &'static NodeManifest)> {
+        self.engines()
+            .flat_map(|e| e.library().into_iter().map(|l| (l.manifest.type_name.to_string(), (e.id(), l.manifest))))
+            .collect()
+    }
+
+    fn note_scanned(&mut self, out: &[goofi_node::ScannedType], held: &HashMap<String, (&'static str, &'static NodeManifest)>) {
         for t in out {
             match &t.outcome {
                 goofi_node::Scanned::Registered { .. } => {
@@ -713,11 +728,24 @@ impl Graph {
                 }
                 // A name a library still answers is never greyed: one name, one row.
                 goofi_node::Scanned::Unavailable(reason) if !self.known_type(&t.type_name) => {
-                    self.unavailable.insert(t.type_name.clone(), reason.clone());
+                    // A file that broke keeps the manifest it last loaded: its instances are still
+                    // running on it, still wired, and a row with no slots would erase them.
+                    let last = held.get(&t.type_name).copied().or_else(|| self.last_owner(&t.type_name));
+                    self.unavailable.insert(t.type_name.clone(), Greyed { reason: reason.clone(), last });
                 }
                 goofi_node::Scanned::Unavailable(_) => {}
             }
         }
+    }
+
+    /// The engine and manifest a greyed name last resolved to, if it ever did.
+    fn last_owner(&self, type_name: &str) -> Option<(&'static str, &'static NodeManifest)> {
+        self.unavailable.get(type_name).and_then(|g| g.last)
+    }
+
+    /// The manifest a greyed name last resolved to — the shape its live instances still hold.
+    pub fn last_manifest(&self, type_name: &str) -> Option<&'static NodeManifest> {
+        self.last_owner(type_name).map(|(_, m)| m)
     }
 
     /// Forget a scanned type from every registry — the engine that held it and the greyed
@@ -763,7 +791,7 @@ impl Graph {
     /// unavailable type names its missing dependency; anything else reads as the typo it is.
     fn reject_type(&self, type_name: &str) -> String {
         match self.unavailable.get(type_name) {
-            Some(reason) => format!("node type `{type_name}` is unavailable: {reason}"),
+            Some(Greyed { reason, .. }) => format!("node type `{type_name}` is unavailable: {reason}"),
             None => format!("unknown node type `{type_name}`"),
         }
     }
@@ -830,13 +858,15 @@ impl Graph {
         if self.library_entry(&type_name).is_some() {
             return false;
         }
-        self.unavailable.insert(type_name, reason);
+        // A name greyed twice keeps the manifest it had the first time.
+        let last = self.last_owner(&type_name);
+        self.unavailable.insert(type_name, Greyed { reason, last });
         true
     }
 
     /// The unloadable types, `(type_name, reason)`, sorted by name.
     pub fn unavailable_types(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.unavailable.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+        self.unavailable.iter().map(|(k, v)| (k.as_str(), v.reason.as_str()))
     }
 
     /// Declare which runtime types came from the open patch's own workspace — the palette's
@@ -972,11 +1002,17 @@ impl Graph {
     /// The record a fresh instance of `type_name` starts from — the owning engine's own
     /// normalization, resolved without constructing the node. Also what the palette renders.
     pub fn default_params_of(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
-        let (id, _) = self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
-        self.engines()
-            .find(|e| e.id() == id)
-            .expect("the entry named it")
-            .normalize_params(type_name, supplied)
+        let (id, manifest) = self.owner_of(type_name).ok_or_else(|| self.reject_type(type_name))?;
+        Ok(self.engines().find(|e| e.id() == id).expect("the owner named it").normalize_params(manifest, supplied))
+    }
+
+    /// The engine and manifest a name resolves to — the library's, or the one a greyed name last
+    /// had, whose instances are still running on it.
+    fn owner_of(&self, type_name: &str) -> Option<(&'static str, &'static NodeManifest)> {
+        match self.library_entry(type_name) {
+            Some((id, entry)) => Some((id, entry.manifest)),
+            None => self.last_owner(type_name),
+        }
     }
 
     /// Instantiate a node by type name. `params` defaults to the type's defaults.
