@@ -11,6 +11,15 @@ fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
     goofi_bridge::audio_engine(&mut graph).drive(frames)
 }
 
+/// Drive tenths until the output satisfies `want` — a constant lands within one control hop, and
+/// the tenth after shows it — and hand that tenth back.
+fn sounds(g: &Goofi, what: &str, want: impl Fn(&[f32]) -> bool) -> Vec<f32> {
+    g.until(what, |g| {
+        let (x, _) = drive(g, TENTH);
+        want(&x).then_some(x)
+    })
+}
+
 fn peak(v: &[f32]) -> f32 {
     v.iter().fold(0f32, |m, x| m.max(x.abs()))
 }
@@ -65,13 +74,12 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!((peak(&a) - 1.0).abs() < 0.01, "a full-scale sine: peak {}", peak(&a));
     assert!(near(crossings(&a), 88), "A4 by default: {} crossings", crossings(&a));
 
-    // Step: a constant param lands at the next block — the gain, then the pitch, in volts per octave.
+    // Step: a constant param lands within one control hop — the gain, then the pitch, in volts
+    // per octave.
     g.set_param(gain, "gain", "gain", 0.5);
-    let (b, _) = drive(&g, TENTH);
-    assert!((peak(&b) - 0.5).abs() < 0.01, "half gain: peak {}", peak(&b));
+    sounds(&g, "half gain", |x| (peak(x) - 0.5).abs() < 0.01);
     g.set_param(osc, "osc", "pitch", 1.75);
-    let (c, _) = drive(&g, TENTH);
-    assert!(near(crossings(&c), 176), "an octave up, 880 Hz: {} crossings", crossings(&c));
+    sounds(&g, "an octave up, 880 Hz", |x| near(crossings(x), 176));
 
     // Step: a param referencing an audio output is a plan edge at audio rate — the gain reads
     // the oscillator itself, so the output is its square: never negative, full scale.
@@ -90,9 +98,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let osc2 = frozen_square(&g);
     g.link(osc2, "out", gain, "input");
     g.call("node param edit", j!({ "node": hex(gain), "param": "gain/gain", "value": 0.5, "mode": "constant" }));
-    let (e, _) = drive(&g, TENTH);
-    assert!((peak(&e) - 1.0).abs() < 0.01, "sine plus one, halved: peak {}", peak(&e));
-    assert!((mean(&e) - 0.5).abs() < 0.02, "…on a half offset: mean {}", mean(&e));
+    sounds(&g, "sine plus one, halved, on a half offset", |x| (peak(x) - 1.0).abs() < 0.01 && (mean(x) - 0.5).abs() < 0.02);
 
     // Step: a reference the graph refuses is never a plan edge: a Str param cannot read an audio
     // output, the record keeps the literal, and the sound is unchanged.
@@ -171,14 +177,29 @@ fn a_patch_sounds_under_the_external_clock() {
         let (x, _) = drive(g, TENTH);
         ((peak(&x) - 0.25).abs() < 0.01).then_some(())
     });
-    let reported = events.next("param_values");
-    assert_eq!(reported["node"], hex(gain3), "{reported}");
+    let reported = loop {
+        let ev = events.next("param_values");
+        if ev["node"] == hex(gain3) && !ev["values"]["gain"].is_null() {
+            break ev;
+        }
+    };
     assert_eq!(reported["values"]["gain"]["gain"], 0.25, "{reported}");
     g.set_param(source, "constant", "value", 0.75);
-    g.until("the gain to follow its source", |g| {
-        let (x, _) = drive(g, TENTH);
-        ((peak(&x) - 0.75).abs() < 0.01).then_some(())
-    });
+    sounds(&g, "the gain to follow its source", |x| (peak(x) - 0.75).abs() < 0.01);
+
+    // Step: a reference the control half cannot copy is a binding error on the node; back on a
+    // constant, the literal lands and the error clears.
+    g.set_param(source, "constant", "length", 4);
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(gain3), "param": "gain/gain", "reference": format!("{source_name}.out"), "mode": "reference" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    let why = g.until("the binding error to reach the node", |g| g.error(gain3));
+    assert!(why.contains("one element"), "{why}");
+    g.call("node param edit", j!({ "node": hex(gain3), "param": "gain/gain", "value": 0.5, "mode": "constant" }));
+    sounds(&g, "the literal to land", |x| (peak(x) - 0.5).abs() < 0.01);
+    g.until("the error to clear", |g| g.error(gain3).is_none().then_some(()));
 
     // Step: a plan swap keeps every instance — the oscillator's phase runs on across it.
     let (a, _) = drive(&g, TENTH);
@@ -190,8 +211,10 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: the tap — every reader of an audio output subscribes on the derived name: a probe
     // sees whole blocks at the rate, a signal Buffer fills from them, and a snapshot answers.
     let tapped = g.probe(osc3, "out");
-    drive(&g, TENTH);
-    let block = tapped.expect_frame(&mut g.state.graph.lock().unwrap(), "the oscillator's tapped blocks");
+    let block = g.until("the oscillator's tapped blocks", |g| {
+        drive(g, TENTH);
+        tapped.latest()
+    });
     assert_eq!(shape(&block)[0], 1, "{:?}", shape(&block));
     assert!(shape(&block)[1] >= 64 && shape(&block)[1].is_multiple_of(64), "whole blocks: {:?}", shape(&block));
     assert_eq!(block.meta().sfreq(), Some(48_000.0));
@@ -199,8 +222,10 @@ fn a_patch_sounds_under_the_external_clock() {
     let buffer = g.add("Buffer");
     g.link(osc3, "out", buffer, "data");
     let buffered = g.probe(buffer, "out");
-    drive(&g, TENTH);
-    let filled = buffered.expect_frame(&mut g.state.graph.lock().unwrap(), "the buffer to fill from the tap");
+    let filled = g.until("the buffer to fill from the tap", |g| {
+        drive(g, TENTH);
+        buffered.latest()
+    });
     assert!(shape(&filled)[0] == 1 && crossings(&f32s(&filled)) > 0, "the buffer holds the sine: {:?}", shape(&filled));
     let snapshot = g.until("a snapshot of the gain's output", |g| {
         drive(g, TENTH);
@@ -212,11 +237,8 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: the in-order crossing — a signal ramp at 256 Hz enters through `SignalIn`, resampled
     // to the rate: it rises from zero, a tenth of a second is a twentieth of it, and the next
     // tenth continues where this one stopped.
-    g.set_param(source, "constant", "value", 0.0);
-    g.until("the gain to close", |g| {
-        let (x, _) = drive(g, TENTH);
-        (peak(&x) == 0.0).then_some(())
-    });
+    g.set_param(gain3, "gain", "gain", 0.0);
+    sounds(&g, "the gain to close", |x| peak(x) == 0.0);
     g.call("node remove", j!({ "node": hex(buffer) }));
     let ramp = g.add("_TestRamp");
     let signal_in = g.add("SignalIn");
@@ -232,6 +254,8 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(rising[0] < 0.01 && top <= 0.051, "from zero, a twentieth per tenth: {} .. {top}", rising[0]);
     let (second, _) = drive(&g, TENTH);
     assert!(second[0] >= top - 0.001 && second.windows(2).all(|w| w[1] >= w[0]), "…and continues: {} after {top}", second[0]);
+    let span = second[second.len() - 1] - second[0];
+    assert!((span - 0.05).abs() < 0.002, "a whole tenth is a twentieth of the ramp: {span}");
 
     // Step: a gate from the signal plane — `Env.gate` referencing a constant — opens the envelope
     // at control rate, and dropping it releases.
@@ -254,10 +278,20 @@ fn a_patch_sounds_under_the_external_clock() {
         (x[x.len() - 1] > 0.99).then_some(())
     });
     g.set_param(gate, "constant", "value", 0.0);
-    g.until("the release to finish", |g| {
-        let (x, _) = drive(g, TENTH);
-        (x[x.len() - 1] == 0.0).then_some(())
-    });
+    sounds(&g, "the release to finish", |x| x[x.len() - 1] == 0.0);
+
+    // Step: the gate's other two sources open it the same way — a constant, then an expression
+    // over the signal-plane constant.
+    g.call("node param edit", j!({ "node": hex(env), "param": "env/gate", "value": true, "mode": "constant" }));
+    sounds(&g, "a constant gate to open", |x| x[x.len() - 1] > 0.99);
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(env), "param": "env/gate", "expression": format!("nd('{gate_name}')"), "mode": "expression" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    sounds(&g, "an expression gate to close", |x| x[x.len() - 1] == 0.0);
+    g.set_param(gate, "constant", "value", 1.0);
+    sounds(&g, "…and to open", |x| x[x.len() - 1] > 0.99);
 
     // Step: an audio-rate gate is one voice per channel — a four-channel ramp through `SignalIn`
     // as the gate: the channel still below the threshold is shut, the three above it sound.
@@ -300,7 +334,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let held = frozen_square(&g);
     g.call("link remove", j!({ "from": ep(hex(osc3), "out"), "to": ep(hex(gain3), "input") }));
     g.link(held, "out", gain3, "input");
-    g.set_param(source, "constant", "value", 0.5);
+    g.set_param(gain3, "gain", "gain", 0.5);
     let fb = g.add("Feedback");
     g.link(gain3, "out", fb, "input");
     g.link(fb, "out", gain3, "input");
@@ -310,6 +344,15 @@ fn a_patch_sounds_under_the_external_clock() {
         let tail = &x[x.len() - 480..];
         ((mean(tail) - 1.0).abs() < 0.01 && peak(&x) <= 1.001).then_some(())
     });
+
+    // Step: a feedback node wired to itself reads its own last block through a copy, never the
+    // region it writes — a wire the graph accepts must not tear the audio thread.
+    let fb2 = g.add("Feedback");
+    g.link(fb2, "out", fb2, "input");
+    g.link(fb2, "out", out, "input");
+    let (still, _) = drive(&g, TENTH);
+    assert!((mean(&still[still.len() - 480..]) - 1.0).abs() < 0.01, "it holds its zero: {}", mean(&still[still.len() - 480..]));
+    g.call("node remove", j!({ "node": hex(fb2) }));
     g.call("node remove", j!({ "node": hex(fb) }));
     let (opened, _) = drive(&g, TENTH);
     assert!((mean(&opened[opened.len() - 480..]) - 0.5).abs() < 0.01, "the loop opened: {}", mean(&opened[opened.len() - 480..]));

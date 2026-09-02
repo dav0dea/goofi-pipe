@@ -247,7 +247,8 @@ pub enum Via<'a> {
 impl GraphView<'_> {
     /// Every doorbell `(producer, slot)` rings, read off the view: wired consumer slots by
     /// manifest position and `nd()` channels by the event id the graph allocated — only for
-    /// consumers whose engine wakes on doorbells, and never a slot past the event-id budget.
+    /// consumers whose engine wakes on doorbells, and never a slot past the event-id budget. In
+    /// one order for one settled state, so a list of them compares.
     pub fn ringers(&self, producer: Uid, slot: &str) -> Vec<Ringer<'_>> {
         let wired = self.edges.iter().filter(|e| e.producer.0 == producer && e.producer.1 == slot).filter_map(|e| {
             let node = self.nodes.get(&e.consumer.0).filter(|n| n.rings)?;
@@ -264,6 +265,8 @@ impl GraphView<'_> {
                 })
             })
         });
-        wired.chain(bound).collect()
+        let mut ringers: Vec<Ringer<'_>> = wired.chain(bound).collect();
+        ringers.sort_by_key(|r| (r.consumer.0, r.event_id));
+        ringers
     }
 }

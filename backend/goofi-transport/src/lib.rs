@@ -9,7 +9,7 @@ use iceoryx2::config::Config;
 use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
 
-use goofi_node::{EventId, GraphView, Uid};
+use goofi_node::{BoundVar, EventId, GraphView, Uid, Var};
 
 /// An iceoryx2 service name — a wire's identity, which is why slot messages carry no source uid.
 pub type ServiceName = String;
@@ -285,6 +285,36 @@ pub fn door_of(view: &GraphView<'_>, uid: Uid) -> Option<ServiceName> {
 pub fn output_of(view: &GraphView<'_>, uid: Uid, slot: &str) -> Option<ServiceName> {
     let node = view.nodes.get(&uid)?;
     Some(output_service(&service_base(view.instance, uid, node.generation), slot))
+}
+
+/// A resolved variable as a node receives it: a service rather than a uid, because a node
+/// addresses a producer by service and cannot resolve anything for itself.
+pub fn var_of(view: &GraphView<'_>, v: &BoundVar) -> (String, Var) {
+    match v {
+        BoundVar::Stream { var, producer, slot, .. } => {
+            let src = output_of(view, *producer, slot)
+                .map_or_else(|| Var::Missing(format!("`{var}` names no running node")), Var::Stream);
+            (var.clone(), src)
+        }
+        BoundVar::Value { var, value } => (var.clone(), Var::Value(value.clone())),
+        BoundVar::Missing { var, reason } => (var.clone(), Var::Missing(reason.clone())),
+    }
+}
+
+/// Send one frame, then ring every bell. In that order, always: a consumer woken first drains
+/// nothing and parks. A loan failure is a shared-memory condition the next emit re-tries.
+pub fn publish<'a>(publisher: &BytePublisher, bytes: &[u8], bells: impl IntoIterator<Item = (&'a Doorbell, EventId)>) {
+    let Ok(sample) = publisher.loan_slice_uninit(bytes.len()) else { return };
+    let _ = sample.write_from_slice(bytes).send();
+    for (bell, id) in bells {
+        let _ = bell.ring(id);
+    }
+}
+
+/// The survivor `keep` names, taken out of what a reconcile held; what is left is what the new
+/// set does not name, and dropping it IS the unsubscribe.
+pub fn take_where<T>(held: &mut Vec<T>, keep: impl Fn(&T) -> bool) -> Option<T> {
+    held.iter().position(keep).map(|i| held.remove(i))
 }
 
 /// The two flags a node's thread is born holding: told to stop, and — once every port it owned

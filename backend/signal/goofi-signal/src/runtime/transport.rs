@@ -149,25 +149,17 @@ impl Transport for IoxTransport {
 
     fn wire_in(&self, slot: &str, services: &[ServiceName]) -> Result<(), String> {
         let mut inputs = self.inputs.lock().unwrap();
-        let mut held: Vec<Option<InputWire>> = match inputs.iter().position(|(name, _)| name == slot) {
-            Some(at) => inputs.remove(at).1.into_iter().map(Some).collect(),
+        let mut held: Vec<InputWire> = match inputs.iter().position(|(name, _)| name == slot) {
+            Some(at) => inputs.remove(at).1,
             None => Vec::new(),
         };
         let mut wires = Vec::with_capacity(services.len());
         let mut failed = Vec::new();
         for service in services {
-            // A surviving wire keeps its subscriber. What is left in `held` is what the new set
-            // does not name, and dropping it IS the unsubscribe.
-            let kept = held
-                .iter_mut()
-                .find(|w| w.as_ref().is_some_and(|w| &w.service == service))
-                .and_then(Option::take);
-            match kept {
-                Some(wire) => wires.push(wire),
-                None => match self.open_wire(service) {
-                    Ok(wire) => wires.push(wire),
-                    Err(e) => failed.push(e),
-                },
+            let kept = goofi_transport::take_where(&mut held, |w| &w.service == service);
+            match kept.map(Ok).unwrap_or_else(|| self.open_wire(service)) {
+                Ok(wire) => wires.push(wire),
+                Err(e) => failed.push(e),
             }
         }
         inputs.push((slot.to_string(), wires));
@@ -212,15 +204,8 @@ impl Transport for IoxTransport {
 
     fn publish(&self, slot: &str, frame: &Data) {
         let Some(port) = self.outputs.get(slot) else { return };
-        let bytes = goofi_codec::encode(frame);
-        // A loan failure is a shared-memory condition rather than a node error, and the next emit
-        // re-tries it. What must not happen is ringing anyway.
-        let Ok(sample) = port.publisher.loan_slice_uninit(bytes.len()) else { return };
-        let _ = sample.write_from_slice(&bytes).send();
-        // The ring comes AFTER the send, always: a consumer woken first drains nothing and parks.
-        for (bell, id) in port.targets.lock().unwrap().iter() {
-            let _ = bell.ring(*id);
-        }
+        let targets = port.targets.lock().unwrap();
+        goofi_transport::publish(&port.publisher, &goofi_codec::encode(frame), targets.iter().map(|(b, id)| (b, *id)));
     }
 
     fn report(&self, status: WireStatus) {

@@ -40,8 +40,17 @@ impl Mailbox {
     }
 }
 
+/// One resolved variable as a node's thread receives it: a producer's service to subscribe, a
+/// value delivered inline, or the reason the graph could not resolve it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Var {
+    Stream(String),
+    Value(Param),
+    Missing(String),
+}
+
 /// One frame as a scalar param of `target`'s type — what a reference copies on arrival.
-pub fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
+fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
     match (frame.value(), target) {
         (goofi_core::Value::Str(s), Param::Str { options, refresh, .. }) => {
             Ok(Param::Str { value: s.to_string(), options: options.clone(), refresh: *refresh })
@@ -75,6 +84,35 @@ pub struct Expression {
 }
 
 impl Expression {
+    pub fn new(source: impl Into<String>, id: Option<BindingId>, vars: impl IntoIterator<Item = (String, Var)>) -> Expression {
+        let vars = vars
+            .into_iter()
+            .map(|(name, v)| {
+                let mailbox = match v {
+                    Var::Stream(_) => Mailbox::empty(),
+                    Var::Value(value) => Mailbox::seeded(value),
+                    Var::Missing(reason) => Mailbox::missing(reason),
+                };
+                (name, mailbox)
+            })
+            .collect();
+        Expression { source: source.into(), id, vars }
+    }
+
+    /// Keep what a surviving variable already holds — for the variables `same` names, which is the
+    /// caller's "still the same producer": a variable re-pointed at another stream starts empty,
+    /// or a silent producer would stand in for the one it replaced.
+    pub fn carry(&mut self, previous: &Expression, same: impl Fn(&str) -> bool) {
+        for (name, mailbox) in &mut self.vars {
+            if mailbox.value().is_some() || mailbox.unresolved().is_some() || !same(name) {
+                continue;
+            }
+            if let Some(held) = previous.vars.get(name).and_then(Mailbox::value) {
+                mailbox.put(held.clone());
+            }
+        }
+    }
+
     /// Land a producer's frame in the variable named `var`.
     pub fn deliver(&mut self, var: &str, frame: Data) {
         if let Some(mailbox) = self.vars.get_mut(var) {

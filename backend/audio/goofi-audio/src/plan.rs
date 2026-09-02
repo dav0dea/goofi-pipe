@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
 use goofi_core::{Param, SlotType};
-use goofi_node::{BindingView, GraphView, ParamDecl, ParamGroups, Uid};
+use goofi_node::{BindingView, GraphView, NodeManifest, ParamDecl, ParamGroups, Uid};
 
 use crate::Instance;
 
@@ -46,6 +46,12 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn reads_inbox(&self, idx: usize, inbox: usize) -> bool {
+        self.stages
+            .iter()
+            .any(|s| s.idx == idx && s.ins.iter().any(|i| matches!(i, Source::Inbox { inbox: n, .. } if *n == inbox)))
+    }
+
     /// The region the device reads and its channel count; silence when nothing is heard.
     pub fn heard(&self) -> (Region, u16) {
         match &self.output {
@@ -58,21 +64,46 @@ impl Plan {
 /// A param's scalar as the audio thread reads it: a number as itself, a bool as 0/1, an option
 /// as its index, free text as 0.
 pub(crate) fn scalar(p: &Param) -> f64 {
-    match p {
-        Param::Float { value, .. } => *value,
-        Param::Int { value, .. } => *value as f64,
-        Param::Bool { value } => f64::from(u8::from(*value)),
+    p.as_f64().unwrap_or_else(|| match p {
         Param::Str { value, options: Some(options), .. } => {
             options.iter().position(|o| o == value).map_or(0.0, |i| i as f64)
         }
-        Param::Str { .. } => 0.0,
-    }
+        _ => 0.0,
+    })
+}
+
+/// The record's value for one declared param, the declared default where the record has none.
+pub(crate) fn param_of(params: &ParamGroups, d: &ParamDecl) -> Param {
+    goofi_node::param(params, d.group, d.name).cloned().unwrap_or_else(|| d.spec.to_param())
 }
 
 pub(crate) fn scalar_of(params: &ParamGroups, d: &ParamDecl) -> f64 {
-    match params.get(d.group).and_then(|g| g.get(d.name)) {
-        Some(p) => scalar(p),
-        None => scalar(&d.spec.to_param()),
+    scalar(&param_of(params, d))
+}
+
+/// The inbox an Array input reads — its index among the node's Array inputs — and `None` for an
+/// audio one.
+pub(crate) fn inbox_of(manifest: &NodeManifest, input: usize) -> Option<usize> {
+    let array = |s: &goofi_node::SlotDecl| s.kind != SlotType::Audio;
+    array(&manifest.inputs[input]).then(|| manifest.inputs[..input].iter().filter(|s| array(s)).count())
+}
+
+fn alloc(channels: u16, len: &mut usize) -> Region {
+    let at = *len;
+    *len += channels as usize * BLOCK;
+    at
+}
+
+/// One jack's source: silence, its one producer's region, or a sum — which one part also takes
+/// when it is this node's own output, so a self-loop never reads and writes one region at once.
+fn source_of(parts: Vec<(Region, u16)>, own: &[Region], len: &mut usize) -> Source {
+    match parts.as_slice() {
+        [] => Source::Silence,
+        [(at, channels)] if !own.contains(at) => Source::Region { at: *at, channels: *channels },
+        _ => {
+            let channels = parts.iter().map(|p| p.1).max().unwrap_or(1);
+            Source::Sum { at: alloc(channels, len), channels, parts }
+        }
     }
 }
 
@@ -127,11 +158,6 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
         members.iter().map(|u| (*u, "in a loop with no feedback node, so it does not run".to_string())).collect();
 
     let mut plan = Plan { stages: Vec::new(), arena_len: BLOCK, output: None };
-    let alloc = |channels: u16, len: &mut usize| -> Region {
-        let at = *len;
-        *len += channels as usize * BLOCK;
-        at
-    };
     let parts_of = |uid: Uid, slot: &str, outs_of: &HashMap<(Uid, &'static str), (Region, u16)>| -> Vec<(Region, u16)> {
         wires.get(&(uid, slot)).into_iter().flatten().filter_map(|p| outs_of.get(p).copied()).collect()
     };
@@ -141,17 +167,14 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
     for uid in &order {
         let inst = &live[uid];
         let nv = &view.nodes[uid];
-        let mut inbox = 0;
         let mut counts: Vec<u16> = inst
             .manifest
             .inputs
             .iter()
-            .map(|s| {
-                if s.kind != SlotType::Audio {
-                    inbox += 1;
-                    return inst.control.chans[inbox - 1].load(Ordering::Relaxed).max(1);
-                }
-                parts_of(*uid, s.name, &outs_of).iter().map(|p| p.1).max().unwrap_or(1)
+            .enumerate()
+            .map(|(i, s)| match inbox_of(inst.manifest, i) {
+                Some(inbox) => inst.control.chans[inbox].load(Ordering::Relaxed),
+                None => parts_of(*uid, s.name, &outs_of).iter().map(|p| p.1).max().unwrap_or(1),
             })
             .collect();
         counts.extend((0..inst.manifest.params.len()).filter_map(|i| refs.get(&(*uid, i)).map(|p| outs_of.get(p).map_or(1, |o| o.1))));
@@ -165,38 +188,28 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
     let mut heard: Option<(Uid, Source)> = None;
     for uid in &order {
         let inst = &live[uid];
-        let mut inbox = 0;
+        let outs: Vec<(Region, u16)> = inst.manifest.outputs.iter().map(|o| outs_of[&(*uid, o.name)]).collect();
+        let own: Vec<Region> = outs.iter().map(|o| o.0).collect();
         let ins: Vec<Source> = inst
             .manifest
             .inputs
             .iter()
-            .map(|s| {
-                if s.kind != SlotType::Audio {
-                    inbox += 1;
-                    if view.wires_into(*uid, s.name).next().is_none() {
-                        return Source::Silence;
-                    }
-                    let channels = inst.control.chans[inbox - 1].load(Ordering::Relaxed).max(1);
-                    return Source::Inbox { at: alloc(channels, &mut plan.arena_len), channels, inbox: inbox - 1 };
+            .enumerate()
+            .map(|(i, s)| match inbox_of(inst.manifest, i) {
+                Some(_) if view.wires_into(*uid, s.name).next().is_none() => Source::Silence,
+                Some(inbox) => {
+                    let channels = inst.control.chans[inbox].load(Ordering::Relaxed);
+                    Source::Inbox { at: alloc(channels, &mut plan.arena_len), channels, inbox }
                 }
-                let parts = parts_of(*uid, s.name, &outs_of);
-                match parts.as_slice() {
-                    [] => Source::Silence,
-                    [(at, channels)] => Source::Region { at: *at, channels: *channels },
-                    _ => {
-                        let channels = parts.iter().map(|p| p.1).max().unwrap_or(1);
-                        Source::Sum { at: alloc(channels, &mut plan.arena_len), channels, parts }
-                    }
-                }
+                None => source_of(parts_of(*uid, s.name, &outs_of), &own, &mut plan.arena_len),
             })
             .collect();
         let params: Vec<Source> = (0..inst.manifest.params.len())
             .map(|i| match refs.get(&(*uid, i)).and_then(|p| outs_of.get(p)) {
-                Some((at, channels)) => Source::Region { at: *at, channels: *channels },
+                Some(part) => source_of(vec![*part], &own, &mut plan.arena_len),
                 None => Source::Scalar { at: alloc(1, &mut plan.arena_len), param: i },
             })
             .collect();
-        let outs: Vec<(Region, u16)> = inst.manifest.outputs.iter().map(|o| outs_of[&(*uid, o.name)]).collect();
         if inst.manifest.type_name == "AudioOut" && heard.as_ref().is_none_or(|(h, _)| uid.0 < h.0) {
             heard = ins.first().map(|s| (*uid, s.clone()));
         }

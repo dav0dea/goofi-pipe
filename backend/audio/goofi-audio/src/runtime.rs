@@ -35,6 +35,16 @@ impl Inbox {
         Inbox { ring, chans: 0, left: 0, last: [0.0; MAX_CHANNELS as usize] }
     }
 
+    /// Empty the ring and forget the chunk in hand — what the previous producer left.
+    fn flush(&mut self) {
+        if let Ok(chunk) = self.ring.read_chunk(self.ring.slots()) {
+            chunk.commit_all();
+        }
+        self.chans = 0;
+        self.left = 0;
+        self.last = [0.0; MAX_CHANNELS as usize];
+    }
+
     /// One block of `channels` planar channels: the next sample entered, or the last one held.
     fn fill(&mut self, region: &mut [f32], channels: u16) {
         for i in 0..BLOCK {
@@ -110,6 +120,18 @@ impl Runtime {
             Msg::Plan { plan, arena } => {
                 let old = std::mem::replace(&mut self.plan, plan);
                 let old_arena = std::mem::replace(&mut self.arena, arena);
+                // An inbox the new plan no longer reads is flushed, or what its last producer
+                // left would play first when the input is wired again.
+                for stage in &old.stages {
+                    for src in &stage.ins {
+                        let Source::Inbox { inbox, .. } = src else { continue };
+                        if !self.plan.reads_inbox(stage.idx, *inbox) {
+                            if let Some(slot) = self.slab[stage.idx].as_mut() {
+                                slot.inboxes[*inbox].flush();
+                            }
+                        }
+                    }
+                }
                 Some(Retired::Plan(old, old_arena))
             }
             Msg::Grow(mut bigger) => {

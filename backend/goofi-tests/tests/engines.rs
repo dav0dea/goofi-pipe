@@ -144,17 +144,8 @@ fn tick_once(shared: &Mutex<Shared>) {
                 },
                 _ => s.block.as_slice(),
             };
-            publish(publisher, payload, rings);
+            goofi_transport::publish(publisher, payload, rings.iter().map(|(b, id)| (b, *id)));
         }
-    }
-}
-
-fn publish(publisher: &goofi_transport::BytePublisher, payload: &[u8], rings: &Rings) {
-    let Ok(sample) = publisher.loan_slice_uninit(payload.len()) else { return };
-    let _ = sample.write_from_slice(payload).send();
-    // The ring comes AFTER the send, always: a consumer woken first drains nothing and parks.
-    for (bell, id) in rings {
-        let _ = bell.ring(*id);
     }
 }
 
@@ -260,7 +251,7 @@ impl Engine for Skeleton {
             // wired later still sees data within one of ITS OWN wakes, and the tick re-publishes.
             for (slot, publisher, rings) in &feed.outs {
                 if *slot != "echo" {
-                    publish(publisher, block, rings);
+                    goofi_transport::publish(publisher, block, rings.iter().map(|(b, id)| (b, *id)));
                 }
             }
         }

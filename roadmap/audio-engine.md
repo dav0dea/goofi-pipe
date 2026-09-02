@@ -4,9 +4,10 @@ The second engine — a peer of the signal plane inside one graph. Designed with
 2026-08-24/25 against measurements, not instinct; every number below was taken on the target machine
 and the harnesses are named where they still exist. Designed in full with the user on 2026-09-02, section by section: the node
 contract is goofi's own, CLAP is out, a reload no longer crossfades, and params gained a
-reference source (`param-sources.md`). Not built; proved, when it is, by
-`goofi-tests/tests/audio.rs` — one session under the external clock, every action through the
-op vocabulary, every probe through a `/data` viewer on an audio slot.
+reference source (`param-sources.md`). Built in steps, each paragraph below saying what landed
+and when; proved by `goofi-tests/tests/audio.rs` — one session under the external clock
+(`drive(frames)`), every action through the op vocabulary, every probe a plain subscriber on the
+derived name of an audio slot, which is the door `/data` opens.
 
 The seam that lets a second engine exist at all — the `Engine` trait, the settle point and what
 the split deletes — is `multi-engine-graph.md`. What is here is audio.
@@ -167,9 +168,13 @@ a 10 ms tick — the shape a signal node already has, and no wait set — and th
 node's atomics, constants included, so a dropped binding cannot race a settle's constant write.
 Settle hands it its whole desired state when that changes; it diffs subscriptions by service name.
 A binding with no stream variable re-evaluates every tick, since there is no run to evaluate
-before. The signal engine now plans a sequence for any consumer that RINGS, skipping the Apply
-phase for a foreign one — before, a signal producer was never told to ring an audio door. The
-ring is latency, not delivery: the tick would drain the same subscribers within 10 ms.
+before; a binding that is dropped withdraws its evaluated value and its error in the same report.
+The signal engine now plans a sequence for any consumer that RINGS, skipping the Apply phase for a
+foreign one — before, a signal producer was never told to ring an audio door — and re-tells a
+foreign consumer's producers the whole set on every touch, because a rebirth renames its door
+where this planner cannot see it; a rebirth touches every subscription of the reborn node for the
+same reason. The ring is latency, not delivery: the tick would drain the same subscribers within
+10 ms, and a constant edit lands within one control hop rather than at the next block.
 
 **One tap serves every reader of an audio output.** Landed 2026-09-02 as a plain publish on the
 derived name, keyed on the data service's subscriber count: the audio thread feeds every output's
@@ -180,18 +185,16 @@ on the name every other engine's output already carries — no `SlotFeed` arm in
 bridge reaching into the engine, and no plan recompile when a tap opens or closes, which is why
 this replaced the spec's reducer arm. Latest-wins by decree.
 
-**An in-order signal→audio crossing is a BRIDGE node this engine owns.** `SignalIn` has a
-`SlotType::Array` input; its control half is rung by the signal producer, pushes the frame's
-samples into a per-node ring, and the DSP half resamples linearly from the frame's `sfreq` to the
-device rate. Latency is one source frame; underrun holds, overrun drops the oldest. This is for
-ORDERED samples — sonification, playback. A control value or a gate from the signal plane is a
-reference into a param, never this. Landed 2026-09-02 with the crossing owned by the ENGINE, not
-the node: any `Array` input of an audio node is delivered as an audio-rate port. The control half
-resamples the frame linearly from its `sfreq` to the rate — no `sfreq` is one sample per sample,
-so a control value is held — and enters it whole as one chunk headed by channel count and length;
-the audio thread reads it one sample per sample and holds the last on underrun; a frame that does
-not fit the one-second inbox is dropped whole. `SignalIn` is a copy, and a new channel count
-re-plans through `dirty()`.
+**An in-order signal→audio crossing is owned by the ENGINE, and `SignalIn` is the node that
+exposes it.** This is for ORDERED samples — sonification, playback; a control value or a gate from
+the signal plane is a reference into a param, never this. Landed 2026-09-02: any `Array` input of
+an audio node is delivered as an audio-rate port. The control half resamples the frame linearly
+from its `sfreq` to the rate — no `sfreq` is one sample per sample, so a control value is held —
+and enters it whole as one chunk headed by channel count and length; the audio thread reads it one
+sample per sample and holds the last on underrun; a frame that does not fit the one-second inbox
+is dropped whole, and an inbox the plan stops reading is flushed at the swap, so nothing stale
+plays when the input is wired again. Latency is one source frame. `SignalIn` is a copy, and a new
+channel count re-plans through `dirty()`.
 
 **MIDI is a node that emits signals, and no engine mechanism knows it exists.** `MidiIn` outputs
 `gate`, `pitch` and `velocity`, each `voices` channels wide; its control half runs `midir` and

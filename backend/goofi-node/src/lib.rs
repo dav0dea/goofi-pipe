@@ -9,7 +9,7 @@ pub mod describe;
 pub mod mailbox;
 pub mod seam;
 pub use describe::{folder_of, illegal_slot, leak_manifest, parse_introspection, type_name_of};
-pub use mailbox::{scalar_of, Expression, Mailbox};
+pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Request, Ringer, Scanned, ScannedType, Stamp, Touched, Via,

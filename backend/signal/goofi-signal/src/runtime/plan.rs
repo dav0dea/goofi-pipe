@@ -109,6 +109,21 @@ impl WirePlanner {
         self.pending.retain(|(to, _)| *to != uid);
     }
 
+    /// Forget every consumer `live` does not name — a foreign consumer's death reaches this
+    /// planner only as its absence from the view.
+    pub(crate) fn forget_absent(&mut self, live: impl Fn(Uid) -> bool) {
+        let gone: Vec<Uid> = self
+            .planned
+            .keys()
+            .chain(self.sequences.keys())
+            .map(|(consumer, _)| *consumer)
+            .filter(|uid| !live(*uid))
+            .collect();
+        for uid in gone {
+            self.forget(uid);
+        }
+    }
+
     /// Drop every channel and everything in flight.
     pub(crate) fn reset_channels(&mut self) {
         self.sinks.clear();

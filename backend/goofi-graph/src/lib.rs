@@ -1998,6 +1998,14 @@ impl Graph {
         // The whole health is REBORN (§4, §6.2): the corpse's reports describe an instance that
         // no longer exists, and a fresh struct has nothing of the corpse's to show.
         entry.health = Health::born(boot_error);
+        // The rebirth renamed the node's door, so every subscription onto it is re-planned.
+        let keys: Vec<ParamKey> = entry.sources.keys().cloned().collect();
+        for slot in lib.manifest.inputs {
+            self.touched.push(Touched::Slot(uid, slot.name));
+        }
+        for key in keys {
+            self.touched.push(Touched::Param(uid, key));
+        }
         // `bindings` are left untouched — their compiled handles may only be dropped through
         // `release_entry_bindings`, and `bind_error` describes a SOURCE this rebirth did not touch.
 

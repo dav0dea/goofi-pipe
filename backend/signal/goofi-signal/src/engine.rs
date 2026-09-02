@@ -146,18 +146,19 @@ impl SignalEngine {
     fn replan(&mut self, view: &GraphView<'_>, key: SlotKey) {
         // Engines FILTER the whole-graph view: a consumer that is never rung drains its boundary
         // at its own clock, and its producers are told nothing.
-        if view.nodes.get(&key.0).is_none_or(|n| !n.rings) {
-            return;
-        }
+        let Some(consumer) = view.nodes.get(&key.0).filter(|n| n.rings) else { return };
+        let foreign = consumer.engine != self.id();
         let desired = desired_wires(view, &key);
         let previous = self.wire.planned(&key);
         // An In set that did not move carries nothing — a batch that ends where it started says
         // nothing. A Bind sequence still runs: its phase 2 IS the param delivery, wires or not.
-        if matches!(key.1, Slot::In(_)) && desired == previous {
+        if !foreign && matches!(key.1, Slot::In(_)) && desired == previous {
             return;
         }
         let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
-        let added = desired.iter().copied().filter(|w| !previous.contains(w)).collect();
+        // A rebirth renames a foreign consumer's door where this planner cannot see it, so every
+        // touch re-tells its producers the whole set.
+        let added = desired.iter().copied().filter(|w| foreign || !previous.contains(w)).collect();
         // A begin cancels the key's previous sequence — and any ack collected for it, or a stale
         // deferred advance would step the NEW sequence past a phase nobody acked.
         self.pending_advance.retain(|k| k != &key);
@@ -226,7 +227,7 @@ impl SignalEngine {
         let value = match node.bindings.iter().find(|b| b.key == key).filter(|b| b.live) {
             Some(b) => runtime::ParamValue::Expr {
                 source: b.rewritten.to_string(),
-                vars: b.vars.iter().map(|v| wire_var(view, v)).collect(),
+                vars: b.vars.iter().map(|v| goofi_transport::var_of(view, v)).collect(),
                 trigger: b.trigger,
                 // The graph compiled it, the node evaluates it (§2.1) — one handle, so the two
                 // ends can never be evaluating different source.
@@ -285,24 +286,6 @@ fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<(Uid, &'static str)
             .filter(|b| b.live)
             .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
             .unwrap_or_default(),
-    }
-}
-
-/// A resolved variable as the NODE sees it: a service name rather than a uid, because a node
-/// addresses a producer by service and cannot resolve anything for itself (§5.3).
-fn wire_var(view: &GraphView<'_>, var: &BoundVar) -> runtime::Var {
-    match var {
-        BoundVar::Stream { var, producer, slot, event_id } => runtime::Var::Stream {
-            name: var.clone(),
-            service: goofi_transport::output_of(view, *producer, slot).unwrap_or_default(),
-            event_id: *event_id,
-        },
-        BoundVar::Value { var, value } => {
-            runtime::Var::Value { name: var.clone(), value: value.clone() }
-        }
-        BoundVar::Missing { var, reason } => {
-            runtime::Var::Missing { name: var.clone(), reason: reason.clone() }
-        }
     }
 }
 
@@ -402,6 +385,7 @@ impl Engine for SignalEngine {
     }
 
     fn settle(&mut self, view: &GraphView<'_>, touched: &[Touched]) {
+        self.wire.forget_absent(|uid| view.nodes.contains_key(&uid));
         // Readies first: an attach re-plans from an EMPTY base, and what it begins must not be
         // clobbered by this batch's own touches.
         for uid in std::mem::take(&mut self.pending_ready) {

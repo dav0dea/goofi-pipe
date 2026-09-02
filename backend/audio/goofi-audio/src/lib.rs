@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use goofi_audio_sdk::AudioNode;
 use goofi_core::SlotType;
 use goofi_node::{
-    BoundVar, DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView,
-    ParamGroups, Request, Ringer, Status, Touched, Uid, Via, NATIVE,
+    DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView, ParamGroups,
+    Request, Ringer, Status, Touched, Uid, Via, NATIVE,
 };
 
 mod control;
@@ -20,7 +20,7 @@ pub mod nodes;
 mod plan;
 mod runtime;
 
-use control::{Desired, Handle, Shared, Sub, VarSrc};
+use control::{Desired, Handle, Shared, Sub};
 use plan::Plan;
 use runtime::{Inbox, Msg, Retired, Runtime, Slot, MAX_PORTS};
 
@@ -156,9 +156,10 @@ impl AudioEngine {
     /// Array inputs it drains, the bindings it evaluates, and the doors each output rings.
     fn desired_of(&self, view: &GraphView<'_>, uid: Uid, nv: &NodeView<'_>) -> Desired {
         let manifest = self.live[&uid].manifest;
-        let consts = manifest.params.iter().map(|d| plan::scalar_of(nv.params, d)).collect();
+        let consts = manifest.params.iter().map(|d| plan::param_of(nv.params, d)).collect();
         let mut subs = Vec::new();
-        for (inbox, s) in manifest.inputs.iter().filter(|s| s.kind != SlotType::Audio).enumerate() {
+        for (i, s) in manifest.inputs.iter().enumerate() {
+            let Some(inbox) = plan::inbox_of(manifest, i) else { continue };
             let wired = view.wires_into(uid, s.name).next();
             if let Some(service) = wired.and_then(|(p, slot)| goofi_transport::output_of(view, p, slot)) {
                 subs.push(Sub::Slot { inbox, service });
@@ -167,21 +168,8 @@ impl AudioEngine {
         for (param, d) in manifest.params.iter().enumerate() {
             let bound = nv.bindings.iter().find(|b| b.live && b.key.group == d.group && b.key.name == d.name);
             let Some(b) = bound.filter(|b| !plan::is_edge(b, &self.live)) else { continue };
-            let target = goofi_node::param(nv.params, d.group, d.name).cloned().unwrap_or_else(|| d.spec.to_param());
-            let vars = b
-                .vars
-                .iter()
-                .map(|v| match v {
-                    BoundVar::Stream { var, producer, slot, .. } => {
-                        let src = goofi_transport::output_of(view, *producer, slot)
-                            .map_or_else(|| VarSrc::Missing(format!("`{var}` names no running node")), VarSrc::Stream);
-                        (var.clone(), src)
-                    }
-                    BoundVar::Value { var, value } => (var.clone(), VarSrc::Value(value.clone())),
-                    BoundVar::Missing { var, reason } => (var.clone(), VarSrc::Missing(reason.clone())),
-                })
-                .collect();
-            subs.push(Sub::Bind { param, key: b.key.clone(), target, source: b.rewritten.to_string(), id: b.id, vars });
+            let vars = b.vars.iter().map(|v| goofi_transport::var_of(view, v)).collect();
+            subs.push(Sub::Bind { param, key: b.key.clone(), source: b.rewritten.to_string(), id: b.id, vars });
         }
         let targets = manifest
             .outputs
@@ -218,7 +206,7 @@ impl Engine for AudioEngine {
     }
 
     fn dirty(&self) -> bool {
-        self.dirty || self.shared.replan.load(Ordering::Relaxed)
+        self.dirty || self.shared.replan.load(Ordering::Acquire)
     }
 
     fn library(&self) -> Vec<LibraryEntry> {
@@ -298,7 +286,7 @@ impl Engine for AudioEngine {
 
     fn settle(&mut self, view: &GraphView<'_>, _touched: &[Touched]) {
         self.dirty = false;
-        self.shared.replan.store(false, Ordering::Relaxed);
+        self.shared.replan.swap(false, Ordering::Acquire);
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
             let desired = self.desired_of(view, uid, nv);

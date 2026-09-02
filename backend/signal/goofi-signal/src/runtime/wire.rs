@@ -59,7 +59,7 @@ pub enum ParamValue {
         /// Graph-rewritten source: every `nd(..)` / `globals.*` term replaced by a variable the
         /// evaluator receives as a local.
         source: String,
-        vars: Vec<Var>,
+        vars: Vec<(VarName, Var)>,
         /// Whether an arrival on this binding also wakes `process()`. Inert on a `common.*` key.
         trigger: bool,
         /// The evaluator's handle for the source, compiled by the GRAPH so `set_source` can
@@ -69,24 +69,7 @@ pub enum ParamValue {
 }
 
 /// One variable of a rewritten expression, resolved by the graph (§5.3).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Var {
-    /// An `nd()` reference — the node subscribes and keeps a latest-wins mailbox.
-    Stream { name: VarName, service: ServiceName, event_id: EventId },
-    /// A `globals.*` reference — resolved by the graph and delivered inline.
-    Value { name: VarName, value: Param },
-    /// The graph could not resolve it; the node builds the binding error and falls back to the
-    /// literal.
-    Missing { name: VarName, reason: String },
-}
-
-impl Var {
-    pub fn name(&self) -> &str {
-        match self {
-            Var::Stream { name, .. } | Var::Value { name, .. } | Var::Missing { name, .. } => name,
-        }
-    }
-}
+pub use goofi_node::Var;
 
 pub use goofi_node::{NodeStage, Status};
 

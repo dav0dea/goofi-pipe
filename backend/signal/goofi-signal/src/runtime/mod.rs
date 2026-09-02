@@ -361,7 +361,7 @@ impl NodeRuntime {
         let triggering = match &value {
             ParamValue::Literal(_) => false,
             ParamValue::Expr { vars, trigger, .. } => {
-                *trigger && vars.iter().any(|v| matches!(v, Var::Value { .. }))
+                *trigger && vars.iter().any(|(_, v)| matches!(v, Var::Value(_)))
             }
         };
         // The record moves FIRST, so the initialization retry below replays the NEW value rather
@@ -479,7 +479,7 @@ impl NodeRuntime {
             let target = self.literal(&key).unwrap_or_else(|| Param::float(0.0, f64::NEG_INFINITY, f64::INFINITY));
             let now = self.ctx.now;
             let evaluator = self.evaluator.clone();
-            let evaluated = match self.bindings[&key].evaluate(evaluator.as_deref(), now, &target) {
+            let evaluated = match self.bindings[&key].expr.evaluate(evaluator.as_deref(), now, &target) {
                 Ok(value) => {
                     errors.extend(self.record_binding_error(&key, None));
                     value
