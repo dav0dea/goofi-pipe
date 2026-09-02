@@ -15,14 +15,12 @@ use goofi_signal::runtime::{
 };
 use goofi_transport::{door_service, iox_node, output_service, service_base, Doorbell, IoxNode};
 use goofi_node::{NodeManifest, OutputDecl, ParamKey, Params, SlotDecl};
-use goofi_signal::default_factory;
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 /// Long enough that a park is a real park, short enough that a broken retention fails fast.
 const MS200: Duration = Duration::from_millis(200);
 
 /// A node with one input and one output. Nothing runs it; the manifest is what the transport reads.
-#[derive(Default)]
 struct Passthrough;
 impl Node for Passthrough {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
@@ -147,7 +145,7 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
     let transport = Arc::new(IoxTransport::create(&instance(), Uid(4), 0, manifest()).unwrap());
     let mut node = NodeRuntime::new(
         manifest(),
-        default_factory::<Passthrough>(),
+        Box::new(Passthrough),
         manifest().default_params(),
         transport.clone(),
         NodeEnv::detached(),

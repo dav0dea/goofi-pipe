@@ -49,7 +49,7 @@ impl Drop for NodeHost {
 /// A [`goofi_signal_sdk::NodeFactory`] shared with the node's own thread, which is where the build happens.
 type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_signal_sdk::Node> + Send + Sync>;
 
-/// A runtime-registered type: the build half a [`crate::NodeClass`] carries for a built-in.
+/// A registered type: its manifest, its tier cell and how an instance is built.
 struct DynType {
     manifest: &'static NodeManifest,
     isolation: &'static IsolationCell,
@@ -69,6 +69,8 @@ pub struct SignalEngine {
     pub(crate) python: Option<crate::scan::Python>,
     /// What the last probe of each file decided, at the stamp it decided it.
     pub(crate) probed: HashMap<std::path::PathBuf, (goofi_node::Stamp, crate::scan::Probed)>,
+    /// Every built artifact loaded so far, by path: a library is opened once and never closed.
+    pub(crate) rust_loaded: HashMap<std::path::PathBuf, crate::scan::RustType>,
     /// Readies the drain collected; the settle that follows re-plans each from an empty base.
     pending_ready: Vec<Uid>,
     /// Sequences whose phase an ack completed; the settle that follows advances each.
@@ -90,14 +92,14 @@ impl SignalEngine {
             dyn_types: HashMap::new(),
             python: None,
             probed: HashMap::new(),
+            rust_loaded: HashMap::new(),
             pending_ready: Vec::new(),
             pending_advance: Vec::new(),
         }
     }
 
-    /// Register a type discovered at runtime; `manifest` leaks, once per type. A name another
-    /// runtime type held is REPLACED, because a rescan re-registers what it finds — answered as
-    /// `true`. A built-in's name is left alone with a warning.
+    /// Register a type; `manifest` leaks, once per type. A name another type held is REPLACED,
+    /// because a rescan re-registers what it finds — answered as `true`.
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
@@ -105,10 +107,6 @@ impl SignalEngine {
         isolation: &'static IsolationCell,
     ) -> bool {
         let name = manifest.type_name;
-        if crate::find(name).is_some() {
-            eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
-            return false;
-        }
         self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }).is_some()
     }
 
@@ -117,9 +115,6 @@ impl SignalEngine {
     }
 
     pub fn find_entry(&self, type_name: &str) -> Option<LibraryEntry> {
-        if let Some(c) = crate::find_class(type_name) {
-            return Some(LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
-        }
         self.dyn_types
             .get(type_name)
             .map(|dt| LibraryEntry { manifest: dt.manifest, isolation: dt.isolation })
@@ -370,14 +365,15 @@ impl Engine for SignalEngine {
         self.remove_dyn_type(type_name)
     }
 
+    fn rust_sdk(&self) -> Option<&'static str> {
+        Some(goofi_build::SIGNAL.name)
+    }
+
     fn library(&self) -> Vec<LibraryEntry> {
-        let builtin = crate::classes()
-            .map(|c| LibraryEntry { manifest: &c.manifest, isolation: c.isolation });
-        let dynamic = self
-            .dyn_types
+        self.dyn_types
             .values()
-            .map(|dt| LibraryEntry { manifest: dt.manifest, isolation: dt.isolation });
-        builtin.chain(dynamic).collect()
+            .map(|dt| LibraryEntry { manifest: dt.manifest, isolation: dt.isolation })
+            .collect()
     }
 
     fn normalize_params(
@@ -399,14 +395,12 @@ impl Engine for SignalEngine {
         generation: u64,
         params: &ParamGroups,
     ) -> Option<String> {
-        let build: runtime::NodeBuild = if let Some(c) = crate::find_class(type_name) {
-            let f = c.factory;
-            Box::new(move |_| f())
-        } else if let Some(dt) = self.dyn_types.get(type_name) {
-            let f = dt.factory.clone();
-            Box::new(move |p| f(p))
-        } else {
-            return Some(format!("no node type `{type_name}` in the signal library"));
+        let build: runtime::NodeBuild = match self.dyn_types.get(type_name) {
+            Some(dt) => {
+                let f = dt.factory.clone();
+                Box::new(move |p| f(p))
+            }
+            None => return Some(format!("no node type `{type_name}` in the signal library")),
         };
         let manifest = self.find_entry(type_name).expect("resolved above").manifest;
         let halt = Arc::new(runtime::Halt::default());

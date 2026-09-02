@@ -5,12 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use goofi_core::probe;
-use goofi_node::{leak_manifest, type_name_of, Isolation, IsolationCell, NodeManifest};
-
-/// Parse the introspection JSON.
-pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
-    serde_json::from_str(json).map_err(|e| e.to_string())
-}
+use goofi_node::{illegal_slot, leak_manifest, parse_introspection, type_name_of, Isolation, IsolationCell, NodeManifest};
 
 /// A discovered Python node type: its manifest, its tier cell — leaked per type, and written at
 /// runtime when a node re-enables the GIL — plus the routing flag (`gil_safe` → in-process).
@@ -86,9 +81,7 @@ pub fn discover_one(
     let Some(type_name) = type_name_of(path) else { return Discovery::Skip };
     match probe_introspect(path, python) {
         Ok(intro) => {
-            let slots = intro.inputs.iter().map(|s| &s.name).chain(intro.outputs.iter().map(|s| &s.name));
-            if let Some(bad) = slots.into_iter().find(|n| !goofi_core::globals::is_valid_name(n)) {
-                let reason = format!("slot `{bad}` is not a legal name: {}", goofi_core::globals::NAME_RULE);
+            if let Some(reason) = illegal_slot(&intro) {
                 return Discovery::Unavailable { type_name, reason };
             }
             let manifest = leak_manifest(type_name, &intro, category);

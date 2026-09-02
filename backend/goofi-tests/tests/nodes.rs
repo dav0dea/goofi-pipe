@@ -18,6 +18,27 @@ fn write_node(root: &Path, file: &str, value: &str) {
     std::fs::write(dir.join(file), source).unwrap();
 }
 
+/// The same producer in Rust — built through cargo into the cache a scan reads.
+fn write_rust_node(root: &Path, file: &str, value: &str) {
+    let dir = root.join("nodes_signal");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = format!(
+        "use goofi_core::{{Data, Meta, SlotType}};\n\
+         use goofi_signal_sdk::{{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, Params}};\n\n\
+         #[derive(Default)]\nstruct Emit;\n\n\
+         impl Node for Emit {{\n    \
+         fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {{\n        \
+         let bytes = {value}f32.to_le_bytes().to_vec();\n        \
+         o.set(\"out\", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);\n        \
+         Ok(())\n    }}\n}}\n\n\
+         static OUTPUTS: &[OutputDecl] = &[OutputDecl {{ name: \"out\", kind: SlotType::Array }}];\n\
+         static MANIFEST: Manifest = Manifest {{\n    \
+         category: \"test\", doc: \"emits a number\", inputs: &[], outputs: OUTPUTS, params: &[], producer: true,\n}};\n\n\
+         goofi_signal_sdk::export!(Emit, MANIFEST);\n"
+    );
+    std::fs::write(dir.join(file), source).unwrap();
+}
+
 fn first_f32(d: &Data) -> f32 {
     match d.value() {
         goofi_core::Value::Array(s) => f32::from_le_bytes(s.as_bytes()[0..4].try_into().unwrap()),
@@ -156,4 +177,55 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
     // `new` swaps in an empty workspace, so a type the previous patch brought stops being addable.
     opened.call("session new", j!({}));
     opened.refuse("node add", j!({ "type": "MyThing" }));
+}
+
+#[test]
+fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
+    let g = Goofi::new();
+    // The shipped nodes came from the artifacts built into the binary: no cargo ran for them, and
+    // each is SOURCE in the shipped root, where `library get` finds it.
+    let r = g.call("library get", j!({ "type": "Oscillator" }));
+    assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
+    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{r}");
+    let shipped_osc = std::path::PathBuf::from(r["path"].as_str().unwrap());
+
+    // An authored file builds through cargo into the same cache, and runs.
+    let mount = g.state.mount();
+    write_rust_node(&mount, "Twice.rs", "2.0");
+    assert_eq!(rescan(&g)["added"], j!(["Twice"]), "the file becomes a type");
+    let live = g.add("Twice");
+    emits(&g, live, 2.0);
+    write_rust_node(&mount, "Twice.rs", "3.0");
+    assert_eq!(rescan(&g)["changed"], j!(["Twice"]), "an edited file reports as changed");
+    emits(&g, live, 3.0); // the running node is the new code
+
+    // A file that does not compile greys the type out with rustc's own words, and the instance
+    // built from the last good file runs on.
+    std::fs::write(mount.join("nodes_signal").join("Twice.rs"), "fn broken( {\n").unwrap();
+    rescan(&g);
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "Twice").cloned().expect("the type stays listed, greyed");
+    assert_eq!(row["available"], false, "{row}");
+    assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
+    let why = g.refuse("node add", j!({ "type": "Twice" }));
+    assert!(why.contains("unavailable"), "{why}");
+    emits(&g, live, 3.0);
+    write_rust_node(&mount, "Twice.rs", "3.0");
+    assert_eq!(rescan(&g)["changed"], j!(["Twice"]), "the fix is a change, built from the cache");
+
+    // A shipped file copied into the patch shadows it, and the palette says so.
+    std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();
+    assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("Oscillator")));
+    let source = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "Oscillator").unwrap()["source"].clone();
+    assert_eq!(source, "patch");
+
+    // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("rust.gfi");
+    g.call("session save", j!({ "path": target.to_string_lossy() }));
+    let opened = Goofi::new();
+    opened.call("session load", j!({ "path": target.to_string_lossy() }));
+    let uid = opened.state.graph.lock().unwrap().node_uids()[0];
+    emits(&opened, uid, 3.0);
 }

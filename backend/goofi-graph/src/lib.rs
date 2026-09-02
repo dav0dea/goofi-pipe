@@ -718,6 +718,11 @@ impl Graph {
         self.unavailable.remove(type_name).is_some() || had
     }
 
+    /// Every engine that builds `.rs` node files, with the SDK crate it builds them against.
+    pub fn rust_sdks(&self) -> Vec<(&'static str, &'static str)> {
+        self.engines.iter().filter_map(|e| e.rust_sdk().map(|sdk| (e.id(), sdk))).collect()
+    }
+
     /// The engine whose library resolves `type_name`.
     pub fn type_engine(&self, type_name: &str) -> Option<&'static str> {
         self.library_entry(type_name).map(|(id, _)| id)

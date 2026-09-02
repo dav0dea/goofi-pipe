@@ -2,9 +2,7 @@
 //! The rank never changes.
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
-use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, NodeClass};
-use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
 
 #[derive(Default)]
 struct Buffer {
@@ -98,18 +96,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     kind: SlotType::Array,
 }];
 
-inventory::submit! {
-    NodeClass {
-        manifest: NodeManifest {
-            type_name: "Buffer",
-            category: "signal",
-            doc: "Rolling window along one axis: keeps the most recent `size` entries, rank unchanged.",
-            inputs: INPUTS,
-            outputs: OUTPUTS,
-            params: PARAMS,
-            producer: false,
-        },
-        isolation: &goofi_node::NATIVE,
-        factory: default_factory::<Buffer>,
-    }
-}
+static MANIFEST: Manifest = Manifest {
+    category: "signal",
+    doc: "Rolling window along one axis: keeps the most recent `size` entries, rank unchanged.",
+    inputs: INPUTS,
+    outputs: OUTPUTS,
+    params: PARAMS,
+    producer: false,
+};
+
+goofi_signal_sdk::export!(Buffer, MANIFEST);

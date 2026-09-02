@@ -30,7 +30,7 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
 
     let types = c.call("library list", j!({})).await["types"].as_array().cloned().unwrap();
     for want in ["Oscillator", "Buffer", "DiscoveredPyNode"] {
-        // A crate nothing NAMES is a crate rustc drops, taking its `inventory` registrations with it.
+        // Two shipped nodes, loaded from the artifacts built into the binary, beside a scanned one.
         assert!(types.iter().any(|t| t["type"] == want), "`{want}` is missing: {types:?}");
     }
     assert!(!types.iter().any(|t| t["type"] == "_TestEcho"), "test nodes stay out of the palette");

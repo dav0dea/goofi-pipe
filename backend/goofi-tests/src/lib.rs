@@ -1,6 +1,7 @@
 //! The test harness — one live goofi, driven through [`Goofi::call`], the entry `/control` and
 //! `/mcp` are transports over. Observation is [`Goofi::call`], [`Events`] and [`OutputProbe`].
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -9,6 +10,7 @@ use serde_json::{json, Value};
 
 pub use goofi_graph::Uid;
 
+pub mod fixtures;
 mod probe;
 pub use probe::OutputProbe;
 pub use serde_json::json as j;
@@ -58,13 +60,27 @@ impl Goofi {
             // one known POSIX shell, so a fish or a loud profile cannot fail a test command.
             #[cfg(unix)]
             std::env::set_var("SHELL", "/bin/sh");
+            // The build dir goofi's own build pre-warmed, so a shipped artifact is found and an
+            // authored node compiles against a target that already holds the SDK.
+            if std::env::var_os("GOOFI_BUILD_DIR").is_none() {
+                if let Some(target) = std::env::current_exe().ok().and_then(|e| e.ancestors().nth(3).map(Path::to_path_buf)) {
+                    std::env::set_var("GOOFI_BUILD_DIR", target.join("goofi-build"));
+                }
+            }
         });
         let state = AppState::new(headless);
-        // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
-        // `.py` file as unavailable, which is what a test that needs one then reports.
-        if let Some(subproc) = find_python() {
-            goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
-                .set_python(goofi_signal::Python { subproc, free_threaded: free_threaded_python() });
+        {
+            let mut g = state.graph.lock().unwrap();
+            fixtures::register(&mut g);
+            // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
+            // `.py` file as unavailable, which is what a test that needs one then reports.
+            if let Some(subproc) = find_python() {
+                goofi_bridge::signal_engine(&mut g)
+                    .set_python(goofi_signal::Python { subproc, free_threaded: free_threaded_python() });
+            }
+            // The shipped tree is a root like any other: scanned at boot, as the CLI scans it.
+            let patch = state.mount();
+            goofi_bridge::rescan(&state, &mut g, &patch);
         }
         goofi_bridge::spawn_workers(&state);
         Goofi { state, actor: "test".into(), patience: WAIT }

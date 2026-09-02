@@ -4,9 +4,7 @@
 use std::sync::Arc;
 
 use goofi_core::{Axis, Coord, Data, SlotType};
-use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, NodeClass};
-use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
 use rustfft::{num_complex::Complex32, FftPlanner};
 
 struct Psd {
@@ -124,18 +122,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     kind: SlotType::Array,
 }];
 
-inventory::submit! {
-    NodeClass {
-        manifest: NodeManifest {
-            type_name: "Psd",
-            category: "signal",
-            doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
-            inputs: INPUTS,
-            outputs: OUTPUTS,
-            params: PARAMS,
-            producer: false,
-        },
-        isolation: &goofi_node::NATIVE,
-        factory: default_factory::<Psd>,
-    }
-}
+static MANIFEST: Manifest = Manifest {
+    category: "signal",
+    doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
+    inputs: INPUTS,
+    outputs: OUTPUTS,
+    params: PARAMS,
+    producer: false,
+};
+
+goofi_signal_sdk::export!(Psd, MANIFEST);

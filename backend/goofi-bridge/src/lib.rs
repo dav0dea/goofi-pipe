@@ -76,8 +76,9 @@ pub struct AppState {
     /// Liveness policy for `/data` sockets, injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
-    /// The node source roots beyond the patch's own, in precedence order — each holds a
-    /// `nodes_<engine>/` per engine. The patch's workspace is scanned last, and wins a name.
+    /// The node source roots beyond the patch's own, in precedence order — the shipped tree
+    /// first, then each `--extra-nodes` — each holding a `nodes_<engine>/` per engine. The
+    /// patch's workspace is scanned last, and wins a name.
     pub roots: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp: the baseline the next [`rescan`]
     /// diffs against, and the only list it removes from.
@@ -160,7 +161,7 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_graph::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
-            roots: Vec::new(),
+            roots: vec![materialise_shipped()],
             node_index: Arc::new(Mutex::new(Default::default())),
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
@@ -527,11 +528,51 @@ pub async fn serve_app(
     axum::serve(listener, app(state, spa, dev_routes)).await
 }
 
-/// The composed graph the app boots: the model plus the signal engine, registered first. The
-/// one anchor that makes the linker keep goofi-nodes' inventory registrations lives here, at the
-/// composition root.
+include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
+
+/// The shipped node tree, written under the home for this version — every source beside the
+/// artifact goofi's own build made of it — so a shipped node loads with no toolchain and
+/// `library get` finds its file. It is a root like any other; this one comes pre-warmed.
+fn materialise_shipped() -> PathBuf {
+    let home = goofi_core::home::dir();
+    let root = home.join("shipped").join(goofi_build::VERSION);
+    for (rel, bytes) in SHIPPED_SOURCES {
+        goofi_build::write_if_changed(&root.join(rel), bytes);
+    }
+    let base = goofi_build::base_dir(&home);
+    for (key, file, bytes) in SHIPPED_ARTIFACTS {
+        goofi_build::write_if_changed(&base.join("out").join(key).join(file), bytes);
+    }
+    root
+}
+
+/// Build every `.rs` node file under every root and `patch` BEFORE the graph lock is taken: a
+/// build takes seconds, and only the caller who asked should wait for it. The scan that follows
+/// finds each artifact made, or the memo of why it was not.
+pub fn prebuild(state: &AppState, patch: &std::path::Path) {
+    let folders: Vec<(String, &'static goofi_build::Sdk)> = state
+        .graph
+        .lock()
+        .unwrap()
+        .rust_sdks()
+        .into_iter()
+        .filter_map(|(id, sdk)| goofi_build::sdk(sdk).map(|s| (format!("nodes_{id}"), s)))
+        .collect();
+    let base = goofi_build::base_dir(&goofi_core::home::dir());
+    for root in state.roots.iter().map(PathBuf::as_path).chain(std::iter::once(patch)) {
+        for (folder, sdk) in &folders {
+            let Ok(entries) = std::fs::read_dir(root.join(folder)) else { continue };
+            for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+                if path.extension().is_some_and(|e| e == "rs") && goofi_node::type_name_of(&path).is_some() {
+                    let _ = goofi_build::ensure(sdk, &path, &base);
+                }
+            }
+        }
+    }
+}
+
+/// The composed graph the app boots: the model plus the signal engine, registered first.
 pub fn fresh_graph() -> Graph {
-    let _ = goofi_nodes::native_node_count();
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
         g.instance().to_string(),

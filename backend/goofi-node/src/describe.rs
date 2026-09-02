@@ -36,6 +36,23 @@ fn camel(stem: &str) -> String {
         .collect()
 }
 
+/// Parse the introspection JSON.
+pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
+    serde_json::from_str(json).map_err(|e| e.to_string())
+}
+
+/// The first slot name the name rule refuses, phrased for the palette — a reference spells
+/// `node.slot` and an expression reads a slot as an attribute, so a bad name never registers.
+pub fn illegal_slot(intro: &probe::Introspection) -> Option<String> {
+    intro
+        .inputs
+        .iter()
+        .map(|s| &s.name)
+        .chain(intro.outputs.iter().map(|s| &s.name))
+        .find(|n| !goofi_core::globals::is_valid_name(n))
+        .map(|bad| format!("slot `{bad}` is not a legal name: {}", goofi_core::globals::NAME_RULE))
+}
+
 /// Leak a `'static &str` for the catalog's lifetime.
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())

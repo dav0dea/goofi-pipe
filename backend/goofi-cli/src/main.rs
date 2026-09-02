@@ -398,9 +398,7 @@ async fn run(
         subproc: subproc_python.clone(),
         free_threaded: free_threaded_python(),
     });
-    if !state.roots.is_empty() {
-        boot_scan(&state);
-    }
+    boot_scan(&state);
 
     let code = if list_nodes {
         let names = goofi_bridge::catalog_type_names(&state.graph.lock().unwrap());
@@ -648,6 +646,7 @@ const NO_PYTHON_NOTE: &str = " (built without the `python` feature — node disc
 /// The boot scan, reported. It runs the bridge's own `rescan`, so the baseline the first refresh
 /// diffs against IS this scan.
 fn boot_scan(state: &AppState) {
+    goofi_bridge::prebuild(state, &state.mount());
     let (found, dirs) = {
         let mut g = state.graph.lock().unwrap();
         let patch = state.mount();

@@ -1,0 +1,13 @@
+[package]
+name = "goofi-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The build script hashes the SDK sources it embeds, so a changed SDK is a new cache key.
+[build-dependencies]
+sha2 = "0.10"
+
+[dependencies]
+libloading = "0.8"
+sha2 = "0.10"

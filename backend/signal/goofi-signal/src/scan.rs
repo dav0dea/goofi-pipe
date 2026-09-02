@@ -1,12 +1,21 @@
 //! The signal engine's scan of one `nodes_signal/` folder: a `.py` file is probed in the
-//! interpreter that will run it and registered on the tier its imports allow.
+//! interpreter that will run it and registered on the tier its imports allow; an `.rs` file is
+//! built through goofi-build — or found built — and loaded behind its version symbol.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use goofi_node::{Scanned, ScannedType, Stamp};
+use goofi_node::{Isolation, NodeManifest, Scanned, ScannedType, Stamp};
 use goofi_python::{Discovered, Discovery};
+use goofi_signal_sdk::host::Loaded;
 
 use crate::SignalEngine;
+
+/// One loaded Rust type: the manifest its `goofi_describe` leaked and its vtable.
+pub(crate) struct RustType {
+    manifest: &'static NodeManifest,
+    loaded: Arc<Loaded>,
+}
 
 /// The interpreters the scan probes and runs with. The subprocess one is always there; the
 /// free-threaded one only when the host links it, and it is what routes a file in-process.
@@ -39,6 +48,11 @@ pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
         }
     };
     paths.sort();
+    let rust: Vec<(PathBuf, String, Option<Stamp>)> = paths
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
+        .filter_map(|p| goofi_node::type_name_of(p).map(|name| (p.clone(), name, stamp(p))))
+        .collect();
     let paths: Vec<(PathBuf, String, Option<Stamp>)> = paths
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "py"))
@@ -77,7 +91,50 @@ pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
         let outcome = engine.register(&type_name, probed);
         out.push(ScannedType { type_name, stamp, outcome });
     }
+    for (path, type_name, stamp) in rust {
+        let outcome = engine.register_rust(&path, &type_name);
+        out.push(ScannedType { type_name, stamp, outcome });
+    }
     out
+}
+
+impl SignalEngine {
+    /// An `.rs` file: built, or already built for these bytes, then loaded — a library that will
+    /// not load displaces a stale registration and greys the type out with the reason.
+    fn register_rust(&mut self, path: &Path, type_name: &str) -> Scanned {
+        let base = goofi_build::base_dir(&goofi_core::home::dir());
+        let loaded = match goofi_build::ensure(&goofi_build::SIGNAL, path, &base) {
+            goofi_build::Outcome::Built(artifact) => self.load_rust(&artifact, type_name),
+            goofi_build::Outcome::Failed(why) => Err(why),
+            goofi_build::Outcome::NeedsCargo => {
+                Err("needs `cargo` to build — install a Rust toolchain, or use a shipped node".into())
+            }
+        };
+        match loaded {
+            Ok(replaced) => Scanned::Registered { isolation: Isolation::Native, replaced },
+            Err(reason) => {
+                self.remove_dyn_type(type_name);
+                Scanned::Unavailable(reason)
+            }
+        }
+    }
+
+    fn load_rust(&mut self, artifact: &Path, type_name: &str) -> Result<bool, String> {
+        if !self.rust_loaded.contains_key(artifact) {
+            let opened = goofi_build::open(artifact)?;
+            let intro = goofi_node::parse_introspection(&opened.describe)?;
+            if let Some(reason) = goofi_node::illegal_slot(&intro) {
+                return Err(reason);
+            }
+            let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro, "signal");
+            let loaded = unsafe { Loaded::open(opened.library, manifest) }?;
+            self.rust_loaded.insert(artifact.to_path_buf(), RustType { manifest, loaded: Arc::new(loaded) });
+        }
+        let RustType { manifest, loaded } = &self.rust_loaded[artifact];
+        let (manifest, loaded) = (*manifest, loaded.clone());
+        let factory: goofi_signal_sdk::NodeFactory = Box::new(move |_| loaded.instantiate());
+        Ok(self.register_dyn_type(manifest, factory, &goofi_node::NATIVE))
+    }
 }
 
 impl SignalEngine {

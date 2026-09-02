@@ -8,8 +8,6 @@ use goofi_bridge::ops::{find, registry, typescript};
 use goofi_bridge::vocab;
 use goofi_core::{Data, Meta, SlotType, Value as DataValue};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
-// Linked for its side effect: a crate nothing NAMES is a crate rustc drops, catalog and all.
-use goofi_nodes as _;
 use goofi_tests::{hex, j, Client, Goofi};
 use serde_json::Value;
 
@@ -308,8 +306,10 @@ fn a_malformed_frame_is_refused_rather_than_trusted() {
 #[test]
 fn every_slot_name_is_letters_and_digits() {
     // A reference spells `node.slot`, and an expression reads a slot as an attribute: one rule,
-    // held by every shipped manifest, so a bad name cannot enter through a Rust node.
-    for m in goofi_signal::catalog() {
+    // held by every manifest a fresh goofi offers — the shipped nodes and the fixtures.
+    let g = Goofi::new();
+    let graph = g.state.graph.lock().unwrap();
+    for m in graph.library_manifests() {
         let slots = m.inputs.iter().map(|s| s.name).chain(m.outputs.iter().map(|o| o.name));
         for slot in slots {
             assert!(goofi_core::globals::is_valid_name(slot),
@@ -322,7 +322,7 @@ fn every_slot_name_is_letters_and_digits() {
     }
     // The graph mints a display name from the type, `_Test*` included: what it mints must pass
     // its own rule, or a node is born under a name nothing can reference.
-    for m in goofi_signal::catalog() {
+    for m in graph.library_manifests() {
         let minted = format!("{}0", goofi_graph::name_base(m.type_name));
         assert!(goofi_core::globals::is_valid_name(&minted), "{}: minted `{minted}`", m.type_name);
     }
@@ -332,8 +332,10 @@ fn every_slot_name_is_letters_and_digits() {
 fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
     // Cheap and evaluator-free: a typo'd `globals.defualt_ufreq` compiles, binds, then errors on every
     // instance. Read AS EACH TYPE SEES IT, since a declaration may condition on the manifest.
-    let decls = goofi_signal::catalog().flat_map(|m| {
-        m.params.iter().copied().chain(goofi_signal::common_decls(m)).map(move |d| (m.type_name, d))
+    let g = Goofi::new();
+    let graph = g.state.graph.lock().unwrap();
+    let decls = graph.library_manifests().into_iter().flat_map(|m| {
+        m.params.iter().copied().chain(graph.universal_decls_of(m.type_name)).map(move |d| (m.type_name, d))
     });
     for (owner, decl) in decls {
         let Some(expr) = decl.expression else { continue };
@@ -351,13 +353,14 @@ fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
 fn every_test_node_is_registered_and_hidden_from_the_palette() {
     // Both or neither: registering without the `_` prefix ships a product node, and the prefix
     // without registration is invisible to the tests it exists for.
-    let names: Vec<&str> = goofi_signal::catalog().map(|m| m.type_name).collect();
+    let g = Goofi::new();
+    let names: Vec<&str> = g.state.graph.lock().unwrap().library_manifests().into_iter().map(|m| m.type_name).collect();
     for want in ["_TestEcho", "_TestSink", "_TestFail", "_TestPanic", "_TestSetupFail", "_TestSlow",
                  "_TestCounter", "_TestRequired", "_TestPicker", "_TestMute", "_TestConst"] {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");
         assert!(want.starts_with('_'), "{want} would show in the palette");
     }
-    let palette = Goofi::new().state.call("library list", j!({}), "t").unwrap();
+    let palette = g.state.call("library list", j!({}), "t").unwrap();
     let listed: Vec<&str> = palette["types"].as_array().unwrap().iter()
         .map(|t| t["type"].as_str().unwrap()).collect();
     assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");

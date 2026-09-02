@@ -2,9 +2,7 @@
 //! Stateful rather than per-frame: a filter restarted on each block would ring at every boundary.
 
 use goofi_core::{resolve_axis, Data, SlotType};
-use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, NodeClass};
-use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
 
 /// One second-order section, normalized so `a0 == 1`.
 #[derive(Clone, Copy, Default)]
@@ -203,18 +201,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     kind: SlotType::Array,
 }];
 
-inventory::submit! {
-    NodeClass {
-        manifest: NodeManifest {
-            type_name: "Filter",
-            category: "signal",
-            doc: "Streaming Butterworth bandpass/lowpass/highpass/notch along one axis, shape unchanged.",
-            inputs: INPUTS,
-            outputs: OUTPUTS,
-            params: PARAMS,
-            producer: false,
-        },
-        isolation: &goofi_node::NATIVE,
-        factory: default_factory::<Filter>,
-    }
-}
+static MANIFEST: Manifest = Manifest {
+    category: "signal",
+    doc: "Streaming Butterworth bandpass/lowpass/highpass/notch along one axis, shape unchanged.",
+    inputs: INPUTS,
+    outputs: OUTPUTS,
+    params: PARAMS,
+    producer: false,
+};
+
+goofi_signal_sdk::export!(Filter, MANIFEST);

@@ -1,10 +1,11 @@
-//! Build the SPA this crate serves, and embed it.
+//! Build the SPA this crate serves and the shipped node folders, and embed both.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
+    prebuild_nodes();
     // Outside every early return below, or the headless verdict outlives the change that revoked it.
     println!("cargo:rerun-if-env-changed=GOOFI_HEADLESS");
     let frontend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../frontend");
@@ -14,6 +15,57 @@ fn main() {
     }
     sync_frontend(&frontend);
     embed_spa(&frontend.join("build"), false);
+}
+
+/// Build every shipped `nodes_<engine>/*.rs` through the one pipeline a scan runs, into a build
+/// dir the test harness shares, and emit `$OUT_DIR/shipped.rs`: every shipped source, and every
+/// artifact under the cache key a scan will look it up by. A shipped node that does not compile
+/// fails THIS build, so a binary never ships a node it cannot load.
+fn prebuild_nodes() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    // OUT_DIR is `<target>/<profile>/build/<pkg>-<hash>/out`; four levels up is `<target>`.
+    let base = out.ancestors().nth(4).expect("a cargo OUT_DIR").join("goofi-build");
+    let (mut sources, mut artifacts) = (String::new(), String::new());
+    for (engine, sdk) in [("signal", &goofi_build::SIGNAL)] {
+        let dir = root.join(format!("nodes_{engine}"));
+        println!("cargo:rerun-if-changed={}", dir.display());
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_file()).collect();
+        paths.sort();
+        for path in paths {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            sources += &format!("    ({:?}, include_bytes!({:?})),
+", format!("nodes_{engine}/{name}"), path.display().to_string());
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            match goofi_build::ensure(sdk, &path, &base) {
+                goofi_build::Outcome::Built(artifact) => {
+                    println!("cargo:rerun-if-changed={}", artifact.display());
+                    let key = artifact.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+                    let file = artifact.file_name().unwrap().to_string_lossy().into_owned();
+                    artifacts += &format!("    ({key:?}, {file:?}, include_bytes!({:?})),
+", artifact.display().to_string());
+                }
+                goofi_build::Outcome::Failed(why) => panic!("the shipped node {} does not build:
+{why}", path.display()),
+                goofi_build::Outcome::NeedsCargo => panic!("no `cargo` to build the shipped nodes with"),
+            }
+        }
+    }
+    std::fs::write(
+        out.join("shipped.rs"),
+        format!(
+            "pub static SHIPPED_SOURCES: &[(&str, &[u8])] = &[
+{sources}];
+             pub static SHIPPED_ARTIFACTS: &[(&str, &str, &[u8])] = &[
+{artifacts}];
+"
+        ),
+    )
+    .expect("write shipped.rs");
 }
 
 /// Whether this is a headless build; only a truthy value opts in, so `=0` asks for the app.

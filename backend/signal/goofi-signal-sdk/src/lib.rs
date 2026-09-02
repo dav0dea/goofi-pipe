@@ -1,11 +1,29 @@
-//! The signal node's author contract: the `Node` trait a signal node implements, and the views it
-//! is handed — shared by the engine that runs one and the file that authors one.
+//! The signal node's author contract: the `Node` trait a signal node implements, the views it is
+//! handed, and the C boundary a built node crosses — shared by the engine that runs one and the
+//! file that authors one, so the two halves cannot drift.
 
 use std::fmt;
 
 use goofi_core::{Data, Param};
-use goofi_node::{ParamGroups, ParamKey, Params};
+use goofi_node::ParamGroups;
 use indexmap::IndexMap;
+
+pub mod abi;
+#[cfg(feature = "host")]
+pub mod host;
+
+pub use goofi_core;
+pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl};
+
+/// What a node file declares: a `NodeManifest` less the type name, which is the FILE's.
+pub struct Manifest {
+    pub category: &'static str,
+    pub doc: &'static str,
+    pub inputs: &'static [SlotDecl],
+    pub outputs: &'static [OutputDecl],
+    pub params: &'static [ParamDecl],
+    pub producer: bool,
+}
 
 /// A signal node's failure, propagated to the health plane rather than panicking.
 #[derive(Debug, Clone)]

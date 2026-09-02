@@ -189,6 +189,7 @@ pub(crate) fn library_refresh(
     _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
+    prebuild(state, &state.mount());
     let result = {
         let mut g = state.graph.lock().unwrap();
         let (diff, _) = rescan(state, &mut g, &state.mount());
@@ -1110,13 +1111,14 @@ fn load_patch(
 ) -> Result<Value, String> {
     // Read OFF the graph lock, as the hello does: the roster's config half is a disk read.
     let agents = goofi_core::home::agents();
+    // Every source mounts FRESH, and the live mount is swapped only once the manifest has parsed,
+    // so a refused load leaves the open patch untouched on both planes. Staged and built off the
+    // lock: the archive's own Rust nodes may take seconds to build.
+    let fresh = new_mount();
+    let (content, from_path) = stage_load(&fresh, payload).inspect_err(|_| remove_mount(&fresh))?;
+    prebuild(state, &fresh);
     let result = {
         let mut g = state.graph.lock().unwrap();
-        // Every source mounts FRESH, and the live mount is swapped only once the manifest has
-        // parsed, so a refused load leaves the open patch untouched on both planes.
-        let fresh = new_mount();
-        let (content, from_path) =
-            stage_load(&fresh, payload).inspect_err(|_| remove_mount(&fresh))?;
         // ORDER is load-bearing: the types the patch SHIPS are registered before the manifest
         // resolves, or the unknown-type gate fires on the nodes the archive brought.
         rescan(state, &mut g, &fresh);

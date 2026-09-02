@@ -3,9 +3,7 @@
 
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
-use goofi_node::{ExprDecl, ExprMode, NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params};
-use goofi_signal::{default_factory, NodeClass};
-use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal_sdk::{ExprDecl, ExprMode, Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy)]
@@ -165,18 +163,13 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
     kind: SlotType::Array,
 }];
 
-inventory::submit! {
-    NodeClass {
-        manifest: NodeManifest {
-            type_name: "Oscillator",
-            category: "inputs",
-            doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
-            inputs: &[],
-            outputs: OUTPUTS,
-            params: PARAMS,
-            producer: true,
-        },
-        isolation: &goofi_node::NATIVE,
-        factory: default_factory::<Oscillator>,
-    }
-}
+static MANIFEST: Manifest = Manifest {
+    category: "inputs",
+    doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
+    inputs: &[],
+    outputs: OUTPUTS,
+    params: PARAMS,
+    producer: true,
+};
+
+goofi_signal_sdk::export!(Oscillator, MANIFEST);

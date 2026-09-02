@@ -1,9 +1,9 @@
-//! The signal engine: the runtime behind `goofi_signal_sdk::Node`, the compile-time class
-//! inventory, and the universal `common` scheduling group.
+//! The signal engine: the runtime behind `goofi_signal_sdk::Node`, its scan of a node folder,
+//! and the universal `common` scheduling group.
 
 use goofi_core::Param;
 use goofi_node::{param, NodeManifest, ParamDecl, ParamGroups, ParamKey, Params, ParamSpec};
-use goofi_node::{ExprDecl, ExprMode, IsolationCell};
+use goofi_node::{ExprDecl, ExprMode};
 use goofi_signal_sdk::{Node, NodeCtx, NodeError, NodeResult};
 
 mod engine;
@@ -180,36 +180,4 @@ pub fn with_common(params: ParamGroups, m: &NodeManifest) -> ParamGroups {
         }
     }
     merged
-}
-
-/// The generic node factory a [`NodeClass`] registers: a default instance, type-erased.
-pub fn default_factory<T: Node + Default + 'static>() -> Box<dyn Node> {
-    Box::new(T::default())
-}
-
-/// A compile-time node registration via `inventory`: the shared manifest plus the build half —
-/// the factory and the tier cell — which are the engine's business rather than the manifest's.
-pub struct NodeClass {
-    pub manifest: NodeManifest,
-    pub isolation: &'static IsolationCell,
-    /// Build a default instance, type-erased.
-    pub factory: fn() -> Box<dyn Node>,
-}
-
-inventory::collect!(NodeClass);
-
-pub fn catalog() -> impl Iterator<Item = &'static NodeManifest> {
-    classes().map(|c| &c.manifest)
-}
-
-pub fn classes() -> impl Iterator<Item = &'static NodeClass> {
-    inventory::iter::<NodeClass>()
-}
-
-pub fn find(type_name: &str) -> Option<&'static NodeManifest> {
-    find_class(type_name).map(|c| &c.manifest)
-}
-
-pub fn find_class(type_name: &str) -> Option<&'static NodeClass> {
-    inventory::iter::<NodeClass>().find(|c| c.manifest.type_name == type_name)
 }

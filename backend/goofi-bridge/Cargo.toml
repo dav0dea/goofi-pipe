@@ -9,6 +9,8 @@ license.workspace = true
 # cannot make provisioning depend on the build it provisions.
 [build-dependencies]
 goofi-init = { path = "../goofi-init" }
+# The node pipeline, run here over the shipped folders so the artifacts ship inside the binary.
+goofi-build = { path = "../goofi-build" }
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }
@@ -18,9 +20,8 @@ goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
 goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
 goofi-transport = { path = "../goofi-transport" }
-# The native node library, linked here at the composition root — `fresh_graph`'s anchor is what
-# keeps its inventory registrations out of the linker's dead-code pass.
-goofi-nodes = { path = "../signal/goofi-nodes" }
+# The same pipeline at run time: where the artifacts live, and a build before the lock.
+goofi-build = { path = "../goofi-build" }
 goofi-view = { path = "../goofi-view" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
@@ -44,6 +45,4 @@ portable-pty = "0.9"
 libc = "0.2"
 
 [dev-dependencies]
-# Flips the `_Test*` fixtures on for test builds only; a release build never sees them.
-goofi-nodes = { path = "../signal/goofi-nodes", features = ["test-nodes"] }
 tempfile = "3"

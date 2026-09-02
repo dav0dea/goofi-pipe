@@ -24,9 +24,6 @@ goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
 goofi-node = { path = "../goofi-node" }
 goofi-transport = { path = "../goofi-transport" }
 goofi-view = { path = "../goofi-view" }
-# The `_Test*` fixtures the suite drives. The feature is what puts them in the catalog; a release
-# build of goofi-nodes leaves them out entirely.
-goofi-nodes = { path = "../signal/goofi-nodes", features = ["test-nodes"] }
 # The manager side of both Python tiers. `subproc` is unconditional — it only SPAWNS an
 # interpreter — so its suite runs in the default build.
 goofi-python = { path = "../signal/goofi-python" }
@@ -59,8 +56,6 @@ tempfile = "3"
 bytes = "1"
 # The Meta map type the codec round-trips.
 indexmap = "2"
-# The node catalog is an `inventory` registry, and one suite registers into it.
-inventory = "0.3"
 # The golden compares msgpack meta SEMANTICALLY — the two encoders are free to order a map
 # differently, and only a decoded comparison can say so.
 rmpv = "1"

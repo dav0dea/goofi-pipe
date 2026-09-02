@@ -1,12 +1,47 @@
 //! Deterministic `_`-prefixed test nodes that every suite can reach, kept out of the palette by
-//! the prefix. Keep this set SMALL: a node earns a place only for a runtime behaviour.
+//! the prefix and registered at harness boot through the one door a discovered type takes. Keep
+//! this set SMALL: a node earns a place only for a runtime behaviour.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, Meta, SlotType};
+use goofi_graph::Graph;
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, NodeClass};
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+
+const fn manifest(
+    type_name: &'static str,
+    doc: &'static str,
+    inputs: &'static [SlotDecl],
+    outputs: &'static [OutputDecl],
+    params: &'static [ParamDecl],
+    producer: bool,
+) -> NodeManifest {
+    NodeManifest { type_name, category: "test", doc, inputs, outputs, params, producer }
+}
+
+fn add(g: &mut Graph, manifest: NodeManifest, make: fn() -> Box<dyn Node>) {
+    let manifest: &'static NodeManifest = Box::leak(Box::new(manifest));
+    goofi_bridge::register_dyn_type(g, manifest, Box::new(move |_| make()), &goofi_node::NATIVE);
+}
+
+/// Every fixture into `g`.
+pub fn register(g: &mut Graph) {
+    add(g, manifest("_TestEcho", "passes its input straight through", IN_ARRAY, OUT_ARRAY, NO_PARAMS, false), || Box::new(Echo));
+    add(g, manifest("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false), || Box::new(Sink));
+    add(g, manifest("_TestScalar", "emits its `control/value` as a one-element frame", &[], OUT_ARRAY, SINK_PARAMS, true), || Box::new(Scalar));
+    add(g, manifest("_TestFail", "process always errors", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Failing));
+    add(g, manifest("_TestPanic", "process panics", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Panicking));
+    add(g, manifest("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(SetupFail));
+    add(g, manifest("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Slow));
+    add(g, manifest("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true), || Box::new(Counter::default()));
+    add(g, manifest("_TestParamWrites", "emits how many param writes were delivered", IN_ARRAY, OUT_ARRAY, SINK_PARAMS, false), || Box::new(ParamWrites::default()));
+    add(g, manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false), || Box::new(RequiredCounter::default()));
+    add(g, manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Grid::default()));
+    add(g, manifest("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false), || Box::new(Picker));
+    add(g, manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false), || Box::new(MutePicker));
+    add(g, manifest("_TestConst", "constant float32 array source (value+length) — hidden test/bench scaffolding.", &[], OUT_ARRAY, CONST_PARAMS, true), || Box::new(TestConst));
+}
 
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
     name: "input",
@@ -25,32 +60,6 @@ static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
 static OUT_ARRAY: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 static NO_PARAMS: &[ParamDecl] = &[];
 
-/// Builds a test-category registration.
-pub const fn class(
-    type_name: &'static str,
-    doc: &'static str,
-    inputs: &'static [SlotDecl],
-    outputs: &'static [OutputDecl],
-    params: &'static [ParamDecl],
-    producer: bool,
-    factory: fn() -> Box<dyn Node>,
-) -> NodeClass {
-    NodeClass {
-        manifest: NodeManifest {
-            type_name,
-            category: "test",
-            doc,
-            inputs,
-            outputs,
-            params,
-            producer,
-        },
-        isolation: &goofi_node::NATIVE,
-        factory,
-    }
-}
-
-#[derive(Default)]
 struct Echo;
 impl Node for Echo {
     fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
@@ -59,9 +68,6 @@ impl Node for Echo {
         }
         Ok(())
     }
-}
-inventory::submit! {
-    class("_TestEcho", "passes its input straight through", IN_ARRAY, OUT_ARRAY, NO_PARAMS, false, default_factory::<Echo>)
 }
 
 static SINK_PARAMS: &[ParamDecl] = &[ParamDecl {
@@ -72,19 +78,14 @@ static SINK_PARAMS: &[ParamDecl] = &[ParamDecl {
     doc: None,
 }];
 
-#[derive(Default)]
 struct Sink;
 impl Node for Sink {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false, default_factory::<Sink>)
-}
 
 /// Emits its one param as a one-element frame — the scalar a reference copies.
-#[derive(Default)]
 struct Scalar;
 impl Node for Scalar {
     fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
@@ -93,33 +94,21 @@ impl Node for Scalar {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestScalar", "emits its `control/value` as a one-element frame", &[], OUT_ARRAY, SINK_PARAMS, true, default_factory::<Scalar>)
-}
 
-#[derive(Default)]
 struct Failing;
 impl Node for Failing {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Err("the sensor is unplugged".into())
     }
 }
-inventory::submit! {
-    class("_TestFail", "process always errors", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Failing>)
-}
 
-#[derive(Default)]
 struct Panicking;
 impl Node for Panicking {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         panic!("_TestPanic panics on purpose");
     }
 }
-inventory::submit! {
-    class("_TestPanic", "process panics", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Panicking>)
-}
 
-#[derive(Default)]
 struct SetupFail;
 impl Node for SetupFail {
     fn setup(&mut self, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
@@ -130,21 +119,14 @@ impl Node for SetupFail {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<SetupFail>)
-}
 
 /// Sleeps far past the shutdown ceiling, so a teardown that JOINED would hang instead of returning.
-#[derive(Default)]
 struct Slow;
 impl Node for Slow {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         std::thread::sleep(std::time::Duration::from_secs(10));
         Ok(())
     }
-}
-inventory::submit! {
-    class("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Slow>)
 }
 
 /// Emits how many times it has run, as a length-1 array.
@@ -159,9 +141,6 @@ impl Node for Counter {
         o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);
         Ok(())
     }
-}
-inventory::submit! {
-    class("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true, default_factory::<Counter>)
 }
 
 /// Emits how many param writes the engine DELIVERED — the settle dedup's own meter. Not a
@@ -181,9 +160,6 @@ impl Node for ParamWrites {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestParamWrites", "emits how many param writes were delivered", IN_ARRAY, OUT_ARRAY, SINK_PARAMS, false, default_factory::<ParamWrites>)
-}
 
 /// The same, but its input is REQUIRED.
 #[derive(Default)]
@@ -198,9 +174,6 @@ impl Node for RequiredCounter {
         o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);
         Ok(())
     }
-}
-inventory::submit! {
-    class("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false, default_factory::<RequiredCounter>)
 }
 
 /// A `[3, 4]` frame — the only source here that is not a vector. Each row rises, offset by a round
@@ -230,9 +203,6 @@ impl Node for Grid {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true, default_factory::<Grid>)
-}
 
 /// Process-wide, because the answer must CHANGE between scans for a test to tell them apart.
 static PICKER_SCANS: AtomicU64 = AtomicU64::new(0);
@@ -245,7 +215,6 @@ static PICKER_PARAMS: &[ParamDecl] = &[ParamDecl {
     doc: None,
 }];
 
-#[derive(Default)]
 struct Picker;
 impl Node for Picker {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
@@ -259,18 +228,43 @@ impl Node for Picker {
         Some(vec![format!("dev{n}"), "none".to_string()])
     }
 }
-inventory::submit! {
-    class("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false, default_factory::<Picker>)
-}
 
 /// The same declaration with NO hook behind it, so the ⟳ spinner runs to its safety timeout.
-#[derive(Default)]
 struct MutePicker;
 impl Node for MutePicker {
     fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
         Ok(())
     }
 }
-inventory::submit! {
-    class("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false, default_factory::<MutePicker>)
+
+/// `_TestConst` — a constant float32 array source.
+struct TestConst;
+
+impl Node for TestConst {
+    fn process(&mut self, _inp: &Inputs<'_>, out: &mut Outputs<'_>, _ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+        let value = p.f64("constant", "value").unwrap_or(0.0) as f32;
+        let length = p.i64("constant", "length").unwrap_or(1).max(1) as usize;
+        let buf: Vec<u8> = (0..length).flat_map(|_| value.to_le_bytes()).collect();
+        let data = Data::array_f32(vec![length], buf, Meta::empty())
+            .map_err(|e| e.to_string())?;
+        out.set("out", data);
+        Ok(())
+    }
 }
+
+static CONST_PARAMS: &[ParamDecl] = &[
+    ParamDecl {
+        group: "constant",
+        name: "value",
+        spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 },
+        expression: None,
+        doc: Some("The value every element of the emitted array carries."),
+    },
+    ParamDecl {
+        group: "constant",
+        name: "length",
+        spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 },
+        expression: None,
+        doc: Some("How many elements the emitted array has."),
+    },
+];
