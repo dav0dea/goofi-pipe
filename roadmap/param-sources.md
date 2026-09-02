@@ -30,9 +30,13 @@ stands, as an unresolved `nd()` does; undo restores it. Nothing is pruned.
 **Node names and slot names are `[A-Za-z][A-Za-z0-9]*` and not a Python keyword.** An expression
 reads a slot as an attribute, and the rule is what makes `node.slot` unambiguous with no quoting.
 One function in `goofi-core`, beside `is_valid_identifier` (which `globals` keep, underscore
-included), enforced at `node add`, at rename, by the Python probe (a bad slot name registers the
-type UNAVAILABLE with the name quoted), by every engine's own declaration path the same way, and
-by a test over every shipped manifest. `in` is a keyword and therefore not a slot name.
+included), enforced at `node add` and at rename — refused, never silently swapped for a minted
+name — by the Python probe (a bad slot name registers the type UNAVAILABLE with the name quoted),
+and by a test over every shipped manifest. A name the graph MINTS passes the rule by construction,
+so a `_`-prefixed type is born `testscalar0`, never `_testscalar0`. `in` is a keyword and therefore
+not a slot name. Not yet held for every engine: the graph checks nothing where it takes an engine's
+library, so a Rust manifest is held only by the test — the dynamic-node step, where every Rust node
+enters through one scan door, is where that door enforces it.
 
 **Typing is by slot kind.** `Float`, `Int` and `Bool` reference an `Array` or an `Audio` output;
 `Str` references a `String` output. A mismatch is a bind error at the op, and the literal stands.
@@ -49,12 +53,17 @@ an empty reference clears it; a mode alone switches among what is retained.
 **The document shape is `{value, mode, expr, ref, triggers}`** — `mode` present when a record
 exists, `expr` and `ref` as strings when they have content, `triggers` when true. The `.gfi` and a
 copied fragment carry the same record as `sources: [{group, name, mode, expression, reference,
-triggers}]`. The descriptor's fields are `mode`, `expression`, `reference`, `triggers`, `error`. No
-shim for the old `enabled` shape: the pre-launch policy applied.
+triggers}]`; a paste rewrites the names a source spells to the copy's, and a slot label only where
+it IS a copied port's name, on the copied facade that holds it. The descriptor's fields are `mode`,
+`expression`, `reference`, `triggers`, `error`. No shim for the old `enabled` shape: the pre-launch
+policy applied. The record is ONE Rust type, `SourceState`, which the graph's record, the command
+and the projection all carry rather than restate.
 
-**The seam ships the source kind on `BindingView`.** A reference is one `BoundVar::Stream` with no
-compiled id; an expression is what it is today. The signal engine subscribes a reference like a
-binding var and COPIES the scalar on arrival — no evaluator, no GIL, none of the `codes` mutex.
+**A reference reaches the seam as one `BoundVar::Stream` with no compiled id**, and that absence
+IS the kind — the seam ships no second field for it. The signal engine subscribes a reference like
+a binding var and COPIES the scalar on arrival — no evaluator, no GIL, none of the `codes` mutex.
+Re-pointing a reference at another producer starts it EMPTY: a held value carries across a rebind
+only from the same stream, so a silent producer never stands in for the one it replaced.
 The audio engine makes a same-engine reference a plan edge (per sample, per channel: a 4-channel
 gate referenced into an envelope is four voices) and lands a foreign reference or an expression as
 an atomic at control rate.
@@ -80,3 +89,5 @@ of a per-param runtime error without an op echo is open below.
 - The inspector shows a param's RUNTIME error (a shape error on arrival, an evaluation failure)
   only after the next op echo for that node; the node-level `error` event carries the node's
   derived error, not the param's. A per-param runtime error event is one candidate; not decided.
+- `triggers` on a reference shares the expression's one arrival path and is unproved by a
+  scenario; the editing scenario proves it on an expression only.
