@@ -12,7 +12,7 @@ pub use describe::{describe, folder_of, illegal_slot, leak_manifest, node_files,
 pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
-    Request, Ringer, Scanned, ScannedType, Stamp, Touched, Via,
+    Ringer, Scanned, ScannedType, Stamp, Touched, Via,
 };
 
 /// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.

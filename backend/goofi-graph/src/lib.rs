@@ -8,7 +8,7 @@ use goofi_core::Param;
 use goofi_node::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, ExprMode, GraphView, Isolation,
     IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamDecl, ParamGroups, ParamKey,
-    Request, Status, Touched,
+    Status, Touched,
 };
 use indexmap::IndexMap;
 
@@ -2140,7 +2140,7 @@ impl Graph {
         let engine = self.leaf(uid).map(|e| e.engine).expect("checked above");
         let key = ParamKey::new(group, name);
         if let Some(e) = self.engine_mut(engine) {
-            e.request(uid, Request::RefreshParam { key });
+            e.refresh_param(uid, key);
         }
         Ok(())
     }

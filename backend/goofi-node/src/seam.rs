@@ -150,12 +150,6 @@ pub enum Touched {
     Param(Uid, ParamKey),
 }
 
-/// A one-time imperative a node must act on — what settled state cannot express.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Request {
-    RefreshParam { key: ParamKey },
-}
-
 /// One node class an engine advertises: the shared manifest plus the display tier. The engine a
 /// type belongs to is WHICH library advertises it — no tag field exists anywhere.
 #[derive(Clone, Copy)]
@@ -207,10 +201,24 @@ pub trait Engine: Send {
     fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {
         Vec::new()
     }
-    /// The record a fresh instance of `manifest` starts from: its declared defaults plus this
-    /// engine's own universal groups, with `supplied` values folded in. By MANIFEST, not by name,
-    /// so a type the library no longer answers for can still say what its live nodes hold.
-    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups;
+    /// The record a fresh instance of `manifest` starts from: this engine's universal groups
+    /// FIRST — the editor renders in insertion order — then the declared defaults, then `supplied`
+    /// folded on top, so a patch saved before a param existed still gets that param's default. By
+    /// MANIFEST, not by name, so a type the library no longer answers for can still say what its
+    /// live nodes hold. Every engine answers this one way; none overrides it.
+    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
+        let mut params = ParamGroups::new();
+        for d in self.universal_decls(manifest) {
+            params.entry(d.group.to_string()).or_default().insert(d.name.to_string(), d.spec.to_param());
+        }
+        for (group, entries) in manifest.default_params() {
+            params.entry(group).or_default().extend(entries);
+        }
+        for (group, entries) in supplied.into_iter().flatten() {
+            params.entry(group).or_default().extend(entries);
+        }
+        params
+    }
     /// Birth at `uid`, with the graph-minted generation. `Some` carries a boot error: the node
     /// then exists holding its place and saying why it is not running.
     fn insert(
@@ -226,7 +234,9 @@ pub trait Engine: Send {
     fn settle(&mut self, view: &GraphView<'_>, touched: &[Touched]);
     /// Hand over every queued health report. A pull: the caller owns the pace.
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize;
-    fn request(&mut self, uid: Uid, request: Request);
+    /// Re-enumerate a `Str` param's options on the node's own thread — the one imperative
+    /// settled state cannot express.
+    fn refresh_param(&mut self, uid: Uid, key: ParamKey);
     /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
     fn reset_clock(&mut self, _origin: Instant) {}
     /// The graph's expression evaluator, shared with every engine that evaluates `nd()` bindings

@@ -15,11 +15,11 @@ use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
     DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView, ParamGroups,
-    Request, Ringer, Status, Touched, Uid, Via, NATIVE,
+    ParamKey, Ringer, Status, Touched, Uid, Via, NATIVE,
 };
 
 mod control;
-pub mod nodes;
+pub(crate) mod nodes;
 mod plan;
 mod runtime;
 mod scan;
@@ -31,10 +31,8 @@ use plan::Plan;
 use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
 
 /// The rate until a device names one.
-pub const RATE: f64 = 48_000.0;
+pub(crate) const RATE: f64 = 48_000.0;
 
-/// A CEILING, not a join: a wedged control half must not be able to wedge the exit.
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 /// A ceiling on a device open, which runs under the graph lock: a sound server that does not
 /// answer must not wedge every op.
 const OPEN_WAIT: Duration = Duration::from_secs(2);
@@ -123,12 +121,12 @@ impl DeviceClock {
 impl Drop for DeviceClock {
     fn drop(&mut self) {
         self.go = None;
-        let _ = self.done.recv_timeout(SHUTDOWN_WAIT);
+        let _ = self.done.recv_timeout(goofi_transport::SHUTDOWN_WAIT);
     }
 }
 
 /// The host default is what a `default` name means.
-pub const DEFAULT_DEVICE: &str = "default";
+pub(crate) const DEFAULT_DEVICE: &str = "default";
 
 fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(cpal::Stream, f64, u16), String> {
     let host = cpal::default_host();
@@ -373,6 +371,7 @@ impl AudioEngine {
         while let Ok(retired) = self.outbox.pop() {
             match retired {
                 Retired::Slot(slot) => self.write_state(slot.uid, slot.type_name, slot.node.save()),
+                // The drop is the POINT: these come back so the audio thread never frees them.
                 Retired::Plan(plan, arena) => drop((plan, arena)),
                 Retired::Slab(slab) => drop(slab),
                 Retired::Faulted { uid, serial, fault } => {
@@ -389,13 +388,13 @@ impl AudioEngine {
         }
     }
 
-    /// A message always lands. A full ring means the audio thread has not run for a long time, so
-    /// taking its lock to apply the backlog costs no block.
     /// The audio half's lock, held through a panic there: the slab is still the slab.
     fn runtime(&self) -> std::sync::MutexGuard<'_, Runtime> {
         self.runtime.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A message always lands. A full ring means the audio thread has not run for a long time, so
+    /// taking its lock to apply the backlog costs no block.
     fn send(&mut self, mut msg: Msg) {
         while let Err(rtrb::PushError::Full(back)) = self.inbox.push(msg) {
             self.runtime().apply_pending();
@@ -585,14 +584,6 @@ impl Engine for AudioEngine {
         }
     }
 
-    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
-        let mut params = manifest.default_params();
-        for (group, entries) in supplied.into_iter().flatten() {
-            params.entry(group).or_default().extend(entries);
-        }
-        params
-    }
-
     fn insert(&mut self, uid: Uid, type_name: &str, generation: u64, params: &ParamGroups) -> Option<String> {
         let Some(Class { manifest, make, .. }) = self.classes.get(type_name).cloned() else {
             return Some(format!("no audio node type `{type_name}`"));
@@ -742,8 +733,7 @@ impl Engine for AudioEngine {
     }
 
     /// A refresh runs on the node's own thread, never under the graph lock.
-    fn request(&mut self, uid: Uid, request: Request) {
-        let Request::RefreshParam { key } = request;
+    fn refresh_param(&mut self, uid: Uid, key: ParamKey) {
         if let Some(inst) = self.live.get(&uid) {
             inst.control.refresh(key);
         }
@@ -770,10 +760,7 @@ impl Engine for AudioEngine {
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             self.remove(uid);
         }
-        let deadline = Instant::now() + SHUTDOWN_WAIT;
-        while halts.iter().any(|h| !h.released()) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        goofi_transport::wait_released(halts.iter().map(|h| &**h), goofi_transport::SHUTDOWN_WAIT);
         if let Ok(mut rt) = self.runtime.lock() {
             rt.render_block();
         }

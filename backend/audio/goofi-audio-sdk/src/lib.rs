@@ -3,7 +3,7 @@
 //! the file that authors one, so the two halves cannot drift.
 
 pub use goofi_core;
-pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamSpec, SlotDecl};
+pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
 
 pub mod abi;
 #[cfg(feature = "host")]
@@ -150,9 +150,6 @@ pub fn hz_of(pitch: f32) -> f32 {
     C4_HZ * 2f32.powf(pitch)
 }
 
-pub fn pitch_of(hz: f32) -> f32 {
-    (hz / C4_HZ).log2()
-}
 
 /// A rising-edge detector over a gate: `true` on the sample the gate goes HIGH.
 #[derive(Default)]

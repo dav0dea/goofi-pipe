@@ -293,14 +293,6 @@ impl Out {
         (chans != 0).then(|| (chans, planar.concat()))
     }
 
-    fn wanted(&self) -> bool {
-        goofi_transport::subscribers(&self.service) > 0
-    }
-
-    fn publish(&self, frame: &Data) {
-        let bytes = goofi_codec::encode(frame);
-        goofi_transport::publish(&self.publisher, &bytes, self.bells.iter().map(|(_, bell, id)| (bell, *id)));
-    }
 }
 
 struct SlotSub {
@@ -592,13 +584,14 @@ impl Control {
         }
         for out in &mut self.outs {
             let Some((c, planar)) = out.drain() else { continue };
-            if !out.wanted() {
+            if goofi_transport::subscribers(&out.service) == 0 {
                 continue;
             }
             let t = planar.len() / c;
             let bytes: Vec<u8> = planar.iter().flat_map(|v| v.to_le_bytes()).collect();
             if let Ok(frame) = Data::array_f32(vec![c, t], bytes, Meta::new().with_sfreq(Some(self.shared.rate()))) {
-                out.publish(&frame);
+                let bytes = goofi_codec::encode(&frame);
+                goofi_transport::publish(&out.publisher, &bytes, out.bells.iter().map(|(_, bell, id)| (bell, *id)));
             }
         }
     }

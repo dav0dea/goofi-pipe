@@ -57,7 +57,7 @@ impl AudioEngine {
             self.rust_loaded.insert(artifact.to_path_buf(), Arc::new(loaded));
         }
         let loaded = self.rust_loaded[artifact].clone();
-        let manifest = loaded.manifest();
+        let manifest = loaded.manifest;
         let class = Class { manifest, make: Arc::new(move |_| loaded.instantiate()), plugin: None };
         Ok(self.classes.insert(manifest.type_name, class).is_some())
     }

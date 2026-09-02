@@ -263,13 +263,14 @@ fn scan_bundle(engine: &mut AudioEngine, bundle: &Path) -> Vec<ScannedType> {
 fn described(scanner: &Path, bundle: &Path, binary: &Path) -> Result<Bundle, String> {
     let bytes = std::fs::read(binary).map_err(|e| format!("{}: {e}", binary.display()))?;
     let dir = goofi_build::base_dir(&goofi_core::home::dir()).join("vst3");
-    let file = dir.join(format!("{:x}.json", Sha256::digest(&bytes)));
+    let key = format!("{:x}", Sha256::digest(&bytes));
+    let file = dir.join(format!("{key}.json"));
     if let Some(cached) = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         return Ok(cached);
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // Written beside and renamed in, so two goofis scanning one bundle cannot tear the cache.
-    let part = dir.join(format!("{:x}.{}.part", Sha256::digest(&bytes), std::process::id()));
+    let part = dir.join(format!("{key}.{}.part", std::process::id()));
     let said = run_scanner(scanner, bundle, &part);
     let answer = said.and_then(|()| std::fs::read(&part).map_err(|e| format!("the scanner wrote nothing: {e}")));
     let found = answer.and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("the scanner's answer did not parse: {e}")));

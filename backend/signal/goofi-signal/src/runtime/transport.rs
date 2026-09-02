@@ -173,10 +173,15 @@ impl Transport for IoxTransport {
     fn wire_out(&self, slot: &str, targets: &[(ServiceName, EventId)]) -> Result<(), String> {
         let port = self.outputs.get(slot).ok_or_else(|| format!("no output slot `{slot}`"))?;
         // Opened here, where a failure can still be reported. The previous set stands until the
-        // whole new one opens, so a refused message leaves the node in the state its ack describes.
+        // whole new one opens, so a refused message leaves the node in the state its ack describes
+        // — and a survivor is MOVED across rather than reopened, or the peak would be both sets.
+        let mut held = std::mem::take(&mut *port.targets.lock().unwrap());
         let mut opened = Vec::with_capacity(targets.len());
         for (service, id) in targets {
-            opened.push((Doorbell::open(&self.node, service)?, *id));
+            match goofi_transport::take_where(&mut held, |(bell, _)| bell.names(service)) {
+                Some((bell, _)) => opened.push((bell, *id)),
+                None => opened.push((Doorbell::open(&self.node, service)?, *id)),
+            }
         }
         *port.targets.lock().unwrap() = opened;
         Ok(())

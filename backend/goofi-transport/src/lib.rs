@@ -4,6 +4,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock};
+use std::time::{Duration, Instant};
 
 use iceoryx2::config::Config;
 use iceoryx2::node::{NodeState, NodeView};
@@ -77,15 +78,22 @@ pub fn output_service(base: &str, slot: &str) -> ServiceName {
 /// A notifier onto one node's door; the ringer knows nothing else about the node it rings.
 pub struct Doorbell {
     notifier: iceoryx2::port::notifier::Notifier<Svc>,
+    /// The service it was opened for: a reconcile keeps a survivor rather than reopening it, and
+    /// a bell counts against `MAX_NOTIFIERS` for as long as it lives.
+    service: String,
 }
 
 impl Doorbell {
+    pub fn names(&self, service: &str) -> bool {
+        self.service == service
+    }
+
     /// Open a door by name, on the ringer's OWN iceoryx2 node — one bell per producing NODE, since
     /// each node counts against `max_nodes`. `open_or_create`: the service is the rendezvous.
     pub fn open(node: &IoxNode, service: &str) -> Result<Doorbell, String> {
         let door = event_service(node, service)?;
         let notifier = door.notifier_builder().create().map_err(|e| format!("notifier `{service}`: {e}"))?;
-        Ok(Doorbell { notifier })
+        Ok(Doorbell { notifier, service: service.to_string() })
     }
 
     /// Ring it. A failed ring costs a wake, never a message: the payload is already in a queue the
@@ -315,6 +323,22 @@ pub fn publish<'a>(publisher: &BytePublisher, bytes: &[u8], bells: impl IntoIter
 /// set does not name, and dropping it IS the unsubscribe.
 pub fn take_where<T>(held: &mut Vec<T>, keep: impl Fn(&T) -> bool) -> Option<T> {
     held.iter().position(keep).map(|i| held.remove(i))
+}
+
+/// A CEILING on a teardown, not a join: a wedged node must not be able to wedge the exit. It is
+/// the transport's own number because what the wait is FOR is the release of shared memory.
+pub const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+
+/// Wait for every halt to release, up to [`SHUTDOWN_WAIT`]. Whether they all did.
+pub fn wait_released<'a>(halts: impl Iterator<Item = &'a Halt> + Clone, ceiling: Duration) -> bool {
+    let deadline = Instant::now() + ceiling;
+    while halts.clone().any(|h| !h.released()) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    true
 }
 
 /// The two flags a node's thread is born holding: told to stop, and — once every port it owned

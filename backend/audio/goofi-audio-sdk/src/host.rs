@@ -14,7 +14,7 @@ use crate::{AudioNode, Block, MAX_PORTS};
 /// One loaded node type: its vtable and the manifest the host leaked from `goofi_describe`.
 pub struct Loaded {
     vtable: &'static VTable,
-    manifest: &'static NodeManifest,
+    pub manifest: &'static NodeManifest,
 }
 
 impl Loaded {
@@ -29,10 +29,6 @@ impl Loaded {
             return Err("`goofi_audio_node` answered null".into());
         }
         Ok(Loaded { vtable: &*vtable, manifest })
-    }
-
-    pub fn manifest(&self) -> &'static NodeManifest {
-        self.manifest
     }
 
     pub fn instantiate(&self) -> Box<dyn AudioNode> {

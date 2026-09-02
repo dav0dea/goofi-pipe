@@ -54,7 +54,7 @@ pub fn base_dir(home: &Path) -> PathBuf {
 
 /// What one source builds to, keyed by everything that decides it: the goofi version, the SDK
 /// sources, the crates the SDK lets a node reach, and the file's own bytes.
-pub fn cache_key(sdk: &Sdk, source: &[u8]) -> String {
+fn cache_key(sdk: &Sdk, source: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(VERSION.as_bytes());
     hash.update(SDK_HASH.as_bytes());
@@ -68,7 +68,7 @@ pub fn cache_key(sdk: &Sdk, source: &[u8]) -> String {
     format!("{:x}", hash.finalize())[..32].to_string()
 }
 
-pub fn artifact_path(base: &Path, key: &str, stem: &str) -> PathBuf {
+fn artifact_path(base: &Path, key: &str, stem: &str) -> PathBuf {
     base.join("out").join(key).join(format!("{stem}.{}", std::env::consts::DLL_EXTENSION))
 }
 

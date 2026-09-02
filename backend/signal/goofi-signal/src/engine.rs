@@ -4,18 +4,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest, ParamGroups, ParamKey, Request, Status, Touched, Uid, Via};
+use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest, ParamGroups, ParamKey, Status, Touched, Uid, Via};
 
 use crate::runtime::{
     self,
     plan::{Phase, Slot, SlotKey, WirePlanner},
 };
-
-/// A CEILING, not a join: a wedged node must not be able to wedge the exit. What one that misses
-/// it leaves behind is what [`runtime::reclaim_stale_resources`] takes on the next startup.
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
@@ -321,11 +317,6 @@ impl Engine for SignalEngine {
             .collect()
     }
 
-    fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
-        let base = supplied.unwrap_or_else(|| manifest.default_params());
-        crate::with_common(base, manifest)
-    }
-
     fn insert(
         &mut self,
         uid: Uid,
@@ -431,12 +422,8 @@ impl Engine for SignalEngine {
         applied
     }
 
-    fn request(&mut self, uid: Uid, request: Request) {
-        match request {
-            Request::RefreshParam { key } => {
-                self.wire.send(uid, runtime::Control::RefreshParam { key });
-            }
-        }
+    fn refresh_param(&mut self, uid: Uid, key: ParamKey) {
+        self.wire.send(uid, runtime::Control::RefreshParam { key });
     }
 
     /// Every node born after computes from the new origin.
@@ -463,13 +450,7 @@ impl Engine for SignalEngine {
         for host in self.hosts.values() {
             host.signal_stop();
         }
-        let deadline = Instant::now() + SHUTDOWN_WAIT;
-        while self.hosts.values().any(|h| !h.halt.released()) {
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        goofi_transport::wait_released(self.hosts.values().map(|h| &*h.halt), goofi_transport::SHUTDOWN_WAIT);
         self.hosts.clear();
         self.wire.reset_channels();
         self.pending_ready.clear();

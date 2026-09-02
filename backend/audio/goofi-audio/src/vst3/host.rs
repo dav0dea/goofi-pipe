@@ -18,16 +18,6 @@ pub fn cstr(s: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn set_utf16(dst: &mut [TChar], s: &str) {
-    let mut n = 0;
-    for (d, c) in dst.iter_mut().zip(s.encode_utf16()) {
-        *d = c;
-        n += 1;
-    }
-    let end = n.min(dst.len() - 1);
-    dst[end] = 0;
-}
-
 /// The application a plugin is initialized against: a name, and no factory of its own.
 pub struct Host;
 
@@ -37,7 +27,9 @@ impl Class for Host {
 
 impl IHostApplicationTrait for Host {
     unsafe fn getName(&self, name: *mut String128) -> tresult {
-        set_utf16(&mut *name, "goofi");
+        for (d, c) in (*name).iter_mut().zip("goofi\0".encode_utf16()) {
+            *d = c;
+        }
         kResultOk
     }
 

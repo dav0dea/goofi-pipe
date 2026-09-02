@@ -11,7 +11,7 @@ use goofi_audio_sdk::{AudioNode, Block, ParamDecl, ParamSpec, Port, PortMut, BLO
 use goofi_core::SlotType;
 use goofi_node::{
     DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
-    OutputDecl, ParamGroups, Request, SlotDecl, Status, Touched, Uid,
+    OutputDecl, ParamGroups, SlotDecl, Status, Touched, Uid,
 };
 use goofi_tests::{ep, f32s, hex, j, shape, Goofi};
 
@@ -166,10 +166,6 @@ impl Engine for Skeleton {
         vec![LibraryEntry { manifest: self.class, isolation: &goofi_node::NATIVE }]
     }
 
-    fn normalize_params(&self, manifest: &'static goofi_node::NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
-        supplied.unwrap_or_else(|| manifest.default_params())
-    }
-
     fn insert(
         &mut self,
         uid: Uid,
@@ -259,7 +255,7 @@ impl Engine for Skeleton {
         n
     }
 
-    fn request(&mut self, _uid: Uid, _request: Request) {}
+    fn refresh_param(&mut self, _uid: Uid, _key: goofi_node::ParamKey) {}
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
