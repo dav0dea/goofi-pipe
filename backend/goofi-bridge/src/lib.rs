@@ -580,7 +580,13 @@ pub fn fresh_graph() -> Graph {
         g.drain_waker(),
     );
     g.register_engine(Box::new(signal));
+    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.patch_start(), g.drain_waker())));
     g
+}
+
+/// The audio engine registered in `g` — its external clock is the concrete door a test drives.
+pub fn audio_engine(g: &mut Graph) -> &mut goofi_audio::AudioEngine {
+    g.engine_mut("audio").and_then(|e| e.as_any_mut().downcast_mut()).expect("the audio engine is registered")
 }
 
 /// The signal engine registered in `g` — the composition root's reach to its concrete doors.

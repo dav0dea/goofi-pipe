@@ -428,7 +428,7 @@ fn register_skeletons(t: &Goofi) {
     let waker = g.drain_waker();
     g.set_evaluator(Arc::new(FirstVar));
     g.register_engine(Box::new(Skeleton::new(
-        "audio",
+        "skel",
         &AUDIO,
         &audio_block(),
         Duration::from_millis(5),

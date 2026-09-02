@@ -129,7 +129,13 @@ returns on a second ring to be dropped off-thread. The plan crosses as an owned 
 exactly one reason — a clock swap — which the callback `try_lock`s and the control thread takes
 only across a device switch; a node add never costs a block. The arena is one `Vec<f32>`: a
 region per output port and per scalar-sourced param, scratch for summing, one silent region; no
-liveness-based reuse until a measurement asks.
+liveness-based reuse until a measurement asks. Landed 2026-09-02 as `backend/audio/goofi-audio`
+under the external clock (`drive(frames)`, the device arrives with its own step): `channels` is
+answered on the control thread by a TWIN from the same factory, so the box that processes never
+leaves the audio thread; coercion is implied by counts — a one-channel wire broadcasts, a narrower
+one pads — so no coercion enum exists; a plan swap resets every slot's memory of its scalar
+regions, because a fresh arena holds nothing; and the three shipped nodes are compiled into the
+engine, one file each in the author's form, until the audio ABI moves them into `nodes_audio/`.
 
 **Topological order, Kahn, ties broken by `Uid`.** Not iteration order — `Graph::nodes` is an
 `IndexMap` whose order moves across save, load, undo and paste. A loop closes only through a node

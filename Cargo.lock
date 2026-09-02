@@ -494,6 +494,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "goofi-audio"
+version = "3.1.0"
+dependencies = [
+ "goofi-audio-sdk",
+ "goofi-core",
+ "goofi-node",
+ "rtrb",
+]
+
+[[package]]
 name = "goofi-audio-sdk"
 version = "3.1.0"
 dependencies = [
@@ -509,6 +519,7 @@ dependencies = [
  "base64",
  "futures-util",
  "getrandom 0.4.3",
+ "goofi-audio",
  "goofi-build",
  "goofi-codec",
  "goofi-core",
@@ -1498,6 +1509,12 @@ checksum = "7a4e1d4b9b938a26d2996af33229f0ca0956c652c1375067f0b45291c1df8417"
 dependencies = [
  "rmp",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
 
 [[package]]
 name = "rustc-hash"
