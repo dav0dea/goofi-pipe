@@ -365,14 +365,14 @@ impl Events {
     }
 }
 
-/// Render `frames` on the audio engine's external clock and hand back what the device would get,
-/// interleaved, with its channel count.
 /// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
 fn scanner() -> PathBuf {
     let exe = std::env::current_exe().expect("a test has a path");
     exe.ancestors().nth(2).expect("target/<profile>/deps/<test>").join(format!("vst3scan{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Render `frames` on the audio engine's external clock and hand back what the device would get,
+/// interleaved, with its channel count.
 pub fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
     let mut graph = g.state.graph.lock().unwrap();
     goofi_bridge::audio_engine(&mut graph).drive(frames)

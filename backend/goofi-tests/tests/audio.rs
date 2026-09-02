@@ -689,6 +689,13 @@ fn a_patch_sounds_under_the_external_clock() {
     for (group, name) in [("voice", "gate"), ("voice", "pitch"), ("voice", "velocity"), ("plugin", "gain")] {
         assert!(!params[group][name].is_null(), "the derived manifest carries {group}/{name}: {params}");
     }
+    // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
+    // own words, stepped past it a number, and read-only is not a param at all.
+    let schema = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "GoofiFixture").cloned().expect("the plugin is in the palette")["params"].clone();
+    assert_eq!(schema["plugin"]["shape"]["options"], j!(["soft", "mid", "hard"]), "{schema}");
+    assert_eq!(schema["plugin"]["steps"]["vmax"], j!(200), "{schema}");
+    assert!(schema["plugin"]["meter"].is_null(), "a read-only parameter is omitted: {schema}");
     let src = g.add("Osc");
     g.link(src, "out", plug, "input");
     heard(&g, plug, "the oscillator through the plugin at unit gain", |x| (peak(x) - 1.0).abs() < 0.02 && near(per_tenth(x), 88));
@@ -712,10 +719,19 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));
     heard(&g, plug, "the server answers on", |x| (peak(x) - 0.5).abs() < 0.02);
 
+    // The plugin's state is its own blob, and the record is its params: the fixture latches the
+    // first time `shape` reaches its last step and halves its tone for ever after, which no param
+    // can say. Latched, then set back, saved and reopened: `shape` is the record's `soft` and the
+    // tone is still the latched one, so the blob came back and the record went on top of it.
+    g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
+    g.set_param(plug, "voice", "gate", true);
+    heard(&g, plug, "the tone before the latch", |x| (peak(x) - 0.5).abs() < 0.02);
+    g.set_param(plug, "plugin", "shape", "hard");
+    heard(&g, plug, "the latched tone", |x| (peak(x) - 0.25).abs() < 0.02);
+    g.set_param(plug, "plugin", "shape", "soft");
     g.call("session save", j!({ "path": target.to_string_lossy() }));
     let carried = Goofi::new();
     carried.call("session load", j!({ "path": target.to_string_lossy() }));
-    carried.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
-    carried.set_param(plug, "voice", "gate", true);
-    heard(&carried, plug, "the archive carried the bundle", |x| (peak(x) - 0.5).abs() < 0.02 && near(per_tenth(x), 52));
+    assert_eq!(carried.doc()["nodes"][hex(plug)]["params"]["plugin"]["shape"]["value"], j!("soft"));
+    heard(&carried, plug, "the archive carried the blob", |x| (peak(x) - 0.25).abs() < 0.02 && near(per_tenth(x), 52));
 }

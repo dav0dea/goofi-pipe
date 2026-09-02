@@ -11,28 +11,23 @@ use vst3::{ComPtr, Interface};
 
 use super::host::cstr;
 
-pub struct Module {
-    library: &'static libloading::Library,
-}
-
-impl Module {
-    pub fn open(binary: &Path) -> Result<Module, String> {
-        static OPENED: OnceLock<Mutex<HashMap<PathBuf, &'static libloading::Library>>> = OnceLock::new();
-        let mut opened = OPENED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(library) = opened.get(binary) {
-            return Ok(Module { library });
+/// The factory of the binary at `path`, loading it the first time. Never unloaded: `dlopen`
+/// answers one handle per path for the life of the process, so a bundle REPLACED in place keeps
+/// running its old code until goofi restarts — recorded in the roadmap.
+pub fn factory(path: &Path) -> Result<Factory, String> {
+    static OPENED: OnceLock<Mutex<HashMap<PathBuf, &'static libloading::Library>>> = OnceLock::new();
+    let mut opened = OPENED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let library = match opened.get(path) {
+        Some(library) => library,
+        None => {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let library = load(path).map_err(|e| format!("{name}: {e}"))?;
+            opened.entry(path.to_path_buf()).or_insert(library)
         }
-        let name = binary.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let library = load(binary).map_err(|e| format!("{name}: {e}"))?;
-        opened.insert(binary.to_path_buf(), library);
-        Ok(Module { library })
-    }
-
-    pub fn factory(&self) -> Result<Factory, String> {
-        let get: libloading::Symbol<unsafe extern "system" fn() -> *mut IPluginFactory> =
-            unsafe { self.library.get(b"GetPluginFactory\0") }.map_err(|e| format!("no `GetPluginFactory`: {e}"))?;
-        unsafe { ComPtr::from_raw(get()) }.map(Factory).ok_or_else(|| "`GetPluginFactory` answered null".into())
-    }
+    };
+    let get: libloading::Symbol<unsafe extern "system" fn() -> *mut IPluginFactory> =
+        unsafe { library.get(b"GetPluginFactory\0") }.map_err(|e| format!("no `GetPluginFactory`: {e}"))?;
+    unsafe { ComPtr::from_raw(get()) }.map(Factory).ok_or_else(|| "`GetPluginFactory` answered null".into())
 }
 
 #[cfg(unix)]

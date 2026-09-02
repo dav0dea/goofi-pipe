@@ -11,6 +11,7 @@ goofi-codec = { path = "../../goofi-codec" }
 goofi-transport = { path = "../../goofi-transport" }
 goofi-audio-sdk = { path = "../goofi-audio-sdk", features = ["host"] }
 goofi-build = { path = "../../goofi-build" }
+sha2 = "0.10"
 indexmap = "2"
 rtrb = "0.3"
 cpal = "0.18"

@@ -249,7 +249,8 @@ list is the whole UI. **The cost is named, not hidden: a plugin whose value IS i
 degraded to a parameter list.** Skipping the editor also skips the platform event loop and timer
 plumbing, which is where every reported hosting difficulty lives.
 
-**VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings** (0.3, after
+**VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings.** Landed
+2026-09-02 as `backend/audio/goofi-audio/src/vst3/`. (0.3, after
 the SDK went MIT in October 2025; raw, so the COM lifecycle, the bus/param/event plumbing and the
 threading rules are ours). A bundle is found in any root's `nodes_audio/` — the patch's own
 included, which is how an archive carries one — and in the platform's plugin folders, which the
@@ -277,6 +278,22 @@ at runtime, so a plugin whose processor needs its controller's messages is degra
 null `CFBundleRef`; output parameter changes and output events are not read. No usable
 VST3→CLAP wrapper exists (DISTRHO Ildaeil does not even bridge params), which is one more reason
 the centre is a trait and not a format.
+
+The residuals a plugin's own nature leaves, each found by Step 9's audit and each recorded rather
+than patched. **A bundle REPLACED in place keeps running its old code until goofi restarts**: the
+scan re-derives from the new bytes, but `dlopen` answers one handle per path for the life of a
+process and nothing is ever unloaded. An authored `.rs` node cannot go stale this way, because its
+artifact path is its content's hash — which is also why the scan cache is keyed by the binary's
+BYTES: a patch mount is a fresh directory every boot and a load restores no mtimes, so a path or a
+stamp survives no archive. That cache is never pruned. **A class the host cannot describe or
+cannot name is dropped without a row** when its bundle's other classes register; only a bundle
+that yields none at all greys, and it greys under the bundle's FILE name, which is not the palette
+name of any class in it — so a working plugin that later fails loses its type outright rather than
+greying in place. **The inspector calls a plugin a Rust node**, because `Isolation::Native` is
+what a compiled in-process node is, and then reports no source file for a bundle sitting in
+`nodes_audio/`. **The scanner survives a crash at load and at instantiation**, both of which it
+performs; a plugin that crashes at `setupProcessing` or at its first block takes the server with
+it, as any node's `process` would.
 
 **Opaque per-node state lives in `workspace/.goofi/state/<uid_hex>/<Type>`.** The engine does the
 I/O and the seam hands it the workspace, which turns over between a load's teardown and its births,

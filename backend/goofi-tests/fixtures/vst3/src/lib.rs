@@ -1,12 +1,12 @@
 //! `GoofiFixture` by `goofi`: one stereo input, one event input, one stereo output, one
 //! continuous `Gain` parameter kept in its state. Its output is the input times the gain, plus
 //! a sine at every held note's pitch, at half the note's velocity.
-#![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
+#![allow(non_snake_case)]
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void, CString};
 use std::slice;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use vst3::{uid, Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
 
@@ -44,10 +44,13 @@ struct Processor {
     gain: AtomicU64,
     rate: AtomicU64,
     voices: RefCell<[Voice; VOICES]>,
+    /// State beyond the params: latched the first time `Shape` reaches its last step, and carried
+    /// ONLY by the state blob. It halves the note tone, so a load that lost the blob is heard.
+    pushed: AtomicBool,
 }
 
 impl Class for Processor {
-    type Interfaces = (IComponent, IAudioProcessor, IProcessContextRequirements);
+    type Interfaces = (IComponent, IAudioProcessor);
 }
 
 impl Processor {
@@ -58,6 +61,7 @@ impl Processor {
             gain: AtomicU64::new(1.0f64.to_bits()),
             rate: AtomicU64::new(48_000.0f64.to_bits()),
             voices: RefCell::new([Voice::default(); VOICES]),
+            pushed: AtomicBool::new(false),
         }
     }
 }
@@ -124,10 +128,12 @@ impl IComponentTrait for Processor {
 
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
         let Some(state) = ComRef::from_raw(state) else { return kInvalidArgument };
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 9];
         let mut read = 0;
-        if state.read(bytes.as_mut_ptr() as *mut c_void, 8, &mut read) == kResultOk && read == 8 {
-            self.gain.store(f64::from_le_bytes(bytes).to_bits(), Ordering::Relaxed);
+        if state.read(bytes.as_mut_ptr() as *mut c_void, 9, &mut read) == kResultOk && read == 9 {
+            let gain: [u8; 8] = bytes[..8].try_into().expect("eight of nine");
+            self.gain.store(f64::from_le_bytes(gain).to_bits(), Ordering::Relaxed);
+            self.pushed.store(bytes[8] != 0, Ordering::Relaxed);
             return kResultOk;
         }
         kResultFalse
@@ -135,9 +141,11 @@ impl IComponentTrait for Processor {
 
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
         let Some(state) = ComRef::from_raw(state) else { return kInvalidArgument };
-        let bytes = f64::from_bits(self.gain.load(Ordering::Relaxed)).to_le_bytes();
+        let mut bytes = [0u8; 9];
+        bytes[..8].copy_from_slice(&f64::from_bits(self.gain.load(Ordering::Relaxed)).to_le_bytes());
+        bytes[8] = self.pushed.load(Ordering::Relaxed) as u8;
         let mut written = 0;
-        state.write(bytes.as_ptr() as *mut c_void, 8, &mut written);
+        state.write(bytes.as_ptr() as *mut c_void, 9, &mut written);
         kResultOk
     }
 }
@@ -186,8 +194,12 @@ impl IAudioProcessorTrait for Processor {
                 let Some(queue) = ComRef::from_raw(changes.getParameterData(i)) else { continue };
                 let points = queue.getPointCount();
                 let (mut offset, mut value) = (0, 0.0);
-                if queue.getParameterId() == 0 && points > 0 && queue.getPoint(points - 1, &mut offset, &mut value) == kResultOk {
-                    self.gain.store(value.to_bits(), Ordering::Relaxed);
+                if points > 0 && queue.getPoint(points - 1, &mut offset, &mut value) == kResultOk {
+                    match queue.getParameterId() {
+                        0 => self.gain.store(value.to_bits(), Ordering::Relaxed),
+                        1 if value >= 0.99 => self.pushed.store(true, Ordering::Relaxed),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -217,6 +229,7 @@ impl IAudioProcessorTrait for Processor {
         }
         let gain = f64::from_bits(self.gain.load(Ordering::Relaxed)) as f32;
         let rate = f64::from_bits(self.rate.load(Ordering::Relaxed)) as f32;
+        let loud = if self.pushed.load(Ordering::Relaxed) { 0.25 } else { 0.5 };
         let n = data.numSamples as usize;
         if data.numOutputs != 1 {
             return kResultOk;
@@ -237,7 +250,7 @@ impl IAudioProcessorTrait for Processor {
             for voice in voices.iter_mut() {
                 if let Some(note) = voice.note {
                     let hz = 440.0 * 2f32.powf((note as f32 - 69.0) / 12.0);
-                    tone += 0.5 * voice.velocity * (voice.phase * std::f32::consts::TAU).sin();
+                    tone += loud * voice.velocity * (voice.phase * std::f32::consts::TAU).sin();
                     voice.phase = (voice.phase + hz / rate) % 1.0;
                 }
             }
@@ -248,12 +261,6 @@ impl IAudioProcessorTrait for Processor {
     }
 
     unsafe fn getTailSamples(&self) -> u32 {
-        0
-    }
-}
-
-impl IProcessContextRequirementsTrait for Processor {
-    unsafe fn getProcessContextRequirements(&self) -> u32 {
         0
     }
 }
@@ -300,30 +307,39 @@ impl IEditControllerTrait for Controller {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        1
+        4
     }
 
+    /// One of each shape the manifest derivation has a rule for: continuous, stepped within the
+    /// `Str` ceiling, stepped past it, and one the host must omit.
     unsafe fn getParameterInfo(&self, param_index: i32, info: *mut ParameterInfo) -> tresult {
-        if param_index != 0 {
-            return kInvalidArgument;
-        }
+        let automate = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+        let (title, units, steps, default, flags) = match param_index {
+            0 => ("Gain", "x", 0, 1.0, automate),
+            1 => ("Shape", "", 2, 0.0, automate),
+            2 => ("Steps", "", 200, 0.5, automate),
+            3 => ("Meter", "", 0, 0.0, automate | ParameterInfo_::ParameterFlags_::kIsReadOnly as i32),
+            _ => return kInvalidArgument,
+        };
         let info = &mut *info;
-        info.id = 0;
-        copy_wstring("Gain", &mut info.title);
-        copy_wstring("Gain", &mut info.shortTitle);
-        copy_wstring("x", &mut info.units);
-        info.stepCount = 0;
-        info.defaultNormalizedValue = 1.0;
+        info.id = param_index as u32;
+        copy_wstring(title, &mut info.title);
+        copy_wstring(title, &mut info.shortTitle);
+        copy_wstring(units, &mut info.units);
+        info.stepCount = steps;
+        info.defaultNormalizedValue = default;
         info.unitId = 0;
-        info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+        info.flags = flags;
         kResultOk
     }
 
     unsafe fn getParamStringByValue(&self, id: u32, value_normalized: f64, string: *mut String128) -> tresult {
-        if id != 0 {
-            return kInvalidArgument;
-        }
-        copy_wstring(&format!("{value_normalized:.2}"), &mut *string);
+        let shown = match id {
+            0 | 2 | 3 => format!("{value_normalized:.2}"),
+            1 => ["soft", "mid", "hard"][(value_normalized * 2.0).round() as usize].to_string(),
+            _ => return kInvalidArgument,
+        };
+        copy_wstring(&shown, &mut *string);
         kResultOk
     }
 
@@ -368,7 +384,6 @@ impl IPluginFactoryTrait for Factory {
         let info = &mut *info;
         copy_cstring("goofi", &mut info.vendor);
         copy_cstring("https://github.com/PhilippThoelke/goofi-pipe", &mut info.url);
-        copy_cstring("", &mut info.email);
         info.flags = PFactoryInfo_::FactoryFlags_::kUnicode as int32;
         kResultOk
     }
@@ -413,33 +428,15 @@ extern "system" fn InitDll() -> bool {
     true
 }
 
-#[cfg(target_os = "windows")]
-#[no_mangle]
-extern "system" fn ExitDll() -> bool {
-    true
-}
-
 #[cfg(target_os = "macos")]
 #[no_mangle]
 extern "system" fn bundleEntry(_bundle_ref: *mut c_void) -> bool {
     true
 }
 
-#[cfg(target_os = "macos")]
-#[no_mangle]
-extern "system" fn bundleExit() -> bool {
-    true
-}
-
 #[cfg(target_os = "linux")]
 #[no_mangle]
 extern "system" fn ModuleEntry(_library_handle: *mut c_void) -> bool {
-    true
-}
-
-#[cfg(target_os = "linux")]
-#[no_mangle]
-extern "system" fn ModuleExit() -> bool {
     true
 }
 

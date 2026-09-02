@@ -8,14 +8,15 @@ mod host;
 mod module;
 mod node;
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use goofi_audio_sdk::AudioNode;
+use goofi_audio_sdk::{AudioNode, MAX_PORTS};
 use goofi_core::probe;
 use goofi_node::{Isolation, Scanned, ScannedType, Stamp};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{ComPtr, ComWrapper};
@@ -28,65 +29,67 @@ use node::{Kind, Plugin};
 /// A stepped parameter with this many steps or fewer is a `Str` of the plugin's own strings.
 const STR_STEPS: i32 = 64;
 
-/// What the scanner prints: the factory's vendor and every "Audio Module Class".
+/// A CEILING on the child, as `OPEN_WAIT` is on a device: the scan runs under the graph lock, and
+/// a plugin that blocks at load must not wedge every op.
+const SCAN_WAIT: Duration = Duration::from_secs(20);
+
+/// What the scanner writes: the factory's vendor and every "Audio Module Class".
 #[derive(Serialize, Deserialize)]
-pub struct Bundle {
-    pub vendor: String,
-    pub classes: Vec<ClassInfo>,
+pub(crate) struct Bundle {
+    vendor: String,
+    classes: Vec<ClassInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ClassInfo {
-    pub cid: String,
-    pub name: String,
+pub(crate) struct ClassInfo {
+    cid: [u8; 16],
+    name: String,
     /// Channel counts per audio bus, main first.
-    pub inputs: Vec<u16>,
-    pub outputs: Vec<u16>,
-    pub events: bool,
-    pub params: Vec<ParamInfo>,
+    inputs: Vec<u16>,
+    outputs: Vec<u16>,
+    events: bool,
+    params: Vec<ParamInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct ParamInfo {
-    pub id: u32,
-    pub title: String,
-    pub units: String,
-    pub steps: i32,
-    pub default: f64,
-    pub flags: i32,
-    /// One display string per step when there are `STR_STEPS` or fewer; the default's alone
-    /// otherwise.
-    pub strings: Vec<String>,
+pub(crate) struct ParamInfo {
+    id: u32,
+    title: String,
+    units: String,
+    steps: i32,
+    default: f64,
+    flags: i32,
+    /// The plugin's own rendering of its default, for a continuous param's doc.
+    shown: String,
+    /// One display string per step, empty for a param that is not stepped within `STR_STEPS`.
+    steps_shown: Vec<String>,
 }
 
 /// Where this platform keeps its plugins.
 pub fn platform_dirs() -> Vec<PathBuf> {
-    let home = std::env::home_dir();
     #[cfg(target_os = "linux")]
-    let dirs = [home.map(|h| h.join(".vst3")), Some("/usr/lib/vst3".into()), Some("/usr/local/lib/vst3".into())];
+    let dirs = [std::env::home_dir().map(|h| h.join(".vst3")), Some("/usr/lib/vst3".into()), Some("/usr/local/lib/vst3".into())];
     #[cfg(target_os = "macos")]
-    let dirs = [home.map(|h| h.join("Library/Audio/Plug-Ins/VST3")), Some("/Library/Audio/Plug-Ins/VST3".into()), None];
+    let dirs = [std::env::home_dir().map(|h| h.join("Library/Audio/Plug-Ins/VST3")), Some("/Library/Audio/Plug-Ins/VST3".into())];
     #[cfg(windows)]
     let dirs = [
         std::env::var_os("COMMONPROGRAMFILES").map(|p| PathBuf::from(p).join("VST3")),
         std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Programs").join("Common").join("VST3")),
-        home.and(None),
     ];
     dirs.into_iter().flatten().collect()
 }
 
-/// `goofi vst3-scan <bundle>`: the child half. The bundle's classes as JSON on stdout, or the
-/// reason on stderr and a non-zero exit.
+/// `goofi vst3-scan <bundle> <answer>`: the child half, which writes the bundle's classes to
+/// `answer` as JSON — never to stdout, which the plugin it just loaded also owns.
 pub fn scan_main(args: &[String]) -> i32 {
-    let Some(bundle) = args.first() else {
-        eprintln!("usage: goofi vst3-scan <bundle>");
+    let (Some(bundle), Some(answer)) = (args.first(), args.get(1)) else {
+        eprintln!("usage: goofi vst3-scan <bundle> <answer>");
         return 2;
     };
-    match describe(Path::new(bundle)) {
-        Ok(found) => {
-            println!("{}", serde_json::to_string(&found).expect("plain data serializes"));
-            0
-        }
+    match describe(Path::new(bundle)).and_then(|found| {
+        serde_json::to_vec(&found).map_err(|e| e.to_string()).and_then(|b| std::fs::write(answer, b).map_err(|e| e.to_string()))
+    }) {
+        Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
             1
@@ -105,6 +108,8 @@ fn binary_of(bundle: &Path) -> Result<PathBuf, String> {
     let (folder, file) = if cfg!(target_os = "macos") {
         ("MacOS".to_string(), stem.to_string())
     } else if cfg!(windows) {
+        // The bundle layout spells this one `arm64`, where Rust spells it `aarch64`.
+        let arch = if arch == "aarch64" { "arm64" } else { arch };
         (format!("{arch}-win"), format!("{stem}.vst3"))
     } else {
         (format!("{arch}-linux"), format!("{stem}.so"))
@@ -119,11 +124,9 @@ fn stamp_of(binary: &Path) -> Result<Stamp, String> {
 }
 
 fn describe(bundle: &Path) -> Result<Bundle, String> {
-    let factory = module::Module::open(&binary_of(bundle)?)?.factory()?;
-    let mut classes = Vec::new();
-    for (cid, name) in factory.audio_classes() {
-        classes.push(describe_class(&factory, cid, name)?);
-    }
+    let factory = module::factory(&binary_of(bundle)?)?;
+    // One class the host cannot describe never costs the bundle its others.
+    let classes = factory.audio_classes().into_iter().filter_map(|(cid, name)| describe_class(&factory, cid, name).ok()).collect();
     Ok(Bundle { vendor: factory.vendor(), classes })
 }
 
@@ -132,40 +135,52 @@ fn describe_class(factory: &module::Factory, cid: TUID, name: String) -> Result<
     let component: ComPtr<IComponent> = factory.create(&cid)?;
     unsafe {
         ok(component.initialize(context.as_ptr()), "initialize")?;
-        // One object or two: a controller of its own is created and initialized alongside.
-        let own: Option<ComPtr<IEditController>> = component.cast();
-        let separate = match &own {
-            Some(_) => None,
-            None => {
-                let mut ccid: TUID = [0; 16];
-                (component.getControllerClassId(&mut ccid) == kResultOk)
-                    .then(|| factory.create::<IEditController>(&ccid))
-                    .transpose()?
-            }
-        };
-        if let Some(c) = &separate {
-            ok(c.initialize(context.as_ptr()), "initialize the controller")?;
-        }
-        let audio = MediaTypes_::kAudio as MediaType;
-        let buses = |dir: BusDirection| -> Vec<u16> {
-            (0..component.getBusCount(audio, dir))
-                .map(|i| {
-                    let mut info: BusInfo = std::mem::zeroed();
-                    component.getBusInfo(audio, dir, i, &mut info);
-                    info.channelCount.clamp(0, u16::MAX as i32) as u16
-                })
-                .collect()
-        };
-        let inputs = buses(BusDirections_::kInput as BusDirection);
-        let outputs = buses(BusDirections_::kOutput as BusDirection);
-        let events = component.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection) > 0;
-        let params = own.as_ref().or(separate.as_ref()).map(|c| params_of(c)).unwrap_or_default();
-        if let Some(c) = &separate {
-            c.terminate();
-        }
+        let described = describe_initialized(factory, &component, &context, cid, name);
         component.terminate();
-        Ok(ClassInfo { cid: hex_of(&cid), name, inputs, outputs, events, params })
+        described
     }
+}
+
+/// The body between `initialize` and `terminate`, so no `?` can leave a component initialized.
+unsafe fn describe_initialized(
+    factory: &module::Factory,
+    component: &ComPtr<IComponent>,
+    context: &ComPtr<FUnknown>,
+    cid: TUID,
+    name: String,
+) -> Result<ClassInfo, String> {
+    // One object or two: a controller of its own is created and initialized alongside.
+    let own: Option<ComPtr<IEditController>> = component.cast();
+    let separate = match &own {
+        Some(_) => None,
+        None => {
+            let mut ccid: TUID = [0; 16];
+            (component.getControllerClassId(&mut ccid) == kResultOk)
+                .then(|| factory.create::<IEditController>(&ccid))
+                .transpose()?
+        }
+    };
+    if let Some(c) = &separate {
+        ok(c.initialize(context.as_ptr()), "initialize the controller")?;
+    }
+    let audio = MediaTypes_::kAudio as MediaType;
+    let buses = |dir: BusDirection| -> Vec<u16> {
+        (0..component.getBusCount(audio, dir))
+            .map(|i| {
+                let mut info: BusInfo = std::mem::zeroed();
+                component.getBusInfo(audio, dir, i, &mut info);
+                info.channelCount.clamp(0, u16::MAX as i32) as u16
+            })
+            .collect()
+    };
+    let inputs = buses(BusDirections_::kInput as BusDirection);
+    let outputs = buses(BusDirections_::kOutput as BusDirection);
+    let events = component.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection) > 0;
+    let params = own.as_ref().or(separate.as_ref()).map(|c| params_of(c)).unwrap_or_default();
+    if let Some(c) = &separate {
+        c.terminate();
+    }
+    Ok(ClassInfo { cid: cid.map(|b| b as u8), name, inputs, outputs, events, params })
 }
 
 unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
@@ -178,10 +193,9 @@ unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
                     c.getParamStringByValue(info.id, v, &mut s);
                     host::utf16(&s)
                 };
-                let strings = if (1..=STR_STEPS).contains(&info.stepCount) {
-                    (0..=info.stepCount).map(|k| string_at(k as f64 / info.stepCount as f64)).collect()
-                } else {
-                    vec![string_at(info.defaultNormalizedValue)]
+                let steps_shown = match (1..=STR_STEPS).contains(&info.stepCount) {
+                    true => (0..=info.stepCount).map(|k| string_at(k as f64 / info.stepCount as f64)).collect(),
+                    false => Vec::new(),
                 };
                 ParamInfo {
                     id: info.id,
@@ -190,7 +204,8 @@ unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
                     steps: info.stepCount,
                     default: info.defaultNormalizedValue,
                     flags: info.flags,
-                    strings,
+                    shown: string_at(info.defaultNormalizedValue),
+                    steps_shown,
                 }
             })
         })
@@ -201,26 +216,22 @@ pub(super) fn ok(result: tresult, what: &str) -> Result<(), String> {
     (result == kResultOk).then_some(()).ok_or_else(|| format!("{what} answered {result}"))
 }
 
-fn hex_of(cid: &TUID) -> String {
-    cid.iter().map(|b| format!("{:02x}", *b as u8)).collect()
-}
-
-fn cid_of(hex: &str) -> Option<TUID> {
-    let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect::<Option<_>>()?;
-    let mut cid: TUID = [0; 16];
-    for (dst, b) in cid.iter_mut().zip(bytes.iter().take(16)) {
-        *dst = *b as std::ffi::c_char;
-    }
-    (bytes.len() == 16).then_some(cid)
-}
-
-/// Every bundle in `dir`: a row per class, or one greyed row naming the bundle.
+/// Every bundle under `dir`, at any depth — an installer may group them by vendor — as a row per
+/// class, or one greyed row naming the bundle.
 pub(crate) fn scan_dir(engine: &mut AudioEngine, dir: &Path) -> Vec<ScannedType> {
+    bundles_under(dir).iter().flat_map(|b| scan_bundle(engine, b)).collect()
+}
+
+fn bundles_under(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut bundles: Vec<PathBuf> =
-        entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "vst3")).collect();
-    bundles.sort();
-    bundles.iter().flat_map(|b| scan_bundle(engine, b)).collect()
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    let (mut bundles, folders): (Vec<PathBuf>, Vec<PathBuf>) =
+        paths.into_iter().partition(|p| p.extension().is_some_and(|e| e == "vst3"));
+    for folder in folders.iter().filter(|p| p.is_dir()) {
+        bundles.extend(bundles_under(folder));
+    }
+    bundles
 }
 
 fn scan_bundle(engine: &mut AudioEngine, bundle: &Path) -> Vec<ScannedType> {
@@ -234,72 +245,120 @@ fn scan_bundle(engine: &mut AudioEngine, bundle: &Path) -> Vec<ScannedType> {
     };
     let found = binary_of(bundle).and_then(|binary| {
         let stamp = stamp_of(&binary)?;
-        described(scanner, bundle, &binary, stamp).map(|b| (binary, stamp, b))
+        described(scanner, bundle, &binary).map(|b| (binary, stamp, b))
     });
     match found {
         Err(reason) => greyed(reason),
-        Ok((binary, stamp, found)) => found
-            .classes
-            .into_iter()
-            .filter_map(|class| {
-                let (type_name, replaced) = engine.register_plugin(&found.vendor, &binary, stamp, class)?;
-                let outcome = Scanned::Registered { isolation: Isolation::Native, replaced };
-                Some(ScannedType { type_name, stamp: Some(stamp), outcome })
-            })
-            .collect(),
+        Ok((_, _, found)) if found.classes.is_empty() => greyed("no audio class in the bundle".into()),
+        Ok((binary, stamp, found)) => {
+            let vendor = found.vendor;
+            found.classes.into_iter().map(|class| engine.register_plugin(&vendor, &binary, stamp, class)).collect()
+        }
     }
 }
 
-/// The scanner's answer for this binary at this stamp, from the cache or from a child.
-fn described(scanner: &Path, bundle: &Path, binary: &Path, stamp: Stamp) -> Result<Bundle, String> {
+/// The scanner's answer for this binary, from the cache or from a child. Keyed by the binary's own
+/// BYTES, as an authored node's artifact is: a patch mount is a fresh directory every boot, and a
+/// load restores no mtimes, so nothing about a bundle's path or stamp survives an archive.
+fn described(scanner: &Path, bundle: &Path, binary: &Path) -> Result<Bundle, String> {
+    let bytes = std::fs::read(binary).map_err(|e| format!("{}: {e}", binary.display()))?;
     let dir = goofi_build::base_dir(&goofi_core::home::dir()).join("vst3");
-    let mut hasher = std::hash::DefaultHasher::new();
-    binary.hash(&mut hasher);
-    let mtime = stamp.1.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let file = dir.join(format!("{:016x}-{}-{mtime}.json", hasher.finish(), stamp.0));
-    if let Some(cached) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()) {
+    let file = dir.join(format!("{:x}.json", Sha256::digest(&bytes)));
+    if let Some(cached) = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         return Ok(cached);
     }
-    let output = std::process::Command::new(scanner)
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Written beside and renamed in, so two goofis scanning one bundle cannot tear the cache.
+    let part = dir.join(format!("{:x}.{}.part", Sha256::digest(&bytes), std::process::id()));
+    let said = run_scanner(scanner, bundle, &part);
+    let answer = said.and_then(|()| std::fs::read(&part).map_err(|e| format!("the scanner wrote nothing: {e}")));
+    let found = answer.and_then(|b| serde_json::from_slice(&b).map_err(|e| format!("the scanner's answer did not parse: {e}")));
+    match found {
+        Ok(found) => {
+            let _ = std::fs::rename(&part, &file);
+            Ok(found)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+/// One child, under a ceiling. Its own words on failure, from the file its errors go to — never a
+/// pipe, which a plugin's chatter could fill while nobody is reading it.
+fn run_scanner(scanner: &Path, bundle: &Path, part: &Path) -> Result<(), String> {
+    let errors = part.with_extension("err");
+    let sink = std::fs::File::create(&errors).map_err(|e| format!("{}: {e}", errors.display()))?;
+    let mut child = std::process::Command::new(scanner)
         .arg("vst3-scan")
         .arg(bundle)
-        .output()
+        .arg(part)
+        .stdin(std::process::Stdio::null())
+        .stdout(sink.try_clone().map_err(|e| e.to_string())?)
+        .stderr(sink)
+        .spawn()
         .map_err(|e| format!("could not run the scanner {}: {e}", scanner.display()))?;
-    if !output.status.success() {
-        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(match output.status.code() {
-            Some(_) if !said.is_empty() => said,
+    let deadline = Instant::now() + SCAN_WAIT;
+    let status = loop {
+        match child.try_wait() {
+            Err(e) => break Err(format!("the scanner could not be waited for: {e}")),
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("the scanner did not answer in {}s", SCAN_WAIT.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let said = std::fs::read_to_string(&errors).unwrap_or_default().trim().to_string();
+    let _ = std::fs::remove_file(&errors);
+    match status? {
+        s if s.success() => Ok(()),
+        _ if !said.is_empty() => Err(said),
+        s => Err(match s.code() {
             Some(code) => format!("the scanner exited with {code}"),
             None => "the scanner crashed".into(),
-        });
+        }),
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let found: Bundle = serde_json::from_str(&text).map_err(|e| format!("the scanner's answer did not parse: {e}"))?;
-    let _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&file, text));
-    Ok(found)
 }
 
 impl AudioEngine {
-    /// One class as one type: named by the plugin, or by vendor and plugin where goofi's own
-    /// library holds the name. A registration from the same binary at the same stamp is kept.
-    fn register_plugin(&mut self, vendor: &str, binary: &Path, stamp: Stamp, class: ClassInfo) -> Option<(String, bool)> {
-        let cid = cid_of(&class.cid)?;
-        let name = camel(&class.name)?;
-        let type_name = match self.classes.get(name.as_str()) {
-            Some(held) if held.plugin.is_none() => format!("{}{name}", camel(vendor)?),
-            _ => name,
+    /// One class as one type: named by the plugin, or by vendor and plugin where the name is
+    /// taken. A registration from the same binary at the same stamp is kept.
+    fn register_plugin(&mut self, vendor: &str, binary: &Path, stamp: Stamp, class: ClassInfo) -> ScannedType {
+        let Some(bare) = camel(&class.name) else {
+            let reason = format!("`{}` is not a legal name: {}", class.name, goofi_core::globals::NAME_RULE);
+            return ScannedType { type_name: class.name, stamp: None, outcome: Scanned::Unavailable(reason) };
         };
+        let cid: TUID = class.cid.map(|b| b as std::ffi::c_char);
         let same = |d: &Arc<Derived>| d.binary == binary && d.stamp == stamp && d.cid == cid;
-        if self.classes.get(type_name.as_str()).and_then(|c| c.plugin.as_ref()).is_some_and(same) {
-            return Some((type_name, false));
+        // The vendor prefixes only where SOMEONE ELSE holds the name — a goofi node, or another
+        // plugin. A rescan finds this very class there and keeps the name it already had.
+        let mine = |name: &str| self.classes.get(name).is_some_and(|c| c.plugin.as_ref().is_some_and(&same));
+        let type_name = match self.classes.contains_key(bare.as_str()) && !mine(&bare) {
+            true => camel(vendor).map_or(bare.clone(), |v| format!("{v}{bare}")),
+            false => bare,
+        };
+        if mine(&type_name) {
+            let outcome = Scanned::Registered { isolation: Isolation::Native, replaced: false };
+            return ScannedType { type_name, stamp: Some(stamp), outcome };
         }
         let (intro, params) = introspection(vendor, &class);
-        let derived = Arc::new(Derived { binary: binary.to_path_buf(), stamp, cid, inputs: class.inputs, outputs: class.outputs, voice: class.events, params });
+        // The refusal is HERE, where the palette can carry it: an insert-time one would offer a
+        // type that every `node add` then answers with the same words, for ever.
+        let widest = intro.params.len().max(intro.inputs.len()).max(intro.outputs.len());
+        if widest > MAX_PORTS {
+            let reason = format!("declares {widest} ports and params, and {MAX_PORTS} is the ceiling");
+            return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) };
+        }
+        let derived = Arc::new(Derived { binary: binary.to_path_buf(), stamp, cid, inputs: class.inputs, outputs: class.outputs, params });
         let manifest = goofi_node::leak_manifest(type_name.clone(), &intro, "audio");
         let plugin = derived.clone();
         let make = Arc::new(move |_| Box::new(Plugin::new(plugin.clone())) as Box<dyn AudioNode>);
         let replaced = self.classes.insert(manifest.type_name, Class { manifest, make, plugin: Some(derived) }).is_some();
-        Some((type_name, replaced))
+        ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Registered { isolation: Isolation::Native, replaced } }
     }
 }
 
@@ -334,10 +393,10 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     for p in class.params.iter().filter(|p| p.flags & OMITTED == 0) {
         let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), &mut names);
         let (spec, kind, doc) = if p.steps <= 0 {
-            let shown = format!("{} {}", p.strings.first().map(String::as_str).unwrap_or_default(), p.units);
+            let shown = format!("{} {}", p.shown, p.units);
             (float(p.default.clamp(0.0, 1.0), 0.0, 1.0), Kind::Float, format!("{}, normalized; {} by default.", p.title, shown.trim()))
         } else if p.steps <= STR_STEPS {
-            let options = distinct(&p.strings, p.steps as usize + 1);
+            let options = distinct(&p.steps_shown, p.steps as usize + 1);
             let at = ((p.default * p.steps as f64).round() as usize).min(options.len() - 1);
             let default = options[at].clone();
             (probe::ParamSpec::Str { default, options, refresh: false }, Kind::Stepped(p.steps as f64), p.title.clone())
@@ -394,12 +453,19 @@ fn unique(name: String, used: &mut Vec<String>) -> String {
     candidate
 }
 
-/// Exactly `count` options, each distinct and none empty: a `Str` param's scalar is its index.
-fn distinct(strings: &[String], count: usize) -> Vec<String> {
+/// Exactly `count` options, each distinct and none empty: a `Str` param's scalar is the index of
+/// the FIRST option that matches, so a repeat would read back as the wrong step.
+fn distinct(shown: &[String], count: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(count);
     for k in 0..count {
-        let s = strings.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| k.to_string());
-        out.push(if out.contains(&s) { format!("{s} ({k})") } else { s });
+        let s = shown.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| k.to_string());
+        let mut candidate = s.clone();
+        let mut n = 1;
+        while out.contains(&candidate) {
+            n += 1;
+            candidate = format!("{s} ({n})");
+        }
+        out.push(candidate);
     }
     out
 }

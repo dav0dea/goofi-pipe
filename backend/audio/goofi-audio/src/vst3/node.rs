@@ -11,7 +11,7 @@ use vst3::Steinberg::*;
 use vst3::{ComPtr, ComWrapper};
 
 use super::host::{Changes, Events, Host, Stream};
-use super::module::Module;
+use super::module;
 use super::ok;
 
 /// How a goofi param's scalar becomes the plugin's normalized value.
@@ -27,21 +27,23 @@ pub struct Derived {
     pub cid: TUID,
     pub inputs: Vec<u16>,
     pub outputs: Vec<u16>,
-    /// An event input, so the first three params are the voice: gate, pitch, velocity.
-    pub voice: bool,
     pub params: Vec<(ParamID, Kind)>,
 }
 
 pub struct Plugin {
     class: Arc<Derived>,
     live: Option<Live>,
-    /// What instantiation refused; the next `process` raises it as the node's own panic.
+    /// What instantiation refused; every `process` raises it, because the runtime marks a node
+    /// dead only once the fault is on its way and expects the next block to fault again.
     failed: Option<String>,
+    /// What `load` was handed. Kept, so a failed instantiation cannot answer `save` with nothing
+    /// and have the engine delete the preset behind it.
+    blob: Vec<u8>,
 }
 
 impl Plugin {
     pub fn new(class: Arc<Derived>) -> Plugin {
-        Plugin { class, live: None, failed: None }
+        Plugin { class, live: None, failed: None, blob: Vec::new() }
     }
 }
 
@@ -51,19 +53,19 @@ impl AudioNode for Plugin {
     }
 
     fn prepare(&mut self, rate: f64) {
-        let result = if let Some(live) = self.live.as_mut() {
-            live.retune(rate)
-        } else {
-            Live::open(&self.class, rate).map(|live| self.live = Some(live))
+        let result = match self.live.as_mut() {
+            Some(live) => live.retune(rate),
+            None => Live::open(&self.class, rate).map(|live| {
+                live.load(&self.blob);
+                self.live = Some(live)
+            }),
         };
-        if let Err(e) = result {
-            self.failed = Some(e);
-        }
+        self.failed = result.err();
     }
 
     fn process(&mut self, b: &mut Block<'_>) {
-        if let Some(text) = self.failed.take() {
-            std::panic::resume_unwind(Box::new(text));
+        if let Some(text) = &self.failed {
+            std::panic::resume_unwind(Box::new(text.clone()));
         }
         match self.live.as_mut() {
             Some(live) => live.block(&self.class, b),
@@ -78,26 +80,25 @@ impl AudioNode for Plugin {
     }
 
     fn save(&self) -> Vec<u8> {
-        let Some(live) = &self.live else { return Vec::new() };
+        let Some(live) = &self.live else { return self.blob.clone() };
         let stream = ComWrapper::new(Stream::default());
         let ptr = stream.to_com_ptr::<IBStream>().expect("a stream is an IBStream");
         if unsafe { live.component.getState(ptr.as_ptr()) } != kResultOk {
-            return Vec::new();
+            return self.blob.clone();
         }
         stream.bytes.take()
     }
 
     fn load(&mut self, bytes: &[u8]) {
-        let Some(live) = self.live.as_mut() else { return };
-        let stream = ComWrapper::new(Stream::of(bytes));
-        let ptr = stream.to_com_ptr::<IBStream>().expect("a stream is an IBStream");
-        unsafe { live.component.setState(ptr.as_ptr()) };
-        live.sent.fill(f64::NAN);
+        self.blob = bytes.to_vec();
+        if let Some(live) = self.live.as_mut() {
+            live.load(bytes);
+        }
     }
 }
 
 struct Live {
-    _context: ComPtr<FUnknown>,
+    _host: ComPtr<FUnknown>,
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
     changes: ComWrapper<Changes>,
@@ -110,6 +111,8 @@ struct Live {
     /// The normalized value last handed over per plugin param; NaN sends it at the next block.
     sent: Vec<f64>,
     held: [Option<i16>; MAX_CHANNELS as usize],
+    /// Whether `setupProcessing` has run: what a re-prepare must undo and a first one must not.
+    prepared: bool,
 }
 
 // The one deviation from "no unsafe impl": the VST3 contract lets `process` run on a thread of
@@ -118,41 +121,21 @@ unsafe impl Send for Live {}
 
 impl Live {
     fn open(class: &Derived, rate: f64) -> Result<Live, String> {
-        let factory = Module::open(&class.binary)?.factory()?;
+        let factory = module::factory(&class.binary)?;
         let component: ComPtr<IComponent> = factory.create(&class.cid)?;
-        let context = ComWrapper::new(Host).to_com_ptr::<FUnknown>().expect("a host is an FUnknown");
-        unsafe { ok(component.initialize(context.as_ptr()), "initialize")? };
-        let processor: ComPtr<IAudioProcessor> = component.cast().ok_or("the component is no IAudioProcessor")?;
-        unsafe {
-            let audio = MediaTypes_::kAudio as MediaType;
-            let (input, output) = (BusDirections_::kInput as BusDirection, BusDirections_::kOutput as BusDirection);
-            let arrangements = |dir: BusDirection, n: usize| -> Vec<SpeakerArrangement> {
-                (0..n as int32)
-                    .map(|i| {
-                        let mut arrangement = 0;
-                        processor.getBusArrangement(dir, i, &mut arrangement);
-                        arrangement
-                    })
-                    .collect()
-            };
-            let (mut ins, mut outs) = (arrangements(input, class.inputs.len()), arrangements(output, class.outputs.len()));
-            processor.setBusArrangements(ins.as_mut_ptr(), ins.len() as int32, outs.as_mut_ptr(), outs.len() as int32);
-            for i in 0..ins.len() as int32 {
-                component.activateBus(audio, input, i, 1);
-            }
-            for i in 0..outs.len() as int32 {
-                component.activateBus(audio, output, i, 1);
-            }
-            if class.voice {
-                component.activateBus(MediaTypes_::kEvent as MediaType, input, 0, 1);
-            }
-        }
+        let host = ComWrapper::new(Host).to_com_ptr::<FUnknown>().expect("a host is an FUnknown");
+        unsafe { ok(component.initialize(host.as_ptr()), "initialize")? };
+        let Some(processor) = component.cast::<IAudioProcessor>() else {
+            unsafe { component.terminate() };
+            return Err("the component is no IAudioProcessor".into());
+        };
+        let (ins, outs) = unsafe { arrange(&component, &processor, class) };
         let changes = ComWrapper::new(Changes::new(class.params.iter().map(|(id, _)| *id)));
         let changes_ptr = changes.to_com_ptr().expect("changes are an IParameterChanges");
         let events = ComWrapper::new(Events::with_capacity(BLOCK * MAX_CHANNELS as usize));
         let events_ptr = events.to_com_ptr().expect("events are an IEventList");
         let mut live = Live {
-            _context: context,
+            _host: host,
             component,
             processor,
             changes,
@@ -160,10 +143,11 @@ impl Live {
             events,
             events_ptr,
             context: Box::new(unsafe { std::mem::zeroed() }),
-            ins: Buses::new(&class.inputs),
-            outs: Buses::new(&class.outputs),
+            ins,
+            outs,
             sent: vec![f64::NAN; class.params.len()],
             held: [None; MAX_CHANNELS as usize],
+            prepared: false,
         };
         live.retune(rate)?;
         Ok(live)
@@ -177,19 +161,35 @@ impl Live {
             sampleRate: rate,
         };
         unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
+            if self.prepared {
+                self.processor.setProcessing(0);
+                self.component.setActive(0);
+            }
+            self.prepared = false;
             ok(self.processor.setupProcessing(&mut setup), "setupProcessing")?;
             ok(self.component.setActive(1), "setActive")?;
             ok(self.processor.setProcessing(1), "setProcessing")?;
         }
+        self.prepared = true;
         self.context.sampleRate = rate;
+        // The reactivation dropped the plugin's voices, so a gate still HIGH must note again.
         self.sent.fill(f64::NAN);
+        self.held = [None; MAX_CHANNELS as usize];
         Ok(())
     }
 
+    fn load(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let stream = ComWrapper::new(Stream::of(bytes));
+        let ptr = stream.to_com_ptr::<IBStream>().expect("a stream is an IBStream");
+        unsafe { self.component.setState(ptr.as_ptr()) };
+    }
+
     fn block(&mut self, class: &Derived, b: &mut Block<'_>) {
-        let voice = class.voice as usize * 3;
+        // The voice params, if any, are the ones the manifest carries beyond the plugin's own.
+        let voice = b.params.len() - class.params.len();
         self.changes.clear();
         for (i, (_, kind)) in class.params.iter().enumerate() {
             let raw = b.params[voice + i].chan(0)[0] as f64;
@@ -204,7 +204,7 @@ impl Live {
             }
         }
         self.events.clear();
-        if class.voice {
+        if voice == 3 {
             let (gate, pitch, velocity) = (&b.params[0], &b.params[1], &b.params[2]);
             for c in 0..(gate.channels() as usize).min(MAX_CHANNELS as usize) {
                 for (s, &g) in gate.chan(c).iter().enumerate() {
@@ -226,7 +226,7 @@ impl Live {
         for (bus, port) in self.ins.buses.iter_mut().zip(b.ins.iter()) {
             bus.silenceFlags = if port.wired() { 0 } else { u64::MAX };
         }
-        for (i, port) in b.ins.iter().enumerate() {
+        for (i, port) in b.ins.iter().enumerate().take(self.ins.pointers.len()) {
             for (c, dst) in self.ins.pointers[i].iter().enumerate() {
                 unsafe { std::ptr::copy_nonoverlapping(port.chan(c).as_ptr(), *dst, BLOCK) };
             }
@@ -251,7 +251,7 @@ impl Live {
             processContext: &mut *self.context,
         };
         unsafe { self.processor.process(&mut data) };
-        for (i, out) in b.outs.iter_mut().enumerate() {
+        for (i, out) in b.outs.iter_mut().enumerate().take(self.outs.pointers.len()) {
             let lanes = &self.outs.pointers[i];
             for c in 0..out.channels() as usize {
                 let src = lanes[c.min(lanes.len() - 1)];
@@ -261,11 +261,48 @@ impl Live {
     }
 }
 
+/// The buses activated at the plugin's own default arrangements, and the staging sized from what
+/// the LIVE instance then reports — never the scan's cached counts, which a plugin whose default
+/// layout lives outside its binary can disagree with.
+unsafe fn arrange(component: &ComPtr<IComponent>, processor: &ComPtr<IAudioProcessor>, class: &Derived) -> (Buses, Buses) {
+    let audio = MediaTypes_::kAudio as MediaType;
+    let (input, output) = (BusDirections_::kInput as BusDirection, BusDirections_::kOutput as BusDirection);
+    let arrangements = |dir: BusDirection, n: usize| -> Vec<SpeakerArrangement> {
+        (0..n as int32)
+            .map(|i| {
+                let mut arrangement = 0;
+                processor.getBusArrangement(dir, i, &mut arrangement);
+                arrangement
+            })
+            .collect()
+    };
+    let (mut ins, mut outs) = (arrangements(input, class.inputs.len()), arrangements(output, class.outputs.len()));
+    processor.setBusArrangements(ins.as_mut_ptr(), ins.len() as int32, outs.as_mut_ptr(), outs.len() as int32);
+    let widths = |dir: BusDirection, n: usize| -> Vec<u16> {
+        (0..n as int32)
+            .map(|i| {
+                let mut info: BusInfo = std::mem::zeroed();
+                component.getBusInfo(audio, dir, i, &mut info);
+                component.activateBus(audio, dir, i, 1);
+                info.channelCount.clamp(1, MAX_CHANNELS as i32) as u16
+            })
+            .collect()
+    };
+    let staged = (Buses::new(&widths(input, ins.len())), Buses::new(&widths(output, outs.len())));
+    let events = MediaTypes_::kEvent as MediaType;
+    for i in 0..component.getBusCount(events, input) {
+        component.activateBus(events, input, i, 1);
+    }
+    staged
+}
+
 impl Drop for Live {
     fn drop(&mut self) {
         unsafe {
-            self.processor.setProcessing(0);
-            self.component.setActive(0);
+            if self.prepared {
+                self.processor.setProcessing(0);
+                self.component.setActive(0);
+            }
             self.component.terminate();
         }
     }
