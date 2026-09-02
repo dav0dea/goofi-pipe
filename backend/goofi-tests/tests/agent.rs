@@ -589,15 +589,15 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     // seeded text can never name a folder the scan does not read or a shape the probe refuses.
     let example: String = agents
         .lines()
-        .skip_while(|l| !l.contains("# nodes_signal/gain.py"))
+        .skip_while(|l| !l.contains("# nodes_signal/scale.py"))
         .skip(1)
         .take_while(|l| !l.contains("library refresh"))
         .map(|l| format!("{}\n", l.strip_prefix("    ").unwrap_or(l)))
         .collect();
-    assert!(example.contains("class Gain"), "the example is where the walk expects it: {agents}");
+    assert!(example.contains("class Scale"), "the example is where the walk expects it: {agents}");
     std::fs::create_dir_all(mount.join("nodes_signal")).unwrap();
-    std::fs::write(mount.join("nodes_signal").join("gain.py"), example).unwrap();
-    assert_eq!(g.call("library refresh", json!({}))["added"], json!(["Gain"]), "the example is a node");
+    std::fs::write(mount.join("nodes_signal").join("scale.py"), example).unwrap();
+    assert_eq!(g.call("library refresh", json!({}))["added"], json!(["Scale"]), "the example is a node");
 
     // Identity travels in the ENVIRONMENT, and the shell itself answers what it was handed: the
     // server's id, its own undo actor, and a `goofi` that resolves — out of the directory the

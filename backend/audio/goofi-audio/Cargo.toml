@@ -9,7 +9,8 @@ goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
 goofi-codec = { path = "../../goofi-codec" }
 goofi-transport = { path = "../../goofi-transport" }
-goofi-audio-sdk = { path = "../goofi-audio-sdk" }
+goofi-audio-sdk = { path = "../goofi-audio-sdk", features = ["host"] }
+goofi-build = { path = "../../goofi-build" }
 indexmap = "2"
 rtrb = "0.3"
 cpal = "0.18"

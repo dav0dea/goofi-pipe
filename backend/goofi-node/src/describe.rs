@@ -47,6 +47,57 @@ pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
     serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
+/// A manifest as the probe schema — the one description every out-of-crate node answers, as JSON.
+pub fn describe(
+    category: &str,
+    doc: &str,
+    inputs: &[SlotDecl],
+    outputs: &[OutputDecl],
+    params: &[ParamDecl],
+    producer: bool,
+) -> String {
+    let intro = probe::Introspection {
+        gil_safe: true,
+        doc: doc.to_string(),
+        category: Some(category.to_string()),
+        producer,
+        inputs: inputs
+            .iter()
+            .map(|s| probe::Slot {
+                name: s.name.to_string(),
+                kind: s.kind.name().to_string(),
+                trigger: s.trigger_process,
+                multi: s.multi,
+                required: s.required,
+            })
+            .collect(),
+        outputs: outputs
+            .iter()
+            .map(|o| probe::OutSlot { name: o.name.to_string(), kind: o.kind.name().to_string() })
+            .collect(),
+        params: params
+            .iter()
+            .map(|p| probe::Param {
+                group: p.group.to_string(),
+                name: p.name.to_string(),
+                doc: p.doc.map(str::to_string),
+                expression: p.expression.map(|e| e.source.to_string()),
+                spec: match p.spec {
+                    ParamSpec::Int { default, min, max } => probe::ParamSpec::Int { default, min, max },
+                    ParamSpec::Float { default, min, max } => probe::ParamSpec::Float { default, min, max },
+                    ParamSpec::Bool { default } => probe::ParamSpec::Bool { default },
+                    ParamSpec::Str { default, options, refresh } => probe::ParamSpec::Str {
+                        default: default.to_string(),
+                        options: options.iter().map(|s| s.to_string()).collect(),
+                        refresh,
+                    },
+                },
+            })
+            .collect(),
+    };
+    serde_json::to_string(&intro).expect("a manifest serializes")
+}
+
 /// The first slot name the name rule refuses, phrased for the palette — a reference spells
 /// `node.slot` and an expression reads a slot as an attribute, so a bad name never registers.
 pub fn illegal_slot(intro: &probe::Introspection) -> Option<String> {

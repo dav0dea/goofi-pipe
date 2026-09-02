@@ -111,7 +111,7 @@ fn source_of(parts: Vec<(Region, u16)>, own: &[Region], len: &mut usize) -> Sour
 
 /// Whether a binding is a plan edge: a bare reference to a live audio output — a same-engine
 /// stream, so the control half never sees it.
-pub(crate) fn is_edge(b: &BindingView<'_>, live: &HashMap<Uid, Instance>) -> bool {
+pub(crate) fn is_edge<V>(b: &BindingView<'_>, live: &HashMap<Uid, V>) -> bool {
     b.live && b.id.is_none() && b.vars.len() == 1 && b.vars[0].wire().is_some_and(|(p, _)| live.contains_key(&p))
 }
 
@@ -119,8 +119,15 @@ pub(crate) fn is_edge(b: &BindingView<'_>, live: &HashMap<Uid, Instance>) -> boo
 /// `feedback()` ignores its in-edges and runs before every other root, reading its producers'
 /// regions as the previous block left them. A loop with no such node is excluded and named; what
 /// the loop feeds still runs, reading silence at that jack. A `silent` `AudioOut` runs but does
-/// not sum.
-pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>, silent: &[Uid]) -> (Plan, Vec<(Uid, String)>) {
+/// not sum, and a `disabled` node is not in the plan at all: what it fed reads silence.
+pub fn compile(
+    view: &GraphView<'_>,
+    live: &HashMap<Uid, Instance>,
+    silent: &[Uid],
+    disabled: &HashMap<Uid, String>,
+) -> (Plan, Vec<(Uid, String)>) {
+    let live: HashMap<Uid, &Instance> = live.iter().filter(|(u, _)| !disabled.contains_key(u)).map(|(u, i)| (*u, i)).collect();
+    let live = &live;
     let mut wires: HashMap<(Uid, &str), Vec<(Uid, &'static str)>> = HashMap::new();
     for e in view.edges {
         if live.contains_key(&e.consumer.0) && live.contains_key(&e.producer.0) {
@@ -232,7 +239,7 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>, silent: &[Ui
 
 /// The order Kahn finds — feedback nodes first, then by uid — and the nodes it could not place.
 /// Edges out of `dropped` nodes do not count, so what a loop feeds is placed on silence.
-fn kahn(live: &HashMap<Uid, Instance>, inbound: &HashMap<Uid, Vec<Uid>>, dropped: &HashSet<Uid>) -> (Vec<Uid>, Vec<Uid>) {
+fn kahn(live: &HashMap<Uid, &Instance>, inbound: &HashMap<Uid, Vec<Uid>>, dropped: &HashSet<Uid>) -> (Vec<Uid>, Vec<Uid>) {
     let mut indegree: HashMap<Uid, usize> = HashMap::new();
     let mut successors: HashMap<Uid, Vec<Uid>> = HashMap::new();
     for (uid, from) in inbound {

@@ -26,7 +26,7 @@ impl SignalEngine {
 const SETUP_RETRY_INTERVAL: f64 = 1.0;
 
 fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(goofi_signal_sdk::abi::panic_message)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(goofi_node::panic_message)
 }
 
 fn fold_panic(panicked: String) -> NodeResult {

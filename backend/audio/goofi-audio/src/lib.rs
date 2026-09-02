@@ -4,12 +4,14 @@
 //! node's control half (`control`) is a thread of its own, parked on the node's door.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use goofi_audio_sdk::{AudioNode, BLOCK};
+use goofi_audio_sdk::host::Loaded;
+use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
     DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView, ParamGroups,
@@ -20,11 +22,12 @@ mod control;
 pub mod nodes;
 mod plan;
 mod runtime;
+mod scan;
 
 use control::{Desired, Handle, Shared, Sub};
-use nodes::audio_out;
+use nodes::{audio_out, Class};
 use plan::Plan;
-use runtime::{Inbox, Msg, Retired, Runtime, Slot, MAX_PORTS};
+use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
 
 /// The rate until a device names one.
 pub const RATE: f64 = 48_000.0;
@@ -214,7 +217,9 @@ pub struct AudioEngine {
     tried: Option<(String, Option<String>)>,
     stats: Arc<Stats>,
     shared: Arc<Shared>,
-    classes: Vec<(&'static NodeManifest, nodes::Make)>,
+    classes: HashMap<&'static str, Class>,
+    /// Every built artifact loaded so far, by path: a library is opened once and never closed.
+    rust_loaded: HashMap<PathBuf, Arc<Loaded>>,
     runtime: Arc<Mutex<Runtime>>,
     inbox: rtrb::Producer<Msg>,
     outbox: rtrb::Consumer<Retired>,
@@ -222,6 +227,8 @@ pub struct AudioEngine {
     slab_len: usize,
     next_serial: u64,
     live: HashMap<Uid, Instance>,
+    /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
+    disabled: HashMap<Uid, String>,
     faulted: HashMap<Uid, String>,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
@@ -235,7 +242,7 @@ const QUEUE: usize = 4096;
 
 impl AudioEngine {
     pub fn new(instance: String, started: Instant, waker: Arc<DrainWaker>, clock: Clock) -> AudioEngine {
-        let classes = nodes::SHIPPED
+        let classes: HashMap<&'static str, Class> = nodes::BUILT_IN
             .iter()
             .map(|(type_name, m, make)| {
                 let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
@@ -247,7 +254,7 @@ impl AudioEngine {
                     params: m.params,
                     producer: false,
                 }));
-                (manifest, *make)
+                (*type_name, Class { manifest, make: Arc::new(*make) })
             })
             .collect();
         let (inbox, to_audio) = rtrb::RingBuffer::new(QUEUE);
@@ -267,6 +274,7 @@ impl AudioEngine {
                 rate: AtomicU64::new(RATE.to_bits()),
             }),
             classes,
+            rust_loaded: HashMap::new(),
             runtime: Arc::new(Mutex::new(Runtime::new(SLAB, to_audio, from_audio))),
             inbox,
             outbox,
@@ -274,6 +282,7 @@ impl AudioEngine {
             slab_len: SLAB,
             next_serial: 0,
             live: HashMap::new(),
+            disabled: HashMap::new(),
             faulted: HashMap::new(),
             pending: Vec::new(),
             dirty: false,
@@ -308,13 +317,24 @@ impl AudioEngine {
         }
     }
 
-    /// What the audio thread handed back is dropped here, where dropping may take time.
+    /// What the audio thread handed back is dropped here, where dropping may take time — and a
+    /// node it put out of the plan is recorded, for the settle this asks for to name and re-plan.
     fn discard_retired(&mut self) {
         while let Ok(retired) = self.outbox.pop() {
             match retired {
                 Retired::Slot(slot) => drop(slot),
                 Retired::Plan(plan, arena) => drop((plan, arena)),
                 Retired::Slab(slab) => drop(slab),
+                Retired::Faulted { uid, serial, fault } => {
+                    if self.live.get(&uid).is_some_and(|i| i.serial == serial) {
+                        let msg = match fault {
+                            Fault::Panic(msg) => msg,
+                            Fault::Overrun => format!("process overran the block {OVERRUNS} times in a row"),
+                        };
+                        self.disabled.insert(uid, msg);
+                        self.dirty = true;
+                    }
+                }
             }
         }
     }
@@ -453,6 +473,7 @@ impl AudioEngine {
                 slot.node.prepare(rate);
             }
             self.shared.rate.store(rate.to_bits(), Ordering::Relaxed);
+            rt.block = Duration::from_secs_f64(BLOCK as f64 / rate);
         }
         rt.set_device(Some(channels));
     }
@@ -472,18 +493,26 @@ impl Engine for AudioEngine {
     }
 
     fn library(&self) -> Vec<LibraryEntry> {
-        self.classes.iter().map(|(manifest, _)| LibraryEntry { manifest, isolation: &NATIVE }).collect()
+        self.classes.values().map(|c| LibraryEntry { manifest: c.manifest, isolation: &NATIVE }).collect()
+    }
+
+    fn scan(&mut self, dir: &Path) -> Vec<goofi_node::ScannedType> {
+        scan::scan(self, dir)
+    }
+
+    fn remove_type(&mut self, type_name: &str) -> bool {
+        !nodes::built_in(type_name) && self.classes.remove(type_name).is_some()
     }
 
     fn rust_sdk(&self) -> Option<&'static str> {
-        Some("goofi-audio-sdk")
+        Some(goofi_build::AUDIO.name)
     }
 
     fn normalize_params(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
-        let (manifest, _) = self
+        let manifest = self
             .classes
-            .iter()
-            .find(|(m, _)| m.type_name == type_name)
+            .get(type_name)
+            .map(|c| c.manifest)
             .ok_or_else(|| format!("no node type `{type_name}` in the audio library"))?;
         let mut params = manifest.default_params();
         for (group, entries) in supplied.into_iter().flatten() {
@@ -493,7 +522,7 @@ impl Engine for AudioEngine {
     }
 
     fn insert(&mut self, uid: Uid, type_name: &str, generation: u64, params: &ParamGroups) -> Option<String> {
-        let Some((manifest, make)) = self.classes.iter().find(|(m, _)| m.type_name == type_name).copied() else {
+        let Some(Class { manifest, make }) = self.classes.get(type_name).cloned() else {
             return Some(format!("no audio node type `{type_name}`"));
         };
         let widest = manifest.params.len().max(manifest.inputs.len()).max(manifest.outputs.len());
@@ -531,7 +560,16 @@ impl Engine for AudioEngine {
         let idx = self.slot_index();
         let serial = self.next_serial;
         self.next_serial += 1;
-        let slot = Slot { serial, node, params: atomics, inboxes: inbox_out.into_iter().map(Inbox::new).collect(), taps: tap_in };
+        let slot = Slot {
+            uid,
+            serial,
+            node,
+            params: atomics,
+            inboxes: inbox_out.into_iter().map(Inbox::new).collect(),
+            taps: tap_in,
+            dead: false,
+            overruns: 0,
+        };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });
         self.live.insert(uid, Instance { idx, serial, manifest, twin, control, last: None });
@@ -546,6 +584,7 @@ impl Engine for AudioEngine {
             inst.control.stop();
             self.send(Msg::Remove(inst.idx));
             self.free.push(inst.idx);
+            self.disabled.remove(&uid);
             self.faulted.remove(&uid);
             self.pending.retain(|(u, _)| *u != uid);
             self.dirty = true;
@@ -578,7 +617,8 @@ impl Engine for AudioEngine {
             }
         }
         let silent: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
-        let (plan, looped) = plan::compile(view, &self.live, &silent);
+        faults.extend(self.disabled.iter().map(|(u, m)| (*u, m.clone())));
+        let (plan, looped) = plan::compile(view, &self.live, &silent, &self.disabled);
         faults.extend(looped);
         let since = self.started.elapsed().as_secs_f64();
         let now: HashMap<Uid, String> = faults.into_iter().collect();

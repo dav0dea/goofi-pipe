@@ -14,6 +14,7 @@ pub static MANIFEST: Manifest = Manifest {
     params: &[],
 };
 
+#[derive(Default)]
 pub struct Feedback;
 
 impl AudioNode for Feedback {
@@ -31,3 +32,5 @@ impl AudioNode for Feedback {
         true
     }
 }
+
+goofi_audio_sdk::export!(Feedback, MANIFEST);

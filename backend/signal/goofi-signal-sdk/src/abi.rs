@@ -6,8 +6,8 @@ use std::ffi::{c_char, c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 
-use goofi_core::{probe, Data};
-use goofi_node::{ParamKey, ParamSpec, Params};
+use goofi_core::Data;
+use goofi_node::{ParamKey, Params};
 use indexmap::IndexMap;
 
 use crate::{Inputs, Manifest, Node, NodeCtx, Outputs};
@@ -69,49 +69,7 @@ pub fn describe_c(manifest: &Manifest) -> *const c_char {
 
 /// A manifest as the probe schema a Python node answers — one schema for every out-of-crate node.
 pub fn describe(m: &Manifest) -> String {
-    let intro = probe::Introspection {
-        gil_safe: true,
-        doc: m.doc.to_string(),
-        category: Some(m.category.to_string()),
-        producer: m.producer,
-        inputs: m
-            .inputs
-            .iter()
-            .map(|s| probe::Slot {
-                name: s.name.to_string(),
-                kind: s.kind.name().to_string(),
-                trigger: s.trigger_process,
-                multi: s.multi,
-                required: s.required,
-            })
-            .collect(),
-        outputs: m
-            .outputs
-            .iter()
-            .map(|o| probe::OutSlot { name: o.name.to_string(), kind: o.kind.name().to_string() })
-            .collect(),
-        params: m
-            .params
-            .iter()
-            .map(|p| probe::Param {
-                group: p.group.to_string(),
-                name: p.name.to_string(),
-                doc: p.doc.map(str::to_string),
-                expression: p.expression.map(|e| e.source.to_string()),
-                spec: match p.spec {
-                    ParamSpec::Int { default, min, max } => probe::ParamSpec::Int { default, min, max },
-                    ParamSpec::Float { default, min, max } => probe::ParamSpec::Float { default, min, max },
-                    ParamSpec::Bool { default } => probe::ParamSpec::Bool { default },
-                    ParamSpec::Str { default, options, refresh } => probe::ParamSpec::Str {
-                        default: default.to_string(),
-                        options: options.iter().map(|s| s.to_string()).collect(),
-                        refresh,
-                    },
-                },
-            })
-            .collect(),
-    };
-    serde_json::to_string(&intro).expect("a manifest serializes")
+    goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer)
 }
 
 /// The instance behind a `*mut c_void`: the author's node and what the shim keeps around it.
@@ -155,19 +113,9 @@ unsafe fn call(
     let reply = match catch_unwind(AssertUnwindSafe(|| f(inst, request))) {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(e)) => goofi_codec::encode_error_response(&e),
-        Err(p) => goofi_codec::encode_error_response(&panic_message(p)),
+        Err(p) => goofi_codec::encode_error_response(&goofi_node::panic_message(p)),
     };
     write(sink, Bytes::of(&reply));
-}
-
-pub fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = p.downcast_ref::<&str>() {
-        format!("panic: {s}")
-    } else if let Some(s) = p.downcast_ref::<String>() {
-        format!("panic: {s}")
-    } else {
-        "panic in node".to_string()
-    }
 }
 
 fn process_request(req: &[u8]) -> Result<(goofi_codec::ParamMap, Vec<(String, Data)>), String> {

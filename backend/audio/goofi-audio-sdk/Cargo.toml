@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The host half: loading a built node behind its vtable. Off in the node's own crate, so a cdylib
+# carries none of it.
+host = ["dep:libloading"]
+
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
+libloading = { version = "0.8", optional = true }

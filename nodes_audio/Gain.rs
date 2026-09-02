@@ -23,6 +23,7 @@ pub static MANIFEST: Manifest = Manifest {
     params: PARAMS,
 };
 
+#[derive(Default)]
 pub struct Gain;
 
 impl AudioNode for Gain {
@@ -42,3 +43,5 @@ impl AudioNode for Gain {
         }
     }
 }
+
+goofi_audio_sdk::export!(Gain, MANIFEST);

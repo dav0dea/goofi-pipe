@@ -1,7 +1,7 @@
 //! A machine with no toolchain: the shipped nodes load from the artifacts built into the binary,
 //! and only authoring is absent — named as such, never a silent gap.
 
-use goofi_tests::{j, Goofi, OutputProbe};
+use goofi_tests::{drive, f32s, j, Goofi, OutputProbe};
 
 #[test]
 fn a_shipped_node_runs_with_no_cargo_and_an_authored_one_says_what_it_needs() {
@@ -13,6 +13,12 @@ fn a_shipped_node_runs_with_no_cargo_and_an_authored_one_says_what_it_needs() {
     let uid = g.add("Oscillator");
     let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
     g.until("the shipped oscillator to emit", |g| probe.frame(&mut g.state.graph.lock().unwrap()));
+    let osc = g.add("Osc");
+    let tap = OutputProbe::open(&g.state.graph.lock().unwrap(), osc, "out");
+    g.until("the shipped audio oscillator to sound", |g| {
+        drive(g, 4800);
+        tap.frame(&mut g.state.graph.lock().unwrap()).filter(|d| f32s(d).iter().any(|v| v.abs() > 0.5))
+    });
 
     let dir = g.state.mount().join("nodes_signal");
     std::fs::create_dir_all(&dir).unwrap();

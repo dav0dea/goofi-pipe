@@ -119,3 +119,5 @@ impl AudioNode for Env {
         }
     }
 }
+
+goofi_audio_sdk::export!(Env, MANIFEST);

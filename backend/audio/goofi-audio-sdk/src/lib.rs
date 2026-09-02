@@ -5,10 +5,17 @@
 pub use goofi_core;
 pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamSpec, SlotDecl};
 
+pub mod abi;
+#[cfg(feature = "host")]
+pub mod host;
+
 /// Every block is exactly this many frames; the engine carries any surplus to the next callback.
 pub const BLOCK: usize = 64;
 /// What a node is prepared for; a port never carries more channels than this.
 pub const MAX_CHANNELS: u16 = 16;
+/// The most inputs, outputs or params a node may declare: a block's ports are stack arrays on
+/// both sides of the boundary.
+pub const MAX_PORTS: usize = 16;
 
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's. The
 /// signal-only slot flags are ignored; `multi: true` on an input sums its wires at the jack.

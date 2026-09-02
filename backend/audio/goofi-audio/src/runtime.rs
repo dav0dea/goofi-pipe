@@ -1,17 +1,21 @@
 //! What the audio thread owns, and one block of it. Nothing here allocates, locks or blocks:
 //! every message is a pointer move, every port is a view into the arena the plan laid out.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK, MAX_CHANNELS};
+use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK, MAX_CHANNELS, MAX_PORTS};
+use goofi_node::Uid;
 
 use crate::plan::{Plan, Source, SILENCE};
 
-/// The most inputs, outputs or params a node may declare: a block's ports are stack arrays.
-pub const MAX_PORTS: usize = 16;
+/// Blocks in a row a node may take longer than a block to process before it leaves the plan.
+pub const OVERRUNS: u8 = 8;
 
 pub struct Slot {
+    pub uid: Uid,
     /// Which occupant of the index this is — what a stage compiled for another one checks.
     pub serial: u64,
     pub node: Box<dyn AudioNode>,
@@ -21,6 +25,10 @@ pub struct Slot {
     pub inboxes: Vec<Inbox>,
     /// One per output: what the control half publishes to whoever subscribes.
     pub taps: Vec<rtrb::Producer<f32>>,
+    /// Out of the plan: it panicked or the watchdog took it, and its outputs are zero until the
+    /// settle that re-plans without it.
+    pub dead: bool,
+    pub overruns: u8,
 }
 
 /// The audio thread's end of an Array input: chunks of interleaved samples, each headed by its
@@ -111,11 +119,18 @@ pub enum Msg {
     Grow(Vec<Option<Slot>>),
 }
 
-/// What comes back to be dropped off the audio thread.
+/// Why a node left the plan.
+pub enum Fault {
+    Panic(String),
+    Overrun,
+}
+
+/// What comes back to be dropped off the audio thread — and what it put out of the plan.
 pub enum Retired {
     Slot(Slot),
     Plan(Plan, Vec<f32>),
     Slab(Vec<Option<Slot>>),
+    Faulted { uid: Uid, serial: u64, fault: Fault },
 }
 
 pub struct Runtime {
@@ -128,6 +143,8 @@ pub struct Runtime {
     pub fifo: Vec<f32>,
     /// The device's width while a device is the clock; the summed output's own otherwise.
     device: Option<u16>,
+    /// One block's duration at the rate: what a node's `process` is held to.
+    pub block: Duration,
 }
 
 impl Runtime {
@@ -140,6 +157,7 @@ impl Runtime {
             outbox,
             fifo: Vec::new(),
             device: None,
+            block: Duration::from_secs_f64(BLOCK as f64 / crate::RATE),
         }
     }
 
@@ -240,7 +258,9 @@ impl Runtime {
                     Source::Silence | Source::Region { .. } => {}
                 }
             }
-            {
+            let fault = if slot.dead {
+                None
+            } else {
                 let ins: [Port<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.ins.get(i) {
                     Some(s) => unsafe { port(base, len, s) },
                     None => Port::new(&[], 0, false),
@@ -253,11 +273,35 @@ impl Runtime {
                     Some((at, channels)) => PortMut::new(unsafe { region_mut(base, len, *at, *channels) }, *channels),
                     None => PortMut::new(&mut [], 0),
                 });
-                slot.node.process(&mut Block {
+                let mut block = Block {
                     ins: &ins[..stage.ins.len()],
                     outs: &mut outs[..stage.outs.len()],
                     params: &params[..stage.params.len()],
-                });
+                };
+                let started = Instant::now();
+                let ran = catch_unwind(AssertUnwindSafe(|| slot.node.process(&mut block)));
+                match ran {
+                    Err(p) => Some(Fault::Panic(goofi_node::panic_message(p))),
+                    Ok(()) if started.elapsed() > self.block => {
+                        slot.overruns += 1;
+                        (slot.overruns >= OVERRUNS).then_some(Fault::Overrun)
+                    }
+                    Ok(()) => {
+                        slot.overruns = 0;
+                        None
+                    }
+                }
+            };
+            if fault.is_some() {
+                slot.dead = true;
+            }
+            if slot.dead {
+                for (at, channels) in &stage.outs {
+                    unsafe { region_mut(base, len, *at, *channels) }.fill(0.0);
+                }
+            }
+            if let Some(fault) = fault {
+                let _ = self.outbox.push(Retired::Faulted { uid: slot.uid, serial: slot.serial, fault });
             }
             for (k, (at, channels)) in stage.outs.iter().enumerate() {
                 let Some(tap) = slot.taps.get_mut(k) else { continue };

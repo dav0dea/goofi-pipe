@@ -15,6 +15,7 @@ pub static MANIFEST: Manifest = Manifest {
     params: &[],
 };
 
+#[derive(Default)]
 pub struct SignalIn;
 
 impl AudioNode for SignalIn {
@@ -28,3 +29,5 @@ impl AudioNode for SignalIn {
         }
     }
 }
+
+goofi_audio_sdk::export!(SignalIn, MANIFEST);

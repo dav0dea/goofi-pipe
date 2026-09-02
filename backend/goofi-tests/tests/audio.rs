@@ -3,13 +3,7 @@
 
 use std::sync::Arc;
 
-use goofi_tests::{ep, f32s, hex, j, shape, FirstVar, Goofi, Uid};
-
-/// Render `frames` and hand back what the device would get, interleaved, with its channel count.
-fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
-    let mut graph = g.state.graph.lock().unwrap();
-    goofi_bridge::audio_engine(&mut graph).drive(frames)
-}
+use goofi_tests::{drive, ep, f32s, hex, j, shape, FirstVar, Goofi, Uid};
 
 /// Drive tenths until the output satisfies `want` — a constant lands within one control hop, and
 /// the tenth after shows it — and hand that tenth back.
@@ -464,4 +458,63 @@ fn a_patch_sounds_under_the_external_clock() {
     g.call("node remove", j!({ "node": hex(fb) }));
     let (opened, _) = drive(&g, TENTH);
     assert!((mean(&opened[opened.len() - 480..]) - 0.5).abs() < 0.01, "the loop opened: {}", mean(&opened[opened.len() - 480..]));
+
+    // Step: an authored audio node builds, loads behind the boundary and sounds beside the chain.
+    let dir = g.state.mount().join("nodes_audio");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Trap.rs"),
+        "use goofi_audio_sdk::goofi_core::SlotType;\n\
+         use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec};\n\
+         goofi_audio_sdk::params! {\n    \
+         ARM = ParamDecl { group: \"trap\", name: \"arm\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n    \
+         STALL = ParamDecl { group: \"trap\", name: \"stall\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n\
+         }\n\
+         static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
+         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"a quarter, a panic, or a stall\", inputs: &[], outputs: OUTS, params: PARAMS };\n\
+         #[derive(Default)]\nstruct Trap;\n\
+         impl AudioNode for Trap {\n    \
+         fn prepare(&mut self, _rate: f64) {}\n    \
+         fn process(&mut self, b: &mut Block<'_>) {\n        \
+         if b.params[P::ARM].chan(0)[0] > 0.5 { panic!(\"armed\"); }\n        \
+         if b.params[P::STALL].chan(0)[0] > 0.5 {\n            \
+         let t = std::time::Instant::now();\n            \
+         while t.elapsed() < std::time::Duration::from_millis(3) {}\n        \
+         }\n        \
+         b.outs[0].chan_mut(0).fill(0.25);\n    \
+         }\n}\n\
+         goofi_audio_sdk::export!(Trap, MANIFEST);\n",
+    )
+    .unwrap();
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Trap"]));
+    let trap = g.add("Trap");
+    g.link(trap, "out", out, "input");
+    let level = |x: &[f32]| mean(&x[x.len() - 480..]);
+    sounds(&g, "the quarter to join the half", |x| (level(x) - 0.75).abs() < 0.01);
+
+    // Step: a panic in `process` is caught at the boundary, never the process's end: the node
+    // faults with its own words, leaves the plan so the chain reads silence where it was, and a
+    // restart brings it back.
+    g.set_param(trap, "trap", "arm", true);
+    g.until("the panic to be named", |g| {
+        drive(g, TENTH);
+        state(g, trap).contains("panic: armed").then_some(())
+    });
+    sounds(&g, "the quarter to leave the sum", |x| (level(x) - 0.5).abs() < 0.01);
+    g.set_param(trap, "trap", "arm", false);
+    g.call("node restart", j!({ "node": hex(trap) }));
+    g.until("the restarted node to be clean", |g| (!state(g, trap).contains("panic")).then_some(()));
+    sounds(&g, "the quarter to rejoin", |x| (level(x) - 0.75).abs() < 0.01);
+
+    // Step: a node that takes longer than a block, eight blocks in a row, is taken out of the
+    // plan by the watchdog and says so; its neighbours never miss a block for it.
+    g.set_param(trap, "trap", "stall", true);
+    g.until("the watchdog to take it", |g| {
+        drive(g, TENTH);
+        state(g, trap).contains("overran the block").then_some(())
+    });
+    sounds(&g, "the stalled quarter to leave the sum", |x| (level(x) - 0.5).abs() < 0.01);
+    g.set_param(trap, "trap", "stall", false);
+    g.call("node restart", j!({ "node": hex(trap) }));
+    sounds(&g, "the quarter to rejoin once more", |x| (level(x) - 0.75).abs() < 0.01);
 }

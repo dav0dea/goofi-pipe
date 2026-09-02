@@ -27,7 +27,7 @@ fn prebuild_nodes() {
     // OUT_DIR is `<target>/<profile>/build/<pkg>-<hash>/out`; four levels up is `<target>`.
     let base = out.ancestors().nth(4).expect("a cargo OUT_DIR").join("goofi-build");
     let (mut sources, mut artifacts) = (String::new(), String::new());
-    for (engine, sdk) in [("signal", &goofi_build::SIGNAL)] {
+    for (engine, sdk) in [("signal", &goofi_build::SIGNAL), ("audio", &goofi_build::AUDIO)] {
         let folder = goofi_node::folder_of(engine);
         let dir = root.join(&folder);
         println!("cargo:rerun-if-changed={}", dir.display());

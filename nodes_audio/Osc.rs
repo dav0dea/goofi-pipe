@@ -59,3 +59,5 @@ impl AudioNode for Osc {
         }
     }
 }
+
+goofi_audio_sdk::export!(Osc, MANIFEST);

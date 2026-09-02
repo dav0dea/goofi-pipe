@@ -35,7 +35,8 @@ its file. `AGENTS.md` states the contract; the code holds the mechanism.
   keys a loaded type or a saved patch still wants, so no sweep can tell a corpse from a hit.
 - **A build in progress says nothing.** A node's lifecycle models "not ready yet"; a TYPE's does not,
   so a refresh that compiles for twenty seconds is twenty seconds of silence on every transport.
-- **`nodes_audio/` and its SDK arrive with the audio engine** (`audio-engine.md`): a second entry in
-  `goofi-build`'s SDK table and nothing else, if the seam holds.
+- **`nodes_audio/` and its SDK landed with the audio engine** (2026-09-02, `audio-engine.md`): a
+  second entry in `goofi-build`'s sdk list, the same pipeline, the same three symbols; the audio
+  ABI crosses the block as descriptors of the arena's regions rather than codec bytes.
 - What a Rust node buys over a Python one, measured through this boundary rather than assumed —
   `builtin-nodes.md` keeps that question.

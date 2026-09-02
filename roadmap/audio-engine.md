@@ -305,6 +305,20 @@ Rust — and goofi generates the crate around it, builds it, and loads it while 
 `node-sources.md` holds the folder rule and the pipeline, which is one for every engine; what is
 here is the part that is audio's — the rules an audio thread forces.
 
+Landed 2026-09-02 (Step 7): `goofi-audio-sdk` carries `abi` and `host` beside the trait, the same
+shape as the signal SDK's, and `goofi-build` knows it as the `AUDIO` sdk; the composition root
+prebuilds `nodes_audio/` beside `nodes_signal/` and embeds both. The five DSP nodes are files in
+`nodes_audio/`; only `AudioOut`, `AudioIn` and `MidiIn` are built in, because their control halves
+own OS handles, and a file may not take one of their names. `process` crosses as a descriptor of the
+arena's own regions — no bytes, no codec — and every entry answers whether the node came through
+it; a panic the shim caught reaches the host as a Rust panic, so the runtime's ONE `catch_unwind`
+around `process` treats a loaded node and a built-in one alike: the node's outputs are zeroed, it
+leaves the plan with a `Process` fault carrying its own words, and `node restart` is what brings it
+back. The watchdog blames a node by its OWN duration — eight blocks in a row over one block's time
+at the rate — and never skips a neighbour, because a skip after a deadline lands on the victim
+rather than the culprit, and under the harness's external clock every scheduler hitch would become
+a zeroed block. `describe` and the panic text live in `goofi-node`, one source for both SDKs.
+
 - **The manifest crosses as data, never as a Rust struct.** `describe()` answers the same JSON
   declaration the Python probe reads from a Python node's class attributes, and the engine leaks
   it to a `&'static NodeManifest` through the probe's own `leak_manifest` — both moved into
@@ -442,6 +456,13 @@ its reasons are in the locked decisions; what survives of the two reviews that p
 - **Whether `MAX_CHANNELS = 16` is right**, and what a spectral port does to it when `Bins` arrives.
 - **Drift between two devices** for `AudioIn`: measured before any correction is built.
 - **A canvas affordance for references** — `param-sources.md` holds it.
+- **Type names are ONE namespace across engines.** A shipped audio `Gain` and a patch's
+  `nodes_signal/gain.py` are one name: the later scan takes it, the palette reports the file as
+  `changed`, and the other engine's type is unreachable while the file exists. The orientation's
+  example became `scale.py` for this. Whether a file may take a name another engine ships, or is
+  refused as a built-in's is, is open.
+- **Blame by a node's own duration is the watchdog's rule**, and eight blocks its count; a node that
+  runs at exactly the block's time flaps in and out. Neither number has been tuned on a device.
 - **A CLAP adapter**, deferred: one more implementor of the trait, only if a CLAP-only plugin ever
   matters. Nothing leans on it.
 - **Whether goofi should run as a plugin inside a DAW.** Deliberately not recorded as an item: the

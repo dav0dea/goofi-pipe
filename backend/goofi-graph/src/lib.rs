@@ -690,19 +690,20 @@ impl Graph {
         let mut out = Vec::new();
         for engine in &mut self.engines {
             let dir = root.join(goofi_node::folder_of(engine.id()));
-            if !dir.is_dir() {
-                continue;
+            if dir.is_dir() {
+                out.extend(engine.scan(&dir));
             }
-            for t in engine.scan(&dir) {
-                match &t.outcome {
-                    goofi_node::Scanned::Registered { .. } => {
-                        self.unavailable.remove(&t.type_name);
-                    }
-                    goofi_node::Scanned::Unavailable(reason) => {
-                        self.unavailable.insert(t.type_name.clone(), reason.clone());
-                    }
+        }
+        for t in &out {
+            match &t.outcome {
+                goofi_node::Scanned::Registered { .. } => {
+                    self.unavailable.remove(&t.type_name);
                 }
-                out.push(t);
+                // A name a library still answers is never greyed: one name, one row.
+                goofi_node::Scanned::Unavailable(reason) if !self.known_type(&t.type_name) => {
+                    self.unavailable.insert(t.type_name.clone(), reason.clone());
+                }
+                goofi_node::Scanned::Unavailable(_) => {}
             }
         }
         out

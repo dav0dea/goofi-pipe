@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use goofi_core::Data;
-use goofi_tests::{j, require_python, Goofi, OutputProbe};
+use goofi_tests::{drive, j, require_python, Goofi, OutputProbe};
 
 /// A producer that emits the number it was written with — which FILE a node runs, observable.
 fn write_node(root: &Path, file: &str, value: &str) {
@@ -275,4 +275,79 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     opened.call("session load", j!({ "path": target.to_string_lossy() }));
     let uid = opened.state.graph.lock().unwrap().node_uids()[0];
     emits(&opened, uid, 3.0);
+}
+
+/// An audio producer that holds the level it was written with — which FILE a node runs, heard.
+fn write_audio_node(root: &Path, file: &str, value: &str) {
+    let dir = root.join("nodes_audio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = format!(
+        "use goofi_audio_sdk::goofi_core::SlotType;\n\
+         use goofi_audio_sdk::{{AudioNode, Block, Manifest, OutputDecl}};\n\n\
+         #[derive(Default)]\nstruct Level;\n\n\
+         impl AudioNode for Level {{\n    \
+         fn prepare(&mut self, _rate: f64) {{}}\n    \
+         fn process(&mut self, b: &mut Block<'_>) {{\n        \
+         b.outs[0].chan_mut(0).fill({value}f32);\n    \
+         }}\n}}\n\n\
+         static OUTS: &[OutputDecl] = &[OutputDecl {{ name: \"out\", kind: SlotType::Audio }}];\n\
+         static MANIFEST: Manifest = Manifest {{ category: \"test\", doc: \"holds a level\", inputs: &[], outputs: OUTS, params: &[] }};\n\n\
+         goofi_audio_sdk::export!(Level, MANIFEST);\n"
+    );
+    std::fs::write(dir.join(file), source).unwrap();
+}
+
+/// Drive the audio clock and watch one node's `out` tap until it holds `want`.
+fn holds(g: &Goofi, uid: goofi_tests::Uid, want: f32) {
+    let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
+    g.until(&format!("{uid} to hold {want}"), |g| {
+        drive(g, 4800);
+        probe.frame(&mut g.state.graph.lock().unwrap()).filter(|d| first_f32(d) == want)
+    });
+}
+
+#[test]
+fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
+    let g = Goofi::new();
+    let r = g.call("library get", j!({ "type": "Osc" }));
+    assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
+    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl AudioNode for Osc")), "{r}");
+
+    let mount = g.state.mount();
+    write_audio_node(&mount, "Level.rs", "0.25");
+    assert_eq!(rescan(&g)["added"], j!(["Level"]), "the file becomes a type");
+    let live = g.add("Level");
+    holds(&g, live, 0.25);
+    write_audio_node(&mount, "Level.rs", "0.5");
+    assert_eq!(rescan(&g)["changed"], j!(["Level"]), "an edited file reports as changed");
+    holds(&g, live, 0.5);
+
+    // A file that does not compile greys the type out with rustc's own words, and the instance
+    // built from the last good file runs on.
+    std::fs::write(mount.join("nodes_audio").join("Level.rs"), "fn broken( {\n").unwrap();
+    rescan(&g);
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "Level").cloned().expect("the type stays listed, greyed");
+    assert_eq!(row["available"], false, "{row}");
+    assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
+    assert!(g.refuse("node add", j!({ "type": "Level" })).contains("unavailable"));
+    holds(&g, live, 0.5);
+    write_audio_node(&mount, "Level.rs", "0.5");
+    assert_eq!(rescan(&g)["changed"], j!(["Level"]), "the fix is a change, built from the cache");
+
+    // A name the engine builds in is refused to a file, and the palette says why.
+    std::fs::write(mount.join("nodes_audio").join("AudioOut.rs"), "fn never_built() {}\n").unwrap();
+    rescan(&g);
+    let rows: Vec<serde_json::Value> = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .filter(|v| v["type"] == "AudioOut").cloned().collect();
+    assert!(rows.len() == 1 && rows[0]["available"] == true, "the built-in stands, and alone: {rows:?}");
+
+    // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("audio.gfi");
+    g.call("session save", j!({ "path": target.to_string_lossy() }));
+    let opened = Goofi::new();
+    opened.call("session load", j!({ "path": target.to_string_lossy() }));
+    let uid = opened.state.graph.lock().unwrap().node_uids()[0];
+    holds(&opened, uid, 0.5);
 }

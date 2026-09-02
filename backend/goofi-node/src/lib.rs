@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 pub mod describe;
 pub mod mailbox;
 pub mod seam;
-pub use describe::{folder_of, illegal_slot, leak_manifest, parse_introspection, type_name_of};
+pub use describe::{describe, folder_of, illegal_slot, leak_manifest, parse_introspection, type_name_of};
 pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
@@ -466,4 +466,20 @@ pub enum Status {
     BindingErrors { errors: Vec<(ParamKey, Option<String>)> },
     /// The evaluated values of the node's bound params — the sparse projection, never the record.
     ParamValues { evaluated: Vec<(ParamKey, Param)> },
+}
+
+/// What a caught panic said, as the node's own words: the `&str` or `String` it carried.
+pub fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "in node".to_string()
+    }
+}
+
+/// A caught panic as the fault text every engine reports it with.
+pub fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+    format!("panic: {}", panic_text(p))
 }

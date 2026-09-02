@@ -98,23 +98,23 @@ node-editor, parameters, viewer, metadata, console, globals, agent.
 ## Custom nodes
 
 The most powerful thing you can do here. The patch's own node library is `nodes_signal/` under
-the workspace: one file is one type, named by CamelCasing its stem (`gain.py` → `Gain`),
+the workspace: one file is one type, named by CamelCasing its stem (`scale.py` → `Scale`),
 overriding a shipped type of the same name.
 
-    # nodes_signal/gain.py
+    # nodes_signal/scale.py
     import goofi
 
-    class Gain(goofi.Node):
+    class Scale(goofi.Node):
         INPUTS = {"data": goofi.DataType.ARRAY}
         OUTPUTS = {"out": goofi.DataType.ARRAY}
-        PARAMS = {"gain": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
+        PARAMS = {"scale": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
 
         def process(self, data):
             if data is None:
                 return None
-            return {"out": (data.data * self.params.gain.factor, data.meta)}
+            return {"out": (data.data * self.params.scale.factor, data.meta)}
 
-    goofi library refresh → {"added": ["Gain"], "changed": [], "removed": []}
+    goofi library refresh → {"added": ["Scale"], "changed": [], "removed": []}
 
 Four constants declare the node, and each may be omitted: `INPUTS`, `OUTPUTS`, `PARAMS`, and
 `PRODUCER = True` for a source that paces itself rather than waiting for a frame. An input slot

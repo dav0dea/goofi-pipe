@@ -32,8 +32,15 @@ pub const SIGNAL: Sdk = Sdk {
     glue: "goofi_signal_sdk::cdylib!(node);",
 };
 
+pub const AUDIO: Sdk = Sdk {
+    name: "goofi-audio-sdk",
+    dir: "backend/audio/goofi-audio-sdk",
+    allow: &[("libm", "0.2")],
+    glue: "goofi_audio_sdk::cdylib!(node);",
+};
+
 pub fn sdk(name: &str) -> Option<&'static Sdk> {
-    [&SIGNAL].into_iter().find(|s| s.name == name)
+    [&SIGNAL, &AUDIO].into_iter().find(|s| s.name == name)
 }
 
 /// Where the extracted SDK, the generated crates, one shared cargo target and every artifact

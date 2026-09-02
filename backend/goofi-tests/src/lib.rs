@@ -362,6 +362,13 @@ impl Events {
     }
 }
 
+/// Render `frames` on the audio engine's external clock and hand back what the device would get,
+/// interleaved, with its channel count.
+pub fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
+    let mut graph = g.state.graph.lock().unwrap();
+    goofi_bridge::audio_engine(&mut graph).drive(frames)
+}
+
 /// A uid as the wire spells it.
 pub fn hex(u: Uid) -> String {
     u.to_string()
