@@ -255,10 +255,10 @@ pub(crate) fn node_add(
         if g.name_taken(&name, None) {
             return Err(format!("node add: the name `{name}` is taken"));
         }
-        if !goofi_core::globals::is_valid_identifier(&name) {
+        if !goofi_core::globals::is_valid_name(&name) {
             return Err(format!(
                 "node add: `{name}` is not a legal name: {}",
-                goofi_graph::NAME_RULE
+                goofi_core::globals::NAME_RULE
             ));
         }
     }
@@ -612,7 +612,7 @@ pub(crate) fn node_edit(
         return Err(format!(
             "node edit: `{}` is not a legal name: {}",
             name.unwrap_or_default(),
-            goofi_graph::NAME_RULE
+            goofi_core::globals::NAME_RULE
         ));
     }
     let pos = payload

@@ -29,7 +29,7 @@ pub use goofi_node::Uid;
 /// archive somebody actually holds — not once per change while the format is still moving.
 const MANIFEST_VERSION: i64 = 1;
 
-pub use goofi_core::globals::NAME_RULE;
+use goofi_core::globals::NAME_RULE;
 
 /// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
 /// so it carries a thread and params; a facade and a port do not, so they carry neither.
@@ -53,8 +53,8 @@ struct Leaf {
     engine: &'static str,
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
     params: Arc<ParamGroups>,
-    /// The graph resolves each binding's references and ships it; the NODE evaluates it.
-    bindings: HashMap<ParamKey, ParamSource>,
+    /// The graph resolves each source's references and ships it; the NODE evaluates it.
+    sources: HashMap<ParamKey, ParamSource>,
     health: Health,
 }
 
@@ -189,7 +189,7 @@ pub fn param_commands(
                 .params(uid)
                 .and_then(|p| goofi_node::param(&p, group, name).cloned())
                 .ok_or_else(|| format!("no param {group}.{name}"))?;
-            let cur = g.param_source(uid, group, name);
+            let cur = g.param_source(uid, group, name).map(|s| s.state);
             let (value, source) = param_change(&existing, cur, spec)
                 .map_err(|e| format!("params.{group}.{name}: {e}"))?;
             if value.is_none() && source.is_none() {
@@ -221,7 +221,7 @@ fn coerced_value(existing: &Param, v: &serde_json::Value) -> Param {
 /// its mode unless one is said; a mode or a trigger alone edits what is retained.
 fn param_change(
     existing: &Param,
-    cur: Option<SourceInfo>,
+    cur: Option<SourceState>,
     spec: &serde_json::Value,
 ) -> Result<(Option<Param>, Option<SourceState>), String> {
     let Some(o) = spec.as_object() else {
@@ -244,8 +244,8 @@ fn param_change(
     let reference = text("reference")?;
     let mode = field("mode")
         .map(|v| {
-            v.as_str()
-                .and_then(Mode::parse)
+            serde_json::from_value::<Mode>(v.clone())
+                .ok()
                 .ok_or_else(|| format!("mode is `constant`, `expression` or `reference`, not {v}"))
         })
         .transpose()?;
@@ -255,6 +255,7 @@ fn param_change(
     if expression.is_none() && reference.is_none() && mode.is_none() && triggers.is_none() {
         return Ok((value, None));
     }
+    let cur = cur.unwrap_or_default();
     let given = |t: &Option<String>| t.as_deref().is_some_and(|s| !s.is_empty());
     let mode = match (mode, given(&expression), given(&reference)) {
         (Some(m), _, _) => m,
@@ -264,7 +265,7 @@ fn param_change(
         (None, true, false) => Mode::Expression,
         (None, false, true) => Mode::Reference,
         // Clearing the active text is what switches it off.
-        (None, false, false) => match cur.as_ref().map(|c| c.mode).unwrap_or_default() {
+        (None, false, false) => match cur.mode {
             Mode::Expression if expression.as_deref() == Some("") => Mode::Constant,
             Mode::Reference if reference.as_deref() == Some("") => Mode::Constant,
             m => m,
@@ -272,9 +273,9 @@ fn param_change(
     };
     let state = SourceState {
         mode,
-        expression: expression.or_else(|| cur.as_ref().map(|c| c.expression.clone())).unwrap_or_default(),
-        reference: reference.or_else(|| cur.as_ref().map(|c| c.reference.clone())).unwrap_or_default(),
-        triggers: triggers.unwrap_or_else(|| cur.as_ref().is_some_and(|c| c.triggers_process)),
+        expression: expression.unwrap_or(cur.expression),
+        reference: reference.unwrap_or(cur.reference),
+        triggers: triggers.unwrap_or(cur.triggers),
     };
     match state.mode {
         Mode::Expression if state.expression.is_empty() => {
@@ -304,7 +305,8 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
 }
 
 /// The active source of a param's value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
     Constant,
@@ -312,48 +314,26 @@ pub enum Mode {
     Reference,
 }
 
-impl Mode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Mode::Constant => "constant",
-            Mode::Expression => "expression",
-            Mode::Reference => "reference",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Mode> {
-        match s {
-            "constant" => Some(Mode::Constant),
-            "expression" => Some(Mode::Expression),
-            "reference" => Some(Mode::Reference),
-            _ => None,
-        }
-    }
-}
-
 /// The one variable a reference rewrites to: the bare-variable source the runtime copies without
 /// an evaluator.
 const REF_VAR: &str = "ref";
 
-/// A param's source record, graph-side: the AUTHORED expression and reference — both retained
-/// whatever the mode, since a toggle is never destructive — and everything below `triggers_process`
-/// is DERIVED from the active one, re-derived whenever it or a name the graph resolves changes.
+/// A param's source record, graph-side: the AUTHORED state — both texts retained whatever the
+/// mode, since a toggle is never destructive — and everything below it DERIVED from the active
+/// one, re-derived whenever it or a name the graph resolves changes.
 struct ParamSource {
-    mode: Mode,
-    expression: String,
-    reference: String,
-    triggers_process: bool,
-    /// Compiled from [`Self::rewritten`], never from [`Self::source`]: the evaluator is handed
+    state: SourceState,
+    /// Compiled from [`Self::rewritten`], never from the authored text: the evaluator is handed
     /// variables, not names. `None` when the compile failed, or there is no evaluator.
     id: Option<goofi_node::BindingId>,
-    /// Derived: `source` with every reference replaced by a generated variable.
+    /// Derived: the active text with every reference replaced by a generated variable.
     rewritten: String,
     /// Derived: one entry per variable `rewritten` names, resolved against the graph.
     vars: Vec<BoundVar>,
     /// The rewrite's variable list BEFORE resolution — a variable that failed to resolve no longer
     /// says what it was looking for, and that is what a new node or global has to re-resolve.
     terms: Vec<expr_rewrite::VarRef>,
-    /// Why the GRAPH could not bind this source. Written by `set_expression` and nowhere else — it
+    /// Why the GRAPH could not bind this source. Written by `set_source` and nowhere else — it
     /// describes the SOURCE, so it outlives any one instance.
     bind_error: Option<String>,
 }
@@ -362,25 +342,14 @@ impl ParamSource {
     /// Whether the graph SHIPS this source. A constant mode and a source the graph could not bind
     /// both leave the param on its literal, and the node is TOLD so.
     fn live(&self) -> bool {
-        self.mode != Mode::Constant && self.bind_error.is_none()
-    }
-
-    fn state(&self) -> SourceState {
-        SourceState {
-            mode: self.mode,
-            expression: self.expression.clone(),
-            reference: self.reference.clone(),
-            triggers: self.triggers_process,
-        }
+        self.state.mode != Mode::Constant && self.bind_error.is_none()
     }
 }
 
-/// [`ParamSource`] projected for the bridge and the `.gfi`.
+/// [`ParamSource`] projected for the bridge and the `.gfi`: the authored state, and why it does
+/// not hold — the graph could not bind it, or the node could not evaluate it.
 pub struct SourceInfo {
-    pub mode: Mode,
-    pub expression: String,
-    pub reference: String,
-    pub triggers_process: bool,
+    pub state: SourceState,
     pub error: Option<String>,
 }
 
@@ -574,7 +543,7 @@ impl Graph {
     /// Re-resolve and re-send every expression binding that reads global `name`, so its new value
     /// reaches the nodes reading it (only those bindings pay). Shared by the global mutators.
     fn invalidate_bindings_reading(&mut self, name: &str) {
-        let reading = self.bindings_where(|b| {
+        let reading = self.sources_where(|b| {
             b.terms.iter().any(|t| matches!(t, expr_rewrite::VarRef::Global { key, .. } if key == name))
         });
         self.rebind(&reading);
@@ -584,7 +553,7 @@ impl Graph {
     /// position, since a port's name is read as a node's and as its facade's slot label. §5.3's
     /// "renamed, added, removed or restarted", stated once.
     fn rebind_naming(&mut self, name: &str) {
-        let naming = self.bindings_where(|b| {
+        let naming = self.sources_where(|b| {
             b.terms.iter().any(|t| match t {
                 expr_rewrite::VarRef::Node { name: n, slot, .. } => {
                     n == name || slot.as_deref() == Some(name)
@@ -603,7 +572,7 @@ impl Graph {
         let Some(target_name) = self.name(target).map(str::to_string) else { return };
         let reading: Vec<(Uid, ParamKey)> = self
             .leaves()
-            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (uid, k.clone(), b)))
+            .flat_map(|(uid, e)| e.sources.iter().map(move |(k, b)| (uid, k.clone(), b)))
             .filter(|(consumer, _, b)| {
                 b.terms.iter().any(|t| match t {
                     expr_rewrite::VarRef::NodeParam { name, group, param, .. } => {
@@ -620,10 +589,10 @@ impl Graph {
         self.rebind(&reading);
     }
 
-    /// Every binding matching a predicate, as `(node, param)` — the addressing `rebind` takes.
-    fn bindings_where(&self, want: impl Fn(&ParamSource) -> bool) -> Vec<(Uid, ParamKey)> {
+    /// Every source matching a predicate, as `(node, param)` — the addressing `rebind` takes.
+    fn sources_where(&self, want: impl Fn(&ParamSource) -> bool) -> Vec<(Uid, ParamKey)> {
         self.leaves()
-            .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (uid, k.clone(), b)))
+            .flat_map(|(uid, e)| e.sources.iter().map(move |(k, b)| (uid, k.clone(), b)))
             .filter(|(_, _, b)| want(b))
             .map(|(uid, key, _)| (uid, key))
             .collect()
@@ -631,20 +600,15 @@ impl Graph {
 
     /// Re-run `set_source` on each of these records from its AUTHORED texts — the one operation
     /// that re-derives the rewrite, the variables and the handle, and records delivery.
-    fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
-        for (uid, key) in bindings {
+    fn rebind(&mut self, sources: &[(Uid, ParamKey)]) {
+        for (uid, key) in sources {
             let Some(state) = self.source_state(*uid, key) else { continue };
             let _ = self.set_source(*uid, &key.group, &key.name, state);
         }
     }
 
     fn source_state(&self, uid: Uid, key: &ParamKey) -> Option<SourceState> {
-        self.leaf(uid).and_then(|e| e.bindings.get(key)).map(ParamSource::state)
-    }
-
-    /// A param's source record as a command carries it, `None` when it holds none.
-    pub fn source_state_of(&self, uid: Uid, group: &str, name: &str) -> Option<SourceState> {
-        self.source_state(uid, &ParamKey::new(group, name))
+        self.leaf(uid).and_then(|e| e.sources.get(key)).map(|s| s.state.clone())
     }
 
     /// Inject the param-expression evaluator (pyo3, from goofi-python). Wired by the CLI at
@@ -1074,7 +1038,7 @@ impl Graph {
                     isolation: entry.isolation,
                     engine,
                     params: Arc::new(params),
-                    bindings: HashMap::new(),
+                    sources: HashMap::new(),
                     health: Health::born(boot_error),
                 })),
                 name,
@@ -1205,11 +1169,11 @@ impl Graph {
         };
         let mut edits: Vec<(Uid, ParamKey, SourceState)> = Vec::new();
         for (ruid, entry) in self.leaves() {
-            for (key, b) in &entry.bindings {
-                let expression = expr_rewrite::rename_refs(&b.expression, rename);
-                let reference = expr_rewrite::rename_reference(&b.reference, rename);
+            for (key, b) in &entry.sources {
+                let expression = expr_rewrite::rename_refs(&b.state.expression, rename);
+                let reference = expr_rewrite::rename_reference(&b.state.reference, rename);
                 if expression.is_some() || reference.is_some() {
-                    let mut state = b.state();
+                    let mut state = b.state.clone();
                     state.expression = expression.unwrap_or(state.expression);
                     state.reference = reference.unwrap_or(state.reference);
                     edits.push((ruid, key.clone(), state));
@@ -1891,7 +1855,7 @@ impl Graph {
     /// registry doesn't leak across a node/graph teardown.
     fn release_entry_bindings(&self, entry: &NodeEntry) {
         if let (Some(ev), Some(leaf)) = (&self.evaluator, entry.leaf()) {
-            for b in leaf.bindings.values() {
+            for b in leaf.sources.values() {
                 if let Some(id) = b.id {
                     ev.release(id);
                 }
@@ -2086,7 +2050,7 @@ impl Graph {
             return Ok(());
         }
         // Release any prior compiled handle first — this path REPLACES it.
-        if let Some(prev) = self.leaf(uid).and_then(|e| e.bindings.get(&key)) {
+        if let Some(prev) = self.leaf(uid).and_then(|e| e.sources.get(&key)) {
             if let (Some(ev), Some(id)) = (&self.evaluator, prev.id) {
                 ev.release(id);
             }
@@ -2149,10 +2113,7 @@ impl Graph {
             _ => None,
         };
         let record = ParamSource {
-            mode: state.mode,
-            expression: state.expression,
-            reference: state.reference,
-            triggers_process: state.triggers,
+            state,
             id,
             rewritten,
             vars,
@@ -2160,7 +2121,7 @@ impl Graph {
             bind_error: error,
         };
         if let Some(e) = self.leaf_mut(uid) {
-            e.bindings.insert(key.clone(), record);
+            e.sources.insert(key.clone(), record);
         }
         self.notify_param(uid, &key);
         Ok(())
@@ -2181,10 +2142,10 @@ impl Graph {
         })
     }
 
-    /// Drop a binding and release its compiled handle — the shared tail of an empty `set_expression`
-    /// and of a literal write over a bound param. It does NOT re-plan: its callers do, exactly once.
+    /// Drop a source and release its compiled handle — the shared tail of an empty `set_source`
+    /// and of a literal write over a driven param. It does NOT re-plan: its callers do, exactly once.
     fn unbind(&mut self, uid: Uid, key: &ParamKey) {
-        let Some(binding) = self.leaf_mut(uid).and_then(|e| e.bindings.remove(key)) else {
+        let Some(binding) = self.leaf_mut(uid).and_then(|e| e.sources.remove(key)) else {
             return;
         };
         if let (Some(ev), Some(id)) = (&self.evaluator, binding.id) {
@@ -2204,7 +2165,7 @@ impl Graph {
         let mut taken: Vec<EventId> = self
             .leaf(consumer)
             .into_iter()
-            .flat_map(|e| e.bindings.iter().filter(|(k, _)| *k != key))
+            .flat_map(|e| e.sources.iter().filter(|(k, _)| *k != key))
             .flat_map(|(_, b)| &b.vars)
             .filter_map(|v| match v {
                 BoundVar::Stream { event_id, .. } => Some(*event_id),
@@ -2327,14 +2288,11 @@ impl Graph {
     pub fn param_source(&self, uid: Uid, group: &str, name: &str) -> Option<SourceInfo> {
         let entry = self.leaf(uid)?;
         let key = ParamKey::new(group, name);
-        let b = entry.bindings.get(&key)?;
+        let b = entry.sources.get(&key)?;
         Some(SourceInfo {
-            mode: b.mode,
-            expression: b.expression.clone(),
-            reference: b.reference.clone(),
-            triggers_process: b.triggers_process,
+            state: b.state.clone(),
             // Derived rather than stored: the graph could not bind it, or the node could not
-            // evaluate it, and a binding the graph refused is never shipped for the node to judge.
+            // evaluate it, and a source the graph refused is never shipped for the node to judge.
             error: b.bind_error.clone().or_else(|| entry.health.param_errors.get(&key).cloned()),
         })
     }
@@ -2344,14 +2302,19 @@ impl Graph {
     pub fn param_sources(&self, uid: Uid) -> Vec<(String, String, SourceState)> {
         self.leaf(uid)
             .map(|e| {
-                e.bindings.iter().map(|(k, b)| (k.group.clone(), k.name.clone(), b.state())).collect()
+                e.sources.iter().map(|(k, b)| (k.group.clone(), k.name.clone(), b.state.clone())).collect()
             })
             .unwrap_or_default()
     }
 
+    /// Whether any param of `uid` has a source other than its literal.
+    pub fn driven(&self, uid: Uid) -> bool {
+        self.leaf(uid).is_some_and(|e| e.sources.values().any(|s| s.state.mode != Mode::Constant))
+    }
+
     /// What the params with a live mode currently evaluate to — the inspector's preview. A constant
     /// is excluded: its value is the literal, already on the descriptor.
-    pub fn expression_values(&self, uid: Uid) -> Vec<(&str, &str, &Param)> {
+    pub fn driven_values(&self, uid: Uid) -> Vec<(&str, &str, &Param)> {
         let Some(entry) = self.leaf(uid) else {
             return Vec::new();
         };
@@ -2359,7 +2322,7 @@ impl Graph {
             .health
             .evaluated
             .iter()
-            .filter(|(key, _)| entry.bindings.get(key).is_some_and(|b| b.mode != Mode::Constant))
+            .filter(|(key, _)| entry.sources.get(key).is_some_and(|b| b.state.mode != Mode::Constant))
             .map(|(key, p)| (key.group.as_str(), key.name.as_str(), p))
             .collect()
     }
@@ -2721,8 +2684,8 @@ impl Graph {
                 }
                 // Persist source records (sorted for a stable diff) — else a save/load silently
                 // freezes every live-driven param to its last evaluated literal.
-                if !leaf.bindings.is_empty() {
-                    let mut binds: Vec<(&ParamKey, &ParamSource)> = leaf.bindings.iter().collect();
+                if !leaf.sources.is_empty() {
+                    let mut binds: Vec<(&ParamKey, &ParamSource)> = leaf.sources.iter().collect();
                     binds.sort_by(|a, b| a.0.cmp(b.0));
                     rec.insert(
                         "sources".into(),
@@ -2730,9 +2693,10 @@ impl Graph {
                             binds
                                 .iter()
                                 .map(|(k, b)| {
-                                    json!({ "group": k.group, "name": k.name, "mode": b.mode.as_str(),
-                                            "expression": b.expression, "reference": b.reference,
-                                            "triggers": b.triggers_process })
+                                    json!({ "group": k.group, "name": k.name, "mode": b.state.mode,
+                                            "expression": b.state.expression,
+                                            "reference": b.state.reference,
+                                            "triggers": b.state.triggers })
                                 })
                                 .collect(),
                         ),
@@ -2819,6 +2783,19 @@ impl Graph {
             renamed.insert(rec.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(), fresh);
         }
         let by_old = |old: &str| renamed.get(old).cloned();
+        // A copied PORT's name is also a slot label — on the copied facade that holds it, and nowhere
+        // else — so a slot is renamed only there, never where a node merely shares its name.
+        let port_labels: HashMap<&str, Vec<&str>> = nodes
+            .values()
+            .filter(|rec| subpatch::boundary_type(rec["type"].as_str().unwrap_or("")).is_some())
+            .filter_map(|rec| {
+                let facade = nodes.get(rec.get("scope")?.as_str()?)?;
+                Some((facade.get("name")?.as_str()?, rec.get("name")?.as_str()?))
+            })
+            .fold(HashMap::new(), |mut m: HashMap<&str, Vec<&str>>, (facade, port)| {
+                m.entry(facade).or_default().push(port);
+                m
+            });
         let at = |p: [f64; 2]| [p[0] + offset[0], p[1] + offset[1]];
         // A facade before the members that name it, and a port after every facade: a port is a
         // port OF a scope, so it takes its scope at birth where everything else is placed below.
@@ -2843,12 +2820,11 @@ impl Graph {
                 sources: record_sources(rec)
                     .into_iter()
                     .map(|(group, name, mut s)| {
-                        // Both positions a display name is read in: a copied node's own, and — under
-                        // a copied facade — a copied PORT's, which is what that facade calls a slot.
                         let remap = |named: &str, slot: Option<&str>| {
-                            let to = by_old(named);
-                            let label = to.as_ref().and(slot).and_then(by_old);
-                            (to, label)
+                            let label = slot
+                                .filter(|s| port_labels.get(named).is_some_and(|ports| ports.contains(s)))
+                                .and_then(by_old);
+                            (by_old(named), label)
                         };
                         if let Some(src) = expr_rewrite::rename_refs(&s.expression, remap) {
                             s.expression = src;
@@ -3092,12 +3068,17 @@ fn structural(ty: &str) -> bool {
 }
 
 /// The stem a minted display name counts from: a leaf's type, and the kind's own word for the two
-/// that have no type to be named after.
-fn name_base(type_name: &str) -> String {
-    match subpatch::boundary_type(type_name) {
+/// that have no type to be named after. Legal by construction — the graph never mints a name its
+/// own rule refuses.
+pub fn name_base(type_name: &str) -> String {
+    let base: String = match subpatch::boundary_type(type_name) {
         Some((dir, _)) => dir.name().to_string(),
         None if type_name == subpatch::SCOPE_TYPE => "subpatch".to_string(),
-        None => type_name.to_lowercase(),
+        None => type_name.to_lowercase().chars().filter(char::is_ascii_alphanumeric).collect(),
+    };
+    match base.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        true => base,
+        false => format!("node{base}"),
     }
 }
 
@@ -3115,7 +3096,7 @@ fn remap_slots(viewers: &serde_json::Value, idmap: &HashMap<String, Uid>) -> ser
     }
 }
 
-/// The expression bindings a record carries, in the shape [`command::Command::AddNode`] re-applies.
+/// The source records a node record carries, in the shape [`command::Command::AddNode`] re-applies.
 fn record_sources(rec: &serde_json::Value) -> Vec<(String, String, SourceState)> {
     let text = |ex: &serde_json::Value, k: &str| ex.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     rec.get("sources")
@@ -3127,7 +3108,7 @@ fn record_sources(rec: &serde_json::Value) -> Vec<(String, String, SourceState)>
                 ex.get("group")?.as_str()?.to_string(),
                 ex.get("name")?.as_str()?.to_string(),
                 SourceState {
-                    mode: ex.get("mode").and_then(|v| v.as_str()).and_then(Mode::parse).unwrap_or_default(),
+                    mode: ex.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
                     expression: text(ex, "expression"),
                     reference: text(ex, "reference"),
                     triggers: ex.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -3231,17 +3212,13 @@ fn build_view<'a>(
         .filter_map(|(uid, e)| {
             let leaf = e.leaf()?;
             let bindings = leaf
-                .bindings
+                .sources
                 .iter()
                 .map(|(key, b)| BindingView {
                     key,
-                    kind: match b.mode {
-                        Mode::Reference => goofi_node::SourceKind::Reference,
-                        _ => goofi_node::SourceKind::Expression,
-                    },
                     rewritten: &b.rewritten,
                     vars: &b.vars,
-                    trigger: b.triggers_process,
+                    trigger: b.state.triggers,
                     id: b.id,
                     live: b.live(),
                 })
@@ -3275,7 +3252,7 @@ fn entry_error(e: &Leaf) -> Option<&str> {
     }
     // Both param-keyed error records, ordered by key together, so which record an error landed in
     // cannot decide whether the badge ever shows it.
-    e.bindings
+    e.sources
         .iter()
         .filter_map(|(k, b)| b.bind_error.as_deref().map(|s| (k, s)))
         .chain(e.health.param_errors.iter().map(|(k, m)| (k, m.as_str())))

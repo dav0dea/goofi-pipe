@@ -194,6 +194,15 @@ fn missing_dep_greys_out_instead_of_crashing() {
         discover_one(&fixtures().join("_hidden.py"), &py, "python", Isolation::Subprocess),
         Discovery::Skip
     ));
+    // A slot an expression could not read as an attribute — `in` is a keyword — greys the type out
+    // with the slot quoted, so a bad name cannot enter through a Python node.
+    match discover_one(&fixtures().join("bad_slot.py"), &py, "python", Isolation::Subprocess) {
+        Discovery::Unavailable { type_name, reason } => {
+            assert_eq!(type_name, "BadSlot");
+            assert!(reason.contains("slot `in`") && reason.contains("letters or digits"), "{reason}");
+        }
+        _ => panic!("a node declaring an illegal slot name is Unavailable, with the slot named"),
+    }
 }
 
 #[test]

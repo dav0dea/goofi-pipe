@@ -320,6 +320,12 @@ fn every_slot_name_is_letters_and_digits() {
     for bad in ["in", "max_frequency", "2x", "", "a.b"] {
         assert!(!goofi_core::globals::is_valid_name(bad), "`{bad}` must be refused");
     }
+    // The graph mints a display name from the type, `_Test*` included: what it mints must pass
+    // its own rule, or a node is born under a name nothing can reference.
+    for m in goofi_signal::catalog() {
+        let minted = format!("{}0", goofi_graph::name_base(m.type_name));
+        assert!(goofi_core::globals::is_valid_name(&minted), "{}: minted `{minted}`", m.type_name);
+    }
 }
 
 #[test]

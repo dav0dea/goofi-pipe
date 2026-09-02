@@ -27,14 +27,14 @@ pub fn of(g: &Graph) -> Value {
                     let mut entry = Map::new();
                     entry.insert("value".into(), goofi_graph::param_value_json(p));
                     if let Some(s) = g.param_source(uid, group, pname) {
-                        entry.insert("mode".into(), json!(s.mode.as_str()));
-                        if !s.expression.is_empty() {
-                            entry.insert("expr".into(), json!(s.expression));
+                        entry.insert("mode".into(), json!(s.state.mode));
+                        if !s.state.expression.is_empty() {
+                            entry.insert("expr".into(), json!(s.state.expression));
                         }
-                        if !s.reference.is_empty() {
-                            entry.insert("ref".into(), json!(s.reference));
+                        if !s.state.reference.is_empty() {
+                            entry.insert("ref".into(), json!(s.state.reference));
                         }
-                        if s.triggers_process {
+                        if s.state.triggers {
                             entry.insert("triggers".into(), json!(true));
                         }
                     }

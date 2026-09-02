@@ -666,12 +666,17 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     g.link(buf, "out", sink, "data");
 
     // An inner sub-patch around the Buffer, then an outer one around that: a copy has to recurse.
-    // The Buffer reads its neighbour by name, so the copy has a reference to get right.
+    // The Buffer reads its neighbour by name — as an expression and as a reference — so the copy
+    // has both to get right. A third member is NAMED like a slot: a paste must rename the copied
+    // node and never the slot label that happens to spell the same word.
     let lfo = g.add("Oscillator");
     g.call("node edit", j!({ "node": hex(lfo), "name": "lfo" }));
     g.call("node param edit", j!({ "node": hex(buf), "param": "common/max_frequency",
                                    "expression": "nd('lfo')" }));
-    let inner = group(&g, &[hex(buf), hex(lfo)]);
+    g.call("node param edit", j!({ "node": hex(buf), "param": "buffer/size", "reference": "lfo.out" }));
+    let decoy = g.add("Oscillator");
+    g.call("node edit", j!({ "node": hex(decoy), "name": "out" }));
+    let inner = group(&g, &[hex(buf), hex(lfo), hex(decoy)]);
     let outer = group(&g, std::slice::from_ref(&inner));
     assert_eq!(g.doc()["nodes"][&outer]["name"], "subpatch1", "the second sub-patch is subpatch1");
 
@@ -679,7 +684,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     let fragment = g.call("nodes copy", j!({ "nodes": [outer] }))["doc"].clone();
     // A fragment is SELF-CONTAINED: it holds the whole subtree and no cable that reaches out of it.
     let held = fragment["nodes"].as_object().expect("a nodes map").len();
-    assert_eq!(held, 8, "two facades, their four ports, and the two leaves inside: {fragment}");
+    assert_eq!(held, 9, "two facades, their four ports, and the three leaves inside: {fragment}");
     assert!(fragment["links"].as_array().is_some_and(|l| !l.is_empty()), "…and its inner wiring: {fragment}");
 
     let rename = g.call("nodes paste", j!({ "doc": fragment, "pos": [400.0, 0.0] }))["rename"].clone();
@@ -726,8 +731,11 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     let bound = g.call("node state", j!({ "node": leaf }))["text"].as_str().unwrap().to_string();
     assert!(bound.contains(&format!("nd('{copy_name}')")),
             "the copy reads its OWN oscillator `{copy_name}`: {bound}");
+    assert!(bound.contains(&format!("ref: {copy_name}.out")),
+            "the reference follows the copy too, its slot label untouched: {bound}");
     assert!(!bound.contains("no node named"), "…and that name resolves: {bound}");
-    assert!(!bound.contains("nd('lfo')"), "…and nothing still reads the original's: {bound}");
+    assert!(!bound.contains("nd('lfo')") && !bound.contains("ref: lfo."),
+            "…and nothing still reads the original's: {bound}");
 
     // It is INDEPENDENT: editing the copy leaves the original alone.
     g.call("node param edit", j!({ "node": leaf, "param": "common/max_frequency", "value": 3.0 }));

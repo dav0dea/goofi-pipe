@@ -392,9 +392,10 @@ pub fn spawn_workers(state: &AppState) {
                         if let Some(f) = g.node_ufreq(u) {
                             rates.push((hex.clone(), f));
                         }
-                        let vals = schemas::expression_value_map(g, u);
-                        if vals.as_object().is_some_and(|o| !o.is_empty()) {
-                            expr_vals.push((hex.clone(), vals));
+                        // The WHOLE map, for every node with a driven param — an empty one is how
+                        // a client learns a value was withdrawn.
+                        if g.driven(u) {
+                            expr_vals.push((hex.clone(), schemas::expression_value_map(g, u)));
                         }
                         let generation = g.node_generation(u);
                         let err = g.last_error(u).map(str::to_string);

@@ -495,6 +495,11 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     for bad in ["a'b", "a\\b", "a\"b", "a b-2", "a_b", "nd()", "1st", "class", ""] {
         let why = g.refuse("node edit", j!({ "node": hex(osc), "name": bad }));
         assert!(why.contains("letters or digits"), "the refusal states the rule: {why}");
+        // The same rule at birth — refused, never silently swapped for a minted name.
+        if !bad.is_empty() {
+            let why = g.refuse("node add", j!({ "type": "Oscillator", "name": bad }));
+            assert!(why.contains("letters or digits"), "{why}");
+        }
     }
     g.call("node edit", j!({ "node": hex(osc), "name": "ab2" }));
     // The command tolerates a collision so replay converges; the RPC boundary raises the user error.
@@ -522,7 +527,7 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
 
     let mut ev = g.events();
     set("nd('src')");
-    // `expression_error` is runtime-derived and rides `state_update`, never the doc.
+    // `error` is runtime-derived and rides `state_update`, never the doc.
     let d = g.until("the descriptor echo", |_| {
         let p = ev.next("state_update");
         (p["node"] == hex(consumer)).then(|| p["params"]["common"]["max_frequency"].clone())
@@ -588,16 +593,44 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
     let d = field(&mut ev, "the literal took over", &|d| d["mode"] == j!("constant"));
     assert_eq!((&d["value"], &d["reference"], &d["expression"]),
                (&j!(7.0), &j!("signal.out"), &j!("nd('signal')")), "{d}");
+    // A mode alone switches among what is retained: the reference is still `signal.out`, so its
+    // shape error comes back. An empty reference clears that text and nothing else.
+    param(&g, j!({ "mode": "reference" }));
+    let d = field(&mut ev, "the retained reference is live", &|d| d["mode"] == j!("reference"));
+    assert_eq!(d["reference"], j!("signal.out"), "{d}");
+    g.until("the shape error is back", |g| line(g).contains("one element").then_some(()));
+    param(&g, j!({ "reference": "" }));
+    let d = field(&mut ev, "an empty reference clears it", &|d| d["mode"] == j!("constant"));
+    assert_eq!((&d["reference"], &d["expression"]), (&j!(null), &j!("nd('signal')")), "{d}");
     param(&g, j!({ "mode": "reference", "reference": "gain.out" }));
-    field(&mut ev, "the reference is live again", &|d| d["mode"] == j!("reference") && d["error"].is_null());
+    // The runtime clears the shape error on its own clock, so the echo is not the oracle.
+    g.until("the reference is live again", |g| {
+        let l = line(g);
+        (l.contains("ref: gain.out") && !l.contains("[error")).then_some(())
+    });
     // A deleted producer leaves the reference standing with its error; undo clears it.
     g.call("node remove", j!({ "node": hex(level) }));
     let l = g.until("the producer is gone", |g| Some(line(g)).filter(|l| l.contains("no node named `gain`")));
     assert!(l.contains("ref: gain.out"), "the reference stands while its producer is gone: {l}");
+    let mut fresh = g.events();
     g.call("undo", j!({}));
     g.until("undo brought the producer back", |g| {
         let l = line(g);
         (l.contains("ref: gain.out") && !l.contains("[error")).then_some(())
+    });
+    let value_of = |p: &serde_json::Value| p["values"]["common"].get("max_frequency").cloned();
+    g.until("…and its value lands again", |_| {
+        let p = fresh.next("param_values");
+        (p["node"] == hex(consumer) && value_of(&p) == Some(j!(0.25))).then_some(())
+    });
+    // Re-pointing a reference at a SILENT producer must not hand it the old producer's last frame:
+    // the mailbox starts empty, the literal stands, and the preview is withdrawn.
+    let quiet = g.add("_TestEcho");
+    g.call("node edit", j!({ "node": hex(quiet), "name": "quiet" }));
+    param(&g, j!({ "reference": "quiet.out" }));
+    g.until("the value is withdrawn", |_| {
+        let p = fresh.next("param_values");
+        (p["node"] == hex(consumer) && value_of(&p).is_none()).then_some(())
     });
 }
 

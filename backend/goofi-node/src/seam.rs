@@ -78,18 +78,9 @@ pub struct Edge {
     pub consumer: (Uid, &'static str),
 }
 
-/// Which retained text a param's mode makes live: a compiled expression, or one producer slot
-/// copied on arrival with no evaluator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceKind {
-    Expression,
-    Reference,
-}
-
 /// One binding as settle ships it: the derived state an engine reads, never the authored record.
 pub struct BindingView<'a> {
     pub key: &'a ParamKey,
-    pub kind: SourceKind,
     pub rewritten: &'a str,
     pub vars: &'a [BoundVar],
     pub trigger: bool,

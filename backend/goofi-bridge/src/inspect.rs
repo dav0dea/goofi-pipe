@@ -153,11 +153,11 @@ fn param_line(p: &goofi_core::Param, source: Option<&goofi_graph::SourceInfo>) -
         s.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default()
     };
     match source {
-        Some(s) if s.mode == goofi_graph::Mode::Expression => {
-            format!("expr: {} → {value}{}", s.expression, error(s))
+        Some(s) if s.state.mode == goofi_graph::Mode::Expression => {
+            format!("expr: {} → {value}{}", s.state.expression, error(s))
         }
-        Some(s) if s.mode == goofi_graph::Mode::Reference => {
-            format!("ref: {} → {value}{}", s.reference, error(s))
+        Some(s) if s.state.mode == goofi_graph::Mode::Reference => {
+            format!("ref: {} → {value}{}", s.state.reference, error(s))
         }
         _ => format!("{value} ({ty})"),
     }

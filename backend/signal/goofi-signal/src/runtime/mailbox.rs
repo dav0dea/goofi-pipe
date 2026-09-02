@@ -64,6 +64,10 @@ fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
     }
 }
 
+fn stream_of<'a>(streams: &'a [(VarName, super::ServiceName)], name: &str) -> Option<&'a super::ServiceName> {
+    streams.iter().find(|(n, _)| n == name).map(|(_, service)| service)
+}
+
 /// A bound param: the rewritten source plus a mailbox per variable it names.
 #[derive(Clone, Debug)]
 pub struct Binding {
@@ -103,14 +107,21 @@ impl Binding {
         Binding { source: source.into(), trigger, id, vars, streams }
     }
 
-    /// Re-resolve this binding in place, keeping what each surviving variable already holds.
+    /// Re-resolve this binding in place, keeping what each surviving variable already holds — from
+    /// the SAME producer only: a variable re-pointed at another stream starts empty, or a silent
+    /// producer would stand in for the one it replaced.
     pub fn rebind(&mut self, next: Binding) {
         let previous = std::mem::replace(self, next);
+        let streams = &self.streams;
         for (name, mailbox) in &mut self.vars {
-            if mailbox.value().is_none() && mailbox.unresolved().is_none() {
-                if let Some(held) = previous.vars.get(name).and_then(Mailbox::value) {
-                    mailbox.put(held.clone());
-                }
+            if mailbox.value().is_some() || mailbox.unresolved().is_some() {
+                continue;
+            }
+            if stream_of(&previous.streams, name) != stream_of(streams, name) {
+                continue;
+            }
+            if let Some(held) = previous.vars.get(name).and_then(Mailbox::value) {
+                mailbox.put(held.clone());
             }
         }
     }

@@ -6,7 +6,7 @@ use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
 pub mod seam;
-pub use seam::{SourceKind, 
+pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Request, Touched,
 };
@@ -95,11 +95,11 @@ pub struct ParamDecl {
     pub doc: Option<&'static str>,
 }
 
-/// A declared param expression: its source plus the two flags the fx editor exposes per binding.
+/// A declared param expression: its source, whether it starts live, and whether it wakes the node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExprDecl {
     pub source: &'static str,
-    /// Whether this expression starts live; `Off` merely carries it for the inspector's fx toggle.
+    /// Whether this expression starts live; `Off` merely retains it as the param's expression text.
     pub mode: ExprMode,
     /// Whether re-evaluating it also wakes `process()`.
     pub trigger: bool,

@@ -393,7 +393,7 @@ impl Command {
                 };
                 // Captured when the caller names a source, and ALSO for a bare literal over a driven
                 // param, since a literal write switches the mode the inverse owes back.
-                let held = g.source_state_of(uid, &group, &name);
+                let held = g.param_source(uid, &group, &name).map(|s| s.state);
                 let driven = held.as_ref().is_some_and(|s| s.mode != Mode::Constant);
                 let old_source =
                     (source.is_some() || (value.is_some() && driven)).then(|| held.unwrap_or_default());

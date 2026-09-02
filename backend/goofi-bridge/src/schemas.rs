@@ -20,10 +20,10 @@ pub fn describe_param(p: &Param, source: Option<&SourceInfo>, doc: Option<&str>)
         json!(matches!(p, Param::Str { refresh: true, .. })),
     );
     let text = |t: &str| if t.is_empty() { Value::Null } else { json!(t) };
-    m.insert("mode".into(), json!(source.map(|s| s.mode).unwrap_or_default().as_str()));
-    m.insert("expression".into(), source.map(|s| text(&s.expression)).unwrap_or(Value::Null));
-    m.insert("reference".into(), source.map(|s| text(&s.reference)).unwrap_or(Value::Null));
-    m.insert("triggers".into(), json!(source.is_some_and(|s| s.triggers_process)));
+    m.insert("mode".into(), json!(source.map(|s| s.state.mode).unwrap_or_default()));
+    m.insert("expression".into(), source.map(|s| text(&s.state.expression)).unwrap_or(Value::Null));
+    m.insert("reference".into(), source.map(|s| text(&s.state.reference)).unwrap_or(Value::Null));
+    m.insert("triggers".into(), json!(source.is_some_and(|s| s.state.triggers)));
     m.insert(
         "error".into(),
         source.and_then(|s| s.error.as_ref()).map(|s| json!(s)).unwrap_or(Value::Null),
@@ -109,7 +109,7 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
 /// the frontend applies it surgically and cannot clobber a concurrent edit.
 pub fn expression_value_map(g: &Graph, uid: Uid) -> Value {
     let mut groups = Map::new();
-    for (group, name, p) in g.expression_values(uid) {
+    for (group, name, p) in g.driven_values(uid) {
         let entry = groups.entry(group.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(names) = entry {
             names.insert(name.to_string(), goofi_graph::param_value_json(p));
