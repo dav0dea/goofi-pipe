@@ -8,6 +8,7 @@
 	import type { NodeTypeInfo } from '$lib/api/control';
 	import { boundaryType } from '$lib/api/vocab';
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
+	import { seedSlot } from './seedSlot';
 	import { onMount, tick } from 'svelte';
 	import { EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
 
@@ -30,11 +31,8 @@
 
 	const seedName = $derived(seed ? (g.nodeById(seed.node)?.name ?? seed.node) : null);
 
-	/** When seeded, keep only types with an opposite-side slot of matching dtype. */
 	function matchesSeed(t: NodeTypeInfo): boolean {
-		if (!seed) return true;
-		const candidates = seed.side === 'source' ? t.input_slots : t.output_slots;
-		return Object.values(candidates).includes(seed.dtype);
+		return !seed || seedSlot(seed, t) !== undefined;
 	}
 
 	const filtered = $derived.by(() => {

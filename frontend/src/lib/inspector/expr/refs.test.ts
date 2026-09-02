@@ -13,7 +13,8 @@ const cat: ExprCatalogue = {
 			],
 			params: []
 		},
-		{ name: 'sink', slots: [], params: [] }
+		{ name: 'sink', slots: [], params: [] },
+		{ name: 'synth', slots: [{ name: 'out', dtype: 'AUDIO' }], params: [] }
 	],
 	globals: []
 };
@@ -27,7 +28,8 @@ describe('the reference picker offers only what the param may reference', () => 
 	it('lists the nodes with at least one output of the kind, naming those outputs', () => {
 		expect(refNodes(cat, 'ARRAY')).toEqual([
 			{ label: 'osc', detail: 'out' },
-			{ label: 'tagger', detail: 'count' }
+			{ label: 'tagger', detail: 'count' },
+			{ label: 'synth', detail: 'out' }
 		]);
 		expect(refNodes(cat, 'STRING')).toEqual([{ label: 'tagger', detail: 'label' }]);
 	});

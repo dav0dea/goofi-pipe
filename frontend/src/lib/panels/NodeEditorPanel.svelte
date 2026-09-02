@@ -32,6 +32,7 @@
 	import { history } from '$lib/stores/history.svelte';
 	import { notify } from '$lib/stores/notify.svelte';
 	import { ui, slotKey, type SlotClickSeed } from '$lib/stores/ui.svelte';
+	import { seedSlot } from '$lib/editor/seedSlot';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from 'panelty';
 	import { getPanelType, type PanelProps } from 'panelty';
@@ -903,13 +904,8 @@
 		picked: NodeTypeInfo,
 		newName: string
 	): Promise<void> {
-		const candidates =
-			seed.side === 'source'
-				? Object.entries(picked.input_slots)
-				: Object.entries(picked.output_slots);
-		const match = candidates.find(([, dt]) => dt === seed.dtype);
-		if (!match) return;
-		const [matchedSlot] = match;
+		const matchedSlot = seedSlot(seed, picked);
+		if (!matchedSlot) return;
 		// Inputs take a single source, so an existing cable is replaced; outputs fan out.
 		if (seed.side === 'target') {
 			const existing = g.links.filter((l) => l.node_in === seed.node && l.slot_in === seed.slot);

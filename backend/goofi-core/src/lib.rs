@@ -574,6 +574,8 @@ pub enum SlotType {
 }
 
 impl SlotType {
+    pub const ALL: [SlotType; 4] = [SlotType::Array, SlotType::String, SlotType::Table, SlotType::Audio];
+
     /// Frontend-facing name (`input_slots`/`output_slots` value).
     pub fn name(self) -> &'static str {
         match self {
@@ -590,13 +592,7 @@ impl SlotType {
     }
 
     pub fn from_name(name: &str) -> Option<SlotType> {
-        match name {
-            "ARRAY" => Some(SlotType::Array),
-            "STRING" => Some(SlotType::String),
-            "TABLE" => Some(SlotType::Table),
-            "AUDIO" => Some(SlotType::Audio),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|t| t.name() == name)
     }
 }
 

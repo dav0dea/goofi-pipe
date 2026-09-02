@@ -34,7 +34,7 @@ pub const SCOPE_TYPE: &str = "SubPatch";
 /// port drains one.
 pub const BOUNDARY_SLOT: &str = "value";
 
-/// The six boundary types: a port, one per direction per dtype. This table is the only place a
+/// The boundary types: a port, one per direction per dtype. This table is the only place a
 /// type name and the `(dir, dtype)` behind it are related.
 pub const BOUNDARY_TYPES: &[(&str, Dir, SlotType)] = &[
     ("InArray", Dir::In, SlotType::Array),

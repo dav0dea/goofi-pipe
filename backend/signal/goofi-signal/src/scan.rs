@@ -226,7 +226,7 @@ fn audio_slot(intro: &goofi_core::probe::Introspection) -> Option<String> {
         .iter()
         .map(|s| (&s.name, &s.kind))
         .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
-        .find(|(_, kind)| kind.as_str() == "AUDIO")
+        .find(|(_, kind)| goofi_core::SlotType::from_name(kind) == Some(goofi_core::SlotType::Audio))
         .map(|(name, _)| format!("slot `{name}` is audio — an audio node lives in nodes_audio/"))
 }
 

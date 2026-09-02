@@ -2175,12 +2175,12 @@ impl Graph {
         let expr_rewrite::VarRef::Node { name, slot: Some(slot), .. } = r else { return None };
         let uid = self.uid_by_name(name)?;
         let kind = self.output_slots(uid).into_iter().find(|(_, label, _)| label == slot)?.2;
-        let (wants, ok) = match param {
-            Param::Str { .. } => ("STRING", kind == goofi_core::SlotType::String),
-            _ => ("ARRAY", kind == goofi_core::SlotType::Array),
+        let wants = match param {
+            Param::Str { .. } => goofi_core::SlotType::String,
+            _ => goofi_core::SlotType::Array,
         };
-        (!ok).then(|| {
-            format!("`{name}.{slot}` is a {} output; this param references a {wants} one", kind.name())
+        (!kind.feeds(wants)).then(|| {
+            format!("`{name}.{slot}` is a {} output; this param references a {} one", kind.name(), wants.name())
         })
     }
 
@@ -2453,8 +2453,6 @@ impl Graph {
                 label(node_in),
             ));
         }
-        // A cross-dtype cable can never carry data — the consumer reads with the wrong accessor and
-        // sits empty forever. Refused here, the one door every link authoring path goes through.
         if !out.kind.feeds(inp.kind) {
             let label = |uid: Uid, slot: &str| {
                 format!("{}.{slot}", self.name(uid).unwrap_or("?"))

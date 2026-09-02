@@ -2,6 +2,7 @@
 //! source the frontend's module is generated from. The BEHAVIOUR keyed off a word stays client-side.
 
 use goofi_graph::layout::{DEFAULT_PANEL_TYPE, EMPTY_PANEL_TYPE};
+use goofi_core::SlotType;
 use goofi_graph::subpatch::{Dir, BOUNDARY_SLOT, BOUNDARY_TYPES, SCOPE_TYPE};
 use serde_json::{json, Value};
 
@@ -106,9 +107,18 @@ pub fn panel_types_help() -> String {
 pub fn viewer_kinds_help() -> String {
     described(VIEWER_KINDS.iter().map(|k| (k.id, k.doc)))
 }
+pub fn boundary_types_help() -> String {
+    BOUNDARY_TYPES.iter().map(|(name, _, _)| *name).collect::<Vec<_>>().join("/")
+}
 
 /// The frontend's vocabulary module, generated from the tables above and checked into the tree.
 pub fn typescript() -> String {
+    let dtypes = SlotType::ALL.iter().map(|t| format!("'{}'", t.name())).collect::<Vec<_>>().join(" | ");
+    let feeds = SlotType::ALL
+        .iter()
+        .flat_map(|out| SlotType::ALL.iter().filter(|into| out.feeds(**into)).map(move |into| format!("'{}>{}'", out.name(), into.name())))
+        .collect::<Vec<_>>()
+        .join(", ");
     let panel_ids = PANEL_TYPES.iter().map(|p| format!("\n\t| '{}'", p.id)).collect::<String>();
     let kind_ids = VIEWER_KINDS.iter().map(|k| format!("\n\t| '{}'", k.id)).collect::<String>();
     let panels = PANEL_TYPES
@@ -174,11 +184,14 @@ pub fn typescript() -> String {
          \treadonly doc: string;\n\
          }}\n\
          \n\
+         /** The slot kinds, as the manager names them. */\n\
+         export type SlotDtype = {dtypes};\n\
+         \n\
          export interface ViewerKindInfo {{\n\
          \treadonly id: ViewerKind;\n\
          \t/** The slot dtype this kind serves. A non-ARRAY dtype PINS its kind: a STRING slot is\n\
          \t * always drawn by the string viewer, whatever kind was stored. */\n\
-         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';\n\
+         \treadonly dtype: SlotDtype;\n\
          \t/** The dimension range the component actually renders — null for a pinned kind. */\n\
          \treadonly draws: readonly [number, number] | null;\n\
          \t/** The dimension range its ViewSpec declares compatible: equal or wider than `draws`,\n\
@@ -202,18 +215,22 @@ pub fn typescript() -> String {
          \treadonly type: string;\n\
          \t/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */\n\
          \treadonly dir: 'in' | 'out';\n\
-         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';\n\
+         \treadonly dtype: SlotDtype;\n\
          }}\n\
          \n\
-         /** The six boundary port types: a port's direction and dtype ARE its type. */\n\
+         /** The boundary port types: a port's direction and dtype ARE its type. */\n\
          export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [\n{boundaries}];\n\
          \n\
          export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>\n\
-         \tBOUNDARY_TYPES.find((b) => b.type === type);\n"
+         \tBOUNDARY_TYPES.find((b) => b.type === type);\n\
+         \n\
+         /** Which output kind may feed which input kind — the manager's one link rule, projected. */\n\
+         export const FEEDS: ReadonlySet<string> = new Set([{feeds}]);\n\
+         export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${{out}}>${{into}}`);\n"
     )
 }
 
-/// The six as catalog entries, so a palette and `library list` see one vocabulary of node types.
+/// The table as catalog entries, so a palette and `library list` see one vocabulary of node types.
 pub fn boundary_catalog() -> Vec<(String, String, Value)> {
     BOUNDARY_TYPES
         .iter()

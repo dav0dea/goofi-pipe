@@ -1,6 +1,7 @@
 /** What the reference picker offers: the nodes with an output a param may reference, and those
  *  outputs — the typing rule the manager holds, applied before the pick. */
 import type { ExprCatalogue } from './catalogue';
+import { feeds, type SlotDtype } from '$lib/api/vocab';
 
 export interface PickerOption {
 	label: string;
@@ -12,18 +13,20 @@ export function wantedDtype(paramType: string): string {
 	return paramType === 'string' ? 'STRING' : 'ARRAY';
 }
 
+const may = (slot: string, wanted: string) => feeds(slot as SlotDtype, wanted as SlotDtype);
+
 export function refNodes(cat: ExprCatalogue, dtype: string): PickerOption[] {
 	return cat.nodes
-		.filter((n) => n.slots.some((s) => s.dtype === dtype))
+		.filter((n) => n.slots.some((s) => may(s.dtype, dtype)))
 		.map((n) => ({
 			label: n.name,
-			detail: n.slots.filter((s) => s.dtype === dtype).map((s) => s.name).join(', ')
+			detail: n.slots.filter((s) => may(s.dtype, dtype)).map((s) => s.name).join(', ')
 		}));
 }
 
 export function refSlots(cat: ExprCatalogue, node: string, dtype: string): PickerOption[] {
 	return (cat.nodes.find((n) => n.name === node)?.slots ?? [])
-		.filter((s) => s.dtype === dtype)
+		.filter((s) => may(s.dtype, dtype))
 		.map((s) => ({ label: s.name, detail: s.dtype }));
 }
 

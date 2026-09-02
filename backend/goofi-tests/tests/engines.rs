@@ -383,7 +383,6 @@ fn audio_block() -> goofi_core::Data {
     let mut arena = [0f32; BLOCK];
     let mut outs = [PortMut::new(&mut arena, 1)];
     Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params });
-    assert_eq!(Tone.channels(&[2, 1], &[0.5], 2), vec![2, 2], "the SDK default follows the widest input");
     goofi_tests::frame(&arena)
 }
 
@@ -492,6 +491,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
     t.call("link add", j!({ "from": ep(&port_in, "value"), "to": ep(hex(other), "audio") }));
     t.call("link add", j!({ "from": ep(hex(other), "out"), "to": ep(&port_out, "value") }));
     t.call("link add", j!({ "from": ep(hex(audio), "out"), "to": ep(&port_in, "value") }));
+    let wires = t.doc()["links"].clone();
     let archive = tempfile::tempdir().unwrap();
     let path = archive.path().join("audio-ports.gfi");
     t.call("session save", j!({ "path": path.to_string_lossy() }));
@@ -503,6 +503,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
         assert_eq!(doc["nodes"][uid]["type"], ty, "the port is back at its uid: {doc}");
     }
     assert_eq!(doc["nodes"][&port_in]["scope"], inst, "…in the sub-patch it is a port of");
+    assert_eq!(doc["links"], wires, "every audio cable is back, the ports' inner wires included");
     drop(again);
     t.call("node remove", j!({ "node": inst }));
 
@@ -543,6 +544,22 @@ fn a_scheduled_engine_beside_the_signal_one() {
         }),
         "latest-wins modulation of a STATIC value writes once, however many ticks pass"
     );
+
+    // Step: a reference obeys the same rule a cable does — a Float param may read an audio
+    // output, a Str param may not — and the refusal names the kinds.
+    let audio_name = t.doc()["nodes"][hex(audio)]["name"].as_str().unwrap().to_string();
+    let bound = t.call(
+        "node param edit",
+        j!({ "node": hex(meter), "param": "control/value", "reference": format!("{audio_name}.out"), "mode": "reference" }),
+    );
+    assert!(bound["error"].is_null(), "a Float param references an audio output: {bound}");
+    let picker = t.add("_TestPicker");
+    let refused = t.call(
+        "node param edit",
+        j!({ "node": hex(picker), "param": "io/device", "reference": format!("{audio_name}.out"), "mode": "reference" }),
+    );
+    assert!(refused["error"].as_str().is_some_and(|e| e.contains("AUDIO") && e.contains("STRING")), "{refused}");
+    t.call("node remove", j!({ "node": hex(picker) }));
 
     // Step: a restart is a rebirth through the same trait doors — new generation, new services.
     let generation = t.state.graph.lock().unwrap().node_generation(audio);

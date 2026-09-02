@@ -38,11 +38,14 @@ export interface PanelTypeInfo {
 	readonly doc: string;
 }
 
+/** The slot kinds, as the manager names them. */
+export type SlotDtype = 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
+
 export interface ViewerKindInfo {
 	readonly id: ViewerKind;
 	/** The slot dtype this kind serves. A non-ARRAY dtype PINS its kind: a STRING slot is
 	 * always drawn by the string viewer, whatever kind was stored. */
-	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
+	readonly dtype: SlotDtype;
 	/** The dimension range the component actually renders — null for a pinned kind. */
 	readonly draws: readonly [number, number] | null;
 	/** The dimension range its ViewSpec declares compatible: equal or wider than `draws`,
@@ -82,10 +85,10 @@ export interface BoundaryTypeInfo {
 	readonly type: string;
 	/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */
 	readonly dir: 'in' | 'out';
-	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
+	readonly dtype: SlotDtype;
 }
 
-/** The six boundary port types: a port's direction and dtype ARE its type. */
+/** The boundary port types: a port's direction and dtype ARE its type. */
 export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [
 	{ type: 'InArray', dir: 'in', dtype: 'ARRAY' },
 	{ type: 'InString', dir: 'in', dtype: 'STRING' },
@@ -99,3 +102,7 @@ export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [
 
 export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>
 	BOUNDARY_TYPES.find((b) => b.type === type);
+
+/** Which output kind may feed which input kind — the manager's one link rule, projected. */
+export const FEEDS: ReadonlySet<string> = new Set(['ARRAY>ARRAY', 'STRING>STRING', 'TABLE>TABLE', 'AUDIO>ARRAY', 'AUDIO>AUDIO']);
+export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${out}>${into}`);
