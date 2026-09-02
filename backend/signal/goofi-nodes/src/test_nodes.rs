@@ -8,14 +8,14 @@ use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Param
 use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
 
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
-    name: "in",
+    name: "input",
     kind: SlotType::Array,
     trigger_process: true,
     multi: false,
     required: false,
 }];
 static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
-    name: "in",
+    name: "input",
     kind: SlotType::Array,
     trigger_process: true,
     multi: false,
@@ -53,7 +53,7 @@ pub const fn class(
 struct Echo;
 impl Node for Echo {
     fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        if let Some(d) = i.get("in") {
+        if let Some(d) = i.get("input") {
             o.set("out", d.clone());
         }
         Ok(())
@@ -177,7 +177,7 @@ struct RequiredCounter {
 }
 impl Node for RequiredCounter {
     fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        let _ = i.get("in").expect("a required slot is never empty when process runs");
+        let _ = i.get("input").expect("a required slot is never empty when process runs");
         self.runs += 1;
         let bytes = (self.runs as f32).to_le_bytes().to_vec();
         o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);

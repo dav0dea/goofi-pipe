@@ -187,6 +187,11 @@ pub fn discover_one(
     }
     match probe_introspect(path, python) {
         Ok(intro) => {
+            let slots = intro.inputs.iter().map(|s| &s.name).chain(intro.outputs.iter().map(|s| &s.name));
+            if let Some(bad) = slots.into_iter().find(|n| !goofi_core::globals::is_valid_name(n)) {
+                let reason = format!("slot `{bad}` is not a legal name: {}", goofi_core::globals::NAME_RULE);
+                return Discovery::Unavailable { type_name: camel(stem), reason };
+            }
             let manifest = leak_manifest(camel(stem), &intro, category);
             Discovery::Found(Discovered {
                 manifest,

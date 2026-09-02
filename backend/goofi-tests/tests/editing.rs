@@ -115,7 +115,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     // single write, carrying the final value. The meter counts `on_param_changed` calls.
     let meter = g.add("_TestParamWrites");
     let mprobe = g.probe(meter, "out");
-    g.link(osc, "out", meter, "in");
+    g.link(osc, "out", meter, "input");
     let base = g.until("the meter to settle after init", |_| {
         mprobe.latest().map(|d| f32s(&d)[0])
     });
@@ -492,11 +492,11 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     // An expression reads a name as an ATTRIBUTE — `globals.gain`, `nd('sub').out.slot` — so a name
     // Python cannot parse as one is refused, whatever makes it unparseable. The refusal says the
     // rule rather than the one character it caught.
-    for bad in ["a'b", "a\\b", "a\"b", "a b-2", "nd()", "1st", "class", ""] {
+    for bad in ["a'b", "a\\b", "a\"b", "a b-2", "a_b", "nd()", "1st", "class", ""] {
         let why = g.refuse("node edit", j!({ "node": hex(osc), "name": bad }));
-        assert!(why.contains("letters, digits or _"), "the refusal states the rule: {why}");
+        assert!(why.contains("letters or digits"), "the refusal states the rule: {why}");
     }
-    g.call("node edit", j!({ "node": hex(osc), "name": "a_b_2" }));
+    g.call("node edit", j!({ "node": hex(osc), "name": "ab2" }));
     // The command tolerates a collision so replay converges; the RPC boundary raises the user error.
     g.add("Buffer");
     g.refuse("node edit", j!({ "node": hex(osc), "name": "buffer0" }));
@@ -568,8 +568,8 @@ fn a_node_can_be_born_configured_at_a_chosen_uid_and_name() {
     // Undo/redo do NOT come through here — they restore via the command history.
     g.call("node remove", j!({ "node": uid.clone() }));
     let again = g.call("node add", j!({ "type": "Oscillator", "member_uid": uid.clone(),
-                                        "name": "restored_osc" }));
-    assert_eq!((&again["uid"], &g.doc()["nodes"][&uid]["name"]), (&j!(uid), &j!("restored_osc")));
+                                        "name": "restoredOsc" }));
+    assert_eq!((&again["uid"], &g.doc()["nodes"][&uid]["name"]), (&j!(uid), &j!("restoredOsc")));
 }
 
 #[test]

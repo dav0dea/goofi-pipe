@@ -29,9 +29,7 @@ pub use goofi_node::Uid;
 /// archive somebody actually holds — not once per change while the format is still moving.
 const MANIFEST_VERSION: i64 = 1;
 
-/// What a name has to be, said once — it is the tail of every refusal about one.
-pub const NAME_RULE: &str =
-    "a letter or _ then letters, digits or _, and not a Python keyword — an expression reads a name as an attribute";
+pub use goofi_core::globals::NAME_RULE;
 
 /// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
 /// so it carries a thread and params; a facade and a port do not, so they carry neither.
@@ -956,7 +954,7 @@ impl Graph {
     /// empty, already worn, or not a legal name. A CREATE degrades where a rename refuses, because
     /// this is also the restore path — a hand-edited archive must cost one name, not the patch.
     fn pick_name(&self, want: &str, base: &str, except: Option<Uid>) -> String {
-        match self.name_taken(want, except) || !goofi_core::globals::is_valid_identifier(want) {
+        match self.name_taken(want, except) || !goofi_core::globals::is_valid_name(want) {
             true => self.fresh_name(base),
             false => want.to_string(),
         }
@@ -1105,7 +1103,7 @@ impl Graph {
     /// Rename a node. Every `nd('old')` in the patch follows to `nd('new')`, and the referrer uids
     /// come back so the bridge can rebroadcast them. The rewrite happens only on success.
     pub fn rename_node(&mut self, uid: Uid, name: &str) -> Result<Vec<Uid>, String> {
-        if !goofi_core::globals::is_valid_identifier(name) {
+        if !goofi_core::globals::is_valid_name(name) {
             return Err(format!("`{name}` is not a legal name: {NAME_RULE}"));
         }
         if self.name_in_use(name) {

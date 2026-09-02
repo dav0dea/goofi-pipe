@@ -157,9 +157,9 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
 
     // …and each spelling the schema promises parses: `--flag=value`, the bool's `--no-` form on
     // a declared bool only, `any` as JSON-or-bare-string, and a variadic positional list.
-    let born = ok_exec(&addr, 15, "node add --type=Oscillator --name inline_osc").await;
+    let born = ok_exec(&addr, 15, "node add --type=Oscillator --name inlineOsc").await;
     let born: Value = serde_json::from_str(&born).unwrap();
-    assert_eq!(born["name"], json!("inline_osc"));
+    assert_eq!(born["name"], json!("inlineOsc"));
     let bare = ok_exec(&addr, 16, &format!("node state {} --no-params", born["uid"].as_str().unwrap())).await;
     assert!(!bare.contains("params:"), "the bool's negative spelling gates the section: {bare}");
     let (text, err) = exec(&addr, "/mcp", 17, &["node add --type Oscillator --no-name x"]).await;

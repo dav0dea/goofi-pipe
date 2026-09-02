@@ -608,9 +608,7 @@ pub(crate) fn node_edit(
             return Err(format!("node edit: the name `{n}` is taken"));
         }
     }
-    // A display name is read as an ATTRIBUTE in an expression, so it has to be one — which also
-    // covers the quote and backslash that would break the source.
-    if name.as_deref().is_some_and(|n| !goofi_core::globals::is_valid_identifier(n)) {
+    if name.as_deref().is_some_and(|n| !goofi_core::globals::is_valid_name(n)) {
         return Err(format!(
             "node edit: `{}` is not a legal name: {}",
             name.unwrap_or_default(),

@@ -88,6 +88,20 @@ pub fn is_valid_identifier(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// What a node or slot name has to be, said once — it is the tail of every refusal about one.
+pub const NAME_RULE: &str =
+    "a letter then letters or digits, and not a Python keyword — an expression reads a name as an attribute, and a reference spells `node.slot`";
+
+/// A legal node or slot name: `[A-Za-z][A-Za-z0-9]*` and not reserved. Narrower than a global's
+/// identifier so that `node.slot` needs no quoting anywhere it is spelled.
+pub fn is_valid_name(name: &str) -> bool {
+    if RESERVED.contains(&name) {
+        return false;
+    }
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && chars.all(|c| c.is_ascii_alphanumeric())
+}
+
 /// The authoritative globals map. System globals may be edited but never removed, and the
 /// insertion order is observable (the panel, the `.gfi` and the mirror all read it).
 #[derive(Clone)]

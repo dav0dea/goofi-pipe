@@ -306,6 +306,23 @@ fn a_malformed_frame_is_refused_rather_than_trusted() {
 }
 
 #[test]
+fn every_slot_name_is_letters_and_digits() {
+    // A reference spells `node.slot`, and an expression reads a slot as an attribute: one rule,
+    // held by every shipped manifest, so a bad name cannot enter through a Rust node.
+    for m in goofi_signal::catalog() {
+        let slots = m.inputs.iter().map(|s| s.name).chain(m.outputs.iter().map(|o| o.name));
+        for slot in slots {
+            assert!(goofi_core::globals::is_valid_name(slot),
+                    "{}: slot `{slot}` — {}", m.type_name, goofi_core::globals::NAME_RULE);
+        }
+    }
+    assert!(goofi_core::globals::is_valid_name("out") && goofi_core::globals::is_valid_name("cutoff2"));
+    for bad in ["in", "max_frequency", "2x", "", "a.b"] {
+        assert!(!goofi_core::globals::is_valid_name(bad), "`{bad}` must be refused");
+    }
+}
+
+#[test]
 fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
     // Cheap and evaluator-free: a typo'd `globals.defualt_ufreq` compiles, binds, then errors on every
     // instance. Read AS EACH TYPE SEES IT, since a declaration may condition on the manifest.

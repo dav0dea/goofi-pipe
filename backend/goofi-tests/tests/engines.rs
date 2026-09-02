@@ -19,7 +19,7 @@ static AUDIO_OUTS: &[OutputDecl] = &[
     OutputDecl { name: "echo", kind: SlotType::Array },
 ];
 static AUDIO_INS: &[SlotDecl] = &[SlotDecl {
-    name: "in",
+    name: "input",
     kind: SlotType::Array,
     trigger_process: false,
     multi: false,
@@ -248,7 +248,7 @@ impl Engine for Skeleton {
             }
             feed.outs = outs;
             feed.ins = view
-                .wires_into(*uid, "in")
+                .wires_into(*uid, "input")
                 .filter_map(|(producer, slot)| {
                     let p = view.nodes.get(&producer)?;
                     let service = goofi_transport::output_service(
@@ -447,7 +447,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
     // Step: skeleton → signal. The signal consumer subscribes to the derived name and the
     // skeleton rings its slot doorbell, so data crosses without a protocol.
     let echo = t.add("_TestEcho");
-    t.link(audio, "out", echo, "in");
+    t.link(audio, "out", echo, "input");
     let echoed = t.probe(echo, "out");
     let crossed = echoed.expect_frame(&mut t.state.graph.lock().unwrap(), "the crossed block");
     assert_eq!(f32s(&crossed), f32s(&block), "the signal node re-emits what the skeleton made");
@@ -455,7 +455,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
     // Step: signal → skeleton. The boundary is drained at the SKELETON's own tick — no doorbell
     // exists on a scheduled engine — and the echo slot republishes the freshest frame verbatim.
     let osc = t.add("Oscillator");
-    t.link(osc, "out", audio, "in");
+    t.link(osc, "out", audio, "input");
     let back = t.probe(audio, "echo");
     let boundary = back.expect_frame(&mut t.state.graph.lock().unwrap(), "the boundary echo");
     assert!(!f32s(&boundary).is_empty(), "the oscillator's block came back through the boundary");
@@ -464,7 +464,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
     // rings the binding's own event id, the mailbox holds the frame latest-wins, and the
     // evaluated value lands exactly once — static data cannot spam writes.
     let meter = t.add("_TestParamWrites");
-    t.link(audio, "out", meter, "in");
+    t.link(audio, "out", meter, "input");
     t.call(
         "node param edit",
         j!({ "node": hex(meter), "param": "control/value",

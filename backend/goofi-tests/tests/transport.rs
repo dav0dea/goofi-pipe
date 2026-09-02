@@ -29,7 +29,7 @@ impl Node for Passthrough {
     }
 }
 static INPUTS: &[SlotDecl] = &[SlotDecl {
-    name: "in",
+    name: "input",
     kind: SlotType::Array,
     trigger_process: true,
     multi: false,
@@ -99,7 +99,7 @@ fn an_undrained_control_mailbox_keeps_the_whole_burst() {
     for seq in 1..=BURST {
         channel.send(Envelope {
             seq,
-            control: Control::InSlot { slot: "in".to_string(), services: Vec::new() },
+            control: Control::InSlot { slot: "input".to_string(), services: Vec::new() },
         });
     }
 
@@ -188,14 +188,14 @@ fn a_frame_reaches_a_wired_consumer_and_rings_its_slot() {
     // A wire is two declarations and nothing else: neither end knows the other's uid.
     let producer = IoxTransport::create(&instance(), Uid(5), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(6), 0, manifest()).unwrap();
-    consumer.wire_in("in", &[output_service(&base_of(Uid(5)), "out")]).unwrap();
+    consumer.wire_in("input", &[output_service(&base_of(Uid(5)), "out")]).unwrap();
     producer.wire_out("out", &[(door_service(&base_of(Uid(6))), 1)]).unwrap();
 
     producer.publish("out", &frame(&[1.0, 2.0, 3.0]));
     assert_eq!(consumer.wait(Some(MS200)), vec![1], "woken by the slot's own event id");
     let got = consumer.drain_inputs();
     assert_eq!(got.len(), 1);
-    assert_eq!((got[0].0.as_str(), got[0].1), ("in", 0), "slot, and its position in the wire order");
+    assert_eq!((got[0].0.as_str(), got[0].1), ("input", 0), "slot, and its position in the wire order");
     assert_eq!(f32s(&got[0].2), vec![1.0, 2.0, 3.0]);
     assert!(consumer.drain_inputs().is_empty(), "a drained wire is empty");
 }
@@ -205,7 +205,7 @@ fn a_frame_larger_than_the_initial_slice_still_lands() {
     // `AllocationStrategy::Static`, the iceoryx2 default, refuses this: a GOOF frame is variable-size.
     let producer = IoxTransport::create(&instance(), Uid(7), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(8), 0, manifest()).unwrap();
-    consumer.wire_in("in", &[output_service(&base_of(Uid(7)), "out")]).unwrap();
+    consumer.wire_in("input", &[output_service(&base_of(Uid(7)), "out")]).unwrap();
 
     let big: Vec<f32> = (0..80_000).map(|i| i as f32).collect(); // 320 KB, past the 64 KiB start
     producer.publish("out", &frame(&big));
@@ -220,11 +220,11 @@ fn a_wire_the_new_set_omits_stops_delivering() {
     let producer = IoxTransport::create(&instance(), Uid(9), 0, manifest()).unwrap();
     let consumer = IoxTransport::create(&instance(), Uid(10), 0, manifest()).unwrap();
     let service = output_service(&base_of(Uid(9)), "out");
-    consumer.wire_in("in", &[service]).unwrap();
+    consumer.wire_in("input", &[service]).unwrap();
     producer.publish("out", &frame(&[1.0]));
     assert_eq!(consumer.drain_inputs().len(), 1);
 
-    consumer.wire_in("in", &[]).unwrap();
+    consumer.wire_in("input", &[]).unwrap();
     producer.publish("out", &frame(&[2.0]));
     assert!(consumer.drain_inputs().is_empty(), "the dropped wire delivers nothing");
 }
@@ -237,10 +237,10 @@ fn a_wire_the_new_set_still_names_keeps_what_it_is_holding() {
     let consumer = IoxTransport::create(&instance(), Uid(12), 0, manifest()).unwrap();
     let held = output_service(&base_of(Uid(11)), "out");
     let added = output_service(&base_of(Uid(13)), "out");
-    consumer.wire_in("in", std::slice::from_ref(&held)).unwrap();
+    consumer.wire_in("input", std::slice::from_ref(&held)).unwrap();
     producer.publish("out", &frame(&[1.0])); // in flight, unread
 
-    consumer.wire_in("in", &[held, added]).unwrap();
+    consumer.wire_in("input", &[held, added]).unwrap();
     let got = consumer.drain_inputs();
     assert_eq!(got.len(), 1, "the second wire has nothing yet");
     assert_eq!(f32s(&got[0].2), vec![1.0], "and the first still holds what it was sent");
@@ -256,7 +256,7 @@ fn a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow() {
     let consumers: Vec<IoxTransport> = (0..CONSUMERS)
         .map(|i| {
             let c = IoxTransport::create(&instance(), Uid(100 + i), 0, manifest()).unwrap();
-            c.wire_in("in", std::slice::from_ref(&service)).expect("subscribe");
+            c.wire_in("input", std::slice::from_ref(&service)).expect("subscribe");
             c
         })
         .collect();
@@ -279,7 +279,7 @@ fn a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given() {
     // Reversed, so a wire index that follows the producers rather than the set is visible.
     let services: Vec<String> =
         (0..WIRES).rev().map(|i| output_service(&base_of(Uid(200 + i)), "out")).collect();
-    consumer.wire_in("in", &services).expect("subscribe");
+    consumer.wire_in("input", &services).expect("subscribe");
 
     let door = door_service(&base_of(Uid(21)));
     for (i, producer) in producers.iter().enumerate() {

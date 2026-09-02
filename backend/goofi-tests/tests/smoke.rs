@@ -13,7 +13,7 @@ fn a_node_is_born_wired_and_runs() {
     g.ready(dst);
 
     let probe = g.probe(dst, "out");
-    g.link(src, "out", dst, "in");
+    g.link(src, "out", dst, "input");
 
     let frame = g.until("a frame to cross the wire", |_| probe.latest());
     assert_eq!(frame.shape(), &[1], "the counter emits one number: {frame:?}");
@@ -46,7 +46,7 @@ fn a_failing_node_reports_why_and_a_healthy_one_stays_quiet() {
 fn a_refusal_says_what_was_wrong() {
     let g = Goofi::new();
     let n = g.add("_TestEcho");
-    let why = g.refuse("link add", j!({ "from": ep(goofi_tests::hex(n), "nope"), "to": ep(goofi_tests::hex(n), "in") }));
+    let why = g.refuse("link add", j!({ "from": ep(goofi_tests::hex(n), "nope"), "to": ep(goofi_tests::hex(n), "input") }));
     assert!(why.contains("nope"), "the refusal names the slot: {why}");
 }
 

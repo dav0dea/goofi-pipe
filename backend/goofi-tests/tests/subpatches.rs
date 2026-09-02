@@ -779,7 +779,7 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     g.ready(src);
     g.ready(dst);
     let at_dst = g.probe(dst, "out");
-    g.link(src, "out", dst, "in");
+    g.link(src, "out", dst, "input");
     g.until("a frame before any sub-patch exists", |_| at_dst.latest());
 
     // Collapsing the consumer is pure bookkeeping: the wire is the same wire. Asked as a RISING
@@ -798,7 +798,7 @@ fn frames_cross_a_boundary_and_stop_when_the_cable_is_cut() {
     g.ready(mid_uid);
     let at_mid = g.probe(mid_uid, "out");
     let port = boundary(&g, &inst, "in");
-    wire(&g, &port, "in", &mid, "in");
+    wire(&g, &port, "in", &mid, "input");
     assert!(g.stays(|_| at_mid.latest().is_none()), "the inside alone feeds it nothing");
 
     // Wiring the OUTSIDE is what makes frames cross. This is the step a planner that drops a port

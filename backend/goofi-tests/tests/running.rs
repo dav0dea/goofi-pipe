@@ -165,11 +165,11 @@ fn a_required_input_refuses_to_run_on_a_hole_and_says_so() {
     g.set_param(need, "common", "autotrigger", true);
     g.set_param(need, "common", "max_frequency", 20.0);
     let why = g.until("the refusal", |g| g.error(need));
-    assert!(why.contains("in"), "the refusal names the slot that is empty: {why}");
+    assert!(why.contains("input"), "the refusal names the slot that is empty: {why}");
     assert!(g.stays(|_| probe.latest().is_none()), "and nothing ran");
 
     let src = g.add("_TestCounter");
-    g.link(src, "out", need, "in");
+    g.link(src, "out", need, "input");
     g.until("the fed node to run", |_| probe.latest().map(|_| ()));
     assert!(g.until("the error to clear", |g| g.error(need).is_none().then_some(true)));
 }
@@ -411,14 +411,14 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
         fn process(&mut self, i: &goofi_signal::Inputs<'_>, o: &mut goofi_signal::Outputs<'_>,
                    _: &mut goofi_signal::NodeCtx, _: &goofi_node::Params<'_>)
                    -> goofi_signal::NodeResult {
-            if let Some(d) = i.get("in") {
+            if let Some(d) = i.get("input") {
                 o.set("out", d.clone());
             }
             Ok(())
         }
     }
     static SLOW_IN: &[goofi_node::SlotDecl] = &[goofi_node::SlotDecl {
-        name: "in", kind: goofi_core::SlotType::Array,
+        name: "input", kind: goofi_core::SlotType::Array,
         trigger_process: true, multi: false, required: false }];
     static SLOW_OUT: &[goofi_node::OutputDecl] =
         &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
@@ -446,7 +446,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
 
     // A node is ADDRESSABLE only once ready, so this wire is planned against one that cannot hear it.
     let probe = g.probe(heavy, "out");
-    g.link(src, "out", heavy, "in");
+    g.link(src, "out", heavy, "input");
     assert_eq!(g.stage(heavy), "creating", "…and it is still building while that wire is planned");
     g.ready(heavy);
     g.until("the wire planned during the build to carry a frame", |_| probe.latest());
