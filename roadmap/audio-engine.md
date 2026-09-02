@@ -132,10 +132,16 @@ region per output port and per scalar-sourced param, scratch for summing, one si
 liveness-based reuse until a measurement asks. Landed 2026-09-02 as `backend/audio/goofi-audio`
 under the external clock (`drive(frames)`, the device arrives with its own step): `channels` is
 answered on the control thread by a TWIN from the same factory, so the box that processes never
-leaves the audio thread; coercion is implied by counts — a one-channel wire broadcasts, a narrower
-one pads — so no coercion enum exists; a plan swap resets every slot's memory of its scalar
-regions, because a fresh arena holds nothing; and the three shipped nodes are compiled into the
-engine, one file each in the author's form, until the audio ABI moves them into `nodes_audio/`.
+leaves the audio thread; the SDK's `Port::chan` is the one owner of the channel rule — a
+one-channel port is on every channel, a channel past a wider port's count is silence — so no
+coercion enum exists and the engine's sum reads a part through the same door a node does; a
+scalar region is refilled when it no longer holds its atomic's value, so a fresh arena needs no
+memory beside it; a loop with no feedback node excludes only its members, and what the loop feeds
+runs on silence at that jack; the lowest-uid `AudioOut` is heard until the device sums them; a
+binding the graph did not ship (`live == false`) is never a plan edge; `Osc` takes `pitch` in volts
+per octave, as the owner ruled, and Hz is a conversion; and the three shipped nodes are compiled
+into the engine, one file each in the author's form, until the audio ABI moves them into
+`nodes_audio/`.
 
 **Topological order, Kahn, ties broken by `Uid`.** Not iteration order — `Graph::nodes` is an
 `IndexMap` whose order moves across save, load, undo and paste. A loop closes only through a node

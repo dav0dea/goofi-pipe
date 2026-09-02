@@ -8,10 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use goofi_audio_sdk::AudioNode;
-use goofi_core::Param;
 use goofi_node::{
-    DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, ParamDecl, ParamGroups, Request,
-    Status, Touched, Uid, NATIVE,
+    DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, ParamGroups, Request, Status,
+    Touched, Uid, NATIVE,
 };
 
 pub mod nodes;
@@ -24,12 +23,13 @@ use runtime::{Msg, Retired, Runtime, Slot, MAX_PORTS};
 /// The rate until a device names one (Step 6 of the audio program).
 pub const RATE: f64 = 48_000.0;
 
-struct Instance {
-    idx: usize,
-    manifest: &'static NodeManifest,
-    twin: Box<dyn AudioNode>,
+pub(crate) struct Instance {
+    pub(crate) idx: usize,
+    pub(crate) manifest: &'static NodeManifest,
+    /// Answers `channels` on the control thread; the box that processes never leaves the audio
+    /// thread.
+    pub(crate) twin: Box<dyn AudioNode>,
     params: Arc<[AtomicU64]>,
-    scalars: Vec<f64>,
 }
 
 pub struct AudioEngine {
@@ -92,10 +92,10 @@ impl AudioEngine {
     pub fn drive(&mut self, frames: usize) -> (Vec<f32>, u16) {
         let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
         rt.fifo.reserve(frames * goofi_audio_sdk::MAX_CHANNELS as usize);
-        while rt.fifo.len() < frames * rt.channels as usize {
+        while rt.fifo.len() < frames * rt.plan.heard().1 as usize {
             rt.render_block();
         }
-        let channels = rt.channels;
+        let channels = rt.plan.heard().1;
         let rest = rt.fifo.split_off(frames * channels as usize);
         let out = std::mem::replace(&mut rt.fifo, rest);
         (out, channels)
@@ -112,9 +112,12 @@ impl AudioEngine {
         }
     }
 
-    fn send(&mut self, msg: Msg) {
-        if self.inbox.push(msg).is_err() {
-            eprintln!("audio engine: the inbox is full — a block has not been rendered in a long time");
+    /// A message always lands. A full ring means the audio thread has not run for a long time, so
+    /// taking its lock to apply the backlog costs no block.
+    fn send(&mut self, mut msg: Msg) {
+        while let Err(rtrb::PushError::Full(back)) = self.inbox.push(msg) {
+            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).apply_pending();
+            msg = back;
         }
     }
 
@@ -128,27 +131,6 @@ impl AudioEngine {
         let idx = self.slab_len;
         self.slab_len = bigger;
         idx
-    }
-}
-
-/// A param's scalar as the audio thread reads it: a number as itself, a bool as 0/1, an option
-/// as its index, free text as 0.
-fn scalar(p: &Param) -> f64 {
-    match p {
-        Param::Float { value, .. } => *value,
-        Param::Int { value, .. } => *value as f64,
-        Param::Bool { value } => f64::from(u8::from(*value)),
-        Param::Str { value, options: Some(options), .. } => {
-            options.iter().position(|o| o == value).map_or(0.0, |i| i as f64)
-        }
-        Param::Str { .. } => 0.0,
-    }
-}
-
-fn scalar_of(params: &ParamGroups, d: &ParamDecl) -> f64 {
-    match params.get(d.group).and_then(|g| g.get(d.name)) {
-        Some(p) => scalar(p),
-        None => scalar(&d.spec.to_param()),
     }
 }
 
@@ -196,14 +178,11 @@ impl Engine for AudioEngine {
         }
         let mut node = make();
         node.prepare(RATE);
-        let scalars: Vec<f64> = manifest.params.iter().map(|d| scalar_of(params, d)).collect();
-        let atomics: Arc<[AtomicU64]> = scalars.iter().map(|v| AtomicU64::new(v.to_bits())).collect();
+        let atomics: Arc<[AtomicU64]> =
+            manifest.params.iter().map(|d| AtomicU64::new(plan::scalar_of(params, d).to_bits())).collect();
         let idx = self.slot_index();
-        self.send(Msg::Insert {
-            idx,
-            slot: Slot { node, params: atomics.clone(), last: vec![f64::NAN; scalars.len()] },
-        });
-        self.live.insert(uid, Instance { idx, manifest, twin: make(), params: atomics, scalars });
+        self.send(Msg::Insert { idx, slot: Slot { node, params: atomics.clone() } });
+        self.live.insert(uid, Instance { idx, manifest, twin: make(), params: atomics });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.waker.notify();
@@ -222,32 +201,13 @@ impl Engine for AudioEngine {
 
     fn settle(&mut self, view: &GraphView<'_>, _touched: &[Touched]) {
         self.dirty = false;
-        for (uid, nv) in &view.nodes {
-            if nv.engine != "audio" {
-                continue;
-            }
-            let Some(inst) = self.live.get_mut(uid) else { continue };
+        for (uid, inst) in &self.live {
+            let Some(nv) = view.nodes.get(uid) else { continue };
             for (i, d) in inst.manifest.params.iter().enumerate() {
-                let v = scalar_of(nv.params, d);
-                inst.scalars[i] = v;
-                inst.params[i].store(v.to_bits(), Ordering::Relaxed);
+                inst.params[i].store(plan::scalar_of(nv.params, d).to_bits(), Ordering::Relaxed);
             }
         }
-        let nodes: Vec<plan::Node<'_>> = view
-            .nodes
-            .iter()
-            .filter(|(_, nv)| nv.engine == "audio")
-            .filter_map(|(uid, _)| {
-                self.live.get(uid).map(|i| plan::Node {
-                    uid: *uid,
-                    idx: i.idx,
-                    manifest: i.manifest,
-                    twin: i.twin.as_ref(),
-                    scalars: &i.scalars,
-                })
-            })
-            .collect();
-        let (plan, faults) = plan::compile(view, &nodes);
+        let (plan, faults) = plan::compile(view, &self.live);
         let since = self.started.elapsed().as_secs_f64();
         let now_faulted: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
         for uid in self.faulted.iter().filter(|u| !now_faulted.contains(u)) {

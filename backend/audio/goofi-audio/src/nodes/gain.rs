@@ -33,8 +33,8 @@ impl AudioNode for Gain {
         let gain = &b.params[P::GAIN];
         let out = &mut b.outs[0];
         for c in 0..out.channels() as usize {
-            let x = input.chan(c.min(input.channels() as usize - 1));
-            let g = gain.chan(c.min(gain.channels() as usize - 1));
+            let x = input.chan(c);
+            let g = gain.chan(c);
             let y = out.chan_mut(c);
             for i in 0..BLOCK {
                 y[i] = x[i] * g[i];

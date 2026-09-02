@@ -63,10 +63,18 @@ impl<'a> Port<'a> {
         self.wired
     }
 
+    /// Channel `c` of a port that may be narrower than the block it feeds: a one-channel port is
+    /// on every channel, a channel past a wider port's count is silence.
     pub fn chan(&self, c: usize) -> &[f32; BLOCK] {
+        let c = if self.channels == 1 { 0 } else { c };
+        if c >= self.channels as usize {
+            return &SILENT;
+        }
         self.data[c * BLOCK..(c + 1) * BLOCK].try_into().expect("a channel is BLOCK frames")
     }
 }
+
+static SILENT: [f32; BLOCK] = [0.0; BLOCK];
 
 /// One output for one block, with the channel count `channels()` answered for this plan.
 pub struct PortMut<'a> {
