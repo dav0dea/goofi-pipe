@@ -391,7 +391,7 @@ async fn run(
     if !list_nodes {
         register_evaluator(&state);
     }
-    state.roots = extra_nodes.iter().map(PathBuf::from).collect();
+    state.roots.extend(extra_nodes.iter().map(PathBuf::from));
     ensure_packages(&state.roots, &subproc_python);
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap()).set_python(goofi_signal::Python {
@@ -652,14 +652,15 @@ fn boot_scan(state: &AppState) {
         let patch = state.mount();
         (goofi_bridge::rescan(state, &mut g, &patch).1, state.roots.clone())
     };
-    let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
+    let (mut n_native, mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32, 0u32);
     for t in found {
         match t.outcome {
             Scanned::Registered { isolation, replaced } => {
                 note_replaced(&t.type_name, replaced);
                 match isolation {
+                    Isolation::Native => n_native += 1,
                     Isolation::InProcess => n_in += 1,
-                    Isolation::Subprocess | Isolation::Native => n_sub += 1,
+                    Isolation::Subprocess => n_sub += 1,
                 }
             }
             Scanned::Unavailable(reason) => {
@@ -671,7 +672,7 @@ fn boot_scan(state: &AppState) {
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
     let from = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ");
     println!(
-        "  auto-routed {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
+        "  {n_native} native + {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
     );
 }
 
