@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use goofi_audio_sdk::{AudioNode, Block, ParamDecl, ParamSpec, Port, PortMut, BLOCK};
 use goofi_core::SlotType;
 use goofi_node::{
     BoundVar, DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
@@ -350,12 +351,40 @@ fn door_for(
     goofi_transport::Doorbell::open(iox, &door).ok()
 }
 
-/// The block the audio skeleton publishes: 64 samples, first one distinctive so a binding that
-/// reads it lands a value no default carries.
+/// The one DSP node behind the audio skeleton, written as an author writes one: a level param
+/// read by index, one output filled a channel at a time.
+struct Tone;
+
+goofi_audio_sdk::params! {
+    LEVEL = ParamDecl {
+        group: "tone",
+        name: "level",
+        spec: ParamSpec::Float { default: 0.5, min: 0.0, max: 1.0 },
+        doc: Some("the block's level"),
+        expression: None,
+    },
+}
+
+impl AudioNode for Tone {
+    fn prepare(&mut self, _rate: f64) {}
+    fn process(&mut self, b: &mut Block<'_>) {
+        let level = b.params[P::LEVEL].chan(0)[0];
+        let out = b.outs[0].chan_mut(0);
+        out.fill(level);
+        out[0] = level / 2.0;
+    }
+}
+
+/// The block the audio skeleton publishes: `Tone` run once over a local arena — 64 samples, the
+/// first one distinctive so a binding that reads it lands a value no default carries.
 fn audio_block() -> goofi_core::Data {
-    let mut samples = vec![0.5f32; 64];
-    samples[0] = 0.25;
-    goofi_tests::frame(&samples)
+    let level = [0.5f32; BLOCK];
+    let params = [Port::new(&level, 1, true)];
+    let mut arena = [0f32; BLOCK];
+    let mut outs = [PortMut::new(&mut arena, 1)];
+    Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params });
+    assert_eq!(Tone.channels(&[2, 1], &[0.5], 2), vec![2, 2], "the SDK default follows the widest input");
+    goofi_tests::frame(&arena)
 }
 
 /// An 8×8 static gradient — the graphics skeleton's whole output.

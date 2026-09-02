@@ -494,6 +494,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "goofi-audio-sdk"
+version = "3.1.0"
+dependencies = [
+ "goofi-core",
+ "goofi-node",
+]
+
+[[package]]
 name = "goofi-bridge"
 version = "3.1.0"
 dependencies = [
@@ -673,6 +681,7 @@ dependencies = [
  "base64",
  "bytes",
  "futures-util",
+ "goofi-audio-sdk",
  "goofi-bridge",
  "goofi-client",
  "goofi-codec",

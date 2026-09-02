@@ -21,6 +21,7 @@ goofi-codec = { path = "../goofi-codec" }
 goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
 goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
+goofi-audio-sdk = { path = "../audio/goofi-audio-sdk" }
 goofi-node = { path = "../goofi-node" }
 goofi-transport = { path = "../goofi-transport" }
 goofi-view = { path = "../goofi-view" }

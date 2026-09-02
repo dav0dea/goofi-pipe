@@ -1,0 +1,9 @@
+[package]
+name = "goofi-audio-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goofi-core = { path = "../../goofi-core" }
+goofi-node = { path = "../../goofi-node" }
