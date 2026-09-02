@@ -255,8 +255,8 @@ node carries a CV port — every modulatable quantity is a param. Node and slot 
 and digits, so `node.slot` needs no quoting. `roadmap/param-sources.md` holds the rest.
 
 **Every audio node stands behind one goofi trait, and a plugin format is an adapter.** A shipped
-node links in statically; an authored node is one `.rs` file built by goofi against its embedded
-SDK and loaded as a `cdylib` behind a version symbol; a VST3 plugin implements the same trait. The
+and an authored node are the same one-file `cdylib` from different folders; a VST3 plugin
+implements the same trait. The
 engine is synchronous, in-process, one 64-frame block per callback, no iceoryx2 on the audio path;
 every signal is audio-rate numbers in a standard range, and a gate, a pitch and a voice count are
 conventions, not types. CLAP was adopted and then replaced, and the reasons are recorded so it is
@@ -272,9 +272,14 @@ ready; pub/sub has no history, so anything said before that is queued or re-plan
 constraint algebra; the bridge folds every viewer's constraints against the real frame and
 reduces ONCE, on its own subscription — so no number of viewers can slow a `process()` down.
 
-**Both Python tiers run one contract.** In-process free-threaded and subprocess GIL-bound nodes
-share one marshalling seam, so they cannot drift. Neither the tier nor the interpreter is
-selectable: one probe per node file routes it, by whether its imports keep the GIL disabled.
+**Every out-of-crate node runs one contract.** In-process free-threaded and subprocess GIL-bound
+Python nodes share one marshalling seam, so they cannot drift; neither the tier nor the
+interpreter is selectable — one probe per node file routes it, by whether its imports keep the
+GIL disabled. A Rust node runs the same seam: every Rust node, shipped or authored, signal or
+audio, is one `.rs` file in `nodes_<engine>/`, built by one pipeline into a `cdylib` and loaded
+behind a version symbol, and the signal ABI passes the codec bytes the transport already carries.
+There is no static registration. The shipped folders are prebuilt at goofi's build time and
+embedded, so a toolchain is needed to author and never to run.
 
 **Exit is a real teardown.** Every node is stopped and waited for — to a CEILING, not a join,
 because a wedged node must not wedge the exit. That wait is what releases shared memory; what a

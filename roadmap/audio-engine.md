@@ -34,10 +34,12 @@ delivery produced. That is the artefact, papered over.
 ## Locked decisions
 
 **Every audio node implements one goofi trait, and a plugin format is an adapter behind it.** A
-shipped node implements `AudioNode` and links in statically. An authored node implements the same
-trait, is built against the SDK crate at goofi's own version, and loads as a `cdylib` through a
-`#[repr(C)]` vtable the SDK emits — the author never sees it. A VST3 plugin is an adapter that
-implements the same trait. The plan compiler, the Kahn sort, the arena, the watchdog and the viewer
+shipped node and an authored node are the same thing: one `.rs` file — in `nodes_audio/` or in the
+patch's `workspace/nodes_audio/` — built against the SDK crate at goofi's own version by the one
+pipeline `node-sources.md` describes, and loaded as a `cdylib` through a `#[repr(C)]` vtable the
+SDK emits, which the author never sees. The shipped folder is prebuilt at goofi's build time and
+embedded, so running needs no toolchain. A VST3 plugin is an adapter that implements the same
+trait. The plan compiler, the Kahn sort, the arena, the watchdog and the viewer
 tap see ONE trait and no format enum. Audio I/O is the engine's own — a device is never a node's to
 open — and it stands behind the same trait. Forking a shipped node is a copy.
 
@@ -217,9 +219,10 @@ instances of one module, a 160 ns per node page-walk tax for private memories th
 fix, a store-wide epoch deadline, an instance leak with a 10,000 hard ceiling, and a trap handler
 unproven on a `SCHED_FIFO` thread across three platforms. Recorded so it is not re-proposed.
 
-**The crates are `backend/audio/goofi-audio-sdk`, `goofi-audio` and `goofi-audio-nodes`.** The
-SDK carries BOTH sides of the boundary — the trait, the `#[repr(C)]` vtable, `export_node!` and
-`Loaded` — so they cannot drift, and depends on `goofi-node` alone. The engine depends on nothing
+**The crates are `backend/audio/goofi-audio-sdk` and `goofi-audio`; the shipped nodes are
+`nodes_audio/`.** The SDK carries BOTH sides of the boundary — the trait, the `#[repr(C)]`
+vtable, `export_node!` and `Loaded` — so they cannot drift, and depends on `goofi-node` alone;
+the pipeline that builds and loads is the shared `goofi-build`. The engine depends on nothing
 above `goofi-transport`, so no iceoryx2 thread or tokio reaches the DSP path and an external block
 callback can drive it. New dependencies: `cpal`, `rtrb`, `midir`, `vst3`. No DSP crate in the
 engine or the shipped nodes.
@@ -229,7 +232,8 @@ engine or the shipped nodes.
 An agent or a user writes ONE file, `workspace/nodes_audio/<Name>.rs` — `impl AudioNode`, in safe
 Rust — and goofi generates the crate around it, builds it, and loads it while audio runs. The
 `.gfi` carries the SOURCE because the workspace does; the artifact is a machine-local cache.
-`node-sources.md` holds the folder rule; the loading rules are here because they are audio's.
+`node-sources.md` holds the folder rule and the pipeline, which is one for every engine; what is
+here is the part that is audio's — the rules an audio thread forces.
 
 - **The manifest crosses as data, never as a Rust struct.** `describe()` answers the same JSON
   declaration the Python probe reads from a Python node's class attributes, and the engine leaks
@@ -238,14 +242,11 @@ Rust — and goofi generates the crate around it, builds it, and loads it while 
 - **A version symbol is checked before anything else.** The SDK stamps the goofi version it was
   built against; the loader reads it first and refuses a mismatch with a message naming both. A
   stale artifact is a refusal, never a crash — the objection to a home-grown ABI, answered.
-- **The build is a free function and runs outside the graph lock.** It takes an SDK path and a
-  source file and knows nothing of audio; `library refresh` runs it BEFORE taking the lock, then
-  locks for the scan, the diff and the restarts. The SDK's sources are embedded in the binary and
-  written to `$GOOFI_HOME/.goofi/sdk/<version>/` on first use — one artifact, no registry lookup
-  for goofi's own crates. A node's crate is generated in `.goofi/build/<Name>/` with a fixed
-  dependency allowlist — `fundsp`, `biquad`, `realfft`, `rustfft`, `libm` — `#![forbid(unsafe_code)]`,
-  and one shared `target/`; the cache key is (goofi version, source hash). A `cargo` that is
-  absent makes the node UNAVAILABLE with "needs cargo to build"; shipped nodes never need it.
+- **The build is `goofi-build`, shared with the signal plane, and it runs outside the graph
+  lock.** `library refresh` runs it BEFORE taking the lock, then locks for the scan, the diff and
+  the restarts. The DSP allowlist it declares — `fundsp`, `biquad`, `realfft`, `rustfft`, `libm` —
+  is what an audio node may import. A `cargo` that is absent makes an authored node UNAVAILABLE
+  with "needs cargo to build"; a shipped node never needs it.
 - **Reload is `library refresh`, and nothing watches a file.** It builds, scans, diffs stamps and
   restarts every live instance of a changed type — how an edited Python node reaches the canvas
   today. A build that fails leaves the stamp unchanged: the instances keep running the old

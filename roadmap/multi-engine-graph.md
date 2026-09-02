@@ -79,9 +79,10 @@ over. The signal engine receives `instance` at construction, and the evaluator t
 `set_evaluator` door; `clear()`'s clock
 reset reaches every engine through the trait's `reset_clock`, a default no-op for an engine with
 no patch time. Engines are registered at the composition root — `goofi-bridge`'s `fresh_graph`,
-the ONE boot path the CLI and the test harness share: it links `goofi-nodes` and anchors its
-inventory, constructs the signal engine (whose construction carries the boot reclaim sweep), and
-registers it first on a bare `Graph::new()`. A bare graph is a MODEL — it serializes, and runs
+the ONE boot path the CLI and the test harness share: it constructs the signal engine (whose
+construction carries the boot reclaim sweep) and registers it first on a bare `Graph::new()`;
+the shipped nodes reach every engine through its scan of the folders the root's `build.rs`
+prebuilt (2026-09-02: `goofi-nodes` and its inventory are deleted, `node-sources.md`). A bare graph is a MODEL — it serializes, and runs
 nothing. A type's engine is WHICH
 library advertises it — no tag field exists anywhere; two libraries claiming one name resolve to
 the first registered advertiser, signal first. Adding an engine is one line there plus its

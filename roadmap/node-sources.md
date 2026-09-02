@@ -7,7 +7,8 @@ central node source directory to point either at.
 ## The state today
 
 - **Rust nodes are compiled in**, registered through `inventory`. There is no directory — a Rust
-  node is a file in `goofi-nodes` and a `cargo build`.
+  node is a file in `goofi-nodes` and a `cargo build`. (Decided away below: they become source in
+  `nodes_signal/`, dynamically loaded.)
 - **The shipped Python tree is `nodes/`, resolved RELATIVE to the process's working directory.** A
   binary started anywhere else finds no shipped Python node and says nothing about it.
 - `--extra-nodes DIR` adds directories to the scan, a later one winning a shared type name.
@@ -55,13 +56,18 @@ The loading rules are in `audio-engine.md` and are not repeated here.
 
 ## On-the-fly Rust nodes, on the SIGNAL plane
 
-**Decided 2026-09-02: a dynamic library, through the audio plane's pipeline, not a process.** The
-owner's direction is that the built-in signal Rust nodes eventually move into `nodes_signal/` and
-become authorable and dynamically loadable on the fly, exactly as audio nodes are. The audio
-build pipeline takes an SDK path and a source file and knows nothing of audio, so the signal
-plane's half is a signal SDK crate — the `Node` trait behind a `#[repr(C)]` vtable with the same
-version symbol and the same `describe()` — and an adoption of that pipeline, not a design. The
-process candidate below is recorded as what it was and is no longer pursued.
+**Decided 2026-09-02: a dynamic library, and it is ONE mechanism for every engine, built now.**
+Every Rust node — shipped or authored, signal or audio — is one `.rs` file in `nodes_<engine>/`,
+built by one pipeline (`goofi-build`: generate the crate, cargo, cache by goofi version and source
+hash, unique filename, load behind a version symbol) into a `cdylib`, and loaded through a
+`#[repr(C)]` vtable. The four built-in signal nodes move to `nodes_signal/*.rs`; `goofi-nodes`,
+`inventory` and static registration are deleted. **A toolchain is still needed to AUTHOR and never
+to run**: the composition root's `build.rs` runs the same pipeline over the shipped folders at
+goofi's build time and embeds the artifacts, as the frontend bundle is embedded, so a shipped node
+that does not compile fails the build and a user without cargo runs every shipped node. The
+signal SDK's ABI passes codec bytes — the boundary the transport already has — so the `cdylib`
+adds no marshalling, and "both Python tiers run one contract" becomes "every out-of-crate node
+runs one contract". The process candidate below is recorded as what it was and is not pursued.
 
 To be investigated, in this order:
 
@@ -79,8 +85,8 @@ To be investigated, in this order:
 - **A Rust toolchain is not a goofi dependency.** Setup is `cargo run -p goofi-init` and `cargo run`,
   and a user who installs a binary has neither. A node that needs `cargo` must degrade to
   "unavailable, and here is why" on a machine without it — the same way a Python node with a missing
-  import already does. On the audio plane this is narrower: only AUTHORING is absent, and every
-  shipped and vendored node still loads.
+  import already does. Held, on both planes, by prebuilding the shipped folders at goofi's build
+  time: only AUTHORING is absent without cargo, and every shipped and vendored node still loads.
 - **Compile latency is seconds to minutes**, where a Python node is instant. The node lifecycle
   already models "not ready yet", so the stage machinery exists; the UX of a node that is compiling
   does not.
