@@ -1,7 +1,8 @@
 /** Wire shapes for parameter descriptors as the bridge emits them. */
 
 /** The one active source of a param's value. */
-export type ParamMode = 'constant' | 'expression' | 'reference';
+export const PARAM_MODES = ['constant', 'expression', 'reference'] as const;
+export type ParamMode = (typeof PARAM_MODES)[number];
 
 /** What `node param edit` takes beside a value: any subset, and a text given implies its mode. */
 export interface SourcePatch {

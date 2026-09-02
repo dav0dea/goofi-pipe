@@ -45,12 +45,9 @@ export interface PickerOptions {
 }
 
 export interface ExprEditorHandle {
-	/** Commit now, if the document has changed — a code editor's document is not a bindable string. */
-	commit(): void;
 	/** Adopt an externally changed source. A no-op while the user is typing into it. */
 	setValue(next: string): void;
 	setError(error: string | null): void;
-	focus(): void;
 	destroy(): void;
 }
 
@@ -88,36 +85,14 @@ function committer(doc: string, onCommit: (value: string) => void): Committer {
 	};
 }
 
-function handleFor(
-	view: EditorView,
+/** The editor both configurations share: one line, the app's popup placement, Enter commits unless
+ *  a completion takes it, blur commits — plus whatever `own` adds in front. */
+function mount(
+	host: HTMLElement,
+	opts: { doc: string; placeholder?: string; attributes: Record<string, string> },
 	commit: (view: EditorView) => void,
-	adopt: (next: string) => void,
-	setError: (error: string | null) => void
-): ExprEditorHandle {
-	return {
-		commit: () => commit(view),
-		setValue: (next) => {
-			if (next === view.state.doc.toString()) {
-				adopt(next);
-				return;
-			}
-			// A live echo must not yank the document from under live typing; the committed value is
-			// left alone, so the local text still commits on blur.
-			if (view.hasFocus) return;
-			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
-			adopt(next);
-		},
-		setError,
-		focus: () => {
-			view.focus();
-			view.dispatch({ selection: { anchor: view.state.doc.length } });
-		},
-		destroy: () => view.destroy()
-	};
-}
-
-export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): ExprEditorHandle {
-	const { send: commit, adopt } = committer(opts.doc, opts.onCommit);
+	own: Extension[]
+): EditorView {
 	/* Escape must fall THROUGH once there is no popup: it is the app's, and it dismisses the auto
 	   inspector pane. */
 	const keys: KeyBinding[] = [
@@ -125,10 +100,7 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 		{ key: 'Enter', run: (view) => acceptCompletion(view) || (commit(view), true) }
 	];
 	const extensions: Extension[] = [
-		python(),
-		goofiLanguageData(opts.catalogue),
-		syntaxHighlighting(exprHighlight),
-		autocompletion(),
+		...own,
 		history(),
 		exprTheme,
 		popup(),
@@ -145,12 +117,44 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 		singleLineExpression
 	];
 	if (opts.placeholder) extensions.push(placeholder(opts.placeholder));
-	const view = new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
+	return new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
+}
+
+function handleFor(
+	view: EditorView,
+	adopt: (next: string) => void,
+	setError: (error: string | null) => void
+): ExprEditorHandle {
+	return {
+		setValue: (next) => {
+			if (next === view.state.doc.toString()) {
+				adopt(next);
+				return;
+			}
+			// A live echo must not yank the document from under live typing; the committed value is
+			// left alone, so the local text still commits on blur.
+			if (view.hasFocus) return;
+			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+			adopt(next);
+		},
+		setError,
+		destroy: () => view.destroy()
+	};
+}
+
+export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): ExprEditorHandle {
+	const { send: commit, adopt } = committer(opts.doc, opts.onCommit);
+	const view = mount(host, opts, commit, [
+		python(),
+		goofiLanguageData(opts.catalogue),
+		syntaxHighlighting(exprHighlight),
+		autocompletion()
+	]);
 	const showError = (error: string | null): void => {
 		view.dispatch(setDiagnostics(view.state, expressionDiagnostics(error, view.state.doc)));
 	};
 	showError(opts.error);
-	return handleFor(view, commit, adopt, showError);
+	return handleFor(view, adopt, showError);
 }
 
 /** A field whose only legal contents are the names it is handed: no language, no highlighting, the
@@ -178,31 +182,14 @@ export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditor
 			}));
 		return options.length ? { from: 0, to: ctx.state.doc.length, options, filter: false } : null;
 	};
-	const keys: KeyBinding[] = [
-		{ key: 'Escape', run: (view) => closeCompletion(view) },
-		{ key: 'Enter', run: (view) => acceptCompletion(view) || (commit(view), true) }
-	];
-	const extensions: Extension[] = [
+	const view = mount(host, opts, commit, [
 		autocompletion({ override: [source], activateOnTyping: true }),
-		history(),
-		exprTheme,
-		popup(),
-		EditorView.contentAttributes.of(opts.attributes),
-		Prec.high(keymap.of(keys)),
-		keymap.of([...historyKeymap, ...defaultKeymap]),
 		EditorView.domEventHandlers({
 			focus: (_e, view) => {
 				startCompletion(view);
 				return false;
-			},
-			blur: (_e, view) => {
-				commit(view);
-				return false;
 			}
-		}),
-		singleLineExpression
-	];
-	if (opts.placeholder) extensions.push(placeholder(opts.placeholder));
-	const view = new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
-	return handleFor(view, commit, adopt, () => {});
+		})
+	]);
+	return handleFor(view, adopt, () => {});
 }

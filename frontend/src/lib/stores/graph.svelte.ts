@@ -257,17 +257,19 @@ export class GraphStore {
 				break;
 			}
 			case 'param_values': {
-				// Applied surgically to the existing descriptors, so a re-evaluation preview cannot
-				// clobber a concurrent edit on a sibling param.
+				// The node's WHOLE live-value map, never a delta: a driven param it no longer names
+				// has no live value and shows its literal again.
 				const t = this.nodeById(ev.payload.node);
 				if (t) {
-					for (const [group, names] of Object.entries(ev.payload.values)) {
-						for (const [name, value] of Object.entries(names)) {
-							const p = t.params[group]?.[name];
-							// Widen past the union's narrowed `value`; the backend guarantees the type.
-							if (p) (p as { value: unknown }).value = value;
+					const runtime = this._extractRuntime(t);
+					for (const [group, names] of Object.entries(runtime.params ?? {})) {
+						for (const [name, pr] of Object.entries(names)) {
+							const live = ev.payload.values[group]?.[name];
+							if (live === undefined) delete pr.liveValue;
+							else pr.liveValue = live;
 						}
 					}
+					this._reassembleNode(t, runtime);
 				}
 				break;
 			}
@@ -572,6 +574,18 @@ export class GraphStore {
 				if (p.type === 'string') (p as StringParam).options = d.options ?? null;
 			}
 		}
+	}
+
+	/** Re-assemble ONE node from the doc under `runtime`, in place, so a runtime-only change reads
+	 * the doc's literals through the same merge a doc change does. */
+	private _reassembleNode(t: NodeInstanceInfo, runtime: RuntimeOverlay): void {
+		const doc = this._sync.doc;
+		const nv = nodeViews(doc).find((v) => v.uid === t.uid);
+		if (!nv) return;
+		const catalog = this.nodeTypes?.find((c) => c.type === nv.type);
+		const faces = facadeFaces(doc);
+		const viewers = (viewersJson(doc, t.uid) ?? {}) as NodeInstanceInfo['viewers'];
+		Object.assign(t, assembleNode(nv, docParams(doc, t.uid), viewers, catalog, runtime, faces.get(t.uid)));
 	}
 
 	/** Build `this.nodes` from the doc: each record is the doc's own fields, plus the catalog

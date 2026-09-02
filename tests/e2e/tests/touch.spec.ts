@@ -109,18 +109,30 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			const option = page.locator('.cm-tooltip-autocomplete [role="option"]', { hasText: lfoName });
 			await expect(option, 'the list opens on focus and names the producer').toBeVisible();
 			await option.tap();
+			const frequency = (key: 'mode' | 'expression' | 'reference'): Promise<unknown> =>
+				page.evaluate(
+					([u, k]) =>
+						(window as any).goofi.query.graph().nodes.find((n: { uid: string }) => n.uid === u)?.params
+							.oscillator.frequency[k],
+					[osc, key] as const
+				);
 			await expect
-				.poll(
-					() =>
-						page.evaluate(
-							(u) =>
-								(window as any).goofi.query.graph().nodes.find((n: { uid: string }) => n.uid === u)?.params
-									.oscillator.frequency.reference,
-							osc
-						),
-					{ message: 'the producer has one output, so the pair committed as node.slot' }
-				)
+				.poll(() => frequency('reference'), {
+					message: 'the producer has one output, so the pair committed as node.slot'
+				})
 				.toBe(`${lfoName}.out`);
+			// The other two chips by the same finger: fx seeds an expression from the literal, and `=`
+			// returns to the constant with the reference RETAINED.
+			await field.getByTestId('param-mode-expression').tap();
+			await expect.poll(() => frequency('mode')).toBe('expression');
+			await expect
+				.poll(async () => typeof (await frequency('expression')) === 'string', {
+					message: 'switching to fx seeded an expression'
+				})
+				.toBe(true);
+			await field.getByTestId('param-mode-constant').tap();
+			await expect.poll(() => frequency('mode')).toBe('constant');
+			expect.soft(await frequency('reference'), 'a mode switch retains the reference').toBe(`${lfoName}.out`);
 		});
 
 		await test.step('a long press on a control tells what it does, and does NOT do it', async () => {

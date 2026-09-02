@@ -46,9 +46,12 @@
 	const driven = $derived(descriptor.mode !== 'constant');
 	// A reference chosen before one is retained shows the picker without a record to show yet.
 	let picking = $state(false);
-	const showPicker = $derived(descriptor.mode === 'reference' || picking);
+	const showPicker = $derived(kind === 'reference' || picking);
+	// The error and preview belong to a source that IS live: a picker over a retained expression
+	// shows neither.
+	const shown = $derived(kind === 'reference' || (kind === 'expression' && !picking));
 	$effect(() => {
-		if (descriptor.mode === 'reference') picking = false;
+		if (kind === 'reference') picking = false;
 	});
 
 	function tone(mode: ParamMode): BadgeTone {
@@ -134,43 +137,32 @@
 	<!-- `display: contents` so the face inherits WITHOUT laying out: Field requires paired controls to
 	     be its direct children, and a real box would take them out of the @container column-flip. -->
 	<div class="pf-value">
-		{#if showPicker}
+		{#if showPicker || kind === 'expression'}
 			<div class="src-region">
-				<RefPicker
-					value={descriptor.reference}
-					paramType={descriptor.type}
-					onCommit={(reference) => onSetSource({ reference })}
-					testid="param-ref"
-				/>
-				{#if descriptor.mode === 'reference' && descriptor.error}
-					<div class="src-error" title={descriptor.error} data-testid="param-source-error">
-						<span class="prefix"><Icon name="triangle-alert" /></span>
-						<span class="msg">{descriptor.error}</span>
-					</div>
-				{:else if descriptor.mode === 'reference'}
-					<div class="src-preview" title={String(descriptor.value)}>
-						<span class="prefix" aria-hidden="true">=</span>
-						<span class="value">{previewText()}</span>
-					</div>
-				{/if}
-			</div>
-		{:else if kind === 'expression'}
-			<div class="src-region">
-				<ExprEditor
-					{selfName}
-					value={descriptor.expression ?? ''}
-					error={descriptor.error}
-					onCommit={(expression) => onSetSource({ expression })}
-					label={`${paramName} expression`}
-					placeholder="nd('oscillator0').out.data.mean()"
-					testid="param-expr-input"
-				/>
-				{#if descriptor.error}
-					<div class="src-error" title={descriptor.error} data-testid="param-source-error">
-						<span class="prefix"><Icon name="triangle-alert" /></span>
-						<span class="msg">{descriptor.error}</span>
-					</div>
+				{#if showPicker}
+					<RefPicker
+						value={descriptor.reference}
+						paramType={descriptor.type}
+						onCommit={(reference) => onSetSource({ reference })}
+						testid="param-ref"
+					/>
 				{:else}
+					<ExprEditor
+						{selfName}
+						value={descriptor.expression ?? ''}
+						error={descriptor.error}
+						onCommit={(expression) => onSetSource({ expression })}
+						label={`${paramName} expression`}
+						placeholder="nd('oscillator0').out.data.mean()"
+						testid="param-expr-input"
+					/>
+				{/if}
+				{#if shown && descriptor.error}
+					<div class="src-error" title={descriptor.error} data-testid="param-source-error">
+						<span class="prefix"><Icon name="triangle-alert" /></span>
+						<span class="msg">{descriptor.error}</span>
+					</div>
+				{:else if shown}
 					<div class="src-preview" title={String(descriptor.value)}>
 						<span class="prefix" aria-hidden="true">=</span>
 						<span class="value">{previewText()}</span>

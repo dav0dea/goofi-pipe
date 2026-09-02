@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { EditorState } from '@codemirror/state';
 import { singleLineExpression } from './singleLine';
 
-/* D-X1 makes the INLINE param field a CodeMirror editor too, so there is one editor component with a
- * `multiline` mode rather than two implementations. The single-line mode's contract is that the
- * document stays one line and the field never grows.
+/* D-X1 makes the INLINE param field a CodeMirror editor too, so there is one editor component rather
+ * than two implementations. Its contract is that the document stays one line and the field never
+ * grows.
  *
  * Enter is not this extension's job — the keymap binds it to COMMIT, so a typed Enter never reaches
  * the document. This is the backstop for every other way a newline gets in: a paste, a drop, a

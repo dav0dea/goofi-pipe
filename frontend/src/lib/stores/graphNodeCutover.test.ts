@@ -185,6 +185,11 @@ describe('expression live value survives a doc rebuild', () => {
 			g.nodeById('n1')!.params.common.max_frequency.value,
 			'live expression value preserved across the doc rebuild'
 		).toBe(7);
+
+		// The map is the node's WHOLE live state: one that no longer names the param withdraws its
+		// value, and the committed literal shows again — a re-pointed reference leaves exactly this.
+		fc.emit({ event: 'param_values', payload: { node: 'n1', values: {} } });
+		expect(g.nodeById('n1')!.params.common.max_frequency.value, 'withdrawn').toBe(99);
 	});
 });
 

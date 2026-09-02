@@ -30,7 +30,7 @@
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { isValidIdentifier } from '$lib/crdt/graphDoc';
+	import { isValidName } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
 	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import ParamField from './ParamField.svelte';
@@ -86,7 +86,7 @@
 		const base = nameDraft.trim();
 		// The manager refuses a name an expression could not read as an attribute; saying so here
 		// is what keeps the draft rather than throwing the user's typing away on a blur.
-		if (!isValidIdentifier(base)) return;
+		if (!isValidName(base)) return;
 		void g.renameNode(uid, base).catch((e) => console.warn('rename failed', e));
 	}
 	function cancelRename(): void {
@@ -138,7 +138,7 @@
 								<input
 									{...MODE_ATTRS.search}
 									class="pf-rename"
-									class:bad={nameDraft.trim() !== '' && !isValidIdentifier(nameDraft.trim())}
+									class:bad={nameDraft.trim() !== '' && !isValidName(nameDraft.trim())}
 									aria-label="Node name"
 									value={nameDraft}
 									oninput={(e) => (nameDraft = e.currentTarget.value)}

@@ -9,6 +9,7 @@ import {
 	docParams,
 	globalViews,
 	isValidIdentifier,
+	isValidName,
 	arrangementTabs,
 	type Doc
 } from './graphDoc';
@@ -195,6 +196,14 @@ describe('graphDoc globals', () => {
 			{ name: 'goofi_home', value: '/home/u/.goofi', type: 'string', system: true, locked: true },
 			{ name: 'subject', value: 'P07', type: 'string', system: false, locked: false }
 		]);
+	});
+
+	it('holds a node name to the letters-and-digits rule', () => {
+		expect(isValidName('ab2')).toBe(true);
+		expect(isValidName('a_b')).toBe(false);
+		expect(isValidName('_x')).toBe(false);
+		expect(isValidName('1x')).toBe(false);
+		expect(isValidName('class')).toBe(false);
 	});
 
 	it('validates names like the Rust identifier rule', () => {

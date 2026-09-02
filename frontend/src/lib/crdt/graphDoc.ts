@@ -4,7 +4,7 @@
  */
 import { EMPTY_PANEL_TYPE, SCOPE_TYPE, boundaryType } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
-import type { ParamMode } from '$lib/api/types';
+import { PARAM_MODES, type ParamMode } from '$lib/api/types';
 import type { LayoutNode, Workspace } from 'panelty';
 
 export type Doc = Record<string, unknown>;
@@ -126,8 +126,6 @@ export type DocParamLeaves = Record<
 	Record<string, { value?: number | string | boolean; source?: ParamSource }>
 >;
 
-const MODES: ReadonlySet<string> = new Set(['constant', 'expression', 'reference']);
-
 export function docParams(doc: Doc, uid: string): DocParamLeaves {
 	const out: DocParamLeaves = {};
 	const params = obj(nodesMap(doc)[uid]?.params);
@@ -138,7 +136,7 @@ export function docParams(doc: Doc, uid: string): DocParamLeaves {
 			const leaf: DocParamLeaves[string][string] = {};
 			const v = entry.value;
 			if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') leaf.value = v;
-			if (typeof entry.mode === 'string' && MODES.has(entry.mode)) {
+			if (typeof entry.mode === 'string' && (PARAM_MODES as readonly string[]).includes(entry.mode)) {
 				const source: ParamSource = { mode: entry.mode as ParamMode };
 				if (typeof entry.expr === 'string') source.expr = entry.expr;
 				if (typeof entry.ref === 'string') source.ref = entry.ref;
@@ -317,4 +315,10 @@ const RESERVED = new Set(
  * reads one as an ATTRIBUTE: `globals.gain`, and a sub-patch's slot in `nd('chain').drain`. */
 export function isValidIdentifier(name: string): boolean {
 	return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !RESERVED.has(name);
+}
+
+/** The NODE name rule, the mirror of the Rust `is_valid_name`: a letter then letters or digits, not
+ * a keyword — a reference spells `node.slot`, so no underscore either. Globals keep the rule above. */
+export function isValidName(name: string): boolean {
+	return /^[A-Za-z][A-Za-z0-9]*$/.test(name) && !RESERVED.has(name);
 }
