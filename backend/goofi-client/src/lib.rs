@@ -151,8 +151,15 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
     let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(|e| {
         use std::io::ErrorKind as K;
         match e.kind() {
+            // A unix closed port answers the SYN with a reset at once, so a connect that timed
+            // out was DROPPED — by a firewall, or a sandbox — and proves nothing there.
             K::PermissionDenied | K::NetworkUnreachable | K::HostUnreachable
             | K::AddrNotAvailable => HttpErr::After(
+                "the connect was blocked on this side — a sandboxed shell does this; \
+                 retry with network access allowed"
+                    .into(),
+            ),
+            K::TimedOut if cfg!(unix) => HttpErr::After(
                 "the connect was blocked on this side — a sandboxed shell does this; \
                  retry with network access allowed"
                     .into(),
