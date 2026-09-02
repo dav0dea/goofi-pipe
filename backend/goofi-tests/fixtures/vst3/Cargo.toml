@@ -1,0 +1,19 @@
+# The suite's VST3 plugin: a stereo gain with an event input that sounds a sine per held note.
+# Its own workspace, built by the audio walk with the running cargo; `crash` makes its factory
+# abort, which is what the scanner's child process exists to survive.
+[package]
+name = "goofi-vst3-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vst3 = "0.3.0"
+
+[features]
+crash = []
+
+[workspace]

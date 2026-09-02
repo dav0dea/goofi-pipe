@@ -1,7 +1,7 @@
 //! The audio engine's scan of one `nodes_audio/` folder: an `.rs` file is found built through
-//! goofi-build — never built here — and loaded behind its version symbol; anything else in the
-//! folder is named as not an audio node. A file whose stem is a built-in node's name is not a
-//! node file, as a stem outside the name rule is not.
+//! goofi-build — never built here — and loaded behind its version symbol; a `.vst3` bundle is
+//! `vst3`'s; anything else in the folder is named as not an audio node. A file whose stem is a
+//! built-in node's name is not a node file, as a stem outside the name rule is not.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ pub(crate) fn scan(engine: &mut AudioEngine, dir: &Path) -> Vec<ScannedType> {
         };
         out.push(ScannedType { type_name, stamp, outcome });
     }
+    out.extend(crate::vst3::scan_dir(engine, dir));
     out
 }
 
@@ -57,7 +58,7 @@ impl AudioEngine {
         }
         let loaded = self.rust_loaded[artifact].clone();
         let manifest = loaded.manifest();
-        let class = Class { manifest, make: Arc::new(move |_| loaded.instantiate()) };
+        let class = Class { manifest, make: Arc::new(move |_| loaded.instantiate()), plugin: None };
         Ok(self.classes.insert(manifest.type_name, class).is_some())
     }
 }

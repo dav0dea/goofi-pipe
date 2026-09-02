@@ -23,6 +23,7 @@ pub mod nodes;
 mod plan;
 mod runtime;
 mod scan;
+pub mod vst3;
 
 use control::{Desired, Handle, Shared, Sub};
 use nodes::{audio_out, Class};
@@ -220,6 +221,8 @@ pub struct AudioEngine {
     classes: HashMap<&'static str, Class>,
     /// Every built artifact loaded so far, by path: a library is opened once and never closed.
     rust_loaded: HashMap<PathBuf, Arc<Loaded>>,
+    /// The child a bundle is scanned in, and the platform's plugin folders: the composition root's.
+    vst3: Option<(PathBuf, Vec<PathBuf>)>,
     runtime: Arc<Mutex<Runtime>>,
     inbox: rtrb::Producer<Msg>,
     outbox: rtrb::Consumer<Retired>,
@@ -257,7 +260,7 @@ impl AudioEngine {
                     params: m.params,
                     producer: false,
                 }));
-                (*type_name, Class { manifest, make: Arc::new(*make) })
+                (*type_name, Class { manifest, make: Arc::new(*make), plugin: None })
             })
             .collect();
         let (inbox, to_audio) = rtrb::RingBuffer::new(QUEUE);
@@ -278,6 +281,7 @@ impl AudioEngine {
             }),
             classes,
             rust_loaded: HashMap::new(),
+            vst3: None,
             runtime: Arc::new(Mutex::new(Runtime::new(SLAB, to_audio, from_audio))),
             inbox,
             outbox,
@@ -294,6 +298,12 @@ impl AudioEngine {
             last: Plan::default(),
             bells: goofi_transport::iox_node().expect("an iceoryx2 node for the audio engine's bells"),
         }
+    }
+
+    /// Where a `.vst3` bundle is scanned — a `goofi` answering `vst3-scan` — and which folders
+    /// are scanned on the engine's own account, after every root.
+    pub fn set_vst3(&mut self, scanner: PathBuf, dirs: Vec<PathBuf>) {
+        self.vst3 = Some((scanner, dirs));
     }
 
     /// The external clock: render whole blocks until `frames` are ready, and hand them over
@@ -545,6 +555,11 @@ impl Engine for AudioEngine {
         scan::scan(self, dir)
     }
 
+    fn scan_own(&mut self) -> Vec<goofi_node::ScannedType> {
+        let dirs = self.vst3.as_ref().map(|(_, dirs)| dirs.clone()).unwrap_or_default();
+        dirs.iter().filter(|d| d.is_dir()).flat_map(|d| vst3::scan_dir(self, d)).collect()
+    }
+
     fn remove_type(&mut self, type_name: &str) -> bool {
         !nodes::built_in(type_name) && self.classes.remove(type_name).is_some()
     }
@@ -584,7 +599,7 @@ impl Engine for AudioEngine {
     }
 
     fn insert(&mut self, uid: Uid, type_name: &str, generation: u64, params: &ParamGroups) -> Option<String> {
-        let Some(Class { manifest, make }) = self.classes.get(type_name).cloned() else {
+        let Some(Class { manifest, make, .. }) = self.classes.get(type_name).cloned() else {
             return Some(format!("no audio node type `{type_name}`"));
         };
         let widest = manifest.params.len().max(manifest.inputs.len()).max(manifest.outputs.len());

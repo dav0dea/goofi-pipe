@@ -1,6 +1,7 @@
 //! The audio engine under the external clock: one session, every action through the op
 //! vocabulary, every probe the interleaved output a device would receive.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use goofi_tests::{drive, ep, f32s, hex, j, shape, FirstVar, Goofi, Uid};
@@ -604,4 +605,83 @@ fn a_patch_sounds_under_the_external_clock() {
     opened.call("session load", j!({ "path": target.to_string_lossy() }));
     opened.call("node add", j!({ "type": "Ticks", "member_uid": hex(ticks) }));
     assert_eq!(born_at(&opened, ticks, "the count of a new node at a dead node's uid"), 0.0);
+
+    // Step: a `.vst3` bundle in the workspace is a node — scanned in a child process, its buses
+    // ports, its parameters params, and its event input three voice params — and a bundle
+    // whose scanner dies is greyed with the reason while the server answers on.
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("vst3");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let nested = PathBuf::from(std::env::var_os("CARGO_TARGET_DIR").expect("the harness names the nested target"));
+    let built = |crash: bool| -> PathBuf {
+        let mut cmd = std::process::Command::new(&cargo);
+        cmd.arg("build").arg("--manifest-path").arg(fixture.join("Cargo.toml"));
+        if crash {
+            cmd.arg("--features").arg("crash");
+        }
+        let out = cmd.output().expect("cargo runs");
+        assert!(out.status.success(), "the fixture plugin builds: {}", String::from_utf8_lossy(&out.stderr));
+        let (prefix, suffix) = (std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+        nested.join("debug").join(format!("{prefix}goofi_vst3_fixture{suffix}"))
+    };
+    // The load above swapped the mount, so the live workspace is asked for again.
+    let dir = g.state.mount().join("nodes_audio");
+    let bundled = |name: &str, artifact: PathBuf| {
+        let arch = std::env::consts::ARCH;
+        let (folder, file) = if cfg!(target_os = "macos") {
+            ("MacOS".to_string(), name.to_string())
+        } else if cfg!(windows) {
+            (format!("{arch}-win"), format!("{name}.vst3"))
+        } else {
+            (format!("{arch}-linux"), format!("{name}.so"))
+        };
+        let into = dir.join(format!("{name}.vst3")).join("Contents").join(folder);
+        std::fs::create_dir_all(&into).unwrap();
+        std::fs::copy(&artifact, into.join(file)).unwrap();
+    };
+    bundled("GoofiFixture", built(false));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["GoofiFixture"]));
+    let plug = g.add("GoofiFixture");
+    let params = g.doc()["nodes"][hex(plug)]["params"].clone();
+    for (group, name) in [("voice", "gate"), ("voice", "pitch"), ("voice", "velocity"), ("plugin", "gain")] {
+        assert!(!params[group][name].is_null(), "the derived manifest carries {group}/{name}: {params}");
+    }
+    // The plugin's own output: channel 0 of the frame its tap publishes, its crossings per tenth.
+    let heard = |g: &Goofi, uid: Uid, what: &str, want: &dyn Fn(f32, usize) -> bool| {
+        let probe = g.probe(uid, "out");
+        g.until(what, |g| {
+            drive(g, TENTH);
+            let d = probe.latest()?;
+            let (x, t) = (f32s(&d), shape(&d)[1]);
+            want(peak(&x[..t]), crossings(&x[..t]) * TENTH / t).then_some(())
+        })
+    };
+    let src = g.add("Osc");
+    g.link(src, "out", plug, "input");
+    heard(&g, plug, "the oscillator through the plugin at unit gain", &|p, c| (p - 1.0).abs() < 0.02 && near(c, 88));
+    g.set_param(plug, "plugin", "gain", 0.5);
+    heard(&g, plug, "half gain", &|p, _| (p - 0.5).abs() < 0.02);
+    g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
+    g.set_param(plug, "voice", "gate", true);
+    heard(&g, plug, "a C4 from a rising gate at pitch zero", &|p, c| (p - 0.5).abs() < 0.02 && near(c, 52));
+    g.set_param(plug, "voice", "gate", false);
+    heard(&g, plug, "silence after the fall", &|p, _| p < 1e-3);
+    g.call("node restart", j!({ "node": hex(plug) }));
+    g.link(src, "out", plug, "input");
+    heard(&g, plug, "the gain the record keeps, past a restart", &|p, _| (p - 0.5).abs() < 0.02);
+
+    bundled("Crasher", built(true));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Crasher"]));
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "Crasher").cloned().expect("greyed, not absent");
+    assert_eq!(row["available"], false, "{row}");
+    assert!(row["missing_deps"].to_string().contains("scanner"), "the scanner's death is the reason: {row}");
+    assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));
+    heard(&g, plug, "the server answers on", &|p, _| (p - 0.5).abs() < 0.02);
+
+    g.call("session save", j!({ "path": target.to_string_lossy() }));
+    let carried = Goofi::new();
+    carried.call("session load", j!({ "path": target.to_string_lossy() }));
+    carried.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
+    carried.set_param(plug, "voice", "gate", true);
+    heard(&carried, plug, "the archive carried the bundle", &|p, c| (p - 0.5).abs() < 0.02 && near(c, 52));
 }

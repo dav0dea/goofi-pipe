@@ -80,6 +80,9 @@ fn main() {
         Some("help") | Some("--help") | Some("-h") => std::process::exit(help_main(&argv[1..])),
         Some("-") => std::process::exit(client_stdin(&argv[1..])),
         Some("serve") => argv[1..].to_vec(),
+        // The binary is its own plugin scanner: a child per bundle, so a crash there is a
+        // refusal here.
+        Some("vst3-scan") => std::process::exit(goofi_audio::vst3::scan_main(&argv[1..])),
         Some(first) if first.starts_with('-') => argv,
         Some(_) => std::process::exit(client_main(argv)),
     };
@@ -396,6 +399,10 @@ async fn run(
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
         .set_python(goofi_signal::Python::new(subproc_python.clone()));
+    if let Ok(own) = std::env::current_exe() {
+        goofi_bridge::audio_engine(&mut state.graph.lock().unwrap())
+            .set_vst3(own, goofi_audio::vst3::platform_dirs());
+    }
     boot_scan(&state);
 
     let code = if list_nodes {

@@ -249,22 +249,34 @@ list is the whole UI. **The cost is named, not hidden: a plugin whose value IS i
 degraded to a parameter list.** Skipping the editor also skips the platform event loop and timer
 plumbing, which is where every reported hosting difficulty lives.
 
-**VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings**, and it is
-built after the goofi nodes. The COM lifecycle, the bus/param/state plumbing and the threading
-rules are ours; the bindings (0.3, after the SDK went MIT in October 2025) are raw. Scanning runs
-each bundle in a CHILD `goofi` process — the one binary is its own scanner — so a plugin that
-crashes at load is refused and named, never taking the server down; results are cached by path,
-mtime and size. The manifest is derived: buses to ports, parameters to `ParamDecl` — stepped with
-≤ 64 steps a `Str` with the plugin's own value strings, stepped otherwise an `Int`, continuous a
-normalized `Float` in `[0, 1]` with the plugin's display string in its doc; hidden, read-only and
-bypass parameters omitted. MIDI is VST3's language, not goofi's: an instrument gets `gate`,
-`pitch` and `velocity` params and the adapter emits note events from them, per channel, so a
-16-channel gate referenced in is 16 voices. Bus arrangements are the menu `channels` selects from,
-and an arrangement change reinstantiates the plugin — the one place that rule survives. A plugin
-param under an audio reference is sampled once per block. The processor moves to the audio
-thread inside the box under one `unsafe impl Send`, justified by the VST3 contract and commented
-as the deviation it is. No usable VST3→CLAP wrapper exists (DISTRHO Ildaeil does not even bridge
-params), which is one more reason the centre is a trait and not a format.
+**VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings** (0.3, after
+the SDK went MIT in October 2025; raw, so the COM lifecycle, the bus/param/event plumbing and the
+threading rules are ours). A bundle is found in any root's `nodes_audio/` — the patch's own
+included, which is how an archive carries one — and in the platform's plugin folders, which the
+engine scans on its own account AFTER every root, behind one seam door; the composition root hands
+the engine its scanner and those folders, so the CLI names the running binary and the platform
+list, and the test harness names its own scanner bin and no folder. Each bundle is scanned in a
+CHILD `goofi` (`goofi vst3-scan`) — the one binary is its own scanner — so a plugin that crashes
+at load is greyed and named, never taking the server down; the answer is cached by the binary's
+path, mtime and size. The manifest is derived in the parent: buses to `input`/`out` ports,
+parameters to `ParamDecl` — stepped with ≤ 64 steps a `Str` of the plugin's own strings, stepped
+otherwise an `Int`, continuous a normalized `Float` in `[0, 1]` with the default's display string
+in its doc; hidden, read-only, bypass and program-change parameters omitted — under the vendor as
+category, named by the plugin, or by vendor and plugin where goofi's own library already holds
+the name (a goofi node scanned LATER still replaces it: the residual). MIDI is VST3's language,
+not goofi's: an event input is three params, `gate`, `pitch` and `velocity`, and the adapter
+emits a note on at each channel's rising gate and a note off at its fall, at the sample, so a
+16-channel gate referenced in is 16 voices. A plugin param is sampled once per block. The
+processor is instantiated at `prepare` on the control thread against a minimal host application
+and moves to the audio thread inside the box under the engine's one `unsafe impl Send`,
+commented as the deviation it is; a refused instantiation reaches the node as its own panic,
+never the control thread's. What did NOT land, and why: bus arrangements are the plugin's
+defaults, fixed at scan — the spec's "an arrangement change reinstantiates" needed an
+arrangement that is a function of the inputs, and here it is not; no controller is instantiated
+at runtime, so a plugin whose processor needs its controller's messages is degraded; macOS gets a
+null `CFBundleRef`; output parameter changes and output events are not read. No usable
+VST3→CLAP wrapper exists (DISTRHO Ildaeil does not even bridge params), which is one more reason
+the centre is a trait and not a format.
 
 **Opaque per-node state lives in `workspace/.goofi/state/<uid_hex>/<Type>`.** The engine does the
 I/O and the seam hands it the workspace, which turns over between a load's teardown and its births,

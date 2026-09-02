@@ -1,7 +1,7 @@
 //! The test harness — one live goofi, driven through [`Goofi::call`], the entry `/control` and
 //! `/mcp` are transports over. Observation is [`Goofi::call`], [`Events`] and [`OutputProbe`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -88,6 +88,9 @@ impl Goofi {
         {
             let mut g = state.graph.lock().unwrap();
             fixtures::register(&mut g);
+            // The child the audio engine scans a bundle in — the suite's own stand-in for the
+            // binary — and no platform folder, so an installed plugin never reaches a test.
+            goofi_bridge::audio_engine(&mut g).set_vst3(scanner(), Vec::new());
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
             if let Some(subproc) = find_python() {
@@ -364,6 +367,12 @@ impl Events {
 
 /// Render `frames` on the audio engine's external clock and hand back what the device would get,
 /// interleaved, with its channel count.
+/// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
+fn scanner() -> PathBuf {
+    let exe = std::env::current_exe().expect("a test has a path");
+    exe.ancestors().nth(2).expect("target/<profile>/deps/<test>").join(format!("vst3scan{}", std::env::consts::EXE_SUFFIX))
+}
+
 pub fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
     let mut graph = g.state.graph.lock().unwrap();
     goofi_bridge::audio_engine(&mut graph).drive(frames)

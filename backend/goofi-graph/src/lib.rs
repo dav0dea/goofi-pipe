@@ -694,7 +694,19 @@ impl Graph {
                 out.extend(engine.scan(&dir));
             }
         }
-        for t in &out {
+        self.note_scanned(&out);
+        out
+    }
+
+    /// What the engines find on their own account, after every root.
+    pub fn scan_own(&mut self) -> Vec<goofi_node::ScannedType> {
+        let out: Vec<_> = self.engines.iter_mut().flat_map(|e| e.scan_own()).collect();
+        self.note_scanned(&out);
+        out
+    }
+
+    fn note_scanned(&mut self, out: &[goofi_node::ScannedType]) {
+        for t in out {
             match &t.outcome {
                 goofi_node::Scanned::Registered { .. } => {
                     self.unavailable.remove(&t.type_name);
@@ -706,7 +718,6 @@ impl Graph {
                 goofi_node::Scanned::Unavailable(_) => {}
             }
         }
-        out
     }
 
     /// Forget a scanned type from every registry — the engine that held it and the greyed

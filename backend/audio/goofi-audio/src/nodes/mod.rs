@@ -28,6 +28,8 @@ pub type Born = fn(Birth) -> Box<dyn AudioNode>;
 pub struct Class {
     pub manifest: &'static NodeManifest,
     pub make: Arc<dyn Fn(Birth) -> Box<dyn AudioNode> + Send + Sync>,
+    /// A VST3 class, by what its scan derived; goofi's own nodes hold none.
+    pub plugin: Option<Arc<crate::vst3::Derived>>,
 }
 
 /// Whether the engine treats `type_name` by name — a file may not take it.

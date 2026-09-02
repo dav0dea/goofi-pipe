@@ -662,6 +662,10 @@ pub fn rescan(
             outcomes.push(t);
         }
     }
+    for t in g.scan_own() {
+        found.insert(t.type_name.clone(), t.stamp);
+        outcomes.push(t);
+    }
     g.set_patch_types(patch_types);
 
     let mut prev = state.node_index.lock().unwrap();

@@ -3,8 +3,8 @@ name = "goofi-tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-# Nothing depends on this crate; it holds the suite and the harness the suite runs on. It builds no
-# binary, so a release build links none of it.
+# Nothing depends on this crate; it holds the suite and the harness the suite runs on. Its one
+# binary is the scanner the harness hands the audio engine, a stand-in for `goofi`'s own door.
 publish = false
 
 [features]
@@ -22,6 +22,7 @@ goofi-graph = { path = "../goofi-graph" }
 goofi-signal = { path = "../signal/goofi-signal" }
 goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
 goofi-audio-sdk = { path = "../audio/goofi-audio-sdk" }
+goofi-audio = { path = "../audio/goofi-audio" }
 goofi-node = { path = "../goofi-node" }
 goofi-transport = { path = "../goofi-transport" }
 goofi-view = { path = "../goofi-view" }

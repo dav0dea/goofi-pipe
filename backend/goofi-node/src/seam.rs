@@ -185,6 +185,12 @@ pub trait Engine: Send {
         Vec::new()
     }
     /// Forget a type a scan registered; whether this engine held it.
+    /// Types the engine finds on its own account — the platform's plugin folders — scanned
+    /// after every root, so a name a root holds is known when these register.
+    fn scan_own(&mut self) -> Vec<ScannedType> {
+        Vec::new()
+    }
+
     fn remove_type(&mut self, _type_name: &str) -> bool {
         false
     }
