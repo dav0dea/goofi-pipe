@@ -58,8 +58,11 @@ lost: an adapter behind the same trait, on which no builtin depends, if a CLAP-o
 matters — nearly every plugin that ships CLAP ships VST3. Exporting a goofi node to a DAW through
 `clap-wrapper` is dropped as a goal.
 
-**The trait is five methods, and the block is three fields.** `channels(ins, params)` answers
-per-output channel counts at plan compile; `prepare(rate)` allocates once on the control thread;
+**The trait is five methods, and the block is three fields.** Landed 2026-09-02 as
+`backend/audio/goofi-audio-sdk`, proved in use by the skeleton engine's session before any engine
+exists. `channels(ins, params, outs)` answers per-output channel counts at plan compile — the
+engine passes the output count, so the default needs no hook into the manifest and the trait
+stays object-safe; `prepare(rate)` allocates once on the control thread;
 `process(&mut Block)` runs on the audio thread and allocates, locks and blocks on nothing;
 `feedback()` marks the one kind of node a loop may close through; `save`/`load` carry state a
 param cannot — a VST3 plugin's own, a recorded loop — and a node that returns nothing leaves
@@ -78,9 +81,12 @@ arrive as their value, `Bool` as 0/1, a `Str` with `options` as the option's ind
 CV port, because every modulatable quantity is a param.
 
 **A port carries a signal with no default; a param carries a value with a default.** That is the
-whole split. `SlotType::Audio` is the fourth slot type — link legality then enforces plane
-homogeneity by construction; NO new `Value` variant and NO new GOOF dtype, because audio buffers
-never cross iceoryx2 or the wire. An unwired input reads one shared silent region, `channels = 1`,
+whole split. `SlotType::Audio` is the fourth slot type, and the graph's one link door holds the
+rule: an audio output feeds an audio input, or an ARRAY input through the engine's tap, and
+nothing but audio feeds an audio input — so `Osc.out → Buffer` is a cable and `Oscillator.out →
+Osc` is a `SignalIn`. NO new `Value` variant and NO new GOOF dtype, because audio buffers never
+cross iceoryx2 or the wire; a signal node that declares an audio slot is greyed out with the
+folder named. An unwired input reads one shared silent region, `channels = 1`,
 `wired() == false`: present, silent, never an error. A `multi` input SUMS its wires at the jack.
 
 **Every signal is audio-rate numbers in a standard range, and the engine treats them all the
@@ -94,8 +100,10 @@ anywhere. Polyphony is channels: a 4-channel gate referenced into an envelope is
 
 **Channel counts are inferred, never configured.** `channels(ins, params)` is evaluated once per
 node INSIDE the Kahn loop, over ports and referenced params — inputs are settled before a node is
-visited, so there is no fixed point. The SDK default is `max(ins).max(1)`; a panner, a mixdown or
-`MidiIn` (whose count is its `voices` param) overrides it. Coercion lives on the edge — `Same`,
+visited, so there is no fixed point. The SDK default is `max(ins).max(1)` for every output; a panner, a mixdown or
+`MidiIn` (whose count is its `voices` param) overrides it. A node reads a param by index, never
+by string: `params!` is ONE list that is both the manifest's params and the `P::NAME` indices, so
+the order has one owner. Coercion lives on the edge — `Same`,
 `Broadcast`, `PadOrTruncate` — and mono to stereo is one region read twice. **The count is dynamic
 per block, not per instance**: a node is prepared once for `MAX_CHANNELS = 16` and reads
 `port.channels` each block, so wiring a stereo source into a mono chain changes the plan and
