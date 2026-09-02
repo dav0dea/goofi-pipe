@@ -317,6 +317,21 @@ above `goofi-transport`, so no iceoryx2 thread or tokio reaches the DSP path and
 callback can drive it. New dependencies: `cpal`, `rtrb`, `midir`, `vst3`. No DSP crate in the
 engine or the shipped nodes.
 
+**The shipped set is nine nodes, and the rule is orthogonality.** Landed 2026-09-02 (Step 10):
+`AudioOut`, `AudioIn` and `MidiIn` are built in, because their control halves own OS handles;
+`Osc`, `Gain`, `Svf`, `Env`, `Slew`, `Feedback` and `SignalIn` are files in `nodes_audio/` like
+any authored node — the shipped tree is a node source root, not a privileged one. Each proves a
+seam or closes a gap nothing else composes to: `Osc` the trait and an option index, `Gain` the
+modulation target, `Svf` and `Slew` state carried across blocks, `Env` the gate convention and
+its three sources, `Feedback` the one way a loop closes, `SignalIn` the in-order crossing.
+`Osc.pitch` and `Svf.cutoff` are both volts per octave, zero at C4, so a reference from one
+tracks the other exactly; a node wanting hertz converts, and no node carries a CV port.
+
+Still open, and the owner's to settle: `Noise`, `Delay`, `LFO` (or is it `Osc` at a low pitch?),
+`Clock` (or `Osc` square?), `Quantize`, `Seq`, `HzToOct`, `MidiCC` (deferred by decision),
+`Sampler` (needs the resource door). `Mix` and `Offset`/`Scale` look redundant while the jack
+sums and a reference replaces a literal.
+
 ## Authored nodes
 
 An agent or a user writes ONE file, `workspace/nodes_audio/<Name>.rs` — `impl AudioNode`, in safe
@@ -481,8 +496,19 @@ its reasons are in the locked decisions; what survives of the two reviews that p
 - **Type names are ONE namespace across engines.** A shipped audio `Gain` and a patch's
   `nodes_signal/gain.py` are one name: the later scan takes it, the palette reports the file as
   `changed`, and the other engine's type is unreachable while the file exists. The orientation's
-  example became `scale.py` for this. Whether a file may take a name another engine ships, or is
-  refused as a built-in's is, is open.
+  example became `scale.py` for this, and the audio filter became `Svf` because the signal engine
+  already ships a Butterworth `Filter` — twice now, a name has moved to dodge a silent collision,
+  and the second time the symptom was a node that answered `node add` with the OTHER engine's
+  slots. A VST3 class takes its vendor as a prefix when goofi's own library holds its name, which
+  is the only door that resolves a collision rather than losing one side of it. Whether a file may
+  take a name another engine ships, or is refused as a built-in's is, is open — and it now has
+  three instances behind it.
+- **A non-finite param poisons a stateful node for the rest of its life.** An expression or an
+  audio reference can hand a node a NaN; `Osc` folds it into its phase and `Svf` into its
+  integrators, and nothing clears either but a restart. Nothing in the engine or the SDK checks
+  `is_finite` today. The fix is one place — the param boundary, where the scalar and the plan edge
+  are already the one owner — never a guard in each of nine nodes, which is why it is recorded
+  rather than patched.
 - **Blame by a node's own duration is the watchdog's rule**, and eight blocks its count; a node that
   runs at exactly the block's time flaps in and out. Neither number has been tuned on a device.
 - **A CLAP adapter**, deferred: one more implementor of the trait, only if a CLAP-only plugin ever

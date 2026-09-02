@@ -15,6 +15,18 @@ fn sounds(g: &Goofi, what: &str, want: impl Fn(&[f32]) -> bool) -> Vec<f32> {
     })
 }
 
+/// Drive tenths until CHANNEL 0 of `uid`'s own output satisfies `want`, and hand that back — the
+/// node itself rather than the device's sum, for a node no `AudioOut` is behind.
+fn heard(g: &Goofi, uid: Uid, what: &str, want: impl Fn(&[f32]) -> bool) -> Vec<f32> {
+    let probe = g.probe(uid, "out");
+    g.until(what, |g| {
+        drive(g, TENTH);
+        let d = probe.latest()?;
+        let lane = f32s(&d)[..shape(&d)[1]].to_vec();
+        want(&lane).then_some(lane)
+    })
+}
+
 fn peak(v: &[f32]) -> f32 {
     v.iter().fold(0f32, |m, x| m.max(x.abs()))
 }
@@ -25,6 +37,11 @@ fn mean(v: &[f32]) -> f32 {
 
 fn crossings(v: &[f32]) -> usize {
     v.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count()
+}
+
+/// Crossings scaled to a tenth: a tap's frame holds whatever the last tick drained.
+fn per_tenth(v: &[f32]) -> usize {
+    crossings(v) * TENTH / v.len().max(1)
 }
 
 fn state(g: &Goofi, uid: Uid) -> String {
@@ -42,13 +59,14 @@ fn refreshed(g: &Goofi, ev: &mut goofi_tests::Events, uid: Uid, group: &str, nam
     p["params"][group][name]["options"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
 }
 
-/// A square held HIGH: a quarter of a hertz from phase zero stays at one for the two seconds
-/// this walk drives after it is born.
-fn frozen_square(g: &Goofi) -> Uid {
-    let osc = g.add("Osc");
-    g.set_param(osc, "osc", "shape", "square");
-    g.set_param(osc, "osc", "pitch", -10.0);
-    osc
+/// A constant one: an envelope gated open with no attack, which sustains at one for as long as
+/// the walk runs. NOT an oscillator held below its first edge — that is a wall-clock budget, and
+/// a step that drove a few tenths more read every later sum at minus one.
+fn held_one(g: &Goofi) -> Uid {
+    let env = g.add("Env");
+    g.set_param(env, "env", "attack", 0.0);
+    g.set_param(env, "env", "gate", true);
+    env
 }
 
 /// A tenth of a second at the engine's rate: 44 cycles of 440 Hz, 88 zero crossings.
@@ -101,7 +119,7 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a multi input sums its wires. A held square is a constant one; with the gain a
     // constant half again, the sum is a half-sine on a half offset.
-    let osc2 = frozen_square(&g);
+    let osc2 = held_one(&g);
     g.link(osc2, "out", gain, "input");
     g.call("node param edit", j!({ "node": hex(gain), "param": "gain/gain", "value": 0.5, "mode": "constant" }));
     sounds(&g, "sine plus one, halved, on a half offset", |x| (peak(x) - 1.0).abs() < 0.01 && (mean(x) - 0.5).abs() < 0.02);
@@ -110,11 +128,37 @@ fn a_patch_sounds_under_the_external_clock() {
     // output, the record keeps the literal, and the sound is unchanged.
     let refused = g.call(
         "node param edit",
-        j!({ "node": hex(osc2), "param": "osc/shape", "reference": format!("{osc_name}.out"), "mode": "reference" }),
+        j!({ "node": hex(osc), "param": "osc/shape", "reference": format!("{osc_name}.out"), "mode": "reference" }),
     );
     assert!(refused["error"].as_str().is_some_and(|e| e.contains("AUDIO") && e.contains("STRING")), "{refused}");
     let (e2, _) = drive(&g, TENTH);
     assert!((peak(&e2) - 1.0).abs() < 0.01 && (mean(&e2) - 0.5).abs() < 0.02, "the literal stands: peak {} mean {}", peak(&e2), mean(&e2));
+
+    // Step: two nodes that carry state across blocks. A filter is asked for the two ends of its
+    // range: wide open it passes the square's edges, and closed far below the fundamental it
+    // passes nothing. Its `cutoff` is volts per octave, as `Osc.pitch` is, so a reference from
+    // one tracks the other. A slew's step is a ramp, and the time it takes is its `rise`.
+    let square = g.add("Osc");
+    g.set_param(square, "osc", "shape", "square");
+    let filter = g.add("Svf");
+    g.link(square, "out", filter, "input");
+    g.set_param(filter, "filter", "cutoff", 6.0);
+    let open = heard(&g, filter, "a square through an open filter", |x| peak(x) > 0.9);
+    assert!(near(per_tenth(&open), 88), "an A4 square keeps its edges: {} crossings", per_tenth(&open));
+    g.set_param(filter, "filter", "cutoff", -4.0);
+    heard(&g, filter, "five octaves below, the square is gone", |x| peak(x) < 0.2);
+
+    // A gated envelope with no attack is a step at birth; a tenth of a second up a one-second
+    // slope reaches a tenth of the way, so what the tap holds is the ramp rather than the step.
+    let slew = g.add("Slew");
+    let step = held_one(&g);
+    g.link(step, "out", slew, "input");
+    g.set_param(slew, "slew", "rise", 1.0);
+    let ramped = heard(&g, slew, "a ramp rather than a step", |x| peak(x) > 0.0 && peak(x) < 0.5);
+    assert!(ramped.windows(2).all(|w| w[1] >= w[0] - 1e-6), "it only climbs: {:?}", &ramped[..4]);
+    for uid in [square, filter, slew, step] {
+        g.call("node remove", j!({ "node": hex(uid) }));
+    }
 
     // Step: a loop with no feedback node is excluded and named; what it feeds runs on silence,
     // and breaking the loop clears the fault and the sound comes back.
@@ -134,9 +178,9 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: the slab grows past its first 64 slots without losing an instance — the 65th node's
     // wire lands in the sum and every earlier one keeps running.
-    let many: Vec<Uid> = (0..64).map(|_| frozen_square(&g)).collect();
+    let many: Vec<Uid> = (0..64).map(|_| held_one(&g)).collect();
     let stillborn: Vec<String> = many.iter().filter_map(|u| g.error(*u)).collect();
-    assert!(stillborn.is_empty(), "every square starts: {stillborn:?}");
+    assert!(stillborn.is_empty(), "every one of them starts: {stillborn:?}");
     g.link(*many.last().unwrap(), "out", gain, "input");
     let (grown, _) = drive(&g, TENTH);
     assert!((peak(&grown) - 1.5).abs() < 0.01 && (mean(&grown) - 1.0).abs() < 0.02, "sine plus two, halved: peak {} mean {}", peak(&grown), mean(&grown));
@@ -434,7 +478,7 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a loop closed by `Feedback` runs, and no fault names it: a held one through half
     // gain and back converges on one, and opening the loop halves it again.
-    let held = frozen_square(&g);
+    let held = held_one(&g);
     g.call("link remove", j!({ "from": ep(hex(osc3), "out"), "to": ep(hex(gain3), "input") }));
     g.link(held, "out", gain3, "input");
     g.set_param(gain3, "gain", "gain", 0.5);
@@ -645,29 +689,19 @@ fn a_patch_sounds_under_the_external_clock() {
     for (group, name) in [("voice", "gate"), ("voice", "pitch"), ("voice", "velocity"), ("plugin", "gain")] {
         assert!(!params[group][name].is_null(), "the derived manifest carries {group}/{name}: {params}");
     }
-    // The plugin's own output: channel 0 of the frame its tap publishes, its crossings per tenth.
-    let heard = |g: &Goofi, uid: Uid, what: &str, want: &dyn Fn(f32, usize) -> bool| {
-        let probe = g.probe(uid, "out");
-        g.until(what, |g| {
-            drive(g, TENTH);
-            let d = probe.latest()?;
-            let (x, t) = (f32s(&d), shape(&d)[1]);
-            want(peak(&x[..t]), crossings(&x[..t]) * TENTH / t).then_some(())
-        })
-    };
     let src = g.add("Osc");
     g.link(src, "out", plug, "input");
-    heard(&g, plug, "the oscillator through the plugin at unit gain", &|p, c| (p - 1.0).abs() < 0.02 && near(c, 88));
+    heard(&g, plug, "the oscillator through the plugin at unit gain", |x| (peak(x) - 1.0).abs() < 0.02 && near(per_tenth(x), 88));
     g.set_param(plug, "plugin", "gain", 0.5);
-    heard(&g, plug, "half gain", &|p, _| (p - 0.5).abs() < 0.02);
+    heard(&g, plug, "half gain", |x| (peak(x) - 0.5).abs() < 0.02);
     g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
     g.set_param(plug, "voice", "gate", true);
-    heard(&g, plug, "a C4 from a rising gate at pitch zero", &|p, c| (p - 0.5).abs() < 0.02 && near(c, 52));
+    heard(&g, plug, "a C4 from a rising gate at pitch zero", |x| (peak(x) - 0.5).abs() < 0.02 && near(per_tenth(x), 52));
     g.set_param(plug, "voice", "gate", false);
-    heard(&g, plug, "silence after the fall", &|p, _| p < 1e-3);
+    heard(&g, plug, "silence after the fall", |x| peak(x) < 1e-3);
     g.call("node restart", j!({ "node": hex(plug) }));
     g.link(src, "out", plug, "input");
-    heard(&g, plug, "the gain the record keeps, past a restart", &|p, _| (p - 0.5).abs() < 0.02);
+    heard(&g, plug, "the gain the record keeps, past a restart", |x| (peak(x) - 0.5).abs() < 0.02);
 
     bundled("Crasher", built(true));
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Crasher"]));
@@ -676,12 +710,12 @@ fn a_patch_sounds_under_the_external_clock() {
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("scanner"), "the scanner's death is the reason: {row}");
     assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));
-    heard(&g, plug, "the server answers on", &|p, _| (p - 0.5).abs() < 0.02);
+    heard(&g, plug, "the server answers on", |x| (peak(x) - 0.5).abs() < 0.02);
 
     g.call("session save", j!({ "path": target.to_string_lossy() }));
     let carried = Goofi::new();
     carried.call("session load", j!({ "path": target.to_string_lossy() }));
     carried.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
     carried.set_param(plug, "voice", "gate", true);
-    heard(&carried, plug, "the archive carried the bundle", &|p, c| (p - 0.5).abs() < 0.02 && near(c, 52));
+    heard(&carried, plug, "the archive carried the bundle", |x| (peak(x) - 0.5).abs() < 0.02 && near(per_tenth(x), 52));
 }
