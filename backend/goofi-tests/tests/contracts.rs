@@ -59,7 +59,7 @@ fn every_op_row_is_well_formed_and_reachable() {
         assert!(!op.doc.is_empty() && !op.result.is_empty(), "`{}` is undocumented", op.name);
         assert!(op.positional <= op.args().count() && op.positional <= 2,
                 "`{}` claims more positionals than it declares args", op.name);
-        assert!(!op.doc().contains("{panel_types}") && !op.doc().contains("{viewer_kinds}"),
+        assert!(!op.doc().contains("{panel_types}") && !op.doc().contains("{viewer_kinds}") && !op.doc().contains("{boundary_types}"),
                 "`{}` has an unexpanded placeholder — a model would read it verbatim", op.name);
     }
     // The `!` has to reach the parse, or every argument is advertised as optional.

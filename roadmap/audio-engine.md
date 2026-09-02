@@ -98,7 +98,7 @@ expression, `log2(hz / 261.63)`. A gate arrives at a `Bool` param — constant f
 expression for a signal-plane detector, reference for `MidiIn.gate` — and there is no event type
 anywhere. Polyphony is channels: a 4-channel gate referenced into an envelope is four voices.
 
-**Channel counts are inferred, never configured.** `channels(ins, params)` is evaluated once per
+**Channel counts are inferred, never configured.** `channels` is evaluated once per
 node INSIDE the Kahn loop, over ports and referenced params — inputs are settled before a node is
 visited, so there is no fixed point. The SDK default is `max(ins).max(1)` for every output; a panner, a mixdown or
 `MidiIn` (whose count is its `voices` param) overrides it. A node reads a param by index, never
