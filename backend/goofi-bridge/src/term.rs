@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(), ORIENTATION);
         // Claude Code reads CLAUDE.md, and its `@` import is what points it at the other file.
         assert_eq!(std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
-        for section in ["\n## Seeing", "\n## Building", "\n## Custom Python nodes"] {
+        for section in ["\n## Seeing", "\n## Building", "\n## Custom nodes"] {
             assert!(ORIENTATION.contains(section), "the orientation has no `{section}` section");
         }
         // Read in EVERY turn of every agent in this patch, so the aim is ~6 KB.

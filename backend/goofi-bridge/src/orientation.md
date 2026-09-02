@@ -95,13 +95,13 @@ Panel types and viewer kinds are **closed sets**, not free strings — guessing 
 `parameters` is a mistake a real agent made. A guess is refused with the whole set: empty,
 node-editor, parameters, viewer, metadata, console, globals, agent.
 
-## Custom Python nodes
+## Custom nodes
 
-The most powerful thing you can do here. The patch's own node library is `nodes/` under the
-workspace: one file is one type, named by CamelCasing its stem (`gain.py` → `Gain`), overriding a
-shipped type of the same name.
+The most powerful thing you can do here. The patch's own node library is `nodes_signal/` under
+the workspace: one file is one type, named by CamelCasing its stem (`gain.py` → `Gain`),
+overriding a shipped type of the same name.
 
-    # nodes/gain.py
+    # nodes_signal/gain.py
     import goofi
 
     class Gain(goofi.Node):
@@ -125,7 +125,8 @@ Edit the file and refresh again: it returns under `changed`, and every live inst
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens.
 A node whose imports are missing registers as unavailable and names the module; a node that
 raises inside `process()` becomes that node's error, not a crash. `goofi library get <type>`
-gives you a shipped Python node to copy from (a native Rust type has no source text).
+gives you a shipped node to copy from, in either language: a `.rs` file in the same folder is a
+Rust node, built on refresh where `cargo` exists.
 
 ## The workspace
 

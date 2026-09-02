@@ -216,7 +216,7 @@ pub static TREE: &[Entry] = &[
              doc: "The node library: every registered type with its slots, params, docs and availability — what `node add` can build.",
              result: "{types: [{type, category, doc, input_slots, output_slots, params, available}]}" }),
         Leaf(Op { name: "get", handler: Read(arms::library_get), args: "type:string!", positional: 1,
-             doc: "ONE library entry in full: the palette fields plus where the type came from and its source text. A native type has no source to read; copy a python node into the patch workspace to modify one.",
+             doc: "ONE library entry in full: the palette fields plus where the type came from and its source text. Copy a node into the patch workspace to modify one.",
              result: "the `library list` entry plus {language, tier, provenance, path, source}" }),
         Leaf(Op { name: "refresh", handler: Effect(arms::library_refresh), args: "", positional: 0,
              doc: "Re-read the shipped and patch node directories; live instances of a changed type restart onto the new code. Call after writing a node file.",

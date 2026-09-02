@@ -18,9 +18,16 @@ its file. `AGENTS.md` states the contract; the code holds the mechanism.
   every `.rs` under every root is built or has its failure memoised; only the caller who asked
   waits. A file that does not compile is a greyed type carrying rustc's words, and an instance
   built from the last good file runs on.
-- **The cache is content-keyed and never re-checked.** The key is goofi's version, the SDK's hash
-  and the source; a hit is trusted without opening cargo. A dependency allowlist per SDK is the
-  whole envelope an authored node gets.
+- **The cache is content-keyed and never re-checked.** The key is goofi's version, the SDK's hash,
+  the SDK's allowlist and the source; a hit is trusted without opening cargo, and an artifact
+  under its key is whole or absent, never rewritten under a process that has it mapped. A
+  dependency allowlist per SDK is the whole envelope an authored node gets.
+- **A failure is retried, never cached.** The prebuild runs cargo for every file with no artifact
+  and keeps what it said for the process; the scan reads an artifact or that memo and can never
+  reach cargo, so nothing transient — a signal, a full disk, no network — outlives the next
+  refresh.
+- **A stem outside the name rule is not a node**, in either language, the same as a `_` stem: the
+  type name IS the stem, and a name the rule refuses would be one nothing can reference.
 
 ## Open
 

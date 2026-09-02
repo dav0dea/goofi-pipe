@@ -10,7 +10,7 @@ Eight nodes, and each one was added to prove a seam rather than to fill a catego
 
 - **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`: `.rs` source in `nodes_signal/`, built at
   goofi's build time and loaded dynamically since 2026-09-02 (`node-sources.md`).
-- **Python** — none in the shipped tree (`nodes/`, to be `nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
+- **Python** — none in the shipped tree (`nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
   `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
   because the subprocess tier had to be proved against real packages that hold the GIL; they now
   live in `node-bundles/complexity/` (see `library.md`).

@@ -33,8 +33,8 @@ provide for itself. That last one must happen *before cargo starts*, because car
 a workspace crate rather than a shell script, so that first line is the same command in PowerShell,
 cmd, bash, zsh and fish.
 
-Python is part of goofi, not an add-on: nodes are written in it, and params are expressions it
-evaluates.
+Python is part of goofi, not an add-on: a node can be written in it, and params are expressions
+it evaluates.
 
 The SPA is compiled into the binary, so `cargo run` builds it whenever a frontend source is newer
 than the last bundle — and **fails** if it cannot. It will not fall back to the previous bundle:
@@ -51,12 +51,10 @@ and the result is headless for life, with no flag to remember at every run. `GOO
 | --- | --- | --- |
 | `--port N` | `8000` | The port to serve on. |
 | `--bind HOST` | `127.0.0.1` | The address to serve on. Anything beyond this machine warns: there is no auth, and `/term` is a real shell. |
-| `--extra-nodes DIR` | — | Scan `DIR` for Python nodes *after* `./nodes/`. Repeatable; a later directory wins a type name it shares with an earlier one. |
+| `--extra-nodes ROOT` | — | A folder holding `nodes_signal/`, scanned after the shipped tree and before the open patch's own workspace. Repeatable; a later root wins a type name it shares with an earlier one. |
 | `--list-nodes` | — | Print the registered node types and exit. |
 | `--headless` | — | Serve the API alone — `/control`, `/data`, `/term`, `/mcp`. The app's routes are never mounted. |
 | `--debug` | — | Open `/dev/*`: the UI primitive gallery at `/dev/ui`, and the other development surfaces. Shut otherwise. |
-
-`./nodes/` is scanned whenever it exists; no flag turns it on or off.
 
 The nodes this repo ships beyond the built-ins live in `node-bundles/`, one directory per
 bundle — `complexity` (the antropy measures) and `eeg` (playback, LSL, band power, FOOOF). A
@@ -71,9 +69,12 @@ second door — *Download a copy* and *Open from this computer…* — which pas
 through the browser rather than the backend. This is a copy out and a copy in: it leaves
 the patch's remembered file alone, so Ctrl+S never silently retargets to a download.
 
-## Python nodes
+## Nodes
 
-Drop a file in `nodes/`:
+Drop a file in the patch workspace's `nodes_signal/`, or a root's: `smooth.py` or `Smooth.rs`. The
+stem names the type, and a leading `_` hides it. The four nodes goofi ships are `.rs` files in
+`nodes_signal/`, built at goofi's own build time and embedded, so a toolchain is needed to author a
+Rust node and never to run one; `goofi library get <type>` hands back any node's source to copy.
 
 ```python
 import goofi
