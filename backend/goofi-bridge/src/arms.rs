@@ -1090,9 +1090,8 @@ pub(crate) fn session_save(
             "session save: this patch has no home yet — give a path")?,
     };
     let mount = state.mount();
-    // Every node's state is on disk before the fingerprint, so what the pack carries is what the
-    // baseline saw. Sampled BEFORE the pack: baselining after would call a file written during
-    // the zip packed either way, which is the direction that LOSES an edit.
+    // Sampled BEFORE the pack: baselining after would call a file written during the zip packed
+    // either way, which is the direction that LOSES an edit.
     g.persist();
     let packed = goofi_graph::archive::fingerprint(&mount);
     save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
@@ -1126,16 +1125,13 @@ fn load_patch(
     let result = {
         let mut g = state.graph.lock().unwrap();
         // ORDER is load-bearing: the types the patch SHIPS are registered before the manifest
-        // resolves, or the unknown-type gate fires on the nodes the archive brought — and the
-        // workspace is the fresh one before a node is born, because its birth reads its state.
+        // resolves, or the unknown-type gate fires on the nodes the archive brought.
         rescan(state, &mut g, &fresh);
-        g.set_workspace(&fresh);
         // Parse BEFORE anything is announced or committed.
-        if let Err(e) = g.load_doc(&content) {
+        if let Err(e) = g.load_doc(&content, &fresh) {
             // Refused, so the registry the scan above swapped is re-derived from the mount that
             // is still live.
             rescan(state, &mut g, &state.mount());
-            g.set_workspace(&state.mount());
             remove_mount(&fresh);
             return Err(e);
         }

@@ -2970,9 +2970,10 @@ impl Graph {
         serde_yaml_ng::to_string(&doc).unwrap_or_default()
     }
 
-    /// Replace the graph from a `.gfi` manifest. Node types are validated before the current
-    /// graph is torn down (a rejected load is a no-op).
-    pub fn load_doc(&mut self, text: &str) -> Result<(), String> {
+    /// Replace the graph from a `.gfi` manifest, `workspace` becoming what its nodes are born
+    /// into. Node types are validated before the current graph is torn down (a rejected load is
+    /// a no-op).
+    pub fn load_doc(&mut self, text: &str, workspace: &std::path::Path) -> Result<(), String> {
         let doc: serde_json::Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let (nodes_v, links_v) = match doc.get("version").and_then(|v| v.as_i64()) {
             Some(MANIFEST_VERSION) => {
@@ -3005,6 +3006,7 @@ impl Graph {
         }
 
         self.clear();
+        self.set_workspace(workspace);
         // Globals load BEFORE nodes so a node's `globals.*` default-expression resolves at
         // instantiation, IN FILE ORDER. Malformed entries are skipped (best-effort load).
         if let Some(serde_json::Value::Array(arr)) = doc.get("globals") {

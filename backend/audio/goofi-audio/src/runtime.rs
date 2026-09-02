@@ -16,6 +16,7 @@ pub const OVERRUNS: u8 = 8;
 
 pub struct Slot {
     pub uid: Uid,
+    pub type_name: &'static str,
     /// Which occupant of the index this is — what a stage compiled for another one checks.
     pub serial: u64,
     pub node: Box<dyn AudioNode>,

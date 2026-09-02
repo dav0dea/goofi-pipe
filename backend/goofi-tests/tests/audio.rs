@@ -547,8 +547,8 @@ fn a_patch_sounds_under_the_external_clock() {
     }
 
     // Step: what a node keeps beyond its params rides its blob in the workspace — past a
-    // restart, into an archive and back, and through a delete and its undo. A count that reset
-    // would read about a tenth's worth of blocks; one that was kept reads past three hundred.
+    // restart, into an archive and back over the live patch, and through a delete and its undo.
+    // Exact, not near: a birth's first frame opens on the count the node was born with.
     std::fs::write(
         dir.join("Ticks.rs"),
         "use goofi_audio_sdk::goofi_core::SlotType;\n\
@@ -571,33 +571,37 @@ fn a_patch_sounds_under_the_external_clock() {
     .unwrap();
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Ticks"]));
     let ticks = g.add("Ticks");
-    let counted = |g: &Goofi, uid: Uid, what: &str| -> f32 {
+    // Nothing is driven between a birth and this probe's opening, so the first frame published
+    // after one tenth STARTS at the count the birth loaded — or at zero.
+    let born_at = |g: &Goofi, uid: Uid, what: &str| -> f32 {
         let probe = g.probe(uid, "out");
-        g.until(what, |g| {
-            drive(g, TENTH);
-            probe.latest().and_then(|d| f32s(&d).last().copied())
-        })
+        drive(g, TENTH);
+        g.until(what, |_| probe.latest().and_then(|d| f32s(&d).first().copied()))
     };
-    drive(&g, 4 * TENTH);
-    assert!(counted(&g, ticks, "the count") >= 300.0);
+    let blocks = (TENTH / goofi_audio_sdk::BLOCK) as f32;
+    drive(&g, 2 * TENTH);
     g.call("node restart", j!({ "node": hex(ticks) }));
-    let resumed = counted(&g, ticks, "the count after a restart");
-    assert!(resumed >= 300.0, "the restart kept the count: {resumed}");
+    assert_eq!(born_at(&g, ticks, "the count after a restart"), 2.0 * blocks);
 
+    // Saved at three tenths, driven on to five, then loaded OVER itself: the outgoing node's
+    // count must retire into the mount being replaced, not over the archive's.
     let keep = tempfile::tempdir().unwrap();
     let target = keep.path().join("state.gfi");
     g.call("session save", j!({ "path": target.to_string_lossy() }));
-    let opened = Goofi::new();
-    opened.call("session load", j!({ "path": target.to_string_lossy() }));
-    let loaded = {
-        let graph = opened.state.graph.lock().unwrap();
-        graph.node_uids().into_iter().find(|u| graph.node_type(*u) == Some("Ticks")).expect("the archive brought it")
-    };
-    let reloaded = counted(&opened, loaded, "the count after a load");
-    assert!(reloaded >= 300.0, "the archive kept the count: {reloaded}");
+    drive(&g, 2 * TENTH);
+    g.call("session load", j!({ "path": target.to_string_lossy() }));
+    assert_eq!(born_at(&g, ticks, "the count after a load"), 3.0 * blocks);
 
     g.call("node remove", j!({ "node": hex(ticks) }));
     g.call("undo", j!({}));
-    let undone = counted(&g, ticks, "the count after an undo");
-    assert!(undone >= 300.0, "the undo kept the count: {undone}");
+    assert_eq!(born_at(&g, ticks, "the count after an undo"), 4.0 * blocks);
+
+    // A delete leaves its blob for its undo, and a save packs it; the load that ends that undo
+    // sweeps it, so the number minted again — or chosen — is born on nothing.
+    g.call("node remove", j!({ "node": hex(ticks) }));
+    g.call("session save", j!({ "path": target.to_string_lossy() }));
+    let opened = Goofi::new();
+    opened.call("session load", j!({ "path": target.to_string_lossy() }));
+    opened.call("node add", j!({ "type": "Ticks", "member_uid": hex(ticks) }));
+    assert_eq!(born_at(&opened, ticks, "the count of a new node at a dead node's uid"), 0.0);
 }

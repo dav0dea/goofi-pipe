@@ -266,18 +266,20 @@ thread inside the box under one `unsafe impl Send`, justified by the VST3 contra
 as the deviation it is. No usable VST3→CLAP wrapper exists (DISTRHO Ildaeil does not even bridge
 params), which is one more reason the centre is a trait and not a format.
 
-**Opaque per-node state lives in `workspace/.goofi/state/<uid_hex>/`**, written by `save` when a
-node's box comes back from the runtime and only when `save` returned bytes, read by `load` at
-insert. That one choice inherits the archive, the dirty fingerprint, the atomic load swap and undo
-of a delete. A goofi node's blob never carries a param value, so the `.gfi` record is the one
-authority by construction; a VST3 plugin serializes its params INTO its state, so its load is blob
-first, then the param record on top. Landed 2026-09-02 (Step 8): the engine does the I/O and the
-seam hands it the workspace — the fresh mount before a load's births, because a birth reads its
-blob; the box is written at a remove, which forces its round trip through the audio thread so a
-restart's birth finds it, and at `session save`, which takes the runtime lock once so the pack
-carries the state as it is rather than as it was at the last restart — the one authoring event
-that takes the lock, a callback finding it taken being the accepted click. An empty answer removes
-the file, and `load` runs after `prepare`, so a prepare that allocates cannot wipe it.
+**Opaque per-node state lives in `workspace/.goofi/state/<uid_hex>/<Type>`.** The engine does the
+I/O and the seam hands it the workspace, which turns over between a load's teardown and its births,
+so the outgoing patch's boxes retire into the mount being replaced. The blob is written when a
+node's box comes back from the runtime — a remove forces that round trip through the audio thread,
+so a restart's birth finds it, one callback finding the lock taken being the accepted click — and at
+`session save`, so the pack carries the state as it is; an empty answer removes the file, and `load`
+runs after `prepare`. That one choice inherits the archive, the dirty fingerprint, the atomic load
+swap and undo of a delete. What it does not do: a paste births on fresh uids and carries no blob,
+and a restart raises the unsaved dot, because it writes. A delete leaves its blob for its undo and a
+save packs it; the first settle after the workspace turns over sweeps every blob whose uid the patch
+does not hold, so a number minted again in a later session is never born on a dead node's bytes,
+and the type segment keeps a chosen uid from another type's. A goofi node's blob never carries a
+param value, so the `.gfi` record is the one authority by construction; a VST3 plugin serializes
+its params INTO its state, so its load is blob first, then the param record on top.
 
 **One node editor panel for every engine.** Engines are told apart by slot colour, and a frontend
 branch on which engine a node belongs to is a defect.

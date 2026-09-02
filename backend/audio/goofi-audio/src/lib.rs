@@ -228,6 +228,8 @@ pub struct AudioEngine {
     next_serial: u64,
     live: HashMap<Uid, Instance>,
     workspace: Option<PathBuf>,
+    /// A workspace that turned over, swept of dead blobs at the first settled state after it.
+    sweep: bool,
     /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
     disabled: HashMap<Uid, String>,
     faulted: HashMap<Uid, String>,
@@ -284,6 +286,7 @@ impl AudioEngine {
             next_serial: 0,
             live: HashMap::new(),
             workspace: None,
+            sweep: false,
             disabled: HashMap::new(),
             faulted: HashMap::new(),
             pending: Vec::new(),
@@ -296,7 +299,7 @@ impl AudioEngine {
     /// The external clock: render whole blocks until `frames` are ready, and hand them over
     /// interleaved — exactly what a device callback would receive.
     pub fn drive(&mut self, frames: usize) -> (Vec<f32>, u16) {
-        let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rt = self.runtime();
         let channels = rt.channels();
         let mut out = vec![0.0; frames * channels as usize];
         rt.render_into(&mut out);
@@ -319,15 +322,31 @@ impl AudioEngine {
         }
     }
 
-    /// Where `uid`'s opaque state is kept between two births: the workspace rides the archive,
-    /// the dirty fingerprint, the load swap and undo of delete, so the file does too.
-    fn state_path(&self, uid: Uid) -> Option<PathBuf> {
-        Some(self.workspace.as_ref()?.join(".goofi").join("state").join(uid.to_hex()).join("node"))
+    /// Where `uid`'s opaque state is kept between two births; named by type, so a chosen uid
+    /// never hands one type the bytes another left.
+    fn state_path(&self, uid: Uid, type_name: &str) -> Option<PathBuf> {
+        Some(self.state_dir()?.join(uid.to_hex()).join(type_name))
+    }
+
+    fn state_dir(&self) -> Option<PathBuf> {
+        Some(self.workspace.as_ref()?.join(".goofi").join("state"))
+    }
+
+    /// Every blob of a uid the patch does not hold — a delete whose undo a load ended — so a
+    /// number minted again is never born on a dead node's bytes.
+    fn sweep_state(&self) {
+        let Some(entries) = self.state_dir().and_then(|d| std::fs::read_dir(d).ok()) else { return };
+        for entry in entries.flatten() {
+            let held = entry.file_name().to_str().and_then(Uid::from_hex).is_some_and(|u| self.live.contains_key(&u));
+            if !held {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
 
     /// Keep what `save` answered, or nothing: a node with no state leaves no file behind.
-    fn write_state(&self, uid: Uid, bytes: Vec<u8>) {
-        let Some(path) = self.state_path(uid) else { return };
+    fn write_state(&self, uid: Uid, type_name: &str, bytes: Vec<u8>) {
+        let Some(path) = self.state_path(uid, type_name) else { return };
         let written = if bytes.is_empty() {
             std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
         } else {
@@ -338,13 +357,12 @@ impl AudioEngine {
         }
     }
 
-    /// What the audio thread handed back is dropped here, where dropping may take time — a
-    /// node's state kept first — and a node it put out of the plan is recorded, for the settle
-    /// this asks for to name and re-plan.
+    /// What the audio thread handed back is dropped here, where dropping may take time — and a
+    /// node it put out of the plan is recorded, for the settle this asks for to name and re-plan.
     fn discard_retired(&mut self) {
         while let Ok(retired) = self.outbox.pop() {
             match retired {
-                Retired::Slot(slot) => self.write_state(slot.uid, slot.node.save()),
+                Retired::Slot(slot) => self.write_state(slot.uid, slot.type_name, slot.node.save()),
                 Retired::Plan(plan, arena) => drop((plan, arena)),
                 Retired::Slab(slab) => drop(slab),
                 Retired::Faulted { uid, serial, fault } => {
@@ -363,9 +381,14 @@ impl AudioEngine {
 
     /// A message always lands. A full ring means the audio thread has not run for a long time, so
     /// taking its lock to apply the backlog costs no block.
+    /// The audio half's lock, held through a panic there: the slab is still the slab.
+    fn runtime(&self) -> std::sync::MutexGuard<'_, Runtime> {
+        self.runtime.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn send(&mut self, mut msg: Msg) {
         while let Err(rtrb::PushError::Full(back)) = self.inbox.push(msg) {
-            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).apply_pending();
+            self.runtime().apply_pending();
             msg = back;
         }
     }
@@ -473,7 +496,7 @@ impl AudioEngine {
     /// Stop the clock and wait for it; the name it had.
     fn close(&mut self) -> Option<String> {
         let clock = self.device.take()?;
-        self.runtime.lock().unwrap_or_else(|e| e.into_inner()).set_device(None);
+        self.runtime().set_device(None);
         Some(clock.name.clone())
     }
 
@@ -488,7 +511,7 @@ impl AudioEngine {
     /// The device's rate and width, under the runtime lock: every instance — the ones still on
     /// the ring included — is re-prepared when the rate moved, and the FIFO is re-cut to the width.
     fn retune(&mut self, rate: f64, channels: u16) {
-        let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rt = self.runtime();
         rt.apply_pending();
         if rate != self.shared.rate() {
             for slot in rt.slab.iter_mut().flatten() {
@@ -532,17 +555,18 @@ impl Engine for AudioEngine {
 
     fn set_workspace(&mut self, dir: &Path) {
         self.workspace = Some(dir.to_path_buf());
+        self.sweep = true;
     }
 
-    /// Under the runtime lock — the one authoring event that takes it — every live node's state.
+    /// Every live node's state, under the runtime lock.
     fn persist(&mut self) {
-        let states: Vec<(Uid, Vec<u8>)> = {
-            let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        let states: Vec<(Uid, &'static str, Vec<u8>)> = {
+            let mut rt = self.runtime();
             rt.apply_pending();
-            rt.slab.iter().flatten().map(|s| (s.uid, s.node.save())).collect()
+            rt.slab.iter().flatten().map(|s| (s.uid, s.type_name, s.node.save())).collect()
         };
-        for (uid, bytes) in states {
-            self.write_state(uid, bytes);
+        for (uid, type_name, bytes) in states {
+            self.write_state(uid, type_name, bytes);
         }
     }
 
@@ -571,7 +595,7 @@ impl Engine for AudioEngine {
         let (birth, ports) = rings_for(type_name, chans.clone());
         let mut node = make(birth);
         node.prepare(self.shared.rate());
-        if let Some(bytes) = self.state_path(uid).and_then(|p| std::fs::read(p).ok()) {
+        if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
             node.load(&bytes);
         }
         let atomics: Arc<[AtomicU64]> =
@@ -603,6 +627,7 @@ impl Engine for AudioEngine {
         self.next_serial += 1;
         let slot = Slot {
             uid,
+            type_name: manifest.type_name,
             serial,
             node,
             params: atomics,
@@ -626,7 +651,7 @@ impl Engine for AudioEngine {
             self.send(Msg::Remove(inst.idx));
             // The box comes back NOW, its state kept, so a restart's birth finds it: one callback
             // may find the runtime taken — a click at an authoring event, accepted.
-            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).apply_pending();
+            self.runtime().apply_pending();
             self.discard_retired();
             self.free.push(inst.idx);
             self.disabled.remove(&uid);
@@ -638,6 +663,9 @@ impl Engine for AudioEngine {
 
     fn settle(&mut self, view: &GraphView<'_>, _touched: &[Touched]) {
         self.dirty = false;
+        if std::mem::take(&mut self.sweep) {
+            self.sweep_state();
+        }
         self.shared.replan.swap(false, Ordering::Acquire);
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
