@@ -54,7 +54,7 @@ pub fn routed_node_type(d: Discovered, subproc_python: &str) -> inproc::PyNodeTy
         match tier.get() {
             goofi_node::Isolation::Subprocess => {
                 Box::new(subproc::RemoteNode::new(&python, &source, in_slots.clone()))
-                    as Box<dyn goofi_signal::Node>
+                    as Box<dyn goofi_signal_sdk::Node>
             }
             // A native tier cannot reach here: this factory only ever backs a discovered file.
             _ => inproc::build_routed(&source, in_slots.clone(), out_slots.clone(), tier),

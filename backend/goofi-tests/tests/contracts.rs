@@ -147,7 +147,7 @@ fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for()
 }
 
 static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
-fn never() -> Box<dyn goofi_signal::Node> {
+fn never() -> Box<dyn goofi_signal_sdk::Node> {
     unreachable!("the catalog never instantiates")
 }
 const fn manifest(type_name: &'static str, inputs: &'static [SlotDecl],

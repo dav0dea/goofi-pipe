@@ -58,7 +58,7 @@ impl Drop for NodeHost {
 }
 
 /// A [`crate::discover::NodeFactory`] shared with the node's own thread, which is where the build happens.
-type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn crate::Node> + Send + Sync>;
+type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_signal_sdk::Node> + Send + Sync>;
 
 /// A runtime-registered type: the build half a [`crate::NodeClass`] carries for a built-in.
 struct DynType {

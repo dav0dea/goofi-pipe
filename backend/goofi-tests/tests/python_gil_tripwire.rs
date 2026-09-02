@@ -4,7 +4,7 @@
 
 use goofi_core::Data;
 use goofi_node::{Isolation, IsolationCell, ParamGroups, Params};
-use goofi_signal::{Inputs, Node, NodeCtx, Outputs};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, Outputs};
 use goofi_python::inproc::PyNode;
 use indexmap::IndexMap;
 
@@ -19,7 +19,7 @@ class Tripper(goofi.Node):
         return {"out": (np.zeros(1, dtype=np.float32), {})}
 "#;
 
-fn tick(node: &mut PyNode, params: &ParamGroups) -> goofi_signal::NodeResult {
+fn tick(node: &mut PyNode, params: &ParamGroups) -> goofi_signal_sdk::NodeResult {
     let inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
     let inp = Inputs::new(&inmap);
     let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();

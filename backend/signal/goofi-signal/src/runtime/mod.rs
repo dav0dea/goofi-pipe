@@ -7,7 +7,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use goofi_core::{Data, Param};
 use goofi_node::{ExprEvaluator, NodeManifest, ParamGroups, ParamKey, Params};
-use crate::{Inputs, Node, NodeCtx, Outputs, RunPolicy};
+use crate::RunPolicy;
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, Outputs};
 pub use goofi_node::NodeFault;
 
 /// A [`Transport`] that also notifies the drain worker on every report — the alternative to the

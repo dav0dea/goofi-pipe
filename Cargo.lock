@@ -531,6 +531,7 @@ dependencies = [
  "goofi-node",
  "goofi-python",
  "goofi-signal",
+ "goofi-signal-sdk",
  "serde_json",
  "shell-words",
  "tokio",
@@ -605,6 +606,7 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-signal",
+ "goofi-signal-sdk",
  "indexmap",
  "inventory",
  "rustfft",
@@ -632,6 +634,7 @@ dependencies = [
  "goofi-node",
  "goofi-pymod",
  "goofi-signal",
+ "goofi-signal-sdk",
  "iceoryx2",
  "indexmap",
  "pyo3",
@@ -644,6 +647,7 @@ dependencies = [
  "goofi-codec",
  "goofi-core",
  "goofi-node",
+ "goofi-signal-sdk",
  "goofi-transport",
  "iceoryx2",
  "indexmap",
@@ -651,6 +655,15 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "goofi-signal-sdk"
+version = "3.1.0"
+dependencies = [
+ "goofi-core",
+ "goofi-node",
+ "indexmap",
 ]
 
 [[package]]
@@ -670,6 +683,7 @@ dependencies = [
  "goofi-nodes",
  "goofi-python",
  "goofi-signal",
+ "goofi-signal-sdk",
  "goofi-transport",
  "goofi-view",
  "indexmap",

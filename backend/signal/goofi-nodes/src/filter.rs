@@ -3,7 +3,8 @@
 
 use goofi_core::{resolve_axis, Data, SlotType};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
+use goofi_signal::{default_factory, NodeClass};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 /// One second-order section, normalized so `a0 == 1`.
 #[derive(Clone, Copy, Default)]

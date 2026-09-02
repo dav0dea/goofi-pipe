@@ -11,7 +11,7 @@ use goofi_core::{Data, Param, Value};
 use goofi_tests::OutputProbe;
 use goofi_graph::Graph;
 use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, Params, SlotDecl};
-use goofi_signal::{Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 use goofi_python::inproc::PyNode;
 use goofi_python::subproc::RemoteNode;
 

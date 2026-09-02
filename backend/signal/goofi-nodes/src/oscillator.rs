@@ -4,7 +4,8 @@
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
 use goofi_node::{ExprDecl, ExprMode, NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params};
-use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
+use goofi_signal::{default_factory, NodeClass};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy)]

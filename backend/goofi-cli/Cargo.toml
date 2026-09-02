@@ -42,6 +42,8 @@ default = ["python"]
 python = ["dep:goofi-python", "goofi-python/embed"]
 
 [dev-dependencies]
+# The trait the graceful-exit test's node implements.
+goofi-signal-sdk = { path = "../signal/goofi-signal-sdk" }
 # A node with a `Drop` — how the graceful-exit test proves a node's own teardown RAN, rather than
 # that the graph merely forgot it.
 goofi-node = { path = "../goofi-node" }

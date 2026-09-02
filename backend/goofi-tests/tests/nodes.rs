@@ -10,7 +10,7 @@ use goofi_bridge::{ScannedType, Tier};
 use goofi_core::{Data, Meta};
 use goofi_graph::Graph;
 use goofi_node::{NodeManifest, OutputDecl, Params};
-use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 use goofi_tests::{j, Goofi, OutputProbe};
 
 static OUT: &[OutputDecl] = &[OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];

@@ -9,7 +9,7 @@ use goofi_node::{
     SlotDecl,
 };
 
-use crate::Node;
+use goofi_signal_sdk::Node;
 
 /// Builds a fresh boxed instance of a runtime-discovered node type from its params.
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;

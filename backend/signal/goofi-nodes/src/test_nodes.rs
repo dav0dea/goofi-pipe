@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, Meta, SlotType};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
+use goofi_signal::{default_factory, NodeClass};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
     name: "input",

@@ -15,7 +15,8 @@ use goofi_signal::runtime::{
 };
 use goofi_transport::{door_service, iox_node, output_service, service_base, Doorbell, IoxNode};
 use goofi_node::{NodeManifest, OutputDecl, ParamKey, Params, SlotDecl};
-use goofi_signal::{default_factory, Inputs, Node, NodeCtx, NodeResult, Outputs};
+use goofi_signal::default_factory;
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 /// Long enough that a park is a real park, short enough that a broken retention fails fast.
 const MS200: Duration = Duration::from_millis(200);

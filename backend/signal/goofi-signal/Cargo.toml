@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
+goofi-signal-sdk = { path = "../goofi-signal-sdk" }
 goofi-transport = { path = "../../goofi-transport" }
 # The GOOF frame is what a data service carries, exactly as the subprocess tier already sends it.
 goofi-codec = { path = "../../goofi-codec" }

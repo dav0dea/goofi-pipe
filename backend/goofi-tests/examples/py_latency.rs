@@ -8,7 +8,7 @@ use goofi_core::Param;
 use goofi_tests::OutputProbe;
 use goofi_graph::Graph;
 use goofi_node::{Isolation, IsolationCell, NodeManifest, OutputDecl, ParamDecl, ParamGroups, SlotDecl};
-use goofi_signal::Node;
+use goofi_signal_sdk::Node;
 use goofi_python::inproc::PyNode;
 
 static PY_IN: &[SlotDecl] = &[SlotDecl {
@@ -167,7 +167,7 @@ fn main() {
 fn run_once(node: &mut PyNode, bytes: &[u8]) {
     use goofi_core::{Data, Meta};
     use goofi_node::Params;
-use goofi_signal::{Inputs, NodeCtx, Outputs};
+use goofi_signal_sdk::{Inputs, NodeCtx, Outputs};
     use indexmap::IndexMap;
     let frame =
         Data::array_f32(vec![bytes.len() / 4], bytes.to_vec(), Meta::empty()).unwrap();

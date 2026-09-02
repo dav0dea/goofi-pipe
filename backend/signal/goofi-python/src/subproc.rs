@@ -9,7 +9,7 @@ use iceoryx2::prelude::*;
 
 use goofi_core::Data;
 use goofi_node::{ParamKey, Params};
-use goofi_signal::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 
 /// Unique iceoryx2 service-name base per spawned subprocess, so concurrent nodes never collide.
 static SUBPROC_SEQ: AtomicU64 = AtomicU64::new(0);

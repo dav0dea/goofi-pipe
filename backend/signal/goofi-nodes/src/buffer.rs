@@ -3,7 +3,8 @@
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, Params, SlotDecl};
-use goofi_signal::{default_factory, Inputs, Node, NodeClass, NodeCtx, NodeResult, Outputs};
+use goofi_signal::{default_factory, NodeClass};
+use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 #[derive(Default)]
 struct Buffer {
