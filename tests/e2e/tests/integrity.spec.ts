@@ -104,11 +104,11 @@ test('a patch under construction holds together at every stage', async ({ page }
 			const panel = page.getByTestId('auto-side-panel');
 			await panel.getByTestId('node-name').click();
 			const input = panel.getByTestId('node-name-input');
-			await input.fill('a_node_name_far_longer_than_any_header_was_drawn_to_hold');
+			await input.fill('anodenamefarlongerthananyheaderwasdrawntohold');
 			await input.press('Enter');
 			await expect
 				.poll(() => page.evaluate((u) => (window as any).goofi.query.node(u)?.name, osc))
-				.toContain('far_longer');
+				.toContain('farlonger');
 			await expectIntact(page, 'a very long node name');
 		});
 
