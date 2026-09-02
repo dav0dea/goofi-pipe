@@ -25,6 +25,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use goofi_node::{ScannedType, Stamp};
+
 /// How long a `/term` socket waits for the PTY's end-of-stream after the child is reaped: ConPTY
 /// keeps its pseudoconsole open past the child's death, so on Windows that end never comes.
 const EXIT_SETTLE: Duration = Duration::from_millis(250);
@@ -74,10 +76,9 @@ pub struct AppState {
     /// Liveness policy for `/data` sockets, injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
-    /// How a directory of node files becomes registered node types; the default discovers nothing.
-    pub scan_nodes: NodeScan,
-    /// The shipped node directories — `nodes/`, then every `--extra-nodes`.
-    pub system_nodes: Vec<PathBuf>,
+    /// The node source roots beyond the patch's own, in precedence order — each holds a
+    /// `nodes_<engine>/` per engine. The patch's workspace is scanned last, and wins a name.
+    pub roots: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp: the baseline the next [`rescan`]
     /// diffs against, and the only list it removes from.
     node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
@@ -159,8 +160,7 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_graph::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
-            scan_nodes: Arc::new(|_, _| Vec::new()),
-            system_nodes: Vec::new(),
+            roots: Vec::new(),
             node_index: Arc::new(Mutex::new(Default::default())),
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
@@ -548,25 +548,17 @@ pub fn signal_engine(g: &mut Graph) -> &mut goofi_signal::SignalEngine {
         .expect("the `signal` registration is the signal engine")
 }
 
-/// Register a runtime type AND clear its greyed row — the one owner of that pairing: a name must
-/// never hold a live registration and an unavailable row at once.
+/// Register a signal type built in this process AND clear its greyed row — the one owner of that
+/// pairing: a name must never hold a live registration and an unavailable row at once.
 pub fn register_dyn_type(
     g: &mut Graph,
     manifest: &'static goofi_node::NodeManifest,
     factory: goofi_signal_sdk::NodeFactory,
     tier: &'static goofi_node::IsolationCell,
-) -> goofi_signal::Registration {
-    let r = signal_engine(g).register_dyn_type(manifest, factory, tier);
-    if r != goofi_signal::Registration::Refused {
-        g.forget_unavailable(manifest.type_name);
-    }
-    r
-}
-
-/// Forget a runtime type from BOTH registries — the registry and the greyed overlay.
-pub fn remove_dyn_type(g: &mut Graph, type_name: &str) -> bool {
-    let had = signal_engine(g).remove_dyn_type(type_name);
-    g.forget_unavailable(type_name) || had
+) -> bool {
+    let replaced = signal_engine(g).register_dyn_type(manifest, factory, tier);
+    g.forget_unavailable(manifest.type_name);
+    replaced
 }
 
 /// One output slot's data service name — the resolver over the graph's own birth facts. Also the
@@ -589,31 +581,6 @@ pub fn catalog_type_names(g: &Graph) -> Vec<String> {
         .collect()
 }
 
-/// Which tier took a node file — and, when neither could, why. Reported rather than printed,
-/// because only the caller can tell a boot scan from a rescan.
-pub enum Tier {
-    InProcess,
-    Subprocess,
-    /// Neither tier could load it, so the palette lists it greyed with this reason.
-    Unavailable(String),
-}
-
-/// A file's size and mtime. `None` when it could not be stat'd, which compares equal to itself and
-/// so reads as "unchanged".
-pub type Stamp = (u64, std::time::SystemTime);
-
-/// One node file's outcome from a scan of one directory.
-pub struct ScannedType {
-    pub type_name: String,
-    pub tier: Tier,
-    pub stamp: Option<Stamp>,
-    pub registration: goofi_signal::Registration,
-}
-
-/// The node-discovery seam: scan ONE directory and report what it registered. Injected by the CLI,
-/// so boot and [`rescan`] re-derive the registry through the same function.
-pub type NodeScan = Arc<dyn Fn(&mut Graph, &std::path::Path) -> Vec<ScannedType> + Send + Sync>;
-
 /// What a [`rescan`] changed, for the caller that asked.
 #[derive(Default)]
 pub struct ScanDiff {
@@ -622,9 +589,9 @@ pub struct ScanDiff {
     pub removed: Vec<String>,
 }
 
-/// Re-derive the registry from the directories that exist RIGHT NOW — the shipped tree, then
-/// `<patch>/nodes`, so a patch-local node of the same name wins. The previous scan's stamps are the
-/// baseline, so this answers a DIFF and removes only what it registered.
+/// Re-derive the registry from the roots that exist RIGHT NOW — every shipped root, then the
+/// patch's own workspace, so a patch-local node of the same name wins. The previous scan's
+/// stamps are the baseline, so this answers a DIFF and removes only what it registered.
 pub fn rescan(
     state: &AppState,
     g: &mut Graph,
@@ -633,21 +600,14 @@ pub fn rescan(
     let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
-    // The scan order IS the precedence: patch LAST, so it shadows every shipped tree.
-    let dirs = (state.system_nodes.iter().map(|d| (d.clone(), false)))
-        .chain(std::iter::once((patch.join("nodes"), true)));
-    for (dir, is_patch) in dirs {
-        if !dir.is_dir() {
-            continue;
-        }
-        for t in (state.scan_nodes)(g, &dir) {
-            // A refused name never reaches the palette, so it must not enter the index either.
-            if t.registration != goofi_signal::Registration::Refused {
-                if is_patch {
-                    patch_types.insert(t.type_name.clone());
-                }
-                found.insert(t.type_name.clone(), t.stamp);
+    let roots = (state.roots.iter().map(|d| (d.clone(), false)))
+        .chain(std::iter::once((patch.to_path_buf(), true)));
+    for (root, is_patch) in roots {
+        for t in g.scan_root(&root) {
+            if is_patch {
+                patch_types.insert(t.type_name.clone());
             }
+            found.insert(t.type_name.clone(), t.stamp);
             outcomes.push(t);
         }
     }
@@ -664,7 +624,7 @@ pub fn rescan(
     }
     diff.removed = prev.keys().filter(|n| !found.contains_key(*n)).cloned().collect();
     for name in &diff.removed {
-        remove_dyn_type(g, name);
+        g.remove_type(name);
     }
     *prev = found;
     (diff, outcomes)

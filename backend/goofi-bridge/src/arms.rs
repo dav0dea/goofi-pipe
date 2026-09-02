@@ -172,11 +172,12 @@ pub(crate) fn library_get(
     let ty = parse_str(payload, "type")?;
     let mount = state.mount();
     let g = state.graph.lock().unwrap();
-    // `.rev()` is load-bearing: `rescan` scans the shipped list forwards and lets each
-    // directory overwrite the last, so a first-match search walks it backwards.
-    let dirs: Vec<(PathBuf, &str)> = [(mount.join("nodes"), "patch")]
+    let folder = format!("nodes_{}", g.type_engine(ty).unwrap_or("signal"));
+    // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
+    // last, so a first-match search walks them backwards.
+    let dirs: Vec<(PathBuf, &str)> = [(mount.join(&folder), "patch")]
         .into_iter()
-        .chain(state.system_nodes.iter().rev().map(|d| (d.clone(), "shipped")))
+        .chain(state.roots.iter().rev().map(|d| (d.join(&folder), "shipped")))
         .collect();
     inspect::node_source(&g, ty, &dirs)
 }

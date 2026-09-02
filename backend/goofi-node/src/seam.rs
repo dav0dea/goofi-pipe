@@ -4,14 +4,15 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 
 use crate::{
-    BindingId, ExprEvaluator, IsolationCell, NodeManifest, ParamDecl, ParamGroups, ParamKey,
-    Status, Uid,
+    BindingId, ExprEvaluator, Isolation, IsolationCell, NodeManifest, ParamDecl, ParamGroups,
+    ParamKey, Status, Uid,
 };
 
 /// A doorbell id: `0` is a control message, `1..=64` the index of an input slot in
@@ -76,6 +77,24 @@ impl DrainWaker {
 pub struct Edge {
     pub producer: (Uid, &'static str),
     pub consumer: (Uid, &'static str),
+}
+
+/// A file's size and mtime — what a rescan diffs. `None` when it could not be stat'd, which
+/// compares equal to itself and so reads as "unchanged".
+pub type Stamp = (u64, std::time::SystemTime);
+
+/// One node file's outcome from an engine's scan of its folder.
+pub struct ScannedType {
+    pub type_name: String,
+    pub stamp: Option<Stamp>,
+    pub outcome: Scanned,
+}
+
+pub enum Scanned {
+    /// Registered; `replaced` says an earlier file already held the name, and this one now does.
+    Registered { isolation: Isolation, replaced: bool },
+    /// Not loadable; the palette lists the type greyed with this reason.
+    Unavailable(String),
 }
 
 /// One binding as settle ships it: the derived state an engine reads, never the authored record.
@@ -160,6 +179,15 @@ pub trait Engine: Send {
     fn dirty(&self) -> bool;
     /// Every node class this engine can build, advertised on request.
     fn library(&self) -> Vec<LibraryEntry>;
+    /// Scan ONE folder of this engine's node files and register what loads, a later file taking
+    /// a name an earlier one held. A file that cannot load answers why instead.
+    fn scan(&mut self, _dir: &Path) -> Vec<ScannedType> {
+        Vec::new()
+    }
+    /// Forget a type a scan registered; whether this engine held it.
+    fn remove_type(&mut self, _type_name: &str) -> bool {
+        false
+    }
     /// The universal params this engine adds to every one of its nodes — declarations, so the
     /// palette's tooltips and the default-expression seeding read one door. Empty by default.
     fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {

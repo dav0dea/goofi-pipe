@@ -6,14 +6,33 @@
 use std::path::{Path, PathBuf};
 
 use goofi_core::Coord;
-use goofi_tests::{f32s, hex, install, j, require_python, shape, Goofi};
+use goofi_tests::{f32s, hex, install, install_all, j, require_python, shape, Goofi};
 
-/// One of the `.py` files a bundle ships, installed through the same seam a user's own file takes.
-fn install_bundled(g: &Goofi, py: &str, bundle: &str, file: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles").join(bundle).join(file);
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read the bundled node {}: {e}", path.display()));
-    install(g, py, file, &source)
+/// The `.py` files a bundle ships, read as they are checked in.
+fn bundled(bundle: &str, files: &[&str]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|file| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../node-bundles").join(bundle).join("nodes_signal").join(file);
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read the bundled node {}: {e}", path.display()));
+            (file.to_string(), source)
+        })
+        .collect()
+}
+
+/// One of a bundle's files, installed through the same seam a user's own file takes.
+fn install_bundled(g: &Goofi, bundle: &str, file: &str) -> String {
+    let [(file, source)] = bundled(bundle, &[file]).try_into().expect("one file");
+    install(g, &file, &source)
+}
+
+/// Several of a bundle's files under ONE refresh, as a real scan takes a folder.
+fn install_bundled_all(g: &Goofi, bundle: &str, files: &[&str]) -> Vec<String> {
+    let sources = bundled(bundle, files);
+    let pairs: Vec<(&str, &str)> = sources.iter().map(|(f, s)| (f.as_str(), s.as_str())).collect();
+    install_all(g, &pairs)
 }
 
 /// Wait for a node to come up, reading its error channel WHILE waiting so a node that says why
@@ -59,7 +78,7 @@ fn labels(d: &goofi_core::Data, dim: &str) -> Vec<String> {
 #[test]
 fn the_complexity_bundle_reduces_the_time_axis_and_leaves_the_channels_alone() {
     // A frame that is NOT a vector: against a single channel a flattening node reads as correct.
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
     let src = g.add("_TestGrid");
     let buf = g.add("Buffer");
@@ -69,36 +88,32 @@ fn the_complexity_bundle_reduces_the_time_axis_and_leaves_the_channels_alone() {
     let window = g.probe(buf, "out");
     g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![3, 256]));
 
-    // All PROBED AND WIRED AT ONCE, one interpreter per file, as a real scan does — so the
-    // ceiling below covers the node boots rather than the probes.
-    let (g, py) = (&g, &py.py);
-    let nodes: Vec<_> = std::thread::scope(|s| {
-        [
-            ("lempel_ziv.py", "complexity"),
-            ("permutation_entropy.py", "entropy"),
-            ("spectral_entropy.py", "entropy"),
-            ("detrended_fluctuation.py", "exponent"),
-            ("sample_entropy.py", "entropy"),
-            ("hjorth.py", "complexity"),
-            ("fractal_dimension.py", "dimension"),
-            ("zero_crossings.py", "count"),
-        ]
-        .map(|(file, slot)| {
-            s.spawn(move || {
-                let ty = install_bundled(g, py, "complexity", file);
-                let node = g.add(&ty);
-                let probe = g.probe(node, slot);
-                g.link(buf, "out", node, "data");
-                (ty, node, probe)
-            })
-        })
+    // All registered by ONE scan, which probes them in parallel — so the ceiling below covers
+    // the node boots rather than the probes.
+    let files = [
+        ("lempel_ziv.py", "complexity"),
+        ("permutation_entropy.py", "entropy"),
+        ("spectral_entropy.py", "entropy"),
+        ("detrended_fluctuation.py", "exponent"),
+        ("sample_entropy.py", "entropy"),
+        ("hjorth.py", "complexity"),
+        ("fractal_dimension.py", "dimension"),
+        ("zero_crossings.py", "count"),
+    ];
+    let types = install_bundled_all(&g, "complexity", &files.map(|(file, _)| file));
+    let nodes: Vec<_> = types
         .into_iter()
-        .map(|h| h.join().expect("a probe thread panicked"))
-        .collect()
-    });
+        .zip(files)
+        .map(|(ty, (_, slot))| {
+            let node = g.add(&ty);
+            let probe = g.probe(node, slot);
+            g.link(buf, "out", node, "data");
+            (ty, node, probe)
+        })
+        .collect();
 
     for (ty, node, probe) in nodes {
-        let d = first_frame(g, &ty, node, &probe, |d| shape(d) == vec![3]);
+        let d = first_frame(&g, &ty, node, &probe, |d| shape(d) == vec![3]);
         let v = f32s(&d);
         assert!(v.iter().all(|x| x.is_finite()), "{ty} answered {v:?}");
         // The three rows are one signal at three offsets, so answers that DISAGREE mean a mix.
@@ -114,7 +129,7 @@ fn the_complexity_bundle_reduces_the_time_axis_and_leaves_the_channels_alone() {
 fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     // An 8 Hz sine over a one-second window has known answers: 15 or 16 zero crossings, a Hjorth
     // complexity of exactly 1, and every entropy solidly inside its range rather than at an edge.
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
@@ -126,34 +141,30 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     let window = g.probe(buf, "out");
     g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![256]));
 
-    let (g, py) = (&g, &py.py);
-    let nodes: Vec<_> = std::thread::scope(|s| {
-        [
-            ("permutation_entropy.py", "entropy", 0.3..0.9),
-            ("sample_entropy.py", "entropy", 0.05..0.8),
-            ("svd_entropy.py", "entropy", 0.1..0.7),
-            ("spectral_entropy.py", "entropy", 0.0..0.5),
-            ("lempel_ziv.py", "complexity", 0.0..0.5),
-            ("hjorth.py", "complexity", 0.9..1.1),
-            ("fractal_dimension.py", "dimension", 1.0..1.1),
-            ("zero_crossings.py", "count", 13.0..17.5),
-        ]
-        .map(|(file, slot, range)| {
-            s.spawn(move || {
-                let ty = install_bundled(g, py, "complexity", file);
-                let node = g.add(&ty);
-                let probe = g.probe(node, slot);
-                g.link(buf, "out", node, "data");
-                (ty, node, probe, range)
-            })
-        })
+    let files = [
+        ("permutation_entropy.py", "entropy", 0.3..0.9),
+        ("sample_entropy.py", "entropy", 0.05..0.8),
+        ("svd_entropy.py", "entropy", 0.1..0.7),
+        ("spectral_entropy.py", "entropy", 0.0..0.5),
+        ("lempel_ziv.py", "complexity", 0.0..0.5),
+        ("hjorth.py", "complexity", 0.9..1.1),
+        ("fractal_dimension.py", "dimension", 1.0..1.1),
+        ("zero_crossings.py", "count", 13.0..17.5),
+    ];
+    let types = install_bundled_all(&g, "complexity", &files.clone().map(|(file, _, _)| file));
+    let nodes: Vec<_> = types
         .into_iter()
-        .map(|h| h.join().expect("a probe thread panicked"))
-        .collect()
-    });
+        .zip(files)
+        .map(|(ty, (_, slot, range))| {
+            let node = g.add(&ty);
+            let probe = g.probe(node, slot);
+            g.link(buf, "out", node, "data");
+            (ty, node, probe, range)
+        })
+        .collect();
 
     for (ty, node, probe, range) in nodes {
-        let d = first_frame(g, &ty, node, &probe, |d| shape(d) == vec![1]);
+        let d = first_frame(&g, &ty, node, &probe, |d| shape(d) == vec![1]);
         let v = f32s(&d)[0];
         assert!(range.contains(&v), "{ty} of an 8 Hz sine is {v}, outside {range:?}");
     }
@@ -240,7 +251,7 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     let recording = write_recording(&py.py, &dir);
 
     // The playback: nothing until a file is named, then the recording's own channels and rate.
-    let play_ty = install_bundled(&g, &py.py, "eeg", "eeg_playback.py");
+    let play_ty = install_bundled(&g, "eeg", "eeg_playback.py");
     let play = g.add(&play_ty);
     let played = g.probe(play, "out");
     g.ready(play);
@@ -256,10 +267,10 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     g.set_param(buf, "buffer", "size", 256);
     let window = g.probe(buf, "out");
     let psd = g.add("Psd");
-    let bands_ty = install_bundled(&g, &py.py, "eeg", "eeg_power_bands.py");
+    let bands_ty = install_bundled(&g, "eeg", "eeg_power_bands.py");
     let bands = g.add(&bands_ty);
     let power = g.probe(bands, "power");
-    let fooof_ty = install_bundled(&g, &py.py, "eeg", "fooof.py");
+    let fooof_ty = install_bundled(&g, "eeg", "fooof.py");
     let fooof = g.add(&fooof_ty);
     let peaks = g.probe(fooof, "peaks");
     let aperiodic = g.probe(fooof, "aperiodic");
@@ -314,7 +325,7 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     g.until("the playback to resume", |_| (played.count() > n).then_some(()));
 
     // A live stream: the node is present and silent until the stream exists, then it is wired.
-    let lsl_ty = install_bundled(&g, &py.py, "eeg", "lsl_in.py");
+    let lsl_ty = install_bundled(&g, "eeg", "lsl_in.py");
     let lsl = g.add(&lsl_ty);
     let received = g.probe(lsl, "out");
     g.set_param(lsl, "lsl", "name", "goofi-test");

@@ -3,27 +3,15 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use goofi_bridge::{serve_app, spawn_workers, AppState, ScannedType, Tier, HEADLESS_BUILD, SPA};
-use goofi_graph::Graph;
-use goofi_signal::Registration;
-
-/// The shipped node directory, scanned whenever it exists.
-const DEFAULT_NODES_DIR: &str = "nodes";
-
-/// The directories to scan, in precedence order: the shipped tree, then each `--extra-nodes`.
-fn node_dirs(extra: &[String], default_exists: bool) -> Vec<PathBuf> {
-    (default_exists.then(|| PathBuf::from(DEFAULT_NODES_DIR)).into_iter())
-        .chain(extra.iter().map(PathBuf::from))
-        .collect()
-}
+use goofi_bridge::{serve_app, spawn_workers, AppState, HEADLESS_BUILD, SPA};
+use goofi_node::{Isolation, Scanned};
 
 #[derive(Debug)]
 struct Cli {
     port: u16,
     bind: String,
-    /// Scanned in addition to the shipped tree; a later entry wins a shared type name.
+    /// Node source roots scanned before the patch's own; a later entry wins a shared type name.
     extra_nodes: Vec<String>,
     list_nodes: bool,
     /// Serve the API alone: the SPA's routes are never mounted. Also set by `GOOFI_HEADLESS` in
@@ -118,7 +106,8 @@ async fn serve_main(rest: Vec<String>) {
         println!(
             "{USAGE}\n\
              \n  \
-             Scans `{DEFAULT_NODES_DIR}/` when it exists, plus every --extra-nodes directory. \
+             Scans every --extra-nodes ROOT — a folder holding `nodes_signal/` — and then the \
+             open patch's own workspace, which wins a shared type name. \
              Each node is routed in-process if free-threading-safe, else to a subprocess on \
              `{}`, which `cargo run -p goofi-init` provisions.\n  \
              GOOFI_HEADLESS=1 in the environment is --headless; setting it for the BUILD leaves \
@@ -402,12 +391,14 @@ async fn run(
     if !list_nodes {
         register_evaluator(&state);
     }
-    // Installed before anything scans, so the boot scan and every later rescan share one seam.
-    let python = subproc_python.clone();
-    state.scan_nodes = Arc::new(move |g, dir| register_routed(g, dir, &python));
-    state.system_nodes = node_dirs(&extra_nodes, std::path::Path::new(DEFAULT_NODES_DIR).is_dir());
-    ensure_packages(&state.system_nodes, &subproc_python);
-    if !state.system_nodes.is_empty() {
+    state.roots = extra_nodes.iter().map(PathBuf::from).collect();
+    ensure_packages(&state.roots, &subproc_python);
+    // Handed to the engine before anything scans, so the boot scan and every rescan share it.
+    goofi_bridge::signal_engine(&mut state.graph.lock().unwrap()).set_python(goofi_signal::Python {
+        subproc: subproc_python.clone(),
+        free_threaded: free_threaded_python(),
+    });
+    if !state.roots.is_empty() {
         boot_scan(&state);
     }
 
@@ -630,147 +621,23 @@ fn register_evaluator(_state: &AppState) {
     println!("  param expressions DISABLED — rebuild with `--features python` to enable the evaluator");
 }
 
-/// One boot registration, reported — the boot registry starts empty, so a `Replaced` here can
-/// only be two files claiming one name. Returns whether the type is now registered.
-fn note_registration(name: &str, r: Registration) -> bool {
-    if r == Registration::Replaced {
+/// One boot registration, reported — the boot registry starts empty, so a replacement here can
+/// only be two files claiming one name.
+fn note_replaced(name: &str, replaced: bool) {
+    if replaced {
         eprintln!("warning: two node files claim the type name `{name}`; the later one wins");
     }
-    r != Registration::Refused
 }
 
+/// The free-threaded interpreter the in-process tier runs on, when this binary links one.
 #[cfg(feature = "python")]
-fn sorted_dir(dir: &Path) -> Vec<std::path::PathBuf> {
-    match std::fs::read_dir(dir) {
-        Ok(rd) => {
-            let mut v: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
-            v.sort();
-            v
-        }
-        Err(e) => {
-            eprintln!("failed to read {}: {e}", dir.display());
-            Vec::new()
-        }
-    }
-}
-
-/// A node file's size + mtime — the stamp a rescan diffs.
-#[cfg(feature = "python")]
-fn stamp(path: &Path) -> Option<goofi_bridge::Stamp> {
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.len(), m.modified().ok()?))
-}
-
-/// What one file's probes decided, before anything is registered.
-#[cfg(feature = "python")]
-#[derive(Clone)]
-enum Probed {
-    InProcess(goofi_python::Discovered),
-    Subprocess(goofi_python::Discovered),
-    Unavailable { type_name: String, reason: String },
-    Skip,
-}
-
-/// What the last probe of each file decided, and the stamp it decided it at.
-#[cfg(feature = "python")]
-static PROBED: std::sync::Mutex<
-    Option<std::collections::HashMap<std::path::PathBuf, (goofi_bridge::Stamp, Probed)>>,
-> = std::sync::Mutex::new(None);
-
-/// Probe one file on both tiers, unless a probe at this exact stamp already answered.
-#[cfg(feature = "python")]
-fn probe_one(path: &Path, ft: Option<&str>, subproc_python: &str) -> Probed {
-    let stamp = stamp(path);
-    if let Some(s) = stamp {
-        let cache = PROBED.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((seen, probed)) = cache.as_ref().and_then(|c| c.get(path)) {
-            if *seen == s {
-                return probed.clone();
-            }
-        }
-    }
-    let probed = probe_uncached(path, ft, subproc_python);
-    if let Some(s) = stamp {
-        let mut cache = PROBED.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get_or_insert_with(Default::default).insert(path.to_path_buf(), (s, probed.clone()));
-    }
-    probed
-}
-
-#[cfg(feature = "python")]
-fn probe_uncached(path: &Path, ft: Option<&str>, subproc_python: &str) -> Probed {
-    // `gil_safe`, reported by the free-threaded probe, IS the routing gate.
-    let ft_probe =
-        ft.map_or(goofi_python::Discovery::Skip, |ftp| goofi_python::inproc::probe(path, ftp));
-    if let goofi_python::Discovery::Found(d) = ft_probe {
-        if d.gil_safe {
-            return Probed::InProcess(d);
-        }
-        // A re-enabled GIL falls through to the subprocess tier below, as a failed probe does.
-    }
-    match goofi_python::subproc::probe(path, subproc_python) {
-        goofi_python::Discovery::Found(d) => Probed::Subprocess(d),
-        goofi_python::Discovery::Unavailable { type_name, reason } => {
-            Probed::Unavailable { type_name, reason }
-        }
-        goofi_python::Discovery::Skip => Probed::Skip,
-    }
-}
-
-/// The GIL-gate router: register a file in-process when its imports keep the GIL disabled, else
-/// quarantine it to a subprocess. One interpreter per probe, because re-enabling the GIL is one-way.
-#[cfg(feature = "python")]
-fn register_routed(g: &mut Graph, dir: &Path, subproc_python: &str) -> Vec<ScannedType> {
-    let ft = goofi_python::inproc::interpreter_path();
-    let paths = sorted_dir(dir);
-    let width = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
-    let mut probes = Vec::with_capacity(paths.len());
-    for chunk in paths.chunks(width) {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|p| s.spawn(|| probe_one(p, ft.as_deref(), subproc_python)))
-                .collect();
-            for h in handles {
-                probes.push(h.join().unwrap_or(Probed::Skip));
-            }
-        });
-    }
-
-    let mut found = Vec::new();
-    for (path, probed) in paths.iter().zip(probes) {
-        let (type_name, tier, registration) = match probed {
-            Probed::InProcess(d) => {
-                // Registered ROUTED: the type's tier cell decides the tier at every build, so
-                // the runtime GIL tripwire demoting it is all a re-route takes.
-                let t = goofi_python::routed_node_type(d, subproc_python);
-                (t.manifest.type_name.to_string(), Tier::InProcess, goofi_bridge::register_dyn_type(g, t.manifest, t.factory, t.isolation))
-            }
-            Probed::Subprocess(d) => {
-                let t = goofi_python::subproc::node_type_from(subproc_python, d);
-                (t.manifest.type_name.to_string(), Tier::Subprocess, goofi_bridge::register_dyn_type(g, t.manifest, t.factory, t.isolation))
-            }
-            // Registered WITH the reason, so the palette explains itself instead of omitting it —
-            // and a stale runtime type is displaced first: the latest scan is the answer.
-            Probed::Unavailable { type_name, reason } => {
-                goofi_bridge::remove_dyn_type(g, &type_name);
-                let registration = if g.register_unavailable(type_name.clone(), reason.clone()) {
-                    Registration::Added
-                } else {
-                    Registration::Refused // a built-in owns the name
-                };
-                (type_name, Tier::Unavailable(reason), registration)
-            }
-            Probed::Skip => continue,
-        };
-        found.push(ScannedType { type_name, tier, stamp: stamp(path), registration });
-    }
-    found
+fn free_threaded_python() -> Option<String> {
+    goofi_python::inproc::interpreter_path()
 }
 
 #[cfg(not(feature = "python"))]
-fn register_routed(_g: &mut Graph, _dir: &Path, _subproc_python: &str) -> Vec<ScannedType> {
-    Vec::new()
+fn free_threaded_python() -> Option<String> {
+    None
 }
 
 #[cfg(feature = "python")]
@@ -784,17 +651,19 @@ fn boot_scan(state: &AppState) {
     let (found, dirs) = {
         let mut g = state.graph.lock().unwrap();
         let patch = state.mount();
-        (goofi_bridge::rescan(state, &mut g, &patch).1, state.system_nodes.clone())
+        (goofi_bridge::rescan(state, &mut g, &patch).1, state.roots.clone())
     };
     let (mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32);
     for t in found {
-        if !note_registration(&t.type_name, t.registration) {
-            continue;
-        }
-        match &t.tier {
-            Tier::InProcess => n_in += 1,
-            Tier::Subprocess => n_sub += 1,
-            Tier::Unavailable(reason) => {
+        match t.outcome {
+            Scanned::Registered { isolation, replaced } => {
+                note_replaced(&t.type_name, replaced);
+                match isolation {
+                    Isolation::InProcess => n_in += 1,
+                    Isolation::Subprocess | Isolation::Native => n_sub += 1,
+                }
+            }
+            Scanned::Unavailable(reason) => {
                 eprintln!("  node `{}` unavailable: {reason}", t.type_name);
                 n_bad += 1;
             }
@@ -810,6 +679,8 @@ fn boot_scan(state: &AppState) {
 // The suite lives in `goofi-tests`; a binary has no lib target for it to reach into.
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Cli, String> {
@@ -844,18 +715,6 @@ mod tests {
             .expect("a repeated flag is well-formed");
         assert_eq!(cli.extra_nodes, ["theirs", "mine"], "--extra-nodes adds");
         assert_eq!(cli.bind, "b", "…while --bind still replaces");
-    }
-
-    #[test]
-    fn extra_nodes_are_scanned_after_the_shipped_tree_not_instead_of_it() {
-        let mine = || vec![String::from("mine")];
-        assert_eq!(
-            node_dirs(&mine(), true),
-            [PathBuf::from("nodes"), PathBuf::from("mine")],
-            "the shipped tree first, the user's own after it"
-        );
-        assert_eq!(node_dirs(&[], true), [PathBuf::from("nodes")], "…and alone when none is named");
-        assert_eq!(node_dirs(&mine(), false), [PathBuf::from("mine")], "no shipped tree to lead");
     }
 
     #[test]

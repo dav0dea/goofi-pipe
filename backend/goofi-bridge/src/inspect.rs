@@ -272,7 +272,7 @@ pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> 
     info["tier"] = json!(tier.map(goofi_node::Isolation::wire));
     info["provenance"] = json!(match &found {
         Some((_, p)) => *p,
-        None => "compiled in — no source file; copy a python node into the patch workspace to modify one",
+        None => "no source file under any node root",
     });
     info["path"] =
         found.as_ref().map(|(p, _)| json!(goofi_core::path::to_slash(p))).unwrap_or(Value::Null);

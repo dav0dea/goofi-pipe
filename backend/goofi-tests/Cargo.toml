@@ -10,7 +10,7 @@ publish = false
 [features]
 # Forwards to goofi-python's, which LINKS libpython. Off by default, so `cargo test --workspace`
 # needs no interpreter; `cargo test -p goofi-tests --features embed` runs the in-process tier too.
-embed = ["goofi-python/embed", "dep:pyo3"]
+embed = ["goofi-python/embed", "goofi-signal/embed", "dep:pyo3"]
 
 [dependencies]
 goofi-bridge = { path = "../goofi-bridge" }

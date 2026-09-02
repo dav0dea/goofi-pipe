@@ -7,11 +7,11 @@ use std::path::Path;
 
 use goofi_tests::{hex, install, j, require_python, shape, Goofi};
 
-fn install_bundled(g: &Goofi, py: &str, bundle: &str, file: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles").join(bundle).join(file);
+fn install_bundled(g: &Goofi, bundle: &str, file: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles").join(bundle).join("nodes_signal").join(file);
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read the bundled node {}: {e}", path.display()));
-    install(g, py, file, &source)
+    install(g, file, &source)
 }
 
 /// A tiny FIF written by mne itself, `channels` wide, into the samples folder.
@@ -50,7 +50,7 @@ fn the_playback_file_follows_goofi_home_and_the_sample_dropdown() {
     write_recording(&py.py, &samples.join("two_raw.fif"), 2);
     write_recording(&py.py, &samples.join("three_raw.fif"), 3);
 
-    let ty = install_bundled(&g, &py.py, "eeg", "eeg_playback.py");
+    let ty = install_bundled(&g, "eeg", "eeg_playback.py");
     // The dropdown is aimed at a LOCAL file at birth: the default sample would download.
     let born = g.call("node add", j!({ "type": ty,
         "param": [{ "name": "playback/sample", "value": "two_raw.fif" }] }));

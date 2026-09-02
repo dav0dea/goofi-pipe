@@ -26,9 +26,9 @@ class Affine(goofi.Node):
 
 #[test]
 fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params() {
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
-    let ty = install(&g, &py.py, "affine.py", AFFINE);
+    let ty = install(&g, "affine.py", AFFINE);
     assert_eq!(ty, "Affine", "the type is named after the file stem");
 
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
@@ -57,9 +57,9 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
 #[test]
 fn a_python_node_that_raises_reports_it_and_the_child_carries_on() {
     // A raise inside `process` is a per-run error: the SAME child answers the next run.
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
-    install(&g, &py.py, "boom.py", r#"
+    install(&g, "boom.py", r#"
 import goofi
 import numpy as np
 class Boom(goofi.Node):
@@ -92,9 +92,9 @@ class Boom(goofi.Node):
 #[test]
 fn a_python_node_writing_to_stdout_does_not_corrupt_the_transport() {
     // The child routes fd 1 to stderr, so a node that prints cannot inject bytes into the frames.
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
-    install(&g, &py.py, "chatty.py", r#"
+    install(&g, "chatty.py", r#"
 import sys
 import goofi
 class Chatty(goofi.Node):
@@ -120,9 +120,9 @@ class Chatty(goofi.Node):
 
 #[test]
 fn a_node_whose_setup_raises_retries_the_whole_initialization_on_the_next_wake() {
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
-    install(&g, &py.py, "late_boot.py", r#"
+    install(&g, "late_boot.py", r#"
 import goofi
 import numpy as np
 class LateBoot(goofi.Node):
@@ -150,7 +150,7 @@ class LateBoot(goofi.Node):
 fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
     let py = require_python();
     let g = Goofi::new();
-    let dir = g.state.mount().join("nodes");
+    let dir = g.state.mount().join("nodes_signal");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("needs_scipy.py");
     std::fs::write(&path, "import goofi\nimport definitely_not_installed\n").unwrap();
@@ -175,9 +175,9 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
 #[test]
 fn a_nodes_own_python_thread_runs_while_the_child_is_idle() {
     // A GIL held across the child's idle serve loop would starve a `setup()` thread for ever.
-    let py = require_python();
+    let _py = require_python();
     let g = Goofi::new();
-    install(&g, &py.py, "ticker.py", r#"
+    install(&g, "ticker.py", r#"
 import threading, time
 import numpy as np
 import goofi

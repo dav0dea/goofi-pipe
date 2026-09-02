@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The in-process Python tier, which LINKS libpython; the scan routes a file there only with it.
+embed = ["goofi-python/embed"]
+
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
+# The scan's Python door: both tiers' probes and node types.
+goofi-python = { path = "../goofi-python" }
 goofi-node = { path = "../../goofi-node" }
 goofi-signal-sdk = { path = "../goofi-signal-sdk" }
 goofi-transport = { path = "../../goofi-transport" }

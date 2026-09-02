@@ -245,7 +245,7 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     assert_eq!(v["language"], "rust");
     assert_eq!(v["tier"], "native");
     assert_eq!(v["source"], Value::Null);
-    assert!(v["provenance"].as_str().unwrap().contains("copy a python node"), "{v}");
+    assert!(v["provenance"].as_str().unwrap().contains("no source file"), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
     assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("no node type `Nope`"));
@@ -271,7 +271,7 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     let g = Goofi::new();
     g.register_dyn(&BOOM, Box::new(|_| unreachable!()), &BOOM_TIER);
     // The patch's OWN node directory, which is where the arm looks first.
-    let nodes = g.state.mount().join("nodes");
+    let nodes = g.state.mount().join("nodes_signal");
     std::fs::create_dir_all(&nodes).unwrap();
     std::fs::write(nodes.join("boom.py"), "class Boom:\n    pass\n").unwrap();
 
@@ -285,5 +285,5 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
     let v = g.call("library get", j!({ "type": "Boom" }));
     assert_eq!(v["source"], Value::Null);
-    assert!(v["provenance"].as_str().unwrap().contains("compiled in"), "{v}");
+    assert!(v["provenance"].as_str().unwrap().contains("no source file"), "{v}");
 }

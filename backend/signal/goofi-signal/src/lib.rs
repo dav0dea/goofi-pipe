@@ -8,8 +8,10 @@ use goofi_signal_sdk::{Node, NodeCtx, NodeError, NodeResult};
 
 mod engine;
 pub mod runtime;
+pub mod scan;
 
-pub use engine::{Registration, SignalEngine};
+pub use engine::SignalEngine;
+pub use scan::Python;
 
 impl SignalEngine {
     /// The concrete engine behind a graph's `"signal"` registration — the composition root's

@@ -17,17 +17,6 @@ use crate::runtime::{
 /// it leaves behind is what [`runtime::reclaim_stale_resources`] takes on the next startup.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
-/// Whether a runtime type registration was added, replaced, or refused — so a caller can tell a
-/// rescan's refresh from two node files claiming one name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Registration {
-    /// The name was free; the type entered the registry.
-    Added,
-    /// A runtime type of that name was already registered and has been replaced.
-    Replaced,
-    /// A built-in owns the name; the registry is unchanged.
-    Refused,
-}
 
 /// One node's manager-side thread, and the graph's end of its wires. A node is *known* when
 /// `insert` answers and *addressable* only once it reports Ready.
@@ -57,7 +46,7 @@ impl Drop for NodeHost {
     }
 }
 
-/// A [`crate::discover::NodeFactory`] shared with the node's own thread, which is where the build happens.
+/// A [`goofi_signal_sdk::NodeFactory`] shared with the node's own thread, which is where the build happens.
 type SharedFactory = Arc<dyn Fn(&ParamGroups) -> Box<dyn goofi_signal_sdk::Node> + Send + Sync>;
 
 /// A runtime-registered type: the build half a [`crate::NodeClass`] carries for a built-in.
@@ -76,6 +65,10 @@ pub struct SignalEngine {
     wire: WirePlanner,
     hosts: HashMap<Uid, NodeHost>,
     dyn_types: HashMap<&'static str, DynType>,
+    /// The interpreters a `.py` file is probed and run with; none until the host provides them.
+    pub(crate) python: Option<crate::scan::Python>,
+    /// What the last probe of each file decided, at the stamp it decided it.
+    pub(crate) probed: HashMap<std::path::PathBuf, (goofi_node::Stamp, crate::scan::Probed)>,
     /// Readies the drain collected; the settle that follows re-plans each from an empty base.
     pending_ready: Vec<Uid>,
     /// Sequences whose phase an ack completed; the settle that follows advances each.
@@ -95,29 +88,28 @@ impl SignalEngine {
             wire: WirePlanner::default(),
             hosts: HashMap::new(),
             dyn_types: HashMap::new(),
+            python: None,
+            probed: HashMap::new(),
             pending_ready: Vec::new(),
             pending_advance: Vec::new(),
         }
     }
 
-    /// Register a type discovered at runtime; `manifest` leaks, once per type. A built-in's name
-    /// is REFUSED and another runtime type's is REPLACED, because a rescan re-registers what it
-    /// finds. Answers whether it was added, replaced, or refused.
+    /// Register a type discovered at runtime; `manifest` leaks, once per type. A name another
+    /// runtime type held is REPLACED, because a rescan re-registers what it finds — answered as
+    /// `true`. A built-in's name is left alone with a warning.
     pub fn register_dyn_type(
         &mut self,
         manifest: &'static NodeManifest,
         factory: goofi_signal_sdk::NodeFactory,
         isolation: &'static IsolationCell,
-    ) -> Registration {
+    ) -> bool {
         let name = manifest.type_name;
         if crate::find(name).is_some() {
             eprintln!("warning: runtime node type `{name}` collides with a built-in; ignoring it");
-            return Registration::Refused;
+            return false;
         }
-        match self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }) {
-            Some(_) => Registration::Replaced,
-            None => Registration::Added,
-        }
+        self.dyn_types.insert(name, DynType { manifest, isolation, factory: Arc::from(factory) }).is_some()
     }
 
     pub fn remove_dyn_type(&mut self, type_name: &str) -> bool {
@@ -368,6 +360,14 @@ impl Engine for SignalEngine {
 
     fn dirty(&self) -> bool {
         !self.pending_ready.is_empty() || !self.pending_advance.is_empty()
+    }
+
+    fn scan(&mut self, dir: &std::path::Path) -> Vec<goofi_node::ScannedType> {
+        crate::scan::scan(self, dir)
+    }
+
+    fn remove_type(&mut self, type_name: &str) -> bool {
+        self.remove_dyn_type(type_name)
     }
 
     fn library(&self) -> Vec<LibraryEntry> {

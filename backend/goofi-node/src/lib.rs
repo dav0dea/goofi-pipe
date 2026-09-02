@@ -10,7 +10,7 @@ pub mod seam;
 pub use describe::{leak_manifest, type_name_of};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
-    Request, Touched,
+    Request, Scanned, ScannedType, Stamp, Touched,
 };
 
 /// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.

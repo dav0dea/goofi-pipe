@@ -60,6 +60,12 @@ impl Goofi {
             std::env::set_var("SHELL", "/bin/sh");
         });
         let state = AppState::new(headless);
+        // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
+        // `.py` file as unavailable, which is what a test that needs one then reports.
+        if let Some(subproc) = find_python() {
+            goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
+                .set_python(goofi_signal::Python { subproc, free_threaded: free_threaded_python() });
+        }
         goofi_bridge::spawn_workers(&state);
         Goofi { state, actor: "test".into(), patience: WAIT }
     }
@@ -655,24 +661,8 @@ pub struct Tier {
 pub fn require_python() -> Tier {
     // A panicking test poisons the mutex; recover rather than cascade onto every sibling.
     let _lock = TIER.lock().unwrap_or_else(|e| e.into_inner());
-    let venv = goofi_init::repo_root().join(goofi_init::GIL_VENV);
-    let cands = std::env::var("GOOFI_SUBPROC_TEST_PYTHON")
-        .into_iter()
-        .chain(goofi_init::venv_python(&venv).map(|p| p.to_string_lossy().into_owned()))
-        .chain(["python3".to_string(), "python".to_string()]);
-    for py in cands {
-        let ok = std::process::Command::new(&py)
-            .arg("-c")
-            .arg("import goofi, numpy")
-            .env_remove("PYTHONPATH")
-            .env_remove("PYTHONHOME")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if ok {
-            return Tier { py, _lock };
-        }
+    if let Some(py) = find_python() {
+        return Tier { py, _lock };
     }
     panic!(
         "no python with goofi + numpy found (checked $GOOFI_SUBPROC_TEST_PYTHON, ./{}, python3, \
@@ -682,23 +672,68 @@ pub fn require_python() -> Tier {
     );
 }
 
-/// Write `source` into the patch's own node directory, probe it as the CLI's scan does, and
-/// register what comes back. Answers the type name the palette now offers.
-pub fn install(g: &Goofi, py: &str, file: &str, source: &str) -> String {
-    let dir = g.state.mount().join("nodes");
+/// The python found once per test process — the lookup spawns an interpreter, and every harness
+/// boot asks.
+fn find_python() -> Option<String> {
+    static FOUND: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            let venv = goofi_init::repo_root().join(goofi_init::GIL_VENV);
+            let cands = std::env::var("GOOFI_SUBPROC_TEST_PYTHON")
+                .into_iter()
+                .chain(goofi_init::venv_python(&venv).map(|p| p.to_string_lossy().into_owned()))
+                .chain(["python3".to_string(), "python".to_string()]);
+            cands.into_iter().find(|py| {
+                std::process::Command::new(py)
+                    .arg("-c")
+                    .arg("import goofi, numpy")
+                    .env_remove("PYTHONPATH")
+                    .env_remove("PYTHONHOME")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            })
+        })
+        .clone()
+}
+
+#[cfg(feature = "embed")]
+fn free_threaded_python() -> Option<String> {
+    goofi_python::inproc::interpreter_path()
+}
+
+#[cfg(not(feature = "embed"))]
+fn free_threaded_python() -> Option<String> {
+    None
+}
+
+/// Write `source` into the patch's own `nodes_signal/` and refresh the library through the op —
+/// the door a user's file takes. Answers the type name the palette now offers; a file that scans
+/// as unavailable is a panic naming why.
+pub fn install(g: &Goofi, file: &str, source: &str) -> String {
+    install_all(g, &[(file, source)]).remove(0)
+}
+
+/// [`install`] for several `(file, source)` pairs under ONE refresh — the scan probes them in
+/// parallel itself, one interpreter per file.
+pub fn install_all(g: &Goofi, files: &[(&str, &str)]) -> Vec<String> {
+    let dir = g.state.mount().join("nodes_signal");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(file);
-    std::fs::write(&path, source).unwrap();
-    match goofi_python::subproc::probe(&path, py) {
-        goofi_python::Discovery::Found(d) => {
-            let t = goofi_python::subproc::node_type_from(py, d);
-            let name = t.manifest.type_name.to_string();
-            g.register_dyn(t.manifest, t.factory, t.isolation);
-            name
+    let names: Vec<String> = files
+        .iter()
+        .map(|(file, source)| {
+            let path = dir.join(file);
+            std::fs::write(&path, source).unwrap();
+            goofi_node::type_name_of(&path).unwrap_or_else(|| panic!("{file} is not a node file"))
+        })
+        .collect();
+    g.call("library refresh", j!({}));
+    let graph = g.state.graph.lock().unwrap();
+    for ((file, _), name) in files.iter().zip(&names) {
+        if let Some((_, reason)) = graph.unavailable_types().find(|(n, _)| n == name) {
+            panic!("{file} scanned as unavailable: {reason}");
         }
-        goofi_python::Discovery::Unavailable { reason, .. } => {
-            panic!("{file} probed as unavailable: {reason}")
-        }
-        goofi_python::Discovery::Skip => panic!("{file} was not taken for a node file at all"),
     }
+    names
 }

@@ -684,6 +684,45 @@ impl Graph {
         self.unavailable.remove(type_name).is_some()
     }
 
+    /// Scan `root/nodes_<engine>` for every engine, and keep the greyed overlay in step with what
+    /// each registered: a name holds a registration or a reason, never both.
+    pub fn scan_root(&mut self, root: &std::path::Path) -> Vec<goofi_node::ScannedType> {
+        let mut out = Vec::new();
+        for engine in &mut self.engines {
+            let dir = root.join(format!("nodes_{}", engine.id()));
+            if !dir.is_dir() {
+                continue;
+            }
+            for t in engine.scan(&dir) {
+                match &t.outcome {
+                    goofi_node::Scanned::Registered { .. } => {
+                        self.unavailable.remove(&t.type_name);
+                    }
+                    goofi_node::Scanned::Unavailable(reason) => {
+                        self.unavailable.insert(t.type_name.clone(), reason.clone());
+                    }
+                }
+                out.push(t);
+            }
+        }
+        out
+    }
+
+    /// Forget a scanned type from every registry — the engine that held it and the greyed
+    /// overlay. Whether anything was forgotten.
+    pub fn remove_type(&mut self, type_name: &str) -> bool {
+        let mut had = false;
+        for engine in &mut self.engines {
+            had |= engine.remove_type(type_name);
+        }
+        self.unavailable.remove(type_name).is_some() || had
+    }
+
+    /// The engine whose library resolves `type_name`.
+    pub fn type_engine(&self, type_name: &str) -> Option<&'static str> {
+        self.library_entry(type_name).map(|(id, _)| id)
+    }
+
     /// Whether a type name resolves to either the compile-time catalog or a
     /// runtime-registered type.
     fn known_type(&self, type_name: &str) -> bool {
