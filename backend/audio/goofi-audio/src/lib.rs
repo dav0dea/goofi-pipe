@@ -227,6 +227,7 @@ pub struct AudioEngine {
     slab_len: usize,
     next_serial: u64,
     live: HashMap<Uid, Instance>,
+    workspace: Option<PathBuf>,
     /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
     disabled: HashMap<Uid, String>,
     faulted: HashMap<Uid, String>,
@@ -282,6 +283,7 @@ impl AudioEngine {
             slab_len: SLAB,
             next_serial: 0,
             live: HashMap::new(),
+            workspace: None,
             disabled: HashMap::new(),
             faulted: HashMap::new(),
             pending: Vec::new(),
@@ -317,12 +319,32 @@ impl AudioEngine {
         }
     }
 
-    /// What the audio thread handed back is dropped here, where dropping may take time — and a
-    /// node it put out of the plan is recorded, for the settle this asks for to name and re-plan.
+    /// Where `uid`'s opaque state is kept between two births: the workspace rides the archive,
+    /// the dirty fingerprint, the load swap and undo of delete, so the file does too.
+    fn state_path(&self, uid: Uid) -> Option<PathBuf> {
+        Some(self.workspace.as_ref()?.join(".goofi").join("state").join(uid.to_hex()).join("node"))
+    }
+
+    /// Keep what `save` answered, or nothing: a node with no state leaves no file behind.
+    fn write_state(&self, uid: Uid, bytes: Vec<u8>) {
+        let Some(path) = self.state_path(uid) else { return };
+        let written = if bytes.is_empty() {
+            std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+        } else {
+            std::fs::create_dir_all(path.parent().expect("a state file has a directory")).and_then(|()| std::fs::write(&path, bytes))
+        };
+        if let Err(e) = written {
+            eprintln!("audio: could not keep {}: {e}", path.display());
+        }
+    }
+
+    /// What the audio thread handed back is dropped here, where dropping may take time — a
+    /// node's state kept first — and a node it put out of the plan is recorded, for the settle
+    /// this asks for to name and re-plan.
     fn discard_retired(&mut self) {
         while let Ok(retired) = self.outbox.pop() {
             match retired {
-                Retired::Slot(slot) => drop(slot),
+                Retired::Slot(slot) => self.write_state(slot.uid, slot.node.save()),
                 Retired::Plan(plan, arena) => drop((plan, arena)),
                 Retired::Slab(slab) => drop(slab),
                 Retired::Faulted { uid, serial, fault } => {
@@ -508,6 +530,22 @@ impl Engine for AudioEngine {
         Some(goofi_build::AUDIO.name)
     }
 
+    fn set_workspace(&mut self, dir: &Path) {
+        self.workspace = Some(dir.to_path_buf());
+    }
+
+    /// Under the runtime lock — the one authoring event that takes it — every live node's state.
+    fn persist(&mut self) {
+        let states: Vec<(Uid, Vec<u8>)> = {
+            let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+            rt.apply_pending();
+            rt.slab.iter().flatten().map(|s| (s.uid, s.node.save())).collect()
+        };
+        for (uid, bytes) in states {
+            self.write_state(uid, bytes);
+        }
+    }
+
     fn normalize_params(&self, type_name: &str, supplied: Option<ParamGroups>) -> Result<ParamGroups, String> {
         let manifest = self
             .classes
@@ -533,6 +571,9 @@ impl Engine for AudioEngine {
         let (birth, ports) = rings_for(type_name, chans.clone());
         let mut node = make(birth);
         node.prepare(self.shared.rate());
+        if let Some(bytes) = self.state_path(uid).and_then(|p| std::fs::read(p).ok()) {
+            node.load(&bytes);
+        }
         let atomics: Arc<[AtomicU64]> =
             manifest.params.iter().map(|d| AtomicU64::new(plan::scalar_of(params, d).to_bits())).collect();
         let (inbox_in, inbox_out): (Vec<_>, Vec<_>) = manifest
@@ -583,6 +624,10 @@ impl Engine for AudioEngine {
         if let Some(inst) = self.live.remove(&uid) {
             inst.control.stop();
             self.send(Msg::Remove(inst.idx));
+            // The box comes back NOW, its state kept, so a restart's birth finds it: one callback
+            // may find the runtime taken — a click at an authoring event, accepted.
+            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).apply_pending();
+            self.discard_retired();
             self.free.push(inst.idx);
             self.disabled.remove(&uid);
             self.faulted.remove(&uid);

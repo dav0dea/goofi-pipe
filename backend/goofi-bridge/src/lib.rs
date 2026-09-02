@@ -139,18 +139,19 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
-        // connects to a fresh backend has the current state at once.
-        let graph_val = fresh_graph(clock);
-        let mut doc = crate::doc::GraphDoc::new();
-        doc.reconcile_root(&projection::of(&graph_val));
-        let graph = Arc::new(Mutex::new(graph_val));
-        let reducers = reducer::SlotReducers::new(graph.clone());
         // Seeded BEFORE the baseline is taken, or the patch is dirty from boot, having written
         // the seed itself.
         let mount = new_mount();
         term::seed_orientation(&mount);
         let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
+        // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
+        // connects to a fresh backend has the current state at once.
+        let mut graph_val = fresh_graph(clock);
+        graph_val.set_workspace(&mount);
+        let mut doc = crate::doc::GraphDoc::new();
+        doc.reconcile_root(&projection::of(&graph_val));
+        let graph = Arc::new(Mutex::new(graph_val));
+        let reducers = reducer::SlotReducers::new(graph.clone());
         AppState {
             graph,
             events,

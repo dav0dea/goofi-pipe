@@ -271,7 +271,13 @@ node's box comes back from the runtime and only when `save` returned bytes, read
 insert. That one choice inherits the archive, the dirty fingerprint, the atomic load swap and undo
 of a delete. A goofi node's blob never carries a param value, so the `.gfi` record is the one
 authority by construction; a VST3 plugin serializes its params INTO its state, so its load is blob
-first, then the param record on top.
+first, then the param record on top. Landed 2026-09-02 (Step 8): the engine does the I/O and the
+seam hands it the workspace — the fresh mount before a load's births, because a birth reads its
+blob; the box is written at a remove, which forces its round trip through the audio thread so a
+restart's birth finds it, and at `session save`, which takes the runtime lock once so the pack
+carries the state as it is rather than as it was at the last restart — the one authoring event
+that takes the lock, a callback finding it taken being the accepted click. An empty answer removes
+the file, and `load` runs after `prepare`, so a prepare that allocates cannot wipe it.
 
 **One node editor panel for every engine.** Engines are told apart by slot colour, and a frontend
 branch on which engine a node belongs to is a defect.

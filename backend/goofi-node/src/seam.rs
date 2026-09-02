@@ -192,6 +192,10 @@ pub trait Engine: Send {
     fn rust_sdk(&self) -> Option<&'static str> {
         None
     }
+    /// The open patch's workspace: where a node's opaque state is kept between two births.
+    fn set_workspace(&mut self, _dir: &Path) {}
+    /// Write every live node's opaque state where the next birth at its uid will find it.
+    fn persist(&mut self) {}
     /// The universal params this engine adds to every one of its nodes — declarations, so the
     /// palette's tooltips and the default-expression seeding read one door. Empty by default.
     fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {

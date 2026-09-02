@@ -719,6 +719,20 @@ impl Graph {
         self.unavailable.remove(type_name).is_some() || had
     }
 
+    /// The open patch's workspace, told to every engine: what a node's opaque state is kept in.
+    pub fn set_workspace(&mut self, dir: &std::path::Path) {
+        for engine in &mut self.engines {
+            engine.set_workspace(dir);
+        }
+    }
+
+    /// Every live node's opaque state written into the workspace, so a pack carries it as it is.
+    pub fn persist(&mut self) {
+        for engine in &mut self.engines {
+            engine.persist();
+        }
+    }
+
     /// Every engine that builds `.rs` node files, with the SDK crate it builds them against.
     pub fn rust_sdks(&self) -> Vec<(&'static str, &'static str)> {
         self.engines.iter().filter_map(|e| e.rust_sdk().map(|sdk| (e.id(), sdk))).collect()

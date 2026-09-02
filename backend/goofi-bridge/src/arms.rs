@@ -1081,7 +1081,7 @@ pub(crate) fn session_save(
     _actor: &str,
     events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    let g = state.graph.lock().unwrap();
+    let mut g = state.graph.lock().unwrap();
     // Expand `~` exactly as the browser does — the two must agree on what a path means. No path
     // means the patch's HOME, and a patch that never had one is refused rather than guessed at.
     let path = match payload.get("path").and_then(|v| v.as_str()) {
@@ -1090,8 +1090,10 @@ pub(crate) fn session_save(
             "session save: this patch has no home yet — give a path")?,
     };
     let mount = state.mount();
-    // Sampled BEFORE the pack: baselining after would call a file written during the zip packed
-    // either way, which is the direction that LOSES an edit.
+    // Every node's state is on disk before the fingerprint, so what the pack carries is what the
+    // baseline saw. Sampled BEFORE the pack: baselining after would call a file written during
+    // the zip packed either way, which is the direction that LOSES an edit.
+    g.persist();
     let packed = goofi_graph::archive::fingerprint(&mount);
     save_archive(std::path::Path::new(&path), &g.serialize(), &mount)?;
     // Announced UNCONDITIONALLY, not on the flag's transition: a patch dirtied solely by a file
@@ -1124,13 +1126,16 @@ fn load_patch(
     let result = {
         let mut g = state.graph.lock().unwrap();
         // ORDER is load-bearing: the types the patch SHIPS are registered before the manifest
-        // resolves, or the unknown-type gate fires on the nodes the archive brought.
+        // resolves, or the unknown-type gate fires on the nodes the archive brought — and the
+        // workspace is the fresh one before a node is born, because its birth reads its state.
         rescan(state, &mut g, &fresh);
+        g.set_workspace(&fresh);
         // Parse BEFORE anything is announced or committed.
         if let Err(e) = g.load_doc(&content) {
             // Refused, so the registry the scan above swapped is re-derived from the mount that
             // is still live.
             rescan(state, &mut g, &state.mount());
+            g.set_workspace(&state.mount());
             remove_mount(&fresh);
             return Err(e);
         }
