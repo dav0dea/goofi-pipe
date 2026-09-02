@@ -66,25 +66,34 @@ const popup = (): Extension =>
 		}
 	});
 
-/** The commit-on-change discipline both editors share: one committed value, compared before each send. */
-function committer(doc: string, onCommit: (value: string) => void): (view: EditorView) => void {
+/** The commit-on-change discipline both editors share: one committed value, compared before each
+ *  send, and adopted when the outside world moves it. */
+interface Committer {
+	send(view: EditorView): void;
+	adopt(next: string): void;
+}
+
+function committer(doc: string, onCommit: (value: string) => void): Committer {
 	let committed = doc;
-	const commit = (view: EditorView): void => {
-		const next = view.state.doc.toString();
-		if (next === committed) return;
-		committed = next;
-		onCommit(next);
+	return {
+		send: (view) => {
+			const next = view.state.doc.toString();
+			if (next === committed) return;
+			committed = next;
+			onCommit(next);
+		},
+		adopt: (next) => {
+			committed = next;
+		}
 	};
-	(commit as { adopt?: (next: string) => void }).adopt = (next) => (committed = next);
-	return commit;
 }
 
 function handleFor(
 	view: EditorView,
 	commit: (view: EditorView) => void,
+	adopt: (next: string) => void,
 	setError: (error: string | null) => void
 ): ExprEditorHandle {
-	const adopt = (commit as { adopt?: (next: string) => void }).adopt ?? (() => {});
 	return {
 		commit: () => commit(view),
 		setValue: (next) => {
@@ -108,7 +117,7 @@ function handleFor(
 }
 
 export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): ExprEditorHandle {
-	const commit = committer(opts.doc, opts.onCommit);
+	const { send: commit, adopt } = committer(opts.doc, opts.onCommit);
 	/* Escape must fall THROUGH once there is no popup: it is the app's, and it dismisses the auto
 	   inspector pane. */
 	const keys: KeyBinding[] = [
@@ -141,19 +150,18 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 		view.dispatch(setDiagnostics(view.state, expressionDiagnostics(error, view.state.doc)));
 	};
 	showError(opts.error);
-	return handleFor(view, commit, showError);
+	return handleFor(view, commit, adopt, showError);
 }
 
 /** A field whose only legal contents are the names it is handed: no language, no highlighting, the
  *  list opens on focus, what is typed filters it, and a pick commits at once. Typed text commits
  *  only when it IS one of the names — a half-typed name is never sent. */
 export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditorHandle {
-	const send = committer(opts.doc, opts.onCommit);
+	const { send, adopt } = committer(opts.doc, opts.onCommit);
 	const commit = (view: EditorView): void => {
 		const typed = view.state.doc.toString();
 		if (opts.options().some((o) => o.label === typed)) send(view);
 	};
-	(commit as { adopt?: (next: string) => void }).adopt = (send as { adopt?: (next: string) => void }).adopt;
 	const source: CompletionSource = (ctx) => {
 		const typed = ctx.state.doc.toString().toLowerCase();
 		const options = opts
@@ -196,5 +204,5 @@ export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditor
 	];
 	if (opts.placeholder) extensions.push(placeholder(opts.placeholder));
 	const view = new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
-	return handleFor(view, commit, () => {});
+	return handleFor(view, commit, adopt, () => {});
 }
