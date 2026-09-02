@@ -242,9 +242,25 @@ runtime, health, library and within-engine transport, and registers at one compo
 (`goofi-bridge`'s `fresh_graph`). Propagation is settled-state: ops record what they touched, and
 one settle per batch hands every engine the same port-resolved view. Cross-engine data rides
 `goofi-transport` — derived iceoryx2 names, latest-wins by decree, rendezvous by
-`open_or_create`, never a protocol between engines. A scheduled engine drains its boundary at its
-own tick; only a doorbell-driven consumer is ever rung. Two skeleton scheduled engines in the
-suite pin the whole seam.
+`open_or_create`, never a protocol between engines. A scheduled engine's clock thread drains its
+boundary at its own tick and is never rung; a consumer is rung only where it is doorbell-driven —
+a signal node, or the audio engine's control half. Two skeleton scheduled engines in the suite pin
+the whole seam.
+
+**A param has one source: constant, expression or reference.** The mode names the active one and
+the other two keep their content. A reference is `node.slot`, by name, no Python: the signal plane
+copies the scalar on arrival, and the audio engine makes it a plan edge at audio rate. That is how
+control-rate and audio-rate modulation share one door with no precedence rule, and why no audio
+node carries a CV port — every modulatable quantity is a param. Node and slot names are letters
+and digits, so `node.slot` needs no quoting. `roadmap/param-sources.md` holds the rest.
+
+**Every audio node stands behind one goofi trait, and a plugin format is an adapter.** A shipped
+node links in statically; an authored node is one `.rs` file built by goofi against its embedded
+SDK and loaded as a `cdylib` behind a version symbol; a VST3 plugin implements the same trait. The
+engine is synchronous, in-process, one 64-frame block per callback, no iceoryx2 on the audio path;
+every signal is audio-rate numbers in a standard range, and a gate, a pitch and a voice count are
+conventions, not types. CLAP was adopted and then replaced, and the reasons are recorded so it is
+not re-argued. `roadmap/audio-engine.md` holds the design.
 
 **There is no tick.** Every node owns one thread and schedules itself, waking for a control
 message, a frame on an input, or its own rate cap elapsing. Frames travel node to node over

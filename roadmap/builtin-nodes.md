@@ -9,7 +9,7 @@ user**, not chosen unilaterally.
 Eight nodes, and each one was added to prove a seam rather than to fill a category:
 
 - **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`.
-- **Python** — none in `nodes/`. `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
+- **Python** — none in the shipped tree (`nodes/`, to be `nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
   `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
   because the subprocess tier had to be proved against real packages that hold the GIL; they now
   live in `node-bundles/complexity/` (see `library.md`).

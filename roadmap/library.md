@@ -26,16 +26,17 @@ anyone can install.
 **The unit is a bundle.** A bundle is a directory with a `requirements.txt` for the Python
 packages its nodes import — this exists today: checked against both interpreters at startup and
 installed only on a yes in the terminal — and a manifest beside its files: a name, a version, a
-description, and the goofi version it was built against. It holds `nodes/` and, later, `panels/`.
+description, and the goofi version it was built against. It holds `nodes_signal/` and
+`nodes_audio/` — one folder per engine, `node-sources.md`'s rule — and, later, `panels/`.
 A bundle is the only thing that is installed, published or updated. There is no per-node install.
 
 **Installed bundles live in `$GOOFI_HOME/.goofi/bundles/<name>/`**, one directory each, and the
 scan order becomes: the shipped tree, then each installed bundle, then this patch's own
-`workspace/nodes/`. The precedence `node-sources.md` states is unchanged; this fills the middle
+`workspace/nodes_*/`. The precedence `node-sources.md` states is unchanged; this fills the middle
 slot it left open. A bundle's name is the palette category its nodes appear under.
 
 **The repo's own bundles live in `node-bundles/<name>/`**, and they publish through the same door a
-third party's do — the shipped `nodes/` tree stays the shipped tree. A first-party bundle that
+third party's do — the shipped `nodes_*/` trees stay the shipped trees. A first-party bundle that
 needs a private path is the defect that proves the door is not finished. Until the install half
 exists, `--extra-nodes node-bundles/<name>` is how one is loaded.
 
@@ -76,7 +77,7 @@ knows that.
 **A patch names the bundles it uses.** The manifest records `name@version` for every bundle a
 node on the canvas came from. A load on a machine without one offers the install and otherwise
 leaves the node UNAVAILABLE with the bundle named — never a silent absence. A patch's own
-`workspace/nodes/` is untouched by this: it still travels inside the `.gfi`.
+`workspace/nodes_*/` is untouched by this: it still travels inside the `.gfi`.
 
 **Trust is provenance, not a sandbox.** A bundle is arbitrary code on the user's machine, and a
 panel add-on is arbitrary code in the app's origin with the control socket; neither has a sandbox
@@ -138,9 +139,10 @@ testable through the one interface) or a peer channel (cheaper, weaker).
 
 - What the service is written in and where it is hosted, and what it stores in. It shares the
   scanner with goofi, so Rust is the default; nothing else is decided.
-- Whether a bundle can carry a Rust node. `node-sources.md` owns that question; until it is
-  answered, a bundle is Python and, later, a panel add-on.
-- Whether a shipped node is ever PROMOTED out of a bundle into `nodes/`, and what that does to the
+- A bundle carries a Rust audio node in `nodes_audio/` by `node-sources.md`'s rule; what a bundle
+  must declare for the build (the allowlist is fixed, so nothing yet) is settled when the first
+  one is published.
+- Whether a shipped node is ever PROMOTED out of a bundle into `nodes_*/`, and what that does to the
   patches that named the bundle. `builtin-nodes.md` holds the other side of this line.
 - A private repo as a source: the login could reach it, but "publishes only from a public repo"
   is what trust rests on above.

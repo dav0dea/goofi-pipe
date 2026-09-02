@@ -14,6 +14,11 @@ central node source directory to point either at.
 - **A patch's own `workspace/nodes/` is scanned LAST**, so it shadows every shipped tree. This part
   is right, and it is what makes a `.gfi` carry its own nodes.
 
+**Decided 2026-09-02, with the audio engine: a node source ROOT holds one folder per engine, named
+`nodes_<engine id>`.** The shipped `nodes/` becomes `nodes_signal/` beside a new `nodes_audio/`; a
+bundle and a patch's `workspace/` hold the same pair; the rescan hands each engine its own folder
+under each root. The folder decides the engine, never the file extension. No alias for `nodes/`.
+
 ## The restructure
 
 One node source directory, resolved absolutely, that both languages and all three origins agree on:
@@ -50,11 +55,13 @@ The loading rules are in `audio-engine.md` and are not repeated here.
 
 ## On-the-fly Rust nodes, on the SIGNAL plane
 
-**A process is the leading candidate, not a dynamic library.** Runtime-linking a Rust crate means a
-stable ABI across a `cdylib` boundary — versioned, and a mismatch is a crash rather than an error.
-A process has neither problem, and the seam already exists: the subprocess Python tier marshals a
-node over a process boundary today, under the same contract the in-process tier uses. A
-compiled-out-of-tree Rust node is that contract with a different implementation behind it.
+**Decided 2026-09-02: a dynamic library, through the audio plane's pipeline, not a process.** The
+owner's direction is that the built-in signal Rust nodes eventually move into `nodes_signal/` and
+become authorable and dynamically loadable on the fly, exactly as audio nodes are. The audio
+build pipeline takes an SDK path and a source file and knows nothing of audio, so the signal
+plane's half is a signal SDK crate — the `Node` trait behind a `#[repr(C)]` vtable with the same
+version symbol and the same `describe()` — and an adoption of that pipeline, not a design. The
+process candidate below is recorded as what it was and is no longer pursued.
 
 To be investigated, in this order:
 
@@ -84,8 +91,8 @@ To be investigated, in this order:
 
 ## Open questions
 
-- Does a patch's `.gfi` carry Rust node SOURCE, a built artifact, or neither? Source is portable and
-  slow; an artifact is fast and machine-specific. Today a `.gfi` carries source, because Python has
-  no other form. The audio plane needs the same answer and does not yet have it.
+- ANSWERED for audio, and the signal plane inherits it: a `.gfi` carries SOURCE — one `.rs` per
+  node in the workspace — and the built artifact is a machine-local cache under `.goofi/build/`,
+  keyed by goofi version and source hash.
 - What a Rust node buys that a Python node does not, stated in measurements rather than instinct.
   The four shipped Rust nodes are a history, not a rule (see `builtin-nodes.md`).

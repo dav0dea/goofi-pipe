@@ -137,10 +137,12 @@ three-phase planner survives unchanged INSIDE `goofi-signal` — it is the async
 mechanism.
 
 **Boundary delivery follows the consumer's clock, and no engine-level door exists.** A scheduled
-engine has no doorbells: before each tick it drains every boundary subscriber and applies the
-latest values to what they feed, so every tick runs against the freshest cross-engine state — a
-consumer-side door does not exist for it, and a producer facing it rings nothing. An async
-consumer (signal) keeps its per-node door: a scheduled producer engine publishes under the
+engine's CLOCK thread has no doorbells: before each tick it drains what its boundary holds, so
+every tick runs against the freshest cross-engine state, and a producer facing that thread rings
+nothing. Which thread consumes is the engine's own affair, and audio's answer (2026-09-02,
+`audio-engine.md`) is a control-half thread — an expression is Python and cannot evaluate on the
+audio clock — so the audio engine IS doorbell-driven: its modulation thread is woken like a signal
+node is, and hands the audio thread an atomic. An async consumer (signal) keeps its per-node door: a scheduled producer engine publishes under the
 derived name and rings the consumer node's OWN doorbell with the event id `GraphView` carries,
 exactly as a signal producer would — no intermediate engine proxy channel, no re-publish through
 one. The producer's ring decision is one engine-tag branch on the settled edge, and the per-node
@@ -238,11 +240,12 @@ caller's partial params against what the owning engine's library entry declares 
 moved behind that door — common params are signal scheduling semantics an audio node will not
 have). The runtime type REGISTRY is the signal engine's own surface, reached by the scan through
 `as_any_mut`; the graph keeps only the unavailable overlay and the provenance (`patch_types`),
-and orders the restarts the diff names. Still open: the stamp baseline and the diff computation
-sit on the bridge's rescan path rather than beside the scanner engine-side — `library get`'s
-Python source-file resolution (`discover::camel`) rides there too, and moves engine-side with it
-— and a trait-level scan-diff report waits for a second engine that scans; a door with one
-implementor is speculation.
+and orders the restarts the diff names. The second scanning engine arrived (audio, 2026-09-02),
+so `Engine::scan(dir)` lands on the trait: a node source ROOT — the shipped tree, a bundle, the
+patch's `workspace/` — holds one folder per engine named `nodes_<engine id>` (`nodes_signal`,
+`nodes_audio`, later `nodes_graphics`), the bridge's `rescan` hands each engine its own folder
+under each root, and the stamp baseline and the diff stay on the bridge's rescan path. `library
+get`'s Python source-file resolution (`discover::camel`) moves engine-side with the scan.
 
 **One stage vocabulary, one health projection.** All engines share
 `creating/setup/ready/error(derived)`; a synchronous engine simply never emits some stages (its
