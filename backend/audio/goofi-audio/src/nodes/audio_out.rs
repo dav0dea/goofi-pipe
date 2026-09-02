@@ -2,18 +2,17 @@ use goofi_audio_sdk::goofi_core::SlotType;
 use goofi_audio_sdk::{AudioNode, Block, Manifest, ParamDecl, ParamSpec, SlotDecl};
 
 pub const TYPE: &str = "AudioOut";
-pub const GROUP: &str = "audio";
 
 goofi_audio_sdk::params! {
     DEVICE = ParamDecl {
-        group: GROUP,
+        group: "audio",
         name: "device",
         spec: ParamSpec::Str { default: crate::DEFAULT_DEVICE, options: &[crate::DEFAULT_DEVICE], refresh: true },
         expression: None,
         doc: Some("the output device the engine's clock follows; every AudioOut names the same one"),
     },
     GAIN = ParamDecl {
-        group: GROUP,
+        group: "audio",
         name: "gain",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 10.0 },
         expression: None,

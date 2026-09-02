@@ -4,7 +4,7 @@
 //! node's control half (`control`) is a thread of its own, parked on the node's door.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,7 @@ mod plan;
 mod runtime;
 
 use control::{Desired, Handle, Shared, Sub};
+use nodes::audio_out;
 use plan::Plan;
 use runtime::{Inbox, Msg, Retired, Runtime, Slot, MAX_PORTS};
 
@@ -30,6 +31,9 @@ pub const RATE: f64 = 48_000.0;
 
 /// A CEILING, not a join: a wedged control half must not be able to wedge the exit.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+/// A ceiling on a device open, which runs under the graph lock: a sound server that does not
+/// answer must not wedge every op.
+const OPEN_WAIT: Duration = Duration::from_secs(2);
 
 /// What drives the blocks: the harness's `drive(frames)`, or the device the `AudioOut` nodes name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,59 +58,77 @@ pub(crate) struct Stats {
     callbacks: AtomicU64,
     xruns: AtomicU64,
     render_max_us: AtomicU64,
+    /// Raised by the stream's error callback; the drain closes the clock and tries the name once more.
+    dead: AtomicBool,
 }
 
 /// The running output stream, owned by a thread of its own: `cpal::Stream` is not `Send` on
-/// every host. Dropping this stops it.
+/// every host. It plays once the runtime is cut to it; dropping this stops it and waits for that.
 struct DeviceClock {
     name: String,
-    rate: f64,
     channels: u16,
-    stop: mpsc::Sender<()>,
+    go: Option<mpsc::Sender<()>>,
+    done: mpsc::Receiver<()>,
 }
 
 impl DeviceClock {
-    fn open(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> Result<DeviceClock, String> {
+    fn open(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(DeviceClock, f64), String> {
         let (opened, on_open) = mpsc::channel::<Result<(f64, u16), String>>();
-        let (stop, stopped) = mpsc::channel::<()>();
+        let (go, on_go) = mpsc::channel::<()>();
+        let (done, on_done) = mpsc::channel::<()>();
         let device = name.to_string();
         std::thread::Builder::new()
             .name("goofi-audio-clock".into())
-            .spawn(move || match open_output(&device, runtime, stats) {
-                Ok((stream, rate, channels)) => {
-                    let _ = opened.send(Ok((rate, channels)));
-                    let _ = stopped.recv();
-                    drop(stream);
+            .spawn(move || {
+                let stream = match open_output(&device, runtime, stats.clone(), waker.clone()) {
+                    Ok((stream, rate, channels)) => {
+                        let _ = opened.send(Ok((rate, channels)));
+                        stream
+                    }
+                    Err(e) => {
+                        let _ = opened.send(Err(e));
+                        return;
+                    }
+                };
+                if on_go.recv().is_ok() {
+                    if let Err(e) = stream.play() {
+                        eprintln!("audio: {e}");
+                        stats.dead.store(true, Ordering::Release);
+                        waker.notify();
+                    }
+                    let _ = on_go.recv();
                 }
-                Err(e) => {
-                    let _ = opened.send(Err(e));
-                }
+                drop(stream);
+                let _ = done.send(());
             })
             .map_err(|e| format!("could not start the clock thread: {e}"))?;
-        let (rate, channels) = on_open.recv().map_err(|_| "the clock thread died before it answered".to_string())??;
-        Ok(DeviceClock { name: name.to_string(), rate, channels, stop })
+        let (rate, channels) = on_open
+            .recv_timeout(OPEN_WAIT)
+            .map_err(|_| format!("`{name}` did not open within {} s", OPEN_WAIT.as_secs()))??;
+        Ok((DeviceClock { name: name.to_string(), channels, go: Some(go), done: on_done }, rate))
+    }
+
+    /// Start the callbacks — only once the runtime is cut to this stream's rate and width.
+    fn play(&self) {
+        if let Some(go) = &self.go {
+            let _ = go.send(());
+        }
     }
 }
 
 impl Drop for DeviceClock {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        self.go = None;
+        let _ = self.done.recv_timeout(SHUTDOWN_WAIT);
     }
 }
 
-/// The host default is what an empty or `default` name means.
+/// The host default is what a `default` name means.
 pub const DEFAULT_DEVICE: &str = "default";
 
-fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> Result<(cpal::Stream, f64, u16), String> {
+fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(cpal::Stream, f64, u16), String> {
     let host = cpal::default_host();
-    let device = if name == DEFAULT_DEVICE {
-        host.default_output_device().ok_or_else(|| "no default output device".to_string())?
-    } else {
-        host.output_devices()
-            .map_err(|e| format!("output devices: {e}"))?
-            .find(|d| d.description().is_ok_and(|d| d.name() == name))
-            .ok_or_else(|| format!("no output device `{name}`"))?
-    };
+    let device = control::device("output", name, host.default_output_device(), host.output_devices())?;
     let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
     let mut config = supported.config();
     if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
@@ -116,6 +138,7 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> R
     }
     let rate = f64::from(config.sample_rate);
     let channels = config.channels;
+    let died = stats.clone();
     let stream = device
         .build_output_stream::<f32, _, _>(
             config,
@@ -131,11 +154,19 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> R
                 }
                 stats.render_max_us.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
             },
-            |e| eprintln!("audio: {e}"),
+            // An underrun the backend reports recovers on its own and is an xrun; only a device
+            // that is gone is death.
+            move |e| {
+                if matches!(e.kind(), cpal::ErrorKind::DeviceNotAvailable) {
+                    died.dead.store(true, Ordering::Release);
+                    waker.notify();
+                } else {
+                    died.xruns.fetch_add(1, Ordering::Relaxed);
+                }
+            },
             None,
         )
         .map_err(|e| format!("`{name}`: {e}"))?;
-    stream.play().map_err(|e| format!("`{name}`: {e}"))?;
     Ok((stream, rate, channels))
 }
 
@@ -162,6 +193,8 @@ fn rings_for(type_name: &str, chans: Arc<AtomicU16>) -> (nodes::Birth, control::
 
 pub(crate) struct Instance {
     pub(crate) idx: usize,
+    /// Which occupant of `idx` this is: a plan compiled for an earlier one must not drive it.
+    pub(crate) serial: u64,
     pub(crate) manifest: &'static NodeManifest,
     /// Answers `channels` on the control thread; the box that processes never leaves the audio
     /// thread.
@@ -176,6 +209,9 @@ pub struct AudioEngine {
     started: Instant,
     clock: Clock,
     device: Option<DeviceClock>,
+    /// The name last tried and what it answered: a name that failed is not tried again until it
+    /// moves, because the open runs under the graph lock.
+    tried: Option<(String, Option<String>)>,
     stats: Arc<Stats>,
     shared: Arc<Shared>,
     classes: Vec<(&'static NodeManifest, nodes::Make)>,
@@ -184,8 +220,9 @@ pub struct AudioEngine {
     outbox: rtrb::Consumer<Retired>,
     free: Vec<usize>,
     slab_len: usize,
+    next_serial: u64,
     live: HashMap<Uid, Instance>,
-    faulted: Vec<Uid>,
+    faulted: HashMap<Uid, String>,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
     last: Plan,
@@ -220,6 +257,7 @@ impl AudioEngine {
             started,
             clock,
             device: None,
+            tried: None,
             stats: Arc::new(Stats::default()),
             shared: Arc::new(Shared {
                 evaluator: Mutex::new(None),
@@ -234,8 +272,9 @@ impl AudioEngine {
             outbox,
             free: (0..SLAB).rev().collect(),
             slab_len: SLAB,
+            next_serial: 0,
             live: HashMap::new(),
-            faulted: Vec::new(),
+            faulted: HashMap::new(),
             pending: Vec::new(),
             dirty: false,
             last: Plan::default(),
@@ -253,8 +292,8 @@ impl AudioEngine {
         (out, channels)
     }
 
+    /// Read without the runtime lock: taking it under the graph lock would cost a callback its block.
     pub fn status(&self) -> AudioStatus {
-        let rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
         AudioStatus {
             clock: match self.clock {
                 Clock::External => "external",
@@ -262,7 +301,7 @@ impl AudioEngine {
             },
             device: self.device.as_ref().map(|d| d.name.clone()),
             rate: self.shared.rate(),
-            channels: rt.channels(),
+            channels: self.device.as_ref().map_or(self.last.output.1, |d| d.channels),
             callbacks: self.stats.callbacks.load(Ordering::Relaxed),
             xruns: self.stats.xruns.load(Ordering::Relaxed),
             render_max_us: self.stats.render_max_us.load(Ordering::Relaxed),
@@ -344,56 +383,71 @@ impl AudioEngine {
         }
     }
 
-    /// The device the `AudioOut` nodes agree on — the lowest uid's name — and the fault every
-    /// one naming another carries. `None` when there is no `AudioOut`.
-    fn output_device(&self, view: &GraphView<'_>) -> (Option<String>, Vec<(Uid, String)>) {
+    /// Every `AudioOut` with the device it names, by uid — the first is the clock's.
+    fn audio_outs(&self, view: &GraphView<'_>) -> Vec<(Uid, String)> {
         let mut outs: Vec<(Uid, String)> = self
             .live
             .iter()
-            .filter(|(_, inst)| inst.manifest.type_name == nodes::audio_out::TYPE)
-            .filter_map(|(uid, _)| {
+            .filter(|(_, inst)| inst.manifest.type_name == audio_out::TYPE)
+            .filter_map(|(uid, inst)| {
                 let nv = view.nodes.get(uid)?;
-                let device = match goofi_node::param(nv.params, nodes::audio_out::GROUP, "device") {
-                    Some(Param::Str { value, .. }) => value.clone(),
-                    _ => DEFAULT_DEVICE.to_string(),
-                };
-                Some((*uid, device))
+                let Param::Str { value, .. } = plan::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };
+                Some((*uid, value))
             })
             .collect();
         outs.sort_by_key(|(uid, _)| uid.0);
-        let Some((_, clock)) = outs.first().cloned() else { return (None, Vec::new()) };
-        let faults = outs
-            .into_iter()
-            .filter(|(_, device)| *device != clock)
-            .map(|(uid, _)| (uid, format!("the clock is on `{clock}`")))
-            .collect();
-        (Some(clock), faults)
+        outs
     }
 
-    /// Open, close or switch the output stream to `wanted`; the error a device that will not open
-    /// answers with. The old stream stops first: silence during a switch, accepted.
+    /// Open, close or switch the output stream to `wanted`, and the error a device that will not
+    /// open answers with. A name is tried ONCE: the previous clock is reopened and stands, and the
+    /// error stands with it until the name moves. The old stream stops before the new one opens,
+    /// because two names of one exclusive device cannot be open at once: silence during a switch.
     fn follow(&mut self, wanted: Option<&str>) -> Option<String> {
-        if self.device.as_ref().is_some_and(|d| Some(d.name.as_str()) == wanted) {
+        if self.device.as_ref().map(|d| d.name.as_str()) == wanted {
             return None;
         }
-        if self.device.take().is_some() {
-            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).set_device(None);
-        }
-        let name = wanted?;
-        match DeviceClock::open(name, self.runtime.clone(), self.stats.clone()) {
-            Ok(clock) => {
-                self.retune(clock.rate, clock.channels);
-                self.device = Some(clock);
-                None
+        let Some(name) = wanted else {
+            self.close();
+            self.tried = None;
+            return None;
+        };
+        if let Some((tried, error)) = &self.tried {
+            if tried == name {
+                return error.clone();
             }
-            Err(e) => Some(e),
         }
+        let previous = self.close();
+        let error = self.open(name).err();
+        if error.is_some() {
+            if let Some(previous) = previous {
+                let _ = self.open(&previous);
+            }
+        }
+        self.tried = Some((name.to_string(), error.clone()));
+        error
     }
 
-    /// The device's rate and width, under the runtime lock: every instance is re-prepared when
-    /// the rate moved, and the FIFO is re-cut to the width.
+    /// Stop the clock and wait for it; the name it had.
+    fn close(&mut self) -> Option<String> {
+        let clock = self.device.take()?;
+        self.runtime.lock().unwrap_or_else(|e| e.into_inner()).set_device(None);
+        Some(clock.name.clone())
+    }
+
+    fn open(&mut self, name: &str) -> Result<(), String> {
+        let (clock, rate) = DeviceClock::open(name, self.runtime.clone(), self.stats.clone(), self.shared.waker.clone())?;
+        self.retune(rate, clock.channels);
+        clock.play();
+        self.device = Some(clock);
+        Ok(())
+    }
+
+    /// The device's rate and width, under the runtime lock: every instance — the ones still on
+    /// the ring included — is re-prepared when the rate moved, and the FIFO is re-cut to the width.
     fn retune(&mut self, rate: f64, channels: u16) {
         let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        rt.apply_pending();
         if rate != self.shared.rate() {
             for slot in rt.slab.iter_mut().flatten() {
                 slot.node.prepare(rate);
@@ -475,10 +529,12 @@ impl Engine for AudioEngine {
             Err(e) => return Some(e),
         };
         let idx = self.slot_index();
-        let slot = Slot { node, params: atomics, inboxes: inbox_out.into_iter().map(Inbox::new).collect(), taps: tap_in };
+        let serial = self.next_serial;
+        self.next_serial += 1;
+        let slot = Slot { serial, node, params: atomics, inboxes: inbox_out.into_iter().map(Inbox::new).collect(), taps: tap_in };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });
-        self.live.insert(uid, Instance { idx, manifest, twin, control, last: None });
+        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, last: None });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.shared.waker.notify();
@@ -490,7 +546,7 @@ impl Engine for AudioEngine {
             inst.control.stop();
             self.send(Msg::Remove(inst.idx));
             self.free.push(inst.idx);
-            self.faulted.retain(|u| *u != uid);
+            self.faulted.remove(&uid);
             self.pending.retain(|(u, _)| *u != uid);
             self.dirty = true;
         }
@@ -508,27 +564,33 @@ impl Engine for AudioEngine {
                 inst.last = Some(desired);
             }
         }
-        let (device, mut faults) = self.output_device(view);
+        let outs = self.audio_outs(view);
+        let clock = outs.first().map(|(_, device)| device.clone());
+        let agrees = |device: &String| Some(device) == clock.as_ref();
+        let mut faults: Vec<(Uid, String)> = outs
+            .iter()
+            .filter(|(_, device)| !agrees(device))
+            .map(|(uid, _)| (*uid, format!("the clock is on `{}`", clock.as_deref().unwrap_or_default())))
+            .collect();
         if self.clock == Clock::Device {
-            if let Some(why) = self.follow(device.as_deref()) {
-                let outs: Vec<Uid> = self.live.iter().filter(|(_, i)| i.manifest.type_name == nodes::audio_out::TYPE).map(|(u, _)| *u).collect();
-                faults.extend(outs.into_iter().map(|u| (u, why.clone())));
+            if let Some(why) = self.follow(clock.as_deref()) {
+                faults.extend(outs.iter().filter(|(_, device)| agrees(device)).map(|(uid, _)| (*uid, why.clone())));
             }
         }
         let silent: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
         let (plan, looped) = plan::compile(view, &self.live, &silent);
         faults.extend(looped);
         let since = self.started.elapsed().as_secs_f64();
-        let now_faulted: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
-        for uid in self.faulted.iter().filter(|u| !now_faulted.contains(u)) {
+        let now: HashMap<Uid, String> = faults.into_iter().collect();
+        for uid in self.faulted.keys().filter(|u| !now.contains_key(u)) {
             self.pending.push((*uid, Status::Fault { fault: None }));
         }
-        for (uid, msg) in faults {
-            if !self.faulted.contains(&uid) {
-                self.pending.push((uid, Status::Fault { fault: Some(NodeFault::Process { msg, since }) }));
+        for (uid, msg) in &now {
+            if self.faulted.get(uid) != Some(msg) {
+                self.pending.push((*uid, Status::Fault { fault: Some(NodeFault::Process { msg: msg.clone(), since }) }));
             }
         }
-        self.faulted = now_faulted;
+        self.faulted = now;
         if plan != self.last {
             let arena = vec![0.0; plan.arena_len];
             self.send(Msg::Plan { plan: plan.clone(), arena });
@@ -541,6 +603,12 @@ impl Engine for AudioEngine {
 
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize {
         self.discard_retired();
+        // A stream that died is closed here, and its name tried once more at the settle this asks for.
+        if self.stats.dead.swap(false, Ordering::Acquire) {
+            self.close();
+            self.tried = None;
+            self.dirty = true;
+        }
         let mut pending = std::mem::take(&mut self.pending);
         pending.append(&mut self.shared.reports.lock().unwrap());
         let n = pending.len();
@@ -574,7 +642,7 @@ impl Engine for AudioEngine {
     /// Stop the clock and every control half, and WAIT for each to release its shared memory — a
     /// ceiling, because only a process about to EXIT has no "a moment later".
     fn shutdown(&mut self) {
-        self.device = None;
+        self.close();
         let halts: Vec<Arc<goofi_transport::Halt>> = self.live.values().map(|i| i.control.halt.clone()).collect();
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             self.remove(uid);

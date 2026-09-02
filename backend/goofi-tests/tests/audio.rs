@@ -36,6 +36,17 @@ fn state(g: &Goofi, uid: Uid) -> String {
     g.call("node state", j!({ "node": hex(uid) }))["text"].as_str().unwrap().to_string()
 }
 
+/// Ask for a param's list and read it off the `state_update` every client gets — the echo that
+/// clears the spinner — rather than through any door of the test's own.
+fn refreshed(g: &Goofi, ev: &mut goofi_tests::Events, uid: Uid, group: &str, name: &str) -> Vec<String> {
+    g.call("node param refresh", j!({ "node": hex(uid), "param": format!("{group}/{name}") }));
+    let p = g.until("the refresh echo", |_| {
+        let p = ev.next("state_update");
+        (p["node"] == hex(uid) && p["refreshed_params"] == j!([[group, name]])).then_some(p)
+    });
+    p["params"][group][name]["options"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
+}
+
 /// A square held HIGH: a quarter of a hertz from phase zero stays at one for the two seconds
 /// this walk drives after it is born.
 fn frozen_square(g: &Goofi) -> Uid {
@@ -129,6 +140,8 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: the slab grows past its first 64 slots without losing an instance — the 65th node's
     // wire lands in the sum and every earlier one keeps running.
     let many: Vec<Uid> = (0..64).map(|_| frozen_square(&g)).collect();
+    let stillborn: Vec<String> = many.iter().filter_map(|u| g.error(*u)).collect();
+    assert!(stillborn.is_empty(), "every square starts: {stillborn:?}");
     g.link(*many.last().unwrap(), "out", gain, "input");
     let (grown, _) = drive(&g, TENTH);
     assert!((peak(&grown) - 1.5).abs() < 0.01 && (mean(&grown) - 1.0).abs() < 0.02, "sine plus two, halved: peak {} mean {}", peak(&grown), mean(&grown));
@@ -172,16 +185,16 @@ fn a_patch_sounds_under_the_external_clock() {
     sounds(&g, "…and to rejoin", |x| (peak(x) - 1.5).abs() < 0.02);
     g.call("node remove", j!({ "node": hex(out2) }));
 
-    // Step: the device list is a refresh answered by the node's own thread, with the host default
-    // always on it; the clock itself reports through `session status`.
-    g.call("node param refresh", j!({ "node": hex(out), "param": "audio/device" }));
-    let devices = g.until("the device list", |g| {
-        g.state.graph.lock().unwrap().refreshed_options(out, "audio", "device").map(|o| o.to_vec())
-    });
-    assert!(devices.contains(&"default".to_string()), "{devices:?}");
+    // Step: the device list is a refresh answered by the node's own thread and echoed to every
+    // client, the host default first; the clock itself reports through `session status`.
+    let mut ev = g.events();
+    assert_eq!(refreshed(&g, &mut ev, out, "audio", "device")[0], "default");
     let status = g.call("session status", j!({}));
     assert_eq!(status["audio"]["clock"], "external", "{status}");
     assert_eq!(status["audio"]["rate"], 48000.0, "{status}");
+    assert!(status["audio"]["device"].is_null(), "no device under the external clock: {status}");
+    assert!(status["audio"]["channels"].as_u64().is_some_and(|c| c >= 1), "{status}");
+    assert_eq!((status["audio"]["callbacks"].as_u64(), status["audio"]["xruns"].as_u64()), (Some(0), Some(0)), "{status}");
 
     // Step: a device or a port that is not there is an error on the param that named it, and
     // what can be named is a refresh; a MIDI port's voices are the channels a gate sees.
@@ -191,11 +204,7 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(mic, "audio", "device", "nowhere");
     let why = g.until("the absent device to be named", |g| g.error(mic).filter(|e| e.contains("nowhere")));
     assert!(why.contains("no input device `nowhere`"), "{why}");
-    g.call("node param refresh", j!({ "node": hex(mic), "param": "audio/device" }));
-    let inputs = g.until("the input device list", |g| {
-        g.state.graph.lock().unwrap().refreshed_options(mic, "audio", "device").map(|o| o.to_vec())
-    });
-    assert_eq!(inputs[0], "default", "{inputs:?}");
+    assert_eq!(refreshed(&g, &mut ev, mic, "audio", "device")[0], "default");
     g.call("node remove", j!({ "node": hex(mic) }));
     let midi = g.add("MidiIn");
     g.set_param(midi, "midi", "port", "nowhere");
@@ -203,11 +212,8 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(why.contains("no MIDI port `nowhere`"), "{why}");
     g.set_param(midi, "midi", "port", "none");
     g.until("the port error to clear", |g| g.error(midi).is_none().then_some(()));
-    g.call("node param refresh", j!({ "node": hex(midi), "param": "midi/port" }));
-    let ports = g.until("the port list", |g| {
-        g.state.graph.lock().unwrap().refreshed_options(midi, "midi", "port").map(|o| o.to_vec())
-    });
-    assert_eq!(ports[0], "none", "{ports:?}");
+    assert_eq!(refreshed(&g, &mut ev, midi, "midi", "port")[0], "none");
+    g.set_param(midi, "midi", "voices", 3);
     let voices = g.add("Env");
     let midi_name = g.doc()["nodes"][hex(midi)]["name"].as_str().unwrap().to_string();
     let bound = g.call(
@@ -216,13 +222,14 @@ fn a_patch_sounds_under_the_external_clock() {
     );
     assert!(bound["error"].is_null(), "{bound}");
     g.link(voices, "out", out, "input");
-    g.until("four silent voices", |g| {
+    g.until("three silent voices", |g| {
         let (x, channels) = drive(g, TENTH);
-        (channels == 4 && peak(&x[x.len() - 4..]) == 0.0).then_some(())
+        (channels == 3 && peak(&x[x.len() - 3..]) == 0.0).then_some(())
     });
 
     // Step: a note through a real port takes the first voice — its gate, its pitch in volts per
-    // octave and its velocity — and its release frees it. A virtual port, which WinMM has none of.
+    // octave and its velocity — the next notes take the next voices in turn, and a release frees
+    // them. A virtual port, which WinMM has none of.
     #[cfg(unix)]
     {
         use midir::os::unix::VirtualOutput;
@@ -230,26 +237,34 @@ fn a_patch_sounds_under_the_external_clock() {
             .expect("a MIDI client: on Linux this needs the ALSA sequencer, `modprobe snd-seq`")
             .create_virtual("goofi-test-out")
             .expect("a virtual MIDI port");
-        g.call("node param refresh", j!({ "node": hex(midi), "param": "midi/port" }));
         let port = g.until("the virtual port to be listed", |g| {
-            let graph = g.state.graph.lock().unwrap();
-            graph.refreshed_options(midi, "midi", "port").and_then(|o| o.iter().find(|n| n.contains("goofi-test-out")).cloned())
+            refreshed(g, &mut ev, midi, "midi", "port").into_iter().find(|n| n.contains("goofi-test-out"))
         });
         g.set_param(midi, "midi", "port", port.as_str());
         let pitch = g.probe(midi, "pitch");
         let velocity = g.probe(midi, "velocity");
         g.until("A4 to take the first voice", |g| {
-            keys.send(&[0x90, 69, 100]).expect("a note on");
+            keys.send(&[0x90, 69, 100]).expect("a note on"); // sent again per poll: a held note keeps its voice
             let (x, channels) = drive(g, TENTH);
-            let heard = channels == 4 && x[x.len() - 4] > 0.99;
+            let heard = channels == 3 && x[x.len() - 3] > 0.99;
             let played = pitch.latest().is_some_and(|d| (f32s(&d)[0] - 0.75).abs() < 1e-3)
                 && velocity.latest().is_some_and(|d| (f32s(&d)[0] - 100.0 / 127.0).abs() < 1e-3);
             (heard && played).then_some(())
         });
+        keys.send(&[0x90, 72, 64]).expect("a note on");
+        keys.send(&[0x90, 76, 127]).expect("a note on");
+        g.until("C5 and E5 to take the second and third voices", |g| {
+            drive(g, TENTH);
+            let voice = |d: &goofi_core::Data, c: usize| f32s(d)[c * shape(d)[1]];
+            let placed = |d: &goofi_core::Data| shape(d)[0] == 3 && (voice(d, 1) - 1.0).abs() < 1e-3 && (voice(d, 2) - 4.0 / 3.0).abs() < 1e-3;
+            pitch.latest().is_some_and(|d| placed(&d)).then_some(())
+        });
         g.until("the voices to release", |g| {
-            keys.send(&[0x80, 69, 0]).expect("a note off");
+            for note in [69, 72, 76] {
+                keys.send(&[0x80, note, 0]).expect("a note off");
+            }
             let (x, _) = drive(g, TENTH);
-            (peak(&x[x.len() - 4..]) == 0.0).then_some(())
+            (peak(&x[x.len() - 3..]) == 0.0).then_some(())
         });
     }
     g.call("node remove", j!({ "node": hex(voices) }));

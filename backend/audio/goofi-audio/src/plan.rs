@@ -32,6 +32,8 @@ pub enum Source {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stage {
     pub idx: usize,
+    /// The occupant of `idx` this was compiled for; a later one waits for its own plan.
+    pub serial: u64,
     pub ins: Vec<Source>,
     pub params: Vec<Source>,
     pub outs: Vec<(Region, u16)>,
@@ -43,8 +45,8 @@ pub struct Plan {
     pub arena_len: usize,
     /// What the device hears: every agreeing `AudioOut`'s input times its gain, summed here.
     pub output: (Region, u16),
-    /// The `AudioOut` stages that sum into `output`.
-    pub sinks: Vec<usize>,
+    /// Per agreeing `AudioOut`: where its input and its gain read.
+    pub sinks: Vec<(Source, Source)>,
 }
 
 impl Default for Plan {
@@ -211,15 +213,14 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>, silent: &[Ui
             })
             .collect();
         if inst.manifest.type_name == crate::nodes::audio_out::TYPE && !silent.contains(uid) {
-            plan.sinks.push(plan.stages.len());
+            plan.sinks.push((ins[0].clone(), params[crate::nodes::audio_out::P::GAIN].clone()));
         }
-        plan.stages.push(Stage { idx: inst.idx, ins, params, outs });
+        plan.stages.push(Stage { idx: inst.idx, serial: inst.serial, ins, params, outs });
     }
     let width = plan
         .sinks
         .iter()
-        .filter_map(|i| plan.stages[*i].ins.first())
-        .map(|s| match s {
+        .map(|(input, _)| match input {
             Source::Region { channels, .. } | Source::Sum { channels, .. } | Source::Inbox { channels, .. } => *channels,
             Source::Silence | Source::Scalar { .. } => 1,
         })

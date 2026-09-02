@@ -122,15 +122,28 @@ machine-local sidecar. Landed 2026-09-02: the clock is a constructor choice (`Cl
 the harness, `Clock::Device` for the CLI); the output stream lives on a thread of its own, because
 `cpal::Stream` is not `Send` on every host, opened at settle when an `AudioOut` exists and closed
 when none does; the callback `try_lock`s the runtime and renders whole blocks through the same
-FIFO `drive()` uses, a failed lock being silence and an xrun counted; a device that will not open
-faults every `AudioOut` with cpal's reason and the last clock stands. The param carries the
-device's NAME — what a refresh lists and a user reads — with `default` for the host default; an
-id can join it if two devices ever share a name. A refresh runs on the node's own thread, never
-under the graph lock. The device's rate reaches every control thread through one shared cell, and
-a switch re-prepares every instance under the runtime lock. Measured by hand on Linux (ALSA, the
-default device, 48 kHz stereo): 518 callbacks in eleven seconds — ~1024-frame periods, the
-64-frame request not honoured by the default PCM — zero xruns, a worst render of 545 µs; read
-through `session status`'s `audio` block, which is the timing door.
+FIFO `drive()` uses, a failed lock being silence and an xrun counted — as is an underrun the
+backend reports, which recovers on its own; only a device that is gone is a stream's death. A
+device name is tried
+ONCE, under a two-second ceiling, because the open runs under the graph lock: one that will not
+open faults the agreeing `AudioOut`s with cpal's reason until the name moves, and the previous
+clock is reopened and stands; a stream that dies after it opened is closed at the next drain and
+its name tried once more. The old stream is closed, and waited for, before the new one opens —
+two names of one exclusive device cannot be open at once — and the new one plays only once the
+runtime is cut to its rate and width, so no period renders at the wrong one. The param carries
+the device's NAME — what a refresh lists and a user reads — with `default` for the host default;
+an id can join it if two devices ever share a name. A refresh runs on the node's own thread,
+never under the graph lock. The device's rate reaches every control thread through one shared
+cell; a switch re-prepares every instance under the runtime lock, the ones still on the ring
+included, and `AudioIn` opens its device AT that rate and reopens when it moves — a device that
+cannot is the error on its param. An input's ring is read one block per render and skips to its
+last two chunks when more are queued, so a period the clock did not render is latency dropped,
+never kept. A plan names the slab OCCUPANT each stage was compiled for, so a callback that lands
+between a remove and the settle that re-plans drives no node with another's port layout.
+Measured by hand on Linux (ALSA, the default device, 48 kHz stereo): 518 callbacks in eleven
+seconds — ~1024-frame periods, the 64-frame request not honoured by the default PCM — zero
+xruns, a worst render of 545 µs; read through `session status`'s `audio` block, which is the
+timing door.
 
 **The audio thread owns one `Runtime`: a slab of instances, the plan, the arena, the atomics.**
 The plan holds slab INDICES, so a topology edit is a new order and new regions over the same
@@ -392,6 +405,24 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   of RT priority and the control thread's graph lock under a knob drag — a burst of
   `node param edit` RPCs, each taking the graph lock, none the runtime's — is still unmeasured, and
   Windows and macOS are unmeasured. `session status`'s `audio` block is the door, by hand, on each.
+- **A device switch, a rate change and a stream loss run only under `Clock::Device`**, which no
+  test constructs and no CI runner has a device for. Measured by hand on Linux (2026-09-02): a name
+  that will not open faults the node and the previous clock stands with its callbacks running;
+  three rounds of `default` → a bad name → `default` → PulseAudio → `default` all landed — one
+  earlier return to `default` did not, its error unrecorded, and did not recur. A raw ALSA `hw`
+  device refuses the stream: it is built for `f32` only, and `HDA Intel PCH, ALC274 Analog`
+  answers "Sample format f32 is not supported" — an `i16`/`i32` stream with a conversion is what
+  such a device needs. A rate change and a stream loss are still unexercised. The door is the same
+  `audio` block, by hand.
+- **The Linux default period is ~1024 frames, ~21 ms.** The `default` PCM ignores the 64-frame
+  request, so the spec's "at most 63 frames" holds only where a backend honours it. A `hw:` name
+  or the PipeWire quantum is how a smaller period is reached; unmeasured.
+- **A machine with no output device** faults every `AudioOut` once with `no default output device`
+  and renders nothing: the CLI is always `Clock::Device`, and the spec's external clock for a
+  headless server has nothing to drive it. A real-time self-clock for a device-less machine is
+  open.
+- **`MidiIn` reads notes and nothing else** — no bend, no CC, no aftertouch — on every channel at
+  once, and a note-on for a note already held moves its voice's velocity, not its envelope.
 - **A MIDI note lands at block start**, up to 1.3 ms late. Sample-accurate placement needs the
   port's timestamps correlated with the device clock; built when a measurement asks.
 - **Windows latency.** cpal's WASAPI backend is shared-mode only and its own source says the callback

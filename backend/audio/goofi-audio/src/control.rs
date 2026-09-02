@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
 use goofi_core::{Data, Meta, Param};
 use goofi_node::{BindingId, DrainWaker, EventId, ExprEvaluator, Expression, NodeManifest, ParamKey, Status, Uid, Var};
@@ -18,7 +19,7 @@ use goofi_transport::{
 use indexmap::IndexMap;
 
 use crate::nodes::midi_in::{Note, NO_PORT};
-use crate::nodes::{audio_in, midi_in};
+use crate::nodes::{audio_in, audio_out, midi_in};
 use crate::{plan, DEFAULT_DEVICE, RATE};
 
 /// How often the paced duties run: a tapped output is published, and a binding with no stream
@@ -45,13 +46,34 @@ pub struct Ports {
 }
 
 /// What a control half opens on its own thread and never lets cross it: a stream is not `Send`
-/// on every host.
+/// on every host. A device is opened at the clock's rate, so the name AND the rate gate a reopen.
 #[derive(Default)]
 struct Io {
     stream: Option<cpal::Stream>,
     midi: Option<midir::MidiInputConnection<()>>,
-    device: Option<String>,
+    device: Option<(String, f64)>,
     port: Option<String>,
+    /// Raised by the input stream's error callback; the name is then tried once more.
+    dead: Arc<AtomicBool>,
+}
+
+/// The device `name` names among `all`, `default` being the host's; `kind` words a refusal.
+pub(crate) fn device(
+    kind: &str,
+    name: &str,
+    default: Option<cpal::Device>,
+    all: Result<impl Iterator<Item = cpal::Device>, impl std::fmt::Display>,
+) -> Result<cpal::Device, String> {
+    if name == DEFAULT_DEVICE {
+        return default.ok_or_else(|| format!("no default {kind} device"));
+    }
+    all.map_err(|e| format!("{kind} devices: {e}"))?
+        .find(|d| name_of(d).as_deref() == Some(name))
+        .ok_or_else(|| format!("no {kind} device `{name}`"))
+}
+
+fn name_of(d: &cpal::Device) -> Option<String> {
+    d.description().ok().map(|d| d.name().to_string())
 }
 
 /// What the engine wants a node's control half to hold — the WHOLE of it, sent when it changes.
@@ -325,10 +347,11 @@ impl Control {
             }
             let mail = std::mem::take(&mut *self.mail.lock().unwrap());
             if let Some(d) = mail.desired {
-                self.apply(d, io);
+                self.apply(d);
             }
+            self.open_io(io);
             for key in mail.refresh {
-                let options = self.enumerate(&key);
+                let options = self.enumerate();
                 self.shared.report(self.uid, Status::RefreshOptions { key, options });
             }
             self.receive();
@@ -339,9 +362,8 @@ impl Control {
         }
     }
 
-    fn apply(&mut self, d: Desired, io: &mut Io) {
+    fn apply(&mut self, d: Desired) {
         self.consts = d.consts;
-        self.open_io(io);
         let (slots, binds): (Vec<Sub>, Vec<Sub>) = d.subs.into_iter().partition(|s| matches!(s, Sub::Slot { .. }));
         self.apply_slots(slots);
         self.apply_binds(binds);
@@ -431,20 +453,20 @@ impl Control {
         }
     }
 
-    /// A refreshable param's list, enumerated here rather than under the graph lock: the output
-    /// devices, the input devices, or the MIDI ports, the host default first.
-    fn enumerate(&self, key: &ParamKey) -> Option<Vec<String>> {
-        use cpal::traits::{DeviceTrait, HostTrait};
-        let named = |devices: Vec<cpal::Device>| {
+    /// The one refreshable list a type has — the graph refuses a refresh on any other param —
+    /// enumerated here rather than under the graph lock: the devices behind the host default, or
+    /// the MIDI ports behind `none`.
+    fn enumerate(&self) -> Option<Vec<String>> {
+        let named = |devices: Option<Vec<cpal::Device>>| {
             let mut names = vec![DEFAULT_DEVICE.to_string()];
-            names.extend(devices.iter().filter_map(|d| d.description().ok()).map(|d| d.name().to_string()).filter(|n| n != DEFAULT_DEVICE));
+            names.extend(devices.into_iter().flatten().filter_map(|d| name_of(&d)).filter(|n| n != DEFAULT_DEVICE));
             names
         };
         let host = cpal::default_host();
-        match (self.manifest.type_name, key.group.as_str(), key.name.as_str()) {
-            ("AudioOut", "audio", "device") => Some(named(host.output_devices().map(|d| d.collect()).unwrap_or_default())),
-            (audio_in::TYPE, "audio", "device") => Some(named(host.input_devices().map(|d| d.collect()).unwrap_or_default())),
-            (midi_in::TYPE, "midi", "port") => {
+        match self.manifest.type_name {
+            audio_out::TYPE => Some(named(host.output_devices().ok().map(|d| d.collect()))),
+            audio_in::TYPE => Some(named(host.input_devices().ok().map(|d| d.collect()))),
+            midi_in::TYPE => {
                 let mut names = vec![NO_PORT.to_string()];
                 if let Ok(input) = midir::MidiInput::new("goofi") {
                     names.extend(input.ports().iter().filter_map(|p| input.port_name(p).ok()));
@@ -455,14 +477,19 @@ impl Control {
         }
     }
 
-    /// A device or a port a param names is opened here, on this thread, when the name moves; an
-    /// error stands on that param until it opens.
+    /// A device or a port a param names is opened here, on this thread, when the name moves — or
+    /// the clock's rate, or the stream died; a name that failed stands as an error on that param
+    /// until it moves.
     fn open_io(&mut self, io: &mut Io) {
+        if io.dead.swap(false, Ordering::Acquire) {
+            io.stream = None;
+            io.device = None;
+        }
         if let Some((producer, chans)) = self.ports.audio_in.clone() {
-            let wanted = self.text(audio_in::P::DEVICE);
-            if io.device.as_deref() != Some(wanted.as_str()) {
+            let wanted = (self.text(audio_in::P::DEVICE), self.shared.rate());
+            if io.device.as_ref() != Some(&wanted) {
                 io.stream = None;
-                let (stream, error) = match open_input(&wanted, producer) {
+                let (stream, error) = match open_input(&wanted.0, wanted.1, producer, io.dead.clone()) {
                     Ok((stream, c)) => {
                         chans.store(c, Ordering::Relaxed);
                         (Some(stream), None)
@@ -606,20 +633,13 @@ impl Control {
     }
 }
 
-/// The device's input stream, its callback entering interleaved frames into the node's inbox as
-/// the Array crossing does — no resampling, the same device being one clock.
-fn open_input(name: &str, producer: Feed<f32>) -> Result<(cpal::Stream, u16), String> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+/// The device's input stream, opened AT the clock's rate — a device that cannot is the error —
+/// its callback entering interleaved frames into the node's inbox as the Array crossing does.
+fn open_input(name: &str, rate: f64, producer: Feed<f32>, dead: Arc<AtomicBool>) -> Result<(cpal::Stream, u16), String> {
     let host = cpal::default_host();
-    let device = if name == DEFAULT_DEVICE {
-        host.default_input_device().ok_or_else(|| "no default input device".to_string())?
-    } else {
-        host.input_devices()
-            .map_err(|e| format!("input devices: {e}"))?
-            .find(|d| d.description().is_ok_and(|d| d.name() == name))
-            .ok_or_else(|| format!("no input device `{name}`"))?
-    };
-    let config = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?.config();
+    let device = device("input", name, host.default_input_device(), host.input_devices())?;
+    let mut config = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?.config();
+    config.sample_rate = rate as u32;
     let channels = config.channels;
     let stream = device
         .build_input_stream::<f32, _, _>(
@@ -631,7 +651,11 @@ fn open_input(name: &str, producer: Feed<f32>) -> Result<(cpal::Stream, u16), St
                     chunk.fill_from_iter([f32::from(channels), frames as f32].into_iter().chain(data.iter().copied()));
                 }
             },
-            |e| eprintln!("audio in: {e}"),
+            move |e| {
+                if matches!(e.kind(), cpal::ErrorKind::DeviceNotAvailable) {
+                    dead.store(true, Ordering::Release);
+                }
+            },
             None,
         )
         .map_err(|e| format!("`{name}`: {e}"))?;

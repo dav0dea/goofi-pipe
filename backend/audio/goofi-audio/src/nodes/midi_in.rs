@@ -77,14 +77,20 @@ impl MidiIn {
         MidiIn { notes: birth.notes, voices: [Voice::default(); MAX_CHANNELS as usize], next: 0 }
     }
 
+    /// A note-on takes the next free voice round-robin — or the voice already holding that note;
+    /// a note-off frees its voice wherever it is, past a shrunk count included.
     fn land(&mut self, n: Note, voices: usize) {
-        if n.on {
-            let free = (0..voices).map(|k| (self.next + k) % voices).find(|v| !self.voices[*v].gate);
-            let v = free.unwrap_or(self.next % voices);
-            self.voices[v] = Voice { gate: true, note: n.note, velocity: f32::from(n.velocity) / 127.0 };
-            self.next = (v + 1) % voices;
-        } else if let Some(voice) = self.voices[..voices].iter_mut().find(|v| v.gate && v.note == n.note) {
-            voice.gate = false;
+        let held = self.voices.iter_mut().find(|v| v.gate && v.note == n.note);
+        match (n.on, held) {
+            (true, Some(voice)) => voice.velocity = f32::from(n.velocity) / 127.0,
+            (true, None) => {
+                let free = (0..voices).map(|k| (self.next + k) % voices).find(|v| !self.voices[*v].gate);
+                let v = free.unwrap_or(self.next % voices);
+                self.voices[v] = Voice { gate: true, note: n.note, velocity: f32::from(n.velocity) / 127.0 };
+                self.next = (v + 1) % voices;
+            }
+            (false, Some(voice)) => voice.gate = false,
+            (false, None) => {}
         }
     }
 }

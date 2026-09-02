@@ -6,13 +6,14 @@ use std::sync::Arc;
 
 use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK, MAX_CHANNELS};
 
-use crate::nodes::audio_out;
 use crate::plan::{Plan, Source, SILENCE};
 
 /// The most inputs, outputs or params a node may declare: a block's ports are stack arrays.
 pub const MAX_PORTS: usize = 16;
 
 pub struct Slot {
+    /// Which occupant of the index this is — what a stage compiled for another one checks.
+    pub serial: u64,
     pub node: Box<dyn AudioNode>,
     /// The scalar per param, `f64` bits, written by the node's control half.
     pub params: Arc<[AtomicU64]>,
@@ -31,6 +32,10 @@ pub struct Inbox {
     last: [f32; MAX_CHANNELS as usize],
 }
 
+/// Chunks a block may leave queued behind the one in hand. What a stalled clock let pile up is
+/// dropped past this, so a period rendered late is latency dropped, never latency kept.
+const QUEUED: usize = 2;
+
 impl Inbox {
     pub fn new(ring: rtrb::Consumer<f32>) -> Inbox {
         Inbox { ring, chans: 0, left: 0, last: [0.0; MAX_CHANNELS as usize] }
@@ -46,8 +51,28 @@ impl Inbox {
         self.last = [0.0; MAX_CHANNELS as usize];
     }
 
+    /// Skip to the last `QUEUED` chunks when more than that wait behind the one in hand.
+    fn catch_up(&mut self) {
+        let Ok(readable) = self.ring.read_chunk(self.ring.slots()) else { return };
+        let (a, b) = readable.as_slices();
+        let at = |i: usize| if i < a.len() { a[i] } else { b[i - a.len()] };
+        let len = a.len() + b.len();
+        let (mut count, mut recent) = (0, [0; QUEUED]);
+        let mut i = self.left * self.chans;
+        while i + 2 <= len {
+            recent[count % QUEUED] = i;
+            count += 1;
+            i += 2 + at(i) as usize * at(i + 1) as usize;
+        }
+        if count > QUEUED {
+            readable.commit(recent[count % QUEUED]);
+            self.left = 0;
+        }
+    }
+
     /// One block: per channel the next sample entered, or the last one held.
     pub fn fill(&mut self, out: &mut PortMut<'_>) {
+        self.catch_up();
         let channels = out.channels();
         for i in 0..BLOCK {
             if self.left == 0 {
@@ -128,14 +153,14 @@ impl Runtime {
         self.fifo.clear();
     }
 
-    /// Fill one device buffer: whole blocks until enough is rendered, the surplus carried.
+    /// Fill one device buffer: whole blocks until enough is rendered, the surplus carried in
+    /// place, so the FIFO keeps its allocation.
     pub fn render_into(&mut self, out: &mut [f32]) {
         while self.fifo.len() < out.len() {
             self.render_block();
         }
-        let rest = self.fifo.split_off(out.len());
-        out.copy_from_slice(&self.fifo);
-        self.fifo = rest;
+        out.copy_from_slice(&self.fifo[..out.len()]);
+        self.fifo.drain(..out.len());
     }
 
     fn apply(&mut self, msg: Msg) {
@@ -151,7 +176,7 @@ impl Runtime {
                     for src in &stage.ins {
                         let Source::Inbox { inbox, .. } = src else { continue };
                         if !self.plan.reads_inbox(stage.idx, *inbox) {
-                            if let Some(slot) = self.slab[stage.idx].as_mut() {
+                            if let Some(slot) = self.slab[stage.idx].as_mut().filter(|s| s.serial == stage.serial) {
                                 slot.inboxes[*inbox].flush();
                             }
                         }
@@ -179,12 +204,13 @@ impl Runtime {
     }
 
     /// One block: drain the inbox, run every stage in plan order, append the output to the fifo.
+    /// A stage whose index another occupant took since the plan was compiled waits for its own.
     pub fn render_block(&mut self) {
         self.apply_pending();
         let base = self.arena.as_mut_ptr();
         let len = self.arena.len();
         for stage in &self.plan.stages {
-            let Some(slot) = self.slab[stage.idx].as_mut() else { continue };
+            let Some(slot) = self.slab[stage.idx].as_mut().filter(|s| s.serial == stage.serial) else { continue };
             for src in stage.params.iter().chain(&stage.ins) {
                 match src {
                     Source::Scalar { at, param } => {
@@ -245,8 +271,7 @@ impl Runtime {
         {
             let dst = unsafe { region_mut(base, len, at, channels) };
             dst.fill(0.0);
-            for stage in self.plan.sinks.iter().map(|i| &self.plan.stages[*i]) {
-                let (Some(input), Some(gain)) = (stage.ins.first(), stage.params.get(audio_out::P::GAIN)) else { continue };
+            for (input, gain) in &self.plan.sinks {
                 let (input, gain) = unsafe { (port(base, len, input), port(base, len, gain)) };
                 for c in 0..channels as usize {
                     let (x, g) = (input.chan(c), gain.chan(c));
