@@ -230,3 +230,40 @@ pub trait Engine: Send {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn shutdown(&mut self);
 }
+
+/// One doorbell an output slot rings: the consumer, the id it is rung with, and the subscription
+/// the ring is for — a declared input slot, or a binding.
+pub struct Ringer<'a> {
+    pub consumer: Uid,
+    pub event_id: EventId,
+    pub via: Via<'a>,
+}
+
+pub enum Via<'a> {
+    Slot(&'static str),
+    Binding(&'a BindingView<'a>),
+}
+
+impl GraphView<'_> {
+    /// Every doorbell `(producer, slot)` rings, read off the view: wired consumer slots by
+    /// manifest position and `nd()` channels by the event id the graph allocated — only for
+    /// consumers whose engine wakes on doorbells, and never a slot past the event-id budget.
+    pub fn ringers(&self, producer: Uid, slot: &str) -> Vec<Ringer<'_>> {
+        let wired = self.edges.iter().filter(|e| e.producer.0 == producer && e.producer.1 == slot).filter_map(|e| {
+            let node = self.nodes.get(&e.consumer.0).filter(|n| n.rings)?;
+            let at = node.manifest.inputs.iter().position(|s| s.name == e.consumer.1)?;
+            (at < 64).then_some(Ringer { consumer: e.consumer.0, event_id: at as EventId + 1, via: Via::Slot(e.consumer.1) })
+        });
+        let bound = self.nodes.iter().filter(|(_, n)| n.rings).flat_map(|(uid, n)| {
+            n.bindings.iter().filter(|b| b.live).flat_map(move |b| {
+                b.vars.iter().filter_map(move |v| match v {
+                    BoundVar::Stream { producer: p, slot: s, event_id, .. } if *p == producer && *s == slot => {
+                        Some(Ringer { consumer: *uid, event_id: *event_id, via: Via::Binding(b) })
+                    }
+                    _ => None,
+                })
+            })
+        });
+        wired.chain(bound).collect()
+    }
+}

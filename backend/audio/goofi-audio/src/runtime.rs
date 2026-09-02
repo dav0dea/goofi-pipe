@@ -4,18 +4,67 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK};
+use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK, MAX_CHANNELS};
 
 use crate::plan::{Plan, Source, SILENCE};
-
 
 /// The most inputs, outputs or params a node may declare: a block's ports are stack arrays.
 pub const MAX_PORTS: usize = 16;
 
 pub struct Slot {
     pub node: Box<dyn AudioNode>,
-    /// The settled scalar per param, `f64` bits, written by the control thread.
+    /// The scalar per param, `f64` bits, written by the node's control half.
     pub params: Arc<[AtomicU64]>,
+    /// One per Array input, in declaration order.
+    pub inboxes: Vec<Inbox>,
+    /// One per output: what the control half publishes to whoever subscribes.
+    pub taps: Vec<rtrb::Producer<f32>>,
+}
+
+/// The audio thread's end of an Array input: chunks of interleaved samples, each headed by its
+/// channel count and length, read one sample per sample.
+pub struct Inbox {
+    ring: rtrb::Consumer<f32>,
+    chans: usize,
+    left: usize,
+    last: [f32; MAX_CHANNELS as usize],
+}
+
+impl Inbox {
+    pub fn new(ring: rtrb::Consumer<f32>) -> Inbox {
+        Inbox { ring, chans: 0, left: 0, last: [0.0; MAX_CHANNELS as usize] }
+    }
+
+    /// One block of `channels` planar channels: the next sample entered, or the last one held.
+    fn fill(&mut self, region: &mut [f32], channels: u16) {
+        for i in 0..BLOCK {
+            if self.left == 0 {
+                if let Ok(head) = self.ring.read_chunk(2) {
+                    let mut head = head.into_iter();
+                    self.chans = head.next().unwrap_or(0.0) as usize;
+                    self.left = head.next().unwrap_or(0.0) as usize;
+                }
+            }
+            if self.left > 0 {
+                match self.ring.read_chunk(self.chans) {
+                    Ok(sample) => {
+                        for (c, v) in sample.into_iter().enumerate() {
+                            self.last[c] = v;
+                        }
+                        self.left -= 1;
+                    }
+                    Err(_) => self.left = 0,
+                }
+            }
+            for c in 0..channels as usize {
+                region[c * BLOCK + i] = match (self.chans, c) {
+                    (1, _) => self.last[0],
+                    (n, c) if c < n => self.last[c],
+                    _ => 0.0,
+                };
+            }
+        }
+    }
 }
 
 pub enum Msg {
@@ -111,26 +160,39 @@ impl Runtime {
                             }
                         }
                     }
+                    Source::Inbox { at, channels, inbox } => {
+                        let region = unsafe { region_mut(base, len, *at, *channels) };
+                        slot.inboxes[*inbox].fill(region, *channels);
+                    }
                     Source::Silence | Source::Region { .. } => {}
                 }
             }
-            let ins: [Port<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.ins.get(i) {
-                Some(s) => unsafe { port(base, len, s) },
-                None => Port::new(&[], 0, false),
-            });
-            let params: [Port<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.params.get(i) {
-                Some(s) => unsafe { port(base, len, s) },
-                None => Port::new(&[], 0, false),
-            });
-            let mut outs: [PortMut<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.outs.get(i) {
-                Some((at, channels)) => PortMut::new(unsafe { region_mut(base, len, *at, *channels) }, *channels),
-                None => PortMut::new(&mut [], 0),
-            });
-            slot.node.process(&mut Block {
-                ins: &ins[..stage.ins.len()],
-                outs: &mut outs[..stage.outs.len()],
-                params: &params[..stage.params.len()],
-            });
+            {
+                let ins: [Port<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.ins.get(i) {
+                    Some(s) => unsafe { port(base, len, s) },
+                    None => Port::new(&[], 0, false),
+                });
+                let params: [Port<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.params.get(i) {
+                    Some(s) => unsafe { port(base, len, s) },
+                    None => Port::new(&[], 0, false),
+                });
+                let mut outs: [PortMut<'_>; MAX_PORTS] = std::array::from_fn(|i| match stage.outs.get(i) {
+                    Some((at, channels)) => PortMut::new(unsafe { region_mut(base, len, *at, *channels) }, *channels),
+                    None => PortMut::new(&mut [], 0),
+                });
+                slot.node.process(&mut Block {
+                    ins: &ins[..stage.ins.len()],
+                    outs: &mut outs[..stage.outs.len()],
+                    params: &params[..stage.params.len()],
+                });
+            }
+            for (k, (at, channels)) in stage.outs.iter().enumerate() {
+                let Some(tap) = slot.taps.get_mut(k) else { continue };
+                let out = unsafe { region(base, len, *at, *channels) };
+                if let Ok(chunk) = tap.write_chunk_uninit(1 + out.len()) {
+                    chunk.fill_from_iter(std::iter::once(*channels as f32).chain(out.iter().copied()));
+                }
+            }
         }
         let (at, channels) = self.plan.heard();
         let out = unsafe { region(base, len, at, channels) };
@@ -164,7 +226,7 @@ unsafe fn region_mut<'a>(base: *mut f32, len: usize, at: usize, channels: u16) -
 unsafe fn port<'a>(base: *mut f32, len: usize, src: &Source) -> Port<'a> {
     match src {
         Source::Silence => Port::new(region(base, len, SILENCE, 1), 1, false),
-        Source::Region { at, channels } | Source::Sum { at, channels, .. } => {
+        Source::Region { at, channels } | Source::Sum { at, channels, .. } | Source::Inbox { at, channels, .. } => {
             Port::new(region(base, len, *at, *channels), *channels, true)
         }
         Source::Scalar { at, .. } => Port::new(region(base, len, *at, 1), 1, true),

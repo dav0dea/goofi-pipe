@@ -2,10 +2,11 @@
 //! settled view — an order, the arena's regions, and where every port and param reads.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
 
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
-use goofi_core::Param;
-use goofi_node::{GraphView, ParamDecl, ParamGroups, Uid};
+use goofi_core::{Param, SlotType};
+use goofi_node::{BindingView, GraphView, ParamDecl, ParamGroups, Uid};
 
 use crate::Instance;
 
@@ -24,6 +25,8 @@ pub enum Source {
     Sum { at: Region, channels: u16, parts: Vec<(Region, u16)> },
     /// A scalar-sourced param: its own one-channel region, refilled when its atomic moves.
     Scalar { at: Region, param: usize },
+    /// An Array input: filled from the node's inbox each block, one sample per sample entered.
+    Inbox { at: Region, channels: u16, inbox: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +76,12 @@ pub(crate) fn scalar_of(params: &ParamGroups, d: &ParamDecl) -> f64 {
     }
 }
 
+/// Whether a binding is a plan edge: a bare reference to a live audio output — a same-engine
+/// stream, so the control half never sees it.
+pub(crate) fn is_edge(b: &BindingView<'_>, live: &HashMap<Uid, Instance>) -> bool {
+    b.live && b.id.is_none() && b.vars.len() == 1 && b.vars[0].wire().is_some_and(|(p, _)| live.contains_key(&p))
+}
+
 /// Kahn over port edges and same-engine references, ties by uid. A node whose type answers
 /// `feedback()` ignores its in-edges and runs before every other root, reading its producers'
 /// regions as the previous block left them. A loop with no such node is excluded and named; what
@@ -89,12 +98,8 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
         let Some(nv) = view.nodes.get(uid) else { continue };
         for (i, d) in inst.manifest.params.iter().enumerate() {
             let bound = nv.bindings.iter().find(|b| b.key.group == d.group && b.key.name == d.name);
-            let Some(b) = bound else { continue };
-            if !b.live || b.id.is_some() || b.vars.len() != 1 {
-                continue;
-            }
-            if let Some(p) = b.vars[0].wire().filter(|(uid, _)| live.contains_key(uid)) {
-                refs.insert((*uid, i), p);
+            if let Some(b) = bound.filter(|b| is_edge(b, live)) {
+                refs.insert((*uid, i), b.vars[0].wire().expect("an edge"));
             }
         }
     }
@@ -104,6 +109,7 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
             .manifest
             .inputs
             .iter()
+            .filter(|s| s.kind == SlotType::Audio)
             .flat_map(|s| wires.get(&(consumer, s.name)).into_iter().flatten().map(|p| p.0))
             .collect();
         from.extend((0..inst.manifest.params.len()).filter_map(|i| refs.get(&(consumer, i)).map(|p| p.0)));
@@ -135,11 +141,18 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
     for uid in &order {
         let inst = &live[uid];
         let nv = &view.nodes[uid];
+        let mut inbox = 0;
         let mut counts: Vec<u16> = inst
             .manifest
             .inputs
             .iter()
-            .map(|s| parts_of(*uid, s.name, &outs_of).iter().map(|p| p.1).max().unwrap_or(1))
+            .map(|s| {
+                if s.kind != SlotType::Audio {
+                    inbox += 1;
+                    return inst.control.chans[inbox - 1].load(Ordering::Relaxed).max(1);
+                }
+                parts_of(*uid, s.name, &outs_of).iter().map(|p| p.1).max().unwrap_or(1)
+            })
             .collect();
         counts.extend((0..inst.manifest.params.len()).filter_map(|i| refs.get(&(*uid, i)).map(|p| outs_of.get(p).map_or(1, |o| o.1))));
         let scalars: Vec<f64> = inst.manifest.params.iter().map(|d| scalar_of(nv.params, d)).collect();
@@ -152,11 +165,20 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
     let mut heard: Option<(Uid, Source)> = None;
     for uid in &order {
         let inst = &live[uid];
+        let mut inbox = 0;
         let ins: Vec<Source> = inst
             .manifest
             .inputs
             .iter()
             .map(|s| {
+                if s.kind != SlotType::Audio {
+                    inbox += 1;
+                    if view.wires_into(*uid, s.name).next().is_none() {
+                        return Source::Silence;
+                    }
+                    let channels = inst.control.chans[inbox - 1].load(Ordering::Relaxed).max(1);
+                    return Source::Inbox { at: alloc(channels, &mut plan.arena_len), channels, inbox: inbox - 1 };
+                }
                 let parts = parts_of(*uid, s.name, &outs_of);
                 match parts.as_slice() {
                     [] => Source::Silence,

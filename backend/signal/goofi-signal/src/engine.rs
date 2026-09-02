@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest, ParamGroups, ParamKey, Request, Status, Touched, Uid};
+use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell, LibraryEntry, NodeManifest, ParamGroups, ParamKey, Request, Status, Touched, Uid, Via};
 
 use crate::runtime::{
     self,
@@ -144,9 +144,9 @@ impl SignalEngine {
     }
 
     fn replan(&mut self, view: &GraphView<'_>, key: SlotKey) {
-        // Engines FILTER the whole-graph view: this engine plans only subscriptions its own
-        // nodes hold; a foreign consumer's engine drains its boundary at its own clock.
-        if view.nodes.get(&key.0).is_none_or(|n| n.engine != self.id()) {
+        // Engines FILTER the whole-graph view: a consumer that is never rung drains its boundary
+        // at its own clock, and its producers are told nothing.
+        if view.nodes.get(&key.0).is_none_or(|n| !n.rings) {
             return;
         }
         let desired = desired_wires(view, &key);
@@ -185,6 +185,9 @@ impl SignalEngine {
         phase: Phase,
     ) -> Vec<(Uid, runtime::Control)> {
         match phase {
+            // A foreign consumer subscribes at its own engine's settle; only its producers hear
+            // from this one.
+            Phase::Apply if view.nodes.get(&key.0).is_some_and(|n| n.engine != self.id()) => Vec::new(),
             // Phase 2 is the SUBSCRIBE, whichever kind of consumer this is — an input slot's full
             // service set, or a binding's whole re-resolved expression. Both are declarative.
             Phase::Apply => match &key.1 {
@@ -193,7 +196,7 @@ impl SignalEngine {
                         .wire
                         .desired(key)
                         .iter()
-                        .filter_map(|(uid, slot)| output_service_in(view, *uid, slot))
+                        .filter_map(|(uid, slot)| goofi_transport::output_of(view, *uid, slot))
                         .collect();
                     vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), services })]
                 }
@@ -237,8 +240,7 @@ impl SignalEngine {
     }
 
     /// Every doorbell one output slot rings, with the event id that says why the far node woke —
-    /// the union of its wire consumers and its expression subscribers (§5.3). A consumer whose
-    /// engine drains at its own tick is never rung.
+    /// the union of its wire consumers and its expression subscribers (§5.3).
     fn out_targets(
         &self,
         view: &GraphView<'_>,
@@ -247,43 +249,17 @@ impl SignalEngine {
     ) -> Vec<(runtime::ServiceName, EventId)> {
         // The ordering guarantee is per TARGET, not per sequence: a consumer whose own sequence
         // has not applied this wire is not a subscriber yet, which is what the phases prevent.
-        let wired = view
-            .edges
-            .iter()
-            .filter(|e| e.producer == (producer, slot))
-            .filter(|e| {
-                !self.wire.unapplied(&(e.consumer.0, Slot::In(e.consumer.1)), (producer, slot))
+        view.ringers(producer, slot)
+            .into_iter()
+            .filter(|r| {
+                let key = match r.via {
+                    Via::Slot(s) => Slot::In(s),
+                    Via::Binding(b) => Slot::Bind(b.key.clone()),
+                };
+                !self.wire.unapplied(&(r.consumer, key), (producer, slot))
             })
-            .filter_map(|e| {
-                let node = view.nodes.get(&e.consumer.0)?;
-                if !node.rings {
-                    return None;
-                }
-                let at = node.manifest.inputs.iter().position(|s| s.name == e.consumer.1)?;
-                let id = (at < 64).then_some(at as EventId + 1)?;
-                Some((door_of(view, e.consumer.0)?, id))
-            })
-            .collect::<Vec<_>>()
-            .into_iter();
-        let bound = view.nodes.iter().flat_map(|(consumer, node)| {
-            node.bindings.iter().filter(|b| b.live).flat_map(move |b| {
-                b.vars
-                    .iter()
-                    .filter(move |v| v.wire() == Some((producer, slot)))
-                    .filter(move |_| {
-                        !self
-                            .wire
-                            .unapplied(&(*consumer, Slot::Bind(b.key.clone())), (producer, slot))
-                    })
-                    .filter_map(move |v| match v {
-                        BoundVar::Stream { event_id, .. } if node.rings => {
-                            Some((door_of(view, *consumer)?, *event_id))
-                        }
-                        _ => None,
-                    })
-            })
-        });
-        wired.chain(bound).collect()
+            .filter_map(|r| Some((goofi_transport::door_of(view, r.consumer)?, r.event_id)))
+            .collect()
     }
 }
 
@@ -312,27 +288,13 @@ fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<(Uid, &'static str)
     }
 }
 
-/// One output slot's data service name, from the view's birth facts.
-fn output_service_in(view: &GraphView<'_>, uid: Uid, slot: &str) -> Option<runtime::ServiceName> {
-    let node = view.nodes.get(&uid)?;
-    Some(goofi_transport::output_service(
-        &goofi_transport::service_base(view.instance, uid, node.generation),
-        slot,
-    ))
-}
-
-fn door_of(view: &GraphView<'_>, uid: Uid) -> Option<runtime::ServiceName> {
-    let node = view.nodes.get(&uid)?;
-    Some(goofi_transport::door_service(&goofi_transport::service_base(view.instance, uid, node.generation)))
-}
-
 /// A resolved variable as the NODE sees it: a service name rather than a uid, because a node
 /// addresses a producer by service and cannot resolve anything for itself (§5.3).
 fn wire_var(view: &GraphView<'_>, var: &BoundVar) -> runtime::Var {
     match var {
         BoundVar::Stream { var, producer, slot, event_id } => runtime::Var::Stream {
             name: var.clone(),
-            service: output_service_in(view, *producer, slot).unwrap_or_default(),
+            service: goofi_transport::output_of(view, *producer, slot).unwrap_or_default(),
             event_id: *event_id,
         },
         BoundVar::Value { var, value } => {

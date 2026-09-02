@@ -160,24 +160,38 @@ arithmetic. The DSP object is `Send` and moves to the audio thread inside the pl
 `multi-engine-graph.md`'s "a scheduled engine has no doorbells": an expression is Python and
 cannot evaluate on the audio thread, so every boundary consumer of this engine is a control-half
 thread, woken like a signal node is — by the producer ringing the consumer node's own doorbell.
-One modulation thread, one iceoryx2 `WaitSet` over every audio node's doorbell: it evaluates an
-expression or copies a referenced scalar on arrival and stores the result in the param's atomic;
-the audio thread reads it at its next block start. Latest wins, no event list, no queue.
+It evaluates an expression or copies a referenced scalar on arrival and stores the result in the
+param's atomic; the audio thread reads it at its next block start. Latest wins, no event list, no
+queue. Landed 2026-09-02 as `control.rs`: a THREAD PER AUDIO NODE, parked on that node's door with
+a 10 ms tick — the shape a signal node already has, and no wait set — and the ONE writer of the
+node's atomics, constants included, so a dropped binding cannot race a settle's constant write.
+Settle hands it its whole desired state when that changes; it diffs subscriptions by service name.
+A binding with no stream variable re-evaluates every tick, since there is no run to evaluate
+before. The signal engine now plans a sequence for any consumer that RINGS, skipping the Apply
+phase for a foreign one — before, a signal producer was never told to ring an audio door. The
+ring is latency, not delivery: the tick would drain the same subscribers within 10 ms.
 
-**One tap serves every reader of an audio output.** A per-output-port SPSC ring of raw planar
-`f32`, filled by the audio thread after each block, ~200 ms deep, existing while it has a reader.
-A viewer reads it through a second `SlotFeed` arm chosen by `SlotType::Audio`, wrapped into a
-`[C, T]` `Data` array with `sfreq = rate` and reduced as today — the `line` viewer already asks
-for an envelope, so the frontend cost is zero. A cross-engine edge or reference into a signal node
-reads the same tap: the tap thread drains at its own pace, publishes under the derived name and
-rings the consumer's doorbell. Latest-wins by decree.
+**One tap serves every reader of an audio output.** Landed 2026-09-02 as a plain publish on the
+derived name, keyed on the data service's subscriber count: the audio thread feeds every output's
+ring after every block (a 64 KB ring per output, the newest block dropped when it is full), and
+the node's control half drains it each tick and publishes one `[C, T]` frame with `sfreq = rate`
+while anyone subscribes. A viewer, `node snapshot` and a signal consumer are all plain subscribers
+on the name every other engine's output already carries — no `SlotFeed` arm in the reducer, no
+bridge reaching into the engine, and no plan recompile when a tap opens or closes, which is why
+this replaced the spec's reducer arm. Latest-wins by decree.
 
 **An in-order signal→audio crossing is a BRIDGE node this engine owns.** `SignalIn` has a
 `SlotType::Array` input; its control half is rung by the signal producer, pushes the frame's
 samples into a per-node ring, and the DSP half resamples linearly from the frame's `sfreq` to the
 device rate. Latency is one source frame; underrun holds, overrun drops the oldest. This is for
 ORDERED samples — sonification, playback. A control value or a gate from the signal plane is a
-reference into a param, never this.
+reference into a param, never this. Landed 2026-09-02 with the crossing owned by the ENGINE, not
+the node: any `Array` input of an audio node is delivered as an audio-rate port. The control half
+resamples the frame linearly from its `sfreq` to the rate — no `sfreq` is one sample per sample,
+so a control value is held — and enters it whole as one chunk headed by channel count and length;
+the audio thread reads it one sample per sample and holds the last on underrun; a frame that does
+not fit the one-second inbox is dropped whole. `SignalIn` is a copy, and a new channel count
+re-plans through `dirty()`.
 
 **MIDI is a node that emits signals, and no engine mechanism knows it exists.** `MidiIn` outputs
 `gate`, `pitch` and `velocity`, each `voices` channels wide; its control half runs `midir` and
@@ -365,6 +379,10 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   Data and BespokeSynth all ship it, and it covers an authored `cdylib` and a VST3 bundle alike. A
   locally compiled node is ad-hoc signed by the linker and carries no quarantine attribute, so it
   loads under that entitlement.
+- **A control-rate param referencing an AUDIO output** receives a `[C, T]` frame, and the bare
+  reference rule wants one element — so it errors where a follower or a mean is what was meant.
+  Whether the rule takes the last sample, or a reference into the signal plane needs a node in
+  between, is open.
 - **Whether `MAX_CHANNELS = 16` is right**, and what a spectral port does to it when `Bins` arrives.
 - **Drift between two devices** for `AudioIn`: measured before any correction is built.
 - **A canvas affordance for references** — `param-sources.md` holds it.

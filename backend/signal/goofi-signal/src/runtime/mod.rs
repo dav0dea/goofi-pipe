@@ -1,7 +1,6 @@
 //! The per-node runtime: the wake loop's body, the three run paths, and a node's faults.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -83,30 +82,7 @@ struct UfreqMeter {
     ema: Option<f64>,
 }
 
-/// The one thing that stops a node's manager-side thread. A flag rather than a control message: a
-/// node removed before it answered [`Status::Ready`] has no sink to receive one.
-#[derive(Default)]
-pub struct Halt {
-    stop: AtomicBool,
-    /// Set once the [`NodeRuntime`] — and with it every iceoryx2 port — has been DROPPED, which is
-    /// what releases the shared memory. The only thing a teardown can usefully wait for.
-    released: AtomicBool,
-}
-
-impl Halt {
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
-    fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-    fn release(&self) {
-        self.released.store(true, Ordering::Release);
-    }
-    pub fn released(&self) -> bool {
-        self.released.load(Ordering::Acquire)
-    }
-}
+pub use goofi_transport::Halt;
 
 /// The pseudo input slot a bound param's producer wires ride: a binding subscribes exactly as an
 /// input slot does, through the one door. Namespaced with a character no declared slot may carry.

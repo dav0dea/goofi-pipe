@@ -758,3 +758,35 @@ pub fn install_all(g: &Goofi, files: &[(&str, &str)]) -> Vec<String> {
     }
     names
 }
+
+/// The one-variable evaluator a modulation step needs: the freshest frame's first sample,
+/// coerced to the target's own type — no interpreter, so a scenario runs in the default suite.
+pub struct FirstVar;
+
+impl goofi_node::ExprEvaluator for FirstVar {
+    fn compile(&self, _source: &str) -> Result<goofi_node::Compiled, goofi_node::ExprError> {
+        Ok(goofi_node::Compiled { id: 1 })
+    }
+    fn eval(
+        &self,
+        _id: goofi_node::BindingId,
+        ctx: &goofi_node::EvalCtx<'_>,
+    ) -> Result<goofi_core::Param, goofi_node::ExprError> {
+        let value = ctx
+            .locals
+            .values()
+            .flatten()
+            .find_map(|local| match local {
+                goofi_node::Local::Frame(d) => f32s(d).first().map(|v| *v as f64),
+                goofi_node::Local::Value(p) => p.as_f64(),
+            })
+            .ok_or_else(|| goofi_node::ExprError("no local arrived".into()))?;
+        match ctx.target {
+            goofi_core::Param::Float { vmin, vmax, .. } => {
+                Ok(goofi_core::Param::float(value, *vmin, *vmax))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+    fn release(&self, _id: goofi_node::BindingId) {}
+}

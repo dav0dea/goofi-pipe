@@ -580,7 +580,7 @@ pub fn fresh_graph() -> Graph {
         g.drain_waker(),
     );
     g.register_engine(Box::new(signal));
-    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.patch_start(), g.drain_waker())));
+    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker())));
     g
 }
 

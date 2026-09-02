@@ -498,8 +498,11 @@ name = "goofi-audio"
 version = "3.1.0"
 dependencies = [
  "goofi-audio-sdk",
+ "goofi-codec",
  "goofi-core",
  "goofi-node",
+ "goofi-transport",
+ "indexmap",
  "rtrb",
 ]
 

@@ -3,8 +3,11 @@
 //! this slice.
 
 pub mod audio_out;
+pub mod env;
+pub mod feedback;
 pub mod gain;
 pub mod osc;
+pub mod signal_in;
 
 use goofi_audio_sdk::{AudioNode, Manifest};
 
@@ -14,4 +17,7 @@ pub static SHIPPED: &[(&str, &Manifest, Make)] = &[
     ("Osc", &osc::MANIFEST, || Box::new(osc::Osc::default())),
     ("Gain", &gain::MANIFEST, || Box::new(gain::Gain)),
     ("AudioOut", &audio_out::MANIFEST, || Box::new(audio_out::AudioOut)),
+    ("SignalIn", &signal_in::MANIFEST, || Box::new(signal_in::SignalIn)),
+    ("Env", &env::MANIFEST, || Box::new(env::Env::default())),
+    ("Feedback", &feedback::MANIFEST, || Box::new(feedback::Feedback)),
 ];

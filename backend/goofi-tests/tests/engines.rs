@@ -10,7 +10,7 @@ use std::time::Duration;
 use goofi_audio_sdk::{AudioNode, Block, ParamDecl, ParamSpec, Port, PortMut, BLOCK};
 use goofi_core::SlotType;
 use goofi_node::{
-    BoundVar, DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
+    DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
     OutputDecl, ParamGroups, Request, SlotDecl, Status, Touched, Uid,
 };
 use goofi_tests::{ep, f32s, hex, j, shape, Goofi};
@@ -296,59 +296,17 @@ impl Drop for Skeleton {
     }
 }
 
-/// Every doorbell one of this engine's output slots must ring: wired consumer slots by manifest
-/// position, and `nd()` binding channels by the event id the graph allocated — both read off the
-/// view, and only for consumers whose engine wakes on doorbells.
+/// Every doorbell one of this engine's output slots must ring, read off the view — only for
+/// consumers whose engine wakes on doorbells.
 fn rings_for(view: &GraphView<'_>, producer: Uid, slot: &'static str) -> Rings {
-    let shared = view;
     let node_iox = goofi_transport::iox_node().expect("an iceoryx2 node for the rings");
-    let mut out = Vec::new();
-    for e in shared.edges.iter().filter(|e| e.producer == (producer, slot)) {
-        let Some(consumer) = shared.nodes.get(&e.consumer.0) else { continue };
-        if !consumer.rings {
-            continue;
-        }
-        let Some(at) = consumer.manifest.inputs.iter().position(|s| s.name == e.consumer.1) else {
-            continue;
-        };
-        if at >= 64 {
-            continue;
-        }
-        if let Some(bell) = door_for(view, &node_iox, e.consumer.0) {
-            out.push((bell, at as EventId + 1));
-        }
-    }
-    for (uid, consumer) in &shared.nodes {
-        if !consumer.rings {
-            continue;
-        }
-        for binding in consumer.bindings.iter().filter(|b| b.live) {
-            for var in binding.vars {
-                if let BoundVar::Stream { event_id, .. } = var {
-                    if var.wire() == Some((producer, slot)) {
-                        if let Some(bell) = door_for(view, &node_iox, *uid) {
-                            out.push((bell, *event_id));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-fn door_for(
-    view: &GraphView<'_>,
-    iox: &goofi_transport::IoxNode,
-    uid: Uid,
-) -> Option<goofi_transport::Doorbell> {
-    let node = view.nodes.get(&uid)?;
-    let door = goofi_transport::door_service(&goofi_transport::service_base(
-        view.instance,
-        uid,
-        node.generation,
-    ));
-    goofi_transport::Doorbell::open(iox, &door).ok()
+    view.ringers(producer, slot)
+        .into_iter()
+        .filter_map(|r| {
+            let door = goofi_transport::door_of(view, r.consumer)?;
+            Some((goofi_transport::Doorbell::open(&node_iox, &door).ok()?, r.event_id))
+        })
+        .collect()
 }
 
 /// The one DSP node behind the audio skeleton, written as an author writes one: a level param
@@ -392,41 +350,10 @@ fn gfx_frame() -> goofi_core::Data {
     goofi_core::Data::array_f32(vec![8, 8], bytes, goofi_core::Meta::empty()).expect("a frame")
 }
 
-/// The one-variable evaluator the modulation step needs: the freshest frame's first sample,
-/// coerced to the target's own type — no interpreter, so the scenario runs in the default suite.
-struct FirstVar;
-impl goofi_node::ExprEvaluator for FirstVar {
-    fn compile(&self, _source: &str) -> Result<goofi_node::Compiled, goofi_node::ExprError> {
-        Ok(goofi_node::Compiled { id: 1 })
-    }
-    fn eval(
-        &self,
-        _id: goofi_node::BindingId,
-        ctx: &goofi_node::EvalCtx<'_>,
-    ) -> Result<goofi_core::Param, goofi_node::ExprError> {
-        let value = ctx
-            .locals
-            .values()
-            .flatten()
-            .find_map(|local| match local {
-                goofi_node::Local::Frame(d) => f32s(d).first().map(|v| *v as f64),
-                goofi_node::Local::Value(p) => p.as_f64(),
-            })
-            .ok_or_else(|| goofi_node::ExprError("no local arrived".into()))?;
-        match ctx.target {
-            goofi_core::Param::Float { vmin, vmax, .. } => {
-                Ok(goofi_core::Param::float(value, *vmin, *vmax))
-            }
-            other => Ok(other.clone()),
-        }
-    }
-    fn release(&self, _id: goofi_node::BindingId) {}
-}
-
 fn register_skeletons(t: &Goofi) {
     let mut g = t.state.graph.lock().unwrap();
     let waker = g.drain_waker();
-    g.set_evaluator(Arc::new(FirstVar));
+    g.set_evaluator(Arc::new(goofi_tests::FirstVar));
     g.register_engine(Box::new(Skeleton::new(
         "skel",
         &AUDIO,

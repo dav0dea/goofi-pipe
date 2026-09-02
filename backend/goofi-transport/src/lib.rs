@@ -2,13 +2,14 @@
 //! mechanism for every engine. A phone book, not a switchboard — the resolver here is pure name
 //! and config derivation, and whichever side settles first waits on `open_or_create`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock};
 
 use iceoryx2::config::Config;
 use iceoryx2::node::{NodeState, NodeView};
 use iceoryx2::prelude::*;
 
-use goofi_node::{EventId, Uid};
+use goofi_node::{EventId, GraphView, Uid};
 
 /// An iceoryx2 service name — a wire's identity, which is why slot messages carry no source uid.
 pub type ServiceName = String;
@@ -246,6 +247,11 @@ pub fn data_service(node: &IoxNode, name: &str) -> Result<ByteService, String> {
         .map_err(|e| format!("data service `{name}`: {e}"))
 }
 
+/// How many subscribers a data service has right now — whether anyone drinks from it.
+pub fn subscribers(service: &ByteService) -> usize {
+    service.dynamic_config().number_of_subscribers()
+}
+
 /// Open a subscriber on an output slot's data service by name — a `/data` consumer's end of a wire.
 pub fn open_output_subscriber(node: &IoxNode, service: &str) -> Result<ByteSubscriber, String> {
     data_service(node, service)?
@@ -267,4 +273,40 @@ pub fn publisher(service: &ByteService, what: &str, initial: usize) -> Result<By
 
 fn parse_name(name: &str) -> Result<iceoryx2::service::service_name::ServiceName, String> {
     name.try_into().map_err(|e| format!("bad service name `{name}`: {e:?}"))
+}
+
+/// One node's door, from the view's birth facts.
+pub fn door_of(view: &GraphView<'_>, uid: Uid) -> Option<ServiceName> {
+    let node = view.nodes.get(&uid)?;
+    Some(door_service(&service_base(view.instance, uid, node.generation)))
+}
+
+/// One output slot's data service name, from the view's birth facts.
+pub fn output_of(view: &GraphView<'_>, uid: Uid, slot: &str) -> Option<ServiceName> {
+    let node = view.nodes.get(&uid)?;
+    Some(output_service(&service_base(view.instance, uid, node.generation), slot))
+}
+
+/// The two flags a node's thread is born holding: told to stop, and — once every port it owned
+/// is dropped, which is what releases the shared memory — released. The only thing a teardown
+/// can usefully wait for.
+#[derive(Default)]
+pub struct Halt {
+    stop: AtomicBool,
+    released: AtomicBool,
+}
+
+impl Halt {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+    pub fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::Acquire)
+    }
 }

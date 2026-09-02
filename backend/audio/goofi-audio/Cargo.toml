@@ -7,5 +7,8 @@ license.workspace = true
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
+goofi-codec = { path = "../../goofi-codec" }
+goofi-transport = { path = "../../goofi-transport" }
 goofi-audio-sdk = { path = "../goofi-audio-sdk" }
+indexmap = "2"
 rtrb = "0.3"

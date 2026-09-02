@@ -41,6 +41,7 @@ pub fn register(g: &mut Graph) {
     add(g, manifest("_TestPicker", "a refreshable device list", &[], &[], PICKER_PARAMS, false), || Box::new(Picker));
     add(g, manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false), || Box::new(MutePicker));
     add(g, manifest("_TestConst", "constant float32 array source (value+length) — hidden test/bench scaffolding.", &[], OUT_ARRAY, CONST_PARAMS, true), || Box::new(TestConst));
+    add(g, manifest("_TestRamp", "a [C, T] ramp frame at `sfreq`: channel c rises from c to c + 1", &[], OUT_ARRAY, RAMP_PARAMS, true), || Box::new(Ramp));
 }
 
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
@@ -266,5 +267,48 @@ static CONST_PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 },
         expression: None,
         doc: Some("How many elements the emitted array has."),
+    },
+];
+
+/// `_TestRamp` — one `[C, T]` frame per run, channel `c` rising from `c` to `c + 1` over
+/// `length` samples at `sfreq`: ordered samples with a rate, which is what a crossing resamples.
+struct Ramp;
+
+impl Node for Ramp {
+    fn process(&mut self, _inp: &Inputs<'_>, out: &mut Outputs<'_>, _ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+        let sfreq = p.f64("ramp", "sfreq").unwrap_or(256.0);
+        let length = p.i64("ramp", "length").unwrap_or(512).max(1) as usize;
+        let channels = p.i64("ramp", "channels").unwrap_or(1).max(1) as usize;
+        let buf: Vec<u8> = (0..channels)
+            .flat_map(|c| (0..length).flat_map(move |i| (c as f32 + i as f32 / length as f32).to_le_bytes()))
+            .collect();
+        let data = Data::array_f32(vec![channels, length], buf, Meta::new().with_sfreq(Some(sfreq)))
+            .map_err(|e| e.to_string())?;
+        out.set("out", data);
+        Ok(())
+    }
+}
+
+static RAMP_PARAMS: &[ParamDecl] = &[
+    ParamDecl {
+        group: "ramp",
+        name: "sfreq",
+        spec: ParamSpec::Float { default: 256.0, min: 1.0, max: 100_000.0 },
+        expression: None,
+        doc: None,
+    },
+    ParamDecl {
+        group: "ramp",
+        name: "length",
+        spec: ParamSpec::Int { default: 512, min: 1, max: 1_000_000 },
+        expression: None,
+        doc: None,
+    },
+    ParamDecl {
+        group: "ramp",
+        name: "channels",
+        spec: ParamSpec::Int { default: 1, min: 1, max: 16 },
+        expression: None,
+        doc: None,
     },
 ];

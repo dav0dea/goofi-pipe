@@ -1,7 +1,9 @@
 //! The audio engine under the external clock: one session, every action through the op
 //! vocabulary, every probe the interleaved output a device would receive.
 
-use goofi_tests::{ep, hex, j, Goofi, Uid};
+use std::sync::Arc;
+
+use goofi_tests::{ep, f32s, hex, j, shape, FirstVar, Goofi, Uid};
 
 /// Render `frames` and hand back what the device would get, interleaved, with its channel count.
 fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
@@ -44,6 +46,7 @@ fn near(a: usize, b: usize) -> bool {
 #[test]
 fn a_patch_sounds_under_the_external_clock() {
     let g = Goofi::new();
+    g.state.graph.lock().unwrap().set_evaluator(Arc::new(FirstVar));
 
     // Step: the palette lists the audio category, and a chain of three sounds at once.
     let types = g.call("library list", j!({}));
@@ -152,4 +155,162 @@ fn a_patch_sounds_under_the_external_clock() {
     let (heard, _) = drive(&g, TENTH);
     assert!((peak(&heard) - 1.0).abs() < 0.01 && near(crossings(&heard), 88), "the first AudioOut is heard: peak {} crossings {}", peak(&heard), crossings(&heard));
     assert!(g.doc()["nodes"][hex(out2)].is_object(), "the second one stands, unheard");
+
+    // Step: a binding the control half evaluates lands at control rate — the gain follows a
+    // signal-plane constant through `nd()`, and the value it evaluated to rides the wire.
+    let mut events = g.events();
+    let source = g.add("_TestConst");
+    let source_name = g.doc()["nodes"][hex(source)]["name"].as_str().unwrap().to_string();
+    g.set_param(source, "constant", "value", 0.25);
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(gain3), "param": "gain/gain", "expression": format!("nd('{source_name}')"), "mode": "expression" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    g.until("the constant to modulate the gain", |g| {
+        let (x, _) = drive(g, TENTH);
+        ((peak(&x) - 0.25).abs() < 0.01).then_some(())
+    });
+    let reported = events.next("param_values");
+    assert_eq!(reported["node"], hex(gain3), "{reported}");
+    assert_eq!(reported["values"]["gain"]["gain"], 0.25, "{reported}");
+    g.set_param(source, "constant", "value", 0.75);
+    g.until("the gain to follow its source", |g| {
+        let (x, _) = drive(g, TENTH);
+        ((peak(&x) - 0.75).abs() < 0.01).then_some(())
+    });
+
+    // Step: a plan swap keeps every instance — the oscillator's phase runs on across it.
+    let (a, _) = drive(&g, TENTH);
+    let spare = g.add("Gain");
+    let (b, _) = drive(&g, TENTH);
+    assert!((b[0] - a[a.len() - 1]).abs() < 0.1, "no jump at the swap: {} then {}", a[a.len() - 1], b[0]);
+    g.call("node remove", j!({ "node": hex(spare) }));
+
+    // Step: the tap — every reader of an audio output subscribes on the derived name: a probe
+    // sees whole blocks at the rate, a signal Buffer fills from them, and a snapshot answers.
+    let tapped = g.probe(osc3, "out");
+    drive(&g, TENTH);
+    let block = tapped.expect_frame(&mut g.state.graph.lock().unwrap(), "the oscillator's tapped blocks");
+    assert_eq!(shape(&block)[0], 1, "{:?}", shape(&block));
+    assert!(shape(&block)[1] >= 64 && shape(&block)[1].is_multiple_of(64), "whole blocks: {:?}", shape(&block));
+    assert_eq!(block.meta().sfreq(), Some(48_000.0));
+    assert!(crossings(&f32s(&block)) > 0 && peak(&f32s(&block)) <= 1.0, "the sine, as it sounds");
+    let buffer = g.add("Buffer");
+    g.link(osc3, "out", buffer, "data");
+    let buffered = g.probe(buffer, "out");
+    drive(&g, TENTH);
+    let filled = buffered.expect_frame(&mut g.state.graph.lock().unwrap(), "the buffer to fill from the tap");
+    assert!(shape(&filled)[0] == 1 && crossings(&f32s(&filled)) > 0, "the buffer holds the sine: {:?}", shape(&filled));
+    let snapshot = g.until("a snapshot of the gain's output", |g| {
+        drive(g, TENTH);
+        let answer = g.call("node snapshot", j!({ "output": ep(hex(gain3), "out") }));
+        answer["npy_b64"].is_string().then_some(answer)
+    });
+    assert_eq!(snapshot["meta"]["sfreq"], 48000.0, "{snapshot}");
+
+    // Step: the in-order crossing — a signal ramp at 256 Hz enters through `SignalIn`, resampled
+    // to the rate: it rises from zero, a tenth of a second is a twentieth of it, and the next
+    // tenth continues where this one stopped.
+    g.set_param(source, "constant", "value", 0.0);
+    g.until("the gain to close", |g| {
+        let (x, _) = drive(g, TENTH);
+        (peak(&x) == 0.0).then_some(())
+    });
+    g.call("node remove", j!({ "node": hex(buffer) }));
+    let ramp = g.add("_TestRamp");
+    let signal_in = g.add("SignalIn");
+    g.link(ramp, "out", signal_in, "data");
+    g.link(signal_in, "out", out, "input");
+    let first = g.until("the ramp to enter", |g| {
+        let (x, _) = drive(g, TENTH);
+        (peak(&x) > 0.0).then_some(x)
+    });
+    let rising: Vec<f32> = first.iter().copied().skip_while(|x| *x == 0.0).collect();
+    assert!(rising.windows(2).all(|w| w[1] >= w[0]), "the ramp rises in order");
+    let top = *rising.last().unwrap();
+    assert!(rising[0] < 0.01 && top <= 0.051, "from zero, a twentieth per tenth: {} .. {top}", rising[0]);
+    let (second, _) = drive(&g, TENTH);
+    assert!(second[0] >= top - 0.001 && second.windows(2).all(|w| w[1] >= w[0]), "…and continues: {} after {top}", second[0]);
+
+    // Step: a gate from the signal plane — `Env.gate` referencing a constant — opens the envelope
+    // at control rate, and dropping it releases.
+    g.call("node remove", j!({ "node": hex(signal_in) }));
+    g.call("node remove", j!({ "node": hex(ramp) }));
+    let env = g.add("Env");
+    let gate = g.add("_TestConst");
+    g.link(env, "out", out, "input");
+    let gate_name = g.doc()["nodes"][hex(gate)]["name"].as_str().unwrap().to_string();
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(env), "param": "env/gate", "reference": format!("{gate_name}.out"), "mode": "reference" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    let (shut, _) = drive(&g, TENTH);
+    assert_eq!(peak(&shut), 0.0, "a low gate is silence");
+    g.set_param(gate, "constant", "value", 1.0);
+    g.until("the gate to open", |g| {
+        let (x, _) = drive(g, TENTH);
+        (x[x.len() - 1] > 0.99).then_some(())
+    });
+    g.set_param(gate, "constant", "value", 0.0);
+    g.until("the release to finish", |g| {
+        let (x, _) = drive(g, TENTH);
+        (x[x.len() - 1] == 0.0).then_some(())
+    });
+
+    // Step: an audio-rate gate is one voice per channel — a four-channel ramp through `SignalIn`
+    // as the gate: the channel still below the threshold is shut, the three above it sound.
+    let ramp4 = g.add("_TestRamp");
+    g.set_param(ramp4, "ramp", "channels", 4);
+    let in4 = g.add("SignalIn");
+    g.link(ramp4, "out", in4, "data");
+    let in4_name = g.doc()["nodes"][hex(in4)]["name"].as_str().unwrap().to_string();
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(env), "param": "env/gate", "reference": format!("{in4_name}.out"), "mode": "reference" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    g.until("four voices, one shut", |g| {
+        let (x, channels) = drive(g, TENTH);
+        let last = &x[x.len() - 4..];
+        (channels == 4 && last[0] == 0.0 && last[1..].iter().all(|v| *v > 0.99)).then_some(())
+    });
+    for uid in [env, in4, ramp4] {
+        g.call("node remove", j!({ "node": hex(uid) }));
+    }
+
+    // Step: a stereo source into the mono chain — the channel count follows the widest part,
+    // and the second channel is its own.
+    let ramp2 = g.add("_TestRamp");
+    g.set_param(ramp2, "ramp", "channels", 2);
+    let in2 = g.add("SignalIn");
+    g.link(ramp2, "out", in2, "data");
+    g.link(in2, "out", out, "input");
+    g.until("stereo", |g| {
+        let (x, channels) = drive(g, TENTH);
+        (channels == 2 && (x[x.len() - 1] - x[x.len() - 2] - 1.0).abs() < 0.01).then_some(())
+    });
+    for uid in [in2, ramp2] {
+        g.call("node remove", j!({ "node": hex(uid) }));
+    }
+
+    // Step: a loop closed by `Feedback` runs, and no fault names it: a held one through half
+    // gain and back converges on one, and opening the loop halves it again.
+    let held = frozen_square(&g);
+    g.call("link remove", j!({ "from": ep(hex(osc3), "out"), "to": ep(hex(gain3), "input") }));
+    g.link(held, "out", gain3, "input");
+    g.set_param(source, "constant", "value", 0.5);
+    let fb = g.add("Feedback");
+    g.link(gain3, "out", fb, "input");
+    g.link(fb, "out", gain3, "input");
+    assert!(g.stays(|g| !state(g, gain3).contains("loop")), "a feedback node closes the loop without a fault");
+    g.until("the loop to converge", |g| {
+        let (x, _) = drive(g, TENTH);
+        let tail = &x[x.len() - 480..];
+        ((mean(tail) - 1.0).abs() < 0.01 && peak(&x) <= 1.001).then_some(())
+    });
+    g.call("node remove", j!({ "node": hex(fb) }));
+    let (opened, _) = drive(&g, TENTH);
+    assert!((mean(&opened[opened.len() - 480..]) - 0.5).abs() < 0.01, "the loop opened: {}", mean(&opened[opened.len() - 480..]));
 }
