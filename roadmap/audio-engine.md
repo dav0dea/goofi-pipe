@@ -334,20 +334,23 @@ above `goofi-transport`, so no iceoryx2 thread or tokio reaches the DSP path and
 callback can drive it. New dependencies: `cpal`, `rtrb`, `midir`, `vst3`. No DSP crate in the
 engine or the shipped nodes.
 
-**The shipped set is nine nodes, and the rule is orthogonality.** Landed 2026-09-02 (Step 10):
+**The shipped set is ten nodes, and the rule is orthogonality.** Landed 2026-09-02 (Step 10):
 `AudioOut`, `AudioIn` and `MidiIn` are built in, because their control halves own OS handles;
 `Osc`, `Gain`, `Svf`, `Env`, `Slew`, `Feedback` and `SignalIn` are files in `nodes_audio/` like
 any authored node — the shipped tree is a node source root, not a privileged one. Each proves a
 seam or closes a gap nothing else composes to: `Osc` the trait and an option index, `Gain` the
-modulation target, `Svf` and `Slew` state carried across blocks, `Env` the gate convention and
-its three sources, `Feedback` the one way a loop closes, `SignalIn` the in-order crossing.
-`Osc.pitch` and `Svf.cutoff` are both volts per octave, zero at C4, so a reference from one
-tracks the other exactly; a node wanting hertz converts, and no node carries a CV port.
+modulation target, `Svf` resonance built across blocks, `Slew` a rate limit — the CV convention —
+`Env` the gate convention and its three sources, `Feedback` the one way a loop closes, `SignalIn`
+the in-order crossing. `Svf.cutoff` is in `Osc.pitch`'s volts, so a reference from one tracks the
+other exactly. Every audio input sums its wires, including the two this step added, which the
+spec's table marks only on `AudioOut`.
 
 Still open, and the owner's to settle: `Noise`, `Delay`, `LFO` (or is it `Osc` at a low pitch?),
 `Clock` (or `Osc` square?), `Quantize`, `Seq`, `HzToOct`, `MidiCC` (deferred by decision),
 `Sampler` (needs the resource door). `Mix` and `Offset`/`Scale` look redundant while the jack
-sums and a reference replaces a literal.
+sums and a reference replaces a literal. `Svf` at a high `q` peaks at `q` times its input, which
+leaves the `[-1, 1]` convention with nothing downstream limiting it — a synth's resonance always
+does, and whether the engine should have a limiter at the jack is the open question.
 
 ## Authored nodes
 
@@ -357,9 +360,9 @@ Rust — and goofi generates the crate around it, builds it, and loads it while 
 `node-sources.md` holds the folder rule and the pipeline, which is one for every engine; what is
 here is the part that is audio's — the rules an audio thread forces.
 
-Landed 2026-09-02 (Step 7), the bullets below being the rules: the five DSP nodes are files in
-`nodes_audio/`, and only `AudioOut`, `AudioIn` and `MidiIn` are built in, because their control
-halves own OS handles. A file whose stem is a built-in's name is not a node file — as a stem
+Landed 2026-09-02 (Step 7), the bullets below being the rules. Which nodes are files and which
+are built in is the shipped-set paragraph's to say, not this one's. A file whose stem is a
+built-in's name is not a node file — as a stem
 outside the name rule is not — so it adds nothing, changes nothing and restarts nothing; the
 prebuild still builds it once and memoises the failure, a cost paid only by a file that will never
 load. `process` crosses as a descriptor of the arena's own regions — no bytes, no codec.
@@ -524,7 +527,7 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   audio reference can hand a node a NaN; `Osc` folds it into its phase and `Svf` into its
   integrators, and nothing clears either but a restart. Nothing in the engine or the SDK checks
   `is_finite` today. The fix is one place — the param boundary, where the scalar and the plan edge
-  are already the one owner — never a guard in each of nine nodes, which is why it is recorded
+  are already the one owner — never a guard in each of ten nodes, which is why it is recorded
   rather than patched.
 - **Blame by a node's own duration is the watchdog's rule**, and eight blocks its count; a node that
   runs at exactly the block's time flaps in and out. Neither number has been tuned on a device.

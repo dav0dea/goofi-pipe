@@ -304,6 +304,22 @@ fn a_malformed_frame_is_refused_rather_than_trusted() {
 }
 
 #[test]
+fn no_two_engines_offer_one_type_name() {
+    // Type names are ONE namespace across engines, and nothing refuses a second claim on one: the
+    // palette shows both rows as available while every resolution door silently takes the first
+    // engine's. It cost a shipped audio filter its name, and twice before that a node was renamed
+    // to dodge the same silence. This is the guard those three incidents did not have.
+    let g = Goofi::new();
+    let graph = g.state.graph.lock().unwrap();
+    let mut seen: std::collections::HashMap<&str, usize> = Default::default();
+    for m in graph.library_manifests() {
+        *seen.entry(m.type_name).or_default() += 1;
+    }
+    let twice: Vec<&str> = seen.iter().filter(|(_, n)| **n > 1).map(|(t, _)| *t).collect();
+    assert!(twice.is_empty(), "two engines offer one type name, and only the first is reachable: {twice:?}");
+}
+
+#[test]
 fn every_slot_name_is_letters_and_digits() {
     // A reference spells `node.slot`, and an expression reads a slot as an attribute: one rule,
     // held by every manifest a fresh goofi offers — the shipped nodes and the fixtures.

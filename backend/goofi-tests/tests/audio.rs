@@ -83,11 +83,12 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: the palette lists the audio category, and a chain of three sounds at once.
     let types = g.call("library list", j!({}));
-    let audio: Vec<&str> = types["types"].as_array().unwrap().iter()
+    let mut audio: Vec<&str> = types["types"].as_array().unwrap().iter()
         .filter(|r| r["category"] == "audio").filter_map(|r| r["type"].as_str()).collect();
-    for want in ["Osc", "Gain", "AudioOut"] {
-        assert!(audio.contains(&want), "`{want}` is missing from the audio palette: {audio:?}");
-    }
+    audio.sort_unstable();
+    // The shipped set, whole: three built in because their control halves own OS handles, and
+    // seven files built by the same pipeline an authored node takes.
+    assert_eq!(audio, ["AudioIn", "AudioOut", "Env", "Feedback", "Gain", "MidiIn", "Osc", "SignalIn", "Slew", "Svf"]);
     let osc = g.add("Osc");
     let gain = g.add("Gain");
     let out = g.add("AudioOut");
@@ -134,29 +135,30 @@ fn a_patch_sounds_under_the_external_clock() {
     let (e2, _) = drive(&g, TENTH);
     assert!((peak(&e2) - 1.0).abs() < 0.01 && (mean(&e2) - 0.5).abs() < 0.02, "the literal stands: peak {} mean {}", peak(&e2), mean(&e2));
 
-    // Step: two nodes that carry state across blocks. A filter is asked for the two ends of its
-    // range: wide open it passes the square's edges, and closed far below the fundamental it
-    // passes nothing. Its `cutoff` is volts per octave, as `Osc.pitch` is, so a reference from
-    // one tracks the other. A slew's step is a ramp, and the time it takes is its `rise`.
+    // Step: two nodes that carry state across blocks, and neither can fake it. The filter is
+    // taken to a cutoff far below its source — which its default would not answer — then across
+    // its modes, then made resonant, where the peak it builds needs many blocks of memory to
+    // reach. The slew is given a full-scale square and a one-second slope: what comes out is a
+    // hundredth of it.
     let square = g.add("Osc");
     g.set_param(square, "osc", "shape", "square");
     let filter = g.add("Svf");
     g.link(square, "out", filter, "input");
-    g.set_param(filter, "filter", "cutoff", 6.0);
-    let open = heard(&g, filter, "a square through an open filter", |x| peak(x) > 0.9);
-    assert!(near(per_tenth(&open), 88), "an A4 square keeps its edges: {} crossings", per_tenth(&open));
     g.set_param(filter, "filter", "cutoff", -4.0);
-    heard(&g, filter, "five octaves below, the square is gone", |x| peak(x) < 0.2);
+    heard(&g, filter, "an A4 square five octaves under the cutoff", |x| peak(x) < 0.2);
+    g.set_param(filter, "filter", "mode", "high");
+    heard(&g, filter, "the same corner, passing everything above it", |x| peak(x) > 0.9 && near(per_tenth(x), 88));
+    g.set_param(filter, "filter", "mode", "low");
+    g.set_param(filter, "filter", "cutoff", 0.75);
+    g.set_param(filter, "filter", "q", 10.0);
+    heard(&g, filter, "resonance built across blocks", |x| peak(x) > 3.0);
 
-    // A gated envelope with no attack is a step at birth; a tenth of a second up a one-second
-    // slope reaches a tenth of the way, so what the tap holds is the ramp rather than the step.
     let slew = g.add("Slew");
-    let step = held_one(&g);
-    g.link(step, "out", slew, "input");
     g.set_param(slew, "slew", "rise", 1.0);
-    let ramped = heard(&g, slew, "a ramp rather than a step", |x| peak(x) > 0.0 && peak(x) < 0.5);
-    assert!(ramped.windows(2).all(|w| w[1] >= w[0] - 1e-6), "it only climbs: {:?}", &ramped[..4]);
-    for uid in [square, filter, slew, step] {
+    g.set_param(slew, "slew", "fall", 1.0);
+    g.link(square, "out", slew, "input");
+    heard(&g, slew, "a full-scale square rate-limited to a hundredth", |x| peak(x) > 0.0 && peak(x) < 0.01);
+    for uid in [square, filter, slew] {
         g.call("node remove", j!({ "node": hex(uid) }));
     }
 

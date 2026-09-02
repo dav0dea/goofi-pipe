@@ -39,7 +39,6 @@ struct Slew {
 impl AudioNode for Slew {
     fn prepare(&mut self, rate: f64) {
         self.rate = rate as f32;
-        self.held = Default::default();
     }
 
     fn process(&mut self, b: &mut Block<'_>) {
