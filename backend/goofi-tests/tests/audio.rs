@@ -150,17 +150,110 @@ fn a_patch_sounds_under_the_external_clock() {
     let (back, _) = drive(&g, TENTH);
     assert!((peak(&back) - 0.5).abs() < 0.01 && near(crossings(&back), 176), "undo restored the 880 Hz oscillator: peak {} crossings {}", peak(&back), crossings(&back));
 
-    // Step: with two AudioOut nodes the lowest uid is heard, whatever order the plan runs them
-    // in — a fresh chain into the first one sounds although a newer, silent one comes earlier.
+    // Step: every AudioOut naming the device sums into it, each through its own gain; one naming
+    // another device is told where the clock is, and leaves the sum until it agrees.
     g.call("node remove", j!({ "node": hex(gain) }));
     let out2 = g.add("AudioOut");
     let osc3 = g.add("Osc");
     let gain3 = g.add("Gain");
     g.link(osc3, "out", gain3, "input");
     g.link(gain3, "out", out, "input");
-    let (heard, _) = drive(&g, TENTH);
-    assert!((peak(&heard) - 1.0).abs() < 0.01 && near(crossings(&heard), 88), "the first AudioOut is heard: peak {} crossings {}", peak(&heard), crossings(&heard));
-    assert!(g.doc()["nodes"][hex(out2)].is_object(), "the second one stands, unheard");
+    g.link(gain3, "out", out2, "input");
+    let (both, _) = drive(&g, TENTH);
+    assert!((peak(&both) - 2.0).abs() < 0.02 && near(crossings(&both), 88), "two outputs sum: peak {} crossings {}", peak(&both), crossings(&both));
+    g.set_param(out2, "audio", "gain", 0.5);
+    sounds(&g, "the second output's own gain", |x| (peak(x) - 1.5).abs() < 0.02);
+    g.set_param(out2, "audio", "device", "elsewhere");
+    let why = g.until("the clock's holder to be named", |g| g.error(out2));
+    assert!(why.contains("the clock is on `default`"), "{why}");
+    sounds(&g, "the disagreeing output to leave the sum", |x| (peak(x) - 1.0).abs() < 0.01);
+    g.set_param(out2, "audio", "device", "default");
+    g.until("the fault to clear", |g| g.error(out2).is_none().then_some(()));
+    sounds(&g, "…and to rejoin", |x| (peak(x) - 1.5).abs() < 0.02);
+    g.call("node remove", j!({ "node": hex(out2) }));
+
+    // Step: the device list is a refresh answered by the node's own thread, with the host default
+    // always on it; the clock itself reports through `session status`.
+    g.call("node param refresh", j!({ "node": hex(out), "param": "audio/device" }));
+    let devices = g.until("the device list", |g| {
+        g.state.graph.lock().unwrap().refreshed_options(out, "audio", "device").map(|o| o.to_vec())
+    });
+    assert!(devices.contains(&"default".to_string()), "{devices:?}");
+    let status = g.call("session status", j!({}));
+    assert_eq!(status["audio"]["clock"], "external", "{status}");
+    assert_eq!(status["audio"]["rate"], 48000.0, "{status}");
+
+    // Step: a device or a port that is not there is an error on the param that named it, and
+    // what can be named is a refresh; a MIDI port's voices are the channels a gate sees.
+    g.set_param(gain3, "gain", "gain", 0.0);
+    sounds(&g, "the chain to fall silent", |x| peak(x) == 0.0);
+    let mic = g.add("AudioIn");
+    g.set_param(mic, "audio", "device", "nowhere");
+    let why = g.until("the absent device to be named", |g| g.error(mic).filter(|e| e.contains("nowhere")));
+    assert!(why.contains("no input device `nowhere`"), "{why}");
+    g.call("node param refresh", j!({ "node": hex(mic), "param": "audio/device" }));
+    let inputs = g.until("the input device list", |g| {
+        g.state.graph.lock().unwrap().refreshed_options(mic, "audio", "device").map(|o| o.to_vec())
+    });
+    assert_eq!(inputs[0], "default", "{inputs:?}");
+    g.call("node remove", j!({ "node": hex(mic) }));
+    let midi = g.add("MidiIn");
+    g.set_param(midi, "midi", "port", "nowhere");
+    let why = g.until("the absent port to be named", |g| g.error(midi));
+    assert!(why.contains("no MIDI port `nowhere`"), "{why}");
+    g.set_param(midi, "midi", "port", "none");
+    g.until("the port error to clear", |g| g.error(midi).is_none().then_some(()));
+    g.call("node param refresh", j!({ "node": hex(midi), "param": "midi/port" }));
+    let ports = g.until("the port list", |g| {
+        g.state.graph.lock().unwrap().refreshed_options(midi, "midi", "port").map(|o| o.to_vec())
+    });
+    assert_eq!(ports[0], "none", "{ports:?}");
+    let voices = g.add("Env");
+    let midi_name = g.doc()["nodes"][hex(midi)]["name"].as_str().unwrap().to_string();
+    let bound = g.call(
+        "node param edit",
+        j!({ "node": hex(voices), "param": "env/gate", "reference": format!("{midi_name}.gate"), "mode": "reference" }),
+    );
+    assert!(bound["error"].is_null(), "{bound}");
+    g.link(voices, "out", out, "input");
+    g.until("four silent voices", |g| {
+        let (x, channels) = drive(g, TENTH);
+        (channels == 4 && peak(&x[x.len() - 4..]) == 0.0).then_some(())
+    });
+
+    // Step: a note through a real port takes the first voice — its gate, its pitch in volts per
+    // octave and its velocity — and its release frees it. A virtual port, which WinMM has none of.
+    #[cfg(unix)]
+    {
+        use midir::os::unix::VirtualOutput;
+        let mut keys = midir::MidiOutput::new("goofi-test")
+            .expect("a MIDI client: on Linux this needs the ALSA sequencer, `modprobe snd-seq`")
+            .create_virtual("goofi-test-out")
+            .expect("a virtual MIDI port");
+        g.call("node param refresh", j!({ "node": hex(midi), "param": "midi/port" }));
+        let port = g.until("the virtual port to be listed", |g| {
+            let graph = g.state.graph.lock().unwrap();
+            graph.refreshed_options(midi, "midi", "port").and_then(|o| o.iter().find(|n| n.contains("goofi-test-out")).cloned())
+        });
+        g.set_param(midi, "midi", "port", port.as_str());
+        let pitch = g.probe(midi, "pitch");
+        let velocity = g.probe(midi, "velocity");
+        g.until("A4 to take the first voice", |g| {
+            keys.send(&[0x90, 69, 100]).expect("a note on");
+            let (x, channels) = drive(g, TENTH);
+            let heard = channels == 4 && x[x.len() - 4] > 0.99;
+            let played = pitch.latest().is_some_and(|d| (f32s(&d)[0] - 0.75).abs() < 1e-3)
+                && velocity.latest().is_some_and(|d| (f32s(&d)[0] - 100.0 / 127.0).abs() < 1e-3);
+            (heard && played).then_some(())
+        });
+        g.until("the voices to release", |g| {
+            keys.send(&[0x80, 69, 0]).expect("a note off");
+            let (x, _) = drive(g, TENTH);
+            (peak(&x[x.len() - 4..]) == 0.0).then_some(())
+        });
+    }
+    g.call("node remove", j!({ "node": hex(voices) }));
+    g.call("node remove", j!({ "node": hex(midi) }));
 
     // Step: a binding the control half evaluates lands at control rate — the gain follows a
     // signal-plane constant through `nd()`, and the value it evaluated to rides the wire.

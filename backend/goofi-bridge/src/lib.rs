@@ -128,12 +128,12 @@ impl Default for DataLiveness {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(false)
+        Self::new(false, Clock::External)
     }
 }
 
 impl AppState {
-    pub fn new(headless: bool) -> AppState {
+    pub fn new(headless: bool, clock: Clock) -> AppState {
         let (events, _) = broadcast::channel(256);
         let iid = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -141,7 +141,7 @@ impl AppState {
             .unwrap_or(0);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        let graph_val = fresh_graph();
+        let graph_val = fresh_graph(clock);
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
         let graph = Arc::new(Mutex::new(graph_val));
@@ -572,7 +572,7 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
 }
 
 /// The composed graph the app boots: the model plus the signal engine, registered first.
-pub fn fresh_graph() -> Graph {
+pub fn fresh_graph(clock: Clock) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
         g.instance().to_string(),
@@ -580,9 +580,11 @@ pub fn fresh_graph() -> Graph {
         g.drain_waker(),
     );
     g.register_engine(Box::new(signal));
-    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker())));
+    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
     g
 }
+
+pub use goofi_audio::Clock;
 
 /// The audio engine registered in `g` — its external clock is the concrete door a test drives.
 pub fn audio_engine(g: &mut Graph) -> &mut goofi_audio::AudioEngine {

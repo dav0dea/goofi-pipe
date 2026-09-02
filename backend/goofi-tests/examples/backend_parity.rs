@@ -82,7 +82,7 @@ type Factory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 /// Fan `n` nodes off one _TestConst and measure the rate each sustains, counted from
 /// `meta["index"]`, plus whether every error channel stayed clean.
 fn bench(manifest: &'static NodeManifest, factory: Factory, len: i64, n: usize, window: Duration) -> (f64, bool) {
-    let mut g = goofi_bridge::fresh_graph();
+    let mut g = goofi_bridge::fresh_graph(goofi_bridge::Clock::External);
     goofi_tests::fixtures::register(&mut g);
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();

@@ -124,7 +124,7 @@ async fn serve_main(rest: Vec<String>) {
             std::process::exit(1);
         }
     };
-    let state = AppState::new(cli.headless);
+    let state = AppState::new(cli.headless, goofi_bridge::Clock::Device);
     std::process::exit(run(cli, python, state, shutdown_signal()).await);
 }
 
@@ -682,7 +682,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::env::set_var("GOOFI_HOME", dir);
         });
-        AppState::new(false)
+        AppState::new(false, goofi_bridge::Clock::External)
     }
 
     #[test]

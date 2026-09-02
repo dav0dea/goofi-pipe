@@ -1039,7 +1039,9 @@ pub(crate) fn session_status(
     let save_path = state.save_path();
     let workspace = goofi_core::path::to_slash(&state.mount());
     let dirty = state.is_dirty();
-    let g = state.graph.lock().unwrap();
+    let mut g = state.graph.lock().unwrap();
+    let errors = inspect::errors(&g);
+    let audio = crate::audio_engine(&mut g).status();
     Ok(json!({
         // The id is what the session-file probe verifies: a listener that answers with another
         // id — or none — is not this session.
@@ -1047,7 +1049,17 @@ pub(crate) fn session_status(
         "save_path": save_path,
         "workspace": workspace,
         "dirty": dirty,
-        "errors": inspect::errors(&g),
+        "errors": errors,
+        // The timing door: what the clock is doing, read by hand on a device before it is trusted.
+        "audio": {
+            "clock": audio.clock,
+            "device": audio.device,
+            "rate": audio.rate,
+            "channels": audio.channels,
+            "callbacks": audio.callbacks,
+            "xruns": audio.xruns,
+            "render_max_us": audio.render_max_us,
+        },
     }))
 }
 

@@ -117,9 +117,20 @@ backend actually delivers through its own FIFO. Without a device the clock is ex
 `AudioEngine::drive(frames)`, the concrete door the test harness reaches through `as_any_mut` —
 and everything downstream is the same code. One output device per engine: the stream follows the
 device the `AudioOut` nodes name, and a second `AudioOut` naming another device faults until they
-agree. Device selection is an ordinary param — `Param::Str { options, refresh: true }` carrying
-cpal's `DeviceId`, empty meaning the host default; an absent device faults the node at insert. No
-machine-local sidecar.
+agree. Device selection is an ordinary param — `Param::Str { options, refresh: true }` — and no
+machine-local sidecar. Landed 2026-09-02: the clock is a constructor choice (`Clock::External` for
+the harness, `Clock::Device` for the CLI); the output stream lives on a thread of its own, because
+`cpal::Stream` is not `Send` on every host, opened at settle when an `AudioOut` exists and closed
+when none does; the callback `try_lock`s the runtime and renders whole blocks through the same
+FIFO `drive()` uses, a failed lock being silence and an xrun counted; a device that will not open
+faults every `AudioOut` with cpal's reason and the last clock stands. The param carries the
+device's NAME — what a refresh lists and a user reads — with `default` for the host default; an
+id can join it if two devices ever share a name. A refresh runs on the node's own thread, never
+under the graph lock. The device's rate reaches every control thread through one shared cell, and
+a switch re-prepares every instance under the runtime lock. Measured by hand on Linux (ALSA, the
+default device, 48 kHz stereo): 518 callbacks in eleven seconds — ~1024-frame periods, the
+64-frame request not honoured by the default PCM — zero xruns, a worst render of 545 µs; read
+through `session status`'s `audio` block, which is the timing door.
 
 **The audio thread owns one `Runtime`: a slab of instances, the plan, the arena, the atomics.**
 The plan holds slab INDICES, so a topology edit is a new order and new regions over the same
@@ -138,7 +149,8 @@ one-channel port is on every channel, a channel past a wider port's count is sil
 coercion enum exists and the engine's sum reads a part through the same door a node does; a
 scalar region is refilled when it no longer holds its atomic's value, so a fresh arena needs no
 memory beside it; a loop with no feedback node excludes only its members, and what the loop feeds
-runs on silence at that jack; the lowest-uid `AudioOut` is heard until the device sums them; a
+runs on silence at that jack; every `AudioOut` naming the clock's device sums into the output
+through its own `gain`, as wide as the widest, and the FIFO coerces that to the device's width; a
 binding the graph did not ship (`live == false`) is never a plan edge; `Osc` takes `pitch` in volts
 per octave, as the owner ruled, and Hz is a conversion; and the three shipped nodes are compiled
 into the engine, one file each in the author's form, until the audio ABI moves them into
@@ -196,7 +208,15 @@ is dropped whole, and an inbox the plan stops reading is flushed at the swap, so
 plays when the input is wired again. Latency is one source frame. `SignalIn` is a copy, and a new
 channel count re-plans through `dirty()`.
 
-**MIDI is a node that emits signals, and no engine mechanism knows it exists.** `MidiIn` outputs
+**MIDI is a node that emits signals, and no engine mechanism knows it exists.** Landed 2026-09-02
+as engine nodes — `AudioIn` and `MidiIn` stay compiled into the engine when the DSP nodes move to
+`nodes_audio/`, because a control half that owns an OS handle is the engine's — whose handles are
+opened on the node's control thread when the param naming them moves, and never cross it; a
+device or port that is not there is an error on that param, cleared when it opens. `AudioIn`'s
+callback enters interleaved frames into the node's inbox as the Array crossing does, with no
+resampling. `MidiIn` lands a note at the START of the next block; placing it at its sample inside
+the block waits on a correlation of the port's clock with the device's, recorded below. A note
+through a virtual port is the proof, on unix — WinMM has no virtual ports. `MidiIn` outputs
 `gate`, `pitch` and `velocity`, each `voices` channels wide; its control half runs `midir` and
 timestamps messages into a ring; its DSP half applies note-on/off at the sample position and
 allocates voices round-robin. An envelope's `gate` REFERENCES `MidiIn.gate`. `MidiCC` — one CC
@@ -367,11 +387,13 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   eval (143 ns for four vars), `PyModule::import(py, "numpy")` runs on every array conversion, and
   `PyBytes::new` copies the whole array although `ArrayStore` is `Arc<[u8]>` and its own doc claims a
   numpy view can alias it zero-copy.
-- **Nothing has been measured with a real device callback.** Every number here is a synthetic loop.
-  The interaction of the node host, RT priority and the control thread's graph lock is unmeasured,
-  and the graph lock is the most plausible cause of a real xrun — a knob drag is a burst of
-  `node param edit` RPCs, each taking it. A `--debug` door reporting xruns and block timing is how
-  it is measured, by hand, on each platform.
+- **One device callback has been measured, on one machine.** Linux, ALSA, the default device:
+  ~1024-frame periods, zero xruns, worst render 545 µs, with nothing else running. The interaction
+  of RT priority and the control thread's graph lock under a knob drag — a burst of
+  `node param edit` RPCs, each taking the graph lock, none the runtime's — is still unmeasured, and
+  Windows and macOS are unmeasured. `session status`'s `audio` block is the door, by hand, on each.
+- **A MIDI note lands at block start**, up to 1.3 ms late. Sample-accurate placement needs the
+  port's timestamps correlated with the device clock; built when a measurement asks.
 - **Windows latency.** cpal's WASAPI backend is shared-mode only and its own source says the callback
   period is always `GetDevicePeriod()` whatever is requested, so `BufferSize::Fixed` is a lie there
   and the floor is ~10 ms. `IAudioClient3` reaches 2.66 ms and cpal does not use it. ASIO needs the

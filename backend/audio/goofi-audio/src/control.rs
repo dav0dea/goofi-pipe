@@ -10,14 +10,16 @@ use std::time::{Duration, Instant};
 
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
 use goofi_core::{Data, Meta, Param};
-use goofi_node::{BindingId, DrainWaker, EventId, ExprEvaluator, Expression, ParamKey, Status, Uid, Var};
+use goofi_node::{BindingId, DrainWaker, EventId, ExprEvaluator, Expression, NodeManifest, ParamKey, Status, Uid, Var};
 use goofi_transport::{
     data_service, door_service, event_service, iox_node, open_output_subscriber, output_service, publisher,
     take_where, ByteService, BytePublisher, ByteSubscriber, Doorbell, Halt, IoxNode, Listener, INITIAL_SLICE,
 };
 use indexmap::IndexMap;
 
-use crate::{plan, RATE};
+use crate::nodes::midi_in::{Note, NO_PORT};
+use crate::nodes::{audio_in, midi_in};
+use crate::{plan, DEFAULT_DEVICE, RATE};
 
 /// How often the paced duties run: a tapped output is published, and a binding with no stream
 /// variable is re-evaluated, at this pace whatever rings in between.
@@ -27,6 +29,30 @@ pub const TAP_RING: usize = (1 + MAX_CHANNELS as usize * BLOCK) * 16;
 /// An inbox holds one second of the widest frame at the rate; a frame that does not fit is
 /// dropped whole.
 pub const INBOX_RING: usize = RATE as usize * MAX_CHANNELS as usize;
+/// Notes a port may hold between two blocks.
+pub const NOTE_RING: usize = 1024;
+
+/// A ring's producer as an OS callback holds it: successive streams on one node share it, and a
+/// callback that finds it taken drops that buffer rather than wait.
+pub type Feed<T> = Arc<Mutex<rtrb::Producer<T>>>;
+
+/// The control half's ends of a device's or a port's rings — none for a node that owns no OS
+/// handle.
+#[derive(Default)]
+pub struct Ports {
+    pub audio_in: Option<(Feed<f32>, Arc<AtomicU16>)>,
+    pub midi_in: Option<Feed<Note>>,
+}
+
+/// What a control half opens on its own thread and never lets cross it: a stream is not `Send`
+/// on every host.
+#[derive(Default)]
+struct Io {
+    stream: Option<cpal::Stream>,
+    midi: Option<midir::MidiInputConnection<()>>,
+    device: Option<String>,
+    port: Option<String>,
+}
 
 /// What the engine wants a node's control half to hold — the WHOLE of it, sent when it changes.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +79,15 @@ pub struct Shared {
     pub waker: Arc<DrainWaker>,
     /// An Array input saw a new channel count: only a settle can re-plan for it.
     pub replan: AtomicBool,
+    /// The clock's rate, `f64` bits: what a crossing resamples to and a tap is stamped with.
+    pub rate: AtomicU64,
+}
+
+/// What the engine leaves for a control half: its whole desired state, and the refreshes asked.
+#[derive(Default)]
+pub struct Mail {
+    pub desired: Option<Desired>,
+    pub refresh: Vec<ParamKey>,
 }
 
 impl Shared {
@@ -64,7 +99,7 @@ impl Shared {
 
 /// The engine's end of one control half.
 pub struct Handle {
-    desired: Arc<Mutex<Option<Desired>>>,
+    mail: Arc<Mutex<Mail>>,
     pub halt: Arc<Halt>,
     /// The channel count each Array input last saw — what the plan sizes its inbox by.
     pub chans: Vec<Arc<AtomicU16>>,
@@ -73,7 +108,12 @@ pub struct Handle {
 
 impl Handle {
     pub fn send(&self, desired: Desired) {
-        *self.desired.lock().unwrap() = Some(desired);
+        self.mail.lock().unwrap().desired = Some(desired);
+        let _ = self.bell.ring(0);
+    }
+
+    pub fn refresh(&self, key: ParamKey) {
+        self.mail.lock().unwrap().refresh.push(key);
         let _ = self.bell.ring(0);
     }
 
@@ -86,10 +126,11 @@ impl Handle {
 pub struct Spawn {
     pub uid: Uid,
     pub base: String,
-    pub manifest: &'static goofi_node::NodeManifest,
+    pub manifest: &'static NodeManifest,
     pub params: Arc<[AtomicU64]>,
     pub inboxes: Vec<rtrb::Producer<f32>>,
     pub taps: Vec<rtrb::Consumer<f32>>,
+    pub ports: Ports,
     pub started: Instant,
 }
 
@@ -108,10 +149,11 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
     }
     let inboxes: Vec<Inbox> = spawn.inboxes.into_iter().map(Inbox::new).collect();
     let chans = inboxes.iter().map(|i| i.chans.clone()).collect();
-    let desired = Arc::new(Mutex::new(None));
+    let mail = Arc::new(Mutex::new(Mail::default()));
     let halt = Arc::new(Halt::default());
     let control = Control {
         uid: spawn.uid,
+        manifest: spawn.manifest,
         started: spawn.started,
         params: spawn.params,
         consts: Vec::new(),
@@ -119,10 +161,11 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
         outs,
         slots: Vec::new(),
         binds: Vec::new(),
+        ports: spawn.ports,
         evaluated: IndexMap::new(),
         errors: IndexMap::new(),
         shared,
-        desired: desired.clone(),
+        mail: mail.clone(),
         last_tick: Instant::now(),
         listener,
         node,
@@ -131,12 +174,13 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
     std::thread::Builder::new()
         .name(format!("goofi-audio-{}", spawn.manifest.type_name))
         .spawn(move || {
+            let mut io = Io::default();
             // A panic here is a bug, and it must still release the node's ports so the exit is real.
-            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| control.run(&thread_halt)));
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| control.run(&thread_halt, &mut io)));
             thread_halt.release();
         })
         .map_err(|e| format!("could not start the node's control thread: {e}"))?;
-    Ok(Handle { desired, halt, chans, bell })
+    Ok(Handle { mail, halt, chans, bell })
 }
 
 struct Inbox {
@@ -155,7 +199,7 @@ impl Inbox {
     /// whole, as one chunk headed by its channel count and length. A frame with no `sfreq` enters
     /// one sample per sample, so a control value is held until the next. Answers whether the
     /// channel count moved.
-    fn enter(&mut self, frame: &Data) -> Option<bool> {
+    fn enter(&mut self, frame: &Data, rate: f64) -> Option<bool> {
         let goofi_core::Value::Array(a) = frame.value() else { return None };
         let (c, t) = match *a.shape() {
             [t] => (1, t),
@@ -166,7 +210,7 @@ impl Inbox {
             return None;
         }
         let x: Vec<f32> = a.as_bytes().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().expect("four bytes"))).collect();
-        let step = frame.meta().sfreq().filter(|sf| *sf > 0.0).map_or(1.0, |sf| sf / RATE);
+        let step = frame.meta().sfreq().filter(|sf| *sf > 0.0).map_or(1.0, |sf| sf / rate);
         let moved = self.chans.swap(c as u16, Ordering::Relaxed) != c as u16;
         if moved {
             self.pos = 0.0;
@@ -253,6 +297,7 @@ struct Bind {
 
 struct Control {
     uid: Uid,
+    manifest: &'static NodeManifest,
     started: Instant,
     params: Arc<[AtomicU64]>,
     consts: Vec<Param>,
@@ -260,10 +305,11 @@ struct Control {
     outs: Vec<Out>,
     slots: Vec<SlotSub>,
     binds: Vec<Bind>,
+    ports: Ports,
     evaluated: IndexMap<ParamKey, Param>,
     errors: IndexMap<ParamKey, String>,
     shared: Arc<Shared>,
-    desired: Arc<Mutex<Option<Desired>>>,
+    mail: Arc<Mutex<Mail>>,
     last_tick: Instant,
     listener: Listener,
     /// Last: every port above is built from it, and fields drop in declaration order.
@@ -271,15 +317,19 @@ struct Control {
 }
 
 impl Control {
-    fn run(mut self, halt: &Halt) {
+    fn run(mut self, halt: &Halt, io: &mut Io) {
         while !halt.stopped() {
             let _ = self.listener.timed_wait_all(|_| {}, TICK);
             if halt.stopped() {
                 break;
             }
-            let desired = self.desired.lock().unwrap().take();
-            if let Some(d) = desired {
-                self.apply(d);
+            let mail = std::mem::take(&mut *self.mail.lock().unwrap());
+            if let Some(d) = mail.desired {
+                self.apply(d, io);
+            }
+            for key in mail.refresh {
+                let options = self.enumerate(&key);
+                self.shared.report(self.uid, Status::RefreshOptions { key, options });
             }
             self.receive();
             if self.last_tick.elapsed() >= TICK {
@@ -289,8 +339,9 @@ impl Control {
         }
     }
 
-    fn apply(&mut self, d: Desired) {
+    fn apply(&mut self, d: Desired, io: &mut Io) {
         self.consts = d.consts;
+        self.open_io(io);
         let (slots, binds): (Vec<Sub>, Vec<Sub>) = d.subs.into_iter().partition(|s| matches!(s, Sub::Slot { .. }));
         self.apply_slots(slots);
         self.apply_binds(binds);
@@ -380,14 +431,105 @@ impl Control {
         }
     }
 
+    /// A refreshable param's list, enumerated here rather than under the graph lock: the output
+    /// devices, the input devices, or the MIDI ports, the host default first.
+    fn enumerate(&self, key: &ParamKey) -> Option<Vec<String>> {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let named = |devices: Vec<cpal::Device>| {
+            let mut names = vec![DEFAULT_DEVICE.to_string()];
+            names.extend(devices.iter().filter_map(|d| d.description().ok()).map(|d| d.name().to_string()).filter(|n| n != DEFAULT_DEVICE));
+            names
+        };
+        let host = cpal::default_host();
+        match (self.manifest.type_name, key.group.as_str(), key.name.as_str()) {
+            ("AudioOut", "audio", "device") => Some(named(host.output_devices().map(|d| d.collect()).unwrap_or_default())),
+            (audio_in::TYPE, "audio", "device") => Some(named(host.input_devices().map(|d| d.collect()).unwrap_or_default())),
+            (midi_in::TYPE, "midi", "port") => {
+                let mut names = vec![NO_PORT.to_string()];
+                if let Ok(input) = midir::MidiInput::new("goofi") {
+                    names.extend(input.ports().iter().filter_map(|p| input.port_name(p).ok()));
+                }
+                Some(names)
+            }
+            _ => None,
+        }
+    }
+
+    /// A device or a port a param names is opened here, on this thread, when the name moves; an
+    /// error stands on that param until it opens.
+    fn open_io(&mut self, io: &mut Io) {
+        if let Some((producer, chans)) = self.ports.audio_in.clone() {
+            let wanted = self.text(audio_in::P::DEVICE);
+            if io.device.as_deref() != Some(wanted.as_str()) {
+                io.stream = None;
+                let (stream, error) = match open_input(&wanted, producer) {
+                    Ok((stream, c)) => {
+                        chans.store(c, Ordering::Relaxed);
+                        (Some(stream), None)
+                    }
+                    Err(e) => (None, Some(e)),
+                };
+                self.shared.replan.store(true, Ordering::Release);
+                self.shared.waker.notify();
+                io.stream = stream;
+                io.device = Some(wanted);
+                self.record_error(self.key_of(audio_in::P::DEVICE), error);
+            }
+        }
+        if let Some(producer) = self.ports.midi_in.clone() {
+            let wanted = self.text(midi_in::P::PORT);
+            if io.port.as_deref() != Some(wanted.as_str()) {
+                io.midi = None;
+                let error = if wanted == NO_PORT {
+                    None
+                } else {
+                    match open_port(&wanted, producer) {
+                        Ok(connection) => {
+                            io.midi = Some(connection);
+                            None
+                        }
+                        Err(e) => Some(e),
+                    }
+                };
+                io.port = Some(wanted);
+                self.record_error(self.key_of(midi_in::P::PORT), error);
+            }
+        }
+    }
+
+    fn text(&self, param: usize) -> String {
+        match &self.consts[param] {
+            Param::Str { value, .. } => value.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn key_of(&self, param: usize) -> ParamKey {
+        let d = &self.manifest.params[param];
+        ParamKey::new(d.group, d.name)
+    }
+
+    /// Record or clear a param's error, reporting only what CHANGED: the graph files the delta
+    /// against the instance.
+    fn record_error(&mut self, key: ParamKey, error: Option<String>) {
+        let changed = match &error {
+            Some(e) => self.errors.insert(key.clone(), e.clone()).as_ref() != Some(e),
+            None => self.errors.shift_remove(&key).is_some(),
+        };
+        if changed {
+            self.shared.report(self.uid, Status::BindingErrors { errors: vec![(key, error)] });
+        }
+    }
+
     /// Every frame that arrived, in order into an inbox, latest-wins into a mailbox — and every
     /// binding a frame reached is evaluated once.
     fn receive(&mut self) {
         let mut moved = false;
+        let rate = self.shared.rate();
         for s in &self.slots {
             while let Ok(Some(sample)) = s.subscriber.receive() {
                 if let Ok(frame) = goofi_codec::decode(sample.payload()) {
-                    moved |= self.inboxes[s.inbox].enter(&frame).unwrap_or(false);
+                    moved |= self.inboxes[s.inbox].enter(&frame, rate).unwrap_or(false);
                 }
             }
         }
@@ -428,7 +570,7 @@ impl Control {
             }
             let t = planar.len() / c;
             let bytes: Vec<u8> = planar.iter().flat_map(|v| v.to_le_bytes()).collect();
-            if let Ok(frame) = Data::array_f32(vec![c, t], bytes, Meta::new().with_sfreq(Some(RATE))) {
+            if let Ok(frame) = Data::array_f32(vec![c, t], bytes, Meta::new().with_sfreq(Some(self.shared.rate()))) {
                 out.publish(&frame);
             }
         }
@@ -454,13 +596,7 @@ impl Control {
         if values_changed {
             self.report_values();
         }
-        let error_changed = match &error {
-            Some(e) => self.errors.insert(key.clone(), e.clone()).as_ref() != Some(e),
-            None => self.errors.shift_remove(&key).is_some(),
-        };
-        if error_changed {
-            self.shared.report(self.uid, Status::BindingErrors { errors: vec![(key, error)] });
-        }
+        self.record_error(key, error);
     }
 
     /// The whole sparse map, never a delta — the graph replaces its copy with this.
@@ -468,4 +604,60 @@ impl Control {
         let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.shared.report(self.uid, Status::ParamValues { evaluated });
     }
+}
+
+/// The device's input stream, its callback entering interleaved frames into the node's inbox as
+/// the Array crossing does — no resampling, the same device being one clock.
+fn open_input(name: &str, producer: Feed<f32>) -> Result<(cpal::Stream, u16), String> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    let host = cpal::default_host();
+    let device = if name == DEFAULT_DEVICE {
+        host.default_input_device().ok_or_else(|| "no default input device".to_string())?
+    } else {
+        host.input_devices()
+            .map_err(|e| format!("input devices: {e}"))?
+            .find(|d| d.description().is_ok_and(|d| d.name() == name))
+            .ok_or_else(|| format!("no input device `{name}`"))?
+    };
+    let config = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?.config();
+    let channels = config.channels;
+    let stream = device
+        .build_input_stream::<f32, _, _>(
+            config,
+            move |data, _| {
+                let Ok(mut inbox) = producer.try_lock() else { return };
+                let frames = data.len() / channels as usize;
+                if let Ok(chunk) = inbox.write_chunk_uninit(2 + data.len()) {
+                    chunk.fill_from_iter([f32::from(channels), frames as f32].into_iter().chain(data.iter().copied()));
+                }
+            },
+            |e| eprintln!("audio in: {e}"),
+            None,
+        )
+        .map_err(|e| format!("`{name}`: {e}"))?;
+    stream.play().map_err(|e| format!("`{name}`: {e}"))?;
+    Ok((stream, channels))
+}
+
+/// A MIDI port, its callback handing every note to the node's ring.
+fn open_port(name: &str, producer: Feed<Note>) -> Result<midir::MidiInputConnection<()>, String> {
+    let mut input = midir::MidiInput::new("goofi").map_err(|e| format!("midi: {e}"))?;
+    input.ignore(midir::Ignore::All);
+    let port = input
+        .ports()
+        .into_iter()
+        .find(|p| input.port_name(p).is_ok_and(|n| n == name))
+        .ok_or_else(|| format!("no MIDI port `{name}`"))?;
+    input
+        .connect(
+            &port,
+            "goofi-in",
+            move |_, bytes, _| {
+                if let (Some(note), Ok(mut notes)) = (Note::parse(bytes), producer.try_lock()) {
+                    let _ = notes.push(note);
+                }
+            },
+            (),
+        )
+        .map_err(|e| format!("`{name}`: {e}"))
 }

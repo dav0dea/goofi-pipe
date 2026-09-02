@@ -12,3 +12,5 @@ goofi-transport = { path = "../../goofi-transport" }
 goofi-audio-sdk = { path = "../goofi-audio-sdk" }
 indexmap = "2"
 rtrb = "0.3"
+cpal = "0.18"
+midir = "0.11"

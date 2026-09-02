@@ -1,15 +1,16 @@
 //! The audio engine behind the `Engine` seam: synchronous, in-process, one 64-frame block per
-//! callback. The engine (this file) owns the library, the slab indices and the plan; the audio
-//! half (`runtime`) owns the instances and the arena, and hears from here by message; a node's
-//! control half (`control`) is a thread of its own, parked on the node's door.
+//! callback. The engine (this file) owns the library, the slab indices, the plan and the clock;
+//! the audio half (`runtime`) owns the instances and the arena, and hears from here by message; a
+//! node's control half (`control`) is a thread of its own, parked on the node's door.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use goofi_audio_sdk::AudioNode;
-use goofi_core::SlotType;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use goofi_audio_sdk::{AudioNode, BLOCK};
+use goofi_core::{Param, SlotType};
 use goofi_node::{
     DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView, ParamGroups,
     Request, Ringer, Status, Touched, Uid, Via, NATIVE,
@@ -24,11 +25,140 @@ use control::{Desired, Handle, Shared, Sub};
 use plan::Plan;
 use runtime::{Inbox, Msg, Retired, Runtime, Slot, MAX_PORTS};
 
-/// The rate until a device names one (Step 6 of the audio program).
+/// The rate until a device names one.
 pub const RATE: f64 = 48_000.0;
 
 /// A CEILING, not a join: a wedged control half must not be able to wedge the exit.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+
+/// What drives the blocks: the harness's `drive(frames)`, or the device the `AudioOut` nodes name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    External,
+    Device,
+}
+
+/// The timing door: what the clock is doing, for `session status`.
+pub struct AudioStatus {
+    pub clock: &'static str,
+    pub device: Option<String>,
+    pub rate: f64,
+    pub channels: u16,
+    pub callbacks: u64,
+    pub xruns: u64,
+    pub render_max_us: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct Stats {
+    callbacks: AtomicU64,
+    xruns: AtomicU64,
+    render_max_us: AtomicU64,
+}
+
+/// The running output stream, owned by a thread of its own: `cpal::Stream` is not `Send` on
+/// every host. Dropping this stops it.
+struct DeviceClock {
+    name: String,
+    rate: f64,
+    channels: u16,
+    stop: mpsc::Sender<()>,
+}
+
+impl DeviceClock {
+    fn open(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> Result<DeviceClock, String> {
+        let (opened, on_open) = mpsc::channel::<Result<(f64, u16), String>>();
+        let (stop, stopped) = mpsc::channel::<()>();
+        let device = name.to_string();
+        std::thread::Builder::new()
+            .name("goofi-audio-clock".into())
+            .spawn(move || match open_output(&device, runtime, stats) {
+                Ok((stream, rate, channels)) => {
+                    let _ = opened.send(Ok((rate, channels)));
+                    let _ = stopped.recv();
+                    drop(stream);
+                }
+                Err(e) => {
+                    let _ = opened.send(Err(e));
+                }
+            })
+            .map_err(|e| format!("could not start the clock thread: {e}"))?;
+        let (rate, channels) = on_open.recv().map_err(|_| "the clock thread died before it answered".to_string())??;
+        Ok(DeviceClock { name: name.to_string(), rate, channels, stop })
+    }
+}
+
+impl Drop for DeviceClock {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+    }
+}
+
+/// The host default is what an empty or `default` name means.
+pub const DEFAULT_DEVICE: &str = "default";
+
+fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>) -> Result<(cpal::Stream, f64, u16), String> {
+    let host = cpal::default_host();
+    let device = if name == DEFAULT_DEVICE {
+        host.default_output_device().ok_or_else(|| "no default output device".to_string())?
+    } else {
+        host.output_devices()
+            .map_err(|e| format!("output devices: {e}"))?
+            .find(|d| d.description().is_ok_and(|d| d.name() == name))
+            .ok_or_else(|| format!("no output device `{name}`"))?
+    };
+    let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
+    let mut config = supported.config();
+    if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
+        if (*min..=*max).contains(&(BLOCK as u32)) {
+            config.buffer_size = cpal::BufferSize::Fixed(BLOCK as u32);
+        }
+    }
+    let rate = f64::from(config.sample_rate);
+    let channels = config.channels;
+    let stream = device
+        .build_output_stream::<f32, _, _>(
+            config,
+            move |data, _| {
+                stats.callbacks.fetch_add(1, Ordering::Relaxed);
+                let started = Instant::now();
+                match runtime.try_lock() {
+                    Ok(mut rt) => rt.render_into(data),
+                    Err(_) => {
+                        data.fill(0.0);
+                        stats.xruns.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                stats.render_max_us.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+            },
+            |e| eprintln!("audio: {e}"),
+            None,
+        )
+        .map_err(|e| format!("`{name}`: {e}"))?;
+    stream.play().map_err(|e| format!("`{name}`: {e}"))?;
+    Ok((stream, rate, channels))
+}
+
+/// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
+/// the control half's in the ports. A node that owns no OS handle gets neither.
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>) -> (nodes::Birth, control::Ports) {
+    let mut birth = nodes::Birth { chans: chans.clone(), ..Default::default() };
+    let mut ports = control::Ports::default();
+    match type_name {
+        nodes::audio_in::TYPE => {
+            let (producer, consumer) = rtrb::RingBuffer::new(control::INBOX_RING);
+            birth.inbox = Some(consumer);
+            ports.audio_in = Some((Arc::new(Mutex::new(producer)), chans));
+        }
+        nodes::midi_in::TYPE => {
+            let (producer, consumer) = rtrb::RingBuffer::new(control::NOTE_RING);
+            birth.notes = Some(consumer);
+            ports.midi_in = Some(Arc::new(Mutex::new(producer)));
+        }
+        _ => {}
+    }
+    (birth, ports)
+}
 
 pub(crate) struct Instance {
     pub(crate) idx: usize,
@@ -44,6 +174,9 @@ pub(crate) struct Instance {
 pub struct AudioEngine {
     instance: String,
     started: Instant,
+    clock: Clock,
+    device: Option<DeviceClock>,
+    stats: Arc<Stats>,
     shared: Arc<Shared>,
     classes: Vec<(&'static NodeManifest, nodes::Make)>,
     runtime: Arc<Mutex<Runtime>>,
@@ -64,7 +197,7 @@ const SLAB: usize = 64;
 const QUEUE: usize = 4096;
 
 impl AudioEngine {
-    pub fn new(instance: String, started: Instant, waker: Arc<DrainWaker>) -> AudioEngine {
+    pub fn new(instance: String, started: Instant, waker: Arc<DrainWaker>, clock: Clock) -> AudioEngine {
         let classes = nodes::SHIPPED
             .iter()
             .map(|(type_name, m, make)| {
@@ -85,11 +218,15 @@ impl AudioEngine {
         AudioEngine {
             instance,
             started,
+            clock,
+            device: None,
+            stats: Arc::new(Stats::default()),
             shared: Arc::new(Shared {
                 evaluator: Mutex::new(None),
                 reports: Mutex::new(Vec::new()),
                 waker,
                 replan: Default::default(),
+                rate: AtomicU64::new(RATE.to_bits()),
             }),
             classes,
             runtime: Arc::new(Mutex::new(Runtime::new(SLAB, to_audio, from_audio))),
@@ -110,14 +247,26 @@ impl AudioEngine {
     /// interleaved — exactly what a device callback would receive.
     pub fn drive(&mut self, frames: usize) -> (Vec<f32>, u16) {
         let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
-        rt.fifo.reserve(frames * goofi_audio_sdk::MAX_CHANNELS as usize);
-        while rt.fifo.len() < frames * rt.plan.heard().1 as usize {
-            rt.render_block();
-        }
-        let channels = rt.plan.heard().1;
-        let rest = rt.fifo.split_off(frames * channels as usize);
-        let out = std::mem::replace(&mut rt.fifo, rest);
+        let channels = rt.channels();
+        let mut out = vec![0.0; frames * channels as usize];
+        rt.render_into(&mut out);
         (out, channels)
+    }
+
+    pub fn status(&self) -> AudioStatus {
+        let rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        AudioStatus {
+            clock: match self.clock {
+                Clock::External => "external",
+                Clock::Device => "device",
+            },
+            device: self.device.as_ref().map(|d| d.name.clone()),
+            rate: self.shared.rate(),
+            channels: rt.channels(),
+            callbacks: self.stats.callbacks.load(Ordering::Relaxed),
+            xruns: self.stats.xruns.load(Ordering::Relaxed),
+            render_max_us: self.stats.render_max_us.load(Ordering::Relaxed),
+        }
     }
 
     /// What the audio thread handed back is dropped here, where dropping may take time.
@@ -194,6 +343,65 @@ impl AudioEngine {
             Via::Binding(b) => plan::is_edge(b, &self.live),
         }
     }
+
+    /// The device the `AudioOut` nodes agree on — the lowest uid's name — and the fault every
+    /// one naming another carries. `None` when there is no `AudioOut`.
+    fn output_device(&self, view: &GraphView<'_>) -> (Option<String>, Vec<(Uid, String)>) {
+        let mut outs: Vec<(Uid, String)> = self
+            .live
+            .iter()
+            .filter(|(_, inst)| inst.manifest.type_name == nodes::audio_out::TYPE)
+            .filter_map(|(uid, _)| {
+                let nv = view.nodes.get(uid)?;
+                let device = match goofi_node::param(nv.params, nodes::audio_out::GROUP, "device") {
+                    Some(Param::Str { value, .. }) => value.clone(),
+                    _ => DEFAULT_DEVICE.to_string(),
+                };
+                Some((*uid, device))
+            })
+            .collect();
+        outs.sort_by_key(|(uid, _)| uid.0);
+        let Some((_, clock)) = outs.first().cloned() else { return (None, Vec::new()) };
+        let faults = outs
+            .into_iter()
+            .filter(|(_, device)| *device != clock)
+            .map(|(uid, _)| (uid, format!("the clock is on `{clock}`")))
+            .collect();
+        (Some(clock), faults)
+    }
+
+    /// Open, close or switch the output stream to `wanted`; the error a device that will not open
+    /// answers with. The old stream stops first: silence during a switch, accepted.
+    fn follow(&mut self, wanted: Option<&str>) -> Option<String> {
+        if self.device.as_ref().is_some_and(|d| Some(d.name.as_str()) == wanted) {
+            return None;
+        }
+        if self.device.take().is_some() {
+            self.runtime.lock().unwrap_or_else(|e| e.into_inner()).set_device(None);
+        }
+        let name = wanted?;
+        match DeviceClock::open(name, self.runtime.clone(), self.stats.clone()) {
+            Ok(clock) => {
+                self.retune(clock.rate, clock.channels);
+                self.device = Some(clock);
+                None
+            }
+            Err(e) => Some(e),
+        }
+    }
+
+    /// The device's rate and width, under the runtime lock: every instance is re-prepared when
+    /// the rate moved, and the FIFO is re-cut to the width.
+    fn retune(&mut self, rate: f64, channels: u16) {
+        let mut rt = self.runtime.lock().unwrap_or_else(|e| e.into_inner());
+        if rate != self.shared.rate() {
+            for slot in rt.slab.iter_mut().flatten() {
+                slot.node.prepare(rate);
+            }
+            self.shared.rate.store(rate.to_bits(), Ordering::Relaxed);
+        }
+        rt.set_device(Some(channels));
+    }
 }
 
 impl Engine for AudioEngine {
@@ -238,8 +446,10 @@ impl Engine for AudioEngine {
         if widest > MAX_PORTS {
             return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
         }
-        let mut node = make();
-        node.prepare(RATE);
+        let chans = Arc::new(AtomicU16::new(1));
+        let (birth, ports) = rings_for(type_name, chans.clone());
+        let mut node = make(birth);
+        node.prepare(self.shared.rate());
         let atomics: Arc<[AtomicU64]> =
             manifest.params.iter().map(|d| AtomicU64::new(plan::scalar_of(params, d).to_bits())).collect();
         let (inbox_in, inbox_out): (Vec<_>, Vec<_>) = manifest
@@ -257,6 +467,7 @@ impl Engine for AudioEngine {
             params: atomics.clone(),
             inboxes: inbox_in,
             taps: tap_out,
+            ports,
             started: self.started,
         };
         let control = match control::spawn(spawn, self.shared.clone(), &self.bells) {
@@ -266,7 +477,8 @@ impl Engine for AudioEngine {
         let idx = self.slot_index();
         let slot = Slot { node, params: atomics, inboxes: inbox_out.into_iter().map(Inbox::new).collect(), taps: tap_in };
         self.send(Msg::Insert { idx, slot });
-        self.live.insert(uid, Instance { idx, manifest, twin: make(), control, last: None });
+        let twin = make(nodes::Birth { chans, ..Default::default() });
+        self.live.insert(uid, Instance { idx, manifest, twin, control, last: None });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.shared.waker.notify();
@@ -296,7 +508,16 @@ impl Engine for AudioEngine {
                 inst.last = Some(desired);
             }
         }
-        let (plan, faults) = plan::compile(view, &self.live);
+        let (device, mut faults) = self.output_device(view);
+        if self.clock == Clock::Device {
+            if let Some(why) = self.follow(device.as_deref()) {
+                let outs: Vec<Uid> = self.live.iter().filter(|(_, i)| i.manifest.type_name == nodes::audio_out::TYPE).map(|(u, _)| *u).collect();
+                faults.extend(outs.into_iter().map(|u| (u, why.clone())));
+            }
+        }
+        let silent: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
+        let (plan, looped) = plan::compile(view, &self.live, &silent);
+        faults.extend(looped);
         let since = self.started.elapsed().as_secs_f64();
         let now_faulted: Vec<Uid> = faults.iter().map(|(u, _)| *u).collect();
         for uid in self.faulted.iter().filter(|u| !now_faulted.contains(u)) {
@@ -329,7 +550,13 @@ impl Engine for AudioEngine {
         n
     }
 
-    fn request(&mut self, _uid: Uid, _request: Request) {}
+    /// A refresh runs on the node's own thread, never under the graph lock.
+    fn request(&mut self, uid: Uid, request: Request) {
+        let Request::RefreshParam { key } = request;
+        if let Some(inst) = self.live.get(&uid) {
+            inst.control.refresh(key);
+        }
+    }
 
     /// Every control half born after computes `t` from the new origin.
     fn reset_clock(&mut self, origin: Instant) {
@@ -344,9 +571,10 @@ impl Engine for AudioEngine {
         self
     }
 
-    /// Stop every control half and WAIT for each to release its shared memory — a ceiling,
-    /// because only a process about to EXIT has no "a moment later".
+    /// Stop the clock and every control half, and WAIT for each to release its shared memory — a
+    /// ceiling, because only a process about to EXIT has no "a moment later".
     fn shutdown(&mut self) {
+        self.device = None;
         let halts: Vec<Arc<goofi_transport::Halt>> = self.live.values().map(|i| i.control.halt.clone()).collect();
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             self.remove(uid);
@@ -359,5 +587,11 @@ impl Engine for AudioEngine {
             rt.render_block();
         }
         self.discard_retired();
+    }
+}
+
+impl Shared {
+    pub(crate) fn rate(&self) -> f64 {
+        f64::from_bits(self.rate.load(Ordering::Relaxed))
     }
 }

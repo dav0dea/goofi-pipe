@@ -84,7 +84,7 @@ impl Goofi {
             // through builds an authored node where nothing looks for it.
             std::env::set_var("CARGO_TARGET_DIR", std::env::temp_dir().join("goofi-test-cargo-target"));
         });
-        let state = AppState::new(headless);
+        let state = AppState::new(headless, goofi_bridge::Clock::External);
         {
             let mut g = state.graph.lock().unwrap();
             fixtures::register(&mut g);

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use goofi_audio_sdk::{AudioNode, Block, Port, PortMut, BLOCK, MAX_CHANNELS};
 
+use crate::nodes::audio_out;
 use crate::plan::{Plan, Source, SILENCE};
 
 /// The most inputs, outputs or params a node may declare: a block's ports are stack arrays.
@@ -45,8 +46,9 @@ impl Inbox {
         self.last = [0.0; MAX_CHANNELS as usize];
     }
 
-    /// One block of `channels` planar channels: the next sample entered, or the last one held.
-    fn fill(&mut self, region: &mut [f32], channels: u16) {
+    /// One block: per channel the next sample entered, or the last one held.
+    pub fn fill(&mut self, out: &mut PortMut<'_>) {
+        let channels = out.channels();
         for i in 0..BLOCK {
             if self.left == 0 {
                 if let Ok(head) = self.ring.read_chunk(2) {
@@ -67,7 +69,7 @@ impl Inbox {
                 }
             }
             for c in 0..channels as usize {
-                region[c * BLOCK + i] = match (self.chans, c) {
+                out.chan_mut(c)[i] = match (self.chans, c) {
                     (1, _) => self.last[0],
                     (n, c) if c < n => self.last[c],
                     _ => 0.0,
@@ -97,8 +99,10 @@ pub struct Runtime {
     pub arena: Vec<f32>,
     pub inbox: rtrb::Consumer<Msg>,
     pub outbox: rtrb::Producer<Retired>,
-    /// Rendered output not yet handed to the device, interleaved.
+    /// Rendered output not yet handed to the device, interleaved at `channels()`.
     pub fifo: Vec<f32>,
+    /// The device's width while a device is the clock; the summed output's own otherwise.
+    device: Option<u16>,
 }
 
 impl Runtime {
@@ -110,7 +114,28 @@ impl Runtime {
             inbox,
             outbox,
             fifo: Vec::new(),
+            device: None,
         }
+    }
+
+    /// The width the FIFO is interleaved at.
+    pub fn channels(&self) -> u16 {
+        self.device.unwrap_or(self.plan.output.1)
+    }
+
+    pub fn set_device(&mut self, channels: Option<u16>) {
+        self.device = channels;
+        self.fifo.clear();
+    }
+
+    /// Fill one device buffer: whole blocks until enough is rendered, the surplus carried.
+    pub fn render_into(&mut self, out: &mut [f32]) {
+        while self.fifo.len() < out.len() {
+            self.render_block();
+        }
+        let rest = self.fifo.split_off(out.len());
+        out.copy_from_slice(&self.fifo);
+        self.fifo = rest;
     }
 
     fn apply(&mut self, msg: Msg) {
@@ -184,7 +209,7 @@ impl Runtime {
                     }
                     Source::Inbox { at, channels, inbox } => {
                         let region = unsafe { region_mut(base, len, *at, *channels) };
-                        slot.inboxes[*inbox].fill(region, *channels);
+                        slot.inboxes[*inbox].fill(&mut PortMut::new(region, *channels));
                     }
                     Source::Silence | Source::Region { .. } => {}
                 }
@@ -216,11 +241,26 @@ impl Runtime {
                 }
             }
         }
-        let (at, channels) = self.plan.heard();
-        let out = unsafe { region(base, len, at, channels) };
+        let (at, channels) = self.plan.output;
+        {
+            let dst = unsafe { region_mut(base, len, at, channels) };
+            dst.fill(0.0);
+            for stage in self.plan.sinks.iter().map(|i| &self.plan.stages[*i]) {
+                let (Some(input), Some(gain)) = (stage.ins.first(), stage.params.get(audio_out::P::GAIN)) else { continue };
+                let (input, gain) = unsafe { (port(base, len, input), port(base, len, gain)) };
+                for c in 0..channels as usize {
+                    let (x, g) = (input.chan(c), gain.chan(c));
+                    for i in 0..BLOCK {
+                        dst[c * BLOCK + i] += x[i] * g[i];
+                    }
+                }
+            }
+        }
+        let out = Port::new(unsafe { region(base, len, at, channels) }, channels, true);
+        let width = self.channels() as usize;
         for i in 0..BLOCK {
-            for c in 0..channels as usize {
-                self.fifo.push(out[c * BLOCK + i]);
+            for c in 0..width {
+                self.fifo.push(out.chan(c)[i]);
             }
         }
     }

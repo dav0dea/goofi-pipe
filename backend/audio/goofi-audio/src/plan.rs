@@ -37,12 +37,20 @@ pub struct Stage {
     pub outs: Vec<(Region, u16)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub stages: Vec<Stage>,
     pub arena_len: usize,
-    /// What the device hears: the lowest-uid `AudioOut`'s input.
-    pub output: Option<Source>,
+    /// What the device hears: every agreeing `AudioOut`'s input times its gain, summed here.
+    pub output: (Region, u16),
+    /// The `AudioOut` stages that sum into `output`.
+    pub sinks: Vec<usize>,
+}
+
+impl Default for Plan {
+    fn default() -> Plan {
+        Plan { stages: Vec::new(), arena_len: BLOCK, output: (SILENCE, 1), sinks: Vec::new() }
+    }
 }
 
 impl Plan {
@@ -50,14 +58,6 @@ impl Plan {
         self.stages
             .iter()
             .any(|s| s.idx == idx && s.ins.iter().any(|i| matches!(i, Source::Inbox { inbox: n, .. } if *n == inbox)))
-    }
-
-    /// The region the device reads and its channel count; silence when nothing is heard.
-    pub fn heard(&self) -> (Region, u16) {
-        match &self.output {
-            Some(Source::Region { at, channels }) | Some(Source::Sum { at, channels, .. }) => (*at, *channels),
-            _ => (SILENCE, 1),
-        }
     }
 }
 
@@ -116,8 +116,9 @@ pub(crate) fn is_edge(b: &BindingView<'_>, live: &HashMap<Uid, Instance>) -> boo
 /// Kahn over port edges and same-engine references, ties by uid. A node whose type answers
 /// `feedback()` ignores its in-edges and runs before every other root, reading its producers'
 /// regions as the previous block left them. A loop with no such node is excluded and named; what
-/// the loop feeds still runs, reading silence at that jack.
-pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Vec<(Uid, String)>) {
+/// the loop feeds still runs, reading silence at that jack. A `silent` `AudioOut` runs but does
+/// not sum.
+pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>, silent: &[Uid]) -> (Plan, Vec<(Uid, String)>) {
     let mut wires: HashMap<(Uid, &str), Vec<(Uid, &'static str)>> = HashMap::new();
     for e in view.edges {
         if live.contains_key(&e.consumer.0) && live.contains_key(&e.producer.0) {
@@ -157,7 +158,7 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
     let faults: Vec<(Uid, String)> =
         members.iter().map(|u| (*u, "in a loop with no feedback node, so it does not run".to_string())).collect();
 
-    let mut plan = Plan { stages: Vec::new(), arena_len: BLOCK, output: None };
+    let mut plan = Plan::default();
     let parts_of = |uid: Uid, slot: &str, outs_of: &HashMap<(Uid, &'static str), (Region, u16)>| -> Vec<(Region, u16)> {
         wires.get(&(uid, slot)).into_iter().flatten().filter_map(|p| outs_of.get(p).copied()).collect()
     };
@@ -185,7 +186,6 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
             outs_of.insert((*uid, o.name), (alloc(channels, &mut plan.arena_len), channels));
         }
     }
-    let mut heard: Option<(Uid, Source)> = None;
     for uid in &order {
         let inst = &live[uid];
         let outs: Vec<(Region, u16)> = inst.manifest.outputs.iter().map(|o| outs_of[&(*uid, o.name)]).collect();
@@ -210,12 +210,22 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
                 None => Source::Scalar { at: alloc(1, &mut plan.arena_len), param: i },
             })
             .collect();
-        if inst.manifest.type_name == "AudioOut" && heard.as_ref().is_none_or(|(h, _)| uid.0 < h.0) {
-            heard = ins.first().map(|s| (*uid, s.clone()));
+        if inst.manifest.type_name == crate::nodes::audio_out::TYPE && !silent.contains(uid) {
+            plan.sinks.push(plan.stages.len());
         }
         plan.stages.push(Stage { idx: inst.idx, ins, params, outs });
     }
-    plan.output = heard.map(|(_, s)| s);
+    let width = plan
+        .sinks
+        .iter()
+        .filter_map(|i| plan.stages[*i].ins.first())
+        .map(|s| match s {
+            Source::Region { channels, .. } | Source::Sum { channels, .. } | Source::Inbox { channels, .. } => *channels,
+            Source::Silence | Source::Scalar { .. } => 1,
+        })
+        .max()
+        .unwrap_or(1);
+    plan.output = (alloc(width, &mut plan.arena_len), width);
     (plan, faults)
 }
 

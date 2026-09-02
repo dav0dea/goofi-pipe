@@ -63,3 +63,4 @@ rmpv = "1"
 # Pin a tiny SO_RCVBUF on a test client so a stalled reader deterministically lags the broadcast
 # ring, instead of the OS silently autotuning a huge buffer.
 socket2 = "0.6"
+midir = "0.11"
