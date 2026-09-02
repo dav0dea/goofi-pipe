@@ -4,13 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# The build script's only dependency, and it is one string: the instruction to run goofi-init,
-# which that script has to print and goofi-init owns. It links no goofi crate itself, so this
-# cannot make provisioning depend on the build it provisions.
+# goofi-init owns the one line the build script prints when provisioning is missing; none of these
+# has a build script of its own, so provisioning cannot depend on the build it provisions.
 [build-dependencies]
 goofi-init = { path = "../goofi-init" }
 # The node pipeline, run here over the shipped folders so the artifacts ship inside the binary.
 goofi-build = { path = "../goofi-build" }
+goofi-node = { path = "../goofi-node" }
 
 [dependencies]
 goofi-core = { path = "../goofi-core" }

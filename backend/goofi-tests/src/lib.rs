@@ -26,6 +26,19 @@ pub struct Goofi {
     pub state: AppState,
     actor: String,
     patience: Duration,
+    /// The handle that minted the mount, and the only one whose drop is the session's end.
+    owner: bool,
+}
+
+/// A situation ends the way a process exits: every node stopped and waited for, so no test leaves
+/// the engine alive under libtest's `exit`.
+impl Drop for Goofi {
+    fn drop(&mut self) {
+        if self.owner {
+            self.state.graph.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
+            self.state.release_mount();
+        }
+    }
 }
 
 impl Default for Goofi {
@@ -67,6 +80,9 @@ impl Goofi {
                     std::env::set_var("GOOFI_BUILD_DIR", target.join("goofi-build"));
                 }
             }
+            // A shell's own target dir must never reach the nested cargo: a pipeline that let it
+            // through builds an authored node where nothing looks for it.
+            std::env::set_var("CARGO_TARGET_DIR", std::env::temp_dir().join("goofi-test-cargo-target"));
         });
         let state = AppState::new(headless);
         {
@@ -75,15 +91,14 @@ impl Goofi {
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
             if let Some(subproc) = find_python() {
-                goofi_bridge::signal_engine(&mut g)
-                    .set_python(goofi_signal::Python { subproc, free_threaded: free_threaded_python() });
+                goofi_bridge::signal_engine(&mut g).set_python(goofi_signal::Python::new(subproc));
             }
             // The shipped tree is a root like any other: scanned at boot, as the CLI scans it.
             let patch = state.mount();
             goofi_bridge::rescan(&state, &mut g, &patch);
         }
         goofi_bridge::spawn_workers(&state);
-        Goofi { state, actor: "test".into(), patience: WAIT }
+        Goofi { state, actor: "test".into(), patience: WAIT, owner: true }
     }
 
     /// Boot one whose `/data` sockets probe on a short clock. Through [`Goofi::with_mode`], so
@@ -101,7 +116,7 @@ impl Goofi {
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
     pub fn client(&self, actor: &str) -> Goofi {
-        Goofi { state: self.state.clone(), actor: actor.into(), patience: self.patience }
+        Goofi { state: self.state.clone(), actor: actor.into(), patience: self.patience, owner: false }
     }
 
     /// Run an op and unwrap it; an unexpected refusal is a failure here.
@@ -712,16 +727,6 @@ fn find_python() -> Option<String> {
             })
         })
         .clone()
-}
-
-#[cfg(feature = "embed")]
-fn free_threaded_python() -> Option<String> {
-    goofi_python::inproc::interpreter_path()
-}
-
-#[cfg(not(feature = "embed"))]
-fn free_threaded_python() -> Option<String> {
-    None
 }
 
 /// Write `source` into the patch's own `nodes_signal/` and refresh the library through the op —

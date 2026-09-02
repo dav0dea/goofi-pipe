@@ -56,7 +56,7 @@ scope: root
 ```mermaid
 flowchart LR
   n000000000001[\"oscillator0: Oscillator<br/>000000000001\"]
-  n000000000002[\"⚠ _testfail0: _TestFail<br/>000000000002\"]
+  n000000000002[\"⚠ testfail0: _TestFail<br/>000000000002\"]
   n000000000004[[\"subpatch0<br/>000000000004\"]]
   n000000000001 -- out→value --> n000000000004
 ```
@@ -71,7 +71,7 @@ uids: a uid is its mermaid id without the leading `n`.
     let errs = health["errors"].as_array().cloned().unwrap_or_default();
     assert_eq!(errs.len(), 1, "one standing error: {health}");
     assert_eq!(errs[0]["node"], "000000000002");
-    assert_eq!(errs[0]["path"], "_testfail0");
+    assert_eq!(errs[0]["path"], "testfail0");
     assert_eq!(errs[0]["error"], "the sensor is unplugged");
     assert!(errs[0]["standing"].as_f64().is_some(), "and how long it has stood: {health}");
 }
@@ -96,7 +96,7 @@ uids: a uid is its mermaid id without the leading `n`.
     );
     // The erroring node is in ROOT, and this is a sub-patch: asking about one scope used to report
     // every fault in the patch, so the same list arrived again under each scope.
-    assert!(!text(&g, "nodes inspect", j!({ "scope": scope })).contains("_testfail0"));
+    assert!(!text(&g, "nodes inspect", j!({ "scope": scope })).contains("testfail0"));
 }
 
 #[test]

@@ -394,10 +394,8 @@ async fn run(
     state.roots.extend(extra_nodes.iter().map(PathBuf::from));
     ensure_packages(&state.roots, &subproc_python);
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
-    goofi_bridge::signal_engine(&mut state.graph.lock().unwrap()).set_python(goofi_signal::Python {
-        subproc: subproc_python.clone(),
-        free_threaded: free_threaded_python(),
-    });
+    goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
+        .set_python(goofi_signal::Python::new(subproc_python.clone()));
     boot_scan(&state);
 
     let code = if list_nodes {
@@ -627,17 +625,6 @@ fn note_replaced(name: &str, replaced: bool) {
     }
 }
 
-/// The free-threaded interpreter the in-process tier runs on, when this binary links one.
-#[cfg(feature = "python")]
-fn free_threaded_python() -> Option<String> {
-    goofi_python::inproc::interpreter_path()
-}
-
-#[cfg(not(feature = "python"))]
-fn free_threaded_python() -> Option<String> {
-    None
-}
-
 #[cfg(feature = "python")]
 const NO_PYTHON_NOTE: &str = "";
 #[cfg(not(feature = "python"))]
@@ -685,6 +672,17 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Cli, String> {
         parse_args(args.iter().map(|s| s.to_string()))
+    }
+
+    /// A booted state under a throwaway home, so no test writes the user's own `.goofi`.
+    fn walled() -> AppState {
+        static WALL: std::sync::Once = std::sync::Once::new();
+        WALL.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("goofi-cli-test-home-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::env::set_var("GOOFI_HOME", dir);
+        });
+        AppState::new(false)
     }
 
     #[test]
@@ -787,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signal_stops_every_node_before_the_run_returns() {
-        let state = AppState::new(false);
+        let state = walled();
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let graph = state.graph.clone();
         {
@@ -808,7 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_mount_lives_exactly_as_long_as_the_run() {
-        let state = AppState::new(false);
+        let state = walled();
         let mount = state.mount();
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
         let cli = Cli { port: 0, ..Cli::default() };
@@ -817,7 +815,7 @@ mod tests {
         assert!(!husk.exists(), "the nonce directory goes too, not just workspace: {}", husk.display());
 
         // `--list-nodes` returns before the server ever binds; the same tail must still reclaim.
-        let listed = AppState::new(false);
+        let listed = walled();
         let m2 = listed.mount();
         let cli = Cli { list_nodes: true, ..Cli::default() };
         assert_eq!(run(cli, "python3".into(), listed, std::future::pending()).await, 0);

@@ -26,21 +26,11 @@ impl SignalEngine {
 const SETUP_RETRY_INTERVAL: f64 = 1.0;
 
 fn guard_lifecycle<T>(f: impl FnOnce() -> T) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(panic_message)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(goofi_signal_sdk::abi::panic_message)
 }
 
 fn fold_panic(panicked: String) -> NodeResult {
     Err(NodeError(panicked))
-}
-
-fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = p.downcast_ref::<&str>() {
-        format!("panic: {s}")
-    } else if let Some(s) = p.downcast_ref::<String>() {
-        format!("panic: {s}")
-    } else {
-        "panic in node".to_string()
-    }
 }
 
 /// Seed a fresh instance: replay every declared param, then run `setup` — a panic in either is

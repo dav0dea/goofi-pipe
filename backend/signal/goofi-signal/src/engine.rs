@@ -70,7 +70,7 @@ pub struct SignalEngine {
     /// What the last probe of each file decided, at the stamp it decided it.
     pub(crate) probed: HashMap<std::path::PathBuf, (goofi_node::Stamp, crate::scan::Probed)>,
     /// Every built artifact loaded so far, by path: a library is opened once and never closed.
-    pub(crate) rust_loaded: HashMap<std::path::PathBuf, crate::scan::RustType>,
+    pub(crate) rust_loaded: HashMap<std::path::PathBuf, Arc<goofi_signal_sdk::host::Loaded>>,
     /// Readies the drain collected; the settle that follows re-plans each from an empty base.
     pending_ready: Vec<Uid>,
     /// Sequences whose phase an ack completed; the settle that follows advances each.

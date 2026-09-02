@@ -172,8 +172,8 @@ pub fn node_type_info(g: &Graph, m: &NodeManifest, source: &str) -> Value {
     })
 }
 
-/// The `list_nodes` palette catalog, sorted by (category, type), compile-time and runtime types
-/// alike. Hidden test nodes (`_`-prefixed) are excluded.
+/// The `list_nodes` palette catalog, sorted by (category, type). Hidden test nodes (`_`-prefixed)
+/// are excluded.
 pub fn catalog_types(g: &Graph) -> Value {
     let mut items: Vec<(String, String, Value)> = g
         .library_manifests()

@@ -28,7 +28,8 @@ fn prebuild_nodes() {
     let base = out.ancestors().nth(4).expect("a cargo OUT_DIR").join("goofi-build");
     let (mut sources, mut artifacts) = (String::new(), String::new());
     for (engine, sdk) in [("signal", &goofi_build::SIGNAL)] {
-        let dir = root.join(format!("nodes_{engine}"));
+        let folder = goofi_node::folder_of(engine);
+        let dir = root.join(&folder);
         println!("cargo:rerun-if-changed={}", dir.display());
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_file()).collect();
@@ -37,22 +38,16 @@ fn prebuild_nodes() {
             println!("cargo:rerun-if-changed={}", path.display());
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             sources += &format!("    ({:?}, include_bytes!({:?})),
-", format!("nodes_{engine}/{name}"), path.display().to_string());
+", format!("{folder}/{name}"), path.display().to_string());
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            match goofi_build::ensure(sdk, &path, &base) {
-                goofi_build::Outcome::Built(artifact) => {
-                    println!("cargo:rerun-if-changed={}", artifact.display());
-                    let key = artifact.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
-                    let file = artifact.file_name().unwrap().to_string_lossy().into_owned();
-                    artifacts += &format!("    ({key:?}, {file:?}, include_bytes!({:?})),
-", artifact.display().to_string());
-                }
-                goofi_build::Outcome::Failed(why) => panic!("the shipped node {} does not build:
-{why}", path.display()),
-                goofi_build::Outcome::NeedsCargo => panic!("no `cargo` to build the shipped nodes with"),
-            }
+            let artifact = goofi_build::ensure(sdk, &path, &base)
+                .unwrap_or_else(|why| panic!("the shipped node {} does not build:\n{why}", path.display()));
+            println!("cargo:rerun-if-changed={}", artifact.display());
+            let key = artifact.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+            let file = artifact.file_name().unwrap().to_string_lossy().into_owned();
+            artifacts += &format!("    ({key:?}, {file:?}, include_bytes!({:?})),\n", artifact.display().to_string());
         }
     }
     std::fs::write(

@@ -541,7 +541,7 @@ fn materialise_shipped() -> PathBuf {
     }
     let base = goofi_build::base_dir(&home);
     for (key, file, bytes) in SHIPPED_ARTIFACTS {
-        goofi_build::write_if_changed(&base.join("out").join(key).join(file), bytes);
+        let _ = goofi_build::place(&base.join("out").join(key).join(file), bytes);
     }
     root
 }
@@ -556,7 +556,7 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
         .unwrap()
         .rust_sdks()
         .into_iter()
-        .filter_map(|(id, sdk)| goofi_build::sdk(sdk).map(|s| (format!("nodes_{id}"), s)))
+        .filter_map(|(id, sdk)| goofi_build::sdk(sdk).map(|s| (goofi_node::folder_of(id), s)))
         .collect();
     let base = goofi_build::base_dir(&goofi_core::home::dir());
     for root in state.roots.iter().map(PathBuf::as_path).chain(std::iter::once(patch)) {

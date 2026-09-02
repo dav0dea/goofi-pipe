@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, CStr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -46,12 +46,17 @@ pub fn base_dir(home: &Path) -> PathBuf {
 }
 
 /// What one source builds to, keyed by everything that decides it: the goofi version, the SDK
-/// sources and the file's own bytes.
+/// sources, the crates the SDK lets a node reach, and the file's own bytes.
 pub fn cache_key(sdk: &Sdk, source: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(VERSION.as_bytes());
     hash.update(SDK_HASH.as_bytes());
     hash.update(sdk.name.as_bytes());
+    for (name, version) in sdk.allow {
+        hash.update(name.as_bytes());
+        hash.update(version.as_bytes());
+    }
+    hash.update(sdk.glue.as_bytes());
     hash.update(source);
     format!("{:x}", hash.finalize())[..32].to_string()
 }
@@ -60,45 +65,60 @@ pub fn artifact_path(base: &Path, key: &str, stem: &str) -> PathBuf {
     base.join("out").join(key).join(format!("{stem}.{}", std::env::consts::DLL_EXTENSION))
 }
 
-pub enum Outcome {
-    Built(PathBuf),
-    /// rustc's own words, memoized beside the artifact that never appeared.
-    Failed(String),
-    /// No `cargo` to run: only authoring is absent, a cached artifact still loads.
-    NeedsCargo,
+/// Why the last `ensure` of a key failed in this process, for `built` to answer. Never on disk:
+/// a signal, a full disk or a resolve with no network is retried at the next build, not kept.
+static FAILED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+
+fn stem_of(source: &Path) -> &str {
+    source.file_stem().and_then(|s| s.to_str()).unwrap_or("node")
 }
 
-/// The artifact for `source`, built if this machine has never built these bytes.
-pub fn ensure(sdk: &Sdk, source: &Path, base: &Path) -> Outcome {
-    let bytes = match std::fs::read(source) {
-        Ok(b) => b,
-        Err(e) => return Outcome::Failed(format!("could not read {}: {e}", source.display())),
-    };
-    let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("node");
+fn locate(sdk: &Sdk, source: &Path, base: &Path) -> Result<(String, PathBuf), String> {
+    let bytes = std::fs::read(source).map_err(|e| format!("could not read {}: {e}", source.display()))?;
     let key = cache_key(sdk, &bytes);
-    let artifact = artifact_path(base, &key, stem);
-    let memo = artifact.with_file_name("error.txt");
+    let artifact = artifact_path(base, &key, stem_of(source));
+    Ok((key, artifact))
+}
+
+/// The artifact for `source` if it is there, else why the last build of these bytes failed.
+/// Never runs cargo: this is the half a scan may take under the graph lock.
+pub fn built(sdk: &Sdk, source: &Path, base: &Path) -> Result<PathBuf, String> {
+    let (key, artifact) = locate(sdk, source, base)?;
     if artifact.is_file() {
-        return Outcome::Built(artifact);
+        return Ok(artifact);
     }
-    if let Ok(why) = std::fs::read_to_string(&memo) {
-        return Outcome::Failed(why);
+    let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+    Err(failed.get(&key).cloned().unwrap_or_else(|| "not built yet — refresh the library".into()))
+}
+
+/// The artifact for `source`, built if it is not there — every failure is retried, and what it
+/// said is kept for `built`.
+pub fn ensure(sdk: &Sdk, source: &Path, base: &Path) -> Result<PathBuf, String> {
+    let (key, artifact) = locate(sdk, source, base)?;
+    if artifact.is_file() {
+        return Ok(artifact);
     }
-    let Some(cargo) = cargo() else { return Outcome::NeedsCargo };
+    let result = build(sdk, source, base, &key, &artifact);
+    if let Err(why) = &result {
+        FAILED.lock().unwrap_or_else(|e| e.into_inner()).insert(key, why.clone());
+    }
+    result
+}
+
+fn build(sdk: &Sdk, source: &Path, base: &Path, key: &str, artifact: &Path) -> Result<PathBuf, String> {
+    let Some(cargo) = cargo() else {
+        return Err("needs `cargo` to build — install a Rust toolchain, or use a shipped node".into());
+    };
     static BUILDING: Mutex<()> = Mutex::new(());
     let _one_at_a_time = BUILDING.lock().unwrap_or_else(|e| e.into_inner());
     if artifact.is_file() {
-        return Outcome::Built(artifact);
+        return Ok(artifact.to_path_buf());
     }
-    let crate_dir = base.join("crates").join(&key);
-    let crate_name = format!("goofi_node_{}", stem.to_lowercase());
-    if let Err(e) = generate(sdk, source, &sdk_root(base), &crate_dir, &crate_name) {
-        return Outcome::Failed(e);
-    }
+    let crate_dir = base.join("crates").join(key);
+    let crate_name = format!("goofi_node_{}", stem_of(source).to_lowercase());
+    generate(sdk, source, &sdk_root(base), &crate_dir, &crate_name)?;
     let mut cmd = Command::new(cargo);
-    cmd.args(["build", "--release", "--message-format", "short", "--color", "never"])
-        .current_dir(&crate_dir)
-        .env("CARGO_TARGET_DIR", base.join("target"));
+    cmd.args(["build", "--release", "--message-format", "short", "--color", "never"]).current_dir(&crate_dir);
     // A nested cargo must not inherit the outer build's own knobs — a build script's `OUT_DIR`,
     // its encoded rustflags, its target triple — only the jobserver and the home.
     for (k, _) in std::env::vars_os() {
@@ -108,25 +128,20 @@ pub fn ensure(sdk: &Sdk, source: &Path, base: &Path) -> Outcome {
             cmd.env_remove(&*k);
         }
     }
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => return Outcome::Failed(format!("could not run cargo: {e}")),
-    };
+    cmd.env("CARGO_TARGET_DIR", base.join("target"));
+    let output = cmd.output().map_err(|e| format!("could not run cargo: {e}"))?;
     if !output.status.success() {
-        let why = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let _ = std::fs::create_dir_all(memo.parent().unwrap());
-        let _ = std::fs::write(&memo, &why);
-        return Outcome::Failed(why);
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let built = base.join("target").join("release").join(format!(
         "{}{crate_name}.{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     ));
-    if let Err(e) = std::fs::create_dir_all(artifact.parent().unwrap()).and_then(|_| std::fs::copy(&built, &artifact)) {
-        return Outcome::Failed(format!("built, but could not place {}: {e}", artifact.display()));
-    }
-    Outcome::Built(artifact)
+    std::fs::read(&built)
+        .and_then(|bytes| place(artifact, &bytes))
+        .map_err(|e| format!("built, but could not place {}: {e}", artifact.display()))?;
+    Ok(artifact.to_path_buf())
 }
 
 fn cargo() -> Option<PathBuf> {
@@ -211,6 +226,19 @@ pub fn write_if_changed(path: &Path, bytes: &[u8]) {
         let _ = std::fs::create_dir_all(dir);
     }
     let _ = std::fs::write(path, bytes);
+}
+
+/// Put `bytes` at `path` unless something is already there. An artifact under its key is whole or
+/// absent and never rewritten: a process may have the one that is there mapped.
+pub fn place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let dir = path.parent().expect("an artifact has a directory");
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!(".{}.{}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
+    std::fs::write(&part, bytes)?;
+    std::fs::rename(&part, path)
 }
 
 /// A loaded artifact: the library, kept for the process lifetime, and what it says it is.

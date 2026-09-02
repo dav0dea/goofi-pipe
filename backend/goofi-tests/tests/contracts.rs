@@ -227,7 +227,7 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
 
     assert_eq!(ty["source"], "patch", "a greyed row is provenanced too");
     assert_eq!(row(&g, "MyPyThing")["source"], "patch");
-    assert_eq!(row(&g, "Oscillator")["source"], "builtin", "a compiled-in node ships with goofi");
+    assert_eq!(row(&g, "Oscillator")["source"], "builtin", "a shipped node ships with goofi");
 }
 
 #[tokio::test]

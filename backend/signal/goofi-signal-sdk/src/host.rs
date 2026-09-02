@@ -30,6 +30,10 @@ impl Loaded {
         Ok(Loaded { vtable: &*vtable, manifest })
     }
 
+    pub fn manifest(&self) -> &'static NodeManifest {
+        self.manifest
+    }
+
     pub fn instantiate(&self) -> Box<dyn Node> {
         let node = unsafe { (self.vtable.create)() };
         Box::new(Handle { node, vtable: self.vtable, manifest: self.manifest })

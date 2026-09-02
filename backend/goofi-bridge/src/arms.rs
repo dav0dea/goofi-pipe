@@ -171,15 +171,7 @@ pub(crate) fn library_get(
 ) -> Result<Value, String> {
     let ty = parse_str(payload, "type")?;
     let mount = state.mount();
-    let g = state.graph.lock().unwrap();
-    let folder = format!("nodes_{}", g.type_engine(ty).unwrap_or("signal"));
-    // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
-    // last, so a first-match search walks them backwards.
-    let dirs: Vec<(PathBuf, &str)> = [(mount.join(&folder), "patch")]
-        .into_iter()
-        .chain(state.roots.iter().rev().map(|d| (d.join(&folder), "shipped")))
-        .collect();
-    inspect::node_source(&g, ty, &dirs)
+    inspect::node_source(&state.graph.lock().unwrap(), ty, &mount, &state.roots)
 }
 
 /// Explicit, never watched: an agent calls it after writing a node file.

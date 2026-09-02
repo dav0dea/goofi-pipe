@@ -659,7 +659,7 @@ impl Graph {
     /// The library entry `type_name` resolves to, and the id of the engine that advertised it —
     /// which IS the engine the type belongs to. Two libraries claiming one name resolve to the
     /// FIRST advertiser, signal first — a decided outcome, not an accident.
-    fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
+    pub fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
         self.engines().find_map(|e| {
             e.library()
                 .into_iter()
@@ -689,7 +689,7 @@ impl Graph {
     pub fn scan_root(&mut self, root: &std::path::Path) -> Vec<goofi_node::ScannedType> {
         let mut out = Vec::new();
         for engine in &mut self.engines {
-            let dir = root.join(format!("nodes_{}", engine.id()));
+            let dir = root.join(goofi_node::folder_of(engine.id()));
             if !dir.is_dir() {
                 continue;
             }
@@ -728,8 +728,7 @@ impl Graph {
         self.library_entry(type_name).map(|(id, _)| id)
     }
 
-    /// Whether a type name resolves to either the compile-time catalog or a
-    /// runtime-registered type.
+    /// Whether a type name resolves to a registered type.
     fn known_type(&self, type_name: &str) -> bool {
         self.library_entry(type_name).is_some()
     }
@@ -949,8 +948,7 @@ impl Graph {
             .normalize_params(type_name, supplied)
     }
 
-    /// Instantiate a node by type name (compile-time catalog or a runtime-registered type).
-    /// `params` defaults to the type's defaults.
+    /// Instantiate a node by type name. `params` defaults to the type's defaults.
     pub fn add_node(&mut self, type_name: &str, params: Option<ParamGroups>) -> Result<Uid, String> {
         self.create_node(type_name, None, "", params, None)
     }
@@ -989,7 +987,7 @@ impl Graph {
                     self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
                 let params = self.default_params_of(type_name, params)?;
                 let uid = self.claim(uid);
-                let born = self.pick_name(name, &entry.manifest.type_name.to_lowercase(), None);
+                let born = self.pick_name(name, &name_base(type_name), None);
                 self.insert_node_at(uid, born.clone(), engine, entry, params);
                 let manifest = entry.manifest;
                 if seed {

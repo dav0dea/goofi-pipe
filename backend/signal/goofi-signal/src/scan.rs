@@ -5,24 +5,24 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use goofi_node::{Isolation, NodeManifest, Scanned, ScannedType, Stamp};
+use goofi_node::{Isolation, Scanned, ScannedType, Stamp};
 use goofi_python::{Discovered, Discovery};
 use goofi_signal_sdk::host::Loaded;
 
 use crate::SignalEngine;
 
-/// One loaded Rust type: the manifest its `goofi_describe` leaked and its vtable.
-pub(crate) struct RustType {
-    manifest: &'static NodeManifest,
-    loaded: Arc<Loaded>,
-}
-
-/// The interpreters the scan probes and runs with. The subprocess one is always there; the
-/// free-threaded one only when the host links it, and it is what routes a file in-process.
+/// The interpreters the scan probes and runs with. The subprocess one is the caller's; the
+/// free-threaded one is the one this build links, if any, and it is what routes a file in-process.
 #[derive(Clone, Debug)]
 pub struct Python {
     pub subproc: String,
-    pub free_threaded: Option<String>,
+    free_threaded: Option<String>,
+}
+
+impl Python {
+    pub fn new(subproc: String) -> Python {
+        Python { subproc, free_threaded: free_threaded() }
+    }
 }
 
 /// What one file's probes decided, before anything is registered.
@@ -99,17 +99,12 @@ pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
 }
 
 impl SignalEngine {
-    /// An `.rs` file: built, or already built for these bytes, then loaded — a library that will
+    /// An `.rs` file: the artifact the prebuild left for these bytes, loaded — a library that will
     /// not load displaces a stale registration and greys the type out with the reason.
     fn register_rust(&mut self, path: &Path, type_name: &str) -> Scanned {
         let base = goofi_build::base_dir(&goofi_core::home::dir());
-        let loaded = match goofi_build::ensure(&goofi_build::SIGNAL, path, &base) {
-            goofi_build::Outcome::Built(artifact) => self.load_rust(&artifact, type_name),
-            goofi_build::Outcome::Failed(why) => Err(why),
-            goofi_build::Outcome::NeedsCargo => {
-                Err("needs `cargo` to build — install a Rust toolchain, or use a shipped node".into())
-            }
-        };
+        let loaded = goofi_build::built(&goofi_build::SIGNAL, path, &base)
+            .and_then(|artifact| self.load_rust(&artifact, type_name));
         match loaded {
             Ok(replaced) => Scanned::Registered { isolation: Isolation::Native, replaced },
             Err(reason) => {
@@ -128,10 +123,10 @@ impl SignalEngine {
             }
             let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro, "signal");
             let loaded = unsafe { Loaded::open(opened.library, manifest) }?;
-            self.rust_loaded.insert(artifact.to_path_buf(), RustType { manifest, loaded: Arc::new(loaded) });
+            self.rust_loaded.insert(artifact.to_path_buf(), Arc::new(loaded));
         }
-        let RustType { manifest, loaded } = &self.rust_loaded[artifact];
-        let (manifest, loaded) = (*manifest, loaded.clone());
+        let loaded = self.rust_loaded[artifact].clone();
+        let manifest = loaded.manifest();
         let factory: goofi_signal_sdk::NodeFactory = Box::new(move |_| loaded.instantiate());
         Ok(self.register_dyn_type(manifest, factory, &goofi_node::NATIVE))
     }
@@ -189,9 +184,19 @@ fn in_process(path: &Path, ft: &str) -> Discovery {
     goofi_python::inproc::probe(path, ft)
 }
 
+#[cfg(feature = "embed")]
+fn free_threaded() -> Option<String> {
+    goofi_python::inproc::interpreter_path()
+}
+
 #[cfg(not(feature = "embed"))]
 fn in_process(_path: &Path, _ft: &str) -> Discovery {
     Discovery::Skip
+}
+
+#[cfg(not(feature = "embed"))]
+fn free_threaded() -> Option<String> {
+    None
 }
 
 /// A discovered in-process type, registered ROUTED: its tier cell decides the tier at every

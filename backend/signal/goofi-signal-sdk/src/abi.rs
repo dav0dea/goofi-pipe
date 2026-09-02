@@ -134,7 +134,7 @@ pub fn instance(create: impl FnOnce() -> Box<dyn Node>, manifest: &'static Manif
 /// `node` came from [`instance`] and is not used after this.
 pub unsafe extern "C" fn destroy(node: *mut c_void) {
     if !node.is_null() {
-        drop(Box::from_raw(node as *mut Instance));
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(node as *mut Instance))));
     }
 }
 
@@ -160,7 +160,7 @@ unsafe fn call(
     write(sink, Bytes::of(&reply));
 }
 
-fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
+pub fn panic_message(p: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
         format!("panic: {s}")
     } else if let Some(s) = p.downcast_ref::<String>() {

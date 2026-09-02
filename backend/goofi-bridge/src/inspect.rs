@@ -1,5 +1,7 @@
 //! The read ops an agent uses to see what it built: a scope as a diagram, a node as a page of text.
 
+use std::path::{Path, PathBuf};
+
 use goofi_graph::{Graph, Uid};
 use serde_json::{json, Value};
 
@@ -254,18 +256,21 @@ pub fn globals(g: &Graph) -> Value {
 }
 
 /// `library get`: a node type's text where it has one, and its provenance either way.
-pub fn node_source(g: &Graph, ty: &str, dirs: &[(std::path::PathBuf, &str)]) -> Result<Value, String> {
-    let manifest =
-        g.type_manifest(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
-    let mut info = crate::schemas::node_type_info(g, manifest, crate::schemas::source_of(g, ty));
+pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Result<Value, String> {
+    let (engine, entry) = g.library_entry(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
+    let mut info = crate::schemas::node_type_info(g, entry.manifest, crate::schemas::source_of(g, ty));
+    let folder = goofi_node::folder_of(engine);
+    // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
+    // last, so a first-match search walks them backwards.
+    let dirs = std::iter::once((mount.join(&folder), "patch")).chain(roots.iter().rev().map(|d| (d.join(&folder), "shipped")));
     // The file names the type, so the path re-derives without a registry.
-    let found = dirs.iter().find_map(|(dir, provenance)| {
+    let found = dirs.into_iter().find_map(|(dir, provenance)| {
         let entries = std::fs::read_dir(dir).ok()?;
         let path = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .find(|p| goofi_node::type_name_of(p).as_deref() == Some(ty))?;
-        Some((path, *provenance))
+        Some((path, provenance))
     });
     let tier = g.type_tier(ty);
     info["language"] = json!(tier.map(goofi_node::Isolation::language));

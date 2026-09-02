@@ -9,17 +9,23 @@ use goofi_core::SlotType;
 use crate::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
 
 /// The type a node file names: a `.py` stem CamelCased, an `.rs` stem as written. `None` for a
-/// file that is not a node file, or one hidden by a `_` prefix.
+/// file that is not a node file, one hidden by a `_` prefix, or a stem outside the name rule.
 pub fn type_name_of(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     if stem.starts_with('_') {
         return None;
     }
-    match path.extension()?.to_str()? {
-        "py" => Some(camel(stem)),
-        "rs" => Some(stem.to_string()),
-        _ => None,
-    }
+    let name = match path.extension()?.to_str()? {
+        "py" => camel(stem),
+        "rs" => stem.to_string(),
+        _ => return None,
+    };
+    goofi_core::globals::is_valid_name(&name).then_some(name)
+}
+
+/// The folder under a node source root that holds `engine`'s files.
+pub fn folder_of(engine: &str) -> String {
+    format!("nodes_{engine}")
 }
 
 /// `snake_case` file stem → `CamelCase` palette type name.

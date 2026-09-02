@@ -182,8 +182,7 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
 #[test]
 fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let g = Goofi::new();
-    // The shipped nodes came from the artifacts built into the binary: no cargo ran for them, and
-    // each is SOURCE in the shipped root, where `library get` finds it.
+    // A shipped node is SOURCE in the shipped root, where `library get` finds it.
     let r = g.call("library get", j!({ "type": "Oscillator" }));
     assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
     assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{r}");
@@ -212,6 +211,34 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     emits(&g, live, 3.0);
     write_rust_node(&mount, "Twice.rs", "3.0");
     assert_eq!(rescan(&g)["changed"], j!(["Twice"]), "the fix is a change, built from the cache");
+
+    // A stem the name rule refuses is not a node, in either language, exactly as a `_` stem is not:
+    // nothing is built, nothing is listed.
+    write_rust_node(&mount, "my-node.rs", "1.0");
+    write_node(&mount, "2d.py", "1.0");
+    assert_eq!(rescan(&g)["added"], j!([]));
+    let listed = g.call("library list", j!({}));
+    let names: Vec<&str> = listed["types"].as_array().unwrap().iter().filter_map(|v| v["type"].as_str()).collect();
+    assert!(!names.iter().any(|n| ["my-node", "2d", "My-node"].contains(n)), "{names:?}");
+
+    // An author's `Drop` that panics costs its own instance, never the process: the boundary
+    // catches at every entry, teardown included.
+    std::fs::write(
+        mount.join("nodes_signal").join("Doomed.rs"),
+        "use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, Outputs, Params};\n\
+         #[derive(Default)]\nstruct Doomed;\n\
+         impl Drop for Doomed { fn drop(&mut self) { panic!(\"doomed\") } }\n\
+         impl Node for Doomed {\n    \
+         fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult { Ok(()) }\n}\n\
+         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"panics on drop\", inputs: &[], outputs: &[], params: &[], producer: true };\n\
+         goofi_signal_sdk::export!(Doomed, MANIFEST);\n",
+    )
+    .unwrap();
+    assert_eq!(rescan(&g)["added"], j!(["Doomed"]));
+    let doomed = g.add("Doomed");
+    g.call("node remove", j!({ "node": goofi_tests::hex(doomed) }));
+    g.until("the doomed instance to be gone", |g| (g.state.graph.lock().unwrap().node_count() == 1).then_some(()));
+    assert!(g.call("library list", j!({}))["types"].as_array().is_some(), "the server answers after the drop");
 
     // A shipped file copied into the patch shadows it, and the palette says so.
     std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();

@@ -1,4 +1,4 @@
-//! The ONE node abstraction, its runtime plumbing, and the native compile-time catalog.
+//! The ONE node abstraction and its runtime plumbing.
 
 use std::fmt;
 
@@ -7,7 +7,7 @@ use indexmap::IndexMap;
 
 pub mod describe;
 pub mod seam;
-pub use describe::{illegal_slot, leak_manifest, parse_introspection, type_name_of};
+pub use describe::{folder_of, illegal_slot, leak_manifest, parse_introspection, type_name_of};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Request, Scanned, ScannedType, Stamp, Touched,
@@ -371,8 +371,8 @@ impl IsolationCell {
     }
 }
 
-/// The cell every compiled-in node points at. Shared because a native node's tier is fixed —
-/// only a Python type, whose cell is leaked per type at discovery, is ever written.
+/// The cell every native node points at. Shared because a native tier is fixed — only a Python
+/// type, whose cell is leaked per type at discovery, is ever written.
 pub static NATIVE: IsolationCell = IsolationCell::new(Isolation::Native);
 
 pub struct SlotDecl {
