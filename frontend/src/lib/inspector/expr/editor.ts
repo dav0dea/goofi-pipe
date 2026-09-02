@@ -145,9 +145,15 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 }
 
 /** A field whose only legal contents are the names it is handed: no language, no highlighting, the
- *  list opens on focus, what is typed filters it, and a pick commits at once. */
+ *  list opens on focus, what is typed filters it, and a pick commits at once. Typed text commits
+ *  only when it IS one of the names — a half-typed name is never sent. */
 export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditorHandle {
-	const commit = committer(opts.doc, opts.onCommit);
+	const send = committer(opts.doc, opts.onCommit);
+	const commit = (view: EditorView): void => {
+		const typed = view.state.doc.toString();
+		if (opts.options().some((o) => o.label === typed)) send(view);
+	};
+	(commit as { adopt?: (next: string) => void }).adopt = (send as { adopt?: (next: string) => void }).adopt;
 	const source: CompletionSource = (ctx) => {
 		const typed = ctx.state.doc.toString().toLowerCase();
 		const options = opts
@@ -159,7 +165,7 @@ export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditor
 				type: 'variable',
 				apply: (view: EditorView) => {
 					view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: o.label } });
-					commit(view);
+					send(view);
 				}
 			}));
 		return options.length ? { from: 0, to: ctx.state.doc.length, options, filter: false } : null;
