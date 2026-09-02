@@ -3,7 +3,8 @@
 Every param of every node, on every engine, has exactly ONE active source. Decided with the user
 on 2026-09-02 while designing the audio engine, because it is what gives that engine control-rate
 and audio-rate modulation through one door with no precedence rule between them — and it applies
-to the whole system, not to audio. Not built; the first step of the audio program.
+to the whole system, not to audio. BUILT 2026-09-02, as the first step of the audio program; what
+is below is what landed.
 
 ## Decisions
 
@@ -45,9 +46,11 @@ reduction is the tool.
 `mode` accepts `reference`. Giving a reference implies the mode, as giving an expression does;
 an empty reference clears it; a mode alone switches among what is retained.
 
-**The document shape is `{value, mode, expr: {source, triggers}, ref: "node.slot"}`**, `expr` and
-`ref` present when they have content. The `.gfi` carries the same. No shim for the old `enabled`
-shape: the pre-launch policy applies.
+**The document shape is `{value, mode, expr, ref, triggers}`** — `mode` present when a record
+exists, `expr` and `ref` as strings when they have content, `triggers` when true. The `.gfi` and a
+copied fragment carry the same record as `sources: [{group, name, mode, expression, reference,
+triggers}]`. The descriptor's fields are `mode`, `expression`, `reference`, `triggers`, `error`. No
+shim for the old `enabled` shape: the pre-launch policy applied.
 
 **The seam ships the source kind on `BindingView`.** A reference is one `BoundVar::Stream` with no
 compiled id; an expression is what it is today. The signal engine subscribes a reference like a
@@ -56,13 +59,24 @@ The audio engine makes a same-engine reference a plan edge (per sample, per chan
 gate referenced into an envelope is four voices) and lands a foreign reference or an expression as
 an atomic at control rate.
 
-**The inspector's fx badge becomes a three-way toggle.** Reference mode is two fields side by
-side, node then slot, each the expression editor in a picker configuration: no language, no
-highlighting, one completion source over the catalogue the expression editor already reads.
-Choosing a node enables the slot field; the pair commits as one `node.slot` in one op. Nothing is
-drawn on the canvas — a binding is not drawn there today, and a reference is a binding.
+**The inspector's fx badge became three chips**: constant, expression, reference. Reference mode
+is two fields side by side, node then slot, each the ONE expression editor component in its picker
+configuration: no language, no highlighting, one completion source over the catalogue the
+expression editor already reads, filtered by what the param may reference. A pick commits; a
+producer with one matching output fills the slot itself. A reference chosen before one is retained
+shows the picker and sends nothing until a pair is picked, because the manager refuses a mode with
+no text. Nothing is drawn on the canvas — a binding is not drawn there today, and a reference is a
+binding.
+
+**A runtime error reaches a client through the node-level `error` event and through `node state`;
+a per-param descriptor is echoed only by an op.** That was true before and it stands: the editing
+scenario reads a reference's arrival error through `node state`. Whether the inspector should learn
+of a per-param runtime error without an op echo is open below.
 
 ## Open
 
 - A canvas affordance for references, so a patch's modulation is visible where its cables are.
   Nothing in the model prevents it; it is a UI choice.
+- The inspector shows a param's RUNTIME error (a shape error on arrival, an evaluation failure)
+  only after the next op echo for that node; the node-level `error` event carries the node's
+  derived error, not the param's. A per-param runtime error event is one candidate; not decided.
