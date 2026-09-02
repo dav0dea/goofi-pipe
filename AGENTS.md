@@ -277,8 +277,9 @@ Python nodes share one marshalling seam, so they cannot drift; neither the tier 
 interpreter is selectable — one probe per node file routes it, by whether its imports keep the
 GIL disabled. A Rust node runs the same seam: every Rust node, shipped or authored, signal or
 audio, is one `.rs` file in `nodes_<engine>/`, built by one pipeline into a `cdylib` and loaded
-behind a version symbol, and the signal ABI passes the codec bytes the transport already carries.
-There is no static registration. The shipped folders are prebuilt at goofi's build time and
+behind a version symbol, and the ABI IS the subprocess tier's codec — one encode and one decode
+per side per run, a copy a compiled-in node never paid, accepted as the price of one seam. There
+is no static registration. The shipped folders are prebuilt at goofi's build time and
 embedded, so a toolchain is needed to author and never to run.
 
 **Exit is a real teardown.** Every node is stopped and waited for — to a CEILING, not a join,

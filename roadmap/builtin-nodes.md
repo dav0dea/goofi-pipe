@@ -8,8 +8,8 @@ user**, not chosen unilaterally.
 
 Eight nodes, and each one was added to prove a seam rather than to fill a category:
 
-- **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`, compiled in today; decided 2026-09-02 to
-  become `.rs` source in `nodes_signal/`, dynamically loaded (`node-sources.md`).
+- **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`: `.rs` source in `nodes_signal/`, built at
+  goofi's build time and loaded dynamically since 2026-09-02 (`node-sources.md`).
 - **Python** — none in the shipped tree (`nodes/`, to be `nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
   `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
   because the subprocess tier had to be proved against real packages that hold the GIL; they now
@@ -72,5 +72,6 @@ already known to be short, and each is a param design rather than a new node:
   user's edit is a copy of that one file into the patch's own folder, which shadows it. "Rust-first
   or Python-first" is then a per-node choice with no structural cost either way.
 - What decides that a node is written in Rust. Today it is "the four that had to be fast", which is
-  a history rather than a rule — and `node-sources.md` is where that question gets settled, because
-  it decides whether a Rust node is even a thing a user can write.
+  a history rather than a rule. A user can now write one as easily as a Python node, and it pays
+  one codec copy per run at the boundary (`node-sources.md`), so the answer is a measurement:
+  what a Rust node buys per frame, through that boundary, against the same node in Python.

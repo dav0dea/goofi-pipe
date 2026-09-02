@@ -82,7 +82,8 @@ no patch time. Engines are registered at the composition root — `goofi-bridge`
 the ONE boot path the CLI and the test harness share: it constructs the signal engine (whose
 construction carries the boot reclaim sweep) and registers it first on a bare `Graph::new()`;
 the shipped nodes reach every engine through its scan of the folders the root's `build.rs`
-prebuilt (2026-09-02: `goofi-nodes` and its inventory are deleted, `node-sources.md`). A bare graph is a MODEL — it serializes, and runs
+prebuilt (2026-09-02: `goofi-nodes` and its inventory are deleted; a shipped Rust node is a
+`.rs` file the engine loads from goofi's build cache, `node-sources.md`). A bare graph is a MODEL — it serializes, and runs
 nothing. A type's engine is WHICH
 library advertises it — no tag field exists anywhere; two libraries claiming one name resolve to
 the first registered advertiser, signal first. Adding an engine is one line there plus its
@@ -230,12 +231,12 @@ library advertises a type is its engine), `Uid`, the param vocabulary (`ParamGro
 (`setup()`/`process()` is the SIGNAL author contract — an audio node never implements it),
 `Inputs`/`Outputs`, `RunPolicy` and the common decls, `WireStatus`, and all of `discover.rs`.
 `Isolation` and `IsolationCell` stay shared after all: the seam's `LibraryEntry` carries the live
-tier cell, so the bridge's `node state` reads one door for every engine. Ripple: `goofi-nodes` and `goofi-python` depend on `goofi-signal` — which is
-honest, they are signal nodes; the pymod does not (it imports nothing from `goofi-node` and stays
+tier cell, so the bridge's `node state` reads one door for every engine. Ripple: `goofi-python` depends on `goofi-signal` — which is
+honest, it runs signal nodes; the pymod does not (it imports nothing from `goofi-node` and stays
 under `signal/` on disk unchanged).
 
 **Each engine owns its library, and the rescan seam moves with it.** The signal engine runs the
-Python probe and the `inventory` enumeration; audio enumerates its shipped nodes, the authored `cdylib`s and the VST3 plugins; each advertises
+Python probe and loads the Rust artifacts `goofi-build` made; audio enumerates its shipped nodes, the authored `cdylib`s and the VST3 plugins; each advertises
 through `library()`. The graph keeps the one merged view the palette reads, and normalizes a
 caller's partial params against what the owning engine's library entry declares (`with_common`
 moved behind that door — common params are signal scheduling semantics an audio node will not
@@ -273,9 +274,9 @@ names — the hierarchy lives on disk):
 
     backend/
       goofi-core, goofi-node, goofi-transport, goofi-graph,
-      goofi-bridge, goofi-cli, goofi-client, goofi-codec, goofi-view, goofi-init, goofi-tests
+      goofi-bridge, goofi-build, goofi-cli, goofi-client, goofi-codec, goofi-view, goofi-init, goofi-tests
       signal/
-        goofi-signal, goofi-python, goofi-pymod, goofi-nodes
+        goofi-signal, goofi-signal-sdk, goofi-python, goofi-pymod
 
 `goofi-codec` stays its own crate, beside `goofi-transport` — the extracted machinery moves
 bytes and rings doorbells, so the transport ended up codec-free; the engines and the bridge
