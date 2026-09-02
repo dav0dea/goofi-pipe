@@ -26,18 +26,19 @@ would land.
 
 ## The audio plane answers this differently, and that is decided
 
-The audio engine (see `audio-engine.md`) locks its own answer: **every audio processing node is a
-CLAP plugin in a `cdylib`, loaded with `libloading`, and authored by recompiling that `cdylib` and
-reloading it while the audio thread runs.** Audio I/O nodes are the engine's own, not plugins. goofi's own audio nodes and a vendored third-party plugin are the
-same kind of thing, loaded the same way. A toolchain is needed to AUTHOR one and never to run one;
-the shipped nodes are built with goofi.
+The audio engine (see `audio-engine.md`) locks its own answer: **every audio node implements one
+goofi trait. A shipped node links in statically; an authored node is the same trait built against
+goofi's SDK crate, compiled to a `cdylib`, loaded with `libloading`, and reloaded while the audio
+thread runs.** Audio I/O is the engine's own, and a VST3 plugin is an adapter behind the same
+trait. A toolchain is needed to AUTHOR a node and never to run one; the shipped nodes are built
+with goofi.
 
 **Why the two planes diverge, stated once.** The objection below — a `cdylib` means a versioned ABI,
-and a mismatch is a crash rather than an error — is an objection to goofi minting an ABI of its own.
-CLAP is a C ABI that already exists, is versioned, and is what every audio host on all three
-platforms already does. And the risk it carries is bounded by what a DSP kernel IS: it is handed a
-buffer and returns a buffer, so `#![forbid(unsafe_code)]` plus a dependency allowlist is a real
-envelope. A signal node is not that shape — it legitimately opens sockets and serial ports, starts
+and a mismatch is a crash rather than an error — is answered on the audio plane by who builds the
+node: goofi does, against its own SDK at its own version, and the SDK stamps that version into a
+symbol the loader checks before anything else, so a mismatch is a refusal with a message. And the
+risk the boundary carries is bounded by what a DSP kernel IS: it is handed a buffer and returns a
+buffer, so `#![forbid(unsafe_code)]` plus a dependency allowlist is a real envelope. A signal node is not that shape — it legitimately opens sockets and serial ports, starts
 background threads and blocks for a long time — so a process boundary earns its keep there and does
 not in a 64-frame block.
 

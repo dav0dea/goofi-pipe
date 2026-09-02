@@ -40,7 +40,7 @@ bridge (whose `/data` reducer holds subscribers) depend on it; the graph never d
 
 Graph parses and applies to the model, then the owning engine propagates to its node. `param edit`
 writes the record identically for every engine; the propagation is a `SetParam` control message
-for signal and a CLAP param event on the audio thread — each engine's own translation, behind the
+for signal and a param value handed to the audio thread — each engine's own translation, behind the
 trait, keyed by the touched set the op path records.
 
 ## Locked decisions
@@ -224,7 +224,7 @@ library advertises a type is its engine), `Uid`, the param vocabulary (`ParamGro
 `Compiled`, `EvalCtx`, `ExprEvaluator`, the scanners), plus the seam: the `Engine` trait,
 `GraphView`, `Touched`, `Request`, and the six-variant health `Status` with
 `NodeStage`/`NodeFault`. Moves to `goofi-signal`: the `Node` trait and factories
-(`setup()`/`process()` is the SIGNAL author contract — a CLAP plugin never implements it),
+(`setup()`/`process()` is the SIGNAL author contract — an audio node never implements it),
 `Inputs`/`Outputs`, `RunPolicy` and the common decls, `WireStatus`, and all of `discover.rs`.
 `Isolation` and `IsolationCell` stay shared after all: the seam's `LibraryEntry` carries the live
 tier cell, so the bridge's `node state` reads one door for every engine. Ripple: `goofi-nodes` and `goofi-python` depend on `goofi-signal` — which is
@@ -232,7 +232,7 @@ honest, they are signal nodes; the pymod does not (it imports nothing from `goof
 under `signal/` on disk unchanged).
 
 **Each engine owns its library, and the rescan seam moves with it.** The signal engine runs the
-Python probe and the `inventory` enumeration; audio enumerates CLAP plugins; each advertises
+Python probe and the `inventory` enumeration; audio enumerates its shipped nodes, the authored `cdylib`s and the VST3 plugins; each advertises
 through `library()`. The graph keeps the one merged view the palette reads, and normalizes a
 caller's partial params against what the owning engine's library entry declares (`with_common`
 moved behind that door — common params are signal scheduling semantics an audio node will not
