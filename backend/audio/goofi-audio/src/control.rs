@@ -365,9 +365,11 @@ impl Control {
                 self.params[i].store(plan::scalar(c).to_bits(), Ordering::Relaxed);
             }
         }
+        let mut pass = Pass::default();
         for i in 0..self.binds.len() {
-            self.evaluate(i);
+            self.evaluate(i, &mut pass);
         }
+        self.report(pass);
     }
 
     fn apply_slots(&mut self, subs: Vec<Sub>) {
@@ -418,20 +420,14 @@ impl Control {
             }
             self.binds.push(Bind { param, key, expr, streams });
         }
-        let mut values_changed = false;
-        let mut cleared = Vec::new();
+        let mut pass = Pass::default();
         for dropped in old {
-            values_changed |= self.evaluated.shift_remove(&dropped.key).is_some();
+            pass.values |= self.evaluated.shift_remove(&dropped.key).is_some();
             if self.errors.shift_remove(&dropped.key).is_some() {
-                cleared.push((dropped.key, None));
+                pass.errors.push((dropped.key, None));
             }
         }
-        if values_changed {
-            self.report_values();
-        }
-        if !cleared.is_empty() {
-            self.shared.report(self.uid, Status::BindingErrors { errors: cleared });
-        }
+        self.report(pass);
     }
 
     fn apply_bells(&mut self, targets: Vec<Vec<(String, EventId)>>) {
@@ -473,6 +469,7 @@ impl Control {
     /// the clock's rate, or the stream died; a name that failed stands as an error on that param
     /// until it moves.
     fn open_io(&mut self, io: &mut Io) {
+        let mut pass = Pass::default();
         if io.dead.swap(false, Ordering::Acquire) {
             io.stream = None;
             io.device = None;
@@ -492,7 +489,7 @@ impl Control {
                 self.shared.waker.notify();
                 io.stream = stream;
                 io.device = Some(wanted);
-                self.record_error(self.key_of(audio_in::P::DEVICE), error);
+                self.record_error(self.key_of(audio_in::P::DEVICE), error, &mut pass);
             }
         }
         if let Some(producer) = self.ports.midi_in.clone() {
@@ -511,9 +508,10 @@ impl Control {
                     }
                 };
                 io.port = Some(wanted);
-                self.record_error(self.key_of(midi_in::P::PORT), error);
+                self.record_error(self.key_of(midi_in::P::PORT), error, &mut pass);
             }
         }
+        self.report(pass);
     }
 
     fn text(&self, param: usize) -> String {
@@ -528,15 +526,27 @@ impl Control {
         ParamKey::new(d.group, d.name)
     }
 
-    /// Record or clear a param's error, reporting only what CHANGED: the graph files the delta
+    /// Record or clear a param's error, keeping only what CHANGED: the graph files the delta
     /// against the instance.
-    fn record_error(&mut self, key: ParamKey, error: Option<String>) {
+    fn record_error(&mut self, key: ParamKey, error: Option<String>, pass: &mut Pass) {
         let changed = match &error {
             Some(e) => self.errors.insert(key.clone(), e.clone()).as_ref() != Some(e),
             None => self.errors.shift_remove(&key).is_some(),
         };
         if changed {
-            self.shared.report(self.uid, Status::BindingErrors { errors: vec![(key, error)] });
+            pass.errors.push((key, error));
+        }
+    }
+
+    /// What a pass of evaluations changed, said ONCE — a batch yields at most one decision, and
+    /// evaluating a node's every binding is one batch.
+    fn report(&self, pass: Pass) {
+        if pass.values {
+            let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            self.shared.report(self.uid, Status::ParamValues { evaluated });
+        }
+        if !pass.errors.is_empty() {
+            self.shared.report(self.uid, Status::BindingErrors { errors: pass.errors });
         }
     }
 
@@ -570,18 +580,22 @@ impl Control {
             }
         }
         touched.dedup();
+        let mut pass = Pass::default();
         for i in touched {
-            self.evaluate(i);
+            self.evaluate(i, &mut pass);
         }
+        self.report(pass);
     }
 
     /// The paced duties: a binding with no stream re-evaluates, and every tapped output goes out.
     fn tick(&mut self) {
+        let mut pass = Pass::default();
         for i in 0..self.binds.len() {
             if self.binds[i].streams.is_empty() {
-                self.evaluate(i);
+                self.evaluate(i, &mut pass);
             }
         }
+        self.report(pass);
         for out in &mut self.outs {
             let Some((c, planar)) = out.drain() else { continue };
             if goofi_transport::subscribers(&out.service) == 0 {
@@ -598,7 +612,7 @@ impl Control {
 
     /// One binding's value into its atomic — the literal when nothing has arrived or it cannot be
     /// evaluated — and the report of what changed.
-    fn evaluate(&mut self, i: usize) {
+    fn evaluate(&mut self, i: usize, pass: &mut Pass) {
         let b = &self.binds[i];
         let target = &self.consts[b.param];
         let evaluator = self.shared.evaluator.lock().unwrap().clone();
@@ -609,21 +623,21 @@ impl Control {
         };
         self.params[b.param].store(plan::scalar(value.as_ref().unwrap_or(target)).to_bits(), Ordering::Relaxed);
         let key = b.key.clone();
-        let values_changed = match value {
+        pass.values |= match value {
             Some(v) => self.evaluated.insert(key.clone(), v.clone()).as_ref() != Some(&v),
             None => self.evaluated.shift_remove(&key).is_some(),
         };
-        if values_changed {
-            self.report_values();
-        }
-        self.record_error(key, error);
+        self.record_error(key, error, pass);
     }
+}
 
-    /// The whole sparse map, never a delta — the graph replaces its copy with this.
-    fn report_values(&self) {
-        let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        self.shared.report(self.uid, Status::ParamValues { evaluated });
-    }
+/// What one pass of binding evaluations changed. The values ride as the WHOLE sparse map, never a
+/// delta — the graph replaces its copy with it, so a value it stops being told is one it would
+/// otherwise preview for ever.
+#[derive(Default)]
+struct Pass {
+    values: bool,
+    errors: Vec<(ParamKey, Option<String>)>,
 }
 
 /// The device's input stream, opened AT the clock's rate — a device that cannot is the error —

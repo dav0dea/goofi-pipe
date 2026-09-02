@@ -2,9 +2,8 @@
 //! bytes, the shim that puts an author's [`Node`] behind it, and the two macros a node file and
 //! its generated crate spell. Only code and plain data cross; never a Rust type.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::OnceLock;
 
 use goofi_core::Data;
 use goofi_node::{ParamKey, Params};
@@ -12,26 +11,7 @@ use indexmap::IndexMap;
 
 use crate::{Inputs, Manifest, Node, NodeCtx, Outputs};
 
-/// A borrowed byte slice as the boundary spells it.
-#[repr(C)]
-pub struct Bytes {
-    pub ptr: *const u8,
-    pub len: usize,
-}
-
-impl Bytes {
-    pub fn of(s: &[u8]) -> Bytes {
-        Bytes { ptr: s.as_ptr(), len: s.len() }
-    }
-    /// # Safety
-    /// `ptr` addresses `len` readable bytes that outlive the slice.
-    pub unsafe fn as_slice<'a>(&self) -> &'a [u8] {
-        match self.len {
-            0 => &[],
-            n => std::slice::from_raw_parts(self.ptr, n),
-        }
-    }
-}
+pub use goofi_node::abi::{collect, version, Bytes, Write};
 
 /// What a node may ask its runtime, as plain data.
 #[repr(C)]
@@ -39,9 +19,6 @@ impl Bytes {
 pub struct Ctx {
     pub now: f64,
 }
-
-/// The host's collector for a reply: the node writes, the host owns the bytes.
-pub type Write = unsafe extern "C" fn(sink: *mut c_void, bytes: Bytes);
 
 /// Every entry has one shape: a request in, a reply out through the host's sink.
 pub type Call = unsafe extern "C" fn(node: *mut c_void, ctx: Ctx, request: Bytes, sink: *mut c_void, write: Write);
@@ -56,21 +33,10 @@ pub struct VTable {
     pub on_param_refreshed: Call,
 }
 
-/// The `goofi_version` answer: this SDK's version, which is goofi's.
-pub fn version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
-}
-
 /// The `goofi_describe` answer: the manifest as the probe schema — the one schema every
-/// out-of-crate node answers — once per library.
+/// out-of-crate node answers.
 pub fn describe_c(m: &Manifest) -> *const c_char {
-    static DESCRIBED: OnceLock<CString> = OnceLock::new();
-    DESCRIBED
-        .get_or_init(|| {
-            let json = goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer);
-            CString::new(json).expect("no NUL in a manifest")
-        })
-        .as_ptr()
+    goofi_node::abi::describe_once(|| goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer))
 }
 
 /// The instance behind a `*mut c_void`: the author's node and what the shim keeps around it.

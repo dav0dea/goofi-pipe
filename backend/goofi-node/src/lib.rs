@@ -5,6 +5,7 @@ use std::fmt;
 use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
+pub mod abi;
 pub mod describe;
 pub mod mailbox;
 pub mod seam;

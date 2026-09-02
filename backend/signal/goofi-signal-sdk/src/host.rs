@@ -7,7 +7,7 @@ use goofi_codec::Response;
 use goofi_core::Data;
 use goofi_node::{NodeManifest, ParamKey, Params};
 
-use crate::abi::{Bytes, Call, Ctx, VTable};
+use crate::abi::{collect, Bytes, Call, Ctx, VTable};
 use crate::{Inputs, Node, NodeCtx, NodeError, NodeResult, Outputs};
 
 /// One loaded node type: its vtable and the manifest the host leaked from `goofi_describe`.
@@ -48,11 +48,6 @@ struct Handle {
 
 // The instance is used from the one thread that runs it, as every node is.
 unsafe impl Send for Handle {}
-
-unsafe extern "C" fn collect(sink: *mut c_void, bytes: Bytes) {
-    let reply = &mut *(sink as *mut Vec<u8>);
-    reply.extend_from_slice(bytes.as_slice());
-}
 
 impl Handle {
     fn call(&mut self, entry: Call, now: f64, request: &[u8]) -> Result<Response, String> {

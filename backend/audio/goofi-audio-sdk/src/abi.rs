@@ -3,9 +3,8 @@
 //! author's [`AudioNode`] behind it, and the two macros a node file and its generated crate spell.
 //! Only code and plain data cross; never a Rust type, and never a panic.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::OnceLock;
 
 use crate::{AudioNode, Block, Manifest, Port, PortMut, BLOCK, MAX_PORTS};
 
@@ -47,8 +46,7 @@ pub struct BlockDesc {
     pub n_params: usize,
 }
 
-/// The host's collector for bytes a node hands back: the node writes, the host owns them.
-pub type Write = unsafe extern "C" fn(sink: *mut c_void, ptr: *const u8, len: usize);
+pub use goofi_node::abi::{collect, version, Bytes, Write};
 
 /// Every entry answers whether the node came through it without a panic; on `false` the panic's
 /// own words are in the sink.
@@ -75,20 +73,9 @@ pub struct VTable {
     pub load: unsafe extern "C" fn(node: *mut c_void, ptr: *const u8, len: usize, sink: *mut c_void, write: Write) -> bool,
 }
 
-/// The `goofi_version` answer: this SDK's version, which is goofi's.
-pub fn version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
-}
-
-/// The `goofi_describe` answer: the manifest as the probe schema, once per library.
+/// The `goofi_describe` answer: the manifest as the probe schema.
 pub fn describe_c(m: &Manifest) -> *const c_char {
-    static DESCRIBED: OnceLock<CString> = OnceLock::new();
-    DESCRIBED
-        .get_or_init(|| {
-            let json = goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, false);
-            CString::new(json).expect("no NUL in a manifest")
-        })
-        .as_ptr()
+    goofi_node::abi::describe_once(|| goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, false))
 }
 
 /// Box a fresh node for the host; a constructor that panics answers null, which the host faults
@@ -114,7 +101,7 @@ unsafe fn with(node: *mut c_void, sink: *mut c_void, write: Write, f: impl FnOnc
         Ok(()) => true,
         Err(p) => {
             let text = goofi_node::panic_text(p);
-            write(sink, text.as_ptr(), text.len());
+            write(sink, Bytes::of(text.as_bytes()));
             false
         }
     }
@@ -184,7 +171,7 @@ pub unsafe extern "C" fn feedback(node: *mut c_void, answer: *mut bool, sink: *m
 pub unsafe extern "C" fn save(node: *mut c_void, sink: *mut c_void, write: Write) -> bool {
     with(node, sink, write, |n| {
         let bytes = n.save();
-        write(sink, bytes.as_ptr(), bytes.len());
+        write(sink, Bytes::of(&bytes));
     })
 }
 

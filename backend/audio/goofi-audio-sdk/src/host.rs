@@ -8,7 +8,7 @@ use std::ffi::c_void;
 
 use goofi_node::NodeManifest;
 
-use crate::abi::{BlockDesc, OutDesc, PortDesc, VTable, Write};
+use crate::abi::{collect, BlockDesc, OutDesc, PortDesc, VTable, Write};
 use crate::{AudioNode, Block, MAX_PORTS};
 
 /// One loaded node type: its vtable and the manifest the host leaked from `goofi_describe`.
@@ -48,13 +48,6 @@ struct Handle {
 // The instance is used from one thread at a time, as every node is: the control thread until
 // it is inserted, the audio thread after.
 unsafe impl Send for Handle {}
-
-unsafe extern "C" fn collect(sink: *mut c_void, ptr: *const u8, len: usize) {
-    let bytes = &mut *(sink as *mut Vec<u8>);
-    if len > 0 {
-        bytes.extend_from_slice(std::slice::from_raw_parts(ptr, len));
-    }
-}
 
 const NONE: PortDesc = PortDesc { data: std::ptr::null(), channels: 0, wired: false };
 
