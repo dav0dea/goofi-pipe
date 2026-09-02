@@ -408,7 +408,7 @@ impl AudioEngine {
         let mut outs: Vec<(Uid, String)> = self
             .live
             .iter()
-            .filter(|(_, inst)| inst.manifest.type_name == audio_out::TYPE)
+            .filter(|(uid, inst)| inst.manifest.type_name == audio_out::TYPE && !self.disabled.contains_key(uid))
             .filter_map(|(uid, inst)| {
                 let nv = view.nodes.get(uid)?;
                 let Param::Str { value, .. } = plan::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };

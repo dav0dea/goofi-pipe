@@ -283,7 +283,7 @@ impl Runtime {
                 match ran {
                     Err(p) => Some(Fault::Panic(goofi_node::panic_message(p))),
                     Ok(()) if started.elapsed() > self.block => {
-                        slot.overruns += 1;
+                        slot.overruns = slot.overruns.saturating_add(1);
                         (slot.overruns >= OVERRUNS).then_some(Fault::Overrun)
                     }
                     Ok(()) => {
@@ -292,16 +292,15 @@ impl Runtime {
                     }
                 }
             };
-            if fault.is_some() {
-                slot.dead = true;
+            // Dead only once the fault is on its way: a full outbox means it faults again next block.
+            let faulted = fault.is_some();
+            if let Some(fault) = fault {
+                slot.dead = self.outbox.push(Retired::Faulted { uid: slot.uid, serial: slot.serial, fault }).is_ok();
             }
-            if slot.dead {
+            if slot.dead || faulted {
                 for (at, channels) in &stage.outs {
                     unsafe { region_mut(base, len, *at, *channels) }.fill(0.0);
                 }
-            }
-            if let Some(fault) = fault {
-                let _ = self.outbox.push(Retired::Faulted { uid: slot.uid, serial: slot.serial, fault });
             }
             for (k, (at, channels)) in stage.outs.iter().enumerate() {
                 let Some(tap) = slot.taps.get_mut(k) else { continue };

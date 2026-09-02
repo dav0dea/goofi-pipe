@@ -262,8 +262,11 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
     let folder = goofi_node::folder_of(engine);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
-    let dirs = std::iter::once((mount.join(&folder), "patch")).chain(roots.iter().rev().map(|d| (d.join(&folder), "shipped")));
-    // The file names the type, so the path re-derives without a registry.
+    let dirs = std::iter::once((mount.join(&folder), "patch"))
+        .filter(|_| g.is_patch_type(ty))
+        .chain(roots.iter().rev().map(|d| (d.join(&folder), "shipped")));
+    // The file names the type, so the path re-derives without a registry; the registry says only
+    // whether the patch's folder is where it lives.
     let found = dirs.into_iter().find_map(|(dir, provenance)| {
         let entries = std::fs::read_dir(dir).ok()?;
         let path = entries

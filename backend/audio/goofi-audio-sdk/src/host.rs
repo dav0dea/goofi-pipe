@@ -1,12 +1,14 @@
 //! The host half of the boundary: a built node's vtable behind the same [`AudioNode`] the engine
-//! runs everything else as. A panic the shim caught comes back as a Rust panic on this side, so
-//! the runtime's one catch around `process` sees a loaded node and a built-in one alike.
+//! runs everything else as. A panic the shim caught comes back as a Rust panic at the next
+//! `process`, whatever entry it was caught in, so the runtime's one catch around `process` sees a
+//! loaded node and a built-in one alike.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 
 use goofi_node::NodeManifest;
 
-use crate::abi::{BlockDesc, OutDesc, PortDesc, VTable};
+use crate::abi::{BlockDesc, OutDesc, PortDesc, VTable, Write};
 use crate::{AudioNode, Block, MAX_PORTS};
 
 /// One loaded node type: its vtable and the manifest the host leaked from `goofi_describe`.
@@ -35,13 +37,16 @@ impl Loaded {
 
     pub fn instantiate(&self) -> Box<dyn AudioNode> {
         let node = unsafe { (self.vtable.create)() };
-        Box::new(Handle { node, vtable: self.vtable })
+        let panicked = node.is_null().then(|| "the constructor panicked".to_string());
+        Box::new(Handle { node, vtable: self.vtable, panicked: RefCell::new(panicked) })
     }
 }
 
 struct Handle {
     node: *mut c_void,
     vtable: &'static VTable,
+    /// What an entry other than `process` panicked with; the next `process` raises it.
+    panicked: RefCell<Option<String>>,
 }
 
 // The instance is used from one thread at a time, as every node is: the control thread until
@@ -57,26 +62,50 @@ unsafe extern "C" fn collect(sink: *mut c_void, ptr: *const u8, len: usize) {
 
 const NONE: PortDesc = PortDesc { data: std::ptr::null(), channels: 0, wired: false };
 
+impl Handle {
+    /// One entry: what it wrote, or the panic it was caught in. Nothing here allocates unless
+    /// the node wrote or panicked.
+    fn call(&self, entry: impl FnOnce(*mut c_void, *mut c_void, Write) -> bool) -> Result<Vec<u8>, String> {
+        let mut sink: Vec<u8> = Vec::new();
+        match entry(self.node, &mut sink as *mut Vec<u8> as *mut c_void, collect) {
+            true => Ok(sink),
+            false => Err(String::from_utf8_lossy(&sink).into_owned()),
+        }
+    }
+
+    fn remember(&self, entry: &str, answer: Result<Vec<u8>, String>) -> Vec<u8> {
+        match answer {
+            Ok(bytes) => bytes,
+            Err(text) => {
+                *self.panicked.borrow_mut() = Some(format!("{entry}: {text}"));
+                Vec::new()
+            }
+        }
+    }
+}
+
 impl AudioNode for Handle {
     fn channels(&self, ins: &[u16], params: &[f64], outs: usize) -> Vec<u16> {
         let mut out = vec![1u16; outs];
         if !self.node.is_null() {
-            unsafe {
-                (self.vtable.channels)(self.node, ins.as_ptr(), ins.len(), params.as_ptr(), params.len(), out.as_mut_ptr(), outs)
-            };
+            let answer = self.call(|node, sink, write| unsafe {
+                (self.vtable.channels)(node, ins.as_ptr(), ins.len(), params.as_ptr(), params.len(), out.as_mut_ptr(), outs, sink, write)
+            });
+            self.remember("channels", answer);
         }
         out
     }
 
     fn prepare(&mut self, rate: f64) {
         if !self.node.is_null() {
-            unsafe { (self.vtable.prepare)(self.node, rate) };
+            let answer = self.call(|node, sink, write| unsafe { (self.vtable.prepare)(node, rate, sink, write) });
+            self.remember("prepare", answer);
         }
     }
 
     fn process(&mut self, b: &mut Block<'_>) {
-        if self.node.is_null() {
-            std::panic::resume_unwind(Box::new("the constructor panicked".to_string()));
+        if let Some(text) = self.panicked.borrow_mut().take() {
+            std::panic::resume_unwind(Box::new(text));
         }
         let ins: [PortDesc; MAX_PORTS] = std::array::from_fn(|i| b.ins.get(i).map_or(NONE, PortDesc::of));
         let params: [PortDesc; MAX_PORTS] = std::array::from_fn(|i| b.params.get(i).map_or(NONE, PortDesc::of));
@@ -92,28 +121,32 @@ impl AudioNode for Handle {
             params: params.as_ptr(),
             n_params: b.params.len(),
         };
-        let mut text: Vec<u8> = Vec::new();
-        let ok = unsafe { (self.vtable.process)(self.node, &desc, &mut text as *mut Vec<u8> as *mut c_void, collect) };
-        if !ok {
-            std::panic::resume_unwind(Box::new(String::from_utf8_lossy(&text).into_owned()));
+        if let Err(text) = self.call(|node, sink, write| unsafe { (self.vtable.process)(node, &desc, sink, write) }) {
+            std::panic::resume_unwind(Box::new(text));
         }
     }
 
     fn feedback(&self) -> bool {
-        !self.node.is_null() && unsafe { (self.vtable.feedback)(self.node) }
+        let mut answer = false;
+        if !self.node.is_null() {
+            let asked = self.call(|node, sink, write| unsafe { (self.vtable.feedback)(node, &mut answer, sink, write) });
+            self.remember("feedback", asked);
+        }
+        answer
     }
 
     fn save(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
-        if !self.node.is_null() {
-            unsafe { (self.vtable.save)(self.node, &mut bytes as *mut Vec<u8> as *mut c_void, collect) };
+        if self.node.is_null() {
+            return Vec::new();
         }
-        bytes
+        let answer = self.call(|node, sink, write| unsafe { (self.vtable.save)(node, sink, write) });
+        self.remember("save", answer)
     }
 
     fn load(&mut self, bytes: &[u8]) {
         if !self.node.is_null() {
-            unsafe { (self.vtable.load)(self.node, bytes.as_ptr(), bytes.len()) };
+            let answer = self.call(|node, sink, write| unsafe { (self.vtable.load)(node, bytes.as_ptr(), bytes.len(), sink, write) });
+            self.remember("load", answer);
         }
     }
 }

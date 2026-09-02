@@ -607,6 +607,7 @@ pub fn register_dyn_type(
 ) -> bool {
     let replaced = signal_engine(g).register_dyn_type(manifest, factory, tier);
     g.forget_unavailable(manifest.type_name);
+    g.add_patch_type(manifest.type_name);
     replaced
 }
 

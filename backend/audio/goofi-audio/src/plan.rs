@@ -119,14 +119,15 @@ pub(crate) fn is_edge<V>(b: &BindingView<'_>, live: &HashMap<Uid, V>) -> bool {
 /// `feedback()` ignores its in-edges and runs before every other root, reading its producers'
 /// regions as the previous block left them. A loop with no such node is excluded and named; what
 /// the loop feeds still runs, reading silence at that jack. A `silent` `AudioOut` runs but does
-/// not sum, and a `disabled` node is not in the plan at all: what it fed reads silence.
+/// not sum, and a `disabled` node is not in the plan at all: what it fed, by wire or by
+/// reference, reads silence.
 pub fn compile(
     view: &GraphView<'_>,
-    live: &HashMap<Uid, Instance>,
+    all: &HashMap<Uid, Instance>,
     silent: &[Uid],
     disabled: &HashMap<Uid, String>,
 ) -> (Plan, Vec<(Uid, String)>) {
-    let live: HashMap<Uid, &Instance> = live.iter().filter(|(u, _)| !disabled.contains_key(u)).map(|(u, i)| (*u, i)).collect();
+    let live: HashMap<Uid, &Instance> = all.iter().filter(|(u, _)| !disabled.contains_key(u)).map(|(u, i)| (*u, i)).collect();
     let live = &live;
     let mut wires: HashMap<(Uid, &str), Vec<(Uid, &'static str)>> = HashMap::new();
     for e in view.edges {
@@ -134,12 +135,14 @@ pub fn compile(
             wires.entry(e.consumer).or_default().push(e.producer);
         }
     }
+    // An edge is decided over EVERY instance, as the control half decides it: a reference onto
+    // a disabled producer stays an edge, one with no region behind it.
     let mut refs: HashMap<(Uid, usize), (Uid, &'static str)> = HashMap::new();
     for (uid, inst) in live {
         let Some(nv) = view.nodes.get(uid) else { continue };
         for (i, d) in inst.manifest.params.iter().enumerate() {
             let bound = nv.bindings.iter().find(|b| b.key.group == d.group && b.key.name == d.name);
-            if let Some(b) = bound.filter(|b| is_edge(b, live)) {
+            if let Some(b) = bound.filter(|b| is_edge(b, all)) {
                 refs.insert((*uid, i), b.vars[0].wire().expect("an edge"));
             }
         }
@@ -153,7 +156,11 @@ pub fn compile(
             .filter(|s| s.kind == SlotType::Audio)
             .flat_map(|s| wires.get(&(consumer, s.name)).into_iter().flatten().map(|p| p.0))
             .collect();
-        from.extend((0..inst.manifest.params.len()).filter_map(|i| refs.get(&(consumer, i)).map(|p| p.0)));
+        from.extend(
+            (0..inst.manifest.params.len())
+                .filter_map(|i| refs.get(&(consumer, i)).map(|p| p.0))
+                .filter(|p| live.contains_key(p)),
+        );
         from
     };
     let inbound: HashMap<Uid, Vec<Uid>> = live
@@ -214,8 +221,9 @@ pub fn compile(
             })
             .collect();
         let params: Vec<Source> = (0..inst.manifest.params.len())
-            .map(|i| match refs.get(&(*uid, i)).and_then(|p| outs_of.get(p)) {
-                Some(part) => source_of(vec![*part], &own, &mut plan.arena_len),
+            .map(|i| match refs.get(&(*uid, i)).map(|p| outs_of.get(p)) {
+                Some(Some(part)) => source_of(vec![*part], &own, &mut plan.arena_len),
+                Some(None) => Source::Silence,
                 None => Source::Scalar { at: alloc(1, &mut plan.arena_len), param: i },
             })
             .collect();

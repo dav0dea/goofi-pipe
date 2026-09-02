@@ -15,7 +15,7 @@ static INS: &[SlotDecl] =
     &[SlotDecl { name: "input", kind: SlotType::Audio, trigger_process: false, multi: true, required: false }];
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
-pub static MANIFEST: Manifest = Manifest {
+static MANIFEST: Manifest = Manifest {
     category: "audio",
     doc: "Its input times `gain`; the wires into `input` sum.",
     inputs: INS,
@@ -24,7 +24,7 @@ pub static MANIFEST: Manifest = Manifest {
 };
 
 #[derive(Default)]
-pub struct Gain;
+struct Gain;
 
 impl AudioNode for Gain {
     fn prepare(&mut self, _rate: f64) {}

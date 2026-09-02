@@ -2,10 +2,10 @@
 //! interpreter that will run it and registered on the tier its imports allow; an `.rs` file is
 //! built through goofi-build — or found built — and loaded behind its version symbol.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use goofi_node::{Isolation, Scanned, ScannedType, Stamp};
+use goofi_node::{Isolation, Scanned, ScannedType};
 use goofi_python::{Discovered, Discovery};
 use goofi_signal_sdk::host::Loaded;
 
@@ -40,24 +40,8 @@ impl SignalEngine {
 }
 
 pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
-    let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(e) => {
-            eprintln!("failed to read {}: {e}", dir.display());
-            return Vec::new();
-        }
-    };
-    paths.sort();
-    let rust: Vec<(PathBuf, String, Option<Stamp>)> = paths
-        .iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        .filter_map(|p| goofi_node::type_name_of(p).map(|name| (p.clone(), name, stamp(p))))
-        .collect();
-    let paths: Vec<(PathBuf, String, Option<Stamp>)> = paths
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "py"))
-        .filter_map(|p| goofi_node::type_name_of(&p).map(|name| (p.clone(), name, stamp(&p))))
-        .collect();
+    let (rust, paths): (Vec<_>, Vec<_>) =
+        goofi_node::node_files(dir).into_iter().partition(|(p, _, _)| p.extension().is_some_and(|e| e == "rs"));
     // Probes spawn an interpreter each, so a folder is probed a few files at a time; a file whose
     // stamp has not moved since its last probe is not probed again.
     let width = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
@@ -228,9 +212,4 @@ fn audio_slot(intro: &goofi_core::probe::Introspection) -> Option<String> {
         .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
         .find(|(_, kind)| goofi_core::SlotType::from_name(kind) == Some(goofi_core::SlotType::Audio))
         .map(|(name, _)| format!("slot `{name}` is audio — an audio node lives in nodes_audio/"))
-}
-
-fn stamp(path: &Path) -> Option<Stamp> {
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.len(), m.modified().ok()?))
 }

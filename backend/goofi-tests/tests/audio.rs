@@ -517,4 +517,32 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(trap, "trap", "stall", false);
     g.call("node restart", j!({ "node": hex(trap) }));
     sounds(&g, "the quarter to rejoin once more", |x| (level(x) - 0.75).abs() < 0.01);
+
+    // Step: a panic anywhere else in the contract is the same fault at the first block — a
+    // constructor that panics, and a `prepare` that does, each named for where it happened.
+    let stillborn = "use goofi_audio_sdk::{AudioNode, Block, Manifest};\n\
+         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"never born\", inputs: &[], outputs: &[], params: &[] };\n\
+         struct Stillborn;\n\
+         impl Default for Stillborn { fn default() -> Stillborn { panic!(\"no birth\") } }\n\
+         impl AudioNode for Stillborn {\n    \
+         fn prepare(&mut self, _rate: f64) {}\n    \
+         fn process(&mut self, _b: &mut Block<'_>) {}\n}\n\
+         goofi_audio_sdk::export!(Stillborn, MANIFEST);\n";
+    let unready = "use goofi_audio_sdk::{AudioNode, Block, Manifest};\n\
+         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"never ready\", inputs: &[], outputs: &[], params: &[] };\n\
+         #[derive(Default)]\nstruct Unready;\n\
+         impl AudioNode for Unready {\n    \
+         fn prepare(&mut self, _rate: f64) { panic!(\"not at this rate\") }\n    \
+         fn process(&mut self, _b: &mut Block<'_>) {}\n}\n\
+         goofi_audio_sdk::export!(Unready, MANIFEST);\n";
+    std::fs::write(dir.join("Stillborn.rs"), stillborn).unwrap();
+    std::fs::write(dir.join("Unready.rs"), unready).unwrap();
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Stillborn", "Unready"]));
+    for (type_name, said) in [("Stillborn", "panic: the constructor panicked"), ("Unready", "panic: prepare: not at this rate")] {
+        let uid = g.add(type_name);
+        g.until(&format!("{type_name} to fault"), |g| {
+            drive(g, TENTH);
+            state(g, uid).contains(said).then_some(())
+        });
+    }
 }

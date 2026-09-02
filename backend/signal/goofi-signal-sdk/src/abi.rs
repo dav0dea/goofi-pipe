@@ -61,15 +61,16 @@ pub fn version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
 }
 
-/// The `goofi_describe` answer: the manifest as the probe schema, once per library.
-pub fn describe_c(manifest: &Manifest) -> *const c_char {
+/// The `goofi_describe` answer: the manifest as the probe schema — the one schema every
+/// out-of-crate node answers — once per library.
+pub fn describe_c(m: &Manifest) -> *const c_char {
     static DESCRIBED: OnceLock<CString> = OnceLock::new();
-    DESCRIBED.get_or_init(|| CString::new(describe(manifest)).expect("no NUL in a manifest")).as_ptr()
-}
-
-/// A manifest as the probe schema a Python node answers — one schema for every out-of-crate node.
-pub fn describe(m: &Manifest) -> String {
-    goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer)
+    DESCRIBED
+        .get_or_init(|| {
+            let json = goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer);
+            CString::new(json).expect("no NUL in a manifest")
+        })
+        .as_ptr()
 }
 
 /// The instance behind a `*mut c_void`: the author's node and what the shim keeps around it.

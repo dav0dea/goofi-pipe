@@ -21,14 +21,13 @@ pub struct Birth {
     pub chans: Arc<AtomicU16>,
 }
 
-pub type Make = Arc<dyn Fn(Birth) -> Box<dyn AudioNode> + Send + Sync>;
 pub type Born = fn(Birth) -> Box<dyn AudioNode>;
 
 /// One node class the engine can build, built in or loaded.
 #[derive(Clone)]
 pub struct Class {
     pub manifest: &'static NodeManifest,
-    pub make: Make,
+    pub make: Arc<dyn Fn(Birth) -> Box<dyn AudioNode> + Send + Sync>,
 }
 
 /// Whether the engine treats `type_name` by name — a file may not take it.

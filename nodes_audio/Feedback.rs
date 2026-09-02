@@ -5,7 +5,7 @@ static INS: &[SlotDecl] =
     &[SlotDecl { name: "input", kind: SlotType::Audio, trigger_process: false, multi: false, required: false }];
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
-pub static MANIFEST: Manifest = Manifest {
+static MANIFEST: Manifest = Manifest {
     category: "audio",
     doc: "Its input one block late: the one way a loop closes. It runs first each block, reading \
           what its producer left in the last one.",
@@ -15,7 +15,7 @@ pub static MANIFEST: Manifest = Manifest {
 };
 
 #[derive(Default)]
-pub struct Feedback;
+struct Feedback;
 
 impl AudioNode for Feedback {
     fn prepare(&mut self, _rate: f64) {}

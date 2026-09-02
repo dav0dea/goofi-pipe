@@ -1,7 +1,7 @@
 //! A manifest as plain data: what a probe or a `describe()` symbol answers, leaked back into the
 //! `'static` manifest every engine reads — and the rule that names a type after its file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use goofi_core::probe;
 use goofi_core::SlotType;
@@ -26,6 +26,26 @@ pub fn type_name_of(path: &Path) -> Option<String> {
 /// The folder under a node source root that holds `engine`'s files.
 pub fn folder_of(engine: &str) -> String {
     format!("nodes_{engine}")
+}
+
+/// Every node file in `dir`, sorted: its path, the type it names, and the stamp a rescan diffs.
+pub fn node_files(dir: &Path) -> Vec<(PathBuf, String, Option<crate::Stamp>)> {
+    let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(e) => {
+            eprintln!("failed to read {}: {e}", dir.display());
+            return Vec::new();
+        }
+    };
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|p| {
+            let name = type_name_of(&p)?;
+            let stamp = std::fs::metadata(&p).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
+            Some((p, name, stamp))
+        })
+        .collect()
 }
 
 /// `snake_case` file stem → `CamelCase` palette type name.

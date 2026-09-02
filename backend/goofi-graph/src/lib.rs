@@ -820,6 +820,11 @@ impl Graph {
         self.patch_types = names;
     }
 
+    /// One more type of the patch's own — what a type registered in place of a scan of it is.
+    pub fn add_patch_type(&mut self, name: &str) {
+        self.patch_types.insert(name.to_string());
+    }
+
     /// Whether `type_name` came from the open patch (see [`Graph::set_patch_types`]). Everything
     /// else — built-ins and the shipped node directory alike — reads as shipped.
     pub fn is_patch_type(&self, type_name: &str) -> bool {

@@ -20,7 +20,7 @@ goofi_audio_sdk::params! {
 
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
-pub static MANIFEST: Manifest = Manifest {
+static MANIFEST: Manifest = Manifest {
     category: "audio",
     doc: "An oscillator in [-1, 1], one channel per channel of `pitch`.",
     inputs: &[],
@@ -29,7 +29,7 @@ pub static MANIFEST: Manifest = Manifest {
 };
 
 #[derive(Default)]
-pub struct Osc {
+struct Osc {
     phase: [f32; MAX_CHANNELS as usize],
     step: f32,
 }

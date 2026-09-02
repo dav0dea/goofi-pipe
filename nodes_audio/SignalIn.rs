@@ -5,7 +5,7 @@ static INS: &[SlotDecl] =
     &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: false, multi: false, required: false }];
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
-pub static MANIFEST: Manifest = Manifest {
+static MANIFEST: Manifest = Manifest {
     category: "audio",
     doc: "The in-order crossing: a `[C, T]` signal frame with `sfreq` enters as `C` audio channels, \
           resampled to the rate. A frame with no `sfreq` enters one sample per sample, so a control \
@@ -16,7 +16,7 @@ pub static MANIFEST: Manifest = Manifest {
 };
 
 #[derive(Default)]
-pub struct SignalIn;
+struct SignalIn;
 
 impl AudioNode for SignalIn {
     fn prepare(&mut self, _rate: f64) {}

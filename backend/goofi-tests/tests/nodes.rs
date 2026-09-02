@@ -335,12 +335,17 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     write_audio_node(&mount, "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["Level"]), "the fix is a change, built from the cache");
 
-    // A name the engine builds in is refused to a file, and the palette says why.
+    // A file whose stem is a built-in node's name is not a node file: nothing is added, nothing
+    // changes when it is edited, the built-in's row stands alone and is not the patch's.
     std::fs::write(mount.join("nodes_audio").join("AudioOut.rs"), "fn never_built() {}\n").unwrap();
-    rescan(&g);
+    let scanned = rescan(&g);
+    assert_eq!((&scanned["added"], &scanned["changed"]), (&j!([]), &j!([])), "{scanned}");
+    std::fs::write(mount.join("nodes_audio").join("AudioOut.rs"), "fn never_built_either() {}\n").unwrap();
+    assert_eq!(rescan(&g)["changed"], j!([]));
     let rows: Vec<serde_json::Value> = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .filter(|v| v["type"] == "AudioOut").cloned().collect();
-    assert!(rows.len() == 1 && rows[0]["available"] == true, "the built-in stands, and alone: {rows:?}");
+    assert!(rows.len() == 1 && rows[0]["available"] == true && rows[0]["source"] != "patch", "{rows:?}");
+    assert_ne!(g.call("library get", j!({ "type": "AudioOut" }))["provenance"], "patch");
 
     // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.
     let tmp = tempfile::tempdir().unwrap();

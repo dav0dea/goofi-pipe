@@ -11,9 +11,11 @@ its file. `AGENTS.md` states the contract; the code holds the mechanism.
 
 ## Decisions taken
 
-- **The ABI is the subprocess tier's codec.** One encode and one decode per side per run — a copy
-  a compiled-in node never paid. It is the price of ONE seam for every out-of-crate node, and it is
-  accepted: a node that needs the copy gone is a node that belongs in an engine, not in a folder.
+- **The signal ABI is the subprocess tier's codec.** One encode and one decode per side per run —
+  a copy a compiled-in node never paid. It is the price of ONE seam for every out-of-crate signal
+  node, and it is accepted: a node that needs the copy gone is a node that belongs in an engine,
+  not in a folder. The audio ABI has no frame to encode: a block is the arena's own memory, and it
+  crosses as descriptors of it.
 - **A build is synchronous, off the graph lock.** `library refresh` and `session load` answer when
   every `.rs` under every root is built or has its failure memoised; only the caller who asked
   waits. A file that does not compile is a greyed type carrying rustc's words, and an instance

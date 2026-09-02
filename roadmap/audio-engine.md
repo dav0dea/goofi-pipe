@@ -291,7 +291,7 @@ unproven on a `SCHED_FIFO` thread across three platforms. Recorded so it is not 
 
 **The crates are `backend/audio/goofi-audio-sdk` and `goofi-audio`; the shipped nodes are
 `nodes_audio/`.** The SDK carries BOTH sides of the boundary — the trait, the `#[repr(C)]`
-vtable, `export_node!` and `Loaded` — so they cannot drift, and depends on `goofi-node` alone;
+vtable, `export!` and `Loaded` — so they cannot drift, and depends on `goofi-node` alone;
 the pipeline that builds and loads is the shared `goofi-build`. The engine depends on nothing
 above `goofi-transport`, so no iceoryx2 thread or tokio reaches the DSP path and an external block
 callback can drive it. New dependencies: `cpal`, `rtrb`, `midir`, `vst3`. No DSP crate in the
@@ -305,19 +305,12 @@ Rust — and goofi generates the crate around it, builds it, and loads it while 
 `node-sources.md` holds the folder rule and the pipeline, which is one for every engine; what is
 here is the part that is audio's — the rules an audio thread forces.
 
-Landed 2026-09-02 (Step 7): `goofi-audio-sdk` carries `abi` and `host` beside the trait, the same
-shape as the signal SDK's, and `goofi-build` knows it as the `AUDIO` sdk; the composition root
-prebuilds `nodes_audio/` beside `nodes_signal/` and embeds both. The five DSP nodes are files in
-`nodes_audio/`; only `AudioOut`, `AudioIn` and `MidiIn` are built in, because their control halves
-own OS handles, and a file may not take one of their names. `process` crosses as a descriptor of the
-arena's own regions — no bytes, no codec — and every entry answers whether the node came through
-it; a panic the shim caught reaches the host as a Rust panic, so the runtime's ONE `catch_unwind`
-around `process` treats a loaded node and a built-in one alike: the node's outputs are zeroed, it
-leaves the plan with a `Process` fault carrying its own words, and `node restart` is what brings it
-back. The watchdog blames a node by its OWN duration — eight blocks in a row over one block's time
-at the rate — and never skips a neighbour, because a skip after a deadline lands on the victim
-rather than the culprit, and under the harness's external clock every scheduler hitch would become
-a zeroed block. `describe` and the panic text live in `goofi-node`, one source for both SDKs.
+Landed 2026-09-02 (Step 7), the bullets below being the rules: the five DSP nodes are files in
+`nodes_audio/`, and only `AudioOut`, `AudioIn` and `MidiIn` are built in, because their control
+halves own OS handles. A file whose stem is a built-in's name is not a node file — as a stem
+outside the name rule is not — so it adds nothing, changes nothing and restarts nothing; the
+prebuild still builds it once and memoises the failure, a cost paid only by a file that will never
+load. `process` crosses as a descriptor of the arena's own regions — no bytes, no codec.
 
 - **The manifest crosses as data, never as a Rust struct.** `describe()` answers the same JSON
   declaration the Python probe reads from a Python node's class attributes, and the engine leaks
@@ -328,9 +321,12 @@ a zeroed block. `describe` and the panic text live in `goofi-node`, one source f
   stale artifact is a refusal, never a crash — the objection to a home-grown ABI, answered.
 - **The build is `goofi-build`, shared with the signal plane, and it runs outside the graph
   lock.** `library refresh` runs it BEFORE taking the lock, then locks for the scan, the diff and
-  the restarts. The DSP allowlist it declares — `fundsp`, `biquad`, `realfft`, `rustfft`, `libm` —
-  is what an audio node may import. A `cargo` that is absent makes an authored node UNAVAILABLE
-  with "needs cargo to build"; a shipped node never needs it.
+  the restarts. The allowlist it declares is what an audio node may import: `libm` alone as landed,
+  because every allowed crate joins every node crate's dependency graph and goofi's own build, and
+  `fundsp`, `biquad`, `realfft` and `rustfft` would cost minutes there for a capability no shipped
+  node uses; they join when a node needs one, which re-keys every audio artifact once — accepted.
+  A `cargo` that is absent makes an authored node UNAVAILABLE with "needs cargo to build"; a
+  shipped node never needs it.
 - **Reload is `library refresh`, and nothing watches a file.** It builds, scans, diffs stamps and
   restarts every live instance of a changed type — how an edited Python node reaches the canvas
   today. A build that fails leaves the stamp unchanged: the instances keep running the old
@@ -353,12 +349,18 @@ a zeroed block. `describe` and the panic text live in `goofi-node`, one source f
 - **`catch_unwind` in the SDK's shim, never in the author's code.** The vtable entry is
   `extern "C"`, and since Rust 1.81.0 an escaping panic is a guaranteed abort. Cost when nothing
   panics: +0.17%, inside noise. A panicking block costs 4.4 µs, or 34 µs with `RUST_BACKTRACE=1`.
-  Policy: catch once, zero that node's output, drop it from the plan, republish, and surface
-  `NodeFault::Process`. Never retry in place — a node that panics panics 750 times a second.
-- **A watchdog, not a per-node budget.** Stamp `Instant::now()` at callback entry; each node skips if
-  the deadline is already gone; N consecutive skips disables it. `Instant::now()` is a vDSO call at
-  ~20 ns, so instrumenting fifty nodes costs 0.19% of a core. The "too expensive to measure" belief
-  is folklore.
+  Every entry answers whether the node came through it, with the panic's own words in the host's
+  sink; a panic caught anywhere but `process` is raised at the next `process`, named for its entry,
+  so the runtime's ONE catch around `process` sees a loaded node and a built-in one alike. Policy:
+  catch once, zero that node's output, drop it from the plan, republish, and surface
+  `NodeFault::Process`; `node restart` is what brings it back. Never retry in place — a node that
+  panics panics 750 times a second.
+- **A watchdog, not a per-node budget.** It blames a node by its OWN duration — eight blocks in a
+  row over one block's time at the rate takes it out of the plan — and never skips a neighbour,
+  because a skip after a deadline lands on the victim rather than the culprit, and under the
+  harness's external clock every scheduler hitch would become a zeroed block. `Instant::now()` is
+  a vDSO call at ~20 ns, so two per node per block cost fifty nodes 0.4% of a core. The "too
+  expensive to measure" belief is folklore.
 
 Measured edit-to-audible, wall power: **~126 ms** for a small node (125 ms of it `cargo build`) and
 **~241 ms** for a `fundsp` reverb. Everything goofi itself does is under a millisecond and the

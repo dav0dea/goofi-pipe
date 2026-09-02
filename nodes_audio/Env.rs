@@ -41,7 +41,7 @@ goofi_audio_sdk::params! {
 
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
-pub static MANIFEST: Manifest = Manifest {
+static MANIFEST: Manifest = Manifest {
     category: "audio",
     doc: "An ADSR in [0, 1] over `gate`, one voice per channel of it.",
     inputs: &[],
@@ -60,7 +60,7 @@ enum Stage {
 }
 
 #[derive(Default)]
-pub struct Env {
+struct Env {
     stage: [Stage; MAX_CHANNELS as usize],
     level: [f32; MAX_CHANNELS as usize],
     edge: [Edge; MAX_CHANNELS as usize],

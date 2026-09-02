@@ -50,7 +50,8 @@ pub struct BlockDesc {
 /// The host's collector for bytes a node hands back: the node writes, the host owns them.
 pub type Write = unsafe extern "C" fn(sink: *mut c_void, ptr: *const u8, len: usize);
 
-/// Every entry answers whether the node came through it without a panic.
+/// Every entry answers whether the node came through it without a panic; on `false` the panic's
+/// own words are in the sink.
 #[repr(C)]
 pub struct VTable {
     pub create: unsafe extern "C" fn() -> *mut c_void,
@@ -63,13 +64,15 @@ pub struct VTable {
         n_params: usize,
         outs: *mut u16,
         n_outs: usize,
+        sink: *mut c_void,
+        write: Write,
     ) -> bool,
-    pub prepare: unsafe extern "C" fn(node: *mut c_void, rate: f64) -> bool,
-    /// `false` is a panic, its text written to the sink: the outputs are the host's to zero.
+    pub prepare: unsafe extern "C" fn(node: *mut c_void, rate: f64, sink: *mut c_void, write: Write) -> bool,
     pub process: unsafe extern "C" fn(node: *mut c_void, block: *const BlockDesc, sink: *mut c_void, write: Write) -> bool,
-    pub feedback: unsafe extern "C" fn(node: *mut c_void) -> bool,
+    pub feedback: unsafe extern "C" fn(node: *mut c_void, answer: *mut bool, sink: *mut c_void, write: Write) -> bool,
+    /// The bytes go to the sink on `true`.
     pub save: unsafe extern "C" fn(node: *mut c_void, sink: *mut c_void, write: Write) -> bool,
-    pub load: unsafe extern "C" fn(node: *mut c_void, ptr: *const u8, len: usize) -> bool,
+    pub load: unsafe extern "C" fn(node: *mut c_void, ptr: *const u8, len: usize, sink: *mut c_void, write: Write) -> bool,
 }
 
 /// The `goofi_version` answer: this SDK's version, which is goofi's.
@@ -78,13 +81,14 @@ pub fn version() -> *const c_char {
 }
 
 /// The `goofi_describe` answer: the manifest as the probe schema, once per library.
-pub fn describe_c(manifest: &Manifest) -> *const c_char {
+pub fn describe_c(m: &Manifest) -> *const c_char {
     static DESCRIBED: OnceLock<CString> = OnceLock::new();
-    DESCRIBED.get_or_init(|| CString::new(describe(manifest)).expect("no NUL in a manifest")).as_ptr()
-}
-
-pub fn describe(m: &Manifest) -> String {
-    goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, false)
+    DESCRIBED
+        .get_or_init(|| {
+            let json = goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, false);
+            CString::new(json).expect("no NUL in a manifest")
+        })
+        .as_ptr()
 }
 
 /// Box a fresh node for the host; a constructor that panics answers null, which the host faults
@@ -104,9 +108,16 @@ pub unsafe extern "C" fn destroy(node: *mut c_void) {
     }
 }
 
-unsafe fn with(node: *mut c_void, f: impl FnOnce(&mut dyn AudioNode)) -> bool {
+unsafe fn with(node: *mut c_void, sink: *mut c_void, write: Write, f: impl FnOnce(&mut dyn AudioNode)) -> bool {
     let node = &mut **(node as *mut Box<dyn AudioNode>);
-    catch_unwind(AssertUnwindSafe(|| f(node))).is_ok()
+    match catch_unwind(AssertUnwindSafe(|| f(node))) {
+        Ok(()) => true,
+        Err(p) => {
+            let text = goofi_node::panic_text(p);
+            write(sink, text.as_ptr(), text.len());
+            false
+        }
+    }
 }
 
 /// # Safety
@@ -119,10 +130,12 @@ pub unsafe extern "C" fn channels(
     n_params: usize,
     outs: *mut u16,
     n_outs: usize,
+    sink: *mut c_void,
+    write: Write,
 ) -> bool {
     let ins = slice(ins, n_ins);
     let params = slice(params, n_params);
-    with(node, |n| {
+    with(node, sink, write, |n| {
         let wanted = n.channels(ins, params, n_outs);
         for (i, w) in wanted.iter().enumerate().take(n_outs) {
             *outs.add(i) = *w;
@@ -132,8 +145,8 @@ pub unsafe extern "C" fn channels(
 
 /// # Safety
 /// As [`channels`].
-pub unsafe extern "C" fn prepare(node: *mut c_void, rate: f64) -> bool {
-    with(node, |n| n.prepare(rate))
+pub unsafe extern "C" fn prepare(node: *mut c_void, rate: f64, sink: *mut c_void, write: Write) -> bool {
+    with(node, sink, write, |n| n.prepare(rate))
 }
 
 /// # Safety
@@ -156,29 +169,20 @@ pub unsafe extern "C" fn process(node: *mut c_void, block: *const BlockDesc, sin
         }
         false => PortMut::new(&mut [], 0),
     });
-    let node = &mut **(node as *mut Box<dyn AudioNode>);
-    let block = &mut Block { ins: &ins[..d.n_ins], outs: &mut outs[..d.n_outs], params: &params[..d.n_params] };
-    match catch_unwind(AssertUnwindSafe(|| node.process(block))) {
-        Ok(()) => true,
-        Err(p) => {
-            let text = goofi_node::panic_text(p);
-            write(sink, text.as_ptr(), text.len());
-            false
-        }
-    }
+    let mut block = Block { ins: &ins[..d.n_ins], outs: &mut outs[..d.n_outs], params: &params[..d.n_params] };
+    with(node, sink, write, |n| n.process(&mut block))
 }
 
 /// # Safety
-/// As [`channels`].
-pub unsafe extern "C" fn feedback(node: *mut c_void) -> bool {
-    let mut answer = false;
-    with(node, |n| answer = n.feedback()) && answer
+/// As [`channels`]; `answer` is writable.
+pub unsafe extern "C" fn feedback(node: *mut c_void, answer: *mut bool, sink: *mut c_void, write: Write) -> bool {
+    with(node, sink, write, |n| *answer = n.feedback())
 }
 
 /// # Safety
 /// As [`channels`].
 pub unsafe extern "C" fn save(node: *mut c_void, sink: *mut c_void, write: Write) -> bool {
-    with(node, |n| {
+    with(node, sink, write, |n| {
         let bytes = n.save();
         write(sink, bytes.as_ptr(), bytes.len());
     })
@@ -186,9 +190,9 @@ pub unsafe extern "C" fn save(node: *mut c_void, sink: *mut c_void, write: Write
 
 /// # Safety
 /// As [`channels`]; `ptr` addresses `len` bytes.
-pub unsafe extern "C" fn load(node: *mut c_void, ptr: *const u8, len: usize) -> bool {
+pub unsafe extern "C" fn load(node: *mut c_void, ptr: *const u8, len: usize, sink: *mut c_void, write: Write) -> bool {
     let bytes = slice(ptr, len);
-    with(node, |n| n.load(bytes))
+    with(node, sink, write, |n| n.load(bytes))
 }
 
 unsafe fn slice<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
