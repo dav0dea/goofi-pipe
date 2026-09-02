@@ -427,8 +427,8 @@ class Sleeper(goofi.Node):
         let osc = g.add("Oscillator");
         let probe = g.probe(osc, "out");
         g.ready(osc);
-        let bound = g.doc()["nodes"][hex(osc)]["params"]["common"]["max_frequency"]["expr"].clone();
-        assert_eq!((&bound["source"], &bound["enabled"]), (&j!("globals.default_ufreq"), &j!(true)),
+        let bound = g.doc()["nodes"][hex(osc)]["params"]["common"]["max_frequency"].clone();
+        assert_eq!((&bound["expr"], &bound["mode"]), (&j!("globals.default_ufreq"), &j!("expression")),
                    "the manifest's declared binding was seeded live, not flattened to a literal");
 
         // Counting emitted frames is the only way to see a rate: a stated value reads correct anyway.

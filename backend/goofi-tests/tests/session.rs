@@ -28,6 +28,10 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.call("global add", j!({ "name": "gain", "value": 2.0, "type": "float" }));
     g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size",
                                    "expression": "globals.gain * 64" }));
+    // …and a reference over it: the archive carries the whole record, the expression retained.
+    let level = g.add("_TestScalar");
+    g.call("node edit", j!({ "node": hex(level), "name": "level" }));
+    g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size", "reference": "level.out" }));
 
     let scope = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
         .as_str().unwrap().to_string();
@@ -52,6 +56,9 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     assert_eq!(recs[&outer]["type"], "SubPatch", "the facade is a node record: {:?}", recs[&outer]);
     assert_eq!(recs[&spare]["type"], "OutTable", "…and so is the port");
     assert_eq!(recs[&scope]["scope"], outer, "membership rides the record it belongs to");
+    let source = &recs[&hex(sink)]["sources"][0];
+    assert_eq!((&source["mode"], &source["expression"], &source["reference"]),
+               (&j!("reference"), &j!("globals.gain * 64"), &j!("level.out")), "{source}");
 
     g.call("layout panel edit", j!({ "panel": panel(&g), "type": "viewer",
                                         "state": { "node": hex(osc), "slot": "out" } }));

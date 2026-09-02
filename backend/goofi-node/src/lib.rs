@@ -6,7 +6,7 @@ use goofi_core::{Data, Param, SlotType};
 use indexmap::IndexMap;
 
 pub mod seam;
-pub use seam::{
+pub use seam::{SourceKind, 
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Request, Touched,
 };

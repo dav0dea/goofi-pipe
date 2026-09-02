@@ -26,11 +26,17 @@ pub fn of(g: &Graph) -> Value {
                 for (pname, p) in pg {
                     let mut entry = Map::new();
                     entry.insert("value".into(), goofi_graph::param_value_json(p));
-                    if let Some(e) = g.param_expression(uid, group, pname) {
-                        entry.insert(
-                            "expr".into(),
-                            json!({ "source": e.source, "enabled": e.enabled, "triggers": e.triggers_process }),
-                        );
+                    if let Some(s) = g.param_source(uid, group, pname) {
+                        entry.insert("mode".into(), json!(s.mode.as_str()));
+                        if !s.expression.is_empty() {
+                            entry.insert("expr".into(), json!(s.expression));
+                        }
+                        if !s.reference.is_empty() {
+                            entry.insert("ref".into(), json!(s.reference));
+                        }
+                        if s.triggers_process {
+                            entry.insert("triggers".into(), json!(true));
+                        }
                     }
                     gmap.insert(pname.clone(), Value::Object(entry));
                 }

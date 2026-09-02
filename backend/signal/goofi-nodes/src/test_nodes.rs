@@ -82,6 +82,20 @@ inventory::submit! {
     class("_TestSink", "consumes a wire and carries one param", IN_ARRAY, &[], SINK_PARAMS, false, default_factory::<Sink>)
 }
 
+/// Emits its one param as a one-element frame — the scalar a reference copies.
+#[derive(Default)]
+struct Scalar;
+impl Node for Scalar {
+    fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+        let value = p.f64("control", "value").unwrap_or(0.0) as f32;
+        o.set("out", Data::array_f32(vec![1], value.to_le_bytes().to_vec(), Meta::new()).unwrap());
+        Ok(())
+    }
+}
+inventory::submit! {
+    class("_TestScalar", "emits its `control/value` as a one-element frame", &[], OUT_ARRAY, SINK_PARAMS, true, default_factory::<Scalar>)
+}
+
 #[derive(Default)]
 struct Failing;
 impl Node for Failing {

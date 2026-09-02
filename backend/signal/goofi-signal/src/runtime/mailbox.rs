@@ -40,6 +40,30 @@ impl Mailbox {
     }
 }
 
+/// One frame as a scalar param of `target`'s type — what a reference copies on arrival.
+fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
+    match (frame.value(), target) {
+        (goofi_core::Value::Str(s), Param::Str { options, refresh, .. }) => {
+            Ok(Param::Str { value: s.to_string(), options: options.clone(), refresh: *refresh })
+        }
+        (goofi_core::Value::Array(a), _) if a.shape().iter().product::<usize>() == 1 => {
+            let bytes: [u8; 4] = a.as_bytes()[..4].try_into().expect("one f32");
+            let x = f32::from_le_bytes(bytes) as f64;
+            Ok(match target {
+                Param::Float { vmin, vmax, .. } => Param::Float { value: x, vmin: *vmin, vmax: *vmax },
+                Param::Int { vmin, vmax, .. } => Param::Int { value: x.round() as i64, vmin: *vmin, vmax: *vmax },
+                Param::Bool { .. } => Param::Bool { value: x >= 0.5 },
+                Param::Str { .. } => return Err("a string param references a STRING output".to_string()),
+            })
+        }
+        (goofi_core::Value::Array(a), _) => {
+            Err(format!("a reference needs one element, and this frame is {:?}", a.shape()))
+        }
+        (goofi_core::Value::Str(_), _) => Err("a STRING output references a string param".to_string()),
+        (goofi_core::Value::Table(_), _) => Err("a reference cannot follow a TABLE output".to_string()),
+    }
+}
+
 /// A bound param: the rewritten source plus a mailbox per variable it names.
 #[derive(Clone, Debug)]
 pub struct Binding {
@@ -110,8 +134,12 @@ impl Binding {
         if let Some(reason) = self.vars.values().find_map(Mailbox::unresolved) {
             return Err(reason.to_string());
         }
-        if let Some(Local::Value(value)) = self.vars.get(self.source.trim()).and_then(Mailbox::value) {
-            return Ok(Some(value.clone()));
+        // A bare variable is read without the evaluator: a global's value as it is, and a
+        // referenced producer's frame as the one element it must hold.
+        match self.vars.get(self.source.trim()).and_then(Mailbox::value) {
+            Some(Local::Value(value)) => return Ok(Some(value.clone())),
+            Some(Local::Frame(frame)) if self.id.is_none() => return scalar_of(frame, target).map(Some),
+            _ => {}
         }
         if self.vars.values().any(|m| m.value().is_none()) {
             return Ok(None);

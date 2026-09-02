@@ -279,7 +279,7 @@ pub(crate) fn node_add(
         uid: restore,
         name: (!name.is_empty()).then_some(name),
         params: None,
-        exprs: vec![],
+        sources: vec![],
         viewers: None,
         scope,
     };
@@ -571,7 +571,7 @@ pub(crate) fn node_param_edit(
     let uid = parse_uid(&g, payload, "node")?;
     let (group, name) = parse_param_addr(payload, "node param edit")?;
     let mut entry = serde_json::Map::new();
-    for key in ["value", "expression", "mode", "triggers"] {
+    for key in ["value", "expression", "reference", "mode", "triggers"] {
         if let Some(v) = payload.get(key).filter(|v| !v.is_null()) {
             entry.insert(key.into(), v.clone());
         }
@@ -582,13 +582,13 @@ pub(crate) fn node_param_edit(
         .pop()
         .ok_or("node param edit: nothing to change")?;
     state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
-    // The runtime `expression_error` is doc-invisible, so echo the descriptor.
+    // The runtime `error` is doc-invisible, so echo the descriptor.
     events.push(param_state_update(&g, uid, &[]));
     Ok(json!({
         "value": g.params(uid)
             .and_then(|p| goofi_node::param(&p, &group, &name).cloned())
             .map(|p| goofi_graph::param_value_json(&p)),
-        "error": g.param_expression(uid, &group, &name).and_then(|e| e.error),
+        "error": g.param_source(uid, &group, &name).and_then(|s| s.error),
     }))
 }
 
@@ -642,7 +642,7 @@ pub(crate) fn node_edit(
         actor,
         goofi_graph::Command::EditNode { uid, name, pos, viewers },
     )?;
-    // The runtime `expression_error` is doc-invisible, so echo every referrer a rename rewrote.
+    // The runtime `error` is doc-invisible, so echo every referrer a rename rewrote.
     if let goofi_graph::Outcome::Nodes(referrers) = out {
         for r in referrers {
             events.push(param_state_update(&g, r, &[]));

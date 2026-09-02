@@ -2,15 +2,16 @@
 //! These are the wire contract: co-edit the frontend when a field or shape changes.
 
 use goofi_core::Param;
-use goofi_graph::{ExprInfo, Graph, Uid};
+use goofi_graph::{Graph, SourceInfo, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
 pub const PROTOCOL_VERSION: i64 = 3;
 
 /// A single param descriptor, discriminated on `type`. `doc` is the type declaration's help text,
-/// which the runtime [`Param`] cannot carry.
-pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> Value {
+/// which the runtime [`Param`] cannot carry. The source fields are the record's: an empty text is
+/// `null`, and a param with no record is a constant.
+pub fn describe_param(p: &Param, source: Option<&SourceInfo>, doc: Option<&str>) -> Value {
     let mut m = Map::new();
     m.insert("value".into(), goofi_graph::param_value_json(p));
     m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
@@ -18,12 +19,14 @@ pub fn describe_param(p: &Param, expr: Option<&ExprInfo>, doc: Option<&str>) -> 
         "refreshable".into(),
         json!(matches!(p, Param::Str { refresh: true, .. })),
     );
-    m.insert("expression".into(), expr.map(|e| json!(e.source)).unwrap_or(Value::Null));
-    m.insert("expression_enabled".into(), json!(expr.is_some_and(|e| e.enabled)));
-    m.insert("expression_triggers_process".into(), json!(expr.is_some_and(|e| e.triggers_process)));
+    let text = |t: &str| if t.is_empty() { Value::Null } else { json!(t) };
+    m.insert("mode".into(), json!(source.map(|s| s.mode).unwrap_or_default().as_str()));
+    m.insert("expression".into(), source.map(|s| text(&s.expression)).unwrap_or(Value::Null));
+    m.insert("reference".into(), source.map(|s| text(&s.reference)).unwrap_or(Value::Null));
+    m.insert("triggers".into(), json!(source.is_some_and(|s| s.triggers_process)));
     m.insert(
-        "expression_error".into(),
-        expr.and_then(|e| e.error.as_ref()).map(|s| json!(s)).unwrap_or(Value::Null),
+        "error".into(),
+        source.and_then(|s| s.error.as_ref()).map(|s| json!(s)).unwrap_or(Value::Null),
     );
     match p {
         Param::Float { vmin, vmax, .. } => {
@@ -90,8 +93,8 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
     for (gname, group) in &*params {
         let mut names = Map::new();
         for (n, param) in group {
-            let expr = g.param_expression(uid, gname, n);
-            let mut v = describe_param(param, expr.as_ref(), param_doc(m, &universal, gname, n));
+            let source = g.param_source(uid, gname, n);
+            let mut v = describe_param(param, source.as_ref(), param_doc(m, &universal, gname, n));
             if let (Param::Str { .. }, Some(live)) = (param, g.refreshed_options(uid, gname, n)) {
                 v["options"] = json!(live);
             }

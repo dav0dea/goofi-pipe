@@ -248,6 +248,23 @@ pub fn rename_refs(
     Some(out)
 }
 
+/// The same rename over a reference's `node.slot`, so one closure serves both retained texts.
+pub fn rename_reference(
+    reference: &str,
+    rename: impl Fn(&str, Option<&str>) -> (Option<String>, Option<String>),
+) -> Option<String> {
+    let (name, slot) = reference.split_once('.')?;
+    let (new_name, new_slot) = rename(name, Some(slot));
+    if new_name.is_none() && new_slot.is_none() {
+        return None;
+    }
+    Some(format!(
+        "{}.{}",
+        new_name.unwrap_or_else(|| name.to_string()),
+        new_slot.unwrap_or_else(|| slot.to_string())
+    ))
+}
+
 /// The identifier after a `.` at `end`, and where it stops. `None` when the next thing is a
 /// method call, or not an attribute at all.
 fn ident_after(source: &str, end: usize) -> Option<(&str, usize)> {

@@ -62,7 +62,7 @@ pub enum ParamValue {
         vars: Vec<Var>,
         /// Whether an arrival on this binding also wakes `process()`. Inert on a `common.*` key.
         trigger: bool,
-        /// The evaluator's handle for the source, compiled by the GRAPH so `set_expression` can
+        /// The evaluator's handle for the source, compiled by the GRAPH so `set_source` can
         /// answer with a real compile error. `None` leaves the literal standing.
         id: Option<goofi_node::BindingId>,
     },

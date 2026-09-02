@@ -58,9 +58,9 @@ fn the_playback_file_follows_goofi_home_and_the_sample_dropdown() {
     let probe = g.probe(play, "out");
 
     // The DECLARED binding is live from birth, and its source is the authored spelling.
-    let expr = g.doc()["nodes"][hex(play)]["params"]["playback"]["file"]["expr"].clone();
-    assert_eq!(expr["enabled"], j!(true), "{expr}");
-    let source = expr["source"].as_str().unwrap_or_default();
+    let file = g.doc()["nodes"][hex(play)]["params"]["playback"]["file"].clone();
+    assert_eq!(file["mode"], j!("expression"), "{file}");
+    let source = file["expr"].as_str().unwrap_or_default();
     assert!(source.contains("globals.goofi_home") && source.contains("me.params.playback.sample"),
             "{source}");
 

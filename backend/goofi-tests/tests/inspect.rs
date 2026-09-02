@@ -175,7 +175,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
     // …and into its expression half. This binding cannot compile (no evaluator here), shown inline.
-    assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 (on) [error: "),
+    assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 [error: "),
             "{out}");
     // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.
     assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
@@ -209,7 +209,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let live = g.until("the node's own evaluation error", |g| {
         Some(text(g, "node state", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
     });
-    assert!(live.contains(&format!("(on) [error: {BLEW_UP}]")),
+    assert!(live.contains(&format!("[error: {BLEW_UP}]")),
             "the bound param's own field carries it too: {live}");
 
     // The finding belongs to the INSTANCE, and a restart is a new one with nothing to report.

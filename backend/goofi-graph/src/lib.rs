@@ -18,7 +18,7 @@ pub mod subpatch;
 pub mod layout;
 
 pub mod command;
-pub use command::{open_batch, BatchScope, Command, CommandHistory, ExprState, Outcome};
+pub use command::{open_batch, BatchScope, Command, CommandHistory, Outcome, SourceState};
 
 pub mod expr_rewrite;
 
@@ -54,7 +54,7 @@ struct Leaf {
     /// The param RECORD — the literals `serialize` writes. An evaluated value must never reach it.
     params: Arc<ParamGroups>,
     /// The graph resolves each binding's references and ships it; the NODE evaluates it.
-    bindings: HashMap<ParamKey, ExprBinding>,
+    bindings: HashMap<ParamKey, ParamSource>,
     health: Health,
 }
 
@@ -77,7 +77,7 @@ struct Health {
     /// broken binding still has the authored literal to fall back to.
     evaluated: IndexMap<ParamKey, Param>,
     /// Every error THIS INSTANCE reported, by param. It dies with the instance, where
-    /// `ExprBinding::bind_error` survives because the source does.
+    /// `ParamSource::bind_error` survives because the source does.
     param_errors: IndexMap<ParamKey, String>,
     /// A refreshable `Str` param's re-enumerated options — the overlay a projection reads over
     /// the record's declared options. The answer to a ⟳ lands here, never in the record.
@@ -172,7 +172,7 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value) -> Param {
 }
 
 /// The one params bag — `node add`'s birth entries and `node param edit` both fold into
-/// `{group: {param: value | {value, expression, mode, triggers}}}` — as one [`Command::EditParam`]
+/// `{group: {param: value | {value, expression, reference, mode, triggers}}}` — as one [`Command::EditParam`]
 /// per entry, typed and merged against the params the node holds NOW.
 pub fn param_commands(
     g: &Graph,
@@ -189,18 +189,18 @@ pub fn param_commands(
                 .params(uid)
                 .and_then(|p| goofi_node::param(&p, group, name).cloned())
                 .ok_or_else(|| format!("no param {group}.{name}"))?;
-            let cur = g.param_expression(uid, group, name);
-            let (value, expr) = param_change(&existing, cur, spec)
+            let cur = g.param_source(uid, group, name);
+            let (value, source) = param_change(&existing, cur, spec)
                 .map_err(|e| format!("params.{group}.{name}: {e}"))?;
-            if value.is_none() && expr.is_none() {
-                return Err(format!("params.{group}.{name} sets neither a value nor an expression"));
+            if value.is_none() && source.is_none() {
+                return Err(format!("params.{group}.{name} sets neither a value nor a source"));
             }
             cmds.push(Command::EditParam {
                 uid,
                 group: group.clone(),
                 name: name.clone(),
                 value,
-                expr,
+                source,
             });
         }
     }
@@ -216,64 +216,76 @@ fn coerced_value(existing: &Param, v: &serde_json::Value) -> Param {
     param_from_json(existing, parsed.as_ref().unwrap_or(v))
 }
 
-/// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, mode, triggers}`.
-/// No param type is an object, so the two forms cannot be confused. An expression given without a
-/// mode turns the binding on, and a mode or trigger given alone edits the binding already there.
+/// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, reference, mode,
+/// triggers}`. No param type is an object, so the two forms cannot be confused. A text given names
+/// its mode unless one is said; a mode or a trigger alone edits what is retained.
 fn param_change(
     existing: &Param,
-    cur: Option<ExprInfo>,
+    cur: Option<SourceInfo>,
     spec: &serde_json::Value,
-) -> Result<(Option<Param>, Option<ExprState>), String> {
+) -> Result<(Option<Param>, Option<SourceState>), String> {
     let Some(o) = spec.as_object() else {
         return Ok((Some(coerced_value(existing, spec)), None));
     };
-    if let Some(k) =
-        o.keys().find(|k| !matches!(k.as_str(), "value" | "expression" | "mode" | "triggers"))
+    if let Some(k) = o
+        .keys()
+        .find(|k| !matches!(k.as_str(), "value" | "expression" | "reference" | "mode" | "triggers"))
     {
-        return Err(format!("unknown field `{k}` — value, expression, mode, triggers"));
+        return Err(format!("unknown field `{k}` — value, expression, reference, mode, triggers"));
     }
-    let value = o
-        .get("value")
-        .filter(|v| !v.is_null())
-        .map(|v| coerced_value(existing, v));
-    let mode = match o.get("mode").filter(|v| !v.is_null()) {
-        None => None,
-        Some(v) => match v.as_str() {
-            Some("expression") => Some(true),
-            Some("constant") => Some(false),
-            _ => return Err(format!("mode is `constant` or `expression`, not {v}")),
+    let field = |k: &str| o.get(k).filter(|v| !v.is_null());
+    let value = field("value").map(|v| coerced_value(existing, v));
+    let text = |k: &str| {
+        field(k)
+            .map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("{k} is a string, not {v}")))
+            .transpose()
+    };
+    let expression = text("expression")?;
+    let reference = text("reference")?;
+    let mode = field("mode")
+        .map(|v| {
+            v.as_str()
+                .and_then(Mode::parse)
+                .ok_or_else(|| format!("mode is `constant`, `expression` or `reference`, not {v}"))
+        })
+        .transpose()?;
+    let triggers = field("triggers")
+        .map(|v| v.as_bool().ok_or_else(|| format!("triggers is a bool, not {v}")))
+        .transpose()?;
+    if expression.is_none() && reference.is_none() && mode.is_none() && triggers.is_none() {
+        return Ok((value, None));
+    }
+    let given = |t: &Option<String>| t.as_deref().is_some_and(|s| !s.is_empty());
+    let mode = match (mode, given(&expression), given(&reference)) {
+        (Some(m), _, _) => m,
+        (None, true, true) => {
+            return Err("an expression and a reference at once: say which with `mode`".to_string())
+        }
+        (None, true, false) => Mode::Expression,
+        (None, false, true) => Mode::Reference,
+        // Clearing the active text is what switches it off.
+        (None, false, false) => match cur.as_ref().map(|c| c.mode).unwrap_or_default() {
+            Mode::Expression if expression.as_deref() == Some("") => Mode::Constant,
+            Mode::Reference if reference.as_deref() == Some("") => Mode::Constant,
+            m => m,
         },
     };
-    let source = o.get("expression").filter(|v| !v.is_null()).map(|v| {
-        v.as_str().map(str::to_string).ok_or_else(|| format!("expression is a string, not {v}"))
-    });
-    let triggers = match o.get("triggers").filter(|v| !v.is_null()) {
-        None => None,
-        Some(v) => Some(v.as_bool().ok_or_else(|| format!("triggers is a bool, not {v}"))?),
+    let state = SourceState {
+        mode,
+        expression: expression.or_else(|| cur.as_ref().map(|c| c.expression.clone())).unwrap_or_default(),
+        reference: reference.or_else(|| cur.as_ref().map(|c| c.reference.clone())).unwrap_or_default(),
+        triggers: triggers.unwrap_or_else(|| cur.as_ref().is_some_and(|c| c.triggers_process)),
     };
-    let expr = match (source, mode, triggers) {
-        (None, None, None) => None,
-        (source, mode, triggers) => {
-            // An expression given is an expression MEANT, so it binds without being told to; a mode
-            // or a trigger alone edits whatever binding is already there.
-            let default_enabled = match &source {
-                Some(_) => true,
-                None => cur.as_ref().is_some_and(|c| c.enabled),
-            };
-            let source = match source {
-                Some(s) => s?,
-                None => cur.as_ref().map(|c| c.source.clone()).unwrap_or_default(),
-            };
-            Some(ExprState {
-                // An empty source is an UNBIND, so it cannot end up enabled.
-                enabled: mode.unwrap_or(default_enabled) && !source.is_empty(),
-                triggers: triggers
-                    .unwrap_or_else(|| cur.as_ref().is_some_and(|c| c.triggers_process)),
-                source,
-            })
+    match state.mode {
+        Mode::Expression if state.expression.is_empty() => {
+            return Err("mode `expression` with no expression to evaluate".to_string())
         }
-    };
-    Ok((value, expr))
+        Mode::Reference if state.reference.is_empty() => {
+            return Err("mode `reference` with no reference to follow".to_string())
+        }
+        _ => {}
+    }
+    Ok((value, Some(state)))
 }
 
 /// A global as `{value, type}` — the shape in the `.gfi` and the doc.
@@ -291,12 +303,45 @@ pub fn global_from_json(entry: &serde_json::Value) -> Option<goofi_core::globals
     })
 }
 
-/// A param bound to an expression, graph-side. Everything below `source` is DERIVED, and
-/// re-derived whenever it or a name the graph resolves changes.
-struct ExprBinding {
-    /// The AUTHORED source — what the `.gfi` stores, the inspector shows, and a rename edits.
-    source: String,
-    enabled: bool,
+/// The active source of a param's value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Constant,
+    Expression,
+    Reference,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Constant => "constant",
+            Mode::Expression => "expression",
+            Mode::Reference => "reference",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Mode> {
+        match s {
+            "constant" => Some(Mode::Constant),
+            "expression" => Some(Mode::Expression),
+            "reference" => Some(Mode::Reference),
+            _ => None,
+        }
+    }
+}
+
+/// The one variable a reference rewrites to: the bare-variable source the runtime copies without
+/// an evaluator.
+const REF_VAR: &str = "ref";
+
+/// A param's source record, graph-side: the AUTHORED expression and reference — both retained
+/// whatever the mode, since a toggle is never destructive — and everything below `triggers_process`
+/// is DERIVED from the active one, re-derived whenever it or a name the graph resolves changes.
+struct ParamSource {
+    mode: Mode,
+    expression: String,
+    reference: String,
     triggers_process: bool,
     /// Compiled from [`Self::rewritten`], never from [`Self::source`]: the evaluator is handed
     /// variables, not names. `None` when the compile failed, or there is no evaluator.
@@ -313,18 +358,28 @@ struct ExprBinding {
     bind_error: Option<String>,
 }
 
-impl ExprBinding {
-    /// Whether the graph SHIPS this binding. A disabled one and one the graph could not bind both
-    /// leave the param on its literal, and the node is TOLD so.
+impl ParamSource {
+    /// Whether the graph SHIPS this source. A constant mode and a source the graph could not bind
+    /// both leave the param on its literal, and the node is TOLD so.
     fn live(&self) -> bool {
-        self.enabled && self.bind_error.is_none()
+        self.mode != Mode::Constant && self.bind_error.is_none()
+    }
+
+    fn state(&self) -> SourceState {
+        SourceState {
+            mode: self.mode,
+            expression: self.expression.clone(),
+            reference: self.reference.clone(),
+            triggers: self.triggers_process,
+        }
     }
 }
 
-/// [`ExprBinding`] projected for the bridge and the `.gfi`.
-pub struct ExprInfo {
-    pub source: String,
-    pub enabled: bool,
+/// [`ParamSource`] projected for the bridge and the `.gfi`.
+pub struct SourceInfo {
+    pub mode: Mode,
+    pub expression: String,
+    pub reference: String,
     pub triggers_process: bool,
     pub error: Option<String>,
 }
@@ -566,7 +621,7 @@ impl Graph {
     }
 
     /// Every binding matching a predicate, as `(node, param)` — the addressing `rebind` takes.
-    fn bindings_where(&self, want: impl Fn(&ExprBinding) -> bool) -> Vec<(Uid, ParamKey)> {
+    fn bindings_where(&self, want: impl Fn(&ParamSource) -> bool) -> Vec<(Uid, ParamKey)> {
         self.leaves()
             .flat_map(|(uid, e)| e.bindings.iter().map(move |(k, b)| (uid, k.clone(), b)))
             .filter(|(_, _, b)| want(b))
@@ -574,14 +629,22 @@ impl Graph {
             .collect()
     }
 
-    /// Re-run `set_expression` on each of these bindings from its AUTHORED source — the one
-    /// operation that re-derives the rewrite, the variables and the handle, and records delivery.
+    /// Re-run `set_source` on each of these records from its AUTHORED texts — the one operation
+    /// that re-derives the rewrite, the variables and the handle, and records delivery.
     fn rebind(&mut self, bindings: &[(Uid, ParamKey)]) {
         for (uid, key) in bindings {
-            let Some(b) = self.leaf(*uid).and_then(|e| e.bindings.get(key)) else { continue };
-            let (source, enabled, triggers) = (b.source.clone(), b.enabled, b.triggers_process);
-            let _ = self.set_expression(*uid, &key.group, &key.name, &source, enabled, triggers);
+            let Some(state) = self.source_state(*uid, key) else { continue };
+            let _ = self.set_source(*uid, &key.group, &key.name, state);
         }
+    }
+
+    fn source_state(&self, uid: Uid, key: &ParamKey) -> Option<SourceState> {
+        self.leaf(uid).and_then(|e| e.bindings.get(key)).map(ParamSource::state)
+    }
+
+    /// A param's source record as a command carries it, `None` when it holds none.
+    pub fn source_state_of(&self, uid: Uid, group: &str, name: &str) -> Option<SourceState> {
+        self.source_state(uid, &ParamKey::new(group, name))
     }
 
     /// Inject the param-expression evaluator (pyo3, from goofi-python). Wired by the CLI at
@@ -976,7 +1039,13 @@ impl Graph {
         for (group, name, expression) in declared.chain(universal) {
             if let Some(e) = expression {
                 let enabled = matches!(e.mode, ExprMode::On);
-                let _ = self.set_expression(uid, group, name, e.source, enabled, e.trigger);
+                let state = SourceState {
+                    mode: if enabled { Mode::Expression } else { Mode::Constant },
+                    expression: e.source.to_string(),
+                    reference: String::new(),
+                    triggers: e.trigger,
+                };
+                let _ = self.set_source(uid, group, name, state);
             }
         }
     }
@@ -1128,25 +1197,28 @@ impl Graph {
         // A port's name is ALSO a slot label — on the facade that holds it, and nowhere else — so
         // the one rename reaches an expression in both positions through the one rewrite.
         let facade = self.stub(uid).and_then(|(scope, _)| self.name(scope)).map(str::to_string);
-        let mut edits: Vec<(Uid, ParamKey, String, bool, bool)> = Vec::new();
+        let rename = |n: &str, slot: Option<&str>| {
+            (
+                (n == old).then(|| new.to_string()),
+                (slot == Some(old) && Some(n) == facade.as_deref()).then(|| new.to_string()),
+            )
+        };
+        let mut edits: Vec<(Uid, ParamKey, SourceState)> = Vec::new();
         for (ruid, entry) in self.leaves() {
             for (key, b) in &entry.bindings {
-                let rewritten = expr_rewrite::rename_refs(&b.source, |n, slot| {
-                    (
-                        (n == old).then(|| new.to_string()),
-                        (slot == Some(old) && Some(n) == facade.as_deref()).then(|| new.to_string()),
-                    )
-                });
-                if let Some(src) = rewritten {
-                    edits.push((ruid, key.clone(), src, b.enabled, b.triggers_process));
+                let expression = expr_rewrite::rename_refs(&b.expression, rename);
+                let reference = expr_rewrite::rename_reference(&b.reference, rename);
+                if expression.is_some() || reference.is_some() {
+                    let mut state = b.state();
+                    state.expression = expression.unwrap_or(state.expression);
+                    state.reference = reference.unwrap_or(state.reference);
+                    edits.push((ruid, key.clone(), state));
                 }
             }
         }
         let mut referrers: Vec<Uid> = Vec::new();
-        for (ruid, key, src, enabled, triggers) in edits {
-            if self.set_expression(ruid, &key.group, &key.name, &src, enabled, triggers).is_ok()
-                && !referrers.contains(&ruid)
-            {
+        for (ruid, key, state) in edits {
+            if self.set_source(ruid, &key.group, &key.name, state).is_ok() && !referrers.contains(&ruid) {
                 referrers.push(ruid);
             }
         }
@@ -1960,11 +2032,12 @@ impl Graph {
         edit_params(entry, |p| {
             p.entry(group.to_string()).or_default().insert(name.to_string(), value.clone());
         });
-        // A LITERAL on a driven param unbinds it, which is what the node does with this write's
-        // `SetParam`. An ENABLED binding only: a disabled one is source the fx toggle holds.
+        // A LITERAL on a driven param switches it to constant, which is what the node does with
+        // this write's `SetParam`; what the record retained stays retained.
         let key = ParamKey::new(group, name);
-        if self.nodes[&uid].leaf().expect("a leaf").bindings.get(&key).is_some_and(|b| b.enabled) {
-            self.unbind(uid, &key);
+        if let Some(mut state) = self.source_state(uid, &key).filter(|s| s.mode != Mode::Constant) {
+            state.mode = Mode::Constant;
+            let _ = self.set_source(uid, group, name, state);
         }
         // The record has moved and the delivery is recorded for settle; nothing else happens
         // here. `on_param_changed` runs on the node's own thread, so its failure arrives as a fault.
@@ -1991,24 +2064,23 @@ impl Graph {
         Ok(())
     }
 
-    /// Bind or unbind a param. An EMPTY source unbinds; a non-empty one with `enabled == false` is
-    /// PRESERVED disabled. A compile error is stored as the binding's field error, not a refusal.
-    pub fn set_expression(
+    /// Set a param's source record: its mode, and the expression and reference it retains. A record
+    /// with nothing retained and a constant mode is removed. A bind error is stored on the record,
+    /// never a refusal — the source outlives any one instance.
+    pub fn set_source(
         &mut self,
         uid: Uid,
         group: &str,
         name: &str,
-        source: &str,
-        enabled: bool,
-        triggers_process: bool,
+        state: SourceState,
     ) -> Result<(), String> {
         if self.leaf(uid).is_none() {
             return Err(format!("no such node {uid}"));
         }
         let key = ParamKey::new(group, name);
-        // Only an empty source is a true unbind, and `unbind` owns the release on that path — so it
+        // Only an empty record is a true unbind, and `unbind` owns the release on that path — so it
         // goes FIRST. Releasing here too gave the evaluator two `release` calls for one handle.
-        if source.trim().is_empty() {
+        if state.is_empty() {
             self.unbind(uid, &key);
             self.notify_param(uid, &key);
             return Ok(());
@@ -2019,45 +2091,68 @@ impl Graph {
                 ev.release(id);
             }
         }
-        // A non-empty source binds a real param: a dangling binding is invisible in the descriptor
-        // and unclearable from the UI.
-        if goofi_node::param(&self.nodes[&uid].leaf().expect("a leaf").params, group, name).is_none() {
+        // A record binds a real param: a dangling one is invisible in the descriptor and
+        // unclearable from the UI.
+        let Some(param) =
+            goofi_node::param(&self.nodes[&uid].leaf().expect("a leaf").params, group, name).cloned()
+        else {
             return Err(format!("no such param `{group}/{name}`"));
-        }
-        // The scan runs even for a DISABLED binding, because `terms` is what a later rename or
-        // globals edit re-resolves against. What it does not get is variables, a handle, a target.
-        let scanned = expr_rewrite::rewrite(source);
-        let terms = scanned.as_ref().map(|(_, vars)| vars.clone()).unwrap_or_default();
-        let (rewritten, vars, mut error) = match (enabled, scanned) {
-            (true, Ok((rewritten, refs))) => {
-                let vars = self.resolve_vars(uid, &key, &refs);
-                let error = vars.iter().find_map(|v| match v {
-                    BoundVar::Missing { reason, .. } => Some(reason.clone()),
-                    _ => None,
-                });
-                (rewritten, vars, error)
-            }
-            (true, Err(e)) => (source.to_string(), Vec::new(), Some(e.0)),
-            (false, _) => (source.to_string(), Vec::new(), None),
         };
-        let id = match (&self.evaluator, enabled, error.is_none()) {
-            (Some(ev), true, true) => match ev.compile(&rewritten) {
+        // Both retained texts are scanned whatever the mode, because `terms` is what a later
+        // rename or globals edit re-resolves against. Only the active one gets variables and a handle.
+        let scanned = (!state.expression.is_empty()).then(|| expr_rewrite::rewrite(&state.expression));
+        let reference = (!state.reference.is_empty()).then(|| parse_reference(&state.reference));
+        let mut terms: Vec<expr_rewrite::VarRef> =
+            scanned.iter().flatten().flat_map(|(_, refs)| refs.clone()).collect();
+        if let Some(Ok(r)) = &reference {
+            terms.push(r.clone());
+        }
+        let missing = |vars: &[BoundVar]| {
+            vars.iter().find_map(|v| match v {
+                BoundVar::Missing { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+        };
+        let (rewritten, vars, mut error) = match state.mode {
+            Mode::Constant => (String::new(), Vec::new(), None),
+            Mode::Expression => match scanned {
+                Some(Ok((rewritten, refs))) => {
+                    let vars = self.resolve_vars(uid, &key, &refs);
+                    let error = missing(&vars);
+                    (rewritten, vars, error)
+                }
+                Some(Err(e)) => (state.expression.clone(), Vec::new(), Some(e.0)),
+                None => (String::new(), Vec::new(), Some("no expression to evaluate".to_string())),
+            },
+            Mode::Reference => match reference {
+                Some(Ok(r)) => {
+                    let vars = self.resolve_vars(uid, &key, std::slice::from_ref(&r));
+                    let error = missing(&vars).or_else(|| self.reference_kind_error(&r, &param));
+                    (REF_VAR.to_string(), vars, error)
+                }
+                Some(Err(e)) => (String::new(), Vec::new(), Some(e)),
+                None => (String::new(), Vec::new(), Some("no reference to follow".to_string())),
+            },
+        };
+        let id = match (&self.evaluator, state.mode, error.is_none()) {
+            (Some(ev), Mode::Expression, true) => match ev.compile(&rewritten) {
                 Ok(c) => Some(c.id),
                 Err(e) => {
                     error = Some(e.0);
                     None
                 }
             },
-            (None, true, _) => {
+            (None, Mode::Expression, _) => {
                 error = Some("no expression evaluator available".to_string());
                 None
             }
             _ => None,
         };
-        let binding = ExprBinding {
-            source: source.to_string(),
-            enabled,
-            triggers_process,
+        let record = ParamSource {
+            mode: state.mode,
+            expression: state.expression,
+            reference: state.reference,
+            triggers_process: state.triggers,
             id,
             rewritten,
             vars,
@@ -2065,10 +2160,25 @@ impl Graph {
             bind_error: error,
         };
         if let Some(e) = self.leaf_mut(uid) {
-            e.bindings.insert(key.clone(), binding);
+            e.bindings.insert(key.clone(), record);
         }
         self.notify_param(uid, &key);
         Ok(())
+    }
+
+    /// Why a resolved reference cannot feed this param: the producer's slot kind against the
+    /// param's type. `None` when they agree, or when the producer was not found (already reported).
+    fn reference_kind_error(&self, r: &expr_rewrite::VarRef, param: &Param) -> Option<String> {
+        let expr_rewrite::VarRef::Node { name, slot: Some(slot), .. } = r else { return None };
+        let uid = self.uid_by_name(name)?;
+        let kind = self.output_slots(uid).into_iter().find(|(_, label, _)| label == slot)?.2;
+        let (wants, ok) = match param {
+            Param::Str { .. } => ("STRING", kind == goofi_core::SlotType::String),
+            _ => ("ARRAY", kind == goofi_core::SlotType::Array),
+        };
+        (!ok).then(|| {
+            format!("`{name}.{slot}` is a {} output; this param references a {wants} one", kind.name())
+        })
     }
 
     /// Drop a binding and release its compiled handle — the shared tail of an empty `set_expression`
@@ -2212,15 +2322,16 @@ impl Graph {
         }
     }
 
-    /// The expression binding on a param, for the bridge descriptor + `.gfi` (or `None`
-    /// if the param is a plain literal).
-    pub fn param_expression(&self, uid: Uid, group: &str, name: &str) -> Option<ExprInfo> {
+    /// The source record on a param, for the bridge descriptor + `.gfi` (or `None` if the param is
+    /// a plain literal with nothing retained).
+    pub fn param_source(&self, uid: Uid, group: &str, name: &str) -> Option<SourceInfo> {
         let entry = self.leaf(uid)?;
         let key = ParamKey::new(group, name);
         let b = entry.bindings.get(&key)?;
-        Some(ExprInfo {
-            source: b.source.clone(),
-            enabled: b.enabled,
+        Some(SourceInfo {
+            mode: b.mode,
+            expression: b.expression.clone(),
+            reference: b.reference.clone(),
             triggers_process: b.triggers_process,
             // Derived rather than stored: the graph could not bind it, or the node could not
             // evaluate it, and a binding the graph refused is never shipped for the node to judge.
@@ -2228,23 +2339,18 @@ impl Graph {
         })
     }
 
-    /// Every expression binding on a node as `(group, name, source, enabled, triggers)` — what a
-    /// delete's inverse must re-apply, since params alone carry only the literal value.
-    pub fn param_bindings(&self, uid: Uid) -> Vec<(String, String, String, bool, bool)> {
+    /// Every source record on a node as `(group, name, state)` — what a delete's inverse must
+    /// re-apply, since params alone carry only the literal value.
+    pub fn param_sources(&self, uid: Uid) -> Vec<(String, String, SourceState)> {
         self.leaf(uid)
             .map(|e| {
-                e.bindings
-                    .iter()
-                    .map(|(k, b)| {
-                        (k.group.clone(), k.name.clone(), b.source.clone(), b.enabled, b.triggers_process)
-                    })
-                    .collect()
+                e.bindings.iter().map(|(k, b)| (k.group.clone(), k.name.clone(), b.state())).collect()
             })
             .unwrap_or_default()
     }
 
-    /// What the params driven by an ENABLED binding currently evaluate to — the inspector's live
-    /// preview. A disabled binding is excluded: its value is the literal, already on the descriptor.
+    /// What the params with a live mode currently evaluate to — the inspector's preview. A constant
+    /// is excluded: its value is the literal, already on the descriptor.
     pub fn expression_values(&self, uid: Uid) -> Vec<(&str, &str, &Param)> {
         let Some(entry) = self.leaf(uid) else {
             return Vec::new();
@@ -2253,7 +2359,7 @@ impl Graph {
             .health
             .evaluated
             .iter()
-            .filter(|(key, _)| entry.bindings.get(key).is_some_and(|b| b.enabled))
+            .filter(|(key, _)| entry.bindings.get(key).is_some_and(|b| b.mode != Mode::Constant))
             .map(|(key, p)| (key.group.as_str(), key.name.as_str(), p))
             .collect()
     }
@@ -2613,19 +2719,20 @@ impl Graph {
                         names.iter().map(|(n, p)| (n.clone(), param_value_json(p))).collect();
                     params.insert(group.clone(), Value::Object(gmap));
                 }
-                // Persist expression bindings (sorted for a stable diff) — else a save/load
-                // silently freezes every live-driven param to its last evaluated literal.
+                // Persist source records (sorted for a stable diff) — else a save/load silently
+                // freezes every live-driven param to its last evaluated literal.
                 if !leaf.bindings.is_empty() {
-                    let mut binds: Vec<(&ParamKey, &ExprBinding)> = leaf.bindings.iter().collect();
+                    let mut binds: Vec<(&ParamKey, &ParamSource)> = leaf.bindings.iter().collect();
                     binds.sort_by(|a, b| a.0.cmp(b.0));
                     rec.insert(
-                        "expressions".into(),
+                        "sources".into(),
                         Value::Array(
                             binds
                                 .iter()
                                 .map(|(k, b)| {
-                                    json!({ "group": k.group, "name": k.name, "source": b.source,
-                                            "enabled": b.enabled, "triggers_process": b.triggers_process })
+                                    json!({ "group": k.group, "name": k.name, "mode": b.mode.as_str(),
+                                            "expression": b.expression, "reference": b.reference,
+                                            "triggers": b.triggers_process })
                                 })
                                 .collect(),
                         ),
@@ -2733,19 +2840,23 @@ impl Graph {
                 uid: Some(idmap[*old]),
                 name: by_old(rec.get("name").and_then(|v| v.as_str()).unwrap_or("")),
                 params: (!structural(ty)).then(|| self.record_params(ty, rec)).transpose()?,
-                exprs: record_exprs(rec)
+                sources: record_sources(rec)
                     .into_iter()
-                    .map(|(group, name, mut e)| {
+                    .map(|(group, name, mut s)| {
                         // Both positions a display name is read in: a copied node's own, and — under
                         // a copied facade — a copied PORT's, which is what that facade calls a slot.
-                        if let Some(src) = expr_rewrite::rename_refs(&e.source, |named, slot| {
+                        let remap = |named: &str, slot: Option<&str>| {
                             let to = by_old(named);
                             let label = to.as_ref().and(slot).and_then(by_old);
                             (to, label)
-                        }) {
-                            e.source = src;
+                        };
+                        if let Some(src) = expr_rewrite::rename_refs(&s.expression, remap) {
+                            s.expression = src;
                         }
-                        (group, name, e)
+                        if let Some(r) = expr_rewrite::rename_reference(&s.reference, remap) {
+                            s.reference = r;
+                        }
+                        (group, name, s)
                     })
                     .collect(),
                 viewers: rec.get("viewers").filter(|v| v.is_object()).map(|v| remap_slots(v, &idmap)),
@@ -2906,8 +3017,8 @@ impl Graph {
             if let Some(v) = rec.get("viewers").filter(|v| v.is_object()) {
                 let _ = self.set_node_viewers(uid, v.clone());
             }
-            for (group, name, e) in record_exprs(rec) {
-                let _ = self.set_expression(uid, &group, &name, &e.source, e.enabled, e.triggers);
+            for (group, name, state) in record_sources(rec) {
+                let _ = self.set_source(uid, &group, &name, state);
             }
         }
         // Membership, from each record's own `scope`. It is set before the ports so a port's
@@ -3005,8 +3116,9 @@ fn remap_slots(viewers: &serde_json::Value, idmap: &HashMap<String, Uid>) -> ser
 }
 
 /// The expression bindings a record carries, in the shape [`command::Command::AddNode`] re-applies.
-fn record_exprs(rec: &serde_json::Value) -> Vec<(String, String, command::ExprState)> {
-    rec.get("expressions")
+fn record_sources(rec: &serde_json::Value) -> Vec<(String, String, SourceState)> {
+    let text = |ex: &serde_json::Value, k: &str| ex.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    rec.get("sources")
         .and_then(|v| v.as_array())
         .into_iter()
         .flatten()
@@ -3014,14 +3126,31 @@ fn record_exprs(rec: &serde_json::Value) -> Vec<(String, String, command::ExprSt
             Some((
                 ex.get("group")?.as_str()?.to_string(),
                 ex.get("name")?.as_str()?.to_string(),
-                command::ExprState {
-                    source: ex.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    enabled: ex.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                    triggers: ex.get("triggers_process").and_then(|v| v.as_bool()).unwrap_or(false),
+                SourceState {
+                    mode: ex.get("mode").and_then(|v| v.as_str()).and_then(Mode::parse).unwrap_or_default(),
+                    expression: text(ex, "expression"),
+                    reference: text(ex, "reference"),
+                    triggers: ex.get("triggers").and_then(|v| v.as_bool()).unwrap_or(false),
                 },
             ))
         })
         .collect()
+}
+
+/// A reference's `node.slot` as the one variable its record resolves — the same term an
+/// expression's `nd('node').out.slot` rewrites to.
+fn parse_reference(reference: &str) -> Result<expr_rewrite::VarRef, String> {
+    let Some((name, slot)) = reference.split_once('.') else {
+        return Err(format!("a reference spells `node.slot`, not `{reference}`"));
+    };
+    if !goofi_core::globals::is_valid_name(name) || !goofi_core::globals::is_valid_name(slot) {
+        return Err(format!("`{reference}` is not a legal reference: {NAME_RULE}"));
+    }
+    Ok(expr_rewrite::VarRef::Node {
+        var: REF_VAR.to_string(),
+        name: name.to_string(),
+        slot: Some(slot.to_string()),
+    })
 }
 
 fn read_pos(rec: &serde_json::Value) -> [f64; 2] {
@@ -3106,6 +3235,10 @@ fn build_view<'a>(
                 .iter()
                 .map(|(key, b)| BindingView {
                     key,
+                    kind: match b.mode {
+                        Mode::Reference => goofi_node::SourceKind::Reference,
+                        _ => goofi_node::SourceKind::Expression,
+                    },
                     rewritten: &b.rewritten,
                     vars: &b.vars,
                     trigger: b.triggers_process,

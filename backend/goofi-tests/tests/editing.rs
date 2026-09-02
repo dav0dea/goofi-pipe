@@ -527,9 +527,9 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
         let p = ev.next("state_update");
         (p["node"] == hex(consumer)).then(|| p["params"]["common"]["max_frequency"].clone())
     });
-    assert_eq!((&d["expression"], &d["expression_enabled"], &d["expression_triggers_process"]),
-               (&j!("nd('src')"), &j!(true), &j!(false)));
-    assert!(d["expression_error"].is_string(), "got {:?}", d["expression_error"]);
+    assert_eq!((&d["expression"], &d["mode"], &d["triggers"]),
+               (&j!("nd('src')"), &j!("expression"), &j!(false)));
+    assert!(d["error"].is_string(), "got {:?}", d["error"]);
     assert!(d.get("expression_autoeval").is_none(), "auto-eval is always on, so it is not on the wire");
 
     g.call("node edit", j!({ "node": hex(producer), "name": "signal" }));
@@ -540,18 +540,65 @@ fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names
     });
     assert_eq!(expr, "nd('signal')", "the referrer's nd() reference followed the rename");
 
-    // Injected: a node's own `Status::ParamValues` is this event's only producer.
-    let mut ev = g.events();
-    g.state.graph.lock().unwrap().apply_status(consumer, goofi_node::Status::ParamValues {
-        evaluated: vec![(goofi_node::ParamKey::new("common", "max_frequency"),
-                         goofi_core::Param::float(3.0, 0.0, 100.0))],
-    });
-    let values = g.until("a param_values broadcast", |_| {
+    // A REFERENCE is the same record with no Python: one producer slot, copied on arrival. The
+    // expression is RETAINED beside it, because a mode switch is never destructive.
+    let level = g.add("_TestScalar");
+    g.call("node edit", j!({ "node": hex(level), "name": "level" }));
+    g.call("node param edit", j!({ "node": hex(level), "param": "control/value", "value": 0.25 }));
+    let param = |g: &Goofi, spec: serde_json::Value| {
+        let mut payload = j!({ "node": hex(consumer), "param": "common/max_frequency" });
+        payload.as_object_mut().unwrap().extend(spec.as_object().unwrap().clone());
+        g.call("node param edit", payload)
+    };
+    // An op's echo is a `state_update`; a RUNTIME error is read back through `node state`.
+    let line = |g: &Goofi| {
+        let text = g.call("node state", j!({ "node": hex(consumer) }))["text"].as_str().unwrap().to_string();
+        text.lines().find(|l| l.contains("common.max_frequency")).unwrap_or("").to_string()
+    };
+    let field = |ev: &mut goofi_tests::Events, what: &str, want: &dyn Fn(&serde_json::Value) -> bool| {
+        g.until(what, |_| {
+            let p = ev.next("state_update");
+            let d = &p["params"]["common"]["max_frequency"];
+            (p["node"] == hex(consumer) && want(d)).then(|| d.clone())
+        })
+    };
+    for bad in ["level", "nosuch.out", "level.nope", "a b.out"] {
+        let why = param(&g, j!({ "reference": bad }))["error"].clone();
+        assert!(why.as_str().is_some_and(|e| !e.is_empty()), "`{bad}` is refused or unresolvable: {why}");
+    }
+    let bound = param(&g, j!({ "reference": "level.out" }));
+    assert!(bound["error"].is_null(), "a reference to a running scalar producer binds: {bound}");
+    let d = field(&mut ev, "the descriptor shows the reference", &|d| d["reference"] == j!("level.out"));
+    assert_eq!((&d["mode"], &d["expression"], &d["error"]),
+               (&j!("reference"), &j!("nd('signal')"), &j!(null)), "{d}");
+    // The value lands with NO evaluator in this process: the runtime copied the frame's one element.
+    g.until("the referenced value lands", |_| {
         let p = ev.next("param_values");
-        (p["node"] == hex(consumer)).then(|| p["values"].clone())
+        (p["node"] == hex(consumer) && p["values"]["common"]["max_frequency"] == j!(0.25)).then_some(())
     });
-    // The EVALUATED value, not the literal — the default is 30.0, which `is_number()` cannot tell apart.
-    assert_eq!(values["common"]["max_frequency"].as_f64(), Some(3.0), "got {values}");
+    // A rename follows into the reference, as it does into an expression.
+    g.call("node edit", j!({ "node": hex(level), "name": "gain" }));
+    field(&mut ev, "the reference followed the rename", &|d| d["reference"] == j!("gain.out"));
+    // A frame with more than one element is a shape error on ARRIVAL, and the literal stands.
+    param(&g, j!({ "reference": "signal.out" }));
+    g.until("the shape error", |g| line(g).contains("one element").then_some(()));
+    // A literal on a driven param switches it to constant; both texts stay retained, and a mode
+    // alone brings the reference back.
+    param(&g, j!({ "value": 7 }));
+    let d = field(&mut ev, "the literal took over", &|d| d["mode"] == j!("constant"));
+    assert_eq!((&d["value"], &d["reference"], &d["expression"]),
+               (&j!(7.0), &j!("signal.out"), &j!("nd('signal')")), "{d}");
+    param(&g, j!({ "mode": "reference", "reference": "gain.out" }));
+    field(&mut ev, "the reference is live again", &|d| d["mode"] == j!("reference") && d["error"].is_null());
+    // A deleted producer leaves the reference standing with its error; undo clears it.
+    g.call("node remove", j!({ "node": hex(level) }));
+    let l = g.until("the producer is gone", |g| Some(line(g)).filter(|l| l.contains("no node named `gain`")));
+    assert!(l.contains("ref: gain.out"), "the reference stands while its producer is gone: {l}");
+    g.call("undo", j!({}));
+    g.until("undo brought the producer back", |g| {
+        let l = line(g);
+        (l.contains("ref: gain.out") && !l.contains("[error")).then_some(())
+    });
 }
 
 #[test]

@@ -138,7 +138,7 @@ pub fn errors(g: &Graph) -> Vec<Value> {
         .collect()
 }
 
-fn param_line(p: &goofi_core::Param, expr: Option<&goofi_graph::ExprInfo>) -> String {
+fn param_line(p: &goofi_core::Param, source: Option<&goofi_graph::SourceInfo>) -> String {
     use goofi_core::Param as P;
     let (value, ty) = match p {
         P::Float { value, vmin, vmax } => (format!("{value}"), format!("float {vmin}..{vmax}")),
@@ -149,14 +149,17 @@ fn param_line(p: &goofi_core::Param, expr: Option<&goofi_graph::ExprInfo>) -> St
         }
         P::Str { value, .. } => (format!("\"{value}\""), "string".to_string()),
     };
-    match expr {
-        Some(e) => format!(
-            "expr: {} → {value} ({}){}",
-            e.source,
-            if e.enabled { "on" } else { "off" },
-            e.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default(),
-        ),
-        None => format!("{value} ({ty})"),
+    let error = |s: &goofi_graph::SourceInfo| {
+        s.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default()
+    };
+    match source {
+        Some(s) if s.mode == goofi_graph::Mode::Expression => {
+            format!("expr: {} → {value}{}", s.expression, error(s))
+        }
+        Some(s) if s.mode == goofi_graph::Mode::Reference => {
+            format!("ref: {} → {value}{}", s.reference, error(s))
+        }
+        _ => format!("{value} ({ty})"),
     }
 }
 
@@ -199,14 +202,14 @@ pub fn node(
         out.push_str("\nparams:\n");
         for (group, names) in g.params(uid).iter().flat_map(|p| p.iter()) {
             for (name, p) in names {
-                let expr = g.param_expression(uid, group, name);
+                let source = g.param_source(uid, group, name);
                 let mut shown = p.clone();
                 if let (goofi_core::Param::Str { options, .. }, Some(live)) =
                     (&mut shown, g.refreshed_options(uid, group, name))
                 {
                     *options = Some(live.to_vec());
                 }
-                out.push_str(&format!("  {group}.{name} = {}\n", param_line(&shown, expr.as_ref())));
+                out.push_str(&format!("  {group}.{name} = {}\n", param_line(&shown, source.as_ref())));
             }
         }
     }

@@ -3,6 +3,8 @@
 use crate::{Graph, Uid};
 use goofi_core::globals::GlobalValue;
 use goofi_core::Param;
+
+use crate::Mode;
 use goofi_node::{param, ParamGroups};
 
 /// What a command produced, for the caller. Kept serde-free so the engine needs no JSON dep.
@@ -17,13 +19,20 @@ pub enum Outcome {
     Nodes(Vec<Uid>),
 }
 
-/// A param's expression binding, as carried by [`Command::EditParam`]. An empty `source` clears the
-/// binding (unbinds back to the literal); a non-empty one (re)binds.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ExprState {
-    pub source: String,
-    pub enabled: bool,
+/// A param's source record as [`Command::EditParam`] carries it: the mode, and the expression and
+/// reference it retains whatever the mode. Nothing retained and a constant mode is no record.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceState {
+    pub mode: Mode,
+    pub expression: String,
+    pub reference: String,
     pub triggers: bool,
+}
+
+impl SourceState {
+    pub fn is_empty(&self) -> bool {
+        self.mode == Mode::Constant && self.expression.is_empty() && self.reference.is_empty()
+    }
 }
 
 /// The captured state to recreate a scope EXACTLY — the inverse of [`Command::Expand`], which
@@ -51,8 +60,8 @@ pub enum Command {
         name: Option<String>,
         /// `Some` restores captured params (a `RemoveNode` inverse); `None` uses the type's defaults.
         params: Option<ParamGroups>,
-        /// Captured expression bindings `(group, name, binding)` to re-apply. Empty for a user add.
-        exprs: Vec<(String, String, ExprState)>,
+        /// Captured source records `(group, name, state)` to re-apply. Empty for a user add.
+        sources: Vec<(String, String, SourceState)>,
         /// Captured viewer view-state blob to restore; `None` for a user add (defaults to empty).
         viewers: Option<serde_json::Value>,
         /// The scope to create the node INSIDE (`None` = ROOT). A PORT's membership rides HERE and
@@ -85,14 +94,14 @@ pub enum Command {
         /// the blob it replaced and a replay cannot half-apply.
         viewers: Option<serde_json::Value>,
     },
-    /// Edit a param — its literal `value` and/or its expression binding. A `None` field is left
+    /// Edit a param — its literal `value` and/or its source record. A `None` field is left
     /// untouched; the inverse restores whichever were set.
     EditParam {
         uid: Uid,
         group: String,
         name: String,
         value: Option<Param>,
-        expr: Option<ExprState>,
+        source: Option<SourceState>,
     },
     /// Add / edit / remove a global: `Some(value)` upserts, `None` removes. `at` is the ordered
     /// slot to re-add at — only a delete's captured inverse carries one, since order is observable.
@@ -232,7 +241,7 @@ impl Command {
                 Ok((out, Command::Compound(inverses)))
             }
 
-            Command::AddNode { type_name, pos, uid, name, params, exprs, viewers, scope } => {
+            Command::AddNode { type_name, pos, uid, name, params, sources, viewers, scope } => {
                 // A peer dissolved the scope this restore names. Tolerated HERE, because a replay
                 // that errors wedges the actor's stack for good; the fresh caller is refused by
                 // this command's precondition instead.
@@ -252,9 +261,9 @@ impl Command {
                     None => g.create_node(&type_name, uid, name.as_deref().unwrap_or(""), params, scope)?,
                 };
                 let _ = g.set_node_pos(u, pos);
-                // Re-apply captured expression bindings and viewer state; a user add carries none.
-                for (group, name, e) in &exprs {
-                    let _ = g.set_expression(u, group, name, &e.source, e.enabled, e.triggers);
+                // Re-apply captured source records and viewer state; a user add carries none.
+                for (group, name, s) in &sources {
+                    let _ = g.set_source(u, group, name, s.clone());
                 }
                 if let Some(v) = viewers {
                     let _ = g.set_node_viewers(u, v);
@@ -370,7 +379,7 @@ impl Command {
                 Ok((out, Command::EditNode { uid, name: inv_name, pos: old_pos, viewers: old_viewers }))
             }
 
-            Command::EditParam { uid, group, name, value, expr } => {
+            Command::EditParam { uid, group, name, value, source } => {
                 if !g.contains(uid) {
                     return Ok((Outcome::Ok, Command::Compound(vec![]))); // idempotent: node gone
                 }
@@ -382,23 +391,21 @@ impl Command {
                     ),
                     None => None,
                 };
-                // Captured when the caller names an `expr`, and ALSO for a bare literal over a
-                // bound param, since §3.4 makes a literal write an unbind the inverse owes back.
-                let bound = g.param_expression(uid, &group, &name);
-                let old_expr = (expr.is_some() || (value.is_some() && bound.is_some())).then(|| {
-                    bound
-                        .map(|e| ExprState { source: e.source, enabled: e.enabled, triggers: e.triggers_process })
-                        .unwrap_or(ExprState { source: String::new(), enabled: false, triggers: false })
-                });
-                // Literal FIRST, then binding, and the order is load-bearing: §3.4 makes a literal
-                // write an UNBIND, so an `EditParam` carrying both would bind and then undo it.
+                // Captured when the caller names a source, and ALSO for a bare literal over a driven
+                // param, since a literal write switches the mode the inverse owes back.
+                let held = g.source_state_of(uid, &group, &name);
+                let driven = held.as_ref().is_some_and(|s| s.mode != Mode::Constant);
+                let old_source =
+                    (source.is_some() || (value.is_some() && driven)).then(|| held.unwrap_or_default());
+                // Literal FIRST, then source, and the order is load-bearing: a literal write switches
+                // the mode to constant, so an `EditParam` carrying both would set and then undo it.
                 if let Some(v) = value {
                     g.update_param(uid, &group, &name, v)?;
                 }
-                if let Some(e) = &expr {
-                    g.set_expression(uid, &group, &name, &e.source, e.enabled, e.triggers)?;
+                if let Some(s) = &source {
+                    g.set_source(uid, &group, &name, s.clone())?;
                 }
-                Ok((Outcome::Ok, Command::EditParam { uid, group, name, value: old_value, expr: old_expr }))
+                Ok((Outcome::Ok, Command::EditParam { uid, group, name, value: old_value, source: old_source }))
             }
 
             Command::EditGlobal { name, value, at } => {
@@ -550,7 +557,7 @@ impl Command {
                         uid: Some(id),
                         name: g.name(id).map(str::to_string),
                         params: None,
-                        exprs: vec![],
+                        sources: vec![],
                         viewers: g.viewers(id).cloned(),
                         scope: Some(scope),
                     })
@@ -788,20 +795,14 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     // state its kind carries — a leaf's params and expression bindings, and everyone's viewers.
     // Membership is restored by the `SetScope` children below, not here — see the field's doc.
     for &u in members.iter().chain(&ports) {
-        let exprs = g
-            .param_bindings(u)
-            .into_iter()
-            .map(|(group, name, source, enabled, triggers)| {
-                (group, name, ExprState { source, enabled, triggers })
-            })
-            .collect();
+        let sources = g.param_sources(u);
         cmds.push(Command::AddNode {
             type_name: g.node_type(u).unwrap_or("").to_string(),
             pos: g.pos(u).unwrap_or([0.0, 0.0]),
             uid: Some(u),
             name: g.name(u).map(str::to_string),
             params: g.params(u).map(|p| (*p).clone()),
-            exprs,
+            sources,
             viewers: g.viewers(u).filter(|v| v.as_object().is_some_and(|m| !m.is_empty())).cloned(),
             scope: g.stub(u).map(|(s, _)| s),
         });
