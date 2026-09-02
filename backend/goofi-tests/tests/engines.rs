@@ -12,19 +12,16 @@ use goofi_node::{
     BoundVar, DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
     OutputDecl, ParamGroups, Request, SlotDecl, Status, Touched, Uid,
 };
-use goofi_tests::{f32s, hex, j, shape, Goofi};
+use goofi_tests::{ep, f32s, hex, j, shape, Goofi};
 
 static AUDIO_OUTS: &[OutputDecl] = &[
-    OutputDecl { name: "out", kind: SlotType::Array },
+    OutputDecl { name: "out", kind: SlotType::Audio },
     OutputDecl { name: "echo", kind: SlotType::Array },
 ];
-static AUDIO_INS: &[SlotDecl] = &[SlotDecl {
-    name: "input",
-    kind: SlotType::Array,
-    trigger_process: false,
-    multi: false,
-    required: false,
-}];
+static AUDIO_INS: &[SlotDecl] = &[
+    SlotDecl { name: "input", kind: SlotType::Array, trigger_process: false, multi: false, required: false },
+    SlotDecl { name: "audio", kind: SlotType::Audio, trigger_process: false, multi: false, required: false },
+];
 static AUDIO: NodeManifest = NodeManifest {
     type_name: "SkelAudioOsc",
     category: "audio",
@@ -423,13 +420,17 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let t = Goofi::new();
     register_skeletons(&t);
 
-    // Step: both libraries join the ONE palette, beside the signal catalog.
+    // Step: both libraries join the ONE palette, beside the signal catalog, and an audio slot
+    // is a kind the palette spells.
     let types = t.call("library list", j!({}));
     let names: Vec<&str> =
         types["types"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
-    for want in ["SkelAudioOsc", "SkelGfxFrame", "Oscillator"] {
+    for want in ["SkelAudioOsc", "SkelGfxFrame", "Oscillator", "InAudio", "OutAudio"] {
         assert!(names.contains(&want), "`{want}` is missing from the merged palette: {names:?}");
     }
+    let skel = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "SkelAudioOsc").unwrap();
+    assert_eq!(skel["output_slots"]["out"], "AUDIO", "{skel}");
+    assert_eq!(skel["input_slots"]["audio"], "AUDIO", "{skel}");
 
     // Step: a skeleton node is born through the one op surface and reports ready through the
     // one health plane.
@@ -443,6 +444,38 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let block = audio_probe.expect_frame(&mut t.state.graph.lock().unwrap(), "the audio block");
     assert_eq!(f32s(&block)[0], 0.25, "the static block, decoded off the shared transport");
     assert_eq!(f32s(&block).len(), 64);
+
+    // Step: an audio output feeds an audio input, or an ARRAY input through the tap; nothing but
+    // audio feeds an audio input, and the refusal names both kinds.
+    let other = t.add("SkelAudioOsc");
+    t.link(audio, "out", other, "audio");
+    let refused = t.refuse("link add", j!({ "from": ep(hex(audio), "echo"), "to": ep(hex(other), "audio") }));
+    assert!(refused.contains("ARRAY") && refused.contains("AUDIO"), "{refused}");
+
+    // Step: an audio port is a node like any other — born in a sub-patch, wired on both faces,
+    // relaying audio in and audio out — and the archive brings the whole arrangement back.
+    let inst = t.call("nodes group", j!({ "nodes": [hex(other)], "pos": [0.0, 0.0] }))["inst_id"]
+        .as_str().unwrap().to_string();
+    let port_in = t.call("node add", j!({ "type": "InAudio", "inst_id": inst, "pos": [0.0, 0.0] }))["uid"]
+        .as_str().unwrap().to_string();
+    let port_out = t.call("node add", j!({ "type": "OutAudio", "inst_id": inst, "pos": [0.0, 0.0] }))["uid"]
+        .as_str().unwrap().to_string();
+    t.call("link add", j!({ "from": ep(&port_in, "value"), "to": ep(hex(other), "audio") }));
+    t.call("link add", j!({ "from": ep(hex(other), "out"), "to": ep(&port_out, "value") }));
+    t.call("link add", j!({ "from": ep(hex(audio), "out"), "to": ep(&port_in, "value") }));
+    let archive = tempfile::tempdir().unwrap();
+    let path = archive.path().join("audio-ports.gfi");
+    t.call("session save", j!({ "path": path.to_string_lossy() }));
+    let again = Goofi::new();
+    register_skeletons(&again);
+    again.call("session load", j!({ "path": path.to_string_lossy() }));
+    let doc = again.doc();
+    for (uid, ty) in [(&port_in, "InAudio"), (&port_out, "OutAudio")] {
+        assert_eq!(doc["nodes"][uid]["type"], ty, "the port is back at its uid: {doc}");
+    }
+    assert_eq!(doc["nodes"][&port_in]["scope"], inst, "…in the sub-patch it is a port of");
+    drop(again);
+    t.call("node remove", j!({ "node": inst }));
 
     // Step: skeleton → signal. The signal consumer subscribes to the derived name and the
     // skeleton rings its slot doorbell, so data crosses without a protocol.

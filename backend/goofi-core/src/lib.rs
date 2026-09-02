@@ -568,6 +568,9 @@ pub enum SlotType {
     Array,
     String,
     Table,
+    /// Audio-rate planar samples that never cross the wire: an audio output feeds an audio input
+    /// in its engine, or an ARRAY input through the engine's tap, and nothing feeds it but audio.
+    Audio,
 }
 
 impl SlotType {
@@ -577,13 +580,21 @@ impl SlotType {
             SlotType::Array => "ARRAY",
             SlotType::String => "STRING",
             SlotType::Table => "TABLE",
+            SlotType::Audio => "AUDIO",
         }
     }
+    /// Whether an output of this kind may feed an input of `into`: the same kind, or audio into
+    /// an array, which the audio engine's tap turns into `[C, T]` frames.
+    pub fn feeds(self, into: SlotType) -> bool {
+        self == into || (self == SlotType::Audio && into == SlotType::Array)
+    }
+
     pub fn from_name(name: &str) -> Option<SlotType> {
         match name {
             "ARRAY" => Some(SlotType::Array),
             "STRING" => Some(SlotType::String),
             "TABLE" => Some(SlotType::Table),
+            "AUDIO" => Some(SlotType::Audio),
             _ => None,
         }
     }

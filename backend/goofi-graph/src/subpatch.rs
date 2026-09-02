@@ -40,9 +40,11 @@ pub const BOUNDARY_TYPES: &[(&str, Dir, SlotType)] = &[
     ("InArray", Dir::In, SlotType::Array),
     ("InString", Dir::In, SlotType::String),
     ("InTable", Dir::In, SlotType::Table),
+    ("InAudio", Dir::In, SlotType::Audio),
     ("OutArray", Dir::Out, SlotType::Array),
     ("OutString", Dir::Out, SlotType::String),
     ("OutTable", Dir::Out, SlotType::Table),
+    ("OutAudio", Dir::Out, SlotType::Audio),
 ];
 
 /// The `(dir, dtype)` a boundary type name stands for, or `None` for any other type.

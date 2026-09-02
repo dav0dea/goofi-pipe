@@ -159,6 +159,7 @@
 	--dtype-array: #50d0a0;
 	--dtype-string: #f0c050;
 	--dtype-table: #e08060;
+	--dtype-audio: #c080f0;
 
 	/* Syntax highlighting for the param expression editor (X, D-X2). The ONE place in the app where
 	   the reduced-saliency brief deliberately does not apply: code is scanned by colour, and a muted

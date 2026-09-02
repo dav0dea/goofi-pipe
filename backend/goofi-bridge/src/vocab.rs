@@ -178,7 +178,7 @@ pub fn typescript() -> String {
          \treadonly id: ViewerKind;\n\
          \t/** The slot dtype this kind serves. A non-ARRAY dtype PINS its kind: a STRING slot is\n\
          \t * always drawn by the string viewer, whatever kind was stored. */\n\
-         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE';\n\
+         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';\n\
          \t/** The dimension range the component actually renders — null for a pinned kind. */\n\
          \treadonly draws: readonly [number, number] | null;\n\
          \t/** The dimension range its ViewSpec declares compatible: equal or wider than `draws`,\n\
@@ -202,7 +202,7 @@ pub fn typescript() -> String {
          \treadonly type: string;\n\
          \t/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */\n\
          \treadonly dir: 'in' | 'out';\n\
-         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE';\n\
+         \treadonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';\n\
          }}\n\
          \n\
          /** The six boundary port types: a port's direction and dtype ARE its type. */\n\

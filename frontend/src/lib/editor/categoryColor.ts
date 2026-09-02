@@ -7,6 +7,8 @@ export function dtypeColor(dtype: string | undefined | null): string {
 			return 'var(--dtype-string)';
 		case 'TABLE':
 			return 'var(--dtype-table)';
+		case 'AUDIO':
+			return 'var(--dtype-audio)';
 		default:
 			return 'var(--text-muted)';
 	}

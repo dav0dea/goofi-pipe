@@ -42,7 +42,7 @@ export interface ViewerKindInfo {
 	readonly id: ViewerKind;
 	/** The slot dtype this kind serves. A non-ARRAY dtype PINS its kind: a STRING slot is
 	 * always drawn by the string viewer, whatever kind was stored. */
-	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE';
+	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
 	/** The dimension range the component actually renders — null for a pinned kind. */
 	readonly draws: readonly [number, number] | null;
 	/** The dimension range its ViewSpec declares compatible: equal or wider than `draws`,
@@ -82,7 +82,7 @@ export interface BoundaryTypeInfo {
 	readonly type: string;
 	/** An `in` port FEEDS the sub-patch, so it wears an output and is a link's SOURCE. */
 	readonly dir: 'in' | 'out';
-	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE';
+	readonly dtype: 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
 }
 
 /** The six boundary port types: a port's direction and dtype ARE its type. */
@@ -90,9 +90,11 @@ export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [
 	{ type: 'InArray', dir: 'in', dtype: 'ARRAY' },
 	{ type: 'InString', dir: 'in', dtype: 'STRING' },
 	{ type: 'InTable', dir: 'in', dtype: 'TABLE' },
+	{ type: 'InAudio', dir: 'in', dtype: 'AUDIO' },
 	{ type: 'OutArray', dir: 'out', dtype: 'ARRAY' },
 	{ type: 'OutString', dir: 'out', dtype: 'STRING' },
 	{ type: 'OutTable', dir: 'out', dtype: 'TABLE' },
+	{ type: 'OutAudio', dir: 'out', dtype: 'AUDIO' },
 ];
 
 export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>

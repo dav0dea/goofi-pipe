@@ -2455,7 +2455,7 @@ impl Graph {
         }
         // A cross-dtype cable can never carry data — the consumer reads with the wrong accessor and
         // sits empty forever. Refused here, the one door every link authoring path goes through.
-        if out.kind != inp.kind {
+        if !out.kind.feeds(inp.kind) {
             let label = |uid: Uid, slot: &str| {
                 format!("{}.{slot}", self.name(uid).unwrap_or("?"))
             };

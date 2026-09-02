@@ -118,7 +118,7 @@ impl SignalEngine {
         if !self.rust_loaded.contains_key(artifact) {
             let opened = goofi_build::open(artifact)?;
             let intro = goofi_node::parse_introspection(&opened.describe)?;
-            if let Some(reason) = goofi_node::illegal_slot(&intro) {
+            if let Some(reason) = goofi_node::illegal_slot(&intro).or_else(|| audio_slot(&intro)) {
                 return Err(reason);
             }
             let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro, "signal");
@@ -217,6 +217,17 @@ fn routed(
 ) -> (&'static goofi_node::NodeManifest, goofi_signal_sdk::NodeFactory, &'static goofi_node::IsolationCell) {
     let t = goofi_python::subproc::node_type_from(subproc, d);
     (t.manifest, t.factory, t.isolation)
+}
+
+/// A signal node carries no audio slot: that kind is the audio engine's, and its folder decides.
+fn audio_slot(intro: &goofi_core::probe::Introspection) -> Option<String> {
+    intro
+        .inputs
+        .iter()
+        .map(|s| (&s.name, &s.kind))
+        .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
+        .find(|(_, kind)| kind.as_str() == "AUDIO")
+        .map(|(name, _)| format!("slot `{name}` is audio — an audio node lives in nodes_audio/"))
 }
 
 fn stamp(path: &Path) -> Option<Stamp> {

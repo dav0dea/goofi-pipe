@@ -240,6 +240,26 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     g.until("the doomed instance to be gone", |g| (g.state.graph.lock().unwrap().node_count() == 1).then_some(()));
     assert!(g.call("library list", j!({}))["types"].as_array().is_some(), "the server answers after the drop");
 
+    // An audio slot belongs to the audio engine's folder: a signal node that declares one is
+    // greyed out with the folder named, never registered.
+    std::fs::write(
+        mount.join("nodes_signal").join("Loud.rs"),
+        "use goofi_core::SlotType;\n\
+         use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, Params};\n\
+         #[derive(Default)]\nstruct Loud;\n\
+         impl Node for Loud {\n    \
+         fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult { Ok(()) }\n}\n\
+         static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
+         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"claims an audio slot\", inputs: &[], outputs: OUTS, params: &[], producer: true };\n\
+         goofi_signal_sdk::export!(Loud, MANIFEST);\n",
+    )
+    .unwrap();
+    rescan(&g);
+    let loud = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "Loud").cloned().expect("listed, greyed");
+    assert_eq!(loud["available"], false, "{loud}");
+    assert!(loud["missing_deps"].to_string().contains("nodes_audio"), "{loud}");
+
     // A shipped file copied into the patch shadows it, and the palette says so.
     std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();
     assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("Oscillator")));
