@@ -92,6 +92,37 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			await expect(pane(page), 'a single selection opens the inspector').toHaveClass(/open/);
 		});
 
+		await test.step('a reference is picked by finger: the mode chip, then the node, then its slot', async () => {
+			const lfo = await addNode(page, 'Oscillator', [40, 260]);
+			await waitForNode(page, lfo);
+			const nameOf = (u: string): Promise<string> =>
+				page.evaluate(
+					(uid) => (window as any).goofi.query.graph().nodes.find((n: { uid: string }) => n.uid === uid)?.name,
+					u
+				);
+			const lfoName = await nameOf(lfo);
+			await tapNode(page, osc);
+			await expect(pane(page)).toHaveClass(/open/);
+			const field = pane(page).getByTestId('param-field-frequency');
+			await field.getByTestId('param-mode-reference').tap();
+			await field.getByTestId('param-ref-node').tap();
+			const option = page.locator('.cm-tooltip-autocomplete [role="option"]', { hasText: lfoName });
+			await expect(option, 'the list opens on focus and names the producer').toBeVisible();
+			await option.tap();
+			await expect
+				.poll(
+					() =>
+						page.evaluate(
+							(u) =>
+								(window as any).goofi.query.graph().nodes.find((n: { uid: string }) => n.uid === u)?.params
+									.oscillator.frequency.reference,
+							osc
+						),
+					{ message: 'the producer has one output, so the pair committed as node.slot' }
+				)
+				.toBe(`${lfoName}.out`);
+		});
+
 		await test.step('a long press on a control tells what it does, and does NOT do it', async () => {
 			// The other half of the hover door: a desktop learns a control's name by hovering it, and a
 			// finger has to be able to ask without also pressing. Named by test id rather than by

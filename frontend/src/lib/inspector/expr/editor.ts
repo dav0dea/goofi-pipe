@@ -1,10 +1,17 @@
-/** The mounted expression editor, and the root of the lazy CodeMirror chunk. One editor in two modes:
- *  the mode changes only whether the document may hold more than one line and what Enter/Escape do. */
+/** The mounted expression editor and the reference picker — one lazy CodeMirror chunk, two
+ *  configurations of it: a Python expression with goofi's completions, and a bare picker whose only
+ *  completions are the names it is handed. */
 import { EditorState, Prec, type Extension } from '@codemirror/state';
 import { EditorView, keymap, placeholder, tooltips, type KeyBinding } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import { python } from '@codemirror/lang-python';
-import { acceptCompletion, autocompletion, closeCompletion } from '@codemirror/autocomplete';
+import {
+	acceptCompletion,
+	autocompletion,
+	closeCompletion,
+	startCompletion,
+	type CompletionSource
+} from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { setDiagnostics } from '@codemirror/lint';
 import { MARGIN, overlayViewport } from 'panelty';
@@ -13,19 +20,26 @@ import { expressionDiagnostics } from './diagnostics';
 import { singleLineExpression } from './singleLine';
 import { exprHighlight, exprTheme } from './theme';
 import type { ExprCatalogue } from './catalogue';
+import type { PickerOption } from './refs';
 
 export interface ExprEditorOptions {
 	doc: string;
-	/** Expanded mode: newlines allowed, ⌘/Ctrl+Enter commits, Escape cancels. */
-	multiline: boolean;
 	/** Read at the moment a completion is asked for. */
 	catalogue: () => ExprCatalogue;
-	/** Enter (inline) / ⌘-Enter (expanded) / blur with a changed document. */
+	/** Enter, or blur with a changed document. */
 	onCommit: (value: string) => void;
-	/** Escape in expanded mode, with no completion popup to close first. */
-	onCancel: () => void;
 	/** The backend's last compile/eval failure for this param, or null. */
 	error: string | null;
+	placeholder?: string;
+	attributes: Record<string, string>;
+}
+
+export interface PickerOptions {
+	doc: string;
+	/** Read at the moment a completion is asked for; what is typed filters it. */
+	options: () => PickerOption[];
+	/** A pick from the list, Enter, or blur with a changed document. */
+	onCommit: (value: string) => void;
 	placeholder?: string;
 	attributes: Record<string, string>;
 }
@@ -40,36 +54,67 @@ export interface ExprEditorHandle {
 	destroy(): void;
 }
 
-export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): ExprEditorHandle {
-	/** The last value this editor and the backend agree on. */
-	let committed = opts.doc;
+/* Parented to `document.body` because an inspector panel clips its overflow, and sized against
+   `overlayViewport()` — CodeMirror's default `innerHeight` would park the list under the keyboard. */
+const popup = (): Extension =>
+	tooltips({
+		parent: document.body,
+		position: 'fixed',
+		tooltipSpace: () => {
+			const vp = overlayViewport();
+			return { top: MARGIN, left: MARGIN, bottom: vp.height - MARGIN, right: vp.width - MARGIN };
+		}
+	});
 
+/** The commit-on-change discipline both editors share: one committed value, compared before each send. */
+function committer(doc: string, onCommit: (value: string) => void): (view: EditorView) => void {
+	let committed = doc;
 	const commit = (view: EditorView): void => {
 		const next = view.state.doc.toString();
 		if (next === committed) return;
 		committed = next;
-		opts.onCommit(next);
+		onCommit(next);
 	};
+	(commit as { adopt?: (next: string) => void }).adopt = (next) => (committed = next);
+	return commit;
+}
 
-	/* Escape must fall THROUGH in the inline field once there is no popup: it is the app's there, and
-	   it dismisses the auto inspector pane. */
-	const keys: KeyBinding[] = [
-		{
-			key: 'Escape',
-			run: (view) => {
-				if (closeCompletion(view)) return true;
-				if (!opts.multiline) return false;
-				opts.onCancel();
-				return true;
+function handleFor(
+	view: EditorView,
+	commit: (view: EditorView) => void,
+	setError: (error: string | null) => void
+): ExprEditorHandle {
+	const adopt = (commit as { adopt?: (next: string) => void }).adopt ?? (() => {});
+	return {
+		commit: () => commit(view),
+		setValue: (next) => {
+			if (next === view.state.doc.toString()) {
+				adopt(next);
+				return;
 			}
-		}
-	];
-	if (opts.multiline) {
-		keys.push({ key: 'Mod-Enter', run: (view) => (commit(view), true) });
-	} else {
-		keys.push({ key: 'Enter', run: (view) => acceptCompletion(view) || (commit(view), true) });
-	}
+			// A live echo must not yank the document from under live typing; the committed value is
+			// left alone, so the local text still commits on blur.
+			if (view.hasFocus) return;
+			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+			adopt(next);
+		},
+		setError,
+		focus: () => {
+			view.focus();
+			view.dispatch({ selection: { anchor: view.state.doc.length } });
+		},
+		destroy: () => view.destroy()
+	};
+}
 
+export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): ExprEditorHandle {
+	const commit = committer(opts.doc, opts.onCommit);
+	/* Escape must fall THROUGH once there is no popup: it is the app's, and it dismisses the auto
+	   inspector pane. */
+	const keys: KeyBinding[] = [
+		{ key: 'Escape', run: (view) => closeCompletion(view) },
+		{ key: 'Enter', run: (view) => acceptCompletion(view) || (commit(view), true) }
+	];
 	const extensions: Extension[] = [
 		python(),
 		goofiLanguageData(opts.catalogue),
@@ -77,62 +122,73 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 		autocompletion(),
 		history(),
 		exprTheme,
-		/* Parented to `document.body` because an inspector panel clips its overflow, and sized against
-		   `overlayViewport()` — CodeMirror's default `innerHeight` would park the list under the keyboard. */
-		tooltips({
-			parent: document.body,
-			position: 'fixed',
-			tooltipSpace: () => {
-				const vp = overlayViewport();
-				return {
-					top: MARGIN,
-					left: MARGIN,
-					bottom: vp.height - MARGIN,
-					right: vp.width - MARGIN
-				};
-			}
-		}),
+		popup(),
 		EditorView.contentAttributes.of(opts.attributes),
 		Prec.high(keymap.of(keys)),
 		keymap.of([...historyKeymap, ...defaultKeymap]),
 		EditorView.domEventHandlers({
 			// The completion popup does not blur the editor, so accepting an option never races this.
 			blur: (_e, view) => {
-				if (!opts.multiline) commit(view);
+				commit(view);
 				return false;
 			}
-		})
+		}),
+		singleLineExpression
 	];
 	if (opts.placeholder) extensions.push(placeholder(opts.placeholder));
-	if (!opts.multiline) extensions.push(singleLineExpression);
-
-	const view = new EditorView({
-		state: EditorState.create({ doc: opts.doc, extensions }),
-		parent: host
-	});
+	const view = new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
 	const showError = (error: string | null): void => {
 		view.dispatch(setDiagnostics(view.state, expressionDiagnostics(error, view.state.doc)));
 	};
 	showError(opts.error);
+	return handleFor(view, commit, showError);
+}
 
-	return {
-		commit: () => commit(view),
-		setValue: (next) => {
-			if (next === view.state.doc.toString()) {
-				committed = next;
-				return;
-			}
-			// A live echo must not yank the document from under live typing; `committed` is left alone, so
-			// the local text still commits on blur.
-			if (view.hasFocus) return;
-			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
-			committed = next;
-		},
-		setError: showError,
-		focus: () => {
-			view.focus();
-			view.dispatch({ selection: { anchor: view.state.doc.length } });
-		},
-		destroy: () => view.destroy()
+/** A field whose only legal contents are the names it is handed: no language, no highlighting, the
+ *  list opens on focus, what is typed filters it, and a pick commits at once. */
+export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditorHandle {
+	const commit = committer(opts.doc, opts.onCommit);
+	const source: CompletionSource = (ctx) => {
+		const typed = ctx.state.doc.toString().toLowerCase();
+		const options = opts
+			.options()
+			.filter((o) => o.label.toLowerCase().includes(typed))
+			.map((o) => ({
+				label: o.label,
+				detail: o.detail,
+				type: 'variable',
+				apply: (view: EditorView) => {
+					view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: o.label } });
+					commit(view);
+				}
+			}));
+		return options.length ? { from: 0, to: ctx.state.doc.length, options, filter: false } : null;
 	};
+	const keys: KeyBinding[] = [
+		{ key: 'Escape', run: (view) => closeCompletion(view) },
+		{ key: 'Enter', run: (view) => acceptCompletion(view) || (commit(view), true) }
+	];
+	const extensions: Extension[] = [
+		autocompletion({ override: [source], activateOnTyping: true }),
+		history(),
+		exprTheme,
+		popup(),
+		EditorView.contentAttributes.of(opts.attributes),
+		Prec.high(keymap.of(keys)),
+		keymap.of([...historyKeymap, ...defaultKeymap]),
+		EditorView.domEventHandlers({
+			focus: (_e, view) => {
+				startCompletion(view);
+				return false;
+			},
+			blur: (_e, view) => {
+				commit(view);
+				return false;
+			}
+		}),
+		singleLineExpression
+	];
+	if (opts.placeholder) extensions.push(placeholder(opts.placeholder));
+	const view = new EditorView({ state: EditorState.create({ doc: opts.doc, extensions }), parent: host });
+	return handleFor(view, commit, () => {});
 }

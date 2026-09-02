@@ -126,19 +126,16 @@ test.describe('the control socket', () => {
 					.toBeCloseTo(0.42, 5);
 			});
 
-			await test.step('an expression carries its flags across, not only its source', async () => {
+			await test.step('an expression carries its mode across, not only its text', async () => {
 				await page.evaluate(
-					(u) =>
-						(window as any).goofi.commands.setExpression(u, 'oscillator', 'frequency', '2 * 3', {
-							enabled: true
-						}),
+					(u) => (window as any).goofi.commands.setSource(u, 'oscillator', 'frequency', { expression: '2 * 3' }),
 					osc
 				);
 				await expect
-					.poll(async () => (await backendDoc(page)).nodes[osc].params.oscillator.frequency.expr?.source)
+					.poll(async () => (await backendDoc(page)).nodes[osc].params.oscillator.frequency.expr)
 					.toBe('2 * 3');
-				const expr = (await backendDoc(page)).nodes[osc].params.oscillator.frequency.expr;
-				expect(expr.enabled, 'the flag rode with the source').toBe(true);
+				const param = (await backendDoc(page)).nodes[osc].params.oscillator.frequency;
+				expect(param.mode, 'the mode rode with the text').toBe('expression');
 			});
 
 			await test.step('a global is patch state, and lands the same way', async () => {

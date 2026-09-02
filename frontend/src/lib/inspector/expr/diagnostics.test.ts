@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Text } from '@codemirror/state';
 import { expressionDiagnostics } from './diagnostics';
 
-/* D-X3: the backend's `expression_error` becomes an inline diagnostic. The only judgement in the
+/* D-X3: the backend's `error` becomes an inline diagnostic. The only judgement in the
  * mapping is WHERE, and the rule is that the message decides: a Python SyntaxError carries
  * `line N`, so anchor there; anything else (a KeyError, the nd() ambiguity raise) carries no
  * position at all, so span the whole document. Never guess a narrower range than the message

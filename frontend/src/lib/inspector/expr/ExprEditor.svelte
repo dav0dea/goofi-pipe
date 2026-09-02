@@ -1,72 +1,68 @@
 <!--
-  ExprEditor — the param expression surface, in one of two modes. It reads the graph store, so it lives
-  here and never in `$lib/ui`, which must stay a leaf layer.
+  ExprEditor — the param source surface, in one of two configurations: a Python expression with
+  goofi's completions, or — given `picker` — a bare field whose only legal contents are the names
+  the picker hands it. It reads the graph store, so it lives here and never in `$lib/ui`, which
+  must stay a leaf layer.
 -->
 <script lang="ts">
 	import { loadExprEditor } from './load';
 	import type { ExprEditorHandle } from './editor';
 	import { liveCatalogue } from './catalogue';
+	import type { PickerOption } from './refs';
 
 	let {
 		value,
-		multiline = false,
 		error = null,
 		onCommit,
-		onCancel = () => {},
 		label,
 		placeholder = '',
 		testid,
-		autofocus = false,
 		selfName,
-		bindCommit
+		picker,
+		disabled = false
 	}: {
 		value: string;
-		multiline?: boolean;
 		error?: string | null;
 		onCommit: (value: string) => void;
-		onCancel?: () => void;
 		/** The editable element's accessible name. */
 		label: string;
 		placeholder?: string;
 		/** Lands on the editable element. */
 		testid: string;
-		autofocus?: boolean;
 		/** The edited node's display name — what `me` completes against. */
 		selfName?: string;
-		/** Hands the owner a commit-now function (and `null` on teardown). */
-		bindCommit?: (commit: (() => void) | null) => void;
+		/** The picker configuration: the names offered, read at the moment the list opens. */
+		picker?: () => PickerOption[];
+		disabled?: boolean;
 	} = $props();
 
 	let host = $state<HTMLDivElement | null>(null);
 	let handle = $state<ExprEditorHandle | null>(null);
 
-	/* `multiline` is read SYNCHRONOUSLY so a mode flip rebuilds the editor; everything else is read
-	   inside the `then`, off the tracking pass, so a keystroke echo does not remount it. */
+	/* Everything is read inside the `then`, off the tracking pass, so a keystroke echo does not
+	   remount the editor. */
 	$effect(() => {
 		const el = host;
-		const mode = multiline;
 		if (!el) return;
 		let live = true;
 		let mounted: ExprEditorHandle | null = null;
 		loadExprEditor().then((mod) => {
 			if (!live) return;
-			mounted = mod.createExprEditor(el, {
-				doc: value,
-				multiline: mode,
-				catalogue: () => ({ ...liveCatalogue(), self: selfName }),
-				onCommit: (v) => onCommit(v),
-				onCancel: () => onCancel(),
-				error,
-				placeholder,
-				attributes: { 'data-testid': testid, 'aria-label': label }
-			});
+			const attributes = { 'data-testid': testid, 'aria-label': label };
+			mounted = picker
+				? mod.createPicker(el, { doc: value, options: picker, onCommit: (v) => onCommit(v), placeholder, attributes })
+				: mod.createExprEditor(el, {
+						doc: value,
+						catalogue: () => ({ ...liveCatalogue(), self: selfName }),
+						onCommit: (v) => onCommit(v),
+						error,
+						placeholder,
+						attributes
+					});
 			handle = mounted;
-			bindCommit?.(() => mounted?.commit());
-			if (autofocus) mounted.focus();
 		});
 		return () => {
 			live = false;
-			bindCommit?.(null);
 			mounted?.destroy();
 			handle = null;
 		};
@@ -81,7 +77,7 @@
 	});
 </script>
 
-<div class="expr-host" class:multi={multiline} bind:this={host}>
+<div class="expr-host" class:disabled bind:this={host} inert={disabled || undefined}>
 	{#if !handle}
 		<!-- The stand-in until the lazy chunk lands: out of flow, so the host's height never depends on it. -->
 		<pre class="stand-in" aria-hidden="true">{value}</pre>
@@ -105,13 +101,8 @@
 		overflow: hidden;
 		tab-size: 4;
 	}
-	.expr-host.multi {
-		min-height: 7rem;
-		resize: vertical;
-		background: var(--surface-2);
-	}
-	.expr-host.multi > :global(.cm-editor) {
-		height: 100%;
+	.expr-host.disabled {
+		opacity: 0.5;
 	}
 	/* Restated because CodeMirror's base theme pins `outline: none` at a specificity app.css cannot reach. */
 	.expr-host:has(:focus-visible) {

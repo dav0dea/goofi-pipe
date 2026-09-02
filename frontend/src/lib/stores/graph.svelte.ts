@@ -32,7 +32,7 @@ import {
 	type GlobalType
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
-import type { StringParam } from '$lib/api/types';
+import type { StringParam, SourcePatch } from '$lib/api/types';
 import type { GraphFragment } from '$lib/editor/clipboard';
 
 /** Safety net: lift a ⟳ spinner after this long when a node never reports the refresh done.
@@ -430,24 +430,13 @@ export class GraphStore {
 		this._refreshing = rest;
 	}
 
-	async setExpression(
-		node: string,
-		group: string,
-		name: string,
-		expression: string | null,
-		opts: { enabled?: boolean; triggers_process?: boolean } = {}
-	): Promise<void> {
+	/** Edit a param's source record: any subset of mode, expression, reference and triggers. A text
+	 * given implies its mode; an empty text clears it. The manager's rules are the op's. */
+	async setSource(node: string, group: string, name: string, source: SourcePatch): Promise<void> {
 		const d = this.nodeById(node)?.params?.[group]?.[name];
 		if (!d) throw new Error(`node param edit: no param ${group}.${name} on node ${node}`);
-		// `expression` is sent even when null: its PRESENCE is what clears a binding.
-		await this.ctl.call('node param edit', {
-			node,
-			param: `${group}/${name}`,
-			expression: expression ?? '',
-			mode: opts.enabled ? 'expression' : 'constant',
-			triggers: opts.triggers_process ?? false
-		});
-		this._recordGraphCmd(`Set ${name} expression`);
+		await this.ctl.call('node param edit', { node, param: `${group}/${name}`, ...source });
+		this._recordGraphCmd(`Set ${name} source`);
 	}
 
 	async setNodePos(uid: string, pos: [number, number]): Promise<void> {
@@ -553,12 +542,10 @@ export class GraphStore {
 			params[group] = {};
 			for (const name of Object.keys(node.params[group])) {
 				const p = node.params[group][name];
-				const pr: NonNullable<RuntimeOverlay['params']>[string][string] = {
-					expression_error: p.expression_error
-				};
+				const pr: NonNullable<RuntimeOverlay['params']>[string][string] = { error: p.error };
 				if (p.type === 'string') pr.options = (p as StringParam).options;
-				// An expression param DISPLAYS its live evaluated value, which never reaches the doc.
-				if (p.expression_enabled) pr.liveValue = p.value;
+				// A driven param DISPLAYS its live evaluated value, which never reaches the doc.
+				if (p.mode !== 'constant') pr.liveValue = p.value;
 				params[group][name] = pr;
 			}
 		}
@@ -580,8 +567,8 @@ export class GraphStore {
 			for (const [name, desc] of Object.entries(names)) {
 				const p = t.params[group]?.[name];
 				if (!p) continue;
-				const d = desc as { expression_error?: string | null; options?: string[] | null };
-				(p as { expression_error: string | null }).expression_error = d.expression_error ?? null;
+				const d = desc as { error?: string | null; options?: string[] | null };
+				(p as { error: string | null }).error = d.error ?? null;
 				if (p.type === 'string') (p as StringParam).options = d.options ?? null;
 			}
 		}

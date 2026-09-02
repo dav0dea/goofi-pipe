@@ -1,17 +1,30 @@
 /** Wire shapes for parameter descriptors as the bridge emits them. */
 
+/** The one active source of a param's value. */
+export type ParamMode = 'constant' | 'expression' | 'reference';
+
+/** What `node param edit` takes beside a value: any subset, and a text given implies its mode. */
+export interface SourcePatch {
+	mode?: ParamMode;
+	expression?: string;
+	reference?: string;
+	triggers?: boolean;
+}
+
 export interface BaseParam {
 	value: unknown;
 	doc: string | null;
 	/** True when the node declared a refresh method for this param. */
 	refreshable: boolean;
-	/** The source of a bound expression; it survives a toggle-off of `expression_enabled`. */
+	mode: ParamMode;
+	/** The retained expression text, whatever the mode; null when there is none. */
 	expression: string | null;
-	expression_enabled: boolean;
-	/** When true, a re-eval that changes the value wakes the node's `process()`. */
-	expression_triggers_process: boolean;
-	/** The last evaluation/compile error for this expression, or null. */
-	expression_error: string | null;
+	/** The retained `node.slot`, whatever the mode; null when there is none. */
+	reference: string | null;
+	/** When true, an arrival that changes the value wakes the node's `process()`. */
+	triggers: boolean;
+	/** The active source's bind, compile or arrival error, or null. */
+	error: string | null;
 }
 
 export interface FloatParam extends BaseParam {

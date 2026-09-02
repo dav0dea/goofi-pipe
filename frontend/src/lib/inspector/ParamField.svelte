@@ -1,33 +1,21 @@
 <!--
-  ParamField — one inspector field, its control region chosen by `controlKind(descriptor)`, with the fx
-  expression binding on every field. `vmin/vmax` are SOFT bounds: they scope only the Slider's track,
-  and the NumberInput beside it commits what is typed.
+  ParamField — one inspector field, its control region chosen by `controlKind(descriptor)`, with the
+  three-way source toggle on every field: constant, expression, reference. `vmin/vmax` are SOFT
+  bounds: they scope only the Slider's track, and the NumberInput beside it commits what is typed.
 -->
 <script lang="ts">
-	import { tick } from 'svelte';
 	import type { HTMLAttributes } from 'svelte/elements';
-	import type { ParamDescriptor } from '$lib/api/types';
-	import {
-		Field,
-		Slider,
-		NumberInput,
-		Toggle,
-		Select,
-		TextInput,
-		Icon,
-		IconButton,
-		Chip,
-		type BadgeTone
-	} from '$lib/ui';
+	import type { ParamDescriptor, ParamMode, SourcePatch } from '$lib/api/types';
+	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Icon, Chip, type BadgeTone } from '$lib/ui';
 	import { controlKind } from './controlKind';
 	import ExprEditor from './expr/ExprEditor.svelte';
-	import { ui } from '$lib/stores/ui.svelte';
+	import RefPicker from './RefPicker.svelte';
 
 	let {
 		paramName,
 		descriptor,
 		onCommit,
-		onSetExpression,
+		onSetSource,
 		onRefresh,
 		refreshing = false,
 		selfName,
@@ -37,10 +25,7 @@
 		paramName: string;
 		descriptor: ParamDescriptor;
 		onCommit: (value: unknown) => void;
-		onSetExpression: (
-			expression: string | null,
-			opts?: { enabled?: boolean; triggers_process?: boolean }
-		) => void;
+		onSetSource: (source: SourcePatch) => void;
 		onRefresh?: () => void;
 		refreshing?: boolean;
 		/** The node's display name, handed to the expression editor as `me`. */
@@ -58,42 +43,20 @@
 
 	const options = $derived(descriptor.type === 'string' ? (descriptor.options ?? []) : []);
 
-	const fxActive = $derived(descriptor.expression_enabled);
-	const fxTone = $derived<BadgeTone>(
-		descriptor.expression_error ? 'danger' : fxActive ? 'accent' : 'neutral'
-	);
-
-	let multilineOpen = $state(false);
-	// The expanded editor OWNS its text, so `apply` asks it to commit rather than reading a mirror.
-	let applyExpanded = $state<(() => void) | null>(null);
-	let fxRegionEl = $state<HTMLDivElement | null>(null);
-
-	// A stable per-field id, so the global standdown below is ref-counted rather than a shared boolean.
-	const editorId = $props.id();
-
-	// Leaving expression mode with the editor open must re-run the standdown effect below, so its
-	// cleanup fires instead of stranding `multilineOpen` on an unmounted editor.
+	const driven = $derived(descriptor.mode !== 'constant');
+	// A reference chosen before one is retained shows the picker without a record to show yet.
+	let picking = $state(false);
+	const showPicker = $derived(descriptor.mode === 'reference' || picking);
 	$effect(() => {
-		if (!fxActive && multilineOpen) multilineOpen = false;
+		if (descriptor.mode === 'reference') picking = false;
 	});
 
-	// While the multi-line editor is open every app-global chord stands down: it owns a full-height code
-	// surface, so Ctrl+S is its editor's, not the app's.
-	$effect(() => {
-		if (multilineOpen) {
-			ui().openEditor(editorId);
-			return () => ui().closeEditor(editorId);
-		}
-	});
-
-	function currentFlags(): { enabled?: boolean; triggers_process?: boolean } {
-		return {
-			enabled: descriptor.expression_enabled,
-			triggers_process: descriptor.expression_triggers_process
-		};
+	function tone(mode: ParamMode): BadgeTone {
+		if (descriptor.mode !== mode) return 'neutral';
+		return descriptor.error ? 'danger' : 'accent';
 	}
 
-	// The current value as a Python literal — the seed when fx is first switched on.
+	// The current value as a Python literal — the seed when an expression is first switched on.
 	function literalFor(d: ParamDescriptor): string {
 		const v = d.value;
 		if (typeof v === 'number') return String(v);
@@ -101,53 +64,16 @@
 		return JSON.stringify(v);
 	}
 
-	function toggleFx(): void {
-		if (fxActive) {
-			// Stash the source, so a later flip-on does not retype it.
-			onSetExpression(descriptor.expression, {
-				enabled: false,
-				triggers_process: descriptor.expression_triggers_process
-			});
+	function choose(mode: ParamMode): void {
+		picking = false;
+		if (mode === descriptor.mode) return;
+		if (mode === 'expression' && !descriptor.expression) {
+			onSetSource({ expression: literalFor(descriptor) });
+		} else if (mode === 'reference' && !descriptor.reference) {
+			picking = true;
 		} else {
-			const seed = descriptor.expression ?? literalFor(descriptor);
-			onSetExpression(seed, {
-				enabled: true,
-				triggers_process: descriptor.expression_triggers_process
-			});
+			onSetSource({ mode });
 		}
-	}
-
-	function toggleTriggersProcess(): void {
-		onSetExpression(descriptor.expression, {
-			enabled: descriptor.expression_enabled,
-			triggers_process: !descriptor.expression_triggers_process
-		});
-	}
-
-	// The inline commit FORCES enabled; the multi-line apply below PRESERVES the flags.
-	function commitExpr(v: string): void {
-		onSetExpression(v, { ...currentFlags(), enabled: true });
-	}
-
-	function openMultiline(): void {
-		multilineOpen = true;
-	}
-	function applyMultiline(v: string): void {
-		onSetExpression(v, currentFlags());
-		void cancelMultiline();
-	}
-	async function applyFromChip(): Promise<void> {
-		applyExpanded?.();
-		await cancelMultiline();
-	}
-	async function cancelMultiline(): Promise<void> {
-		multilineOpen = false;
-		await restoreExpandFocus();
-	}
-	// After the editor unmounts, focus returns to the ⤢ expand affordance rather than falling to <body>.
-	async function restoreExpandFocus(): Promise<void> {
-		await tick();
-		fxRegionEl?.querySelector<HTMLElement>('[data-testid="param-expr-expand"]')?.focus();
 	}
 
 	function previewText(): string {
@@ -158,85 +84,94 @@
 		if (typeof v === 'string') return v.length > 32 ? v.slice(0, 31) + '…' : v;
 		return String(v);
 	}
-
 </script>
 
-<!-- A SIBLING of the label (via Field's adornment slot), so its button never steals the label's focus target. -->
-{#snippet fx()}
-	{#if fxActive}
+<!-- A SIBLING of the label (via Field's adornment slot), so its buttons never steal the label's focus target. -->
+{#snippet source()}
+	{#if driven}
 		<Chip
-			tone={descriptor.expression_triggers_process ? 'accent' : 'neutral'}
-			aria-pressed={descriptor.expression_triggers_process}
-			onclick={toggleTriggersProcess}
-			title="When this expression's value changes, wake the node's process()"
-			data-testid="param-expr-triggers-process"
+			tone={descriptor.triggers ? 'accent' : 'neutral'}
+			aria-pressed={descriptor.triggers}
+			onclick={() => onSetSource({ triggers: !descriptor.triggers })}
+			title="When this source's value changes, wake the node's process()"
+			data-testid="param-triggers"
 		>
 			trig
 		</Chip>
 	{/if}
-	<Chip
-		tone={fxTone}
-		aria-pressed={fxActive}
-		onclick={toggleFx}
-		title={fxActive ? 'Disable expression (keeps the source)' : 'Enable expression'}
-		data-testid="param-fx-toggle"
-	>
-		fx
-	</Chip>
+	<div class="mode" role="group" aria-label={`${paramName} source`} data-testid="param-mode">
+		<Chip
+			tone={tone('constant')}
+			aria-pressed={descriptor.mode === 'constant' && !picking}
+			onclick={() => choose('constant')}
+			title="A constant: the value below"
+			data-testid="param-mode-constant"
+		>
+			=
+		</Chip>
+		<Chip
+			tone={tone('expression')}
+			aria-pressed={descriptor.mode === 'expression'}
+			onclick={() => choose('expression')}
+			title="An expression over nd(), globals and me, at control rate"
+			data-testid="param-mode-expression"
+		>
+			fx
+		</Chip>
+		<Chip
+			tone={tone('reference')}
+			aria-pressed={descriptor.mode === 'reference' || picking}
+			onclick={() => choose('reference')}
+			title="A reference to one node's output, at that node's rate"
+			data-testid="param-mode-reference"
+		>
+			ref
+		</Chip>
+	</div>
 {/snippet}
 
-<Field label={paramName} doc={descriptor.doc ?? undefined} adornment={fx} class={klass} {...rest}>
+<Field label={paramName} doc={descriptor.doc ?? undefined} adornment={source} class={klass} {...rest}>
 	<!-- `display: contents` so the face inherits WITHOUT laying out: Field requires paired controls to
 	     be its direct children, and a real box would take them out of the @container column-flip. -->
 	<div class="pf-value">
-		{#if kind === 'expression'}
-			<div class="fx-region" bind:this={fxRegionEl}>
-				{#if multilineOpen}
-					<ExprEditor
-						{selfName}
-						multiline
-						value={descriptor.expression ?? ''}
-						error={descriptor.expression_error}
-						onCommit={applyMultiline}
-						onCancel={cancelMultiline}
-						bindCommit={(c) => (applyExpanded = c)}
-						label={`${paramName} expression`}
-						testid="param-expr-multiline"
-						autofocus
-					/>
-					<div class="fx-actions">
-						<span class="fx-kbd" aria-hidden="true">⌃⏎ apply · esc cancel</span>
-						<Chip onclick={cancelMultiline} data-testid="param-expr-collapse">collapse</Chip>
-						<Chip tone="accent" onclick={applyFromChip} data-testid="param-expr-apply">apply</Chip>
+		{#if showPicker}
+			<div class="src-region">
+				<RefPicker
+					value={descriptor.reference}
+					paramType={descriptor.type}
+					onCommit={(reference) => onSetSource({ reference })}
+					testid="param-ref"
+				/>
+				{#if descriptor.mode === 'reference' && descriptor.error}
+					<div class="src-error" title={descriptor.error} data-testid="param-source-error">
+						<span class="prefix"><Icon name="triangle-alert" /></span>
+						<span class="msg">{descriptor.error}</span>
 					</div>
-				{:else}
-					<div class="fx-inline">
-						<ExprEditor
-							{selfName}
-							value={descriptor.expression ?? ''}
-							error={descriptor.expression_error}
-							onCommit={commitExpr}
-							label={`${paramName} expression`}
-							placeholder="nd('oscillator0').out.data.mean()"
-							testid="param-expr-input"
-						/>
-						<IconButton
-							size="sm"
-							label="Open the multi-line editor"
-							onclick={openMultiline}
-							data-testid="param-expr-expand"
-						>
-							<Icon name="maximize-2" />
-						</IconButton>
+				{:else if descriptor.mode === 'reference'}
+					<div class="src-preview" title={String(descriptor.value)}>
+						<span class="prefix" aria-hidden="true">=</span>
+						<span class="value">{previewText()}</span>
 					</div>
 				{/if}
-				{#if descriptor.expression_error}
-					<div class="fx-error" title={descriptor.expression_error} data-testid="param-expr-error">
+			</div>
+		{:else if kind === 'expression'}
+			<div class="src-region">
+				<ExprEditor
+					{selfName}
+					value={descriptor.expression ?? ''}
+					error={descriptor.error}
+					onCommit={(expression) => onSetSource({ expression })}
+					label={`${paramName} expression`}
+					placeholder="nd('oscillator0').out.data.mean()"
+					testid="param-expr-input"
+				/>
+				{#if descriptor.error}
+					<div class="src-error" title={descriptor.error} data-testid="param-source-error">
 						<span class="prefix"><Icon name="triangle-alert" /></span>
-						<span class="msg">{descriptor.expression_error}</span>
+						<span class="msg">{descriptor.error}</span>
 					</div>
 				{:else}
-					<div class="fx-preview" title={String(descriptor.value)}>
+					<div class="src-preview" title={String(descriptor.value)}>
 						<span class="prefix" aria-hidden="true">=</span>
 						<span class="value">{previewText()}</span>
 					</div>
@@ -274,37 +209,19 @@
 		display: contents;
 		font-family: var(--font-mono);
 	}
-	.fx-region {
+	.mode {
+		display: inline-flex;
+		gap: var(--space-1);
+	}
+	.src-region {
 		flex: 1;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
 	}
-	.fx-inline {
-		display: flex;
-		align-items: stretch;
-		gap: var(--space-2);
-		min-width: 0;
-	}
-	.fx-actions {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		justify-content: flex-end;
-	}
-	.fx-kbd {
-		flex: 1;
-		min-width: 0;
-		font-family: var(--font-mono);
-		font-size: var(--fs-micro);
-		color: var(--text-muted);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.fx-error,
-	.fx-preview {
+	.src-error,
+	.src-preview {
 		display: flex;
 		align-items: baseline;
 		gap: var(--space-2);
@@ -313,36 +230,23 @@
 		font-size: var(--fs-micro);
 		padding: 0 var(--space-1);
 	}
-	.fx-error {
+	.src-error {
 		color: var(--danger);
 	}
-	.fx-error .prefix {
+	.src-error .prefix {
 		flex-shrink: 0;
 	}
-	.fx-error .msg {
+	.src-error .msg {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
 	}
-	.fx-preview {
+	.src-preview {
 		color: var(--text-muted);
-	}
-	.fx-preview .prefix {
-		/* The `=` lead-in recedes behind the value; the preview itself is live, not disabled. */
-		opacity: 0.6;
-	}
-	.fx-preview .value {
-		font-variant-numeric: tabular-nums;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
 	}
 	.unknown {
-		min-width: 0;
 		font-size: var(--fs-micro);
 		color: var(--text-muted);
-		word-break: break-all;
 	}
 </style>

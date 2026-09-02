@@ -41,9 +41,10 @@ function catalog(): NodeTypeInfo[] {
 						doc: null,
 						refreshable: false,
 						expression: null,
-						expression_enabled: false,
-						expression_triggers_process: false,
-						expression_error: null
+						mode: 'constant',
+						reference: null,
+						triggers: false,
+						error: null
 					}
 				}
 			}
@@ -116,13 +117,13 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
 		d.patch({ nodes: { n1: { params: { common: { max_frequency: { value: 55 } } } } } });
 
-		// A state_update carrying a STALE value (999) + an expression_error + stage: the value must
-		// stay the doc's 55 (params are doc-owned), while error/stage/expression_error merge.
+		// A state_update carrying a STALE value (999) + an error + stage: the value must
+		// stay the doc's 55 (params are doc-owned), while error/stage/error merge.
 		fc.emit({
 			event: 'state_update',
 			payload: {
 				node: 'n1',
-				params: { common: { max_frequency: { value: 999, expression_error: 'compile error' } } } as unknown as Record<
+				params: { common: { max_frequency: { value: 999, error: 'compile error' } } } as unknown as Record<
 					string,
 					Record<string, ParamDescriptor>
 				>,
@@ -132,7 +133,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		});
 		const n = g.nodeById('n1')!;
 		expect(n.params.common.max_frequency.value).toBe(55); // doc value preserved
-		expect(n.params.common.max_frequency.expression_error).toBe('compile error'); // runtime merged
+		expect(n.params.common.max_frequency.error).toBe('compile error'); // runtime merged
 		expect(n.stage).toBe('ready');
 	});
 
@@ -166,7 +167,7 @@ describe('expression live value survives a doc rebuild', () => {
 				n1: {
 					params: {
 						common: {
-							max_frequency: { value: 99, expr: { source: "nd('lfo')", enabled: true, triggers: false } }
+							max_frequency: { value: 99, mode: 'expression', expr: "nd('lfo')" }
 						}
 					}
 				}

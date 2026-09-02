@@ -27,9 +27,10 @@ function catalog(): NodeTypeInfo {
 					doc: null,
 					refreshable: false,
 					expression: null,
-					expression_enabled: false,
-					expression_triggers_process: false,
-					expression_error: null
+					mode: 'constant',
+					reference: null,
+					triggers: false,
+					error: null
 				}
 			},
 			audio: {
@@ -40,9 +41,10 @@ function catalog(): NodeTypeInfo {
 					doc: null,
 					refreshable: true,
 					expression: null,
-					expression_enabled: false,
-					expression_triggers_process: false,
-					expression_error: null
+					mode: 'constant',
+					reference: null,
+					triggers: false,
+					error: null
 				}
 			}
 		}
@@ -82,27 +84,31 @@ describe('assembleNode — three-way merge', () => {
 		expect(cat.params.common.frequency.value).toBe(1);
 	});
 
-	it('applies a doc expression binding + the runtime expression_error', () => {
+	it('applies a doc source record + the runtime error', () => {
 		const docParams: DocParamLeaves = {
-			common: { frequency: { value: 1, expr: { source: "nd('lfo')", enabled: true, triggers: true } } }
+			common: {
+				frequency: { value: 1, source: { mode: 'expression', expr: "nd('lfo')", ref: 'lfo.out', triggers: true } }
+			}
 		};
 		const runtime: RuntimeOverlay = {
-			params: { common: { frequency: { expression_error: 'name error: lfo' } } }
+			params: { common: { frequency: { error: 'name error: lfo' } } }
 		};
 		const freq = assembleNode(view, docParams, {}, catalog(), runtime).params.common.frequency;
+		expect(freq.mode).toBe('expression');
 		expect(freq.expression).toBe("nd('lfo')");
-		expect(freq.expression_enabled).toBe(true);
-		expect(freq.expression_triggers_process).toBe(true);
-		expect(freq.expression_error).toBe('name error: lfo');
+		expect(freq.reference).toBe('lfo.out');
+		expect(freq.triggers).toBe(true);
+		expect(freq.error).toBe('name error: lfo');
 	});
 
-	it('clears a stale binding when the doc leaf has no expr', () => {
-		// The catalog default carries no binding; a doc leaf without `expr` must leave it cleared
-		// (never inherit a binding the doc doesn't have).
+	it('reads a constant when the doc leaf has no source record', () => {
+		// The catalog default carries no record; a doc leaf without one is a constant with nothing
+		// retained (never inherit a record the doc does not have).
 		const freq = assembleNode(view, { common: { frequency: { value: 5 } } }, {}, catalog(), {}).params
 			.common.frequency;
+		expect(freq.mode).toBe('constant');
 		expect(freq.expression).toBeNull();
-		expect(freq.expression_enabled).toBe(false);
+		expect(freq.reference).toBeNull();
 	});
 
 	it('overrides StringParam options from runtime (a refresh), not the catalog default', () => {

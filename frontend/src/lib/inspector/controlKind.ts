@@ -3,6 +3,7 @@ import type { ParamDescriptor } from '$lib/api/types';
 
 export type ControlKind =
 	| 'expression'
+	| 'reference'
 	| 'numeric'
 	| 'toggle'
 	| 'select'
@@ -10,7 +11,8 @@ export type ControlKind =
 	| 'unknown';
 
 export function controlKind(descriptor: ParamDescriptor): ControlKind {
-	if (descriptor.expression_enabled) return 'expression';
+	if (descriptor.mode === 'expression') return 'expression';
+	if (descriptor.mode === 'reference') return 'reference';
 	switch (descriptor.type) {
 		case 'float':
 		case 'int':

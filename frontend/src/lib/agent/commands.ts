@@ -1,4 +1,5 @@
 /** Flat, typed command facade over the store logic the UI uses; paired with `query` for reads. */
+import type { SourcePatch } from '$lib/api/types';
 import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
@@ -19,13 +20,8 @@ export const commands = {
 	addLink: (link: LinkInfo): Promise<void> => graph().addLink(link),
 	updateParam: (node: string, group: string, name: string, value: unknown): Promise<void> =>
 		graph().updateParam(node, group, name, value),
-	setExpression: (
-		node: string,
-		group: string,
-		name: string,
-		expression: string | null,
-		opts?: { enabled?: boolean; triggers_process?: boolean }
-	): Promise<void> => graph().setExpression(node, group, name, expression, opts),
+	setSource: (node: string, group: string, name: string, source: SourcePatch): Promise<void> =>
+		graph().setSource(node, group, name, source),
 	setNodePos: (name: string, pos: [number, number]): Promise<void> => graph().setNodePos(name, pos),
 	renameNode: (uid: string, name: string): Promise<void> => graph().renameNode(uid, name),
 

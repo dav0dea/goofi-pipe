@@ -26,6 +26,7 @@
   `<ParamField>` per param in the active group.
 -->
 <script lang="ts">
+	import type { SourcePatch } from '$lib/api/types';
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
@@ -61,16 +62,9 @@
 		if (!node) return;
 		void g.refreshParam(node.uid, group, name).catch((e) => console.warn('refresh failed', e));
 	}
-	function setExpression(
-		group: string,
-		name: string,
-		expression: string | null,
-		opts: { enabled?: boolean; triggers_process?: boolean } = {}
-	): void {
+	function setSource(group: string, name: string, source: SourcePatch): void {
 		if (!node) return;
-		void g.setExpression(node.uid, group, name, expression, opts).catch((e) =>
-			console.warn('set expression failed', e)
-		);
+		void g.setSource(node.uid, group, name, source).catch((e) => console.warn('set source failed', e));
 	}
 
 	// Keyed by uid, so switching nodes closes the editor while a live state update (which re-creates the
@@ -235,7 +229,7 @@
 							data-testid={`param-field-${paramName}`}
 							refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}
 							onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
-							onSetExpression={(expr, opts) => setExpression(activeGroup ?? '', paramName, expr, opts)}
+							onSetSource={(source) => setSource(activeGroup ?? '', paramName, source)}
 							onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
 						/>
 					{/each}

@@ -34,9 +34,10 @@ function catalog(): NodeTypeInfo[] {
 						doc: null,
 						refreshable: false,
 						expression: null,
-						expression_enabled: false,
-						expression_triggers_process: false,
-						expression_error: null
+						mode: 'constant',
+						reference: null,
+						triggers: false,
+						error: null
 					}
 				}
 			}
@@ -96,7 +97,7 @@ describe('GraphStore.updateParam — guards a non-existent param', () => {
 	});
 });
 
-describe('GraphStore.setExpression — guards a non-existent param', () => {
+describe('GraphStore.setSource — guards a non-existent param', () => {
 	beforeEach(() => history().reset());
 
 	it('throws (recording nothing, minting no phantom doc binding) when the param does not exist', async () => {
@@ -108,9 +109,9 @@ describe('GraphStore.setExpression — guards a non-existent param', () => {
 
 		// A missing group/name (agent typo, or a call racing hydration) must not leaf-write an
 		// `expr` onto a phantom param entry — the graph rejects it and the re-mirror never prunes it.
-		await expect(g.setExpression('uidA', 'nope', 'missing', "nd('x')")).rejects.toThrow();
+		await expect(g.setSource('uidA', 'nope', 'missing', { expression: "nd('x')" })).rejects.toThrow();
 		expect(history().canUndo).toBe(false);
-		expect(docParams(g.doc, 'uidA').nope?.missing?.expr).toBeUndefined();
+		expect(docParams(g.doc, 'uidA').nope?.missing?.source).toBeUndefined();
 	});
 });
 

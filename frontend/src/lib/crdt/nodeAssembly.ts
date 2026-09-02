@@ -10,10 +10,10 @@ export type ViewersBlob = NodeInstanceInfo['viewers'];
 
 /** Per-param runtime overlay (event-sourced, never in the doc). */
 export interface ParamRuntime {
-	expression_error?: string | null;
+	error?: string | null;
 	/** Refreshed StringParam options (device/stream pickers) — override the catalog default. */
 	options?: string[] | null;
-	/** For an expression-enabled param, its LIVE evaluated value — it overrides the committed doc leaf. */
+	/** For a driven param, its LIVE evaluated value — it overrides the committed doc leaf. */
 	liveValue?: unknown;
 }
 
@@ -34,10 +34,11 @@ function unknownParam(): ParamDescriptor {
 		value: undefined,
 		doc: null,
 		refreshable: false,
+		mode: 'constant',
 		expression: null,
-		expression_enabled: false,
-		expression_triggers_process: false,
-		expression_error: null
+		reference: null,
+		triggers: false,
+		error: null
 	};
 }
 
@@ -49,18 +50,13 @@ function mergeParam(
 	// Shallow-copy so the shared catalog descriptor is never mutated.
 	const p: ParamDescriptor = catalog ? { ...catalog } : unknownParam();
 	if (leaf && leaf.value !== undefined) (p as { value: unknown }).value = leaf.value;
-	if (leaf?.expr) {
-		p.expression = leaf.expr.source;
-		p.expression_enabled = leaf.expr.enabled;
-		p.expression_triggers_process = leaf.expr.triggers;
-	} else {
-		p.expression = null;
-		p.expression_enabled = false;
-		p.expression_triggers_process = false;
-	}
-	p.expression_error = runtime?.expression_error ?? null;
+	p.mode = leaf?.source?.mode ?? 'constant';
+	p.expression = leaf?.source?.expr ?? null;
+	p.reference = leaf?.source?.ref ?? null;
+	p.triggers = leaf?.source?.triggers === true;
+	p.error = runtime?.error ?? null;
 	if (p.type === 'string' && runtime?.options !== undefined) p.options = runtime.options;
-	if (p.expression_enabled && runtime?.liveValue !== undefined)
+	if (p.mode !== 'constant' && runtime?.liveValue !== undefined)
 		(p as { value: unknown }).value = runtime.liveValue;
 	return p;
 }

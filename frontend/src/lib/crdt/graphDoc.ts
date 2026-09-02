@@ -4,6 +4,7 @@
  */
 import { EMPTY_PANEL_TYPE, SCOPE_TYPE, boundaryType } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
+import type { ParamMode } from '$lib/api/types';
 import type { LayoutNode, Workspace } from 'panelty';
 
 export type Doc = Record<string, unknown>;
@@ -112,16 +113,20 @@ export function facadeFaces(doc: Doc): Map<string, FacadeFace> {
 	return out;
 }
 
-export interface ParamExpr {
-	source: string;
-	enabled: boolean;
-	triggers: boolean;
+/** A param's source record as the document carries it: the mode, and the texts it retains. */
+export interface ParamSource {
+	mode: ParamMode;
+	expr?: string;
+	ref?: string;
+	triggers?: boolean;
 }
 
 export type DocParamLeaves = Record<
 	string,
-	Record<string, { value?: number | string | boolean; expr?: ParamExpr }>
+	Record<string, { value?: number | string | boolean; source?: ParamSource }>
 >;
+
+const MODES: ReadonlySet<string> = new Set(['constant', 'expression', 'reference']);
 
 export function docParams(doc: Doc, uid: string): DocParamLeaves {
 	const out: DocParamLeaves = {};
@@ -133,9 +138,12 @@ export function docParams(doc: Doc, uid: string): DocParamLeaves {
 			const leaf: DocParamLeaves[string][string] = {};
 			const v = entry.value;
 			if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') leaf.value = v;
-			const expr = obj(entry.expr);
-			if (typeof expr.source === 'string') {
-				leaf.expr = { source: expr.source, enabled: expr.enabled === true, triggers: expr.triggers === true };
+			if (typeof entry.mode === 'string' && MODES.has(entry.mode)) {
+				const source: ParamSource = { mode: entry.mode as ParamMode };
+				if (typeof entry.expr === 'string') source.expr = entry.expr;
+				if (typeof entry.ref === 'string') source.ref = entry.ref;
+				if (entry.triggers === true) source.triggers = true;
+				leaf.source = source;
 			}
 			out[group][name] = leaf;
 		}
@@ -168,18 +176,26 @@ export function setParamValue(
 	return true;
 }
 
-/** Write (or, with `null`, clear) a param's expression binding — a test-seed double, as [`setParamValue`] is. */
-export function setParamExpr(
+/** Write (or, with `null`, clear) a param's source record — a test-seed double, as [`setParamValue`] is. */
+export function setParamSource(
 	doc: Doc,
 	uid: string,
 	group: string,
 	name: string,
-	expr: ParamExpr | null
+	source: ParamSource | null
 ): boolean {
 	const entry = paramEntry(doc, uid, group, name);
 	if (!entry) return false;
-	if (expr) entry.expr = { ...expr };
-	else delete entry.expr;
+	delete entry.mode;
+	delete entry.expr;
+	delete entry.ref;
+	delete entry.triggers;
+	if (source) {
+		entry.mode = source.mode;
+		if (source.expr !== undefined) entry.expr = source.expr;
+		if (source.ref !== undefined) entry.ref = source.ref;
+		if (source.triggers) entry.triggers = true;
+	}
 	return true;
 }
 

@@ -3,7 +3,7 @@ import {
 	nodesMap,
 	nodeView,
 	nodeViews,
-	setParamExpr,
+	setParamSource,
 	linkViews,
 	facadeFaces,
 	docParams,
@@ -24,7 +24,7 @@ function seedDoc(): Doc {
 				params: {
 					common: { max_frequency: { value: 30 } },
 					oscillator: {
-						waveform: { value: 'sine', expr: { source: "nd('lfo')", enabled: true, triggers: false } }
+						waveform: { value: 'sine', mode: 'expression', expr: "nd('lfo')" }
 					}
 				}
 			},
@@ -55,8 +55,8 @@ describe('graphDoc readers', () => {
 		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(30);
 		expect(docParams(doc, 'a').oscillator?.waveform?.value).toBe('sine');
 		expect(docParams(doc, 'a').common?.nope?.value).toBeUndefined();
-		expect(docParams(doc, 'a').oscillator?.waveform?.expr?.source).toBe("nd('lfo')");
-		expect(docParams(doc, 'a').common?.max_frequency?.expr?.source).toBeUndefined();
+		expect(docParams(doc, 'a').oscillator?.waveform?.source?.expr).toBe("nd('lfo')");
+		expect(docParams(doc, 'a').common?.max_frequency?.source).toBeUndefined();
 	});
 
 	it('reads links', () => {
@@ -104,14 +104,14 @@ describe('graphDoc readers', () => {
 		expect(facadeFaces(doc).has('a')).toBe(false);
 	});
 
-	it('reads a node param leaves (value + expression binding) via docParams', () => {
+	it('reads a node param leaves (value + source record) via docParams', () => {
 		const doc = seedDoc();
 		const p = docParams(doc, 'a');
 		expect(p.common.max_frequency).toEqual({ value: 30 });
-		// waveform in seedDoc carries a value AND an expr binding.
+		// waveform in seedDoc carries a value AND a source record.
 		expect(p.oscillator.waveform).toEqual({
 			value: 'sine',
-			expr: { source: "nd('lfo')", enabled: true, triggers: false }
+			source: { mode: 'expression', expr: "nd('lfo')" }
 		});
 		// A node with no params → empty.
 		expect(docParams(doc, 'b')).toEqual({});
@@ -150,32 +150,32 @@ describe('graphDoc readers', () => {
 	});
 });
 
-describe('graphDoc.setParamExpr — the test-seed binding write', () => {
-	it('writes a binding in place and docParams reads it back', () => {
+describe('graphDoc.setParamSource — the test-seed source write', () => {
+	it('writes a record in place and docParams reads it back', () => {
 		const doc = seedDoc();
 		expect(
-			setParamExpr(doc, 'a', 'common', 'max_frequency', { source: "nd('f')", enabled: true, triggers: false })
+			setParamSource(doc, 'a', 'common', 'max_frequency', { mode: 'reference', ref: 'f.out', triggers: true })
 		).toBe(true);
-		expect(docParams(doc, 'a').common?.max_frequency?.expr).toEqual({
-			source: "nd('f')",
-			enabled: true,
-			triggers: false
+		expect(docParams(doc, 'a').common?.max_frequency?.source).toEqual({
+			mode: 'reference',
+			ref: 'f.out',
+			triggers: true
 		});
 		// The committed value is untouched — only the binding was written.
 		expect(docParams(doc, 'a').common?.max_frequency?.value).toBe(30);
 	});
 
-	it('clears a binding when passed null', () => {
+	it('clears a record when passed null', () => {
 		const doc = seedDoc();
-		// `waveform` is seeded WITH an expr in seedDoc.
-		expect(docParams(doc, 'a').oscillator?.waveform?.expr).toBeDefined();
-		expect(setParamExpr(doc, 'a', 'oscillator', 'waveform', null)).toBe(true);
-		expect(docParams(doc, 'a').oscillator?.waveform?.expr).toBeUndefined();
+		// `waveform` is seeded WITH a record in seedDoc.
+		expect(docParams(doc, 'a').oscillator?.waveform?.source).toBeDefined();
+		expect(setParamSource(doc, 'a', 'oscillator', 'waveform', null)).toBe(true);
+		expect(docParams(doc, 'a').oscillator?.waveform?.source).toBeUndefined();
 	});
 
 	it('no-ops (returns false) when the node is absent — never mint a phantom', () => {
 		const doc = seedDoc();
-		expect(setParamExpr(doc, 'ghost', 'common', 'x', { source: 'nd()', enabled: true, triggers: false })).toBe(false);
+		expect(setParamSource(doc, 'ghost', 'common', 'x', { mode: 'expression', expr: 'nd()' })).toBe(false);
 		expect(nodesMap(doc).ghost).toBeUndefined();
 	});
 });

@@ -1,4 +1,4 @@
-/** A param's `expression_error` as an inline CodeMirror diagnostic, anchored to the line the message names. */
+/** A param's `error` as an inline CodeMirror diagnostic, anchored to the line the message names. */
 import type { Text } from '@codemirror/state';
 import type { Diagnostic } from '@codemirror/lint';
 
