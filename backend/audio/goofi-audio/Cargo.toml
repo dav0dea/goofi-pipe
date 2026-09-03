@@ -14,7 +14,9 @@ goofi-build = { path = "../../goofi-build" }
 sha2 = "0.10"
 indexmap = "2"
 rtrb = "0.3"
-cpal = "0.18"
+# The sound SERVER, never the card: ALSA's `default` is the hardware, so a stream on it bypasses
+# the OS mixer. Pure Rust, probed at runtime, and ALSA still answers a machine with no server.
+cpal = { version = "0.18", features = ["pulseaudio"] }
 midir = "0.11"
 vst3 = "0.3.0"
 libloading = "0.8"

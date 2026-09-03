@@ -124,8 +124,15 @@ renders at the caller's speed, so neither a playback nor a capture stream has a 
 meet. The output half was gated from the start; the INPUT half was not, so a test that merely
 added an `AudioIn` opened the machine's real microphone. A name is still resolved whatever the
 clock — an absent device is named as before — and only the resolved device is opened; under the
-external clock the input says so on the param that named it. Enumeration is untouched: it lists
-what a refresh shows and neither plays nor captures. Landed 2026-09-02: the clock is a constructor
+external clock the input says so on the param that named it. **And goofi asks the machine's sound
+SERVER, never its card**: cpal's `pulseaudio` host is compiled in, so `default_host()` probes for a
+server socket at run time and only a machine with none falls back to ALSA. ALSA's own `default` is
+the hardware — a stream on it never reaches PipeWire, so the OS volume and the OS mute did not
+apply and the device list was thirty ALSA aliases, nine of them filter plugins and eleven of them
+one jack under one name. The list is now the server's sinks. The `pulseaudio` crate is pure Rust,
+so this costs no system package; the `pipewire` host would need `libpipewire-0.3-dev` and clang at
+build time, which the one-command setup will not pay for a result pipewire-pulse already gives.
+Landed 2026-09-02: the clock is a constructor
 choice (`Clock::External` for the harness, `Clock::Device` for the CLI); the output stream lives on
 a thread of its own, because
 `cpal::Stream` is not `Send` on every host, opened at settle when an `AudioOut` exists and closed
