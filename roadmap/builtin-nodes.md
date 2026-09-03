@@ -6,17 +6,24 @@ user**, not chosen unilaterally.
 
 ## What ships today
 
-Eight nodes, and each one was added to prove a seam rather than to fill a category:
+Fourteen nodes, and each one was added to prove a seam rather than to fill a category:
 
-- **Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`: `.rs` source in `nodes_signal/`, built at
-  goofi's build time and loaded dynamically since 2026-09-02 (`node-sources.md`).
+- **Signal, Rust** — `Oscillator`, `Buffer`, `Filter`, `Psd`: `.rs` source in `nodes_signal/`, built
+  at goofi's build time and loaded dynamically since 2026-09-02 (`node-sources.md`).
+- **Audio, Rust** — `Osc`, `Gain`, `Env`, `Svf`, `Slew`, `Feedback`, `SignalIn`: the same one-file
+  shape in `nodes_audio/`, against the audio SDK (`audio-engine.md`). They are a VOCABULARY rather
+  than a category sweep — a source, a level, a shape, a filter, a rate limit, a cycle and the door
+  from the signal plane — and the §13 set that would grow them is still the user's to choose.
+- **Audio, native** — `AudioOut`, `AudioIn`, `MidiIn`: the engine's own rather than files, because
+  a device and a port are the engine's to own.
 - **Python** — none in the shipped tree (`nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
   `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
   because the subprocess tier had to be proved against real packages that hold the GIL; they now
   live in `node-bundles/complexity/` (see `library.md`).
 
 `Filter` is the first evidence that the rule below pays: it is ONE node with a `mode` param of
-four options, where the old implementation had a node for each.
+four options, where the old implementation had a node for each. The audio `Svf` is the second, and
+it took the name because one namespace spans both engines.
 
 ## The rule the reset exists to protect
 
@@ -43,8 +50,8 @@ already compose to, and is this genuinely outside that span?"
 
 ## The shipped nodes, made more expressive
 
-The eight that ship each prove a seam, and their params are the minimum that proved it. Two are
-already known to be short, and each is a param design rather than a new node:
+Each node that ships proves a seam, and its params are the minimum that proved it. Two are already
+known to be short, and each is a param design rather than a new node:
 
 - **`Buffer` sizes in samples only.** A window a user thinks of as "two seconds" or "the last
   thirty updates" is a size to recompute by hand at every rate change. The size wants a unit —

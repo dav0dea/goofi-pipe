@@ -370,8 +370,9 @@ does not die.
 
 - The `library()` return shape — the entries carry manifest, factory, tier and defaults; the
   scan-diff report rides the same door; the exact types are the build's to price.
-- `slots_touching` is O(N × (links + bindings)) and runs once per node reaching `Ready`. Nobody
-  has noticed at signal-engine node counts. A large patch will.
+- `keys_touching` — `slots_touching` as built, and the signal engine's rather than the graph's —
+  is O(N × (links + bindings)) and runs once per node reaching `Ready`. Nobody has noticed at
+  signal-engine node counts. A large patch will.
 - `Graph::contains` means "is a running leaf", `exists` means "is any node", `wirable` means
   "leaf or port". Three near-synonyms with different truth sets, and `Command::precondition`
   picks a different one per variant. Worth one pass to name them for what they answer.

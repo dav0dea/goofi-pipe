@@ -260,7 +260,11 @@ implements the same trait. The
 engine is synchronous, in-process, one 64-frame block per callback, no iceoryx2 on the audio path;
 every signal is audio-rate numbers in a standard range, and a gate, a pitch and a voice count are
 conventions, not types. CLAP was adopted and then replaced, and the reasons are recorded so it is
-not re-argued. `roadmap/audio-engine.md` holds the design.
+not re-argued. Hardware belongs to the DEVICE clock alone — the external clock renders at
+`drive()`'s speed, which no live stream can meet — so no test opens a microphone or a speaker; and
+what the device clock opens is the machine's sound SERVER, never its card, because a raw ALSA
+stream is one the OS volume and the OS mute cannot reach. `roadmap/audio-engine.md` holds the
+design.
 
 **There is no tick.** Every node owns one thread and schedules itself, waking for a control
 message, a frame on an input, or its own rate cap elapsing. Frames travel node to node over

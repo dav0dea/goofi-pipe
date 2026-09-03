@@ -486,11 +486,15 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   eval (143 ns for four vars), `PyModule::import(py, "numpy")` runs on every array conversion, and
   `PyBytes::new` copies the whole array although `ArrayStore` is `Arc<[u8]>` and its own doc claims a
   numpy view can alias it zero-copy.
-- **One device callback has been measured, on one machine.** Linux, ALSA, the default device:
-  ~1024-frame periods, zero xruns, worst render 545 µs, with nothing else running. The interaction
-  of RT priority and the control thread's graph lock under a knob drag — a burst of
-  `node param edit` RPCs, each taking the graph lock, none the runtime's — is still unmeasured, and
-  Windows and macOS are unmeasured. `session status`'s `audio` block is the door, by hand, on each.
+- **One device callback has been measured, on one machine.** Linux, the default device, first on
+  ALSA and then through pipewire-pulse: ~1016-frame periods, zero xruns, worst render 545 µs and
+  97 µs, with nothing else running. The interaction of RT priority and the control thread's graph
+  lock under a knob drag — a burst of `node param edit` RPCs, each taking the graph lock, none the
+  runtime's — is still unmeasured, and Windows and macOS are unmeasured. `session status`'s `audio`
+  block is the door, by hand, on each.
+- **The OS mixer labels goofi `cpal-pulseaudio-<pid>`.** cpal hard-codes its PulseAudio client name
+  and exposes no way to set it, so goofi's own name reaches no volume slider. Upstream is the only
+  clean door.
 - **A device switch, a rate change and a stream loss run only under `Clock::Device`**, which no
   test constructs and no CI runner has a device for. Measured by hand on Linux (2026-09-02): a name
   that will not open faults the node and the previous clock stands with its callbacks running;
@@ -498,11 +502,15 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   earlier return to `default` did not, its error unrecorded, and did not recur. A raw ALSA `hw`
   device refuses the stream: it is built for `f32` only, and `HDA Intel PCH, ALC274 Analog`
   answers "Sample format f32 is not supported" — an `i16`/`i32` stream with a conversion is what
-  such a device needs. A rate change and a stream loss are still unexercised. The door is the same
-  `audio` block, by hand.
-- **The Linux default period is ~1024 frames, ~21 ms.** The `default` PCM ignores the 64-frame
-  request, so the spec's "at most 63 frames" holds only where a backend honours it. A `hw:` name
-  or the PipeWire quantum is how a smaller period is reached; unmeasured.
+  such a device needs. That is now the ALSA FALLBACK's problem alone, since a machine with a sound
+  server never lists a `hw:` name. A rate change and a stream loss are still unexercised. The door
+  is the same `audio` block, by hand.
+- **The Linux period is ~1016 frames, ~21 ms, on either backend.** The ALSA `default` PCM ignores
+  the 64-frame request, and re-measured 2026-09-03 the PulseAudio host ignores it too: 238
+  callbacks in 5.04 s at 48 kHz stereo, 0 xruns, worst render 97 µs. So the spec's "at most 63
+  frames" holds only where a backend honours it. The PipeWire quantum is how a smaller period is
+  reached; unmeasured, and it is the strongest argument for the native `pipewire` host if the
+  build-time dependency it wants is ever worth paying.
 - **A machine with no output device** faults every `AudioOut` once with `no default output device`
   and renders nothing: the CLI is always `Clock::Device`, and the spec's external clock for a
   headless server has nothing to drive it. A real-time self-clock for a device-less machine is
