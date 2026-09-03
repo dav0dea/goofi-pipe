@@ -118,8 +118,16 @@ backend actually delivers through its own FIFO. Without a device the clock is ex
 and everything downstream is the same code. One output device per engine: the stream follows the
 device the `AudioOut` nodes name, and a second `AudioOut` naming another device faults until they
 agree. Device selection is an ordinary param — `Param::Str { options, refresh: true }` — and no
-machine-local sidecar. Landed 2026-09-02: the clock is a constructor choice (`Clock::External` for
-the harness, `Clock::Device` for the CLI); the output stream lives on a thread of its own, because
+machine-local sidecar. **The external clock owns no hardware, in EITHER direction**, and that is
+one rule at one owner (`Clock::owns_devices`) rather than a gate per stream: `drive(frames)`
+renders at the caller's speed, so neither a playback nor a capture stream has a timeline it can
+meet. The output half was gated from the start; the INPUT half was not, so a test that merely
+added an `AudioIn` opened the machine's real microphone. A name is still resolved whatever the
+clock — an absent device is named as before — and only the resolved device is opened; under the
+external clock the input says so on the param that named it. Enumeration is untouched: it lists
+what a refresh shows and neither plays nor captures. Landed 2026-09-02: the clock is a constructor
+choice (`Clock::External` for the harness, `Clock::Device` for the CLI); the output stream lives on
+a thread of its own, because
 `cpal::Stream` is not `Send` on every host, opened at settle when an `AudioOut` exists and closed
 when none does; the callback `try_lock`s the runtime and renders whole blocks through the same
 FIFO `drive()` uses, a failed lock being silence and an xrun counted — as is an underrun the

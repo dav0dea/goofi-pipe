@@ -242,6 +242,13 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(gain3, "gain", "gain", 0.0);
     sounds(&g, "the chain to fall silent", |x| peak(x) == 0.0);
     let mic = g.add("AudioIn");
+    // The external clock renders at `drive`'s speed, which no live capture stream can meet: the
+    // default device is resolved and never opened, and a machine with no card says so instead.
+    let why = g.until("the default device to be refused", |g| g.error(mic));
+    assert!(
+        why.contains("the external clock owns no device") || why.contains("no default input device"),
+        "an AudioIn under the external clock names a reason rather than opening the microphone: {why}"
+    );
     g.set_param(mic, "audio", "device", "nowhere");
     let why = g.until("the absent device to be named", |g| g.error(mic).filter(|e| e.contains("nowhere")));
     assert!(why.contains("no input device `nowhere`"), "{why}");

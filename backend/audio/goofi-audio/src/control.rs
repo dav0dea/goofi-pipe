@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 
 use crate::nodes::midi_in::{Note, NO_PORT};
 use crate::nodes::{audio_in, audio_out, midi_in};
-use crate::{plan, DEFAULT_DEVICE, RATE};
+use crate::{plan, Clock, DEFAULT_DEVICE, NO_DEVICE, RATE};
 
 /// How often the paced duties run: a tapped output is published, and a binding with no stream
 /// variable is re-evaluated, at this pace whatever rings in between.
@@ -103,6 +103,8 @@ pub struct Shared {
     pub replan: AtomicBool,
     /// The clock's rate, `f64` bits: what a crossing resamples to and a tap is stamped with.
     pub rate: AtomicU64,
+    /// What drives the blocks: a live stream is opened only where the device does.
+    pub clock: Clock,
 }
 
 /// What the engine leaves for a control half: its whole desired state, and the refreshes asked.
@@ -478,11 +480,12 @@ impl Control {
             let wanted = (self.text(audio_in::P::DEVICE), self.shared.rate());
             if io.device.as_ref() != Some(&wanted) {
                 io.stream = None;
-                let (stream, error) = match open_input(&wanted.0, wanted.1, producer, io.dead.clone()) {
-                    Ok((stream, c)) => {
+                let (stream, error) = match open_input(&wanted.0, wanted.1, producer, io.dead.clone(), self.shared.clock) {
+                    Ok(Some((stream, c))) => {
                         chans.store(c, Ordering::Relaxed);
                         (Some(stream), None)
                     }
+                    Ok(None) => (None, Some(NO_DEVICE.to_string())),
                     Err(e) => (None, Some(e)),
                 };
                 self.shared.replan.store(true, Ordering::Release);
@@ -642,9 +645,20 @@ struct Pass {
 
 /// The device's input stream, opened AT the clock's rate — a device that cannot is the error —
 /// its callback entering interleaved frames into the node's inbox as the Array crossing does.
-fn open_input(name: &str, rate: f64, producer: Feed<f32>, dead: Arc<AtomicBool>) -> Result<(cpal::Stream, u16), String> {
+/// The name is resolved whatever the clock, so an absent one is still named; only the device
+/// clock opens what it resolved to.
+fn open_input(
+    name: &str,
+    rate: f64,
+    producer: Feed<f32>,
+    dead: Arc<AtomicBool>,
+    clock: Clock,
+) -> Result<Option<(cpal::Stream, u16)>, String> {
     let host = cpal::default_host();
     let device = device("input", name, host.default_input_device(), host.input_devices())?;
+    if !clock.owns_devices() {
+        return Ok(None);
+    }
     let mut config = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?.config();
     config.sample_rate = rate as u32;
     let channels = config.channels;
@@ -667,7 +681,7 @@ fn open_input(name: &str, rate: f64, producer: Feed<f32>, dead: Arc<AtomicBool>)
         )
         .map_err(|e| format!("`{name}`: {e}"))?;
     stream.play().map_err(|e| format!("`{name}`: {e}"))?;
-    Ok((stream, channels))
+    Ok(Some((stream, channels)))
 }
 
 /// A MIDI port, its callback handing every note to the node's ring.

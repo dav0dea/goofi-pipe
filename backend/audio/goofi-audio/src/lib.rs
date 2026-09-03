@@ -44,6 +44,14 @@ pub enum Clock {
     Device,
 }
 
+impl Clock {
+    /// Hardware belongs to the device clock alone: `drive(frames)` renders at the caller's speed,
+    /// and no live stream has a timeline that can meet it.
+    pub fn owns_devices(self) -> bool {
+        self == Clock::Device
+    }
+}
+
 /// The timing door: what the clock is doing, for `session status`.
 pub struct AudioStatus {
     pub clock: &'static str,
@@ -127,6 +135,9 @@ impl Drop for DeviceClock {
 
 /// The host default is what a `default` name means.
 pub(crate) const DEFAULT_DEVICE: &str = "default";
+
+/// What an input names its device to say the name resolved and nothing was opened.
+pub(crate) const NO_DEVICE: &str = "the external clock owns no device";
 
 fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(cpal::Stream, f64, u16), String> {
     let host = cpal::default_host();
@@ -276,6 +287,7 @@ impl AudioEngine {
                 waker,
                 replan: Default::default(),
                 rate: AtomicU64::new(RATE.to_bits()),
+                clock,
             }),
             classes,
             rust_loaded: HashMap::new(),
@@ -685,7 +697,7 @@ impl Engine for AudioEngine {
             .filter(|(_, device)| !agrees(device))
             .map(|(uid, _)| (*uid, format!("the clock is on `{}`", clock.as_deref().unwrap_or_default())))
             .collect();
-        if self.clock == Clock::Device {
+        if self.clock.owns_devices() {
             if let Some(why) = self.follow(clock.as_deref()) {
                 faults.extend(outs.iter().filter(|(_, device)| agrees(device)).map(|(uid, _)| (*uid, why.clone())));
             }
