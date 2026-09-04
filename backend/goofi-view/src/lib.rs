@@ -109,6 +109,10 @@ pub struct AxisReduce {
     pub method: ReduceMethod,
 }
 
+/// The bins an axis is capped to for a viewer that has declared nothing; Subsample because it is
+/// the one kernel every viewer family can draw.
+pub const UNDECLARED_MAX: usize = 512;
+
 /// One viewer's full declaration: what it can draw + what it wants reduced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewSpec {
@@ -142,6 +146,13 @@ pub fn canon_dim(dim: i32, ndim: usize) -> Option<usize> {
 }
 
 impl ViewSpec {
+    /// What stands in for a viewer that has declared nothing yet: a preview, never the full frame,
+    /// so a slot nobody has sized cannot cost the stream's whole rate.
+    pub fn undeclared() -> ViewSpec {
+        let cap = |dim| AxisReduce { dim, max: UNDECLARED_MAX, method: ReduceMethod::Subsample };
+        ViewSpec { dtype: ViewDtype::Array, ndim: Vec::new(), dims: Vec::new(), reduce: vec![cap(0), cap(-1)] }
+    }
+
     /// Whether this viewer can draw `frame`, and so joins the merge.
     pub fn admits<R: Reducible + ?Sized>(&self, frame: &R) -> bool {
         if frame.dtype_tag() != self.dtype.tag() {

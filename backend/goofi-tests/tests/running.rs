@@ -246,6 +246,20 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     g.set_param(osc, "oscillator", "sfreq", 20000.0);
     let key = (osc, "out".to_string());
 
+    // Every viewer passes through the undeclared state on its way in, and a slot nobody has sized
+    // yet must answer it with a preview rather than with the producer's whole rate.
+    let mut undeclared = Viewer::open(&base, &hex(osc), "out").await;
+    let preview = undeclared.until(|d| !f32s(d).is_empty()).await;
+    let raw = g.state.reducers.latest(key.clone()).expect("the slot keeps its raw frame");
+    assert!(f32s(&raw).len() > goofi_view::UNDECLARED_MAX,
+            "the fixture has to out-run the cap for the cap to be visible at all");
+    assert!(f32s(&preview).len() <= goofi_view::UNDECLARED_MAX,
+            "an undeclared viewer draws a preview, never the full frame");
+    assert!(preview.meta().reduced().is_some(), "and the frame says it was reduced");
+    drop(undeclared);
+    assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 0).await,
+            "it left before the counted viewers arrive");
+
     let spec = |max: usize| j!([{ "dtype": "array", "ndim": [["le", 2]], "dims": [],
                                   "reduce": [{ "dim": -1, "max": max, "method": "envelope" }] }]);
     let mut wide = Viewer::open(&base, &hex(osc), "out").await;

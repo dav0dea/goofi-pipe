@@ -19,10 +19,11 @@ pub type SlotKey = (Uid, String);
 /// A unique id per `/data` connection, so its spec contribution can be tracked + removed.
 pub type ConnId = u64;
 
-/// Flatten every connection's `ViewSpec`s into the single list the planner merges; empty means
-/// full-resolution passthrough.
+/// Flatten every connection's `ViewSpec`s into the single list the planner merges; a slot nobody
+/// has declared for folds to the undeclared preview rather than to the full frame.
 fn union_specs(by_conn: &HashMap<ConnId, Vec<ViewSpec>>) -> Vec<ViewSpec> {
-    by_conn.values().flatten().cloned().collect()
+    let merged: Vec<ViewSpec> = by_conn.values().flatten().cloned().collect();
+    if merged.is_empty() { vec![ViewSpec::undeclared()] } else { merged }
 }
 
 struct SlotReducer {
@@ -243,13 +244,8 @@ fn spawn_reducer(
             if !fresh && served == Some(g_now) {
                 continue; // nothing new to say — no emit, no joiner, no spec change
             }
-            let merged = union_specs(&specs.lock().unwrap());
-            let out = if merged.is_empty() {
-                d
-            } else {
-                let plan = goofi_view::plan(&merged, &d);
-                goofi_core::reduce::reduce_for_view(&d, &plan)
-            };
+            let plan = goofi_view::plan(&union_specs(&specs.lock().unwrap()), &d);
+            let out = goofi_core::reduce::reduce_for_view(&d, &plan);
             reductions.fetch_add(1, Ordering::Relaxed);
             let bytes = Bytes::from(goofi_codec::encode(&out));
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
