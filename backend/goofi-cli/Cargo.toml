@@ -3,6 +3,9 @@ name = "goofi-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# What a bare `cargo run` resolves to. The other two binaries are goofi-init, named explicitly
+# once per clone, and the suite's vst3scan fixture — neither is what "run goofi" means.
+default-run = "goofi"
 
 [[bin]]
 name = "goofi"

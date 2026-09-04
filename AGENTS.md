@@ -402,6 +402,14 @@ that stops to name a second setup step is a build that did not have to stop. The
 `node_modules` was that third line, and it cost a fresh clone a server that started and served
 nothing.
 
+**`cargo run` starts the server, and the same binary is the CLI client of a running one.**
+`default-run` in `goofi-cli` is what keeps that bare command unambiguous, because the workspace also
+builds `goofi-init` and the suite's `vst3scan`. From a second shell, `goofi session list` names what
+is running and `goofi help` lists the vocabulary. Three environment variables steer the client, all
+optional: `GOOFI_SESSION` picks the server when more than one runs, `GOOFI_ACTOR` names the undo
+stack the commands land on, and `GOOFI_HOME` must MATCH the server's, because the session record
+the client finds it through lives under it. An agent goofi spawns is handed the first two already.
+
 **The toolchain is pinned**, in `rust-toolchain.toml` — a different statement from `rust-version` in
 Cargo.toml, which is the OLDEST compiler this code supports where the pin is the one it is built and
 gated with. It exists because CI's `stable` had drifted eight releases past the machine the code was

@@ -23,31 +23,6 @@ members = [
     "backend/goofi-tests",
 ]
 
-# Everything except `goofi-init`. Two binaries in the default set make a bare `cargo run`
-# ambiguous ("could not determine which binary to run"), and goofi-init is not something you run
-# by accident — it is `cargo run -p goofi-init`, named explicitly, once per clone. Listed the long
-# way rather than narrowed to `goofi-cli`, because narrowing would quietly shrink a bare
-# `cargo test` to one crate's handful of tests while still reporting success.
-default-members = [
-    "backend/goofi-core",
-    "backend/goofi-codec",
-    "backend/goofi-node",
-    "backend/goofi-transport",
-    "backend/goofi-build",
-    "backend/goofi-graph",
-    "backend/signal/goofi-signal-sdk",
-    "backend/audio/goofi-audio-sdk",
-    "backend/audio/goofi-audio",
-    "backend/signal/goofi-signal",
-    "backend/signal/goofi-python",
-    "backend/signal/goofi-pymod",
-    "backend/goofi-view",
-    "backend/goofi-bridge",
-    "backend/goofi-client",
-    "backend/goofi-cli",
-    "backend/goofi-tests",
-]
-
 [workspace.package]
 # THE version of goofi — the single source of truth. Every crate takes it via
 # `version.workspace = true`, `mcp.rs` reports it through `env!("CARGO_PKG_VERSION")`, and the
