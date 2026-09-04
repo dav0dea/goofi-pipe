@@ -143,12 +143,9 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
     let host = cpal::default_host();
     let device = control::device("output", name, host.default_output_device(), host.output_devices())?;
     let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
-    let mut config = supported.config();
-    if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
-        if (*min..=*max).contains(&(BLOCK as u32)) {
-            config.buffer_size = cpal::BufferSize::Fixed(BLOCK as u32);
-        }
-    }
+    // The host's own buffer, never a size of ours: `render_into` is size-agnostic, and a sound
+    // server underruns on the one-block buffer a sound CARD served happily.
+    let config = supported.config();
     let rate = f64::from(config.sample_rate);
     let channels = config.channels;
     let died = stats.clone();

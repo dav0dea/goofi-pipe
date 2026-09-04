@@ -112,8 +112,8 @@ nothing else — no reinstantiation, no state reset. A layout tag (`Speakers`, `
 carried: a port is a count, and the tag arrives with the first node that needs one.
 
 **The audio device belongs to the engine, not to a node.** The device callback is the clock; the
-engine opens ONE cpal output stream, asks for a fixed 64-frame buffer, and carries whatever the
-backend actually delivers through its own FIFO. Without a device the clock is external —
+engine opens ONE cpal output stream, takes the HOST's own buffer, and carries whatever the
+backend delivers through its own FIFO. Without a device the clock is external —
 `AudioEngine::drive(frames)`, the concrete door the test harness reaches through `as_any_mut` —
 and everything downstream is the same code. One output device per engine: the stream follows the
 device the `AudioOut` nodes name, and a second `AudioOut` naming another device faults until they
@@ -505,12 +505,18 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   such a device needs. That is now the ALSA FALLBACK's problem alone, since a machine with a sound
   server never lists a `hw:` name. A rate change and a stream loss are still unexercised. The door
   is the same `audio` block, by hand.
-- **The Linux period is ~1016 frames, ~21 ms, on either backend.** The ALSA `default` PCM ignores
-  the 64-frame request, and re-measured 2026-09-03 the PulseAudio host ignores it too: 238
-  callbacks in 5.04 s at 48 kHz stereo, 0 xruns, worst render 97 µs. So the spec's "at most 63
-  frames" holds only where a backend honours it. The PipeWire quantum is how a smaller period is
-  reached; unmeasured, and it is the strongest argument for the native `pipewire` host if the
-  build-time dependency it wants is ever worth paying.
+- **goofi asks for NO buffer size, and the 2026-09-03 reading that said it may was wrong.** That
+  reading took `session status` for the answer, and the counter it trusted cannot see the fault:
+  a sound SERVER underruns on a 64-frame buffer where a sound CARD did not, and the server pads
+  the gap with silence, so goofi's callback succeeds every time and `xruns` stays 0. Measured
+  2026-09-04 by recording the sink back: with `BufferSize::Fixed(64)` the output was **58.5%
+  exact-zero samples** — 384 frames of audio, then 512 to 640 of silence, the sine resuming IN
+  PHASE, which is what says the DSP never skipped and the padding is the server's. `Fixed(256)`
+  is no better (40.6% of the envelope under half). The host default is clean: zero dropouts, as
+  clean as a `pw-play` reference sine. The period is then ~2032 frames, ~42 ms, and buying that
+  latency back means the PipeWire quantum, never a cpal buffer request.
+  **A device fault is only provable from OUTSIDE the process** — `session status` reports what
+  goofi did, not what was heard.
 - **A machine with no output device** faults every `AudioOut` once with `no default output device`
   and renders nothing: the CLI is always `Clock::Device`, and the spec's external clock for a
   headless server has nothing to drive it. A real-time self-clock for a device-less machine is
