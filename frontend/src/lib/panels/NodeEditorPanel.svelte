@@ -306,20 +306,32 @@
 		return sceneDrawEndpoint(node, slot, entered ?? ROOT_ID, memberIndex);
 	}
 
+	/** The handles a card draws, one per slot in order — kept on the flow node, as the record it
+	 * came from is mutated in place. */
+	function handlesOf(n: { input_slots: Record<string, string>; output_slots: Record<string, string> }): string {
+		return `${Object.keys(n.input_slots).join(' ')}|${Object.keys(n.output_slots).join(' ')}`;
+	}
+
 	// Render the direct children of the entered scope — leaves, nested facades and boundary ports
 	// alike, because each is a node record that names this scope.
 	$effect(() => {
 		const scope = entered ?? ROOT_ID;
+		// SvelteFlow hides a node it has not measured and trusts a measured one's handle bounds, so
+		// the size it wrote on the previous object rides along only while the handles are the same.
+		const previous = new Map(untrack(() => flowNodes).map((n) => [n.id, n]));
 		const next: Node[] = [];
 		for (const uid of childrenOfScope(scope, memberIndex)) {
 			const n = g.nodeById(uid);
 			if (!n) continue;
+			const was = previous.get(uid);
+			const handles = handlesOf(n);
 			next.push({
 				id: uid,
 				type: 'goofi',
 				position: pinned.get(uid) ?? { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
-				data: { node: n, label: n.name },
-				selected: sel.nodes(panelId).has(uid)
+				data: { node: n, label: n.name, handles },
+				selected: sel.nodes(panelId).has(uid),
+				measured: was?.data.handles === handles ? was.measured : undefined
 			});
 		}
 		flowNodes = next;

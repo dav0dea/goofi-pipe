@@ -87,6 +87,20 @@ test('a patch under construction holds together at every stage', async ({ page }
 				)
 				.toBe(true);
 			await expectIntact(page, 'a streaming viewer');
+			// A card under a live runtime never blinks out: every delta re-derives the flow, and a
+			// node SvelteFlow has not measured is hidden until it is — a press then lands on the pane.
+			const blinks = await page.evaluate(async (u) => {
+				const card = document.querySelector(`.svelte-flow__node[data-id="${u}"]`) as HTMLElement;
+				let hidden = 0;
+				const mo = new MutationObserver(() => {
+					if (getComputedStyle(card).visibility === 'hidden') hidden++;
+				});
+				mo.observe(card, { attributes: true, attributeFilter: ['style'] });
+				await new Promise((r) => setTimeout(r, 2000));
+				mo.disconnect();
+				return hidden;
+			}, buf);
+			expect(blinks, 'the streaming card never went hidden').toBe(0);
 		});
 
 		await test.step('a spectrum on a log axis, streaming', async () => {
