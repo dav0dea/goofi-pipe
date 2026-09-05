@@ -3374,7 +3374,12 @@ fn apply_status_to(
             }
         }
         Status::ParamValues { evaluated } => {
-            entry.health.evaluated = evaluated.into_iter().collect();
+            // A pulse holds no value: what an engine evaluated for one is its edge memory.
+            let params = &entry.params;
+            entry.health.evaluated = evaluated
+                .into_iter()
+                .filter(|(key, _)| !matches!(goofi_node::param(params, &key.group, &key.name), Some(Param::Pulse)))
+                .collect();
         }
     }
     // Stamp when the error first read the way it does now — re-stamped only when the message

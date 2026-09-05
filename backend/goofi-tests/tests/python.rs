@@ -244,11 +244,10 @@ fn a_python_pulse_param_is_a_request_the_node_answers_with_a_hook() {
     let node = g.add("PulseCounter");
     let probe = g.probe(node, "out");
     free_run(&g, node, 50.0);
-    let past = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v > c);
     let under = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v < c);
-    g.until("a count past twenty", |_| past(20.0).then_some(()));
+    let before = f32s(&g.until("a count past twenty", |_| probe.latest().filter(|d| f32s(d)[0] > 20.0)))[0];
     g.call("node param pulse", j!({ "node": hex(node), "param": "count/reset" }));
-    g.until("the count to start over", |_| under(10.0).then_some(()));
+    g.until("the count to start over", |_| under(before).then_some(()));
     assert!(g.error(node).is_none(), "a pulse leaves no error");
 }
 
@@ -257,7 +256,7 @@ mod inproc {
     use std::time::Duration;
 
     use super::*;
-    use goofi_tests::hex;
+    use super::SOURCES;
     use goofi_core::{Data, Meta, Param, Value};
     use goofi_node::{ParamGroups, Params};
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, Outputs};
@@ -340,7 +339,53 @@ class Absent(goofi.Node):
         assert_eq!((count(&mut there), count(&mut there)), (1.0, 2.0));
         there.on_pulse(&key, &Params::new(&params)).expect("the hook answers in the child");
         assert_eq!(count(&mut there), 1.0, "the child's count starts over after a pulse");
+
+        // A declared pulse with no hook stays silent; a hook that raises is one request's error,
+        // and the node answers the next run on both tiers.
+        for (source, hook) in [(NO_HOOK, "no hook"), (RAISING_HOOK, "raising hook")] {
+            let mut here = PyNode::from_source(source, vec![], vec!["out"]).expect("PyNode");
+            here.setup(&mut NodeCtx::new(), &Params::new(&params)).expect("in-process setup");
+            let mut there = RemoteNode::new(&py, source, vec![]);
+            for node in [&mut here as &mut dyn Node, &mut there] {
+                let fired = node.on_pulse(&key, &Params::new(&params));
+                match hook {
+                    "no hook" => assert!(fired.is_ok(), "{hook}: {fired:?}"),
+                    _ => assert!(matches!(&fired, Err(e) if e.0.contains("boom")), "{hook}: {fired:?}"),
+                }
+                assert_eq!(count(node), 1.0, "{hook}: the node runs after the pulse");
+            }
+        }
     }
+
+    const NO_HOOK: &str = r#"
+import goofi
+import numpy as np
+class Mute(goofi.Node):
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    PRODUCER = True
+    PARAMS = {"count": {"reset": goofi.PulseParam()}}
+    def setup(self):
+        self.n = 0
+    def process(self):
+        self.n += 1
+        return np.array([float(self.n)], dtype=np.float32)
+"#;
+
+    const RAISING_HOOK: &str = r#"
+import goofi
+import numpy as np
+class Loud(goofi.Node):
+    OUTPUTS = {"out": goofi.DataType.ARRAY}
+    PRODUCER = True
+    PARAMS = {"count": {"reset": goofi.PulseParam()}}
+    def setup(self):
+        self.n = 0
+    def process(self):
+        self.n += 1
+        return np.array([float(self.n)], dtype=np.float32)
+    def pulse_count_reset(self):
+        raise RuntimeError("boom")
+"#;
 
     #[test]
     fn one_source_run_on_both_tiers_produces_the_same_frame() {

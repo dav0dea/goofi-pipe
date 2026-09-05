@@ -50,7 +50,7 @@ pub fn apply_merge(target: &mut Value, patch: &Value) {
     let Value::Object(t) = target else { unreachable!("just made it an object") };
     for (k, pv) in p {
         if pv.is_null() {
-            t.remove(k);
+            t.shift_remove(k);
         } else {
             apply_merge(t.entry(k.clone()).or_insert(Value::Null), pv);
         }

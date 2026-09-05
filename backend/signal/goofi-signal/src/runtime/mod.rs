@@ -541,13 +541,7 @@ impl NodeRuntime {
     /// is no longer told about is one it would otherwise preview for ever. A PULSE is left out: its
     /// evaluated bool is this thread's edge memory, and a pulse has no value for anyone to read.
     fn report_param_values(&mut self) {
-        let literals = &self.literals;
-        let evaluated = self
-            .evaluated
-            .iter()
-            .filter(|(k, _)| !matches!(goofi_node::param(literals, &k.group, &k.name), Some(Param::Pulse)))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.transport.report(WireStatus::Health(Status::ParamValues { evaluated }));
     }
 

@@ -10,11 +10,9 @@
 		error: 'danger'
 	};
 
-	/** Parameter group names in display order: the manifest's declared order, 'common' last. */
+	/** Parameter group names in display order: the order the manager sent, which is the declared one. */
 	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
-		if (!node) return [];
-		const names = Object.keys(node.params);
-		return [...names.filter((n) => n !== 'common'), ...names.filter((n) => n === 'common')];
+		return node ? Object.keys(node.params) : [];
 	}
 </script>
 
