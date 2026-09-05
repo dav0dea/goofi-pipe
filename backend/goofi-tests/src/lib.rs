@@ -78,16 +78,16 @@ impl Goofi {
             // one known POSIX shell, so a fish or a loud profile cannot fail a test command.
             #[cfg(unix)]
             std::env::set_var("SHELL", "/bin/sh");
-            // The build dir goofi's own build pre-warmed, so a shipped artifact is found and an
-            // authored node compiles against a target that already holds the SDK.
+            // Both under THIS binary's target dir, which goofi's own build pre-warmed: a shell's own
+            // target must never reach the nested cargo, and the machine's temp dir is every checkout's.
+            let target = std::env::current_exe().ok().and_then(|e| e.ancestors().nth(3).map(Path::to_path_buf));
             if std::env::var_os("GOOFI_BUILD_DIR").is_none() {
-                if let Some(target) = std::env::current_exe().ok().and_then(|e| e.ancestors().nth(3).map(Path::to_path_buf)) {
+                if let Some(target) = &target {
                     std::env::set_var("GOOFI_BUILD_DIR", target.join("goofi-build"));
                 }
             }
-            // A shell's own target dir must never reach the nested cargo: a pipeline that let it
-            // through builds an authored node where nothing looks for it.
-            std::env::set_var("CARGO_TARGET_DIR", std::env::temp_dir().join("goofi-test-cargo-target"));
+            let nested = target.unwrap_or_else(std::env::temp_dir).join("goofi-test-cargo-target");
+            std::env::set_var("CARGO_TARGET_DIR", nested);
         });
         let state = AppState::new(mode, goofi_bridge::Clock::External);
         {
