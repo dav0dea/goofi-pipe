@@ -99,14 +99,29 @@ fn main() {
         Some(first) if first.starts_with('-') => argv,
         Some(_) => std::process::exit(client_main(argv)),
     };
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("the serve runtime")
-        .block_on(serve_main(rest));
+    let (windows, ui) = match goofi_audio::ui::Loop::open() {
+        Ok((windows, ui)) => (Some(windows), Some(ui)),
+        Err(_) => (None, None),
+    };
+    let serve = move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("the serve runtime")
+            .block_on(serve_main(rest, ui))
+    };
+    // Where a display answers, the main thread is the window thread — a plugin's editor lives
+    // there — and the server runs beside it; where none does, it serves as it always did.
+    match windows {
+        Some(windows) => {
+            std::thread::Builder::new().name("goofi-serve".into()).spawn(serve).expect("the serve thread");
+            windows.run();
+        }
+        None => serve(),
+    }
 }
 
-async fn serve_main(rest: Vec<String>) {
+async fn serve_main(rest: Vec<String>, ui: Option<goofi_audio::ui::Ui>) {
     let mut cli = match parse_args(rest.into_iter()) {
         Ok(cli) => cli,
         Err(e) => {
@@ -143,7 +158,7 @@ async fn serve_main(rest: Vec<String>) {
     };
     let mode = goofi_bridge::Mode { headless: cli.headless, demo: cli.demo };
     let state = AppState::new(mode, goofi_bridge::Clock::Device);
-    std::process::exit(run(cli, python, state, shutdown_signal()).await);
+    std::process::exit(run(cli, python, state, shutdown_signal(), ui).await);
 }
 
 /// Send lines to the resolved server and print each entry — decoded NPY bytes when the result
@@ -400,6 +415,7 @@ async fn run(
     subproc_python: String,
     mut state: AppState,
     shutdown: impl Future<Output = ()>,
+    ui: Option<goofi_audio::ui::Ui>,
 ) -> i32 {
     // Before ANY use of the embedded interpreter.
     point_embedded_python_at_its_venv();
@@ -415,9 +431,13 @@ async fn run(
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
         .set_python(goofi_signal::Python::new(subproc_python.clone()));
-    if let (false, Ok(own)) = (demo, std::env::current_exe()) {
-        goofi_bridge::audio_engine(&mut state.graph.lock().unwrap())
-            .set_vst3(own, goofi_audio::vst3::platform_dirs());
+    if !demo {
+        let mut g = state.graph.lock().unwrap();
+        let audio = goofi_bridge::audio_engine(&mut g);
+        if let Ok(own) = std::env::current_exe() {
+            audio.set_vst3(own, goofi_audio::vst3::platform_dirs());
+        }
+        audio.set_ui(ui);
     }
     boot_scan(&state);
 
@@ -824,7 +844,7 @@ mod tests {
         }
         // An already-resolved shutdown takes the same path ctrl-C does; port 0 binds ephemerally.
         let cli = Cli { port: Some(0), ..Cli::default() };
-        assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
+        assert_eq!(run(cli, "python3".into(), state, std::future::ready(()), None).await, 0);
         assert!(
             released.load(std::sync::atomic::Ordering::Acquire),
             "the node's runtime was dropped — its shared memory went with it — before the exit"
@@ -838,7 +858,7 @@ mod tests {
         let mount = state.mount();
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
         let cli = Cli { port: Some(0), ..Cli::default() };
-        assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
+        assert_eq!(run(cli, "python3".into(), state, std::future::ready(()), None).await, 0);
         let husk = mount.parent().expect("the mount is nested under a nonce dir");
         assert!(!husk.exists(), "the nonce directory goes too, not just workspace: {}", husk.display());
 
@@ -846,7 +866,7 @@ mod tests {
         let listed = walled();
         let m2 = listed.mount();
         let cli = Cli { list_nodes: true, ..Cli::default() };
-        assert_eq!(run(cli, "python3".into(), listed, std::future::pending()).await, 0);
+        assert_eq!(run(cli, "python3".into(), listed, std::future::pending(), None).await, 0);
         assert!(!m2.exists(), "--list-nodes reclaims too: {}", m2.display());
     }
 

@@ -19,6 +19,8 @@ pub struct Birth {
     pub inbox: Option<rtrb::Consumer<f32>>,
     pub notes: Option<rtrb::Consumer<midi_in::Note>>,
     pub chans: Arc<AtomicU16>,
+    /// The window thread, where a plugin is made and unmade; none where the machine has no display.
+    pub ui: Option<crate::ui::Ui>,
 }
 
 pub type Born = fn(Birth) -> Box<dyn AudioNode>;

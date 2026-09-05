@@ -21,7 +21,7 @@ use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{ComPtr, ComWrapper};
 
-use crate::nodes::Class;
+use crate::nodes::{self, Class};
 use crate::AudioEngine;
 pub(crate) use node::Derived;
 use node::{Kind, Plugin};
@@ -389,7 +389,7 @@ impl AudioEngine {
             Err(reason) => return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) },
         };
         let plugin = derived.clone();
-        let make = Arc::new(move |_| Box::new(Plugin::new(plugin.clone())) as Box<dyn AudioNode>);
+        let make = Arc::new(move |birth: nodes::Birth| Box::new(Plugin::new(plugin.clone(), birth.ui)) as Box<dyn AudioNode>);
         let replaced = self.classes.insert(manifest.type_name, Class { manifest, make, plugin: Some(derived) }).is_some();
         ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Registered { isolation: Isolation::Native, replaced } }
     }

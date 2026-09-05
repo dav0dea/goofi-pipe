@@ -1,4 +1,4 @@
-//! One plugin instance behind [`AudioNode`]: instantiated at `prepare` on the control thread, its
+//! One plugin instance behind [`AudioNode`]: instantiated at `prepare` on the window thread, its
 //! params and note events queued per block, its buses staged from the arena.
 
 use std::path::PathBuf;
@@ -13,6 +13,7 @@ use vst3::{ComPtr, ComWrapper};
 use super::host::{Changes, Events, Host, Stream};
 use super::module;
 use super::ok;
+use crate::ui::Ui;
 
 /// The tempo the host reports. A CONSTANT for now, and a lie only in the sense that goofi has no
 /// transport of its own to tell the truth from — but a plausible tempo is what a synced plugin
@@ -37,6 +38,7 @@ pub struct Derived {
 
 pub struct Plugin {
     class: Arc<Derived>,
+    ui: Option<Ui>,
     live: Option<Live>,
     /// What instantiation refused; every `process` raises it, because the runtime marks a node
     /// dead only once the fault is on its way and expects the next block to fault again.
@@ -47,8 +49,24 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub fn new(class: Arc<Derived>) -> Plugin {
-        Plugin { class, live: None, failed: None, blob: Vec::new() }
+    pub fn new(class: Arc<Derived>, ui: Option<Ui>) -> Plugin {
+        Plugin { class, ui, live: None, failed: None, blob: Vec::new() }
+    }
+}
+
+/// On the window thread where there is one — a JUCE plugin holds the thread that loaded it to be
+/// its message thread — and inline where there is none.
+fn on<T: Send>(ui: &Option<Ui>, f: impl FnOnce() -> T + Send) -> T {
+    match ui {
+        Some(ui) => ui.run(|_| f()),
+        None => f(),
+    }
+}
+
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        let live = self.live.take();
+        on(&self.ui, move || drop(live));
     }
 }
 
@@ -58,14 +76,15 @@ impl AudioNode for Plugin {
     }
 
     fn prepare(&mut self, rate: f64) {
-        let result = match self.live.as_mut() {
+        let Plugin { class, ui, live, failed, blob } = self;
+        *failed = on(ui, || match live {
             Some(live) => live.retune(rate),
-            None => Live::open(&self.class, rate).map(|live| {
-                live.load(&self.blob);
-                self.live = Some(live)
+            None => Live::open(class, rate).map(|opened| {
+                opened.load(blob);
+                *live = Some(opened)
             }),
-        };
-        self.failed = result.err();
+        })
+        .err();
     }
 
     fn process(&mut self, b: &mut Block<'_>) {

@@ -23,6 +23,7 @@ pub(crate) mod nodes;
 mod plan;
 mod runtime;
 mod scan;
+pub mod ui;
 pub mod vst3;
 
 use control::{Desired, Handle, Shared, Sub};
@@ -182,8 +183,8 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
 /// the control half's in the ports. A node that owns no OS handle gets neither.
-fn rings_for(type_name: &str, chans: Arc<AtomicU16>) -> (nodes::Birth, control::Ports) {
-    let mut birth = nodes::Birth { chans: chans.clone(), ..Default::default() };
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>, ui: Option<ui::Ui>) -> (nodes::Birth, control::Ports) {
+    let mut birth = nodes::Birth { chans: chans.clone(), ui, ..Default::default() };
     let mut ports = control::Ports::default();
     match type_name {
         nodes::audio_in::TYPE => {
@@ -229,6 +230,8 @@ pub struct AudioEngine {
     rust_loaded: HashMap<PathBuf, Arc<Loaded>>,
     /// The child a bundle is scanned in, and the platform's plugin folders: the composition root's.
     vst3: Option<(PathBuf, Vec<PathBuf>)>,
+    /// The window thread: where a plugin is loaded and its editor lives. None without a display.
+    ui: Option<ui::Ui>,
     runtime: Arc<Mutex<Runtime>>,
     inbox: rtrb::Producer<Msg>,
     outbox: rtrb::Consumer<Retired>,
@@ -289,6 +292,7 @@ impl AudioEngine {
             classes,
             rust_loaded: HashMap::new(),
             vst3: None,
+            ui: None,
             runtime: Arc::new(Mutex::new(Runtime::new(SLAB, to_audio, from_audio))),
             inbox,
             outbox,
@@ -311,6 +315,11 @@ impl AudioEngine {
     /// are scanned on the engine's own account, after every root.
     pub fn set_vst3(&mut self, scanner: PathBuf, dirs: Vec<PathBuf>) {
         self.vst3 = Some((scanner, dirs));
+    }
+
+    /// The window thread every plugin from here on is made on — before anything scans.
+    pub fn set_ui(&mut self, ui: Option<ui::Ui>) {
+        self.ui = ui;
     }
 
     /// The external clock: render whole blocks until `frames` are ready, and hand them over
@@ -603,7 +612,7 @@ impl Engine for AudioEngine {
             return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
         }
         let chans = Arc::new(AtomicU16::new(1));
-        let (birth, ports) = rings_for(type_name, chans.clone());
+        let (birth, ports) = rings_for(type_name, chans.clone(), self.ui.clone());
         let mut node = make(birth);
         node.prepare(self.shared.rate());
         if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
