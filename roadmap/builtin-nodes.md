@@ -27,7 +27,7 @@ Fourteen nodes, and each one was added to prove a seam rather than to fill a cat
 
 `Filter` is the first evidence that the rule below pays: it is ONE node with a `mode` param of
 four options, where the old implementation had a node for each. The audio `Svf` is the second, and
-it took the name because one namespace spans both engines.
+it took the name before two engines could offer one; `audio:Filter` is legal now.
 
 ## The rule the reset exists to protect
 

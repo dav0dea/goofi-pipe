@@ -1,6 +1,6 @@
 # Node sources: what is still open after dynamic Rust nodes landed
 
-Built 2026-09-02. A node is a file in `nodes_<engine>/` under a root, in either language; the
+Built 2026-09-02. A node is a file in a flat root, in either language, and names its own engine (a `.py` is signal's, a `.rs` names its SDK); the
 roots are the shipped tree, then each `--extra-nodes` directory, then the patch's own `workspace/`,
 a later one winning a shared type name. A Rust node is one `.rs` file that `goofi-build` wraps in a
 generated crate, builds through a nested cargo into one content-keyed cache under

@@ -277,8 +277,8 @@ at load is greyed and named, never taking the server down; the answer is cached 
 path, mtime and size. The manifest is derived in the parent: buses to `input`/`out` ports,
 parameters to `ParamDecl` — stepped with ≤ 64 steps a `Str` of the plugin's own strings, stepped
 otherwise an `Int`, continuous a normalized `Float` in `[0, 1]` with the default's display string
-in its doc; hidden, read-only, bypass and program-change parameters omitted — under the vendor as
-category, named by the plugin, or by vendor and plugin where goofi's own library already holds
+in its doc; hidden, read-only, bypass and program-change parameters omitted — the vendor in the
+doc line, named by the plugin, or by vendor and plugin where goofi's own library already holds
 the name (a goofi node scanned LATER still replaces it: the residual). MIDI is VST3's language,
 not goofi's: an event input is three params, `gate`, `pitch` and `velocity`, and the adapter
 emits a note on at each channel's rising gate and a note off at its fall, at the sample, so a

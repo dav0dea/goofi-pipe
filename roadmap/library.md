@@ -26,14 +26,14 @@ anyone can install.
 **The unit is a bundle.** A bundle is a directory with a `requirements.txt` for the Python
 packages its nodes import — this exists today: checked against both interpreters at startup and
 installed only on a yes in the terminal — and a manifest beside its files: a name, a version, a
-description, and the goofi version it was built against. It holds `nodes_signal/` and
-`nodes_audio/` — one folder per engine, `node-sources.md`'s rule — and, later, `panels/`.
+description, and the goofi version it was built against. It is a flat folder of node
+files, each naming its own engine — `node-sources.md`'s rule — and, later, `panels/`.
 A bundle is the only thing that is installed, published or updated. There is no per-node install.
 
 **Installed bundles live in `$GOOFI_HOME/.goofi/bundles/<name>/`**, one directory each, and the
 scan order becomes: the shipped tree, then each installed bundle, then this patch's own
 `workspace/nodes_*/`. The precedence `node-sources.md` states is unchanged; this fills the middle
-slot it left open. A bundle's name is the palette category its nodes appear under.
+slot it left open. A bundle's name is a palette facet the palette derives from where a node came from.
 
 **The repo's own bundles live in `node-bundles/<name>/`**, and they publish through the same door a
 third party's do — the shipped `nodes_*/` trees stay the shipped trees. A first-party bundle that
@@ -126,7 +126,7 @@ testable through the one interface) or a peer channel (cheaper, weaker).
    naming its packages in a `requirements.txt` that provisioning installs and startup checks, and
    one scenario per bundle in `goofi-tests`.
 2. **The bundle manifest and the local half**: `library bundle install <path | git url>` into
-   `.goofi/bundles/`, the scan order, the palette category, `list`, `update`, `remove`. The
+   `.goofi/bundles/`, the scan order, the bundle facet, `list`, `update`, `remove`. The
    `.gfi` records `name@version`.
 3. **The static scanner** in `goofi-node`, and `library source` against a local folder, so an
    author previews the detection before any service exists.
