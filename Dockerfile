@@ -9,10 +9,11 @@ FROM rust:1.97.1-bookworm AS build
 # uv and npm are the two tools goofi-init demands; libasound2-dev is cpal's, which is compiled in
 # whether or not a demo ever opens a device. Node comes from NodeSource, not apt: bookworm
 # ships 18.20 and the frontend's vite asks for ^20.19 || >=22.12, so an apt node fails the
-# SPA build — which `cargo build` refuses to fall back from.
+# SPA build — which `cargo build` refuses to fall back from. 24 rather than 22, matching CI:
+# the lockfile is gitignored, and npm 10 crashes on this manifest without one.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg libasound2-dev pkg-config \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
