@@ -9,6 +9,7 @@ import ViewerPanel from './ViewerPanel.svelte';
 import MetadataInspectorPanel from './MetadataInspectorPanel.svelte';
 import ConsolePanel from './ConsolePanel.svelte';
 import GlobalsPanel from './GlobalsPanel.svelte';
+import ControlPanel from './ControlPanel.svelte';
 import AgentPanel from './AgentPanel.svelte';
 
 const components: Record<PanelTypeId, Component<PanelProps>> = {
@@ -19,6 +20,7 @@ const components: Record<PanelTypeId, Component<PanelProps>> = {
 	metadata: MetadataInspectorPanel,
 	console: ConsolePanel,
 	globals: GlobalsPanel,
+	control: ControlPanel,
 	agent: AgentPanel
 };
 

@@ -106,6 +106,18 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let why = g.refuse("global entry rename", j!({ "name": "desk.handle", "to": "loose" }));
     assert!(why.contains("group"), "a rename out of every group is refused: {why}");
 
+    // A control panel names its group the way an expression does, so the ONE rename moves both.
+    g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "control",
+                                     "state": { "group": "desk", "edit": false } }));
+    // A panel's state rides the document as a JSON string, so the reader parses it.
+    let group_of = |g: &Goofi| {
+        let raw = entries(g)[&first_panel(g)]["state"].as_str().unwrap_or("null").to_string();
+        serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null)["group"].clone()
+    };
+    g.call("global group rename", j!({ "from": "desk", "to": "board" }));
+    assert_eq!(group_of(&g), j!("board"), "the panel followed its group");
+    g.call("global group rename", j!({ "from": "board", "to": "desk" }));
+
     // …and a compound is a UNIT: a refused step takes back the one that landed, and records nothing,
     // which is what the step count below would catch.
     let why = g.refuse("compound", j!({ "ops": [
@@ -158,7 +170,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
-    assert_eq!(steps, 16, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert_eq!(steps, 19, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");

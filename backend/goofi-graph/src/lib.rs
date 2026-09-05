@@ -567,6 +567,8 @@ impl Graph {
     pub fn rename_global_group(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
         let moved = self.globals.rename_group(from, to)?;
         let touched = self.rewrite_global_reads(&moved);
+        let writes = self.arrangement.regroup(from, to);
+        self.arrangement.set_contents(&writes);
         for (_, new) in &moved {
             self.invalidate_bindings_reading(new);
         }

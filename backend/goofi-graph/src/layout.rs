@@ -934,6 +934,24 @@ impl Layout {
         writes
     }
 
+    /// Re-aim every control panel naming group `from` at `to`. A group's identity is its name, so
+    /// a panel holds it the way an expression does, and one rename moves both.
+    pub fn regroup(&self, from: &str, to: &str) -> Vec<Write> {
+        let mut writes = Vec::new();
+        for n in self.nodes() {
+            let Node::Panel { id, panel_type, state, .. } = n else { continue };
+            if panel_type != "control" || state.get("group").and_then(|v| v.as_str()) != Some(from) {
+                continue;
+            }
+            let mut state = state.clone();
+            if let Some(o) = state.as_object_mut() {
+                o.insert("group".into(), Value::String(to.to_string()));
+            }
+            writes.push((id.clone(), Contents::Panel { panel_type: panel_type.clone(), state }));
+        }
+        writes
+    }
+
     /// Set a panel's type and/or state. `panel_type` lands FIRST because changing it clears the old
     /// type's state, and re-asserting the SAME type must not wipe. `state` MERGES key by key, so two
     /// writes in one round trip cannot drop the first's key.

@@ -10,6 +10,7 @@
 		Field,
 		NumberInput,
 		Slider,
+		Knob,
 		Select,
 		TextInput,
 		Toggle,
@@ -246,6 +247,32 @@
 					></textarea>
 				{/if}
 			</Field>
+		</div>
+	</section>
+
+	<section>
+		<h2>Knob</h2>
+		<div class="form">
+			<div style="width: 64px; height: 64px">
+				<Knob
+					value={cutoff}
+					onChange={(v) => (cutoff = v)}
+					min={0}
+					max={1}
+					step={0.01}
+					label="Cutoff"
+					data-testid="ui-knob"
+				/>
+			</div>
+			<div style="width: 64px; height: 64px">
+				<Knob
+					value={cutoff}
+					onChange={(v) => (cutoff = v)}
+					disabled
+					label="Cutoff, disabled"
+					data-testid="ui-knob-disabled"
+				/>
+			</div>
 		</div>
 	</section>
 

@@ -30,6 +30,7 @@ import {
 	arrangementTabs,
 	type Doc,
 	type GlobalView,
+	type ControlView,
 	type GlobalType
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
@@ -377,10 +378,16 @@ export class GraphStore {
 		this._recordGraphCmd(`Set ${name}`);
 	}
 
-	/** Add a NEW user global; the server refuses a name the patch already holds. */
-	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
+	/** Add a NEW user global; the server refuses a name the patch already holds. A `control` makes
+	 * it a control-panel element. */
+	async addGlobal(
+		name: string,
+		value: number | string | boolean,
+		type: GlobalType,
+		control?: ControlView
+	): Promise<void> {
 		if (this.globals.some((g) => g.name === name)) throw new Error(`global ${name} already exists`);
-		await this.ctl.call('global entry add', { name, value, type });
+		await this.ctl.call('global entry add', control ? { name, value, type, control } : { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
 	}
 
@@ -402,6 +409,12 @@ export class GraphStore {
 		if (!this.globals.some((g) => g.name === oldName)) throw new Error(`no global ${oldName}`);
 		await this.ctl.call('global entry rename', { name: oldName, to: newName });
 		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
+	}
+
+	/** Set a control element's widget, its range or its place. */
+	async setGlobalControl(name: string, control: ControlView): Promise<void> {
+		await this.ctl.call('global entry edit', { name, control });
+		this._recordGraphCmd(`Edit control ${name}`);
 	}
 
 	/** Rename a group, moving every member with it. */
