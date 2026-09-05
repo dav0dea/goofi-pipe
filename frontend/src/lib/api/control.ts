@@ -200,6 +200,8 @@ export type ControlEvent =
 	// Carries the WHOLE roster, so a client never has to diff transitions.
 	| { event: 'harness_changed'; payload: HarnessRoster }
 	| { event: 'graph_replaced'; payload: GraphSnapshot }
+	// A demo about to hand itself back. `null` withdraws a countdown somebody else interrupted.
+	| { event: 'demo_idle'; payload: { closing_in_ms: number | null } }
 	// The whole document — on connect, and again to recover a client that lagged past the ring.
 	| { event: 'doc_state'; payload: { v: number; doc: Record<string, unknown> } }
 	// `from` is the version the delta applies TO, `v` the version it produces.
