@@ -424,7 +424,7 @@ pub struct NodeManifest {
     /// Declared params; the runtime `ParamGroups` is built on demand by [`Self::default_params`].
     pub params: &'static [ParamDecl],
     /// This type is a SOURCE: it makes frames on its own schedule, so `common.autotrigger` and the
-    /// carried `globals.default_ufreq` expression both default on.
+    /// carried `globals.system.default_ufreq` expression both default on.
     pub producer: bool,
 }
 

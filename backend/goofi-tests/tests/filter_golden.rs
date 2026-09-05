@@ -35,7 +35,7 @@ fn the_zero_phase_filter_answers_what_scipy_answers() {
     let g = Goofi::new();
     install(&g, "golden.py", &source_of(&input));
     let src = g.add("Golden");
-    let flt = g.add("Filter");
+    let flt = g.add("signal:Filter");
     let probe = g.probe(flt, "out");
     g.link(src, "out", flt, "input");
 

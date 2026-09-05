@@ -19,7 +19,7 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     // half a hertz and a spectrum labelled in bins instead of hertz reads WRONG.
     let g = Goofi::new();
     let osc = g.add("LFO");
-    let flt = g.add("Filter");
+    let flt = g.add("signal:Filter");
     let buf = g.add("Buffer");
     let psd = g.add("Psd");
     let set = |n, group: &str, name: &str, v: serde_json::Value| {
@@ -136,7 +136,7 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     // input at all, which nothing can ring — so their own birth and their own edits run them.
     let g = Goofi::new();
     let lfo = g.add("LFO");
-    let noise = g.add("Noise");
+    let noise = g.add("signal:Noise");
     let konst = g.add("Constant");
     let words = g.add("Text");
     let set = |n, group: &str, name: &str, v: serde_json::Value| {
@@ -416,7 +416,7 @@ fn a_stitching_node_answers_from_the_past_and_a_transform_round_trips() {
 
     // A delay keeps the shape and the level it was given, at any reach: it moves the stream along
     // its own axis and invents nothing. What the reach itself buys is the past proven above.
-    let delay = g.add("Delay");
+    let delay = g.add("signal:Delay");
     set(delay, "delay", "size", j!(4));
     let pd = g.probe(delay, "out");
     g.link(level, "out", delay, "input");
@@ -499,7 +499,7 @@ fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
     assert!((row_hz - 10.0).abs() < 1.5, "the strongest row is the sine's own frequency, got {row_hz}");
 
     // Shifting the sine up by forty hertz moves its peak from ten to fifty.
-    let shift = g.add("FreqShift");
+    let shift = g.add("signal:FreqShift");
     set(shift, "freq_shift", "frequency", j!(40.0));
     let psd = g.add("Psd");
     set(psd, "psd", "mode", j!("fft"));
