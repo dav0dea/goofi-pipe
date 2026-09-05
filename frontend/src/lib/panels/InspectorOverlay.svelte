@@ -263,13 +263,14 @@
 		background: var(--accent);
 	}
 	/* Touch: an 8px seam is under a fifth of --hit, so a `::before` widens the HIT area alone. It
-	   leans INWARD, over the pane's own rows, rather than over the escape strip the clamp reserves. */
+	   leans OUTWARD, over the canvas: inward is the pane's first column, which carries the leading
+	   param tab, and a band over a control is a control no finger can reach. */
 	@media (hover: none) and (pointer: coarse) {
 		.resize-handle::before {
 			content: '';
 			position: absolute;
-			/* 12px out + 8px handle + 24px in = --hit. */
-			inset: 0 -24px 0 -12px;
+			/* 36px out + 8px handle = --hit. */
+			inset: 0 0 0 -36px;
 		}
 		/* …and the seam PAINTS at rest, as a grabber: with no hover there is no other affordance. */
 		.resize-handle::after {
@@ -315,8 +316,7 @@
 				width: var(--grab-len, 100%);
 				height: 2px;
 			}
-			/* The band turns but leans OUTWARD here (36px out + 8px handle = --hit): inward is the
-			   pane's top row, which carries the ✕. It always leans away from whatever is scarce. */
+			/* The band turns; it leans outward on both geometries, away from the pane's own controls. */
 			@media (hover: none) and (pointer: coarse) {
 				.resize-handle::before {
 					inset: -36px 0 0 0;
