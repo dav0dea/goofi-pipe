@@ -143,8 +143,8 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
     let host = cpal::default_host();
     let device = control::device("output", name, host.default_output_device(), host.output_devices())?;
     let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
-    // The host's own buffer, never a size of ours: `render_into` is size-agnostic, and a sound
-    // server underruns on the one-block buffer a sound CARD served happily.
+    // The host's own buffer, never a size of ours: `render_into` is size-agnostic, and a request of
+    // ours underran while the client was unoptimized. The 2 s this costs is a roadmap item.
     let config = supported.config();
     let rate = f64::from(config.sample_rate);
     let channels = config.channels;

@@ -36,3 +36,8 @@ rust-version = "1.89"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The sound-server client zero-fills a 1 MB read buffer on every socket wakeup; unoptimized, that
+# byte-by-byte fill alone pins a core, so a `cargo run` build cannot hold a stream in real time.
+[profile.dev.package.pulseaudio]
+opt-level = 3

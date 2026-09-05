@@ -505,18 +505,21 @@ its reasons are in the locked decisions; what survives of the two reviews that p
   such a device needs. That is now the ALSA FALLBACK's problem alone, since a machine with a sound
   server never lists a `hw:` name. A rate change and a stream loss are still unexercised. The door
   is the same `audio` block, by hand.
-- **goofi asks for NO buffer size, and the 2026-09-03 reading that said it may was wrong.** That
-  reading took `session status` for the answer, and the counter it trusted cannot see the fault:
-  a sound SERVER underruns on a 64-frame buffer where a sound CARD did not, and the server pads
-  the gap with silence, so goofi's callback succeeds every time and `xruns` stays 0. Measured
-  2026-09-04 by recording the sink back: with `BufferSize::Fixed(64)` the output was **58.5%
-  exact-zero samples** — 384 frames of audio, then 512 to 640 of silence, the sine resuming IN
-  PHASE, which is what says the DSP never skipped and the padding is the server's. `Fixed(256)`
-  is no better (40.6% of the envelope under half). The host default is clean: zero dropouts, as
-  clean as a `pw-play` reference sine. The period is then ~2032 frames, ~42 ms, and buying that
-  latency back means the PipeWire quantum, never a cpal buffer request.
-  **A device fault is only provable from OUTSIDE the process** — `session status` reports what
-  goofi did, not what was heard.
+- **goofi asks for NO buffer size, and both earlier readings of why were wrong.** The 2026-09-03
+  reading took `session status` for the answer, and its counter cannot see the fault: this host's
+  client never surfaces the server's UNDERFLOW, so `xruns` stays 0 whatever is heard. The
+  2026-09-04 reading recorded the sink back — `Fixed(64)`: **58.5% exact-zero samples**, 384 frames
+  of audio then 512 to 640 of silence, the sine resuming IN PHASE; `Fixed(256)`: 40.6% of the
+  envelope under half; the host default clean, at ~2032 frames, ~42 ms a callback — and blamed the
+  sound server. The 2026-09-05 profile found the cause: the dev profile compiled the `pulseaudio`
+  crate at opt-level 0, and its reactor zero-fills a 1 MB read buffer on every socket wakeup, byte
+  by byte, which pinned the clock thread at 100% of a core and put every render on the edge.
+  `Cargo.toml` now optimizes that one crate: 43% in a `cargo run` build, 21% in release, the DSP
+  of the bells patch being the release floor. The host default still stands because a request is
+  unmeasured with the fix, and it costs **2 s of buffer** (`tlength` 768000 bytes at the server):
+  a buffer request is the open item — `Fixed(1024)` would make it ~43 ms end to end — and it is
+  provable only from OUTSIDE the process, by recording the sink back, since `session status`
+  reports what goofi did, not what was heard.
 - **A machine with no output device** faults every `AudioOut` once with `no default output device`
   and renders nothing: the CLI is always `Clock::Device`, and the spec's external clock for a
   headless server has nothing to drive it. A real-time self-clock for a device-less machine is
