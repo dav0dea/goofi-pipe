@@ -258,7 +258,9 @@ fn a_patch_sounds_under_the_external_clock() {
     let midi = g.add("MidiIn");
     g.set_param(midi, "midi", "port", "nowhere");
     let why = g.until("the absent port to be named", |g| g.error(midi));
-    assert!(why.contains("no MIDI port `nowhere`"), "{why}");
+    // A kernel built without sound — GitHub's Linux runner — has no sequencer to look a port up in.
+    let sequencer = midir::MidiOutput::new("goofi-test").is_ok();
+    assert_eq!(why.contains("no MIDI port `nowhere`"), sequencer, "{why}");
     g.set_param(midi, "midi", "port", "none");
     g.until("the port error to clear", |g| g.error(midi).is_none().then_some(()));
     assert_eq!(refreshed(&g, &mut ev, midi, "midi", "port")[0], "none");
@@ -278,43 +280,45 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a note through a real port takes the first voice — its gate, its pitch in volts per
     // octave and its velocity — the next notes take the next voices in turn, and a release frees
-    // them. A virtual port, which WinMM has none of.
+    // them. A virtual port, which WinMM has none of, and a machine with no sequencer cannot open.
     #[cfg(unix)]
     {
         use midir::os::unix::VirtualOutput;
-        let mut keys = midir::MidiOutput::new("goofi-test")
-            .expect("a MIDI client: on Linux this needs the ALSA sequencer, `modprobe snd-seq`")
-            .create_virtual("goofi-test-out")
-            .expect("a virtual MIDI port");
-        let port = g.until("the virtual port to be listed", |g| {
-            refreshed(g, &mut ev, midi, "midi", "port").into_iter().find(|n| n.contains("goofi-test-out"))
-        });
-        g.set_param(midi, "midi", "port", port.as_str());
-        let pitch = g.probe(midi, "pitch");
-        let velocity = g.probe(midi, "velocity");
-        g.until("A4 to take the first voice", |g| {
-            keys.send(&[0x90, 69, 100]).expect("a note on"); // sent again per poll: a held note keeps its voice
-            let (x, channels) = drive(g, TENTH);
-            let heard = channels == 3 && x[x.len() - 3] > 0.99;
-            let played = pitch.latest().is_some_and(|d| (f32s(&d)[0] - 0.75).abs() < 1e-3)
-                && velocity.latest().is_some_and(|d| (f32s(&d)[0] - 100.0 / 127.0).abs() < 1e-3);
-            (heard && played).then_some(())
-        });
-        keys.send(&[0x90, 72, 64]).expect("a note on");
-        keys.send(&[0x90, 76, 127]).expect("a note on");
-        g.until("C5 and E5 to take the second and third voices", |g| {
-            drive(g, TENTH);
-            let voice = |d: &goofi_core::Data, c: usize| f32s(d)[c * shape(d)[1]];
-            let placed = |d: &goofi_core::Data| shape(d)[0] == 3 && (voice(d, 1) - 1.0).abs() < 1e-3 && (voice(d, 2) - 4.0 / 3.0).abs() < 1e-3;
-            pitch.latest().is_some_and(|d| placed(&d)).then_some(())
-        });
-        g.until("the voices to release", |g| {
-            for note in [69, 72, 76] {
-                keys.send(&[0x80, note, 0]).expect("a note off");
-            }
-            let (x, _) = drive(g, TENTH);
-            (peak(&x[x.len() - 3..]) == 0.0).then_some(())
-        });
+        if sequencer {
+            let mut keys = midir::MidiOutput::new("goofi-test")
+                .expect("a MIDI client")
+                .create_virtual("goofi-test-out")
+                .expect("a virtual MIDI port");
+            let port = g.until("the virtual port to be listed", |g| {
+                refreshed(g, &mut ev, midi, "midi", "port").into_iter().find(|n| n.contains("goofi-test-out"))
+            });
+            g.set_param(midi, "midi", "port", port.as_str());
+            let pitch = g.probe(midi, "pitch");
+            let velocity = g.probe(midi, "velocity");
+            g.until("A4 to take the first voice", |g| {
+                keys.send(&[0x90, 69, 100]).expect("a note on"); // sent again per poll: a held note keeps its voice
+                let (x, channels) = drive(g, TENTH);
+                let heard = channels == 3 && x[x.len() - 3] > 0.99;
+                let played = pitch.latest().is_some_and(|d| (f32s(&d)[0] - 0.75).abs() < 1e-3)
+                    && velocity.latest().is_some_and(|d| (f32s(&d)[0] - 100.0 / 127.0).abs() < 1e-3);
+                (heard && played).then_some(())
+            });
+            keys.send(&[0x90, 72, 64]).expect("a note on");
+            keys.send(&[0x90, 76, 127]).expect("a note on");
+            g.until("C5 and E5 to take the second and third voices", |g| {
+                drive(g, TENTH);
+                let voice = |d: &goofi_core::Data, c: usize| f32s(d)[c * shape(d)[1]];
+                let placed = |d: &goofi_core::Data| shape(d)[0] == 3 && (voice(d, 1) - 1.0).abs() < 1e-3 && (voice(d, 2) - 4.0 / 3.0).abs() < 1e-3;
+                pitch.latest().is_some_and(|d| placed(&d)).then_some(())
+            });
+            g.until("the voices to release", |g| {
+                for note in [69, 72, 76] {
+                    keys.send(&[0x80, note, 0]).expect("a note off");
+                }
+                let (x, _) = drive(g, TENTH);
+                (peak(&x[x.len() - 3..]) == 0.0).then_some(())
+            });
+        }
     }
     g.call("node remove", j!({ "node": hex(voices) }));
     g.call("node remove", j!({ "node": hex(midi) }));
