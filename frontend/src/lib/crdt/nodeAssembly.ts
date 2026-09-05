@@ -56,7 +56,7 @@ function mergeParam(
 	p.triggers = leaf?.source?.triggers === true;
 	p.error = runtime?.error ?? null;
 	if (p.type === 'string' && runtime?.options !== undefined) p.options = runtime.options;
-	if (p.mode !== 'constant' && runtime?.liveValue !== undefined)
+	if (p.type !== 'pulse' && p.mode !== 'constant' && runtime?.liveValue !== undefined)
 		(p as { value: unknown }).value = runtime.liveValue;
 	return p;
 }

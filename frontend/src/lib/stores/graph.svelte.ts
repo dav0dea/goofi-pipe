@@ -419,6 +419,13 @@ export class GraphStore {
 		}
 	}
 
+	/** Fire a pulse param: a request the node acts on, with no value and so no inverse to undo. */
+	async pulse(node: string, group: string, name: string): Promise<void> {
+		const param = this.nodeById(node)?.params?.[group]?.[name];
+		if (!param) throw new Error(`node param pulse: no param ${group}.${name} on node ${node}`);
+		await this.ctl.call('node param pulse', { node, param: `${group}/${name}` });
+	}
+
 	/** Whether a ⟳ refresh is in flight for this param. */
 	isRefreshing(node: string, group: string, name: string): boolean {
 		return refreshKey(node, group, name) in this._refreshing;

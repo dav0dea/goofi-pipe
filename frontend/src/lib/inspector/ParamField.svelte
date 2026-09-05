@@ -6,7 +6,7 @@
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor, ParamMode, SourcePatch } from '$lib/api/types';
-	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Icon, Chip, type BadgeTone } from '$lib/ui';
+	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Button, Icon, Chip, type BadgeTone } from '$lib/ui';
 	import { controlKind } from './controlKind';
 	import ExprEditor from './expr/ExprEditor.svelte';
 	import RefPicker from './RefPicker.svelte';
@@ -17,6 +17,7 @@
 		onCommit,
 		onSetSource,
 		onRefresh,
+		onPulse,
 		refreshing = false,
 		selfName,
 		class: klass = '',
@@ -27,6 +28,7 @@
 		onCommit: (value: unknown) => void;
 		onSetSource: (source: SourcePatch) => void;
 		onRefresh?: () => void;
+		onPulse?: () => void;
 		refreshing?: boolean;
 		/** The node's display name, handed to the expression editor as `me`. */
 		selfName?: string;
@@ -50,8 +52,9 @@
 	// The error and preview belong to a source that IS live: a picker over a retained expression
 	// shows neither.
 	const shown = $derived(kind === 'reference' || (kind === 'expression' && !picking));
+	// The MODE, not the kind: a pulse keeps its button in reference mode, and would never close this.
 	$effect(() => {
-		if (kind === 'reference') picking = false;
+		if (descriptor.mode === 'reference') picking = false;
 	});
 
 	function tone(mode: ParamMode): BadgeTone {
@@ -169,6 +172,8 @@
 					</div>
 				{/if}
 			</div>
+		{:else if kind === 'pulse'}
+			<Button size="sm" onclick={onPulse} data-testid="param-pulse">{paramName}</Button>
 		{:else if num}
 			<!-- SOFT bounds → Slider only; the NumberInput is UNBOUNDED (the engine does not clamp on set). -->
 			<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />

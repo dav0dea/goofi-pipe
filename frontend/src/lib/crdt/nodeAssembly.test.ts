@@ -47,6 +47,19 @@ function catalog(): NodeTypeInfo {
 					triggers: false,
 					error: null
 				}
+			},
+			count: {
+				reset: {
+					type: 'pulse',
+					value: null,
+					doc: null,
+					refreshable: false,
+					expression: null,
+					mode: 'constant',
+					reference: null,
+					triggers: false,
+					error: null
+				}
 			}
 		}
 	};
@@ -135,6 +148,18 @@ describe('assembleNode — three-way merge', () => {
 		expect(n.params.common.frequency.value).toBe(7);
 		expect(n.error).toBe('missing dep: numpy');
 		expect(n.stage).toBe('error');
+	});
+
+	it('keeps a pulse a pulse: no value key in its leaf, and no live gate value on it', () => {
+		// A pulse holds no value, so its doc leaf has no `value` — a merge patch spends `null` on
+		// "delete this key" — and the gate its source reports is not a value to show.
+		const docParams: DocParamLeaves = { count: { reset: { source: { mode: 'reference', ref: 'clock.out' } } } };
+		const runtime: RuntimeOverlay = { params: { count: { reset: { liveValue: true } } } };
+		const reset = assembleNode(view, docParams, {}, catalog(), runtime).params.count.reset;
+		expect(reset.type).toBe('pulse');
+		expect(reset.value).toBeNull();
+		expect(reset.mode).toBe('reference');
+		expect(reset.reference).toBe('clock.out');
 	});
 
 	it('passes the viewers blob through verbatim', () => {

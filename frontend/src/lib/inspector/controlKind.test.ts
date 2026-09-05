@@ -6,14 +6,16 @@ import type {
 	IntParam,
 	BoolParam,
 	StringParam,
+	PulseParam,
 	UnknownParam
 } from '$lib/api/types';
 
-// The pure descriptor → control discriminant (spec §2, D-N2). First-match over the descriptor:
-// a driven mode wins over type; numeric = float|int; a plain bool
-// is a toggle; a string with options OR that is refreshable is a select (an empty-but-refreshable
-// list still gets a dropdown so its ⟳ re-scan survives); a plain string is text; anything else is
-// unknown. Kept pure + unit-tested so ParamField is a thin switch and the mapping is one SSOT.
+// The pure descriptor → control discriminant (spec §2, D-N2). First-match over the descriptor: a
+// pulse is a button whatever its mode; a driven mode wins over type; numeric = float|int; a plain
+// bool is a toggle; a string with options OR that is refreshable is a select (an
+// empty-but-refreshable list still gets a dropdown so its ⟳ re-scan survives); a plain string is
+// text; anything else is unknown. Kept pure + unit-tested so ParamField is a thin switch and the
+// mapping is one SSOT.
 const base: Omit<BaseParam, 'value'> = {
 	doc: null,
 	refreshable: false,
@@ -53,6 +55,12 @@ const stringParam = (over: Partial<StringParam> = {}): StringParam => ({
 	options: null,
 	...over
 });
+const pulseParam = (over: Partial<PulseParam> = {}): PulseParam => ({
+	...base,
+	type: 'pulse',
+	value: null,
+	...over
+});
 const unknownParam = (over: Partial<UnknownParam> = {}): UnknownParam => ({
 	...base,
 	type: 'unknown',
@@ -81,6 +89,14 @@ describe('controlKind', () => {
 	it('maps a plain string (no options, not refreshable) to text', () => {
 		expect(controlKind(stringParam({ options: [], refreshable: false }))).toBe('text');
 		expect(controlKind(stringParam({ options: null, refreshable: false }))).toBe('text');
+	});
+
+	it('maps a pulse to its own kind (a button, and no value)', () => {
+		expect(controlKind(pulseParam())).toBe('pulse');
+	});
+
+	it('keeps a pulse a pulse in reference mode, so the button stays and the chips show', () => {
+		expect(controlKind(pulseParam({ mode: 'reference', reference: 'clock.out' }))).toBe('pulse');
 	});
 
 	it('maps an unknown param to unknown', () => {

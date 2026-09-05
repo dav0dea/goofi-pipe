@@ -53,8 +53,20 @@ export interface StringParam extends BaseParam {
 	options: string[] | null;
 }
 
+/** A request rather than a value: it holds none, and firing it is the whole edit. */
+export interface PulseParam extends BaseParam {
+	type: 'pulse';
+	value: null;
+}
+
 export interface UnknownParam extends BaseParam {
 	type: 'unknown';
 }
 
-export type ParamDescriptor = FloatParam | IntParam | BoolParam | StringParam | UnknownParam;
+export type ParamDescriptor =
+	| FloatParam
+	| IntParam
+	| BoolParam
+	| StringParam
+	| PulseParam
+	| UnknownParam;

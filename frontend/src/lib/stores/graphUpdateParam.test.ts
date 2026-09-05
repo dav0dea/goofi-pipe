@@ -40,6 +40,19 @@ function catalog(): NodeTypeInfo[] {
 						triggers: false,
 						error: null
 					}
+				},
+				count: {
+					reset: {
+						type: 'pulse',
+						value: null,
+						doc: null,
+						refreshable: false,
+						expression: null,
+						mode: 'constant',
+						reference: null,
+						triggers: false,
+						error: null
+					}
 				}
 			}
 		}
@@ -126,6 +139,23 @@ describe('GraphStore.refreshParam — asks the node to re-evaluate options', () 
 		const call = fc.recordedCalls().find((c) => c.op === 'node param refresh');
 		expect(call?.payload).toEqual({ node: 'uidA', param: 'audio/device' });
 		// A refresh recomputes options, not values — it is not an undoable graph edit.
+		expect(history().canUndo).toBe(false);
+	});
+});
+
+describe('GraphStore.pulse — fires a param that holds no value', () => {
+	it('sends the pulse with the uid and joined address, and records no undo entry', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		g.nodeTypes = catalog(); // catalog present → node identity + params come from the doc
+		d.node('uidA', 'Oscillator', 'osc0', [0, 0]);
+		history().reset();
+
+		await g.pulse('uidA', 'count', 'reset');
+		const call = fc.recordedCalls().find((c) => c.op === 'node param pulse');
+		expect(call?.payload).toEqual({ node: 'uidA', param: 'count/reset' });
+		// A pulse carries no value, so it has no inverse — it is not an undoable graph edit.
 		expect(history().canUndo).toBe(false);
 	});
 });

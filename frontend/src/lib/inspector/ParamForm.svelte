@@ -10,14 +10,11 @@
 		error: 'danger'
 	};
 
-	/** Parameter group names in display order: node-specific groups alphabetical, 'common' last. */
+	/** Parameter group names in display order: the manifest's declared order, 'common' last. */
 	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
 		if (!node) return [];
-		return Object.keys(node.params).sort((a, b) => {
-			if (a === 'common') return 1;
-			if (b === 'common') return -1;
-			return a.localeCompare(b);
-		});
+		const names = Object.keys(node.params);
+		return [...names.filter((n) => n !== 'common'), ...names.filter((n) => n === 'common')];
 	}
 </script>
 
@@ -62,6 +59,10 @@
 	function refreshOptions(group: string, name: string): void {
 		if (!node) return;
 		void g.refreshParam(node.uid, group, name).catch((e) => console.warn('refresh failed', e));
+	}
+	function pulse(group: string, name: string): void {
+		if (!node) return;
+		void g.pulse(node.uid, group, name).catch((e) => console.warn('pulse failed', e));
 	}
 	function setSource(group: string, name: string, source: SourcePatch): void {
 		if (!node) return;
@@ -232,6 +233,7 @@
 							onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
 							onSetSource={(source) => setSource(activeGroup ?? '', paramName, source)}
 							onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
+							onPulse={() => pulse(activeGroup ?? '', paramName)}
 						/>
 					{/each}
 				{/if}

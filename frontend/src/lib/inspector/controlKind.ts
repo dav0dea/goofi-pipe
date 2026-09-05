@@ -2,6 +2,7 @@
 import type { ParamDescriptor } from '$lib/api/types';
 
 export type ControlKind =
+	| 'pulse'
 	| 'expression'
 	| 'reference'
 	| 'numeric'
@@ -11,6 +12,7 @@ export type ControlKind =
 	| 'unknown';
 
 export function controlKind(descriptor: ParamDescriptor): ControlKind {
+	if (descriptor.type === 'pulse') return 'pulse';
 	if (descriptor.mode === 'expression') return 'expression';
 	if (descriptor.mode === 'reference') return 'reference';
 	switch (descriptor.type) {
