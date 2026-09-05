@@ -889,6 +889,7 @@ version = "3.1.0"
 dependencies = [
  "goofi-codec",
  "goofi-core",
+ "goofi-init",
  "goofi-node",
  "goofi-pymod",
  "goofi-signal-sdk",
@@ -896,6 +897,7 @@ dependencies = [
  "indexmap",
  "pyo3",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

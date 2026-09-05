@@ -8,7 +8,7 @@ pub mod subproc;
 pub mod inproc;
 
 pub mod discover;
-pub use discover::{discover_one, probe_introspect, Discovered, Discovery};
+pub use discover::{discover_one, probe_key, probe_introspect, Discovered, Discovery};
 
 /// Registers the `goofi` module into the inittab, which must happen BEFORE the interpreter
 /// initializes — so every Python entry point in this crate attaches through [`attach`].

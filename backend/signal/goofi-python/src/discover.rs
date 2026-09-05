@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 
 use goofi_core::probe;
 use goofi_node::{illegal_slot, leak_manifest, parse_introspection, type_name_of, Isolation, IsolationCell, NodeManifest};
+use sha2::{Digest, Sha256};
 
 /// A discovered Python node type: its manifest, its tier cell — leaked per type, and written at
 /// runtime when a node re-enables the GIL — plus the routing flag (`gil_safe` → in-process).
@@ -59,6 +60,47 @@ payload.close()
     parse_introspection(&json).map_err(|e| format!("malformed introspection: {e}"))
 }
 
+/// What decides a probe's answer, hashed: goofi's version, the file's bytes, and each interpreter
+/// with its site-packages — the directory an install moves, so an installed dependency re-probes
+/// the file that lacked it. `None` only for a file that cannot be read.
+pub fn probe_key(path: &Path, pythons: &[&str]) -> Option<String> {
+    let mut hash = Sha256::new();
+    hash.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hash.update(std::fs::read(path).ok()?);
+    for python in pythons {
+        hash.update(python.as_bytes());
+        hash.update(mtime(Path::new(python)));
+        let site = Path::new(python).parent().and_then(Path::parent).and_then(goofi_init::site_packages);
+        hash.update(site.as_deref().map(mtime).unwrap_or_default());
+    }
+    Some(format!("{:x}", hash.finalize())[..32].to_string())
+}
+
+fn mtime(p: &Path) -> [u8; 16] {
+    std::fs::metadata(p)
+        .ok()
+        .and_then(|m| m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or([0; 16], |t| t.as_nanos().to_le_bytes())
+}
+
+/// The probe under `memo`, where its answer outlives the process: an import-heavy node costs
+/// seconds to probe, and no boot should pay that twice for one file under one interpreter.
+fn introspect_memoised(path: &Path, python: &str, memo: &Path) -> Result<probe::Introspection, String> {
+    let Some(key) = probe_key(path, &[python]) else { return probe_introspect(path, python) };
+    let entry = memo.join(format!("{key}.json"));
+    if let Some(hit) = std::fs::read_to_string(&entry).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        return hit;
+    }
+    let answer = probe_introspect(path, python);
+    if let Ok(json) = serde_json::to_string(&answer) {
+        let tmp = memo.join(format!("{key}.{}.tmp", std::process::id()));
+        let _ = std::fs::create_dir_all(memo)
+            .and_then(|()| std::fs::write(&tmp, json))
+            .and_then(|()| std::fs::rename(&tmp, &entry));
+    }
+    answer
+}
+
 /// What a node file turned out to be.
 pub enum Discovery {
     /// Not a node file: not `.py`, or `_`-prefixed (hidden).
@@ -68,13 +110,13 @@ pub enum Discovery {
     Found(Discovered),
 }
 
-/// Discover one Python node file; the file names the type.
-pub fn discover_one(path: &Path, python: &str, isolation: Isolation) -> Discovery {
+/// Discover one Python node file; the file names the type, and `memo` keeps the probe's answer.
+pub fn discover_one(path: &Path, python: &str, isolation: Isolation, memo: &Path) -> Discovery {
     if path.extension().and_then(|e| e.to_str()) != Some("py") {
         return Discovery::Skip;
     }
     let Some(type_name) = type_name_of(path) else { return Discovery::Skip };
-    match probe_introspect(path, python) {
+    match introspect_memoised(path, python, memo) {
         Ok(intro) => {
             if let Some(reason) = illegal_slot(&intro) {
                 return Discovery::Unavailable { type_name, reason };

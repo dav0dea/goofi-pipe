@@ -17,11 +17,18 @@ use crate::SignalEngine;
 pub struct Python {
     pub subproc: String,
     free_threaded: Option<String>,
+    /// Where a probe's answer outlives the process: in the build dir, beside the built nodes.
+    memo: std::path::PathBuf,
 }
 
 impl Python {
     pub fn new(subproc: String) -> Python {
-        Python { subproc, free_threaded: free_threaded() }
+        let memo = goofi_build::base_dir(&goofi_core::home::dir()).join("probes");
+        Python { subproc, free_threaded: free_threaded(), memo }
+    }
+
+    fn interpreters(&self) -> Vec<&str> {
+        std::iter::once(self.subproc.as_str()).chain(self.free_threaded.as_deref()).collect()
     }
 }
 
@@ -43,16 +50,18 @@ pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
     let (rust, paths): (Vec<_>, Vec<_>) =
         goofi_node::node_files(dir, goofi_node::Engine::id(engine)).into_iter().partition(|(p, _, _)| p.extension().is_some_and(|e| e == "rs"));
     // Probes spawn an interpreter each, so a folder is probed a few files at a time; a file whose
-    // stamp has not moved since its last probe is not probed again.
+    // key — its bytes and its interpreters' environment — is already decided is not probed again.
     let width = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
     let mut probes: Vec<Option<Probed>> = Vec::with_capacity(paths.len());
     for chunk in paths.chunks(width) {
         let python = engine.python.clone();
-        let cached: Vec<Option<Probed>> = chunk
+        let keyed: Vec<Option<String>> = chunk
             .iter()
-            .map(|(p, _, s)| engine.probed.get(p).filter(|(seen, _)| Some(*seen) == *s).map(|(_, r)| r.clone()))
+            .map(|(p, _, _)| python.as_ref().and_then(|py| goofi_python::probe_key(p, &py.interpreters())))
             .collect();
-        std::thread::scope(|s| {
+        let cached: Vec<Option<Probed>> =
+            keyed.iter().map(|k| k.as_ref().and_then(|k| engine.probed.get(k).cloned())).collect();
+        let decided: Vec<Option<Probed>> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
                 .zip(&cached)
@@ -61,17 +70,18 @@ pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
                     s.spawn(move || hit.clone().unwrap_or_else(|| probe(p, python)))
                 })
                 .collect();
-            for h in handles {
-                probes.push(h.join().ok());
-            }
+            handles.into_iter().map(|h| h.join().ok()).collect()
         });
+        for (key, probed) in keyed.into_iter().zip(decided) {
+            if let (Some(key), Some(probed)) = (key, &probed) {
+                engine.probed.insert(key, probed.clone());
+            }
+            probes.push(probed);
+        }
     }
     let mut out = Vec::new();
-    for ((path, type_name, stamp), probed) in paths.into_iter().zip(probes) {
+    for ((_, type_name, stamp), probed) in paths.into_iter().zip(probes) {
         let Some(probed) = probed else { continue };
-        if let Some(s) = stamp {
-            engine.probed.insert(path, (s, probed.clone()));
-        }
         let outcome = engine.register(&type_name, probed);
         out.push(ScannedType { type_name, stamp, outcome });
     }
@@ -149,14 +159,14 @@ fn probe(path: &Path, python: Option<&Python>) -> Probed {
         return Probed::Unavailable("no Python interpreter provisioned — run `cargo run -p goofi-init`".into());
     };
     if let Some(ft) = python.free_threaded.as_deref() {
-        if let Discovery::Found(d) = in_process(path, ft) {
+        if let Discovery::Found(d) = in_process(path, ft, &python.memo) {
             if d.gil_safe {
                 return Probed::InProcess(d);
             }
             // A re-enabled GIL falls through to the subprocess tier, as a failed probe does.
         }
     }
-    match goofi_python::subproc::probe(path, &python.subproc) {
+    match goofi_python::subproc::probe(path, &python.subproc, &python.memo) {
         Discovery::Found(d) => Probed::Subprocess(d),
         Discovery::Unavailable { reason, .. } => Probed::Unavailable(reason),
         Discovery::Skip => Probed::Unavailable("not a node file".into()),
@@ -164,8 +174,8 @@ fn probe(path: &Path, python: Option<&Python>) -> Probed {
 }
 
 #[cfg(feature = "embed")]
-fn in_process(path: &Path, ft: &str) -> Discovery {
-    goofi_python::inproc::probe(path, ft)
+fn in_process(path: &Path, ft: &str, memo: &Path) -> Discovery {
+    goofi_python::inproc::probe(path, ft, memo)
 }
 
 #[cfg(feature = "embed")]
@@ -174,7 +184,7 @@ fn free_threaded() -> Option<String> {
 }
 
 #[cfg(not(feature = "embed"))]
-fn in_process(_path: &Path, _ft: &str) -> Discovery {
+fn in_process(_path: &Path, _ft: &str, _memo: &Path) -> Discovery {
     Discovery::Skip
 }
 

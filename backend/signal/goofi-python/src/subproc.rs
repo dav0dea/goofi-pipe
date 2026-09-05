@@ -253,8 +253,8 @@ pub struct SubprocNodeType {
 use crate::Discovery;
 
 /// Probe one file for this tier, reporting all three outcomes.
-pub fn probe(path: &Path, python: &str) -> Discovery {
-    crate::discover_one(path, python, Isolation::Subprocess)
+pub fn probe(path: &Path, python: &str, memo: &Path) -> Discovery {
+    crate::discover_one(path, python, Isolation::Subprocess, memo)
 }
 
 /// Turn a probe-[`Discovered`] into a [`SubprocNodeType`], without a second spawn.

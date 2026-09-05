@@ -58,8 +58,8 @@ pub struct PyNodeType {
 
 /// Probe one file for this tier, reporting all three outcomes; the [`Discovered`] it yields
 /// carries the `gil_safe` flag that routes between tiers.
-pub fn probe(path: &Path, ft_python: &str) -> Discovery {
-    probe_discover_one(path, ft_python, Isolation::InProcess)
+pub fn probe(path: &Path, ft_python: &str, memo: &Path) -> Discovery {
+    probe_discover_one(path, ft_python, Isolation::InProcess, memo)
 }
 
 /// Turn a probe-[`Discovered`] into an in-process [`PyNodeType`], without a second spawn.

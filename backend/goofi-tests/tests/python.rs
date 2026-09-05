@@ -153,12 +153,19 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
     let dir = g.state.mount().join("nodes_signal");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("needs_scipy.py");
-    std::fs::write(&path, "import goofi\nimport definitely_not_installed\n").unwrap();
+    // Named per process, so two suites probing at once cannot install for each other.
+    let module = format!("definitely_not_installed_{}", std::process::id());
+    std::fs::write(
+        &path,
+        format!("import goofi\nimport {module}\n\nclass NeedsScipy(goofi.Node):\n    OUTPUTS = {{\"out\": goofi.DataType.ARRAY}}\n"),
+    )
+    .unwrap();
 
-    match goofi_python::subproc::probe(&path, &py.py) {
+    let memo = tempfile::tempdir().unwrap();
+    match goofi_python::subproc::probe(&path, &py.py, memo.path()) {
         goofi_python::Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "NeedsScipy");
-            assert!(reason.contains("definitely_not_installed"), "the reason names the module: {reason}");
+            assert!(reason.contains(&module), "the reason names the module: {reason}");
             let ty = goofi_node::qualify("signal", &type_name);
             g.state.graph.lock().unwrap().register_unavailable(ty, reason);
         }
@@ -169,8 +176,19 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:NeedsScipy").expect("the greyed row is in the palette").clone();
     assert_eq!(row["available"], false, "{row}");
-    assert!(row["doc"].as_str().unwrap().contains("definitely_not_installed"), "{row}");
+    assert!(row["doc"].as_str().unwrap().contains(&module), "{row}");
     g.refuse("node add", j!({ "type": "NeedsScipy" }));
+
+    // Installed into the interpreter's site-packages, the module lights the node up on the next
+    // refresh: a probe's memo is keyed on that directory, so the install itself moves the key.
+    let venv = std::path::Path::new(&py.py).parent().unwrap().parent().unwrap();
+    let installed = goofi_init::site_packages(venv).expect("the test interpreter is a venv").join(format!("{module}.py"));
+    std::fs::write(&installed, "").unwrap();
+    g.call("library refresh", j!({}));
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|t| t["type"] == "signal:NeedsScipy").expect("still in the palette").clone();
+    let _ = std::fs::remove_file(&installed);
+    assert_eq!(row["available"], true, "installed, refreshed, and still greyed: {row}");
 }
 
 #[test]

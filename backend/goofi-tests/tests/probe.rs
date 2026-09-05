@@ -103,10 +103,15 @@ fn fixtures() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+/// A probe memo this process alone writes, so no earlier run's answer stands in for a probe.
+fn memo() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("goofi-probe-memo-{}", std::process::id()))
+}
+
 #[test]
 fn discovers_a_valid_node_with_declarations() {
     let py = test_python();
-    let Discovery::Found(d) = discover_one(&fixtures().join("negate.py"), &py, Isolation::Subprocess)
+    let Discovery::Found(d) = discover_one(&fixtures().join("negate.py"), &py, Isolation::Subprocess, &memo())
     else {
         panic!("negate.py discovers")
     };
@@ -122,7 +127,7 @@ fn a_python_input_slot_declares_required_and_trigger_independently() {
     // required — while `InputSlot` makes each authorable WITHOUT touching the other.
     let py = test_python();
     let Discovery::Found(d) =
-        discover_one(&fixtures().join("declared.py"), &py, Isolation::Subprocess)
+        discover_one(&fixtures().join("declared.py"), &py, Isolation::Subprocess, &memo())
     else {
         panic!("declared.py discovers")
     };
@@ -140,14 +145,14 @@ fn a_python_node_can_declare_itself_a_producer() {
     // a hard parse failure greys out every node it discovers.
     let py = test_python();
     let Discovery::Found(d) =
-        discover_one(&fixtures().join("producer.py"), &py, Isolation::InProcess)
+        discover_one(&fixtures().join("producer.py"), &py, Isolation::InProcess, &memo())
     else {
         panic!("producer.py discovers")
     };
     assert!(d.manifest.producer, "the class attribute reached the manifest");
 
     let Discovery::Found(n) =
-        discover_one(&fixtures().join("negate.py"), &py, Isolation::InProcess)
+        discover_one(&fixtures().join("negate.py"), &py, Isolation::InProcess, &memo())
     else {
         panic!("negate.py discovers")
     };
@@ -158,7 +163,7 @@ fn a_python_node_can_declare_itself_a_producer() {
 fn a_producer_that_is_not_a_bool_is_refused_rather_than_read_as_false() {
     // `Manifest` refuses a non-bool where it is WRITTEN, so the import fails and the node greys out.
     let py = test_python();
-    match discover_one(&fixtures().join("bad_producer.py"), &py, Isolation::InProcess) {
+    match discover_one(&fixtures().join("bad_producer.py"), &py, Isolation::InProcess, &memo()) {
         Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "BadProducer");
             assert!(!reason.is_empty(), "the palette tooltip gets something to show");
@@ -173,7 +178,7 @@ fn missing_dep_greys_out_instead_of_crashing() {
     // The probe import fails -> the REASON, never a panic, so the palette can explain itself.
     let err = probe_introspect(&fixtures().join("missing_dep.py"), &py).unwrap_err();
     assert_eq!(err, "definitely_not_installed_pkg", "a missing import names the module");
-    match discover_one(&fixtures().join("missing_dep.py"), &py, Isolation::Subprocess) {
+    match discover_one(&fixtures().join("missing_dep.py"), &py, Isolation::Subprocess, &memo()) {
         Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "MissingDep");
             assert_eq!(reason, "definitely_not_installed_pkg");
@@ -182,7 +187,7 @@ fn missing_dep_greys_out_instead_of_crashing() {
     }
     // A file that imports CLEANLY and simply declares no node is Unavailable too, and for a reason
     // of its own — the palette must be able to say which of the two happened.
-    match discover_one(&fixtures().join("no_node.py"), &py, Isolation::Subprocess) {
+    match discover_one(&fixtures().join("no_node.py"), &py, Isolation::Subprocess, &memo()) {
         Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "NoNode");
             assert!(!reason.is_empty(), "a file with no node says so rather than greying out blank");
@@ -191,12 +196,12 @@ fn missing_dep_greys_out_instead_of_crashing() {
     }
     // A file that is not OFFERED as a node at all is a different outcome entirely.
     assert!(matches!(
-        discover_one(&fixtures().join("_hidden.py"), &py, Isolation::Subprocess),
+        discover_one(&fixtures().join("_hidden.py"), &py, Isolation::Subprocess, &memo()),
         Discovery::Skip
     ));
     // A slot an expression could not read as an attribute — `in` is a keyword — greys the type out
     // with the slot quoted, so a bad name cannot enter through a Python node.
-    match discover_one(&fixtures().join("bad_slot.py"), &py, Isolation::Subprocess) {
+    match discover_one(&fixtures().join("bad_slot.py"), &py, Isolation::Subprocess, &memo()) {
         Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "BadSlot");
             assert!(reason.contains("slot `in`") && reason.contains("letters or digits"), "{reason}");
@@ -205,7 +210,7 @@ fn missing_dep_greys_out_instead_of_crashing() {
     }
     // A tag outside the closed vocabulary greys the type out the same way, and the reason lists
     // the vocabulary — the author is told what to write instead.
-    match discover_one(&fixtures().join("bad_tag.py"), &py, Isolation::Subprocess) {
+    match discover_one(&fixtures().join("bad_tag.py"), &py, Isolation::Subprocess, &memo()) {
         Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "BadTag");
             assert!(reason.contains("unknown tag `sparkly`") && reason.contains("transform"), "{reason}");
@@ -220,7 +225,7 @@ fn a_node_whose_import_prints_still_discovers() {
     // child routes fd 1 to stderr the way the serve loop already does.
     let py = test_python();
     let Discovery::Found(d) =
-        discover_one(&fixtures().join("chatty.py"), &py, Isolation::Subprocess)
+        discover_one(&fixtures().join("chatty.py"), &py, Isolation::Subprocess, &memo())
     else {
         panic!("a node whose import prints to stdout still discovers")
     };
@@ -243,7 +248,7 @@ fn probe_ignores_a_host_pythonpath() {
 
     // Every probe Command strips PYTHONPATH, so setting it here cannot leak into sibling tests.
     std::env::set_var("PYTHONPATH", &poison);
-    let d = discover_one(&fixtures().join("negate.py"), &py, Isolation::Subprocess);
+    let d = discover_one(&fixtures().join("negate.py"), &py, Isolation::Subprocess, &memo());
     std::env::remove_var("PYTHONPATH");
     let _ = std::fs::remove_dir_all(&poison);
 
@@ -258,7 +263,7 @@ fn every_param_kind_carries_its_doc_across_the_probe() {
     // `doc=` crosses Python, the wheel's introspect and ParamDecl — one arm per param kind on each side.
     let py = test_python();
     let Discovery::Found(d) =
-        discover_one(&fixtures().join("documented.py"), &py, Isolation::Subprocess)
+        discover_one(&fixtures().join("documented.py"), &py, Isolation::Subprocess, &memo())
     else {
         panic!("documented.py discovers")
     };
@@ -282,12 +287,12 @@ fn the_probe_itself_is_the_gil_routing_gate() {
     // answer either quarantines a fast node or re-enables the GIL for every in-process node.
     let node = fixtures().join("negate.py");
 
-    let Discovery::Found(ft) = discover_one(&node, &ft_python(), Isolation::InProcess) else {
+    let Discovery::Found(ft) = discover_one(&node, &ft_python(), Isolation::InProcess, &memo()) else {
         panic!("negate.py discovers on the free-threaded interpreter")
     };
     assert!(ft.gil_safe, "a free-threaded probe whose imports left the GIL disabled → in-process tier");
 
-    let Discovery::Found(gil) = discover_one(&node, &gil_python(), Isolation::Subprocess) else {
+    let Discovery::Found(gil) = discover_one(&node, &gil_python(), Isolation::Subprocess, &memo()) else {
         panic!("negate.py discovers on the GIL interpreter")
     };
     assert!(!gil.gil_safe, "a GIL interpreter can never host in-process → subprocess tier");
@@ -298,7 +303,7 @@ fn the_gil_sample_covers_the_whole_import() {
     // The GIL state is read after the module has been IMPORTED: a C extension built without
     // free-threading support re-enables it, and sampled earlier such a node routes to the wrong tier.
     let Discovery::Found(d) =
-        discover_one(&fixtures().join("gil_flip.py"), &ft_python(), Isolation::InProcess)
+        discover_one(&fixtures().join("gil_flip.py"), &ft_python(), Isolation::InProcess, &memo())
     else {
         panic!("gil_flip.py discovers on the free-threaded interpreter")
     };

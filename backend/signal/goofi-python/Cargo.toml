@@ -16,8 +16,11 @@ embed = ["dep:pyo3", "dep:goofi_pymod"]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }
 goofi-signal-sdk = { path = "../goofi-signal-sdk" }
-# The probe's introspection JSON.
+# The probe's introspection JSON, and the memo it is kept in.
 serde_json = "1"
+sha2 = "0.10"
+# The venv layout, for the site-packages a probe's memo is keyed on.
+goofi-init = { path = "../../goofi-init" }
 # The subprocess transport: `goofi-codec` request/response frames over iceoryx2 shared memory,
 # the Rust crate on BOTH ends (the child runs `goofi.serve` from the abi3 wheel, same 0.9.3 ABI).
 goofi-codec = { path = "../../goofi-codec" }

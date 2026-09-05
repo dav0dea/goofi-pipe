@@ -63,8 +63,8 @@ pub struct SignalEngine {
     dyn_types: HashMap<&'static str, DynType>,
     /// The interpreters a `.py` file is probed and run with; none until the host provides them.
     pub(crate) python: Option<crate::scan::Python>,
-    /// What the last probe of each file decided, at the stamp it decided it.
-    pub(crate) probed: HashMap<std::path::PathBuf, (goofi_node::Stamp, crate::scan::Probed)>,
+    /// What the probe decided, by the key that decides it: the file's bytes and its interpreters.
+    pub(crate) probed: HashMap<String, crate::scan::Probed>,
     /// Every built artifact loaded so far, by path: a library is opened once and never closed.
     pub(crate) rust_loaded: HashMap<std::path::PathBuf, Arc<goofi_signal_sdk::host::Loaded>>,
     /// Readies the drain collected; the settle that follows re-plans each from an empty base.
