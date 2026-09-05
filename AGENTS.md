@@ -256,7 +256,11 @@ and digits, so `node.slot` needs no quoting. `roadmap/param-sources.md` holds th
 
 **Every audio node stands behind one goofi trait, and a plugin format is an adapter.** A shipped
 and an authored node are the same one-file `cdylib` from different folders; a VST3 plugin
-implements the same trait. The
+implements the same trait. A plugin's editor is a native window on the server's desktop, hosted on
+the process MAIN thread — where a display answers, the main thread is a window loop and the server
+runs beside it — because a JUCE plugin holds the thread that loaded it to be its message thread;
+the view is off the RUNNING instance, and a knob in it enters the document through the param op
+like any author, so the parameter list stays the one portable UI. The
 engine is synchronous, in-process, one 64-frame block per callback, no iceoryx2 on the audio path;
 every signal is audio-rate numbers in a standard range, and a gate, a pitch and a voice count are
 conventions, not types. CLAP was adopted and then replaced, and the reasons are recorded so it is

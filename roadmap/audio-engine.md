@@ -257,12 +257,25 @@ at a block boundary, and a click or a short gap there is accepted: a reload is a
 authoring, and this engine is not a DAW. So is a device switch, which re-prepares every node
 across the runtime lock with silence during it. Reinstantiate per node, never per graph.
 
-**No plugin GUIs, and goofi draws every param itself.** goofi is a server that prints a URL and
-never opens a window (principle 5), and its UI is a browser replica. A VST3 editor hands the host a
-NATIVE window handle with no offscreen form, so `IPlugView` is never created and the parameter
-list is the whole UI. **The cost is named, not hidden: a plugin whose value IS its editor is
-degraded to a parameter list.** Skipping the editor also skips the platform event loop and timer
-plumbing, which is where every reported hosting difficulty lives.
+**A plugin's editor is a window on the machine goofi runs on, and the parameter list stays the
+portable UI.** goofi is a server that prints a URL and opens no window of its OWN (principle 5);
+a VST3 editor is the plugin's, handed a native handle the browser cannot host, so it appears on
+the server's desktop and nowhere else. Landed 2026-09-05. The process main thread is the window
+thread: where a display answers, `goofi` serves on a thread beside it and the main thread pumps
+one loop — X11 over a connection of its own, a Win32 message queue, AppKit's event queue by hand
+(`backend/audio/goofi-audio/src/ui/`) — and every plugin is loaded, retuned and torn down THERE,
+because a JUCE plugin holds the thread that loaded it to be its message thread and aborts on any
+other. The view is asked of the RUNNING instance's controller, never of a second instance, so a
+knob in the window moves the audio; the edit enters the document through `node param edit` under
+an actor of its own, and a settle tells the controller the record back. On Linux the frame is the
+plugin's run loop too — the descriptors and timers a JUCE editor rides on. `Engine::has_editor` is
+the capability a palette row carries, false wherever no window host answers, `node editor` is the
+one door, and the open runs OFF the graph lock because a window takes its time to come up. **The
+cost is named: a plugin whose value IS its editor is degraded to a parameter list everywhere but
+the server's own desktop — a phone, an agent and a headless server get the parameter route, which
+is also the only one another node can modulate.** Not yet proven on a real JUCE or BABY Audio
+editor: the fixture plugin's editor is the suite's proof, and a Windows or macOS machine with such
+a plugin is where the next finding comes from.
 
 **VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings.** Landed
 2026-09-02 as `backend/audio/goofi-audio/src/vst3/`. (0.3, after
