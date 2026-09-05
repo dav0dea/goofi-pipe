@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
 
-use crate::data::{array_to_f32, dict_to_meta, Data};
+use crate::data::{any_to_core, array_to_f32, dict_to_meta, Data};
 
 /// `group -> name -> Param` — the same shape as `goofi_node::ParamGroups`, so a caller passes
 /// its own directly and pymod needs no dependency on goofi-node.
@@ -20,6 +20,13 @@ pub fn run_setup(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups) -
     apply_params(py, instance, params)?;
     instance.call_method0("setup")?;
     Ok(())
+}
+
+/// Call `node.stop()`. Nothing to return to: a raise is reported and the teardown carries on.
+pub fn run_stop(instance: &Bound<'_, PyAny>) {
+    if let Err(e) = instance.call_method0("stop") {
+        eprintln!("stop() raised: {e}");
+    }
 }
 
 /// Re-enumerate a refreshable string param's options via the node's `refresh_{group}_{name}()`.
@@ -176,10 +183,16 @@ fn value_to_core(
             } else {
                 dict_to_meta(meta_obj.cast::<PyDict>()?)?
             };
+            if arr.extract::<String>().is_ok() || arr.cast::<PyDict>().is_ok() {
+                return any_to_core(py, &arr, meta);
+            }
             let (shape, bytes) = array_f32_bytes(py, &arr, slot, warned)?;
             return CoreData::array_f32(shape, bytes, meta)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
+    }
+    if v.cast::<PyDict>().is_ok() {
+        return any_to_core(py, v, Meta::empty());
     }
     let (shape, bytes) = array_f32_bytes(py, v, slot, warned)?;
     let meta = match primary {

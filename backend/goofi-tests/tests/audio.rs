@@ -258,7 +258,7 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(why.contains("no input device `nowhere`"), "{why}");
     assert_eq!(refreshed(&g, &mut ev, mic, "audio", "device")[0], "default");
     g.call("node remove", j!({ "node": hex(mic) }));
-    let midi = g.add("MidiIn");
+    let midi = g.add("audio:MidiIn");
     g.set_param(midi, "midi", "port", "nowhere");
     let why = g.until("the absent port to be named", |g| g.error(midi));
     // A kernel built without sound — GitHub's Linux runner — has no sequencer to look a port up in.

@@ -62,4 +62,9 @@ impl Node {
     fn process(&self, _inputs: Option<&Bound<'_, PyDict>>) -> Option<Py<PyAny>> {
         None
     }
+    /// Release what `setup` acquired — a thread, a socket, a device. Called once, when the node
+    /// goes; a raise here is printed and nothing else, because there is no next call to retry on.
+    fn stop(&self) -> PyResult<()> {
+        Ok(())
+    }
 }

@@ -1,0 +1,5 @@
+mido
+pylsl
+python-osc
+python-rtmidi
+scipy

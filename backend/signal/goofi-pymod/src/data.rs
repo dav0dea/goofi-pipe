@@ -69,21 +69,51 @@ impl Data {
 
 #[pymethods]
 impl Data {
-    /// `Data(array, meta=None)` — copy a numpy array (cast to f32) + optional meta dict.
+    /// `Data(value, meta=None)` — an array-like becomes an array, a `str` a string, and a `dict`
+    /// a table whose values are each read the same way.
     #[new]
-    #[pyo3(signature = (array, meta=None))]
-    fn new(py: Python<'_>, array: &Bound<'_, PyAny>, meta: Option<&Bound<'_, PyDict>>) -> PyResult<Data> {
-        let (_src, shape, f32_bytes) = array_to_f32(py, array)?;
+    #[pyo3(signature = (value, meta=None))]
+    fn new(py: Python<'_>, value: &Bound<'_, PyAny>, meta: Option<&Bound<'_, PyDict>>) -> PyResult<Data> {
         let m = meta.map(dict_to_meta).transpose()?.unwrap_or_else(Meta::new);
-        let inner = CoreData::array_f32(shape, f32_bytes, m)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Data { inner })
+        Ok(Data { inner: any_to_core(py, value, m)? })
     }
 
     /// The frame's rank, ready to be compared: `data.assert_ndims > 1` raises unless it holds.
     #[getter]
     fn assert_ndims(&self) -> Ndims {
         Ndims { shape: self.shape_or_empty() }
+    }
+
+    /// Which of the three kinds this frame is, spelled as `goofi.DataType.<X>.value` is.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner.value() {
+            Value::Array(_) => "ARRAY",
+            Value::Str(_) => "STRING",
+            Value::Table(_) => "TABLE",
+        }
+    }
+
+    /// The string a string frame holds.
+    #[getter]
+    fn text(&self) -> PyResult<&str> {
+        match self.inner.value() {
+            Value::Str(s) => Ok(s),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err("Data is not a string")),
+        }
+    }
+
+    /// The entries a table frame holds, each one a `Data` of its own.
+    #[getter]
+    fn table<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let Value::Table(t) = self.inner.value() else {
+            return Err(pyo3::exceptions::PyTypeError::new_err("Data is not a table"));
+        };
+        let out = PyDict::new(py);
+        for (k, v) in t.iter() {
+            out.set_item(k, Py::new(py, Data { inner: v.clone() })?)?;
+        }
+        Ok(out)
     }
 
     /// The array as a fresh numpy `<f4` array of the stored shape.
@@ -165,6 +195,26 @@ impl Data {
 }
 
 /// `np.ascontiguousarray(array)` → `(source dtype, shape, f32 bytes)`, the one numpy→f32 funnel.
+/// One Python value as a frame: a `str`, a `dict` of them, or anything numpy reads as an array.
+pub(crate) fn any_to_core(py: Python<'_>, v: &Bound<'_, PyAny>, meta: Meta) -> PyResult<CoreData> {
+    if let Ok(d) = v.cast::<Data>() {
+        return Ok(d.borrow().inner.clone());
+    }
+    if let Ok(s) = v.extract::<String>() {
+        return Ok(CoreData::string(s, meta));
+    }
+    if let Ok(dict) = v.cast::<PyDict>() {
+        let mut map = goofi_core::indexmap::IndexMap::new();
+        for (k, item) in dict.iter() {
+            map.insert(k.extract::<String>()?, any_to_core(py, &item, Meta::empty())?);
+        }
+        return Ok(CoreData::table(map, meta));
+    }
+    let (_src, shape, bytes) = array_to_f32(py, v)?;
+    CoreData::array_f32(shape, bytes, meta)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 pub(crate) fn array_to_f32(
     py: Python<'_>,
     array: &Bound<'_, PyAny>,

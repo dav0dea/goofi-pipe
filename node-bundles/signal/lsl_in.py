@@ -13,7 +13,7 @@ import goofi
 class LslIn(goofi.Node):
     """Receive an LSL stream: [channels, samples] per tick, with its labels and rate."""
 
-    TAGS = ["input", "eeg"]
+    TAGS = ["input"]
     OUTPUTS = {"out": goofi.DataType.ARRAY}
     PRODUCER = True
     PARAMS = {

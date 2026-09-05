@@ -5,8 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use goofi_core::Coord;
-use goofi_tests::{f32s, hex, install, install_all, j, require_python, shape, Goofi};
+use goofi_tests::{f32s, install, install_all, labels, require_python, shape, Goofi};
 
 /// The `.py` files a bundle ships, read as they are checked in.
 fn bundled(bundle: &str, files: &[&str]) -> Vec<(String, String)> {
@@ -56,23 +55,6 @@ fn first_frame(
         }
         probe.latest().filter(&mut keep)
     })
-}
-
-fn labels(d: &goofi_core::Data, dim: &str) -> Vec<String> {
-    d.meta()
-        .channels()
-        .dims()
-        .find(|(k, _)| k == dim)
-        .map(|(_, coords)| {
-            coords
-                .iter()
-                .map(|c| match c {
-                    Coord::Str(s) => s.to_string(),
-                    Coord::Num(n) => n.to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[test]
@@ -206,14 +188,6 @@ fn python(py: &str, script: &str) -> std::process::Command {
     cmd
 }
 
-/// A child killed when the test is done with it, however the test ends.
-struct Child(std::process::Child);
-impl Drop for Child {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 /// Four channels of white noise under a strong 10 Hz sine, in volts, saved as a FIF by mne itself.
 fn write_recording(py: &str, dir: &Path) -> PathBuf {
@@ -232,19 +206,6 @@ mne.io.RawArray(x, mne.create_info(["Fz", "Cz", "Pz", "Oz"], sf, "eeg"), verbose
     path
 }
 
-const OUTLET: &str = r#"
-import pylsl, time
-info = pylsl.StreamInfo("goofi-test", "EEG", 3, 100, "float32", "goofi-test-src")
-chs = info.desc().append_child("channels")
-for name in ["A", "B", "C"]:
-    chs.append_child("channel").append_child_value("label", name)
-out = pylsl.StreamOutlet(info)
-k = 0
-while True:
-    out.push_chunk([[k + j, 2.0 * (k + j), 3.0 * (k + j)] for j in range(10)])
-    k += 10
-    time.sleep(0.1)
-"#;
 
 #[test]
 fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_stream() {
@@ -328,33 +289,4 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     let n = played.count();
     g.until("the playback to resume", |_| (played.count() > n).then_some(()));
 
-    // A live stream: the node is present and silent until the stream exists, then it is wired.
-    let lsl_ty = install_bundled(&g, "eeg", "lsl_in.py");
-    let lsl = g.add(&lsl_ty);
-    let received = g.probe(lsl, "out");
-    g.set_param(lsl, "lsl", "name", "goofi-test");
-    g.ready(lsl);
-    assert!(g.stays(|_| received.count() == 0), "no stream, no frames, no error");
-    assert!(g.error(lsl).is_none(), "an absent stream is not an error: {:?}", g.error(lsl));
-    let _outlet = Child(python(&py.py, OUTLET).stdout(std::process::Stdio::null()).spawn().expect("spawn the outlet"));
-    let d = first_frame(&g, &lsl_ty, lsl, &received, |d| shape(d)[0] == 3 && shape(d)[1] > 0);
-    assert_eq!(d.meta().sfreq(), Some(100.0), "the stream's nominal rate rides the frame");
-    assert_eq!(labels(&d, "dim0"), ["A", "B", "C"], "and so do its channel labels");
-    let v = f32s(&d);
-    let cols = shape(&d)[1];
-    assert!(
-        (0..cols).all(|t| v[cols + t] == 2.0 * v[t] && v[2 * cols + t] == 3.0 * v[t]),
-        "samples land channel-major, not transposed: {v:?}"
-    );
-
-    // The ⟳ on the stream picker lists what is on the network.
-    let mut ev = g.events();
-    g.call("node param refresh", j!({ "node": hex(lsl), "param": "lsl/name" }));
-    let p = g.until("the picker's echo", |_| {
-        let p = ev.next("state_update");
-        (p["node"] == hex(lsl) && p["refreshed_params"] == j!([["lsl", "name"]])).then_some(p)
-    });
-    let options = p["params"]["lsl"]["name"]["options"].as_array().cloned().unwrap_or_default();
-    assert!(options.contains(&j!("goofi-test")), "the live stream is offered: {options:?}");
-    assert!(options.contains(&j!("")), "…and `any` stays an option: {options:?}");
 }

@@ -520,7 +520,33 @@ fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
     assert_eq!(names[0], goofi_core::Coord::Str("IMF1".into()), "the modes are named in order");
     assert_eq!(modes.meta().sfreq(), Some(256.0), "the last axis is still time");
 
-    for n in [hil, wav, shift, psd, emd] {
+    // Half the rate is half the samples, and the frame says so rather than leaving a reader to
+    // divide. The 10 Hz line survives, because 10 Hz is well under the new Nyquist.
+    let down = g.add("Resample");
+    set(down, "resample", "sfreq", j!(128.0));
+    let pd = g.probe(down, "out");
+    g.link(window, "out", down, "input");
+    let halved = g.until("the window at half the rate", |_| pd.latest().filter(|d| shape(d) == vec![256]));
+    assert_eq!(halved.meta().sfreq(), Some(128.0), "the new rate rides the frame");
+    let peak_of = |v: &[f32]| v[64..192].iter().fold(0f32, |m, x| m.max(x.abs()));
+    assert!((peak_of(&f32s(&halved)) - 1.0).abs() < 0.05, "the sine is still a sine at half the rate");
+
+    // A square matrix of one value has one axis that carries everything and two that carry
+    // nothing, which is the answer to check an eigendecomposition against.
+    let flat = g.add("Constant");
+    set(flat, "constant", "value", j!(2.0));
+    set(flat, "constant", "shape", j!("3,3"));
+    let eig = g.add("Eigen");
+    let (pv, pw) = (g.probe(eig, "values"), g.probe(eig, "vectors"));
+    g.link(flat, "out", eig, "input");
+    let values = g.until("the eigenvalues of a flat matrix", |_| pv.latest().filter(|d| shape(d) == vec![3]));
+    let v = f32s(&values);
+    assert!((v[0] - 6.0).abs() < 1e-3, "three rows of two carry six on one axis, got {v:?}");
+    assert!(v[1].abs() < 1e-3 && v[2].abs() < 1e-3, "and nothing on the other two, got {v:?}");
+    let vectors = g.until("the eigenvectors beside them", |_| pw.latest().filter(|d| shape(d) == vec![3, 3]));
+    assert_eq!(shape(&vectors), vec![3, 3], "one vector per column");
+
+    for n in [hil, wav, shift, psd, emd, down, eig] {
         assert!(g.error(n).is_none(), "an analysis node carries no error: {:?}", g.error(n));
     }
 }

@@ -78,6 +78,12 @@ pub fn interpreter_path() -> Option<String> {
     })
 }
 
+impl Drop for PyNode {
+    fn drop(&mut self) {
+        attach(|py| goofi_pymod::exec::run_stop(self.instance.bind(py)));
+    }
+}
+
 impl Node for PyNode {
     fn setup(&mut self, _ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         attach(|py| {

@@ -728,6 +728,24 @@ pub fn text(d: &goofi_core::Data) -> Option<&str> {
     }
 }
 
+/// The names on one axis of a frame, as text; empty when the axis carries none.
+pub fn labels(d: &goofi_core::Data, dim: &str) -> Vec<String> {
+    d.meta()
+        .channels()
+        .dims()
+        .find(|(k, _)| k == dim)
+        .map(|(_, coords)| {
+            coords
+                .iter()
+                .map(|c| match c {
+                    goofi_core::Coord::Str(s) => s.to_string(),
+                    goofi_core::Coord::Num(n) => n.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// An ARRAY frame's shape.
 pub fn shape(d: &goofi_core::Data) -> Vec<usize> {
     let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };
