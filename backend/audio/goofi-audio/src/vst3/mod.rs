@@ -160,8 +160,36 @@ unsafe fn describe_initialized(
                 .transpose()?
         }
     };
+    // The connection between the two halves, HELD so that it can be undone before either of them
+    // is torn down. Terminating a controller the component still points at is a use-after-free the
+    // plugin performs on itself, and it took down the scanner for every iZotope plugin here.
+    let mut wired: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)> = None;
     if let Some(c) = &separate {
         ok(c.initialize(context.as_ptr()), "initialize the controller")?;
+        // The two halves must be INTRODUCED before either is asked anything. A separate controller
+        // is a peer of the processor, not a view onto it: a JUCE plugin mints its parameter list
+        // only once it can talk back, so a host that skips this reads a count of ZERO and concludes
+        // the plugin has no parameters. Both directions, because `connect` names one end each way.
+        // A half that does not implement IConnectionPoint is saying there is nothing to connect,
+        // which is an answer rather than a failure — and only a connection that actually took is
+        // remembered, so the undo below never names an end that never heard of the other.
+        if let (Some(cp), Some(ccp)) =
+            (component.cast::<IConnectionPoint>(), c.cast::<IConnectionPoint>())
+        {
+            if cp.connect(ccp.as_ptr()) == kResultOk && ccp.connect(cp.as_ptr()) == kResultOk {
+                wired = Some((cp, ccp));
+            }
+        }
+        // …and then TOLD the processor's state, which is what the controller builds its parameters
+        // from. The stream is rewound between the two calls because `getState` leaves the cursor at
+        // the end and `setComponentState` reads from wherever it is handed one.
+        let state = ComWrapper::new(host::Stream::default());
+        if let Some(s) = state.to_com_ptr::<IBStream>() {
+            if component.getState(s.as_ptr()) == kResultOk {
+                s.seek(0, IBStream_::IStreamSeekMode_::kIBSeekSet as int32, std::ptr::null_mut());
+                c.setComponentState(s.as_ptr());
+            }
+        }
     }
     let audio = MediaTypes_::kAudio as MediaType;
     let buses = |dir: BusDirection| -> Vec<u16> {
@@ -177,6 +205,12 @@ unsafe fn describe_initialized(
     let outputs = buses(BusDirections_::kOutput as BusDirection);
     let events = component.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection) > 0;
     let params = own.as_ref().or(separate.as_ref()).map(|c| params_of(c)).unwrap_or_default();
+    // Undone in the reverse of the order it was made, and BEFORE the controller is terminated: the
+    // component outlives this call and must not be left holding a pointer into a torn-down peer.
+    if let Some((cp, ccp)) = &wired {
+        ccp.disconnect(cp.as_ptr());
+        cp.disconnect(ccp.as_ptr());
+    }
     if let Some(c) = &separate {
         c.terminate();
     }
@@ -349,9 +383,11 @@ impl AudioEngine {
         let (intro, params) = introspection(vendor, &class);
         // The refusal is HERE, where the palette can carry it: an insert-time one would offer a
         // type that every `node add` then answers with the same words, for ever.
-        let widest = intro.params.len().max(intro.inputs.len()).max(intro.outputs.len());
+        // Params are trimmed to fit by `introspection`; BUSES cannot be, since dropping one would
+        // silently rechannel the plugin. So only a bus count can still refuse a class.
+        let widest = intro.inputs.len().max(intro.outputs.len());
         if widest > MAX_PORTS {
-            let reason = format!("declares {widest} ports and params, and {MAX_PORTS} is the ceiling");
+            let reason = format!("declares {widest} audio buses, and {MAX_PORTS} is the ceiling");
             return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) };
         }
         let derived = Arc::new(Derived { binary: binary.to_path_buf(), stamp, cid, inputs: class.inputs, outputs: class.outputs, params });
@@ -391,7 +427,15 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     };
     let mut names: Vec<String> = Vec::new();
     let mut kinds = Vec::new();
-    for p in class.params.iter().filter(|p| p.flags & OMITTED == 0) {
+    // A block's params are a stack array, so the ceiling is real. Taking the plugin's own first
+    // rather than refusing the class: a synth with 2983 params is still worth having with its
+    // first few dozen reachable, and the plugin declares them roughly in the order it thinks
+    // matters. `take` bounds the KINDS too, which is what keeps a param's index and the id it
+    // writes back to in step.
+    let room = MAX_PORTS - params.len();
+    let offered = class.params.iter().filter(|p| p.flags & OMITTED == 0);
+    let total = offered.clone().count();
+    for p in offered.take(room) {
         let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), &mut names);
         let (spec, kind, doc) = if p.steps <= 0 {
             let shown = format!("{} {}", p.shown, p.units);
@@ -408,9 +452,15 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         params.push(probe::Param { group: "plugin".into(), name, doc: Some(doc), expression: None, spec });
         kinds.push((p.id, kind));
     }
+    // Said in the node's own doc, because a control that is simply absent reads as a plugin that
+    // does not have it.
+    let doc = match total > room {
+        true => format!("{} by {vendor} — the first {room} of its {total} parameters", class.name, room = room.min(total)),
+        false => format!("{} by {vendor}", class.name),
+    };
     let intro = probe::Introspection {
         gil_safe: true,
-        doc: format!("{} by {vendor}", class.name),
+        doc,
         category: Some(vendor.to_string()),
         producer: false,
         inputs: (0..class.inputs.len())
