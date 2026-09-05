@@ -9,7 +9,7 @@ mod host;
 mod module;
 mod node;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,7 +33,7 @@ const STR_STEPS: i32 = 64;
 
 /// The most parameters a plugin node declares. This is NOT the port ceiling — a plugin parameter
 /// is control rate and costs no port — but a row the document carries and the inspector draws.
-const MAX_PARAMS: usize = 512;
+const MAX_PARAMS: usize = 4096;
 
 /// A CEILING on the child, as `OPEN_WAIT` is on a device: the scan runs under the graph lock, and
 /// a plugin that blocks at load must not wedge every op.
@@ -58,7 +58,6 @@ pub(crate) struct ClassInfo {
     /// The VST3 subcategory string, which holds `Instrument` for a synth.
     sub_categories: String,
     /// The plugin's own parameter families, a tree by `parent`; empty where it declares none.
-    #[serde(default)]
     units: Vec<UnitRow>,
 }
 
@@ -83,7 +82,6 @@ pub(crate) struct ParamInfo {
     /// One display string per step, empty for a param that is not stepped within `STR_STEPS`.
     steps_shown: Vec<String>,
     /// The unit this parameter belongs to; 0 is the root every plugin has.
-    #[serde(default)]
     unit: i32,
 }
 
@@ -438,6 +436,10 @@ const OMITTED: i32 = ParameterInfo_::ParameterFlags_::kIsHidden
     | ParameterInfo_::ParameterFlags_::kIsBypass
     | ParameterInfo_::ParameterFlags_::kIsProgramChange;
 
+/// A param goofi can drive says so itself. Requiring it is what keeps the 128x16 MIDI CC mapping
+/// block a JUCE plugin declares — 2080 params, every one of them flagless — out of the node.
+const AUTOMATABLE: i32 = ParameterInfo_::ParameterFlags_::kCanAutomate;
+
 /// The manifest a class derives to, and — in the same pass, so they cannot drift — how each of
 /// its params reaches the plugin.
 fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<(ParamID, Kind)>) {
@@ -460,30 +462,40 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         Vec::new()
     };
     let mut names: HashMap<String, Vec<String>> = HashMap::new();
-    let mut kinds = Vec::new();
+    let offered: Vec<&ParamInfo> =
+        class.params.iter().filter(|p| p.flags & OMITTED == 0 && p.flags & AUTOMATABLE != 0).collect();
+    let total = offered.len();
+    let groups = unit_groups(class);
+    // Named and specced over the WHOLE offered set, so the name a param gets never depends on
+    // whether it was chosen — which is what lets one be adopted later under that same name.
+    let catalog: Vec<(ParamID, Kind, probe::Param)> = offered
+        .iter()
+        .map(|p| {
+            let group = groups.get(&p.unit).cloned().unwrap_or_else(|| "plugin".into());
+            let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), names.entry(group.clone()).or_default());
+            let (spec, kind, doc) = if p.steps <= 0 {
+                let shown = format!("{} {}", p.shown, p.units);
+                (float(p.default.clamp(0.0, 1.0), 0.0, 1.0), Kind::Float, format!("{}, normalized; {} by default.", p.title, shown.trim()))
+            } else if p.steps <= STR_STEPS {
+                let options = distinct(&p.steps_shown, p.steps as usize + 1);
+                let at = ((p.default * p.steps as f64).round() as usize).min(options.len() - 1);
+                let default = options[at].clone();
+                (probe::ParamSpec::Str { default, options, refresh: false }, Kind::Stepped(p.steps as f64), p.title.clone())
+            } else {
+                let default = (p.default * p.steps as f64).round() as i64;
+                (probe::ParamSpec::Int { default, min: 0, max: p.steps as i64 }, Kind::Stepped(p.steps as f64), p.title.clone())
+            };
+            (p.id, kind, probe::Param { group, name, doc: Some(doc), expression: None, spec })
+        })
+        .collect();
     // `chosen` bounds the KINDS too, which is what keeps a param's index and the id it writes back
     // to in step.
     let room = MAX_PARAMS - params.len();
-    let offered: Vec<&ParamInfo> = class.params.iter().filter(|p| p.flags & OMITTED == 0).collect();
-    let total = offered.len();
-    let groups = unit_groups(class);
-    for p in chosen(&offered, room, &groups) {
-        let group = groups.get(&p.unit).cloned().unwrap_or_else(|| "plugin".into());
-        let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), names.entry(group.clone()).or_default());
-        let (spec, kind, doc) = if p.steps <= 0 {
-            let shown = format!("{} {}", p.shown, p.units);
-            (float(p.default.clamp(0.0, 1.0), 0.0, 1.0), Kind::Float, format!("{}, normalized; {} by default.", p.title, shown.trim()))
-        } else if p.steps <= STR_STEPS {
-            let options = distinct(&p.steps_shown, p.steps as usize + 1);
-            let at = ((p.default * p.steps as f64).round() as usize).min(options.len() - 1);
-            let default = options[at].clone();
-            (probe::ParamSpec::Str { default, options, refresh: false }, Kind::Stepped(p.steps as f64), p.title.clone())
-        } else {
-            let default = (p.default * p.steps as f64).round() as i64;
-            (probe::ParamSpec::Int { default, min: 0, max: p.steps as i64 }, Kind::Stepped(p.steps as f64), p.title.clone())
-        };
-        params.push(probe::Param { group, name, doc: Some(doc), expression: None, spec });
-        kinds.push((p.id, kind));
+    let keep: HashSet<ParamID> = chosen(&offered, room, &groups).into_iter().map(|p| p.id).collect();
+    let mut kinds = Vec::new();
+    for (id, kind, param) in catalog.iter().filter(|(id, ..)| keep.contains(id)) {
+        params.push(param.clone());
+        kinds.push((*id, *kind));
     }
     // A plugin has no tag to name its vendor, so the doc line does — unless its name already has.
     let named = match class.name.starts_with(vendor) {
