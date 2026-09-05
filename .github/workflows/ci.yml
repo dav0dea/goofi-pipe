@@ -32,9 +32,10 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    # cpal's Linux host is ALSA whatever plays the sound, and `alsa-sys` links the system library.
+    # cpal's Linux host is ALSA whatever plays the sound, and `alsa-sys` links the system library;
+    # MIDI on Linux is the ALSA sequencer, a kernel module the runner has but does not load.
     - if: runner.os == 'Linux'
-      run: sudo apt-get update -q && sudo apt-get install -y libasound2-dev
+      run: sudo apt-get update -q && sudo apt-get install -y libasound2-dev && sudo modprobe snd-seq
 
     # 24, not 22: 22 ships npm 10, which resolves this manifest with no lockfile into `Cannot read
     # properties of null (reading 'edgesOut')` and installs nothing; npm 11, what 24 ships, does not.
