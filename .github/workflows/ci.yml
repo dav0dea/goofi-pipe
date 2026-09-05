@@ -28,7 +28,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # What the list costs a standard runner, measured 2026-09-05: the workspace tests alone took
+    # 47 minutes on macOS and were still running at 55 on Linux and Windows, and the in-process
+    # tier then repeats every goofi-tests scenario. Sixty minutes cancelled three green jobs.
+    timeout-minutes: 240
     steps:
     - uses: actions/checkout@v7
 
