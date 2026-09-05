@@ -14,6 +14,11 @@ use super::host::{Changes, Events, Host, Stream};
 use super::module;
 use super::ok;
 
+/// The tempo the host reports. A CONSTANT for now, and a lie only in the sense that goofi has no
+/// transport of its own to tell the truth from — but a plausible tempo is what a synced plugin
+/// needs to run at all, where zero is what stops it.
+const TEMPO: f64 = 120.0;
+
 /// How a goofi param's scalar becomes the plugin's normalized value.
 pub enum Kind {
     Float,
@@ -101,6 +106,11 @@ struct Live {
     _host: ComPtr<FUnknown>,
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
+    /// The plugin's OTHER half, connected to the component for as long as this instance lives. Not
+    /// here to be read — nothing asks it anything — but because a plugin whose halves were never
+    /// introduced can sit muted, exactly as it reports no parameters when the scanner skips this.
+    controller: Option<ComPtr<IEditController>>,
+    wired: Option<Wire>,
     changes: ComWrapper<Changes>,
     changes_ptr: ComPtr<IParameterChanges>,
     events: ComWrapper<Events>,
@@ -129,6 +139,7 @@ impl Live {
             unsafe { component.terminate() };
             return Err("the component is no IAudioProcessor".into());
         };
+        let (controller, wired) = unsafe { pair(&factory, &component, &host) };
         let (ins, outs) = unsafe { arrange(&component, &processor, class) };
         let changes = ComWrapper::new(Changes::new(class.params.iter().map(|(id, _)| *id)));
         let changes_ptr = changes.to_com_ptr().expect("changes are an IParameterChanges");
@@ -138,6 +149,8 @@ impl Live {
             _host: host,
             component,
             processor,
+            controller,
+            wired,
             changes,
             changes_ptr,
             events,
@@ -167,11 +180,27 @@ impl Live {
             }
             self.prepared = false;
             ok(self.processor.setupProcessing(&mut setup), "setupProcessing")?;
+            activate_buses(&self.component, self.ins.buses.len(), self.outs.buses.len());
             ok(self.component.setActive(1), "setActive")?;
-            ok(self.processor.setProcessing(1), "setProcessing")?;
+            // OPTIONAL in the SDK: a plugin that does not distinguish processing from active
+            // answers kNotImplemented, which is an answer rather than a refusal.
+            let processing = self.processor.setProcessing(1);
+            if processing != kNotImplemented {
+                ok(processing, "setProcessing")?;
+            }
         }
         self.prepared = true;
         self.context.sampleRate = rate;
+        // A playing, advancing transport: a zeroed context tells a plugin the host is stopped at
+        // 0 BPM, and a tempo-synced engine then correctly produces nothing.
+        self.context.state = (ProcessContext_::StatesAndFlags_::kPlaying
+            | ProcessContext_::StatesAndFlags_::kTempoValid
+            | ProcessContext_::StatesAndFlags_::kTimeSigValid
+            | ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid
+            | ProcessContext_::StatesAndFlags_::kContTimeValid) as uint32;
+        self.context.tempo = TEMPO;
+        self.context.timeSigNumerator = 4;
+        self.context.timeSigDenominator = 4;
         // The reactivation dropped the plugin's voices, so a gate still HIGH must note again.
         self.sent.fill(f64::NAN);
         self.held = [None; MAX_CHANNELS as usize];
@@ -251,6 +280,11 @@ impl Live {
             processContext: &mut *self.context,
         };
         unsafe { self.processor.process(&mut data) };
+        // Advanced AFTER the block it described, so the plugin's clock runs at the rate its own
+        // audio does. A transport that is valid but frozen is a host paused on the first sample.
+        self.context.projectTimeSamples += BLOCK as i64;
+        self.context.continousTimeSamples += BLOCK as i64;
+        self.context.projectTimeMusic += BLOCK as f64 / self.context.sampleRate * (TEMPO / 60.0);
         for (i, out) in b.outs.iter_mut().enumerate().take(self.outs.pointers.len()) {
             let lanes = &self.outs.pointers[i];
             for c in 0..out.channels() as usize {
@@ -264,6 +298,62 @@ impl Live {
 /// The buses activated at the plugin's own default arrangements, and the staging sized from what
 /// the LIVE instance then reports — never the scan's cached counts, which a plugin whose default
 /// layout lives outside its binary can disagree with.
+/// A component and its controller, each holding the other's connection point.
+pub(super) type Wire = (ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>);
+
+/// What pairing yields: the other half, and the connection to undo before tearing it down.
+type Pair = (Option<ComPtr<IEditController>>, Option<Wire>);
+
+/// The component's other half, introduced to it. The SAME sequence the scanner performs, and for
+/// the same reason: the two are peers, and a plugin that cannot talk to its own controller behaves
+/// as though it has nothing to say. Every step is optional — a single-object plugin needs none of
+/// it — so a failure anywhere leaves the instance exactly as it was rather than refusing it.
+unsafe fn pair(
+    factory: &module::Factory,
+    component: &ComPtr<IComponent>,
+    context: &ComPtr<FUnknown>,
+) -> Pair {
+    if component.cast::<IEditController>().is_some() {
+        return (None, None);
+    }
+    let mut ccid: TUID = [0; 16];
+    if component.getControllerClassId(&mut ccid) != kResultOk {
+        return (None, None);
+    }
+    let Ok(controller) = factory.create::<IEditController>(&ccid) else { return (None, None) };
+    if controller.initialize(context.as_ptr()) != kResultOk {
+        return (None, None);
+    }
+    let wired = introduce(component, &controller);
+    (Some(controller), wired)
+}
+
+/// Connect a component and its controller, then seed the controller with the component's state —
+/// the one sequence both the scan and the runtime need. The returned wire is undone by [`sunder`].
+pub(super) unsafe fn introduce(component: &ComPtr<IComponent>, controller: &ComPtr<IEditController>) -> Option<Wire> {
+    let wired = match (component.cast::<IConnectionPoint>(), controller.cast::<IConnectionPoint>()) {
+        (Some(cp), Some(ccp)) if cp.connect(ccp.as_ptr()) == kResultOk && ccp.connect(cp.as_ptr()) == kResultOk => {
+            Some((cp, ccp))
+        }
+        _ => None,
+    };
+    let state = ComWrapper::new(Stream::default());
+    if let Some(s) = state.to_com_ptr::<IBStream>() {
+        if component.getState(s.as_ptr()) == kResultOk {
+            s.seek(0, IBStream_::IStreamSeekMode_::kIBSeekSet as int32, std::ptr::null_mut());
+            controller.setComponentState(s.as_ptr());
+        }
+    }
+    wired
+}
+
+/// Undo an [`introduce`], both directions, before either half is terminated.
+pub(super) unsafe fn sunder(wire: &Wire) {
+    let (cp, ccp) = wire;
+    ccp.disconnect(cp.as_ptr());
+    cp.disconnect(ccp.as_ptr());
+}
+
 unsafe fn arrange(component: &ComPtr<IComponent>, processor: &ComPtr<IAudioProcessor>, class: &Derived) -> (Buses, Buses) {
     let audio = MediaTypes_::kAudio as MediaType;
     let (input, output) = (BusDirections_::kInput as BusDirection, BusDirections_::kOutput as BusDirection);
@@ -283,17 +373,29 @@ unsafe fn arrange(component: &ComPtr<IComponent>, processor: &ComPtr<IAudioProce
             .map(|i| {
                 let mut info: BusInfo = std::mem::zeroed();
                 component.getBusInfo(audio, dir, i, &mut info);
-                component.activateBus(audio, dir, i, 1);
                 info.channelCount.clamp(1, MAX_CHANNELS as i32) as u16
             })
             .collect()
     };
-    let staged = (Buses::new(&widths(input, ins.len())), Buses::new(&widths(output, outs.len())));
+    (Buses::new(&widths(input, ins.len())), Buses::new(&widths(output, outs.len())))
+}
+
+/// Activate the audio and event buses — AFTER `setupProcessing` and BEFORE `setActive`, the order
+/// Steinberg's own host uses. Activating before the processing setup left some plugins (IK's
+/// T-RackS among them) rendering silence, asked to route buses before the block shape was set.
+unsafe fn activate_buses(component: &ComPtr<IComponent>, n_in: usize, n_out: usize) {
+    let audio = MediaTypes_::kAudio as MediaType;
+    let input = BusDirections_::kInput as BusDirection;
+    for i in 0..n_in as int32 {
+        component.activateBus(audio, input, i, 1);
+    }
+    for i in 0..n_out as int32 {
+        component.activateBus(audio, BusDirections_::kOutput as BusDirection, i, 1);
+    }
     let events = MediaTypes_::kEvent as MediaType;
     for i in 0..component.getBusCount(events, input) {
         component.activateBus(events, input, i, 1);
     }
-    staged
 }
 
 impl Drop for Live {
@@ -302,6 +404,14 @@ impl Drop for Live {
             if self.prepared {
                 self.processor.setProcessing(0);
                 self.component.setActive(0);
+            }
+            // Undone BEFORE either half is terminated: a component left pointing at a torn-down
+            // controller is a use-after-free the plugin performs on itself.
+            if let Some(wire) = &self.wired {
+                sunder(wire);
+            }
+            if let Some(c) = &self.controller {
+                c.terminate();
             }
             self.component.terminate();
         }

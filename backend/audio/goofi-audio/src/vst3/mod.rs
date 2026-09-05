@@ -167,8 +167,12 @@ unsafe fn describe_initialized(
                 .transpose()?
         }
     };
+    // A separate controller publishes its parameters only once it is connected to its processor
+    // over IConnectionPoint and seeded with the processor's state; held, to undo before terminate.
+    let mut wired: Option<node::Wire> = None;
     if let Some(c) = &separate {
         ok(c.initialize(context.as_ptr()), "initialize the controller")?;
+        wired = node::introduce(component, c);
     }
     let audio = MediaTypes_::kAudio as MediaType;
     let buses = |dir: BusDirection| -> Vec<u16> {
@@ -184,6 +188,10 @@ unsafe fn describe_initialized(
     let outputs = buses(BusDirections_::kOutput as BusDirection);
     let events = component.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection) > 0;
     let params = own.as_ref().or(separate.as_ref()).map(|c| params_of(c)).unwrap_or_default();
+    // Before the controller is terminated: the component outlives this call.
+    if let Some(wire) = &wired {
+        node::sunder(wire);
+    }
     if let Some(c) = &separate {
         c.terminate();
     }
@@ -356,9 +364,11 @@ impl AudioEngine {
         let (intro, params) = introspection(vendor, &class);
         // The refusal is HERE, where the palette can carry it: an insert-time one would offer a
         // type that every `node add` then answers with the same words, for ever.
-        let widest = intro.params.len().max(intro.inputs.len()).max(intro.outputs.len());
+        // Params are trimmed to fit by `introspection`; BUSES cannot be, since dropping one would
+        // silently rechannel the plugin. So only a bus count can still refuse a class.
+        let widest = intro.inputs.len().max(intro.outputs.len());
         if widest > MAX_PORTS {
-            let reason = format!("declares {widest} ports and params, and {MAX_PORTS} is the ceiling");
+            let reason = format!("declares {widest} audio buses, and {MAX_PORTS} is the ceiling");
             return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) };
         }
         let derived = Arc::new(Derived { binary: binary.to_path_buf(), stamp, cid, inputs: class.inputs, outputs: class.outputs, params });
@@ -401,7 +411,15 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     };
     let mut names: Vec<String> = Vec::new();
     let mut kinds = Vec::new();
-    for p in class.params.iter().filter(|p| p.flags & OMITTED == 0) {
+    // A block's params are a stack array, so the ceiling is real. Taking the plugin's own first
+    // rather than refusing the class: a synth with 2983 params is still worth having with its
+    // first few dozen reachable, and the plugin declares them roughly in the order it thinks
+    // matters. `take` bounds the KINDS too, which is what keeps a param's index and the id it
+    // writes back to in step.
+    let room = MAX_PORTS - params.len();
+    let offered = class.params.iter().filter(|p| p.flags & OMITTED == 0);
+    let total = offered.clone().count();
+    for p in offered.take(room) {
         let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), &mut names);
         let (spec, kind, doc) = if p.steps <= 0 {
             let shown = format!("{} {}", p.shown, p.units);
@@ -419,9 +437,14 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         kinds.push((p.id, kind));
     }
     // A plugin has no tag to name its vendor, so the doc line does — unless its name already has.
-    let doc = match class.name.starts_with(vendor) {
+    let named = match class.name.starts_with(vendor) {
         true => class.name.clone(),
         false => format!("{vendor}: {}", class.name),
+    };
+    // A parameter that is simply absent reads as one the plugin does not have, so the doc says so.
+    let doc = match total > room {
+        true => format!("{named} — the first {room} of its {total} parameters"),
+        false => named,
     };
     let tag = match class.sub_categories.contains("Instrument") {
         true => Tag::Generator,
