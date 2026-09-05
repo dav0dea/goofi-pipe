@@ -32,9 +32,11 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
+    # 24, not 22: 22 ships npm 10, which resolves this manifest with no lockfile into `Cannot read
+    # properties of null (reading 'edgesOut')` and installs nothing; npm 11, what 24 ships, does not.
     - uses: actions/setup-node@v7
       with:
-        node-version: '22'
+        node-version: '24'
 
     # `enable-cache` OFF, not merely unkeyed. Its default glob is `uv.lock`/`requirements*.txt`,
     # and this repo has neither — so the key never changes and the cache never invalidates, which
