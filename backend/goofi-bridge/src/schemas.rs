@@ -253,6 +253,7 @@ pub fn snapshot(
     unsaved: bool,
     save_path: Option<&str>,
     harnesses: Value,
+    demo: bool,
 ) -> Value {
     let mut snap = json!({
         "instance_id": instance_id,
@@ -267,6 +268,7 @@ pub fn snapshot(
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
         // The palette rides along, so the first render needs no `list_nodes` round-trip.
         snap["node_types"] = catalog_types(g);
+        snap["demo"] = json!(demo);
     }
     snap
 }

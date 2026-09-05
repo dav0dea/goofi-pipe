@@ -56,9 +56,21 @@ pub const DEFAULT_ACTOR: &str = "default";
 pub type Spa = &'static [(&'static str, &'static [u8])];
 include!(concat!(env!("OUT_DIR"), "/spa.rs"));
 
+/// The doors this server opens, decided once at start and never again.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Mode {
+    /// The API alone: no app is served, and the layout group leaves the vocabulary.
+    pub headless: bool,
+    /// A PUBLIC goofi: no terminal, no agents, no filesystem, no save or load, no audio. It is NOT
+    /// a sandbox — a param expression is still Python. See `roadmap/demo-mode.md`.
+    pub demo: bool,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
+    /// What this instance serves, one owner: the op table, the routes and the engines read it.
+    pub mode: Mode,
     pub events: broadcast::Sender<String>,
     pub instance_id: Arc<str>,
     /// The op rows THIS instance serves — headless leaves the layout group out.
@@ -128,12 +140,12 @@ impl Default for DataLiveness {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(false, Clock::External)
+        Self::new(Mode::default(), Clock::External)
     }
 }
 
 impl AppState {
-    pub fn new(headless: bool, clock: Clock) -> AppState {
+    pub fn new(mode: Mode, clock: Clock) -> AppState {
         let (events, _) = broadcast::channel(256);
         let iid = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -146,7 +158,7 @@ impl AppState {
         let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        let mut graph_val = fresh_graph(clock);
+        let mut graph_val = fresh_graph((!mode.demo).then_some(clock));
         graph_val.set_workspace(&mount);
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
@@ -156,7 +168,8 @@ impl AppState {
             graph,
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
-            ops: Arc::new(ops::table(headless)),
+            mode,
+            ops: Arc::new(ops::table(mode)),
             doc: Arc::new(Mutex::new(doc)),
             dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reducers,
@@ -305,6 +318,18 @@ fn routes(state: AppState) -> Router {
                 ws.on_upgrade(move |socket| handle_data(socket, state, node, slot))
             }),
         )
+        .with_state(state.clone())
+        // A demo serves the graph and nothing around it: the patch file, the two op doors and a
+        // terminal are ABSENT rather than refused.
+        .merge(match state.mode.demo {
+            true => Router::new(),
+            false => local_routes(state),
+        })
+}
+
+/// The routes a demo does not mount — the ones that reach the host rather than the graph.
+fn local_routes(state: AppState) -> Router {
+    Router::new()
         // The body limit is lifted: axum caps at 2 MB and a patch with a workspace is larger.
         .route(
             "/patch.gfi",
@@ -464,13 +489,14 @@ type NodeState = (u64, &'static str, Option<String>, Option<&'static str>);
 /// development surfaces. The [`origin`] guard goes on LAST, so it wraps every route — the WebSocket
 /// upgrades included, which CORS would not cover.
 pub fn app(state: AppState, spa: Spa, dev_routes: bool) -> Router {
+    let mode = state.mode;
     let base = routes(state);
     let served = if spa.is_empty() {
         base
     } else {
         base.fallback(move |uri| serve_spa_file(uri, dev_routes))
     };
-    served.layer(axum::middleware::from_fn(origin::guard))
+    served.layer(axum::middleware::from_fn_with_state(mode, origin::guard))
 }
 
 /// One embedded file, or the page itself for anything else: the client router owns every route
@@ -578,8 +604,9 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
     }
 }
 
-/// The composed graph the app boots: the model plus the signal engine, registered first.
-pub fn fresh_graph(clock: Clock) -> Graph {
+/// The composed graph the app boots: the model plus the signal engine, registered first. `None`
+/// asks for no audio engine at all, which is also what takes every audio node out of the catalog.
+pub fn fresh_graph(clock: Option<Clock>) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
         g.instance().to_string(),
@@ -587,7 +614,9 @@ pub fn fresh_graph(clock: Clock) -> Graph {
         g.drain_waker(),
     );
     g.register_engine(Box::new(signal));
-    g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
+    if let Some(clock) = clock {
+        g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
+    }
     g
 }
 
@@ -747,7 +776,7 @@ fn control_seeds(state: &AppState) -> (String, String) {
         let g = state.graph.lock().unwrap();
         event(
             "hello",
-            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(), roster),
+            schemas::snapshot(&g, &state.instance_id, true, unsaved, saved_at.as_deref(), roster, state.mode.demo),
         )
     };
     (hello, doc_state(state))

@@ -1153,7 +1153,7 @@ fn load_patch(
         events.push(event(
             "graph_replaced",
             schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
-                              state.harnesses.roster(&agents)),
+                              state.harnesses.roster(&agents), state.mode.demo),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
         events.push(event("node_types", json!({ "types": schemas::catalog_types(&g) })));

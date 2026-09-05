@@ -340,10 +340,14 @@ pub fn find(name: &str) -> Option<&'static Op> {
 
 /// The rows one server serves. Headless does not REGISTER the layout group — the one spelling of
 /// the mode, so `op list`, the phrase resolver and the MCP all shrink with it.
-pub fn table(headless: bool) -> Vec<&'static Op> {
+pub fn table(mode: crate::Mode) -> Vec<&'static Op> {
+    // What a demo drops: the host's filesystem, the agents it would spawn, and the two ops that
+    // read or write a `.gfi` beside them. `session new` stays — it is the visitor's reset.
+    const DEMO_DROPS: [&str; 4] = ["dir", "agent", "session save", "session load"];
     registry()
         .iter()
-        .filter(|o| !headless || o.name.split(' ').next() != Some("layout"))
+        .filter(|o| !mode.headless || o.name.split(' ').next() != Some("layout"))
+        .filter(|o| !mode.demo || !DEMO_DROPS.iter().any(|d| o.name == *d || o.name.starts_with(&format!("{d} "))))
         .collect()
 }
 
