@@ -913,6 +913,17 @@ pub(crate) fn layout_remove(
     apply_layout(state, &mut g, actor, goofi_graph::Command::LayoutClose { born: panel })
 }
 
+/// The `control` payload: absent leaves the record alone, null clears it, an object sets it.
+fn parse_control(payload: &Value) -> Result<Option<Option<goofi_core::globals::Control>>, String> {
+    match payload.get("control") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(|c| Some(Some(c)))
+            .map_err(|e| format!("control: {e}")),
+    }
+}
+
 /// Create a global. Every expression reading one depends on its TYPE, so the type is declared
 /// at birth and immutable after — re-typing is a remove and an add.
 pub(crate) fn global_add(
@@ -930,10 +941,11 @@ pub(crate) fn global_add(
     let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global entry add: missing value")?;
     let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
         .ok_or_else(|| format!("global entry add: `{val}` is not a {ty}"))?;
+    let control = parse_control(payload)?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None, control },
     )?;
     // As STORED: the conversion is type-directed, so a fraction into an int rounds.
     Ok(json!({ "value": goofi_graph::global_to_json(&value)["value"] }))
@@ -952,13 +964,21 @@ pub(crate) fn global_edit(
         return Err(format!("global entry edit: no global `{name}` — `global entry add` creates one"));
     };
     let ty = held["type"].as_str().unwrap_or_default().to_string();
-    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global entry edit: missing value")?;
+    let control = parse_control(payload)?;
+    let val = payload.get("value").filter(|v| !v.is_null());
+    // A control-only edit is what the panel sends when it moves a widget, so the value is optional
+    // once a `control` is given.
+    let val = match (val, &control) {
+        (Some(v), _) => v,
+        (None, Some(_)) => &held["value"],
+        (None, None) => return Err("global entry edit: missing value".to_string()),
+    };
     let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
         .ok_or_else(|| format!("global entry edit: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None },
+        goofi_graph::Command::EditGlobal { name, value: Some(value.clone()), at: None, control },
     )?;
     Ok(json!({ "value": goofi_graph::global_to_json(&value)["value"] }))
 }
@@ -977,7 +997,7 @@ pub(crate) fn global_remove(
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
-        goofi_graph::Command::EditGlobal { name, value: None, at: None },
+        goofi_graph::Command::EditGlobal { name, value: None, at: None, control: None },
     )?;
     Ok(json!({ "removed": true }))
 }

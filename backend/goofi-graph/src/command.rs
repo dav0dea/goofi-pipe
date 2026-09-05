@@ -1,7 +1,7 @@
 //! Patch commands with exact inverses — the manager's undo/redo unit.
 
 use crate::{Graph, Uid};
-use goofi_core::globals::GlobalValue;
+use goofi_core::globals::{Control, GlobalValue};
 use goofi_core::Param;
 
 use crate::Mode;
@@ -109,6 +109,8 @@ pub enum Command {
         name: String,
         value: Option<GlobalValue>,
         at: Option<usize>,
+        /// The control record: outer `None` leaves it alone, inner `None` clears it.
+        control: Option<Option<Control>>,
     },
     /// Rename a global, or a whole group of them. Each inverts as the reverse rename, planned
     /// forward, so nothing puts back raw state.
@@ -418,12 +420,13 @@ impl Command {
                 Ok((Outcome::Ok, Command::EditParam { uid, group, name, value: old_value, source: old_source }))
             }
 
-            Command::EditGlobal { name, value, at } => {
+            Command::EditGlobal { name, value, at, control } => {
                 let old = g.globals().get(&name).cloned();
+                let old_control = control.as_ref().map(|_| g.globals().control(&name).cloned());
                 // A delete's inverse re-adds at the removed index; add/edit inverses carry no slot.
                 let inv_at = if value.is_none() { g.globals().index_of(&name) } else { None };
-                g.apply_global_change(&name, value, at)?;
-                Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
+                g.apply_global_change(&name, value, at, control)?;
+                Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at, control: old_control }))
             }
 
             Command::RenameGlobal { from, to } => {

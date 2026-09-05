@@ -22,12 +22,17 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let sink = g.add("Buffer");
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier" }));
     g.set_param(buf, "buffer", "size", 128);
-    g.link(osc, "out", buf, "data");
-    g.link(buf, "out", sink, "data");
+    g.link(osc, "out", buf, "input");
+    g.link(buf, "out", sink, "input");
 
     g.call("global entry add", j!({ "name": "patch.gain", "value": 2.0, "type": "float" }));
     g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size",
                                    "expression": "globals.patch.gain * 64" }));
+    // A control element is a global that carries a widget, and the archive carries the record.
+    g.call("global entry edit", j!({ "name": "patch.gain", "control":
+        { "kind": "knob", "min": 0.0, "max": 4.0, "step": 0.01, "x": 2.0, "y": 1.0, "w": 2.0, "h": 2.0 } }));
+    let why = g.refuse("global entry edit", j!({ "name": "patch.gain", "control": { "kind": "toggle" } }));
+    assert!(why.contains("toggle") && why.contains("float"), "a widget that cannot draw the type: {why}");
     // …and a reference over it: the archive carries the whole record, the expression retained.
     let level = g.add("_TestScalar");
     g.call("node edit", j!({ "node": hex(level), "name": "level" }));
@@ -59,6 +64,11 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let source = &recs[&hex(sink)]["sources"][0];
     assert_eq!((&source["mode"], &source["expression"], &source["reference"]),
                (&j!("reference"), &j!("globals.patch.gain * 64"), &j!("level.out")), "{source}");
+
+    let saved_gain = saved["globals"].as_array().unwrap().iter()
+        .find(|e| e["name"] == "patch.gain").cloned().expect("the element is in the file");
+    assert_eq!((&saved_gain["control"]["kind"], &saved_gain["control"]["x"]), (&j!("knob"), &j!(2.0)),
+               "the widget and its place ride the archive: {saved_gain}");
 
     g.call("layout panel edit", j!({ "panel": panel(&g), "type": "viewer",
                                         "state": { "node": hex(osc), "slot": "out" } }));
@@ -108,6 +118,17 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let manifest = g.call("session manifest", j!({}));
     assert!(!manifest["yaml"].as_str().unwrap().contains("goofi_home"),
             "a machine path in a patch file travels to the wrong machine");
+    // An archive from before groups existed cannot come up half-alive: every expression reading
+    // its globals would be broken, so the load stops and names the global.
+    let flat = g.call("session manifest", j!({}))["yaml"].as_str().unwrap()
+        .replace("name: patch.gain", "name: gain");
+    let why = g.refuse("session load", j!({ "content": flat }));
+    assert!(why.contains("gain") && why.contains("group.element"), "the load names the global: {why}");
+
+    let reborn = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
+        .find(|e| e["name"] == "patch.gain").cloned().expect("the element came back");
+    assert_eq!((&reborn["control"]["kind"], &reborn["control"]["w"]), (&j!("knob"), &j!(2.0)),
+               "the load restored the widget and its place: {reborn}");
     let held = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
         .find(|e| e["name"] == "system.goofi_home").cloned().unwrap();
     assert_eq!(held["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));

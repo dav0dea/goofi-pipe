@@ -545,8 +545,12 @@ impl Graph {
         name: &str,
         value: Option<goofi_core::globals::GlobalValue>,
         at: Option<usize>,
+        control: Option<Option<goofi_core::globals::Control>>,
     ) -> Result<(), String> {
         self.globals.apply_change(name, value, at)?;
+        if let Some(c) = control {
+            self.globals.set_control(name, c)?;
+        }
         self.invalidate_bindings_reading(name);
         Ok(())
     }
@@ -3143,11 +3147,14 @@ impl Graph {
             .entries()
             // A locked global is the MACHINE's; writing it into a patch would carry one machine's
             // path onto another.
-            .filter(|(_, _, _, locked)| !locked)
-            .map(|(name, value, _is_system, _)| {
+            .filter(|(_, _, _, locked, _)| !locked)
+            .map(|(name, value, _is_system, _, control)| {
                 let mut e = global_to_json(value); // {value, type}
                 if let Value::Object(ref mut m) = e {
                     m.insert("name".to_string(), Value::String(name.to_string()));
+                    if let Some(c) = control {
+                        m.insert("control".to_string(), serde_json::to_value(c).expect("a plain record"));
+                    }
                 }
                 e
             })
@@ -3201,6 +3208,21 @@ impl Graph {
             self.resolve_type(ty)?;
         }
 
+        // Every global name is checked BEFORE the swap: a refusal after `clear` would leave the
+        // patch destroyed, and a load is graph and workspace or neither.
+        if let Some(serde_json::Value::Array(arr)) = doc.get("globals") {
+            for entry in arr {
+                if let Some(name) = entry.get("name").and_then(|v| v.as_str()) {
+                    if !goofi_core::globals::is_valid_global_name(name) {
+                        return Err(format!(
+                            "this patch holds the global `{name}`, which is not `group.element`: {}",
+                            goofi_core::globals::GLOBAL_NAME_RULE
+                        ));
+                    }
+                }
+            }
+        }
+
         self.clear();
         self.set_workspace(workspace);
         // Globals load BEFORE nodes so a node's `globals.*` default-expression resolves at
@@ -3211,6 +3233,11 @@ impl Graph {
                     (entry.get("name").and_then(|v| v.as_str()), global_from_json(entry))
                 {
                     let _ = self.globals.apply_change(name, Some(value), None);
+                    if let Some(c) = entry.get("control") {
+                        if let Ok(c) = serde_json::from_value(c.clone()) {
+                            let _ = self.globals.set_control(name, Some(c));
+                        }
+                    }
                 }
             }
         }

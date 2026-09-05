@@ -35,6 +35,78 @@ impl GlobalValue {
     }
 }
 
+/// What a control element is drawn as.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlKind {
+    Knob,
+    Slider,
+    Number,
+    Field,
+    Toggle,
+    Dropdown,
+}
+
+impl ControlKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ControlKind::Knob => "knob",
+            ControlKind::Slider => "slider",
+            ControlKind::Number => "number",
+            ControlKind::Field => "field",
+            ControlKind::Toggle => "toggle",
+            ControlKind::Dropdown => "dropdown",
+        }
+    }
+}
+
+/// A global drawn in a control panel: the widget, its range, and its place in the grid. Carrying
+/// one is what makes a global an ELEMENT — there is no second list of what a panel holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Control {
+    pub kind: ControlKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub w: f64,
+    #[serde(default)]
+    pub h: f64,
+}
+
+impl Control {
+    /// Whether this widget can draw `value`'s type.
+    pub fn fits(&self, value: &GlobalValue) -> bool {
+        use ControlKind as K;
+        use GlobalValue as G;
+        match self.kind {
+            K::Knob | K::Slider | K::Number => matches!(value, G::Float(_) | G::Int(_)),
+            K::Toggle => matches!(value, G::Bool(_)),
+            K::Field | K::Dropdown => matches!(value, G::Str(_)),
+        }
+    }
+
+    /// Why this widget cannot draw `value`, in the words a refusal uses.
+    pub fn mismatch(&self, value: &GlobalValue) -> String {
+        let ty = match value {
+            GlobalValue::Float(_) => "float",
+            GlobalValue::Int(_) => "int",
+            GlobalValue::Bool(_) => "bool",
+            GlobalValue::Str(_) => "string",
+        };
+        format!("a `{}` cannot draw a {ty}", self.kind.as_str())
+    }
+}
+
 /// A code-owned system global: never deletable or renamable. A LOCKED one is not editable
 /// either — its value is the machine's, re-derived at every reassert, and a `.gfi` never
 /// carries it.
@@ -125,6 +197,7 @@ pub fn is_valid_name(name: &str) -> bool {
 #[derive(Clone)]
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
+    controls: IndexMap<String, Control>,
     system: std::collections::HashSet<String>,
     locked: std::collections::HashSet<String>,
 }
@@ -139,6 +212,7 @@ impl GlobalStore {
     pub fn new() -> GlobalStore {
         let mut s = GlobalStore {
             values: IndexMap::new(),
+            controls: IndexMap::new(),
             system: std::collections::HashSet::new(),
             locked: std::collections::HashSet::new(),
         };
@@ -167,11 +241,32 @@ impl GlobalStore {
         self.values.contains_key(name)
     }
 
-    /// Every global in order, tagged with whether it is a system global and whether it is locked.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool, bool)> {
-        self.values
-            .iter()
-            .map(|(k, v)| (k.as_str(), v, self.system.contains(k), self.locked.contains(k)))
+    /// Every global in order, tagged with whether it is a system global, whether it is locked,
+    /// and the control record that makes it an element.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool, bool, Option<&Control>)> {
+        self.values.iter().map(|(k, v)| {
+            (k.as_str(), v, self.system.contains(k), self.locked.contains(k), self.controls.get(k))
+        })
+    }
+
+    pub fn control(&self, name: &str) -> Option<&Control> {
+        self.controls.get(name)
+    }
+
+    /// Set or clear a global's control record; a widget that cannot draw the value is refused.
+    pub fn set_control(&mut self, name: &str, control: Option<Control>) -> Result<(), String> {
+        let value = self.values.get(name).ok_or_else(|| format!("no such global `{name}`"))?;
+        match control {
+            Some(c) if !c.fits(value) => Err(c.mismatch(value)),
+            Some(c) => {
+                self.controls.insert(name.to_string(), c);
+                Ok(())
+            }
+            None => {
+                self.controls.shift_remove(name);
+                Ok(())
+            }
+        }
     }
 
     /// Set an EXISTING global, coercing to its declared type; errors when it does not exist.
@@ -216,6 +311,7 @@ impl GlobalStore {
         if self.values.shift_remove(name).is_none() {
             return Err(format!("no such global `{name}`"));
         }
+        self.controls.shift_remove(name);
         Ok(())
     }
 
@@ -233,6 +329,9 @@ impl GlobalStore {
         let at = self.values.get_index_of(from).ok_or_else(|| format!("no such global `{from}`"))?;
         let value = self.values.shift_remove(from).expect("the index answered");
         self.values.shift_insert(at, to.to_string(), value);
+        if let Some(c) = self.controls.shift_remove(from) {
+            self.controls.insert(to.to_string(), c);
+        }
         Ok(())
     }
 

@@ -38,7 +38,7 @@ fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     let mut g = goofi_bridge::fresh_graph(Some(goofi_bridge::Clock::External));
     goofi_tests::fixtures::register(&mut g);
     // Every producer's rate cap is `globals.default_ufreq`; the patch default measures 30 Hz.
-    g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
+    g.apply_global_change("system.default_ufreq", Some(GlobalValue::Float(1e6)), None, None).unwrap();
     goofi_bridge::register_dyn_type(&mut g, 
         &PY_MANIFEST,
         Box::new(move |_| Box::new(PyNode::from_source(src, vec![("data", false)], vec!["out"]).unwrap()) as Box<dyn Node>),

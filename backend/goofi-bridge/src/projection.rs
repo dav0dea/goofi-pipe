@@ -75,11 +75,14 @@ pub fn of(g: &Graph) -> Value {
         .collect();
 
     let mut globals = Map::new();
-    for (name, value, is_system, locked) in g.globals().entries() {
+    for (name, value, is_system, locked, control) in g.globals().entries() {
         let mut entry = goofi_graph::global_to_json(value);
         if let Value::Object(m) = &mut entry {
             m.insert("system".into(), json!(is_system));
             m.insert("locked".into(), json!(locked));
+            if let Some(c) = control {
+                m.insert("control".into(), serde_json::to_value(c).expect("a plain record"));
+            }
         }
         globals.insert(name.to_string(), entry);
     }
