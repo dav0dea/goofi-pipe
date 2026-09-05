@@ -275,7 +275,8 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     }
 
     // The fold takes the largest need per dim, and an envelope of width W carries 2·W samples.
-    for v in [&mut wide, &mut narrow] {
+    // Every one of the six is awaited: a viewer holding a folded frame is a viewer that is counted.
+    for v in [&mut wide, &mut narrow].into_iter().chain(rest.iter_mut()) {
         let d = v.until(|d| f32s(d).len() == 512).await;
         assert!(d.meta().reduced().is_some(), "the frame says it is a reduction");
     }
@@ -576,4 +577,11 @@ fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
     g.until("the count to climb under the expression's low gate", |_| past(80.0).then_some(()));
     g.set_param(gate, "control", "value", 1.0);
     g.until("the reset the expression fired", |_| under(80.0).then_some(()));
+
+    // A pulse is no command: the edit BEFORE it is what one undo takes back.
+    g.set_param(n, "common", "max_frequency", 25.0);
+    g.call("node param pulse", j!({ "node": hex(n), "param": "count/reset" }));
+    assert_eq!(g.call("undo", j!({}))["changed"], j!(true));
+    assert_eq!(g.doc()["nodes"][hex(n)]["params"]["common"]["max_frequency"]["value"], j!(50.0),
+               "the undo took back the param edit, so the pulse left nothing on the stack");
 }

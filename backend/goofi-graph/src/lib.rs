@@ -218,6 +218,10 @@ fn coerced_value(existing: &Param, v: &serde_json::Value) -> Param {
     param_from_json(existing, parsed.as_ref().unwrap_or(v))
 }
 
+/// What every writer hears when it offers a pulse a value, whichever shape it came in.
+const PULSE_HOLDS_NO_VALUE: &str =
+    "this param is a pulse and holds no value; fire it with `node param pulse`";
+
 /// One `params.<group>.<name>` entry: a bare literal, or `{value, expression, reference, mode,
 /// triggers}`. No param type is an object, so the two forms cannot be confused. A text given names
 /// its mode unless one is said; a mode or a trigger alone edits what is retained.
@@ -226,7 +230,11 @@ fn param_change(
     cur: Option<SourceState>,
     spec: &serde_json::Value,
 ) -> Result<(Option<Param>, Option<SourceState>), String> {
+    let pulse = matches!(existing, Param::Pulse);
     let Some(o) = spec.as_object() else {
+        if pulse {
+            return Err(PULSE_HOLDS_NO_VALUE.to_string());
+        }
         return Ok((Some(coerced_value(existing, spec)), None));
     };
     if let Some(k) = o
@@ -236,8 +244,8 @@ fn param_change(
         return Err(format!("unknown field `{k}` — value, expression, reference, mode, triggers"));
     }
     let field = |k: &str| o.get(k).filter(|v| !v.is_null());
-    if matches!(existing, Param::Pulse) && field("value").is_some() {
-        return Err("this param is a pulse and holds no value; fire it with `node param pulse`".to_string());
+    if pulse && field("value").is_some() {
+        return Err(PULSE_HOLDS_NO_VALUE.to_string());
     }
     let value = field("value").map(|v| coerced_value(existing, v));
     let text = |k: &str| {

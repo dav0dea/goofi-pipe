@@ -46,6 +46,10 @@ pub(crate) fn seed_node(
             continue;
         }
         for (name, value) in entries {
+            // A pulse is a request, so there is no value to replay and nothing it ever changed.
+            if matches!(value, goofi_core::Param::Pulse) {
+                continue;
+            }
             let key = ParamKey::new(group.as_str(), name.as_str());
             if let Err(e) = guard_lifecycle(|| node.on_param_changed(&key, value)).unwrap_or_else(fold_panic) {
                 last_error.get_or_insert(e.0);

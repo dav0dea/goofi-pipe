@@ -64,7 +64,7 @@ impl Plan {
 }
 
 /// A param's scalar as the audio thread reads it: a number as itself, a bool as 0/1, an option
-/// as its index, free text as 0.
+/// as its index, free text as 0, and a pulse — which holds no value — as 0.
 pub(crate) fn scalar(p: &Param) -> f64 {
     p.as_f64().unwrap_or_else(|| match p {
         Param::Str { value, options: Some(options), .. } => {

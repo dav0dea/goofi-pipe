@@ -520,6 +520,7 @@ impl Control {
         self.report(pass);
     }
 
+    /// A `Str` param's text; every other kind — a number, a bool, a valueless pulse — has none.
     fn text(&self, param: usize) -> String {
         match &self.consts[param] {
             Param::Str { value, .. } => value.clone(),
