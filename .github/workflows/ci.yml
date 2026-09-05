@@ -105,7 +105,7 @@ jobs:
       run: cargo clippy --workspace --all-targets -- -D warnings
 
     - name: Tests
-      run: cargo test --workspace
+      run: cargo test --workspace --no-fail-fast
 
     # The other Python tier. Separate because it LINKS libpython — a different build of the same
     # suite rather than more of it.

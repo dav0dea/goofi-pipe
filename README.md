@@ -106,6 +106,7 @@ omitted:
 | `OUTPUTS` | `{slot: DataType}`. |
 | `PARAMS` | `{group: {name: IntParam / FloatParam / BoolParam / StringParam}}`, read as `self.params.<group>.<name>`. |
 | `PRODUCER` | `True` for a node that paces itself rather than waiting for a frame. |
+| `TAGS` | The palette facets, from one closed vocabulary: `["analysis", "eeg"]`. An unknown tag greys the node out and names the vocabulary. |
 
 `process` receives one keyword argument per **declared** input slot — a `goofi.Data`, or
 `None` when the slot holds no frame. A `required=True` slot never arrives empty, so it may
@@ -116,8 +117,8 @@ seeded.
 
 The same file runs on either tier, and the file does not choose: a discovery probe imports
 it in a real interpreter and routes it in-process when its imports keep the GIL disabled,
-else to a subprocess — where it appears in the palette under the `subprocess` category. The
-two interpreters are `.gfivenv-ft` (free-threaded 3.14t) and `.gfivenv` (a GIL Python), both
+else to a subprocess. The palette shows the tags a node declares, never the tier it runs on.
+The two interpreters are `.gfivenv-ft` (free-threaded 3.14t) and `.gfivenv` (a GIL Python), both
 made by `goofi-init`, and goofi uses no others. Re-run it after a version bump; it is
 idempotent.
 
@@ -128,7 +129,7 @@ surfaces on the node's error channel instead of taking anything down.
 ## Testing
 
 ```bash
-cargo test --workspace                        # backend
+cargo test --workspace --no-fail-fast         # backend
 cargo test -p goofi-tests --features embed    # …plus the in-process Python tier
 cargo clippy --workspace --all-targets        # prints nothing
 cd frontend && npm run check && npm run test  # svelte-check, then vitest

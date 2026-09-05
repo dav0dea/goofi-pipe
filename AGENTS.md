@@ -420,7 +420,7 @@ Moving the pin is a deliberate commit that fixes whatever the new release names.
 The gates, once it is provisioned:
 
 ```bash
-cargo test --workspace                      # must stay green, and warning-free
+cargo test --workspace --no-fail-fast       # must stay green, and warning-free
 cargo test -p goofi-tests --features embed  # …plus the in-process Python tier, which LINKS libpython
 cargo build --workspace --all-targets 2>&1 | grep -n '^warning'   # anchor the grep: a test's own
 #   log line can contain "warning:" and read as a failing gate when it is not
