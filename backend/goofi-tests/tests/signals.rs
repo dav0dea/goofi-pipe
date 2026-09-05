@@ -295,3 +295,60 @@ fn the_array_nodes_reshape_a_grid_and_the_rate_follows_the_time_axis() {
         assert!(g.error(n).is_none(), "an array node carries no error: {:?}", g.error(n));
     }
 }
+
+#[test]
+fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
+    // The three nodes that carry no signal of their own. Each configuration gets its OWN node and
+    // is wired after it is set: a consumer fed by a constant never re-runs on a param edit,
+    // because a literal edit is not a trigger and no second frame is coming.
+    let g = Goofi::new();
+    let set = |n, group: &str, name: &str, v: serde_json::Value| {
+        g.set_param(n, group, name, v);
+    };
+    let level = g.add("Constant");
+    set(level, "constant", "value", j!(2.0));
+    set(level, "constant", "shape", j!("3,4"));
+
+    // Above and below are the same comparison read from either side.
+    let over = g.add("Threshold");
+    set(over, "threshold", "level", j!(1.0));
+    let under = g.add("Threshold");
+    set(under, "threshold", "level", j!(1.0));
+    set(under, "threshold", "mode", j!("below"));
+    let (po, pu) = (g.probe(over, "out"), g.probe(under, "out"));
+    g.link(level, "out", over, "input");
+    g.link(level, "out", under, "input");
+    let high = g.until("the decision above the level", |_| {
+        po.latest().filter(|d| shape(d) == vec![3, 4] && f32s(d).iter().all(|v| *v == 1.0))
+    });
+    assert_eq!(shape(&high), vec![3, 4], "a decision keeps the shape it was given");
+    g.until("the same comparison read the other way", |_| {
+        pu.latest().filter(|d| f32s(d).iter().all(|v| *v == 0.0))
+    });
+
+    // Switch reads its wires in the order they were connected, and a live source lets the
+    // param edit show: the next frame carries the new route.
+    let grid = g.add("_TestGrid");
+    let count = g.add("_TestCounter");
+    let route = g.add("Switch");
+    let pr = g.probe(route, "out");
+    g.link(grid, "out", route, "input");
+    g.link(count, "out", route, "input");
+    g.until("the first wire", |_| pr.latest().filter(|d| shape(d) == vec![3, 4]));
+    set(route, "switch", "index", j!(1));
+    g.until("the second wire", |_| pr.latest().filter(|d| shape(d) == vec![1]));
+
+    // Meta writes what a source could not say about itself.
+    let named = g.add("Meta");
+    set(named, "meta", "sfreq", j!(128.0));
+    set(named, "meta", "labels", j!("alpha"));
+    let pn = g.probe(named, "out");
+    g.link(count, "out", named, "input");
+    let stamped = g.until("the written rate", |_| pn.latest().filter(|d| d.meta().sfreq() == Some(128.0)));
+    let labels = stamped.meta().channels().get(0).and_then(|x| x.coords.clone()).expect("the written label");
+    assert_eq!(labels[0], goofi_core::Coord::Str("alpha".into()), "the name the node was told to write");
+
+    for n in [over, under, route, named] {
+        assert!(g.error(n).is_none(), "a control node carries no error: {:?}", g.error(n));
+    }
+}
