@@ -14,8 +14,11 @@ pub const BLOCK: usize = 64;
 /// What a node is prepared for; a port never carries more channels than this.
 pub const MAX_CHANNELS: u16 = 16;
 /// The most inputs, outputs or params a node may declare: a block's ports are stack arrays on
-/// both sides of the boundary.
-pub const MAX_PORTS: usize = 16;
+/// both sides of the boundary, so this is stack per callback rather than a free number. 16 was
+/// enough for a hand-written node and far too few for a plugin — a third of the VST3 classes on
+/// one machine here declare between 17 and 64 params, and at 16 every one of them was refused
+/// outright rather than merely trimmed.
+pub const MAX_PORTS: usize = 64;
 
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's. The
 /// signal-only slot flags are ignored; `multi: true` on an input sums its wires at the jack.
