@@ -24,6 +24,7 @@ use goofi_node::Uid;
 const TEMPO: f64 = 120.0;
 
 /// How a goofi param's scalar becomes the plugin's normalized value.
+#[derive(Clone, Copy)]
 pub enum Kind {
     Float,
     Stepped(f64),
