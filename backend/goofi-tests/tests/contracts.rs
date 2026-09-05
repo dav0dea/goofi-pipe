@@ -386,8 +386,9 @@ fn every_manifest_carries_only_standard_tags_and_no_category() {
             .collect()
     };
     assert!(!types.is_empty(), "a fresh goofi offers a library");
+    let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
     for ty in types {
-        let row = row(&g, &ty);
+        let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
         assert!(row.get("category").is_none(), "{ty}: category is gone");
         let tags = row["tags"].as_array().expect("a tags list");
         // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
