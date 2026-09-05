@@ -427,3 +427,75 @@ fn a_stitching_node_answers_from_the_past_and_a_transform_round_trips() {
         assert!(g.error(n).is_none(), "a stitching node carries no error: {:?}", g.error(n));
     }
 }
+
+#[test]
+fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
+    // One 10 Hz sine at 256 Hz, two seconds of it in a window, read four ways. Every assertion
+    // below is a closed form of that sine rather than a property of whatever arrived.
+    let g = Goofi::new();
+    let set = |n, group: &str, name: &str, v: serde_json::Value| {
+        g.set_param(n, group, name, v);
+    };
+    let lfo = g.add("LFO");
+    set(lfo, "lfo", "frequency", j!(10.0));
+    set(lfo, "output", "mode", j!("block"));
+    set(lfo, "output", "sfreq", j!(256.0));
+    set(lfo, "common", "max_frequency", j!(20.0));
+    let window = g.add("Buffer");
+    set(window, "buffer", "size", j!(512));
+    g.link(lfo, "out", window, "data");
+
+    // A sine's envelope is its amplitude, and its instantaneous frequency is its frequency. Both
+    // ring at the edges of a frame, so the middle half is what is read.
+    let hil = g.add("Hilbert");
+    let (pe, ph) = (g.probe(hil, "envelope"), g.probe(hil, "frequency"));
+    g.link(window, "out", hil, "input");
+    let env = g.until("the envelope of a full window", |_| pe.latest().filter(|d| shape(d) == vec![512]));
+    let mid = |v: &[f32]| v[128..384].to_vec();
+    let e = mid(&f32s(&env));
+    assert!(e.iter().all(|v| (v - 1.0).abs() < 0.05), "a sine of amplitude one has an envelope of one: {:?}", &e[..4]);
+    let hz = g.until("the instantaneous frequency", |_| ph.latest().filter(|d| shape(d) == vec![512]));
+    let f = mid(&f32s(&hz));
+    assert!(f.iter().all(|v| (v - 10.0).abs() < 0.5), "a 10 Hz sine turns at 10 Hz: {:?}", &f[..4]);
+
+    // The wavelet's strongest row is the one whose own frequency is the sine's.
+    let wav = g.add("Wavelet");
+    let pw = g.probe(wav, "out");
+    g.link(window, "out", wav, "input");
+    let scal = g.until("a scalogram of the window", |_| pw.latest().filter(|d| shape(d) == vec![40, 512]));
+    let v = f32s(&scal);
+    let strongest = (0..40)
+        .max_by(|a, b| {
+            let mean = |r: &usize| v[r * 512 + 128..r * 512 + 384].iter().sum::<f32>();
+            mean(a).total_cmp(&mean(b))
+        })
+        .expect("forty rows");
+    let coords = scal.meta().channels().get(0).and_then(|x| x.coords.clone()).expect("the frequency axis");
+    let goofi_core::Coord::Num(row_hz) = coords[strongest] else { panic!("numeric frequencies") };
+    assert!((row_hz - 10.0).abs() < 1.5, "the strongest row is the sine's own frequency, got {row_hz}");
+
+    // Shifting the sine up by forty hertz moves its peak from ten to fifty.
+    let shift = g.add("FreqShift");
+    set(shift, "freq_shift", "frequency", j!(40.0));
+    let psd = g.add("Psd");
+    let pp = g.probe(psd, "psd");
+    g.link(window, "out", shift, "input");
+    g.link(shift, "out", psd, "data");
+    let spectrum = g.until("the shifted spectrum", |_| {
+        pp.latest().filter(|d| shape(d) == vec![257] && peak(d).0 > 80 && peak(d).0 < 120)
+    });
+    assert_eq!(peak(&spectrum).0, 100, "ten hertz shifted up by forty is fifty, at half a hertz a bin");
+
+    // The decomposition names its modes and keeps time last, so the rate rides through.
+    let emd = g.add("Emd");
+    let pm = g.probe(emd, "out");
+    g.link(window, "out", emd, "input");
+    let modes = g.until("the modes of the window", |_| pm.latest().filter(|d| shape(d) == vec![5, 512]));
+    let names = modes.meta().channels().get(0).and_then(|x| x.coords.clone()).expect("the mode axis");
+    assert_eq!(names[0], goofi_core::Coord::Str("IMF1".into()), "the modes are named in order");
+    assert_eq!(modes.meta().sfreq(), Some(256.0), "the last axis is still time");
+
+    for n in [hil, wav, shift, psd, emd] {
+        assert!(g.error(n).is_none(), "an analysis node carries no error: {:?}", g.error(n));
+    }
+}
