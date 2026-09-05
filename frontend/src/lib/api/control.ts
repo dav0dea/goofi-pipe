@@ -19,10 +19,8 @@ export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
 export type NodeRuntime = 'native' | 'in-process' | 'subprocess';
 
 export interface NodeTypeInfo {
-	/** The qualified `engine:Name` id; a structural type is bare. */
+	/** The qualified `engine:Name` id; a structural type is bare. `engineOf` reads the engine. */
 	type: string;
-	/** The engine that offers the type; null for a structural one, which runs nowhere. */
-	engine: string | null;
 	tags: (typeof TAGS)[number][];
 	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. */
 	source: 'builtin' | 'patch';

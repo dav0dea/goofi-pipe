@@ -6,23 +6,18 @@ import { FakeControl } from '$lib/test/fakeControl';
 import { seed } from '$lib/test/docSeed';
 import type { Action, NavContext } from '$lib/stores/history.svelte';
 import type { NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 const CTX: NavContext = { activeWorkspaceId: 'w', activePanelId: null, enteredPath: {}, selection: {} };
 
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Oscillator',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: {},
 			output_slots: { out: 'ARRAY', sig: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }
 

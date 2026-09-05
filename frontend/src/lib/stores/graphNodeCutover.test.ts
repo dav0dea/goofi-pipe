@@ -6,6 +6,7 @@ import { nodesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
 import type { ParamDescriptor } from '$lib/api/types';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** A minimal hello/graph_replaced snapshot; `node_types` optionally carries the palette inline. */
 function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'] = {}): GraphSnapshot {
@@ -22,14 +23,9 @@ function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'
 /** The catalog (list_nodes) the manager provides — the static per-type descriptor source. */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'signal:Oscillator',
-			engine: 'signal',
-			tags: [],
 			doc: 'A generator',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {
@@ -49,7 +45,7 @@ function catalog(): NodeTypeInfo[] {
 					}
 				}
 			}
-		}
+		})
 	];
 }
 

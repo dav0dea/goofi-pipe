@@ -5,6 +5,7 @@ import { GraphStore } from './graph.svelte';
 import { slotView, isSlotExpanded } from '$lib/viewers/inlineView';
 import { workspace } from 'panelty';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /**
  * A fresh backend session is a GENERATION boundary, not merely a document swap.
@@ -101,17 +102,12 @@ function snap(instance_id: string): GraphSnapshot {
 
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Oscillator',
-			engine: 'signal',
-			tags: [],
 			doc: 'A generator',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }

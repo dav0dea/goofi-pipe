@@ -4,23 +4,18 @@ import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { nodesMap } from '$lib/crdt/graphDoc';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** The catalog (list_nodes) the manager provides — its presence flips the store to
  * doc-authoritative for node identity. */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'PSD',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { data: 'ARRAY' },
 			output_slots: { psd: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }
 

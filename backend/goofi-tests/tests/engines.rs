@@ -376,8 +376,6 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let rows = t.call("library list", j!({}))["types"].clone();
     let ids: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["type"].as_str().unwrap()).collect();
     assert!(ids.contains(&"signal:Oscillator") && ids.contains(&"twin:Oscillator"), "{ids:?}");
-    let twin_row = rows.as_array().unwrap().iter().find(|r| r["type"] == "twin:Oscillator").unwrap();
-    assert_eq!(twin_row["engine"], "twin");
 
     let why = t.refuse("node add", j!({ "type": "Oscillator" }));
     assert!(why.contains("signal:Oscillator") && why.contains("twin:Oscillator"), "names every candidate: {why}");

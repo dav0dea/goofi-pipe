@@ -5,6 +5,7 @@ import { GraphStore } from './graph.svelte';
 import { history } from './history.svelte';
 import { docParams, nodesMap, setParamValue } from '$lib/crdt/graphDoc';
 import type { NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** Seed a node — a param leaf-write targets the replica's node, so it no-ops unless it is there. */
 function docAddNode(d: DocSeed, uid: string): void {
@@ -15,14 +16,8 @@ function docAddNode(d: DocSeed, uid: string): void {
  * doc-authoritative, so node identity + params come from the doc + these descriptors. */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Oscillator',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {
@@ -55,7 +50,7 @@ function catalog(): NodeTypeInfo[] {
 					}
 				}
 			}
-		}
+		})
 	];
 }
 

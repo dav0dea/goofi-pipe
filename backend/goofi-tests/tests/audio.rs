@@ -84,7 +84,7 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: the palette lists the audio engine's types, and a chain of three sounds at once.
     let types = g.call("library list", j!({}));
     let mut audio: Vec<&str> = types["types"].as_array().unwrap().iter()
-        .filter(|r| r["engine"] == "audio").filter_map(|r| r["type"].as_str()).collect();
+        .filter_map(|r| r["type"].as_str()).filter(|t| t.starts_with("audio:")).collect();
     audio.sort_unstable();
     // The shipped set, whole: three built in because their control halves own OS handles, and
     // seven files built by the same pipeline an authored node takes.

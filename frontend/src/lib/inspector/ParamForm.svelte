@@ -9,11 +9,6 @@
 		warn: 'warning',
 		error: 'danger'
 	};
-
-	/** Parameter group names in display order: the order the manager sent, which is the declared one. */
-	export function paramGroupNames(node: NodeInstanceInfo | null): string[] {
-		return node ? Object.keys(node.params) : [];
-	}
 </script>
 
 <!--
@@ -97,7 +92,7 @@
 		el.select();
 	}
 
-	const groupNames = $derived(paramGroupNames(node));
+	const groupNames = $derived(node ? Object.keys(node.params) : []);
 	const health = $derived(nodeHealth(node));
 
 	const tabItems = $derived(groupNames.map((name) => ({ id: name, label: name })));

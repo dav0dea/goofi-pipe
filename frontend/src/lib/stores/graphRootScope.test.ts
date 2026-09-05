@@ -4,22 +4,17 @@ import { seed } from '$lib/test/docSeed';
 import { GraphStore } from './graph.svelte';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import type { NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** The catalog makes the doc authoritative for node + scope identity (see the node cutover). */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Buffer',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }
 

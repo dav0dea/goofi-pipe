@@ -1,22 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { nodeTypeSource } from './nodeTypeSource';
-import type { NodeTypeInfo } from '$lib/api/control';
-
-function ty(over: Partial<NodeTypeInfo> = {}): NodeTypeInfo {
-	return {
-		type: 'Thing',
-		engine: 'signal',
-		tags: [],
-		doc: '',
-		available: true,
-		source: 'builtin',
-		missing_deps: [],
-		input_slots: {},
-		output_slots: {},
-		params: {},
-		...over
-	};
-}
+import { typeInfo as ty } from '$lib/test/typeInfo';
 
 describe('nodeTypeSource — the one word a palette row carries', () => {
 	it('names the patch a node came with, so a patch-local node is distinguishable', () => {

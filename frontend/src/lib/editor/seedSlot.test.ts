@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { seedSlot } from './seedSlot';
-import type { NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 const type = (input_slots: Record<string, string>, output_slots: Record<string, string>) =>
-	({ type: 'T', input_slots, output_slots }) as unknown as NodeTypeInfo;
+	typeInfo({ input_slots, output_slots });
 const seed = (side: 'source' | 'target', dtype: string) =>
 	({ node: 'n', slot: 's', side, dtype }) as Parameters<typeof seedSlot>[0];
 

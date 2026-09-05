@@ -1,21 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { nodeTypeTitle } from './nodeTypeTitle';
 import type { NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 function unavailable(reason: string): NodeTypeInfo {
 	// Exactly the shape `schemas.rs` emits for a node file whose probe failed.
-	return {
+	return typeInfo({
 		type: 'Psd',
-		engine: 'signal',
-		tags: [],
 		doc: `This node could not be loaded: ${reason}`,
-		source: 'builtin',
 		available: false,
-		missing_deps: [reason],
-		input_slots: {},
-		output_slots: {},
-		params: {}
-	};
+		missing_deps: [reason]
+	});
 }
 
 describe('nodeTypeTitle', () => {

@@ -2,19 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { assembleNode, type DocParamLeaves, type RuntimeOverlay } from './nodeAssembly';
 import type { NodeTypeInfo } from '$lib/api/control';
 import type { NodeView } from './graphDoc';
+import { typeInfo } from '$lib/test/typeInfo';
 
 const view: NodeView = { uid: 'n1', type: 'signal:Oscillator', name: 'osc0', pos: [10, 20], scope: '__root__' };
 
 /** A catalog entry with a static float param + a refreshable string param. */
 function catalog(): NodeTypeInfo {
-	return {
+	return typeInfo({
 		type: 'signal:Oscillator',
-		engine: 'signal',
-		tags: [],
 		doc: 'A sine generator',
-		source: 'builtin',
-		available: true,
-		missing_deps: [],
 		input_slots: { in: 'ARRAY' },
 		input_multi: ['in'],
 		output_slots: { out: 'ARRAY' },
@@ -62,7 +58,7 @@ function catalog(): NodeTypeInfo {
 				}
 			}
 		}
-	};
+	});
 }
 
 describe('assembleNode — three-way merge', () => {

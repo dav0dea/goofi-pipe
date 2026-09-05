@@ -164,7 +164,6 @@ pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest,
     let ty = goofi_node::qualify(engine, m.type_name);
     json!({
         "type": ty,
-        "engine": engine,
         "source": source,
         "tags": m.tags.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
         "doc": m.doc,
@@ -205,7 +204,6 @@ pub fn catalog_types(g: &Graph) -> Value {
             bare.to_string(),
             json!({
                 "type": name,
-                "engine": engine,
                 "source": source_of(g, &name),
                 "tags": [],
                 "doc": format!("This node could not be loaded: {reason}"),

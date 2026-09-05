@@ -1,22 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { rankNodeTypes } from './nodeSearch';
-import { engineOf } from './typeId';
 import type { NodeTypeInfo } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
-function node(type: string, tags: NodeTypeInfo['tags'], doc = ''): NodeTypeInfo {
-	return {
-		type,
-		engine: engineOf(type),
-		tags,
-		doc,
-		input_slots: {},
-		output_slots: {},
-		params: {},
-		source: 'builtin',
-		available: true,
-		missing_deps: []
-	};
-}
+const node = (type: string, tags: NodeTypeInfo['tags'], doc = '') =>
+	typeInfo({ type, tags, doc });
 
 const order = (types: NodeTypeInfo[], q: string): string[] =>
 	rankNodeTypes(types, q).map((t) => t.type);

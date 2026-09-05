@@ -8,22 +8,17 @@ import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { nodesMap } from '$lib/crdt/graphDoc';
 import { SCOPE_TYPE } from '$lib/api/vocab';
 import type { NodeTypeInfo, GraphSnapshot } from '$lib/api/control';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** Minimal catalog — its presence flips the store to doc-authoritative identity. */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Buffer',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }
 

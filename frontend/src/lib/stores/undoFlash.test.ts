@@ -7,23 +7,18 @@ import { pulseRestored } from './undoFlash';
 import type { NavContext } from './history.svelte';
 import type { NodeTypeInfo } from '$lib/api/control';
 import { nodesMap } from '$lib/crdt/graphDoc';
+import { typeInfo } from '$lib/test/typeInfo';
 
 /** The catalog (list_nodes) the manager provides — `g.nodeTypes = catalog()` flips the store
  * doc-authoritative, so a seeded node is built from the doc + these descriptors. */
 function catalog(): NodeTypeInfo[] {
 	return [
-		{
+		typeInfo({
 			type: 'Oscillator',
-			engine: 'signal',
-			tags: [],
-			doc: '',
-			source: 'builtin',
-			available: true,
-			missing_deps: [],
 			input_slots: {},
 			output_slots: { out: 'ARRAY' },
 			params: {}
-		}
+		})
 	];
 }
 
