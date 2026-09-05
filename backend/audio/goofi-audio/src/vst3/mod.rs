@@ -9,6 +9,7 @@ mod host;
 mod module;
 mod node;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,6 +53,17 @@ pub(crate) struct ClassInfo {
     params: Vec<ParamInfo>,
     /// The VST3 subcategory string, which holds `Instrument` for a synth.
     sub_categories: String,
+    /// The plugin's own parameter families, a tree by `parent`; empty where it declares none.
+    #[serde(default)]
+    units: Vec<UnitRow>,
+}
+
+/// One VST3 "unit": the plugin's own name for a family of parameters.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct UnitRow {
+    id: i32,
+    parent: i32,
+    name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -66,6 +78,9 @@ pub(crate) struct ParamInfo {
     shown: String,
     /// One display string per step, empty for a param that is not stepped within `STR_STEPS`.
     steps_shown: Vec<String>,
+    /// The unit this parameter belongs to; 0 is the root every plugin has.
+    #[serde(default)]
+    unit: i32,
 }
 
 /// Where this platform keeps its plugins.
@@ -188,7 +203,9 @@ unsafe fn describe_initialized(
     let inputs = buses(BusDirections_::kInput as BusDirection);
     let outputs = buses(BusDirections_::kOutput as BusDirection);
     let events = component.getBusCount(MediaTypes_::kEvent as MediaType, BusDirections_::kInput as BusDirection) > 0;
-    let params = own.as_ref().or(separate.as_ref()).map(|c| params_of(c)).unwrap_or_default();
+    let controller = own.as_ref().or(separate.as_ref());
+    let params = controller.map(|c| params_of(c)).unwrap_or_default();
+    let units = controller.map(|c| units_of(c)).unwrap_or_default();
     // Before the controller is terminated: the component outlives this call.
     if let Some(wire) = &wired {
         node::sunder(wire);
@@ -196,7 +213,20 @@ unsafe fn describe_initialized(
     if let Some(c) = &separate {
         c.terminate();
     }
-    Ok(ClassInfo { cid: cid.map(|b| b as u8), name, inputs, outputs, events, params, sub_categories })
+    Ok(ClassInfo { cid: cid.map(|b| b as u8), name, inputs, outputs, events, params, sub_categories, units })
+}
+
+/// The plugin's own parameter families. A plugin that implements no `IUnitInfo` has none, which is
+/// the flat list every parameter already forms under the root.
+unsafe fn units_of(c: &ComPtr<IEditController>) -> Vec<UnitRow> {
+    let Some(u) = c.cast::<IUnitInfo>() else { return Vec::new() };
+    (0..u.getUnitCount())
+        .filter_map(|i| {
+            let mut info: UnitInfo = std::mem::zeroed();
+            (u.getUnitInfo(i, &mut info) == kResultOk)
+                .then(|| UnitRow { id: info.id, parent: info.parentUnitId, name: host::utf16(&info.name) })
+        })
+        .collect()
 }
 
 unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
@@ -220,6 +250,7 @@ unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
                     steps: info.stepCount,
                     default: info.defaultNormalizedValue,
                     flags: info.flags,
+                    unit: info.unitId,
                     shown: string_at(info.defaultNormalizedValue),
                     steps_shown,
                 }
@@ -424,18 +455,17 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     } else {
         Vec::new()
     };
-    let mut names: Vec<String> = Vec::new();
+    let mut names: HashMap<String, Vec<String>> = HashMap::new();
     let mut kinds = Vec::new();
-    // A block's params are a stack array, so the ceiling is real. Taking the plugin's own first
-    // rather than refusing the class: a synth with 2983 params is still worth having with its
-    // first few dozen reachable, and the plugin declares them roughly in the order it thinks
-    // matters. `take` bounds the KINDS too, which is what keeps a param's index and the id it
-    // writes back to in step.
+    // A block's params are a stack array, so the ceiling is real; `chosen` bounds the KINDS too,
+    // which is what keeps a param's index and the id it writes back to in step.
     let room = MAX_PORTS - params.len();
-    let offered = class.params.iter().filter(|p| p.flags & OMITTED == 0);
-    let total = offered.clone().count();
-    for p in offered.take(room) {
-        let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), &mut names);
+    let offered: Vec<&ParamInfo> = class.params.iter().filter(|p| p.flags & OMITTED == 0).collect();
+    let total = offered.len();
+    let groups = unit_groups(class);
+    for p in chosen(&offered, room, &groups) {
+        let group = groups.get(&p.unit).cloned().unwrap_or_else(|| "plugin".into());
+        let name = unique(lower_camel(&p.title).unwrap_or_else(|| "param".into()), names.entry(group.clone()).or_default());
         let (spec, kind, doc) = if p.steps <= 0 {
             let shown = format!("{} {}", p.shown, p.units);
             (float(p.default.clamp(0.0, 1.0), 0.0, 1.0), Kind::Float, format!("{}, normalized; {} by default.", p.title, shown.trim()))
@@ -448,7 +478,7 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
             let default = (p.default * p.steps as f64).round() as i64;
             (probe::ParamSpec::Int { default, min: 0, max: p.steps as i64 }, Kind::Stepped(p.steps as f64), p.title.clone())
         };
-        params.push(probe::Param { group: "plugin".into(), name, doc: Some(doc), expression: None, spec });
+        params.push(probe::Param { group, name, doc: Some(doc), expression: None, spec });
         kinds.push((p.id, kind));
     }
     // A plugin has no tag to name its vendor, so the doc line does — unless its name already has.
@@ -480,6 +510,76 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
 }
 
 /// The alnum words of `s`, capitalized and joined: a legal name, or none.
+/// The plugin's own units as goofi param groups. Unit 0 is the root every plugin has, and a name
+/// that cannot be an identifier has no group, so both fall to `plugin`.
+fn unit_groups(class: &ClassInfo) -> HashMap<i32, String> {
+    let mut used: Vec<String> = vec!["plugin".into(), "voice".into()];
+    class
+        .units
+        .iter()
+        .filter(|u| u.id != 0)
+        .filter_map(|u| group_name(&u.name).map(|n| (u.id, unique(n, &mut used))))
+        .collect()
+}
+
+/// A unit's name as a group identifier, which is also the tab a reader sees. A word with no lower
+/// case is lowered whole, so `VCF1` reads `vcf1` rather than the `vCF1` a plain camel would give.
+fn group_name(s: &str) -> Option<String> {
+    let words: Vec<String> = s
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| match w.chars().any(|c| c.is_ascii_lowercase()) {
+            true => w.to_string(),
+            false => w.to_ascii_lowercase(),
+        })
+        .collect();
+    let name: String =
+        words.iter().enumerate().map(|(i, w)| if i == 0 { w.clone() } else { w[..1].to_ascii_uppercase() + &w[1..] }).collect();
+    let name = match name.is_empty() {
+        true => return None,
+        false => name[..1].to_ascii_lowercase() + &name[1..],
+    };
+    goofi_core::globals::is_valid_name(&name).then_some(name)
+}
+
+/// The `room` params worth showing, out of everything the plugin offers. A named unit's params come
+/// before the root's, and one unit at a time, so no single family fills a node on its own.
+fn chosen<'a>(offered: &[&'a ParamInfo], room: usize, groups: &HashMap<i32, String>) -> Vec<&'a ParamInfo> {
+    let mut queues: Vec<Vec<&'a ParamInfo>> = Vec::new();
+    let mut at: HashMap<i32, usize> = HashMap::new();
+    let mut root: Vec<&'a ParamInfo> = Vec::new();
+    for p in offered {
+        if !groups.contains_key(&p.unit) {
+            root.push(p);
+            continue;
+        }
+        let slot = match at.get(&p.unit) {
+            Some(&slot) => slot,
+            None => {
+                queues.push(Vec::new());
+                at.insert(p.unit, queues.len() - 1);
+                queues.len() - 1
+            }
+        };
+        queues[slot].push(p);
+    }
+    let mut out: Vec<&'a ParamInfo> = Vec::new();
+    let mut round = 0;
+    while out.len() < room && queues.iter().any(|q| round < q.len()) {
+        for q in &queues {
+            if out.len() == room {
+                break;
+            }
+            if let Some(p) = q.get(round) {
+                out.push(p);
+            }
+        }
+        round += 1;
+    }
+    out.extend(root.into_iter().take(room.saturating_sub(out.len())));
+    out
+}
+
 fn camel(s: &str) -> Option<String> {
     let name: String = s
         .split(|c: char| !c.is_ascii_alphanumeric())
