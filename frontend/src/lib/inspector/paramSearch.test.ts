@@ -6,6 +6,7 @@ function param(doc: string | null = null): ParamDescriptor {
 	return {
 		type: 'float',
 		value: 0,
+		default: 0,
 		vmin: 0,
 		vmax: 1,
 		doc,

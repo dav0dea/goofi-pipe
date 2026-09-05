@@ -14,6 +14,8 @@ export interface SourcePatch {
 
 export interface BaseParam {
 	value: unknown;
+	/** What the declaration says this param is worth untouched; null for a pulse. */
+	default: unknown;
 	doc: string | null;
 	/** True when the node declared a refresh method for this param. */
 	refreshable: boolean;

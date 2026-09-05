@@ -17,6 +17,7 @@ import type {
 // list still gets a dropdown so its ⟳ re-scan survives); a plain string is text; anything else is
 // unknown. Kept pure + unit-tested so ParamField is a thin switch and the mapping is one SSOT.
 const base: Omit<BaseParam, 'value'> = {
+	default: null,
 	doc: null,
 	refreshable: false,
 	expression: null,
@@ -30,6 +31,7 @@ const floatParam = (over: Partial<FloatParam> = {}): FloatParam => ({
 	...base,
 	type: 'float',
 	value: 0,
+	default: 0,
 	vmin: 0,
 	vmax: 1,
 	...over
@@ -38,6 +40,7 @@ const intParam = (over: Partial<IntParam> = {}): IntParam => ({
 	...base,
 	type: 'int',
 	value: 0,
+	default: 0,
 	vmin: 0,
 	vmax: 10,
 	...over
@@ -46,12 +49,14 @@ const boolParam = (over: Partial<BoolParam> = {}): BoolParam => ({
 	...base,
 	type: 'bool',
 	value: false,
+	default: false,
 	...over
 });
 const stringParam = (over: Partial<StringParam> = {}): StringParam => ({
 	...base,
 	type: 'string',
 	value: '',
+	default: '',
 	options: null,
 	...over
 });
@@ -59,12 +64,14 @@ const pulseParam = (over: Partial<PulseParam> = {}): PulseParam => ({
 	...base,
 	type: 'pulse',
 	value: null,
+	default: null,
 	...over
 });
 const unknownParam = (over: Partial<UnknownParam> = {}): UnknownParam => ({
 	...base,
 	type: 'unknown',
 	value: null,
+	default: null,
 	...over
 });
 
