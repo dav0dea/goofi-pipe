@@ -4,7 +4,7 @@
 //! DIMENSIONALITY is the property that spans the set, so the source emits a grid, not a vector.
 
 use goofi_core::Data;
-use goofi_tests::{f32s, shape, text, j, Goofi};
+use goofi_tests::{f32s, hex, shape, text, j, Goofi};
 
 /// The bin carrying the most power, and its value.
 fn peak(d: &Data) -> (usize, f32) {
@@ -174,5 +174,124 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     assert_eq!(text(&said), Some("hello"));
     for n in [lfo, noise, konst, words] {
         assert!(g.error(n).is_none(), "a generator carries no error");
+    }
+}
+
+#[test]
+fn the_array_nodes_reshape_a_grid_and_the_rate_follows_the_time_axis() {
+    // One session over the array family. The source is a [3, 4] grid at 256 Hz, so a node that
+    // flattens a rank, or keeps a rate whose axis it just removed, is caught here.
+    let g = Goofi::new();
+    let src = g.add("_TestGrid");
+    let set = |n, group: &str, name: &str, v: serde_json::Value| {
+        g.set_param(n, group, name, v);
+    };
+
+    // Math and Function are elementwise, so the shape and the whole meta ride through untouched.
+    let math = g.add("Math");
+    set(math, "math", "multiply", j!(2.0));
+    set(math, "math", "post_add", j!(1.0));
+    let pm = g.probe(math, "out");
+    g.link(src, "out", math, "input");
+    let scaled = g.until("the scaled grid", |_| pm.latest().filter(|d| shape(d) == vec![3, 4]));
+    assert_eq!(scaled.meta().sfreq(), Some(256.0), "elementwise work leaves the rate alone");
+
+    let func = g.add("Function");
+    set(func, "function", "function", j!("negate"));
+    let pf = g.probe(func, "out");
+    g.link(math, "out", func, "input");
+    let flipped = g.until("the negated grid", |_| {
+        pf.latest().filter(|d| shape(d) == vec![3, 4] && f32s(d).iter().all(|v| *v < 0.0))
+    });
+    assert_eq!(shape(&flipped), vec![3, 4], "a function does not change the shape");
+
+    // Reducing the LAST axis takes the rate with it; reducing another leaves time in place.
+    let over_time = g.add("Reduce");
+    let over_channels = g.add("Reduce");
+    set(over_channels, "reduce", "axis", j!(0));
+    let (pt, pc) = (g.probe(over_time, "out"), g.probe(over_channels, "out"));
+    g.link(src, "out", over_time, "input");
+    g.link(src, "out", over_channels, "input");
+    let collapsed = g.until("one value per channel", |_| pt.latest().filter(|d| shape(d) == vec![3]));
+    assert_eq!(collapsed.meta().sfreq(), None, "the rate belonged to the axis that is gone");
+    let across = g.until("one value per sample", |_| pc.latest().filter(|d| shape(d) == vec![4]));
+    assert_eq!(across.meta().sfreq(), Some(256.0), "the last axis is still time, so the rate stays");
+
+    // A reorder carries the labels; a re-cut cannot, so it carries nothing.
+    let swap = g.add("Reshape");
+    set(swap, "reshape", "axes", j!("1,0"));
+    let ps = g.probe(swap, "out");
+    g.link(src, "out", swap, "input");
+    let turned = g.until("the transposed grid", |_| ps.latest().filter(|d| shape(d) == vec![4, 3]));
+    let v = f32s(&turned);
+    assert!((v[1] - v[0] - 100.0).abs() < 0.01, "column-major order puts the channels together: {v:?}");
+    set(swap, "reshape", "shape", j!("12"));
+    let flat = g.until("the re-cut frame", |_| ps.latest().filter(|d| shape(d) == vec![12]));
+    assert_eq!(flat.meta().sfreq(), None, "a re-cut makes entries the input never had");
+
+    // Select keeps part of an axis and can drop it when one entry is left.
+    let pick = g.add("Select");
+    set(pick, "select", "mode", j!("index"));
+    set(pick, "select", "include", j!("0,2"));
+    let pp = g.probe(pick, "out");
+    g.link(src, "out", pick, "input");
+    g.until("two of the three channels", |_| pp.latest().filter(|d| shape(d) == vec![2, 4]));
+    set(pick, "select", "include", j!("1"));
+    set(pick, "select", "squeeze", j!(true));
+    g.until("the axis to go with the last entry", |_| pp.latest().filter(|d| shape(d) == vec![4]));
+
+    // Join stacks onto a new axis, and names it after the nodes the frames came from.
+    let a = g.add("Constant");
+    let b = g.add("Constant");
+    g.call("node edit", j!({ "node": hex(a), "name": "alpha" }));
+    g.call("node edit", j!({ "node": hex(b), "name": "beta" }));
+    set(a, "constant", "value", j!(2.0));
+    set(a, "constant", "shape", j!("3,4"));
+    set(b, "constant", "value", j!(3.0));
+    set(b, "constant", "shape", j!("3,4"));
+    let end_to_end = g.add("Join");
+    let pe = g.probe(end_to_end, "out");
+    g.link(a, "out", end_to_end, "input");
+    g.link(b, "out", end_to_end, "input");
+    g.until("the two frames end to end", |_| pe.latest().filter(|d| shape(d) == vec![6, 4]));
+
+    let join = g.add("Join");
+    set(join, "join", "mode", j!("stack"));
+    let pj = g.probe(join, "out");
+    g.link(a, "out", join, "input");
+    g.link(b, "out", join, "input");
+    let stacked = g.until("both frames on a new axis", |_| pj.latest().filter(|d| shape(d) == vec![2, 3, 4]));
+    let names: Vec<String> = stacked.meta().channels().get(0).and_then(|x| x.coords.clone())
+        .expect("the stacked axis is named").iter()
+        .map(|c| match c { goofi_core::Coord::Str(s) => s.to_string(), goofi_core::Coord::Num(n) => n.to_string() })
+        .collect();
+    assert_eq!(names, ["alpha.out", "beta.out"], "the new axis carries its senders");
+
+    // Operation folds the wires left, stretching a length of one the way numpy does.
+    let one = g.add("Constant");
+    set(one, "constant", "value", j!(5.0));
+    let op = g.add("Operation");
+    set(op, "operation", "mode", j!("multiply"));
+    let po = g.probe(op, "out");
+    g.link(a, "out", op, "input");
+    g.link(one, "out", op, "input");
+    let product = g.until("the broadcast product", |_| {
+        po.latest().filter(|d| shape(d) == vec![3, 4] && f32s(d).iter().all(|v| (v - 10.0).abs() < 1e-4))
+    });
+    assert_eq!(shape(&product), vec![3, 4], "a single value stretches over the frame it meets");
+
+    // And a signal correlated with itself is perfect at no lag, whatever the frame held.
+    let auto = g.add("Operation");
+    set(auto, "operation", "mode", j!("autocorrelation"));
+    let pa = g.probe(auto, "out");
+    g.link(src, "out", auto, "input");
+    let lags = g.until("the lag axis", |_| pa.latest().filter(|d| shape(d) == vec![3, 7]));
+    let v = f32s(&lags);
+    assert!((v[3] - 1.0).abs() < 1e-4, "lag zero is a signal against itself: {v:?}");
+    let offsets = lags.meta().channels().get(1).and_then(|x| x.coords.clone()).expect("lag coords");
+    assert_eq!(offsets[3], goofi_core::Coord::Num(0.0), "the middle of the lag axis is no lag at all");
+
+    for n in [math, func, over_time, over_channels, swap, pick, end_to_end, join, op, auto] {
+        assert!(g.error(n).is_none(), "an array node carries no error: {:?}", g.error(n));
     }
 }
