@@ -280,8 +280,8 @@ reduces ONCE, on its own subscription — so no number of viewers can slow a `pr
 Python nodes share one marshalling seam, so they cannot drift; neither the tier nor the
 interpreter is selectable — one probe per node file routes it, by whether its imports keep the
 GIL disabled. A Rust node runs the same seam: every Rust node, shipped or authored, signal or
-audio, is one `.rs` file in `nodes_<engine>/`, built by one pipeline into a `cdylib` and loaded
-behind a version symbol. The signal ABI IS the subprocess tier's codec — one encode and one
+audio, is one `.rs` file naming the SDK it is written against — which is what routes it to its
+engine — built by one pipeline into a `cdylib` and loaded behind a version symbol. The signal ABI IS the subprocess tier's codec — one encode and one
 decode per side per run, a copy a compiled-in node never paid, accepted as the price of one
 seam; the audio ABI crosses the block as descriptors of the arena's own regions, because a block
 is memory the plan laid out, not a frame in flight. There is no static registration. Every

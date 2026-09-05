@@ -7,9 +7,8 @@ use goofi_core::Data;
 use goofi_tests::{drive, j, require_python, Goofi, OutputProbe};
 
 /// A producer that emits the number it was written with — which FILE a node runs, observable.
-fn write_node(root: &Path, file: &str, value: &str) {
-    let dir = root.join("nodes_signal");
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_node(dir: &Path, file: &str, value: &str) {
+    std::fs::create_dir_all(dir).unwrap();
     let source = format!(
         "import goofi\nimport numpy as np\n\nclass Emit(goofi.Node):\n    \
          OUTPUTS = {{\"out\": goofi.DataType.ARRAY}}\n    PRODUCER = True\n\n    \
@@ -19,9 +18,8 @@ fn write_node(root: &Path, file: &str, value: &str) {
 }
 
 /// The same producer in Rust — built through cargo into the cache a scan reads.
-fn write_rust_node(root: &Path, file: &str, value: &str) {
-    let dir = root.join("nodes_signal");
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_rust_node(dir: &Path, file: &str, value: &str) {
+    std::fs::create_dir_all(dir).unwrap();
     let source = format!(
         "use goofi_core::{{Data, Meta, SlotType}};\n\
          use goofi_signal_sdk::{{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, Params}};\n\n\
@@ -65,7 +63,7 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
     let _py = require_python();
     let g = Goofi::new();
     let mount = g.state.mount();
-    write_node(&mount, "my_thing.py", "1.0");
+    write_node(&mount.join("nodes_signal"), "my_thing.py", "1.0");
 
     assert_eq!(rescan(&g)["added"], j!(["signal:MyThing"]), "the file becomes a type");
     // The baseline is what the LAST scan found, so refresh with nothing edited says nothing changed.
@@ -76,7 +74,7 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
     let live = g.add("MyThing");
     emits(&g, live, 1.0);
 
-    write_node(&mount, "my_thing.py", "2.0");
+    write_node(&mount.join("nodes_signal"), "my_thing.py", "2.0");
     let diff = rescan(&g);
     assert_eq!(diff["changed"], j!(["signal:MyThing"]), "an edited file reports as changed");
     assert_eq!((&diff["added"], &diff["removed"]), (&j!([]), &j!([])));
@@ -98,7 +96,7 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
     write_node(shipped.path(), "my_thing.py", "1.0");
     write_node(shipped.path(), "only_shipped.py", "7.0");
     g.state.roots = vec![shipped.path().to_path_buf()];
-    write_node(&g.state.mount(), "my_thing.py", "9.0");
+    write_node(&g.state.mount().join("nodes_signal"), "my_thing.py", "9.0");
     rescan(&g);
 
     let uid = g.add("MyThing");
@@ -145,10 +143,10 @@ fn a_named_type_hands_back_the_file_that_is_actually_running() {
     assert!(r["source"].as_str().is_some_and(|s| s.contains("[5.0]")),
             "the file that RUNS is the file handed back: {r}");
     assert_eq!(r["provenance"], "shipped", "{r}");
-    assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("nodes_signal").join("my_thing.py")),
+    assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("my_thing.py")),
                "…and it names the winning root, not the shadowed one: {r}");
 
-    write_node(&g.state.mount(), "my_thing.py", "9.0");
+    write_node(&g.state.mount().join("nodes_signal"), "my_thing.py", "9.0");
     rescan(&g);
     let r = g.call("library get", j!({ "type": "MyThing" }));
     assert_eq!(r["provenance"], "patch", "{r}");
@@ -162,7 +160,7 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
     let g = Goofi::new();
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("patch.gfi");
-    write_node(&g.state.mount(), "my_thing.py", "5.0");
+    write_node(&g.state.mount().join("nodes_signal"), "my_thing.py", "5.0");
     rescan(&g);
     g.add("MyThing");
     g.call("session save", j!({ "path": target.to_string_lossy() }));
@@ -190,11 +188,11 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
 
     // An authored file builds through cargo into the same cache, and runs.
     let mount = g.state.mount();
-    write_rust_node(&mount, "Twice.rs", "2.0");
+    write_rust_node(&mount.join("nodes_signal"), "Twice.rs", "2.0");
     assert_eq!(rescan(&g)["added"], j!(["signal:Twice"]), "the file becomes a type");
     let live = g.add("Twice");
     emits(&g, live, 2.0);
-    write_rust_node(&mount, "Twice.rs", "3.0");
+    write_rust_node(&mount.join("nodes_signal"), "Twice.rs", "3.0");
     assert_eq!(rescan(&g)["changed"], j!(["signal:Twice"]), "an edited file reports as changed");
     emits(&g, live, 3.0); // the running node is the new code
 
@@ -214,13 +212,13 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let why = g.refuse("node add", j!({ "type": "Twice" }));
     assert!(why.contains("unavailable"), "{why}");
     emits(&g, live, 3.0);
-    write_rust_node(&mount, "Twice.rs", "3.0");
+    write_rust_node(&mount.join("nodes_signal"), "Twice.rs", "3.0");
     assert_eq!(rescan(&g)["changed"], j!(["signal:Twice"]), "the fix is a change, built from the cache");
 
     // A stem the name rule refuses is not a node, in either language, exactly as a `_` stem is not:
     // nothing is built, nothing is listed.
-    write_rust_node(&mount, "my-node.rs", "1.0");
-    write_node(&mount, "2d.py", "1.0");
+    write_rust_node(&mount.join("nodes_signal"), "my-node.rs", "1.0");
+    write_node(&mount.join("nodes_signal"), "2d.py", "1.0");
     assert_eq!(rescan(&g)["added"], j!([]));
     let listed = g.call("library list", j!({}));
     let names: Vec<&str> = listed["types"].as_array().unwrap().iter().filter_map(|v| v["type"].as_str()).collect();
@@ -245,8 +243,8 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     g.until("the doomed instance to be gone", |g| (g.state.graph.lock().unwrap().node_count() == 1).then_some(()));
     assert!(g.call("library list", j!({}))["types"].as_array().is_some(), "the server answers after the drop");
 
-    // An audio slot belongs to the audio engine's folder: a signal node that declares one is
-    // greyed out with the folder named, never registered.
+    // An audio slot belongs to the audio SDK: a signal node that declares one is greyed out with
+    // the SDK named, never registered.
     std::fs::write(
         mount.join("nodes_signal").join("Loud.rs"),
         "use goofi_core::SlotType;\n\
@@ -263,7 +261,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let loud = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "signal:Loud").cloned().expect("listed, greyed");
     assert_eq!(loud["available"], false, "{loud}");
-    assert!(loud["missing_deps"].to_string().contains("nodes_audio"), "{loud}");
+    assert!(loud["missing_deps"].to_string().contains("goofi_audio_sdk"), "{loud}");
 
     // A shipped file copied into the patch shadows it, and the palette says so.
     std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();
@@ -283,9 +281,8 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
 }
 
 /// An audio producer that holds the level it was written with — which FILE a node runs, heard.
-fn write_audio_node(root: &Path, file: &str, value: &str) {
-    let dir = root.join("nodes_audio");
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_audio_node(dir: &Path, file: &str, value: &str) {
+    std::fs::create_dir_all(dir).unwrap();
     let source = format!(
         "use goofi_audio_sdk::goofi_core::SlotType;\n\
          use goofi_audio_sdk::{{AudioNode, Block, Manifest, OutputDecl}};\n\n\
@@ -319,11 +316,11 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     assert!(r["source"].as_str().is_some_and(|s| s.contains("impl AudioNode for Osc")), "{r}");
 
     let mount = g.state.mount();
-    write_audio_node(&mount, "Level.rs", "0.25");
+    write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.25");
     assert_eq!(rescan(&g)["added"], j!(["audio:Level"]), "the file becomes a type");
     let live = g.add("Level");
     holds(&g, live, 0.25);
-    write_audio_node(&mount, "Level.rs", "0.5");
+    write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "an edited file reports as changed");
     holds(&g, live, 0.5);
 
@@ -337,7 +334,7 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
     assert!(g.refuse("node add", j!({ "type": "Level" })).contains("unavailable"));
     holds(&g, live, 0.5);
-    write_audio_node(&mount, "Level.rs", "0.5");
+    write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "the fix is a change, built from the cache");
 
     // A file whose stem is a built-in node's name is not a node file: nothing is added, nothing

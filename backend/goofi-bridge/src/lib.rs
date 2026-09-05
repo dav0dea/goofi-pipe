@@ -553,26 +553,29 @@ fn materialise_shipped() -> Vec<PathBuf> {
     roots
 }
 
-/// Build every `.rs` node file under every root and `patch` BEFORE the graph lock is taken: a
-/// build takes seconds, and only the caller who asked should wait for it. The scan that follows
-/// finds each artifact made, or the memo of why it was not.
+/// Build every `.rs` node file under every root and the workspace's engine folders BEFORE the
+/// graph lock is taken: a build takes seconds, and only the caller who asked should wait for it.
+/// The scan that follows finds each artifact made, or the memo of why it was not.
 pub fn prebuild(state: &AppState, patch: &std::path::Path) {
-    let folders: Vec<(String, &'static goofi_build::Sdk)> = state
+    let sdks: Vec<(&'static str, &'static goofi_build::Sdk)> = state
         .graph
         .lock()
         .unwrap()
         .rust_sdks()
         .into_iter()
-        .filter_map(|(id, sdk)| goofi_build::sdk(sdk).map(|s| (goofi_node::folder_of(id), s)))
+        .filter_map(|(id, sdk)| goofi_build::sdk(sdk).map(|s| (id, s)))
         .collect();
     let base = goofi_build::base_dir(&goofi_core::home::dir());
-    for root in state.roots.iter().map(PathBuf::as_path).chain(std::iter::once(patch)) {
-        for (folder, sdk) in &folders {
-            let Ok(entries) = std::fs::read_dir(root.join(folder)) else { continue };
-            for path in entries.filter_map(Result::ok).map(|e| e.path()) {
-                if path.extension().is_some_and(|e| e == "rs") && goofi_node::type_name_of(&path).is_some() {
-                    let _ = goofi_build::ensure(sdk, &path, &base);
-                }
+    let dirs = state.roots.iter().cloned().chain(sdks.iter().map(|(id, _)| patch.join(goofi_node::folder_of(id))));
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+            if path.extension().is_none_or(|e| e != "rs") || goofi_node::type_name_of(&path).is_none() {
+                continue;
+            }
+            let engine = goofi_node::engine_of(&path);
+            if let Some((_, sdk)) = sdks.iter().find(|(id, _)| Some(*id) == engine.as_deref()) {
+                let _ = goofi_build::ensure(sdk, &path, &base);
             }
         }
     }
@@ -648,8 +651,9 @@ pub struct ScanDiff {
 }
 
 /// Re-derive the registry from the roots that exist RIGHT NOW — every shipped root, then the
-/// patch's own workspace, so a patch-local node of the same name wins. The previous scan's
-/// stamps are the baseline, so this answers a DIFF and removes only what it registered.
+/// patch's own workspace, one engine folder at a time, so a patch-local node of the same name
+/// wins. The previous scan's stamps are the baseline, so this answers a DIFF and removes only what
+/// it registered.
 pub fn rescan(
     state: &AppState,
     g: &mut Graph,
@@ -658,8 +662,8 @@ pub fn rescan(
     let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
-    let roots = (state.roots.iter().map(|d| (d.clone(), false)))
-        .chain(std::iter::once((patch.to_path_buf(), true)));
+    let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| patch.join(goofi_node::folder_of(id))).collect();
+    let roots = (state.roots.iter().map(|d| (d.clone(), false))).chain(workspace.into_iter().map(|d| (d, true)));
     for (root, is_patch) in roots {
         for t in g.scan_root(&root) {
             if is_patch {

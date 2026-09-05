@@ -23,13 +23,42 @@ pub fn type_name_of(path: &Path) -> Option<String> {
     goofi_core::globals::is_valid_name(&name).then_some(name)
 }
 
-/// The folder under a node source root that holds `engine`'s files.
+/// The folder under a patch's workspace that holds `engine`'s authored files.
 pub fn folder_of(engine: &str) -> String {
     format!("nodes_{engine}")
 }
 
-/// Every node file in `dir`, sorted: its path, the type it names, and the stamp a rescan diffs.
-pub fn node_files(dir: &Path) -> Vec<(PathBuf, String, Option<crate::Stamp>)> {
+/// The engine a node file is for: a `.py` is a signal node, and a `.rs` names the SDK it uses.
+/// One naming none — a file mid-edit — is its folder's where the folder names an engine, and the
+/// signal engine's elsewhere; either then says why it does not build.
+pub fn engine_of(path: &Path) -> Option<String> {
+    match path.extension()?.to_str()? {
+        "py" => Some("signal".to_string()),
+        "rs" => Some(sdk_engine(&std::fs::read_to_string(path).ok()?).unwrap_or_else(|| folder_engine(path))),
+        _ => None,
+    }
+}
+
+fn folder_engine(path: &Path) -> String {
+    path.parent()
+        .and_then(|d| d.file_name()?.to_str()?.strip_prefix("nodes_"))
+        .filter(|e| !e.is_empty())
+        .unwrap_or("signal")
+        .to_string()
+}
+
+/// The `<engine>` of the first `goofi_<engine>_sdk` a source names.
+fn sdk_engine(source: &str) -> Option<String> {
+    source.match_indices("goofi_").find_map(|(at, _)| {
+        let rest = &source[at + "goofi_".len()..];
+        let ident: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        ident.strip_suffix("_sdk").filter(|e| !e.is_empty()).map(str::to_string)
+    })
+}
+
+/// Every node file in `dir` that is `engine`'s, sorted: its path, the type it names, and the
+/// stamp a rescan diffs.
+pub fn node_files(dir: &Path, engine: &str) -> Vec<(PathBuf, String, Option<crate::Stamp>)> {
     let mut paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
         Err(e) => {
@@ -42,6 +71,9 @@ pub fn node_files(dir: &Path) -> Vec<(PathBuf, String, Option<crate::Stamp>)> {
         .into_iter()
         .filter_map(|p| {
             let name = type_name_of(&p)?;
+            if engine_of(&p).as_deref() != Some(engine) {
+                return None;
+            }
             let stamp = std::fs::metadata(&p).ok().and_then(|m| Some((m.len(), m.modified().ok()?)));
             Some((p, name, stamp))
         })

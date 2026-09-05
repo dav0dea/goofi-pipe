@@ -41,7 +41,7 @@ impl SignalEngine {
 
 pub(crate) fn scan(engine: &mut SignalEngine, dir: &Path) -> Vec<ScannedType> {
     let (rust, paths): (Vec<_>, Vec<_>) =
-        goofi_node::node_files(dir).into_iter().partition(|(p, _, _)| p.extension().is_some_and(|e| e == "rs"));
+        goofi_node::node_files(dir, goofi_node::Engine::id(engine)).into_iter().partition(|(p, _, _)| p.extension().is_some_and(|e| e == "rs"));
     // Probes spawn an interpreter each, so a folder is probed a few files at a time; a file whose
     // stamp has not moved since its last probe is not probed again.
     let width = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
@@ -211,5 +211,5 @@ fn audio_slot(intro: &goofi_core::probe::Introspection) -> Option<String> {
         .map(|s| (&s.name, &s.kind))
         .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
         .find(|(_, kind)| goofi_core::SlotType::from_name(kind) == Some(goofi_core::SlotType::Audio))
-        .map(|(name, _)| format!("slot `{name}` is audio — an audio node lives in nodes_audio/"))
+        .map(|(name, _)| format!("slot `{name}` is audio — an audio node is written against goofi_audio_sdk"))
 }

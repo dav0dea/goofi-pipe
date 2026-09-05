@@ -109,7 +109,7 @@ async fn serve_main(rest: Vec<String>) {
         println!(
             "{USAGE}\n\
              \n  \
-             Scans every --extra-nodes ROOT — a folder holding `nodes_signal/` — and then the \
+             Scans every --extra-nodes ROOT — a folder of node files, `.py` and `.rs` — and then the \
              open patch's own workspace, which wins a shared type name. \
              Each node is routed in-process if free-threading-safe, else to a subprocess on \
              `{}`, which `cargo run -p goofi-init` provisions.\n  \

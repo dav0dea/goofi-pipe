@@ -1,5 +1,5 @@
 //! The nodes built into the engine: the device and MIDI nodes, whose control halves own OS
-//! handles. Every other audio node — shipped or authored — is one file in `nodes_audio/`, loaded
+//! handles. Every other audio node — shipped or authored — is one `.rs` file, loaded
 //! behind the audio ABI.
 
 pub mod audio_in;

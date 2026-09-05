@@ -8,7 +8,7 @@ use std::path::Path;
 use goofi_tests::{hex, install, j, require_python, shape, Goofi};
 
 fn install_bundled(g: &Goofi, bundle: &str, file: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles").join(bundle).join("nodes_signal").join(file);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles").join(bundle).join(file);
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read the bundled node {}: {e}", path.display()));
     install(g, file, &source)

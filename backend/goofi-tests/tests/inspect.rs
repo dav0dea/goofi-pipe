@@ -247,7 +247,7 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     assert_eq!(v["tier"], "native");
     // A shipped Rust node is SOURCE in the shipped root, exactly as a Python one would be.
     assert_eq!(v["provenance"], "shipped", "{v}");
-    assert!(v["path"].as_str().is_some_and(|p| p.ends_with("nodes_signal/Oscillator.rs")), "{v}");
+    assert!(v["path"].as_str().is_some_and(|p| p.ends_with("/signal/Oscillator.rs")), "{v}");
     assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");

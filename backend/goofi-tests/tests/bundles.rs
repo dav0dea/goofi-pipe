@@ -14,7 +14,7 @@ fn bundled(bundle: &str, files: &[&str]) -> Vec<(String, String)> {
         .iter()
         .map(|file| {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../node-bundles").join(bundle).join("nodes_signal").join(file);
+                .join("../../node-bundles").join(bundle).join(file);
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read the bundled node {}: {e}", path.display()));
             (file.to_string(), source)
@@ -178,7 +178,7 @@ fn every_bundle_names_its_packages_and_both_interpreters_hold_them() {
     let bundles = goofi_init::bundle_dirs(&root);
     assert!(!bundles.is_empty(), "the repo ships bundles under node-bundles/");
     let pythonic = |b: &Path| {
-        std::fs::read_dir(b.join("nodes_signal")).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x == "py"))
+        std::fs::read_dir(b).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x == "py"))
     };
     for b in bundles.iter().filter(|b| pythonic(b)) {
         assert!(b.join("requirements.txt").is_file(), "{} names its packages", b.display());

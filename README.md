@@ -51,7 +51,7 @@ and the result is headless for life, with no flag to remember at every run. `GOO
 | --- | --- | --- |
 | `--port N` | `8000` | The port to serve on. |
 | `--bind HOST` | `127.0.0.1` | The address to serve on. Anything beyond this machine warns: there is no auth, and `/term` is a real shell. |
-| `--extra-nodes ROOT` | — | A folder holding `nodes_signal/` or `nodes_audio/`, scanned after the shipped bundles and before the open patch's own workspace. Repeatable; a later root wins a type name it shares with an earlier one. |
+| `--extra-nodes ROOT` | — | A folder of node files, `.py` and `.rs`, scanned after the shipped bundles and before the open patch's own workspace. Repeatable; a later root wins a type name it shares with an earlier one. |
 | `--list-nodes` | — | Print the registered node types and exit. |
 | `--headless` | — | Serve the API alone — `/control`, `/data`, `/term`, `/mcp`. The app's routes are never mounted. |
 | `--debug` | — | Open `/dev/*`: the UI primitive gallery at `/dev/ui`, and the other development surfaces. Shut otherwise. |
@@ -72,8 +72,9 @@ the patch's remembered file alone, so Ctrl+S never silently retargets to a downl
 
 ## Nodes
 
-Drop a file in the patch workspace's `nodes_signal/`, or a root's: `smooth.py` or `Smooth.rs`. The
-stem names the type, and a leading `_` hides it. The nodes goofi ships are the same kind of file
+Drop a file in the patch workspace's `nodes_signal/` or `nodes_audio/`, or straight into a root:
+`smooth.py` or `Smooth.rs`. The stem names the type, a leading `_` hides it, and a `.rs` names the
+SDK it is written against, which is what routes it to its engine. The nodes goofi ships are the same kind of file
 under `node-bundles/`, built at goofi's own build time and embedded, so a toolchain is needed to
 author a Rust node and never to run one; `goofi library get <type>` hands back any node's source to
 copy.

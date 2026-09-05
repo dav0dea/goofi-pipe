@@ -714,19 +714,22 @@ impl Graph {
         self.unavailable.remove(type_name).is_some()
     }
 
-    /// Scan `root/nodes_<engine>` for every engine, and keep the greyed overlay in step with what
-    /// each registered: a name holds a registration or a reason, never both.
+    /// Scan `root` for every engine, each taking the files that name it, and keep the greyed
+    /// overlay in step with what each registered: a name holds a registration or a reason, never both.
     pub fn scan_root(&mut self, root: &std::path::Path) -> Vec<goofi_node::ScannedType> {
         let held = self.held_manifests();
         let mut out = Vec::new();
-        for engine in &mut self.engines {
-            let dir = root.join(goofi_node::folder_of(engine.id()));
-            if dir.is_dir() {
-                out.extend(qualified(engine.id(), engine.scan(&dir)));
+        if root.is_dir() {
+            for engine in &mut self.engines {
+                out.extend(qualified(engine.id(), engine.scan(root)));
             }
         }
         self.note_scanned(&out, &held);
         out
+    }
+
+    pub fn engine_ids(&self) -> Vec<&'static str> {
+        self.engines.iter().map(|e| e.id()).collect()
     }
 
     /// What the engines find on their own account, after every root.

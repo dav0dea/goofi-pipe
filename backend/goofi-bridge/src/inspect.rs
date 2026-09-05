@@ -260,12 +260,14 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
     let (engine, entry) = g.resolve_type(ty).map_err(|e| format!("library get: {e}"))?;
     let ty = &goofi_node::qualify(engine, entry.manifest.type_name);
     let mut info = crate::schemas::node_type_info(g, engine, entry.manifest, crate::schemas::source_of(g, ty));
-    let folder = goofi_node::folder_of(engine);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
-    let dirs = std::iter::once((mount.join(&folder), "patch"))
+    let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| mount.join(goofi_node::folder_of(id))).collect();
+    let dirs = workspace
+        .into_iter()
         .filter(|_| g.is_patch_type(ty))
-        .chain(roots.iter().rev().map(|d| (d.join(&folder), "shipped")));
+        .map(|d| (d, "patch"))
+        .chain(roots.iter().rev().map(|d| (d.clone(), "shipped")));
     // The file names the type, so the path re-derives without a registry; the registry says only
     // whether the patch's folder is where it lives.
     let found = dirs.into_iter().find_map(|(dir, provenance)| {

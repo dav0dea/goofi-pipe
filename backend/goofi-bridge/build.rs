@@ -17,7 +17,7 @@ fn main() {
     embed_spa(&frontend.join("build"), false);
 }
 
-/// Build every `node-bundles/<bundle>/nodes_<engine>/*.rs` through the one pipeline a scan runs,
+/// Build every `node-bundles/<bundle>/*.rs` through the one pipeline a scan runs,
 /// into a build dir the test harness shares, and emit `$OUT_DIR/shipped.rs`: every file of every
 /// bundle, and every artifact under the cache key a scan will look it up by. A shipped node that
 /// does not compile fails THIS build, so a binary never ships a node it cannot load.
@@ -35,7 +35,7 @@ fn prebuild_nodes() {
             println!("cargo:rerun-if-changed={}", path.display());
             let within = path.strip_prefix(&bundle).unwrap().to_string_lossy().replace('\\', "/");
             sources += &format!("    ({:?}, include_bytes!({:?})),\n", format!("{name}/{within}"), path.display().to_string());
-            let Some(sdk) = sdk_of(&path, &bundle) else { continue };
+            let Some(sdk) = sdk_of(&path) else { continue };
             let artifact = goofi_build::ensure(sdk, &path, &base)
                 .unwrap_or_else(|why| panic!("the shipped node {} does not build:\n{why}", path.display()));
             println!("cargo:rerun-if-changed={}", artifact.display());
@@ -54,16 +54,16 @@ fn prebuild_nodes() {
     .expect("write shipped.rs");
 }
 
-/// The SDK a `.rs` file directly under a bundle's `nodes_<engine>/` is built with.
-fn sdk_of(path: &Path, bundle: &Path) -> Option<&'static goofi_build::Sdk> {
+/// The SDK a `.rs` node file is built with: the one it names.
+fn sdk_of(path: &Path) -> Option<&'static goofi_build::Sdk> {
     if path.extension().is_none_or(|e| e != "rs") {
         return None;
     }
-    let folder = path.parent()?.strip_prefix(bundle).ok()?.to_str()?.to_string();
-    [("signal", &goofi_build::SIGNAL), ("audio", &goofi_build::AUDIO)]
-        .into_iter()
-        .find(|(engine, _)| folder == goofi_node::folder_of(engine))
-        .map(|(_, sdk)| sdk)
+    match goofi_node::engine_of(path)?.as_str() {
+        "signal" => Some(&goofi_build::SIGNAL),
+        "audio" => Some(&goofi_build::AUDIO),
+        _ => None,
+    }
 }
 
 /// The directories directly under `dir`, sorted.

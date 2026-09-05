@@ -14,7 +14,7 @@ use crate::AudioEngine;
 
 pub(crate) fn scan(engine: &mut AudioEngine, dir: &Path) -> Vec<ScannedType> {
     let mut out = Vec::new();
-    for (path, type_name, stamp) in goofi_node::node_files(dir) {
+    for (path, type_name, stamp) in goofi_node::node_files(dir, goofi_node::Engine::id(engine)) {
         if crate::nodes::built_in(&type_name) {
             continue;
         }
