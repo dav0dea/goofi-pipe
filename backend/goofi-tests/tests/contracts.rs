@@ -8,7 +8,7 @@ use goofi_bridge::ops::{find, registry, typescript};
 use goofi_bridge::vocab;
 use goofi_core::{Data, Meta, SlotType, Value as DataValue};
 use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
-use goofi_tests::{hex, j, Client, Goofi};
+use goofi_tests::{fixtures::LibraryEngine, hex, j, Client, Goofi};
 use serde_json::Value;
 
 /// A generated file, kept honest: on drift it is REWRITTEN and the test fails once.
@@ -187,21 +187,21 @@ fn a_palette_row_carries_everything_a_client_renders_a_node_from() {
     g.register_dyn(&OVERRIDES_COMMON, Box::new(|_| never()), &goofi_node::NATIVE);
 
     // The two fixtures differ only in the `producer` flag, and it decides who paces the node.
-    assert_eq!(row(&g, "MyPyThing")["params"]["common"]["autotrigger"]["value"], true,
+    assert_eq!(row(&g, "signal:MyPyThing")["params"]["common"]["autotrigger"]["value"], true,
                "a source paces itself");
-    assert_eq!(row(&g, "MultiThing")["params"]["common"]["autotrigger"]["value"], false,
+    assert_eq!(row(&g, "signal:MultiThing")["params"]["common"]["autotrigger"]["value"], false,
                "a transform is driven by its input");
-    let common = row(&g, "MyPyThing")["params"]["common"].clone();
+    let common = row(&g, "signal:MyPyThing")["params"]["common"].clone();
     assert_eq!((&common["max_frequency"]["type"], &common["autotrigger"]["type"],
                 &common["frequency_mode"]["type"]), (&j!("float"), &j!("bool"), &j!("string")));
-    assert_eq!(row(&g, "MultiThing")["input_multi"], j!(["many"]));
-    assert_eq!(row(&g, "MyPyThing")["input_multi"], j!([]));
+    assert_eq!(row(&g, "signal:MultiThing")["input_multi"], j!(["many"]));
+    assert_eq!(row(&g, "signal:MyPyThing")["input_multi"], j!([]));
 
     // A tooltip is rendered from the CATALOG descriptor, so a node that redeclares a `common.*`
     // param owns its help text too.
-    assert_eq!(row(&g, "DocumentedThing")["params"]["welch"]["nperseg"]["doc"],
+    assert_eq!(row(&g, "signal:DocumentedThing")["params"]["welch"]["nperseg"]["doc"],
                "Samples per Welch segment: longer means finer frequency resolution.");
-    let overridden = row(&g, "OverridesCommon");
+    let overridden = row(&g, "signal:OverridesCommon");
     assert_eq!(overridden["params"]["common"]["autotrigger"]["doc"],
                "On by default: this node is a source.");
     assert!(overridden["params"]["common"]["max_frequency"]["doc"].as_str().unwrap()
@@ -213,12 +213,12 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
     let g = Goofi::new();
     {
         let mut graph = g.state.graph.lock().unwrap();
-        graph.register_unavailable("PsdScipy".into(), "scipy".into());
+        graph.register_unavailable("signal:PsdScipy".into(), "scipy".into());
         goofi_bridge::register_dyn_type(&mut graph, &SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
         // Provenance is the only thing the scan knows that the catalog cannot re-derive, greyed rows too.
-        graph.set_patch_types(["MyPyThing".to_string(), "PsdScipy".to_string()].into());
+        graph.set_patch_types(["signal:MyPyThing".to_string(), "signal:PsdScipy".to_string()].into());
     }
-    let ty = row(&g, "PsdScipy");
+    let ty = row(&g, "signal:PsdScipy");
     assert_eq!(ty["available"], false);
     assert_eq!(ty["missing_deps"], j!(["scipy"]), "the machine-readable reason");
     // `reason` is a bare module name only for a ModuleNotFoundError, so the sentence is phrased here.
@@ -226,8 +226,8 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
     assert_eq!(ty["input_slots"], j!({}), "the probe never got far enough to report them");
 
     assert_eq!(ty["source"], "patch", "a greyed row is provenanced too");
-    assert_eq!(row(&g, "MyPyThing")["source"], "patch");
-    assert_eq!(row(&g, "Oscillator")["source"], "builtin", "a shipped node ships with goofi");
+    assert_eq!(row(&g, "signal:MyPyThing")["source"], "patch");
+    assert_eq!(row(&g, "signal:Oscillator")["source"], "builtin", "a shipped node ships with goofi");
 }
 
 #[tokio::test]
@@ -304,19 +304,25 @@ fn a_malformed_frame_is_refused_rather_than_trusted() {
 }
 
 #[test]
-fn no_two_engines_offer_one_type_name() {
-    // Type names are ONE namespace across engines, and nothing refuses a second claim on one: the
-    // palette shows both rows as available while every resolution door silently takes the first
-    // engine's. It cost a shipped audio filter its name, and twice before that a node was renamed
-    // to dodge the same silence. This is the guard those three incidents did not have.
+fn a_type_id_names_its_engine() {
+    assert_eq!(goofi_node::qualify("audio", "Filter"), "audio:Filter");
+    assert_eq!(goofi_node::split_type_id("audio:Filter"), (Some("audio"), "Filter"));
+    assert_eq!(goofi_node::split_type_id("Filter"), (None, "Filter"));
+    assert_eq!(goofi_node::bare("audio:Filter"), "Filter");
+}
+
+#[test]
+fn two_engines_may_offer_one_type_name() {
+    // A type id is `engine:Name`, so a name two engines both offer costs neither of them: both are
+    // advertised and both are addressable. It cost a shipped audio filter its name, and twice
+    // before that a node was renamed to dodge the silence a first-advertiser-wins lookup made.
     let g = Goofi::new();
-    let graph = g.state.graph.lock().unwrap();
-    let mut seen: std::collections::HashMap<&str, usize> = Default::default();
-    for m in graph.library_manifests() {
-        *seen.entry(m.type_name).or_default() += 1;
-    }
-    let twice: Vec<&str> = seen.iter().filter(|(_, n)| **n > 1).map(|(t, _)| *t).collect();
-    assert!(twice.is_empty(), "two engines offer one type name, and only the first is reachable: {twice:?}");
+    g.state.graph.lock().unwrap().register_engine(Box::new(LibraryEngine::named("twin", &["Oscillator"])));
+
+    assert_ne!(g.add("signal:Oscillator"), g.add("twin:Oscillator"), "each engine's own is reachable");
+    let why = g.refuse("node add", j!({ "type": "Oscillator" }));
+    assert!(why.contains("signal:Oscillator") && why.contains("twin:Oscillator"),
+            "the bare name is ambiguous, and the refusal names every candidate: {why}");
 }
 
 #[test]
@@ -350,8 +356,9 @@ fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
     // instance. Read AS EACH TYPE SEES IT, since a declaration may condition on the manifest.
     let g = Goofi::new();
     let graph = g.state.graph.lock().unwrap();
-    let decls = graph.library_manifests().into_iter().flat_map(|m| {
-        m.params.iter().copied().chain(graph.universal_decls_of(m.type_name)).map(move |d| (m.type_name, d))
+    let decls = graph.library_entries().into_iter().flat_map(|(engine, l)| {
+        let m = l.manifest;
+        m.params.iter().copied().chain(graph.universal_decls(engine, m)).map(move |d| (m.type_name, d))
     });
     for (owner, decl) in decls {
         let Some(expr) = decl.expression else { continue };
@@ -379,8 +386,9 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
     let palette = g.state.call("library list", j!({}), "t").unwrap();
     let listed: Vec<&str> = palette["types"].as_array().unwrap().iter()
         .map(|t| t["type"].as_str().unwrap()).collect();
-    assert!(!listed.iter().any(|t| t.starts_with('_')), "a test node reached the palette: {listed:?}");
-    assert!(listed.contains(&"Oscillator") && listed.contains(&"Buffer"), "{listed:?}");
+    assert!(!listed.iter().any(|t| goofi_node::bare(t).starts_with('_')),
+            "a test node reached the palette: {listed:?}");
+    assert!(listed.contains(&"signal:Oscillator") && listed.contains(&"signal:Buffer"), "{listed:?}");
 }
 
 #[test]

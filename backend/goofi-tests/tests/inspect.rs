@@ -55,8 +55,8 @@ scope: root
 
 ```mermaid
 flowchart LR
-  n000000000001[\"oscillator0: Oscillator<br/>000000000001\"]
-  n000000000002[\"⚠ testfail0: _TestFail<br/>000000000002\"]
+  n000000000001[\"oscillator0: signal:Oscillator<br/>000000000001\"]
+  n000000000002[\"⚠ testfail0: signal:_TestFail<br/>000000000002\"]
   n000000000004[[\"subpatch0<br/>000000000004\"]]
   n000000000001 -- out→value --> n000000000004
 ```
@@ -86,7 +86,7 @@ scope: subpatch0 (000000000004)
 
 ```mermaid
 flowchart LR
-  n000000000003[\"buffer0: Buffer<br/>000000000003\"]
+  n000000000003[\"buffer0: signal:Buffer<br/>000000000003\"]
   n000000000005([\"in0: InArray<br/>000000000005\"])
   n000000000005 -- value\u{2192}data --> n000000000003
 ```
@@ -168,7 +168,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     });
 
     let out = text(&g, "node state", j!({ "node": hex(osc) }));
-    assert!(out.starts_with(&format!("oscillator0: Oscillator (uid {}, native, stage ready)", hex(osc))),
+    assert!(out.starts_with(&format!("oscillator0: signal:Oscillator (uid {}, native, stage ready)", hex(osc))),
             "{out}");
     // The goldened inline param format, round-trippable into `node param edit`…
     assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
@@ -236,8 +236,9 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
     // with the wide one rather than be assembled a second way.
     let all = g.call("library list", j!({}))["types"].as_array().cloned().unwrap_or_default();
-    let listed = all.iter().find(|t| t["type"] == "Oscillator").expect("Oscillator is in the palette");
+    let listed = all.iter().find(|t| t["type"] == "signal:Oscillator").expect("Oscillator is in the palette");
 
+    // A bare name resolves while one engine offers it, and answers the QUALIFIED row.
     let v = g.call("library get", j!({ "type": "Oscillator" }));
     assert_eq!(v["type"], listed["type"]);
     assert_eq!(v["doc"], listed["doc"], "one entry says what the catalog says");
@@ -250,7 +251,7 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
-    assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("no node type `Nope`"));
+    assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("unknown node type `Nope`"));
 }
 
 #[test]

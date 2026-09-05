@@ -4,7 +4,7 @@ import type { OpName } from '$lib/api/ops';
 
 /** Control-plane protocol version. Bump it together with PROTOCOL_VERSION in
  * `backend/goofi-bridge/src/schemas.rs`. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Whether a backend-reported protocol version is compatible with this build. */
 export function isProtocolCompatible(remote: unknown): boolean {

@@ -6,7 +6,7 @@ use goofi_graph::{Graph, SourceInfo, Uid};
 use goofi_node::{NodeManifest, ParamGroups};
 use serde_json::{json, Map, Value};
 
-pub const PROTOCOL_VERSION: i64 = 3;
+pub const PROTOCOL_VERSION: i64 = 4;
 
 /// A single param descriptor, discriminated on `type`. `doc` is the type declaration's help text,
 /// which the runtime [`Param`] cannot carry. The source fields are the record's: an empty text is
@@ -70,8 +70,8 @@ fn param_doc(
 }
 
 /// Type-level params for the palette, and the projection param tooltips are rendered from.
-pub fn describe_params(g: &Graph, p: &ParamGroups, m: &NodeManifest) -> Value {
-    let universal = g.universal_decls_of(m.type_name);
+pub fn describe_params(g: &Graph, engine: &str, p: &ParamGroups, m: &'static NodeManifest) -> Value {
+    let universal = g.universal_decls(engine, m);
     let mut groups = Map::new();
     for (gname, grp) in p {
         let mut names = Map::new();
@@ -88,7 +88,8 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
     let (Some(params), Some(m)) = (g.params(uid), g.manifest(uid)) else {
         return Value::Object(Map::new());
     };
-    let universal = g.universal_decls_of(m.type_name);
+    let ty = g.node_type(uid).unwrap_or_default();
+    let universal = g.universal_decls(goofi_node::split_type_id(&ty).0.unwrap_or_default(), m);
     let mut groups = Map::new();
     for (gname, group) in &*params {
         let mut names = Map::new();
@@ -156,9 +157,11 @@ pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     }
 }
 
-pub fn node_type_info(g: &Graph, m: &NodeManifest, source: &str) -> Value {
+pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest, source: &str) -> Value {
+    let ty = goofi_node::qualify(engine, m.type_name);
     json!({
-        "type": m.type_name,
+        "type": ty,
+        "engine": engine,
         "source": source,
         "category": m.category,
         "doc": m.doc,
@@ -168,19 +171,21 @@ pub fn node_type_info(g: &Graph, m: &NodeManifest, source: &str) -> Value {
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),
         // The owning engine's own normalization, so palette and instance agree.
-        "params": describe_params(g, &g.default_params_of(m.type_name, None).unwrap_or_default(), m),
+        "params": describe_params(g, engine, &g.default_params_of(&ty, None).unwrap_or_default(), m),
     })
 }
 
-/// The `list_nodes` palette catalog, sorted by (category, type). Hidden test nodes (`_`-prefixed)
-/// are excluded.
+/// The `list_nodes` palette catalog, sorted by (engine, bare name). Hidden test nodes
+/// (`_`-prefixed) are excluded.
 pub fn catalog_types(g: &Graph) -> Value {
     let mut items: Vec<(String, String, Value)> = g
-        .library_manifests()
+        .library_entries()
         .into_iter()
-        .filter(|m| !m.type_name.starts_with('_'))
-        .map(|m| {
-            (m.category.to_string(), m.type_name.to_string(), node_type_info(g, m, source_of(g, m.type_name)))
+        .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
+        .map(|(engine, l)| {
+            let ty = goofi_node::qualify(engine, l.manifest.type_name);
+            let info = node_type_info(g, engine, l.manifest, source_of(g, &ty));
+            (engine.to_string(), l.manifest.type_name.to_string(), info)
         })
         .collect();
     // Node files that exist but cannot load are listed too, greyed and with the reason — carrying
@@ -191,11 +196,13 @@ pub fn catalog_types(g: &Graph) -> Value {
         .collect();
     items.extend(greyed.into_iter().map(|(name, reason)| {
         let last = g.last_manifest(&name);
+        let (engine, bare) = goofi_node::split_type_id(&name);
         (
-            "unavailable".to_string(),
-            name.clone(),
+            engine.unwrap_or_default().to_string(),
+            bare.to_string(),
             json!({
                 "type": name,
+                "engine": engine,
                 "source": source_of(g, &name),
                 "category": "unavailable",
                 "doc": format!("This node could not be loaded: {reason}"),
@@ -205,7 +212,8 @@ pub fn catalog_types(g: &Graph) -> Value {
                 "input_multi": last.map_or_else(|| json!([]), input_multi),
                 "output_slots": last.map_or_else(|| json!({}), output_slots),
                 "params": last.map_or_else(|| json!({}), |m| {
-                    describe_params(g, &g.default_params_of(m.type_name, None).unwrap_or_default(), m)
+                    let params = g.default_params_of(&name, None).unwrap_or_default();
+                    describe_params(g, engine.unwrap_or_default(), &params, m)
                 }),
             }),
         )

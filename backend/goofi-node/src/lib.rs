@@ -9,12 +9,14 @@ pub mod abi;
 pub mod describe;
 pub mod mailbox;
 pub mod seam;
+pub mod type_id;
 pub use describe::{describe, folder_of, illegal_slot, leak_manifest, node_files, parse_introspection, type_name_of};
 pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Ringer, Scanned, ScannedType, Stamp, Touched, Via,
 };
+pub use type_id::{bare, qualify, split as split_type_id};
 
 /// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

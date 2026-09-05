@@ -84,11 +84,12 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: the palette lists the audio category, and a chain of three sounds at once.
     let types = g.call("library list", j!({}));
     let mut audio: Vec<&str> = types["types"].as_array().unwrap().iter()
-        .filter(|r| r["category"] == "audio").filter_map(|r| r["type"].as_str()).collect();
+        .filter(|r| r["engine"] == "audio").filter_map(|r| r["type"].as_str()).collect();
     audio.sort_unstable();
     // The shipped set, whole: three built in because their control halves own OS handles, and
     // seven files built by the same pipeline an authored node takes.
-    assert_eq!(audio, ["AudioIn", "AudioOut", "Env", "Feedback", "Gain", "MidiIn", "Osc", "SignalIn", "Slew", "Svf"]);
+    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:Env", "audio:Feedback", "audio:Gain",
+                       "audio:MidiIn", "audio:Osc", "audio:SignalIn", "audio:Slew", "audio:Svf"]);
     let osc = g.add("Osc");
     let gain = g.add("Gain");
     let out = g.add("AudioOut");
@@ -566,7 +567,7 @@ fn a_patch_sounds_under_the_external_clock() {
          goofi_audio_sdk::export!(Trap, MANIFEST);\n",
     )
     .unwrap();
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Trap"]));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Trap"]));
     let trap = g.add("Trap");
     g.link(trap, "out", out, "input");
     let level = |x: &[f32]| mean(&x[x.len() - 480..]);
@@ -629,7 +630,7 @@ fn a_patch_sounds_under_the_external_clock() {
          goofi_audio_sdk::export!(Unready, MANIFEST);\n";
     std::fs::write(dir.join("Stillborn.rs"), stillborn).unwrap();
     std::fs::write(dir.join("Unready.rs"), unready).unwrap();
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Stillborn", "Unready"]));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Stillborn", "audio:Unready"]));
     for (type_name, said) in [("Stillborn", "panic: the constructor panicked"), ("Unready", "panic: prepare: not at this rate")] {
         let uid = g.add(type_name);
         g.until(&format!("{type_name} to fault"), |g| {
@@ -661,7 +662,7 @@ fn a_patch_sounds_under_the_external_clock() {
          goofi_audio_sdk::export!(Ticks, MANIFEST);\n",
     )
     .unwrap();
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Ticks"]));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Ticks"]));
     let ticks = g.add("Ticks");
     // Nothing is driven between a birth and this probe's opening, so the first frame published
     // after one tenth STARTS at the count the birth loaded — or at zero.
@@ -730,7 +731,7 @@ fn a_patch_sounds_under_the_external_clock() {
         std::fs::copy(&artifact, into.join(file)).unwrap();
     };
     bundled("GoofiFixture", built(false));
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["GoofiFixture"]));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiFixture"]));
     let plug = g.add("GoofiFixture");
     let params = g.doc()["nodes"][hex(plug)]["params"].clone();
     for (group, name) in [("voice", "gate"), ("voice", "pitch"), ("voice", "velocity"), ("plugin", "gain")] {
@@ -739,7 +740,7 @@ fn a_patch_sounds_under_the_external_clock() {
     // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
     // own words, stepped past it a number, and read-only is not a param at all.
     let schema = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "GoofiFixture").cloned().expect("the plugin is in the palette")["params"].clone();
+        .find(|v| v["type"] == "audio:GoofiFixture").cloned().expect("the plugin is in the palette")["params"].clone();
     assert_eq!(schema["plugin"]["shape"]["options"], j!(["soft", "mid", "hard"]), "{schema}");
     assert_eq!(schema["plugin"]["steps"]["vmax"], j!(200), "{schema}");
     assert!(schema["plugin"]["meter"].is_null(), "a read-only parameter is omitted: {schema}");
@@ -758,9 +759,9 @@ fn a_patch_sounds_under_the_external_clock() {
     heard(&g, plug, "the gain the record keeps, past a restart", |x| (peak(x) - 0.5).abs() < 0.02);
 
     bundled("Crasher", built(true));
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["Crasher"]));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Crasher"]));
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Crasher").cloned().expect("greyed, not absent");
+        .find(|v| v["type"] == "audio:Crasher").cloned().expect("greyed, not absent");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("scanner"), "the scanner's death is the reason: {row}");
     assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));

@@ -16,7 +16,7 @@ pub fn of(g: &Graph) -> Value {
     // params key is simply empty, as it is on a node with none.
     for uid in g.all_uids() {
         let mut node = Map::new();
-        node.insert("type".into(), json!(g.node_type(uid).unwrap_or("")));
+        node.insert("type".into(), json!(g.node_type(uid).unwrap_or_default()));
         node.insert("name".into(), json!(g.name(uid).unwrap_or("")));
         node.insert("pos".into(), pos_json(g.pos(uid).unwrap_or([0.0, 0.0])));
         let mut params = Map::new();

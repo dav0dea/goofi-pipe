@@ -12,10 +12,10 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let g = Goofi::new();
 
     let types = g.call("library list", j!({}))["types"].as_array().cloned().unwrap();
-    for want in ["Oscillator", "Buffer"] {
+    for want in ["signal:Oscillator", "signal:Buffer"] {
         assert!(types.iter().any(|t| t["type"] == want), "{want} is in the palette");
     }
-    assert!(!types.iter().any(|t| t["type"] == "_TestEcho"), "test nodes are not");
+    assert!(!types.iter().any(|t| t["type"] == "signal:_TestEcho"), "test nodes are not");
 
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");

@@ -26,7 +26,7 @@ fn the_doc_and_the_event_agree_with_the_op() {
     let n = g.add("_TestEcho");
 
     assert_eq!(ev.next("node_added")["uid"], goofi_tests::hex(n));
-    assert_eq!(g.doc()["nodes"][goofi_tests::hex(n)]["type"], "_TestEcho");
+    assert_eq!(g.doc()["nodes"][goofi_tests::hex(n)]["type"], "signal:_TestEcho");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn the_state_clients_replicate_is_readable_as_plain_json() {
     let g = Goofi::new();
     let n = g.add("_TestEcho");
     let doc = g.doc();
-    assert_eq!(doc["nodes"][goofi_tests::hex(n)]["type"], "_TestEcho", "{doc}");
+    assert_eq!(doc["nodes"][goofi_tests::hex(n)]["type"], "signal:_TestEcho", "{doc}");
     assert!(doc["globals"]["default_ufreq"].is_object(), "the seeded system globals: {doc}");
 
     g.call("node remove", j!({ "node": goofi_tests::hex(n) }));

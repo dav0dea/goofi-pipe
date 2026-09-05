@@ -87,7 +87,7 @@ pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
         for &uid in &member {
             let hex = uid.to_hex();
             let name = label(g.name(uid).unwrap_or("?"));
-            let ty = g.node_type(uid).unwrap_or("?");
+            let ty = g.node_type(uid).unwrap_or_else(|| "?".into());
             let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
             if g.stub(uid).is_some() {
                 out.push_str(&format!("  {}([\"{warn}{name}: {ty}<br/>{hex}\"])\n", mid(uid)));
@@ -257,8 +257,9 @@ pub fn globals(g: &Graph) -> Value {
 
 /// `library get`: a node type's text where it has one, and its provenance either way.
 pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Result<Value, String> {
-    let (engine, entry) = g.library_entry(ty).ok_or_else(|| format!("library get: no node type `{ty}`"))?;
-    let mut info = crate::schemas::node_type_info(g, entry.manifest, crate::schemas::source_of(g, ty));
+    let (engine, entry) = g.resolve_type(ty).map_err(|e| format!("library get: {e}"))?;
+    let ty = &goofi_node::qualify(engine, entry.manifest.type_name);
+    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest, crate::schemas::source_of(g, ty));
     let folder = goofi_node::folder_of(engine);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
@@ -272,7 +273,7 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
         let path = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .find(|p| goofi_node::type_name_of(p).as_deref() == Some(ty))?;
+            .find(|p| goofi_node::type_name_of(p).as_deref() == Some(goofi_node::bare(ty)))?;
         Some((path, provenance))
     });
     let tier = g.type_tier(ty);

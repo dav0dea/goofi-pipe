@@ -768,7 +768,7 @@ pub fn install_all(g: &Goofi, files: &[(&str, &str)]) -> Vec<String> {
     g.call("library refresh", j!({}));
     let graph = g.state.graph.lock().unwrap();
     for ((file, _), name) in files.iter().zip(&names) {
-        if let Some((_, reason)) = graph.unavailable_types().find(|(n, _)| n == name) {
+        if let Some((_, reason)) = graph.unavailable_types().find(|(n, _)| goofi_node::bare(n) == name) {
             panic!("{file} scanned as unavailable: {reason}");
         }
     }

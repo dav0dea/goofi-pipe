@@ -597,7 +597,7 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     assert!(example.contains("class Scale"), "the example is where the walk expects it: {agents}");
     std::fs::create_dir_all(mount.join("nodes_signal")).unwrap();
     std::fs::write(mount.join("nodes_signal").join("scale.py"), example).unwrap();
-    assert_eq!(g.call("library refresh", json!({}))["added"], json!(["Scale"]), "the example is a node");
+    assert_eq!(g.call("library refresh", json!({}))["added"], json!(["signal:Scale"]), "the example is a node");
 
     // Identity travels in the ENVIRONMENT, and the shell itself answers what it was handed: the
     // server's id, its own undo actor, and a `goofi` that resolves — out of the directory the

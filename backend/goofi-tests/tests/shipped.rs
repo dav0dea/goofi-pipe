@@ -25,7 +25,7 @@ fn a_shipped_node_runs_with_no_cargo_and_an_authored_one_says_what_it_needs() {
     std::fs::write(dir.join("Twice.rs"), "fn never_built() {}\n").unwrap();
     g.call("library refresh", j!({}));
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Twice").cloned().expect("the file is listed, greyed");
+        .find(|v| v["type"] == "signal:Twice").cloned().expect("the file is listed, greyed");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("cargo"), "what is missing is named: {row}");
 }

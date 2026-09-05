@@ -13,7 +13,7 @@ use goofi_node::{
     DrainWaker, Engine, EventId, GraphView, LibraryEntry, NodeManifest, NodeStage,
     OutputDecl, ParamGroups, SlotDecl, Status, Touched, Uid,
 };
-use goofi_tests::{ep, f32s, hex, j, shape, Goofi};
+use goofi_tests::{ep, f32s, fixtures::LibraryEngine, hex, j, shape, Goofi};
 
 static AUDIO_OUTS: &[OutputDecl] = &[
     OutputDecl { name: "out", kind: SlotType::Audio },
@@ -360,12 +360,52 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let types = t.call("library list", j!({}));
     let names: Vec<&str> =
         types["types"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
-    for want in ["SkelAudioOsc", "SkelGfxFrame", "Oscillator", "InAudio", "OutAudio"] {
+    for want in ["skel:SkelAudioOsc", "graphics:SkelGfxFrame", "signal:Oscillator", "InAudio", "OutAudio"] {
         assert!(names.contains(&want), "`{want}` is missing from the merged palette: {names:?}");
     }
-    let skel = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "SkelAudioOsc").unwrap();
+    let skel = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "skel:SkelAudioOsc").unwrap();
     assert_eq!(skel["output_slots"]["out"], "AUDIO", "{skel}");
     assert_eq!(skel["input_slots"]["audio"], "AUDIO", "{skel}");
+
+    // Step: a THIRD engine takes a name the signal engine ships. A type id is `engine:Name`, so
+    // both are advertised, both are addressable, and the bare name is refused as ambiguous.
+    t.state.graph.lock().unwrap().register_engine(Box::new(LibraryEngine::named("twin", &["Oscillator"])));
+
+    let rows = t.call("library list", j!({}))["types"].clone();
+    let ids: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["type"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"signal:Oscillator") && ids.contains(&"twin:Oscillator"), "{ids:?}");
+    let twin_row = rows.as_array().unwrap().iter().find(|r| r["type"] == "twin:Oscillator").unwrap();
+    assert_eq!(twin_row["engine"], "twin");
+
+    let why = t.refuse("node add", j!({ "type": "Oscillator" }));
+    assert!(why.contains("signal:Oscillator") && why.contains("twin:Oscillator"), "names every candidate: {why}");
+
+    let a = t.add("signal:Oscillator");
+    let b = t.add("twin:Oscillator");
+    let doc = t.doc();
+    assert_eq!(doc["nodes"][hex(a)]["type"], "signal:Oscillator");
+    assert_eq!(doc["nodes"][hex(b)]["type"], "twin:Oscillator");
+    assert_eq!(doc["nodes"][hex(a)]["name"], "oscillator0", "the minted name is the BARE half");
+    assert_eq!(doc["nodes"][hex(b)]["name"], "oscillator1");
+
+    let buf = t.add("Buffer");
+    assert_eq!(t.doc()["nodes"][hex(buf)]["type"], "signal:Buffer",
+               "a bare name resolves when one engine offers it, and is stored qualified");
+
+    let manifest = t.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
+    assert!(manifest.contains("type: twin:Oscillator"), "the .gfi records the qualified id: {manifest}");
+    t.call("session load", j!({ "content": manifest }));
+    let reloaded = t.doc();
+    let loaded: Vec<&str> =
+        reloaded["nodes"].as_object().unwrap().values().map(|n| n["type"].as_str().unwrap()).collect();
+    assert!(loaded.contains(&"signal:Oscillator") && loaded.contains(&"twin:Oscillator"), "{loaded:?}");
+
+    let got = t.call("library get", j!({ "type": "twin:Oscillator" }));
+    assert_eq!(got["type"], "twin:Oscillator");
+    // …and away again, since the steps below walk the empty patch they always did.
+    for u in [a, b, buf] {
+        t.call("node remove", j!({ "node": hex(u) }));
+    }
 
     // Step: a skeleton node is born through the one op surface and reports ready through the
     // one health plane.
@@ -424,7 +464,8 @@ fn a_scheduled_engine_beside_the_signal_one() {
 
     // Step: signal → skeleton. The boundary is drained at the SKELETON's own tick — no doorbell
     // exists on a scheduled engine — and the echo slot republishes the freshest frame verbatim.
-    let osc = t.add("Oscillator");
+    // Named by engine, since the twin registered above offers `Oscillator` too.
+    let osc = t.add("signal:Oscillator");
     t.link(osc, "out", audio, "input");
     let back = t.probe(audio, "echo");
     let boundary = back.expect_frame(&mut t.state.graph.lock().unwrap(), "the boundary echo");

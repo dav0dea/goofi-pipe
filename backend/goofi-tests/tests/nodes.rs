@@ -67,7 +67,7 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
     let mount = g.state.mount();
     write_node(&mount, "my_thing.py", "1.0");
 
-    assert_eq!(rescan(&g)["added"], j!(["MyThing"]), "the file becomes a type");
+    assert_eq!(rescan(&g)["added"], j!(["signal:MyThing"]), "the file becomes a type");
     // The baseline is what the LAST scan found, so refresh with nothing edited says nothing changed.
     let again = rescan(&g);
     assert_eq!((&again["added"], &again["changed"], &again["removed"]), (&j!([]), &j!([]), &j!([])),
@@ -78,13 +78,13 @@ fn a_node_file_in_the_workspace_is_live_after_a_rescan_and_follows_its_edits() {
 
     write_node(&mount, "my_thing.py", "2.0");
     let diff = rescan(&g);
-    assert_eq!(diff["changed"], j!(["MyThing"]), "an edited file reports as changed");
+    assert_eq!(diff["changed"], j!(["signal:MyThing"]), "an edited file reports as changed");
     assert_eq!((&diff["added"], &diff["removed"]), (&j!([]), &j!([])));
     emits(&g, live, 2.0); // the running node is the new code
 
     // Removal closes the door; it does not reach into the graph.
     std::fs::remove_file(mount.join("nodes_signal").join("my_thing.py")).unwrap();
-    assert_eq!(rescan(&g)["removed"], j!(["MyThing"]));
+    assert_eq!(rescan(&g)["removed"], j!(["signal:MyThing"]));
     g.refuse("node add", j!({ "type": "MyThing" }));
     emits(&g, live, 2.0); // …and its instance still runs
 }
@@ -105,8 +105,8 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
     emits(&g, uid, 9.0); // the patch's own file wins the name
     let source = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).unwrap()["source"].clone();
-    assert_eq!(source("MyThing"), "patch", "…and says where it came from");
-    assert_eq!(source("OnlyShipped"), "builtin", "the shipped root's own node is not the patch's");
+    assert_eq!(source("signal:MyThing"), "patch", "…and says where it came from");
+    assert_eq!(source("signal:OnlyShipped"), "builtin", "the shipped root's own node is not the patch's");
 }
 
 #[test]
@@ -191,11 +191,11 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     // An authored file builds through cargo into the same cache, and runs.
     let mount = g.state.mount();
     write_rust_node(&mount, "Twice.rs", "2.0");
-    assert_eq!(rescan(&g)["added"], j!(["Twice"]), "the file becomes a type");
+    assert_eq!(rescan(&g)["added"], j!(["signal:Twice"]), "the file becomes a type");
     let live = g.add("Twice");
     emits(&g, live, 2.0);
     write_rust_node(&mount, "Twice.rs", "3.0");
-    assert_eq!(rescan(&g)["changed"], j!(["Twice"]), "an edited file reports as changed");
+    assert_eq!(rescan(&g)["changed"], j!(["signal:Twice"]), "an edited file reports as changed");
     emits(&g, live, 3.0); // the running node is the new code
 
     // A file that does not compile greys the type out with rustc's own words, and the instance
@@ -203,7 +203,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     std::fs::write(mount.join("nodes_signal").join("Twice.rs"), "fn broken( {\n").unwrap();
     rescan(&g);
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Twice").cloned().expect("the type stays listed, greyed");
+        .find(|v| v["type"] == "signal:Twice").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
     // The greyed row keeps the SHAPE it last loaded, because the canvas draws a node's slots and
@@ -215,7 +215,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     assert!(why.contains("unavailable"), "{why}");
     emits(&g, live, 3.0);
     write_rust_node(&mount, "Twice.rs", "3.0");
-    assert_eq!(rescan(&g)["changed"], j!(["Twice"]), "the fix is a change, built from the cache");
+    assert_eq!(rescan(&g)["changed"], j!(["signal:Twice"]), "the fix is a change, built from the cache");
 
     // A stem the name rule refuses is not a node, in either language, exactly as a `_` stem is not:
     // nothing is built, nothing is listed.
@@ -239,7 +239,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
          goofi_signal_sdk::export!(Doomed, MANIFEST);\n",
     )
     .unwrap();
-    assert_eq!(rescan(&g)["added"], j!(["Doomed"]));
+    assert_eq!(rescan(&g)["added"], j!(["signal:Doomed"]));
     let doomed = g.add("Doomed");
     g.call("node remove", j!({ "node": goofi_tests::hex(doomed) }));
     g.until("the doomed instance to be gone", |g| (g.state.graph.lock().unwrap().node_count() == 1).then_some(()));
@@ -261,15 +261,15 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     .unwrap();
     rescan(&g);
     let loud = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Loud").cloned().expect("listed, greyed");
+        .find(|v| v["type"] == "signal:Loud").cloned().expect("listed, greyed");
     assert_eq!(loud["available"], false, "{loud}");
     assert!(loud["missing_deps"].to_string().contains("nodes_audio"), "{loud}");
 
     // A shipped file copied into the patch shadows it, and the palette says so.
     std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();
-    assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("Oscillator")));
+    assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("signal:Oscillator")));
     let source = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Oscillator").unwrap()["source"].clone();
+        .find(|v| v["type"] == "signal:Oscillator").unwrap()["source"].clone();
     assert_eq!(source, "patch");
 
     // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.
@@ -320,11 +320,11 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
 
     let mount = g.state.mount();
     write_audio_node(&mount, "Level.rs", "0.25");
-    assert_eq!(rescan(&g)["added"], j!(["Level"]), "the file becomes a type");
+    assert_eq!(rescan(&g)["added"], j!(["audio:Level"]), "the file becomes a type");
     let live = g.add("Level");
     holds(&g, live, 0.25);
     write_audio_node(&mount, "Level.rs", "0.5");
-    assert_eq!(rescan(&g)["changed"], j!(["Level"]), "an edited file reports as changed");
+    assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "an edited file reports as changed");
     holds(&g, live, 0.5);
 
     // A file that does not compile greys the type out with rustc's own words, and the instance
@@ -332,13 +332,13 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     std::fs::write(mount.join("nodes_audio").join("Level.rs"), "fn broken( {\n").unwrap();
     rescan(&g);
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "Level").cloned().expect("the type stays listed, greyed");
+        .find(|v| v["type"] == "audio:Level").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
     assert!(g.refuse("node add", j!({ "type": "Level" })).contains("unavailable"));
     holds(&g, live, 0.5);
     write_audio_node(&mount, "Level.rs", "0.5");
-    assert_eq!(rescan(&g)["changed"], j!(["Level"]), "the fix is a change, built from the cache");
+    assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "the fix is a change, built from the cache");
 
     // A file whose stem is a built-in node's name is not a node file: nothing is added, nothing
     // changes when it is edited, the built-in's row stands alone and is not the patch's.
@@ -348,7 +348,7 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     std::fs::write(mount.join("nodes_audio").join("AudioOut.rs"), "fn never_built_either() {}\n").unwrap();
     assert_eq!(rescan(&g)["changed"], j!([]));
     let rows: Vec<serde_json::Value> = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .filter(|v| v["type"] == "AudioOut").cloned().collect();
+        .filter(|v| v["type"] == "audio:AudioOut").cloned().collect();
     assert!(rows.len() == 1 && rows[0]["available"] == true && rows[0]["source"] != "patch", "{rows:?}");
     assert_ne!(g.call("library get", j!({ "type": "AudioOut" }))["provenance"], "patch");
 

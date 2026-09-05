@@ -699,7 +699,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     assert_ne!(copied_inner, inner, "…as a fresh scope, not a second reference to the original");
     let doc = g.doc();
     let leaf = g.members(&copied_inner).into_iter()
-        .find(|m| doc["nodes"][m]["type"] == "Buffer")
+        .find(|m| doc["nodes"][m]["type"] == "signal:Buffer")
         .expect("the innermost member came along");
     assert_ne!(leaf, hex(buf), "at its own uid");
     assert!(g.nodes().len() > before_nodes, "the copy added nodes rather than re-pointing at them");
@@ -725,7 +725,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     // to the original, and deleting the original then breaks a sub-patch that only looks separate.
     let doc_now = g.doc();
     let inner_osc = g.members(&copied_inner).into_iter()
-        .find(|m| doc_now["nodes"][m]["type"] == "Oscillator")
+        .find(|m| doc_now["nodes"][m]["type"] == "signal:Oscillator")
         .expect("the copied oscillator");
     let copy_name = doc_now["nodes"][&inner_osc]["name"].as_str().unwrap().to_string();
     let bound = g.call("node state", j!({ "node": leaf }))["text"].as_str().unwrap().to_string();

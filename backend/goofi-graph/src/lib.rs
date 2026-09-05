@@ -664,23 +664,42 @@ impl Graph {
         self.library_entry(type_name).map(|(_, l)| l.manifest)
     }
 
-    /// The library entry `type_name` resolves to, and the id of the engine that advertised it —
-    /// which IS the engine the type belongs to. Two libraries claiming one name resolve to the
-    /// FIRST advertiser, signal first — a decided outcome, not an accident.
-    pub fn library_entry(&self, type_name: &str) -> Option<(&'static str, LibraryEntry)> {
-        self.engines().find_map(|e| {
-            e.library()
-                .into_iter()
-                .find(|l| l.manifest.type_name == type_name)
-                .map(|l| (e.id(), l))
-        })
+    /// Every advertised entry with the id of the engine that advertises it, in registration order.
+    pub fn library_entries(&self) -> Vec<(&'static str, LibraryEntry)> {
+        self.engines().flat_map(|e| e.library().into_iter().map(move |l| (e.id(), l))).collect()
     }
 
-    /// The universal param group the owning engine adds to every one of its nodes — the palette
-    /// and the default-expression seeding read declarations through this one door.
-    pub fn universal_decls_of(&self, type_name: &str) -> Vec<ParamDecl> {
-        let Some((id, manifest)) = self.owner_of(type_name) else { return Vec::new() };
-        self.engines().find(|e| e.id() == id).map(|e| e.universal_decls(manifest)).unwrap_or_default()
+    /// The one entry a type reference names. A qualified id names its engine; a bare name resolves
+    /// only when exactly one engine offers it.
+    pub fn resolve_type(&self, type_ref: &str) -> Result<(&'static str, LibraryEntry), String> {
+        let (engine, name) = goofi_node::split_type_id(type_ref);
+        let mut hits = self
+            .library_entries()
+            .into_iter()
+            .filter(|(e, l)| l.manifest.type_name == name && engine.is_none_or(|want| want == *e));
+        match (hits.next(), hits.next()) {
+            (Some(hit), None) => Ok(hit),
+            (None, _) => Err(self.reject_type(type_ref)),
+            (Some(a), Some(b)) => {
+                let mut all = vec![goofi_node::qualify(a.0, name), goofi_node::qualify(b.0, name)];
+                all.extend(hits.map(|(e, _)| goofi_node::qualify(e, name)));
+                Err(format!("`{name}` is offered by more than one engine: {}", all.join(", ")))
+            }
+        }
+    }
+
+    /// The entry a type reference resolves to, and the id of the engine that advertised it —
+    /// which IS the engine the type belongs to.
+    pub fn library_entry(&self, type_ref: &str) -> Option<(&'static str, LibraryEntry)> {
+        self.resolve_type(type_ref).ok()
+    }
+
+    /// The universal param group an engine adds to every one of its nodes — the palette and the
+    /// default-expression seeding read declarations through this one door. By ENGINE and MANIFEST,
+    /// which every caller already holds: a name would have to be resolved, and two engines may
+    /// offer one.
+    pub fn universal_decls(&self, engine: &str, manifest: &'static NodeManifest) -> Vec<ParamDecl> {
+        self.engines().find(|e| e.id() == engine).map(|e| e.universal_decls(manifest)).unwrap_or_default()
     }
 
     /// Forget the unavailable row for a type that now resolves — a registration's caller clears
@@ -697,7 +716,7 @@ impl Graph {
         for engine in &mut self.engines {
             let dir = root.join(goofi_node::folder_of(engine.id()));
             if dir.is_dir() {
-                out.extend(engine.scan(&dir));
+                out.extend(qualified(engine.id(), engine.scan(&dir)));
             }
         }
         self.note_scanned(&out, &held);
@@ -707,7 +726,8 @@ impl Graph {
     /// What the engines find on their own account, after every root.
     pub fn scan_own(&mut self) -> Vec<goofi_node::ScannedType> {
         let held = self.held_manifests();
-        let out: Vec<_> = self.engines.iter_mut().flat_map(|e| e.scan_own()).collect();
+        let out: Vec<_> =
+            self.engines.iter_mut().flat_map(|e| qualified(e.id(), e.scan_own())).collect();
         self.note_scanned(&out, &held);
         out
     }
@@ -715,8 +735,9 @@ impl Graph {
     /// What every name resolved to before a scan displaced it — the last good manifest a greyed
     /// row keeps, so a node still running on it keeps its slots and its params.
     fn held_manifests(&self) -> HashMap<String, (&'static str, &'static NodeManifest)> {
-        self.engines()
-            .flat_map(|e| e.library().into_iter().map(|l| (l.manifest.type_name.to_string(), (e.id(), l.manifest))))
+        self.library_entries()
+            .into_iter()
+            .map(|(id, l)| (goofi_node::qualify(id, l.manifest.type_name), (id, l.manifest)))
             .collect()
     }
 
@@ -751,9 +772,10 @@ impl Graph {
     /// Forget a scanned type from every registry — the engine that held it and the greyed
     /// overlay. Whether anything was forgotten.
     pub fn remove_type(&mut self, type_name: &str) -> bool {
+        let (engine, name) = goofi_node::split_type_id(type_name);
         let mut had = false;
-        for engine in &mut self.engines {
-            had |= engine.remove_type(type_name);
+        for e in self.engines.iter_mut().filter(|e| engine.is_none_or(|want| want == e.id())) {
+            had |= e.remove_type(name);
         }
         self.unavailable.remove(type_name).is_some() || had
     }
@@ -790,7 +812,13 @@ impl Graph {
     /// The ONE phrasing for a rejected type, shared by `build_node` and the load gate. An
     /// unavailable type names its missing dependency; anything else reads as the typo it is.
     fn reject_type(&self, type_name: &str) -> String {
-        match self.unavailable.get(type_name) {
+        // The overlay is keyed by the qualified name the scan registered; a bare reference to a
+        // greyed type must read as unavailable rather than unknown.
+        let greyed = self.unavailable.get(type_name).or_else(|| {
+            let bare = goofi_node::bare(type_name);
+            self.unavailable.iter().find(|(k, _)| goofi_node::bare(k) == bare).map(|(_, g)| g)
+        });
+        match greyed {
             Some(Greyed { reason, .. }) => format!("node type `{type_name}` is unavailable: {reason}"),
             None => format!("unknown node type `{type_name}`"),
         }
@@ -930,10 +958,6 @@ impl Graph {
         self.nodes.keys().copied().collect()
     }
 
-    pub fn type_name(&self, uid: Uid) -> Option<&'static str> {
-        self.leaf(uid).map(|e| e.manifest.type_name)
-    }
-
     pub fn manifest(&self, uid: Uid) -> Option<&'static NodeManifest> {
         self.leaf(uid).map(|e| e.manifest)
     }
@@ -1050,15 +1074,14 @@ impl Graph {
                 // A leaf is the only kind with a manifest, so it is the only one that can seed the
                 // default expressions its type declares.
                 let seed = params.is_none();
-                let (engine, entry) =
-                    self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
+                let (engine, entry) = self.resolve_type(type_name)?;
                 let params = self.default_params_of(type_name, params)?;
                 let uid = self.claim(uid);
-                let born = self.pick_name(name, &name_base(type_name), None);
+                let born = self.pick_name(name, &name_base(goofi_node::bare(type_name)), None);
                 self.insert_node_at(uid, born.clone(), engine, entry, params);
                 let manifest = entry.manifest;
                 if seed {
-                    self.seed_default_expressions(uid, manifest);
+                    self.seed_default_expressions(uid, engine, manifest);
                 }
                 self.set_member_scope(uid, scope);
                 // A name that meant nothing a moment ago now names a producer (§5.3). This also
@@ -1096,7 +1119,7 @@ impl Graph {
         }
     }
 
-    fn seed_default_expressions(&mut self, uid: Uid, manifest: &'static NodeManifest) {
+    fn seed_default_expressions(&mut self, uid: Uid, engine: &'static str, manifest: &'static NodeManifest) {
         if self.evaluator.is_none() {
             return;
         }
@@ -1104,7 +1127,7 @@ impl Graph {
         // the value side.
         let declared = manifest.params.iter().map(|d| (d.group, d.name, d.expression));
         let universal = self
-            .universal_decls_of(manifest.type_name)
+            .universal_decls(engine, manifest)
             .into_iter()
             .filter(|d| !manifest.params.iter().any(|o| o.group == d.group && o.name == d.name))
             .map(|d| (d.group, d.name, d.expression))
@@ -1407,15 +1430,16 @@ impl Graph {
             .unwrap_or_default()
     }
 
-    /// The type name of anything a uid names — a leaf's, a facade's, or a port's boundary type.
-    pub fn node_type(&self, uid: Uid) -> Option<&'static str> {
+    /// The type id of anything a uid names — a leaf's `engine:Name`, or the bare structural name
+    /// a facade and a boundary port wear, which belong to the model rather than to an engine.
+    pub fn node_type(&self, uid: Uid) -> Option<String> {
         if self.is_facade(uid) {
-            return Some(subpatch::SCOPE_TYPE);
+            return Some(subpatch::SCOPE_TYPE.to_string());
         }
         if let Some((_, st)) = self.stub(uid) {
-            return Some(subpatch::boundary_type_name(st.dir, st.dtype));
+            return Some(subpatch::boundary_type_name(st.dir, st.dtype).to_string());
         }
-        self.leaf(uid).map(|e| e.manifest.type_name)
+        self.leaf(uid).map(|e| goofi_node::qualify(e.engine, e.manifest.type_name))
     }
 
     /// A facade address, folded one level onto the port it names. Everything else is itself. What
@@ -2023,11 +2047,12 @@ impl Graph {
             return Ok(());
         }
         let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
-        let type_name = entry.manifest.type_name;
+        // Qualified, because the node's own engine is the one to re-resolve it in.
+        let type_ref = &goofi_node::qualify(entry.engine, entry.manifest.type_name);
         let held = entry.params.clone();
         // Fold what the node HAS onto what its type declares NOW: only the saved VALUE carries
         // over — bounds, options and variant are the edited file's to state.
-        let mut params = self.default_params_of(type_name, None)?;
+        let mut params = self.default_params_of(type_ref, None)?;
         for (group, held) in &*held {
             let Some(g) = params.get_mut(group) else { continue };
             for (name, value) in held {
@@ -2038,9 +2063,8 @@ impl Graph {
         }
         // Resolve BEFORE touching the entry: a type that no longer resolves leaves the old
         // instance running rather than half-killing the node.
-        let (engine, lib) =
-            self.library_entry(type_name).ok_or_else(|| self.reject_type(type_name))?;
-        let params = self.default_params_of(type_name, Some(params))?;
+        let (engine, lib) = self.resolve_type(type_ref)?;
+        let params = self.default_params_of(type_ref, Some(params))?;
 
         // A restart is a BIRTH at this uid: without the generation bump the reborn node re-opens
         // names the corpse's ports still hold, and remove halts the corpse before the new Ready.
@@ -2052,7 +2076,7 @@ impl Graph {
         let boot_error = self
             .engine_mut(engine)
             .expect("the library entry named it")
-            .insert(uid, type_name, generation, &params);
+            .insert(uid, lib.manifest.type_name, generation, &params);
         let entry = self.leaf_mut(uid).expect("looked up above");
         // The MANIFEST goes with the instance: keeping the old one leaves the graph describing a
         // node not running.
@@ -2750,7 +2774,7 @@ impl Graph {
     /// Take the name a RESTORE asks for. It goes through the same gate a create does, so an
     /// archive naming something illegal or already worn costs that NAME and not the patch.
     fn force_set_name(&mut self, uid: Uid, name: &str) {
-        let Some(base) = self.node_type(uid).map(name_base) else { return };
+        let Some(base) = self.node_type(uid).map(|t| name_base(goofi_node::bare(&t))) else { return };
         let name = self.pick_name(name, &base, Some(uid));
         if let Some(e) = self.nodes.get_mut(&uid) {
             e.name = name;
@@ -2787,7 +2811,7 @@ impl Graph {
         // rides each record rather than a member list beside what `scope_of` owns.
         for (uid, e) in self.nodes.iter().filter(|(u, _)| want.contains(u)) {
             let mut rec = Map::new();
-            rec.insert("type".into(), json!(self.node_type(*uid).unwrap_or("")));
+            rec.insert("type".into(), json!(self.node_type(*uid).unwrap_or_default()));
             rec.insert("name".into(), json!(e.name));
             rec.insert("pos".into(), json!(e.pos));
             let mut params = Map::new();
@@ -2877,8 +2901,8 @@ impl Graph {
         }
         for rec in nodes.values() {
             let ty = rec.get("type").and_then(|v| v.as_str()).ok_or("paste: a record has no `type`")?;
-            if !structural(ty) && !self.known_type(ty) {
-                return Err(self.reject_type(ty));
+            if !structural(ty) {
+                self.resolve_type(ty)?;
             }
         }
         let idmap = self.remap_fragment(nodes);
@@ -2889,7 +2913,7 @@ impl Graph {
             self.nodes.values().map(|e| e.name.clone()).collect();
         let mut renamed: HashMap<String, String> = HashMap::new();
         for rec in nodes.values() {
-            let base = name_base(rec["type"].as_str().unwrap_or(""));
+            let base = name_base(goofi_node::bare(rec["type"].as_str().unwrap_or("")));
             let fresh = (0..)
                 .map(|n| format!("{base}{n}"))
                 .find(|c| !taken.contains(c))
@@ -3047,9 +3071,7 @@ impl Graph {
             if structural(ty) {
                 continue;
             }
-            if !self.known_type(ty) {
-                return Err(self.reject_type(ty));
-            }
+            self.resolve_type(ty)?;
         }
 
         self.clear();
@@ -3096,12 +3118,12 @@ impl Graph {
             let ty = rec["type"].as_str().unwrap();
             // Folded in BEFORE construction, since `insert_node` runs `setup()`.
             let params = self.record_params(ty, rec)?;
-            let (engine, entry) = self.library_entry(ty).ok_or_else(|| self.reject_type(ty))?;
+            let (engine, entry) = self.resolve_type(ty)?;
             let params = self.default_params_of(ty, Some(params))?;
             // The record's KEY is its uid — restored, not reminted (see `restore_uid`). The name is
             // the type's fresh one only until the record's own `name` lands, just below.
             let uid = idmap[old];
-            let name = self.fresh_name(&entry.manifest.type_name.to_lowercase());
+            let name = self.fresh_name(&name_base(goofi_node::bare(ty)));
             self.insert_node_at(uid, name, engine, entry, params);
             if let Some(name) = rec.get("name").and_then(|v| v.as_str()) {
                 self.force_set_name(uid, name);
@@ -3177,6 +3199,14 @@ impl Graph {
         self.arrangement_warning = warning;
         Ok(())
     }
+}
+
+/// One engine's scan outcomes under the `engine:Name` ids the rest of the graph keys them by.
+fn qualified(engine: &'static str, scanned: Vec<goofi_node::ScannedType>) -> Vec<goofi_node::ScannedType> {
+    scanned
+        .into_iter()
+        .map(|t| goofi_node::ScannedType { type_name: goofi_node::qualify(engine, &t.type_name), ..t })
+        .collect()
 }
 
 /// Is this a type the MODEL owns rather than the palette — a sub-patch facade or a boundary port?

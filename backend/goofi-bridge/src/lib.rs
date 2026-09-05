@@ -607,8 +607,9 @@ pub fn register_dyn_type(
     tier: &'static goofi_node::IsolationCell,
 ) -> bool {
     let replaced = signal_engine(g).register_dyn_type(manifest, factory, tier);
-    g.forget_unavailable(manifest.type_name);
-    g.add_patch_type(manifest.type_name);
+    let ty = goofi_node::qualify("signal", manifest.type_name);
+    g.forget_unavailable(&ty);
+    g.add_patch_type(&ty);
     replaced
 }
 
@@ -624,10 +625,10 @@ pub fn output_service_of(g: &Graph, uid: goofi_graph::Uid, slot: &str) -> String
 /// Every node type name visible in the catalog — all engines' libraries plus the unavailable
 /// overlay, `_`-prefixed test nodes hidden.
 pub fn catalog_type_names(g: &Graph) -> Vec<String> {
-    g.library_manifests()
+    g.library_entries()
         .into_iter()
-        .filter(|m| !m.type_name.starts_with('_'))
-        .map(|m| m.type_name.to_string())
+        .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
+        .map(|(engine, l)| goofi_node::qualify(engine, l.manifest.type_name))
         .chain(g.unavailable_types().map(|(name, _)| name.to_string()))
         .collect()
 }
@@ -689,7 +690,7 @@ pub fn rescan(
 /// on the canvas. NOT part of [`rescan`], whose graph may be about to be replaced by a load.
 fn restart_changed(g: &mut Graph, diff: &ScanDiff) {
     for uid in g.node_uids() {
-        if g.type_name(uid).is_some_and(|t| diff.changed.iter().any(|c| c == t)) {
+        if g.node_type(uid).is_some_and(|t| diff.changed.contains(&t)) {
             let _ = g.restart_node(uid);
         }
     }

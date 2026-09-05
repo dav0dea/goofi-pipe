@@ -143,7 +143,7 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     // …and completion turns LIVE: a `uid` position offers the patch's own nodes, by the NAME a
     // human types, with the uid riding in the doc column.
     assert!(ok(&url, "default", "op complete --line 'node edit '")
-                .contains(&format!("osc\t(Oscillator) {uid}")),
+                .contains(&format!("osc\t(signal:Oscillator) {uid}")),
             "a uid position completes from the graph");
     // A node reference is the uid OR the unique name — resolved server-side, in the one
     // namespace nd() reads, so every transport takes both and the endpoint's node half follows.

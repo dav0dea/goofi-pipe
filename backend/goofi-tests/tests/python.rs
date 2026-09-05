@@ -32,7 +32,7 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
     assert_eq!(ty, "Affine", "the type is named after the file stem");
 
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|t| t["type"] == "Affine").expect("Affine is in the palette").clone();
+        .find(|t| t["type"] == "signal:Affine").expect("Affine is in the palette").clone();
     assert_eq!(row["input_slots"]["data"], "ARRAY", "{row}");
     assert_eq!(row["output_slots"]["out"], "ARRAY", "{row}");
     assert_eq!(row["params"]["gain"]["factor"]["value"], 1, "{row}");
@@ -159,14 +159,15 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
         goofi_python::Discovery::Unavailable { type_name, reason } => {
             assert_eq!(type_name, "NeedsScipy");
             assert!(reason.contains("definitely_not_installed"), "the reason names the module: {reason}");
-            g.state.graph.lock().unwrap().register_unavailable(type_name, reason);
+            let ty = goofi_node::qualify("signal", &type_name);
+            g.state.graph.lock().unwrap().register_unavailable(ty, reason);
         }
         goofi_python::Discovery::Found(_) =>
             panic!("a node with a missing import must not probe as loadable"),
         goofi_python::Discovery::Skip => panic!("the file was not taken for a node file at all"),
     }
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|t| t["type"] == "NeedsScipy").expect("the greyed row is in the palette").clone();
+        .find(|t| t["type"] == "signal:NeedsScipy").expect("the greyed row is in the palette").clone();
     assert_eq!(row["available"], false, "{row}");
     assert!(row["doc"].as_str().unwrap().contains("definitely_not_installed"), "{row}");
     g.refuse("node add", j!({ "type": "NeedsScipy" }));

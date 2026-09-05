@@ -241,10 +241,11 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
                 Dir::Out => (slot, json!({})),
             };
             (
-                "boundary".to_string(),
+                String::new(),
                 name.to_string(),
                 json!({
                     "type": name,
+                    "engine": Value::Null,
                     "source": "builtin",
                     "category": "boundary",
                     "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),

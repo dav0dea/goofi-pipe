@@ -552,7 +552,7 @@ impl Command {
                     .ports_of(scope)
                     .into_iter()
                     .map(|id| Command::AddNode {
-                        type_name: g.node_type(id).unwrap_or("").to_string(),
+                        type_name: g.node_type(id).unwrap_or_default(),
                         pos: g.pos(id).unwrap_or([0.0, 0.0]),
                         uid: Some(id),
                         name: g.name(id).map(str::to_string),
@@ -797,7 +797,7 @@ fn capture_subtree_restore(g: &Graph, root: Uid) -> (Command, std::collections::
     for &u in members.iter().chain(&ports) {
         let sources = g.param_sources(u);
         cmds.push(Command::AddNode {
-            type_name: g.node_type(u).unwrap_or("").to_string(),
+            type_name: g.node_type(u).unwrap_or_default(),
             pos: g.pos(u).unwrap_or([0.0, 0.0]),
             uid: Some(u),
             name: g.name(u).map(str::to_string),

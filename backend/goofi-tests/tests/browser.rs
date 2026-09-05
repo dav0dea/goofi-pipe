@@ -24,16 +24,16 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     let (mut c, hello) = Client::connect(&base).await;
 
     // Bumped in lockstep with `frontend/src/lib/api/control.ts`; a literal here on purpose.
-    assert_eq!(hello["protocol_version"], 3);
+    assert_eq!(hello["protocol_version"], 4);
     assert!(hello["instance_id"].is_string());
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
 
     let types = c.call("library list", j!({})).await["types"].as_array().cloned().unwrap();
-    for want in ["Oscillator", "Buffer", "DiscoveredPyNode"] {
+    for want in ["signal:Oscillator", "signal:Buffer", "signal:DiscoveredPyNode"] {
         // Two shipped nodes, loaded from the artifacts built into the binary, beside a scanned one.
         assert!(types.iter().any(|t| t["type"] == want), "`{want}` is missing: {types:?}");
     }
-    assert!(!types.iter().any(|t| t["type"] == "_TestEcho"), "test nodes stay out of the palette");
+    assert!(!types.iter().any(|t| t["type"] == "signal:_TestEcho"), "test nodes stay out of the palette");
 
     let uid = c.call("node add", j!({ "type": "Oscillator", "pos": [10.0, 20.0] })).await["uid"]
         .as_str().unwrap().to_string();
@@ -62,7 +62,7 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     let uid = c.call("node add", j!({ "type": "Oscillator" })).await["uid"].as_str().unwrap().to_string();
     c.until_doc(|d| d.node_ids().contains(&uid)).await;
     assert_eq!(c.doc().read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(Value::as_str),
-               Some("Oscillator"), "the delta carried the node");
+               Some("signal:Oscillator"), "the delta carried the node");
 
     let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
     let fresh = peer.call("layout panel add", j!({ "beside": panel,

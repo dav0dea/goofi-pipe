@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use goofi_core::{Data, Meta, SlotType};
 use goofi_graph::Graph;
-use goofi_node::{NodeManifest, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl};
+use goofi_node::{
+    Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, OutputDecl, ParamDecl, ParamGroups, ParamKey,
+    ParamSpec, Params, SlotDecl, Status, Touched, Uid,
+};
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
 const fn manifest(
@@ -60,6 +63,74 @@ static IN_REQUIRED: &[SlotDecl] = &[SlotDecl {
 }];
 static OUT_ARRAY: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 static NO_PARAMS: &[ParamDecl] = &[];
+
+/// An engine that is nothing but a library: it advertises the names it was built with, and runs
+/// them nowhere. What a test registers to put a second engine behind a name a shipped one offers.
+pub struct LibraryEngine {
+    id: &'static str,
+    types: Vec<LibraryEntry>,
+    pending: Vec<(Uid, Status)>,
+}
+
+impl LibraryEngine {
+    pub fn named(id: &'static str, types: &[&str]) -> LibraryEngine {
+        let types = types
+            .iter()
+            .map(|name| {
+                let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+                let m = manifest(name, "a name a second engine also offers", &[], OUT_ARRAY, NO_PARAMS, true);
+                LibraryEntry { manifest: Box::leak(Box::new(m)), isolation: &goofi_node::NATIVE }
+            })
+            .collect();
+        LibraryEngine { id, types, pending: Vec::new() }
+    }
+}
+
+impl Engine for LibraryEngine {
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn doorbell_driven(&self) -> bool {
+        false
+    }
+
+    fn dirty(&self) -> bool {
+        false
+    }
+
+    fn library(&self) -> Vec<LibraryEntry> {
+        self.types.clone()
+    }
+
+    fn insert(&mut self, uid: Uid, _type_name: &str, _generation: u64, _params: &ParamGroups) -> Option<String> {
+        self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
+        None
+    }
+
+    fn remove(&mut self, uid: Uid) {
+        self.pending.retain(|(u, _)| *u != uid);
+    }
+
+    fn settle(&mut self, _view: &GraphView<'_>, _touched: &[Touched]) {}
+
+    fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize {
+        let pending = std::mem::take(&mut self.pending);
+        let n = pending.len();
+        for (uid, status) in pending {
+            apply(uid, status);
+        }
+        n
+    }
+
+    fn refresh_param(&mut self, _uid: Uid, _key: ParamKey) {}
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn shutdown(&mut self) {}
+}
 
 struct Echo;
 impl Node for Echo {
