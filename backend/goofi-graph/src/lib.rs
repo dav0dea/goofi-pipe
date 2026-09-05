@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_node::{
-    EditorAction,
+    Edit, EditorAction,
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, ExprMode, GraphView, Isolation,
     IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamDecl, ParamGroups, ParamKey,
     Status, Touched,
@@ -698,6 +698,12 @@ impl Graph {
             return Err(format!("`{}` has no editor", goofi_node::qualify(engine, type_name)));
         }
         e.editor(uid, show)
+    }
+
+    /// Every value a node's own editor wrote since the last call, for the worker to put through
+    /// the param op — the one door a value enters the document by.
+    pub fn take_edits(&mut self) -> Vec<Edit> {
+        self.engines_mut().flat_map(|e| e.take_edits()).collect()
     }
 
     /// The manifest `type_name` resolves to, from whichever engine's library advertises it.

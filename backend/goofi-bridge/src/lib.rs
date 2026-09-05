@@ -385,6 +385,7 @@ const BROADCAST_PERIOD: Duration = Duration::from_millis(500);
 /// It must never `set_dirty(true)` — a node reporting its own state is not a user edit — and must
 /// FORGET a uid on removal, so a stale error cannot outlive its node.
 pub fn spawn_workers(state: &AppState) {
+    let state = state.clone();
     let (graph, events) = (state.graph.clone(), state.events.clone());
     std::thread::spawn(move || {
         let waker = graph.lock().unwrap().drain_waker();
@@ -399,10 +400,11 @@ pub fn spawn_workers(state: &AppState) {
             let wait = next_broadcast.saturating_duration_since(Instant::now()).min(period);
             waker.wait_timeout(wait);
             let due = Instant::now() >= next_broadcast;
-            let collected = {
+            let (edits, collected) = {
                 let mut g = graph.lock().unwrap();
                 g.drain_status();
-                if !due {
+                let edits = g.take_edits();
+                (edits, if !due {
                     None
                 } else {
                     // Options are the one thing a node reports that the doc has no field for, so
@@ -443,8 +445,14 @@ pub fn spawn_workers(state: &AppState) {
                         })
                         .collect();
                     Some((rates, errs, expr_vals, stages, refreshed))
-                }
+                })
             };
+            // A knob turned in a plugin's own window is authoring, and enters by the door every
+            // other author uses — its own actor, so a tab's undo never takes a window's edit.
+            for e in edits {
+                let payload = json!({ "node": e.uid.to_hex(), "param": format!("{}/{}", e.key.group, e.key.name), "value": goofi_graph::param_value_json(&e.value) });
+                let _ = state.call("node param edit", payload, "editor");
+            }
             let Some((rates, errs, expr_vals, stages, refreshed)) = collected else { continue };
             // From NOW, not the deadline just passed: a worker held off the lock owes no burst of
             // catch-up broadcasts.

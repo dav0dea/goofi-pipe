@@ -142,6 +142,13 @@ impl GraphView<'_> {
     }
 }
 
+/// One value a node's own editor wrote: what the document is asked to hold, through the param op.
+pub struct Edit {
+    pub uid: Uid,
+    pub key: ParamKey,
+    pub value: Param,
+}
+
 /// What [`Engine::editor`] hands back: the open or close itself, run once the graph lock is
 /// released, because a plugin's window takes its time to come up and every other op would wait.
 pub type EditorAction = Box<dyn FnOnce() -> Result<bool, String> + Send>;
@@ -265,6 +272,11 @@ pub trait Engine: Send {
     /// Show or hide `uid`'s editor: the action, answering whether it changed anything.
     fn editor(&mut self, uid: Uid, _show: bool) -> Result<EditorAction, String> {
         Err(format!("{uid} has no editor"))
+    }
+    /// Every value an editor wrote since the last call. A pull, like the drain: the worker owns
+    /// the pace, and puts each through the param op off the lock.
+    fn take_edits(&mut self) -> Vec<Edit> {
+        Vec::new()
     }
     /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
     fn reset_clock(&mut self, _origin: Instant) {}

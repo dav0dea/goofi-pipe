@@ -14,8 +14,8 @@ use goofi_audio_sdk::host::Loaded;
 use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
-    DrainWaker, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView, ParamGroups,
-    ParamKey, Ringer, Status, Touched, Uid, Via, NATIVE,
+    DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView,
+    ParamGroups, ParamKey, Ringer, Status, Touched, Uid, Via, NATIVE,
 };
 
 mod control;
@@ -183,8 +183,8 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
 /// the control half's in the ports. A node that owns no OS handle gets neither.
-fn rings_for(type_name: &str, chans: Arc<AtomicU16>, ui: Option<ui::Ui>) -> (nodes::Birth, control::Ports) {
-    let mut birth = nodes::Birth { chans: chans.clone(), ui, ..Default::default() };
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui>, shared: Arc<Shared>) -> (nodes::Birth, control::Ports) {
+    let mut birth = nodes::Birth { chans: chans.clone(), ui, uid: Some(uid), shared: Some(shared), ..Default::default() };
     let mut ports = control::Ports::default();
     match type_name {
         nodes::audio_in::TYPE => {
@@ -288,6 +288,7 @@ impl AudioEngine {
                 replan: Default::default(),
                 rate: AtomicU64::new(RATE.to_bits()),
                 clock,
+                edits: Mutex::new(Vec::new()),
             }),
             classes,
             rust_loaded: HashMap::new(),
@@ -466,6 +467,29 @@ impl AudioEngine {
         Desired { consts, subs, targets }
     }
 
+    /// A plugin's params as its controller counts them — normalized, in the plugin's own order —
+    /// read off the record; `None` for a node that is no plugin, and where no window can show them.
+    fn plugin_values(&self, uid: Uid, consts: &[Param]) -> Option<Vec<(u32, f64)>> {
+        self.ui.as_ref()?;
+        let inst = self.live.get(&uid)?;
+        let derived = self.classes.get(inst.manifest.type_name)?.plugin.as_ref()?;
+        let voice = consts.len() - derived.params.len();
+        let values = derived
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, (id, kind))| {
+                let raw = plan::scalar(&consts[voice + i]);
+                let normalized = match kind {
+                    vst3::Kind::Float => raw,
+                    vst3::Kind::Stepped(steps) => raw / steps,
+                };
+                (*id, normalized.clamp(0.0, 1.0))
+            })
+            .collect();
+        Some(values)
+    }
+
     /// Whether a ring would wake a same-engine consumer for what is a plan edge: an audio-typed
     /// input's wire, or a bare audio reference.
     fn rides_the_plan(&self, r: &Ringer<'_>) -> bool {
@@ -612,7 +636,7 @@ impl Engine for AudioEngine {
             return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
         }
         let chans = Arc::new(AtomicU16::new(1));
-        let (birth, ports) = rings_for(type_name, chans.clone(), self.ui.clone());
+        let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.shared.clone());
         let mut node = make(birth);
         node.prepare(self.shared.rate());
         if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
@@ -690,10 +714,15 @@ impl Engine for AudioEngine {
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
             let desired = self.desired_of(view, uid, nv);
+            if self.live[&uid].last.as_ref() == Some(&desired) {
+                continue;
+            }
+            let shown = self.plugin_values(uid, &desired.consts);
             let inst = self.live.get_mut(&uid).expect("live");
-            if inst.last.as_ref() != Some(&desired) {
-                inst.control.send(desired.clone());
-                inst.last = Some(desired);
+            inst.control.send(desired.clone());
+            inst.last = Some(desired);
+            if let (Some(ui), Some(values)) = (&self.ui, shown) {
+                ui.post(move |_| vst3::editor::sync(uid, values));
             }
         }
         let outs = self.audio_outs(view);
@@ -763,6 +792,48 @@ impl Engine for AudioEngine {
         if let Some(inst) = self.live.get(&uid) {
             inst.control.pulse(key);
         }
+    }
+
+    /// A plugin has one, where a window can be opened at all.
+    fn has_editor(&self, type_name: &str) -> bool {
+        self.ui.is_some() && self.classes.get(type_name).is_some_and(|c| c.plugin.is_some())
+    }
+
+    fn editor(&mut self, uid: Uid, show: bool) -> Result<EditorAction, String> {
+        let ui = self.ui.clone().ok_or("no window: goofi has no display here")?;
+        let inst = self.live.get(&uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let title = format!("{} — goofi", inst.manifest.type_name);
+        Ok(Box::new(move || ui.run(|host| vst3::editor::show(host, uid, &title, show))))
+    }
+
+    /// What every editor wrote since the last call, as the record spells it — latest wins per
+    /// param, because a drag is many edits and the document wants the last.
+    fn take_edits(&mut self) -> Vec<Edit> {
+        let raw = std::mem::take(&mut *self.shared.edits.lock().unwrap());
+        let mut edits: Vec<Edit> = Vec::new();
+        for (uid, id, v) in raw {
+            let Some(inst) = self.live.get(&uid) else { continue };
+            let Some(derived) = self.classes.get(inst.manifest.type_name).and_then(|c| c.plugin.as_ref()) else { continue };
+            let Some(i) = derived.params.iter().position(|(pid, _)| *pid == id) else { continue };
+            let decl = &inst.manifest.params[inst.manifest.params.len() - derived.params.len() + i];
+            let steps = match &derived.params[i].1 {
+                vst3::Kind::Float => 1.0,
+                vst3::Kind::Stepped(steps) => *steps,
+            };
+            let mut value = decl.spec.to_param();
+            match &mut value {
+                Param::Float { value, .. } => *value = v.clamp(0.0, 1.0),
+                Param::Int { value, .. } => *value = (v.clamp(0.0, 1.0) * steps).round() as i64,
+                Param::Str { value, options: Some(options), .. } => {
+                    *value = options[((v.clamp(0.0, 1.0) * steps).round() as usize).min(options.len() - 1)].clone()
+                }
+                _ => continue,
+            }
+            let key = ParamKey::new(decl.group, decl.name);
+            edits.retain(|e| !(e.uid == uid && e.key == key));
+            edits.push(Edit { uid, key, value });
+        }
+        edits
     }
 
     /// Every control half born after computes `t` from the new origin.

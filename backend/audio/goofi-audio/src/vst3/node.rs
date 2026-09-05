@@ -10,10 +10,13 @@ use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{ComPtr, ComWrapper};
 
+use super::editor;
 use super::host::{Changes, Events, Host, Stream};
 use super::module;
 use super::ok;
-use crate::ui::Ui;
+use crate::control::Shared;
+use crate::ui::{self, Ui};
+use goofi_node::Uid;
 
 /// The tempo the host reports. A CONSTANT for now, and a lie only in the sense that goofi has no
 /// transport of its own to tell the truth from — but a plausible tempo is what a synced plugin
@@ -39,6 +42,8 @@ pub struct Derived {
 pub struct Plugin {
     class: Arc<Derived>,
     ui: Option<Ui>,
+    uid: Option<Uid>,
+    shared: Option<Arc<Shared>>,
     live: Option<Live>,
     /// What instantiation refused; every `process` raises it, because the runtime marks a node
     /// dead only once the fault is on its way and expects the next block to fault again.
@@ -49,24 +54,29 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub fn new(class: Arc<Derived>, ui: Option<Ui>) -> Plugin {
-        Plugin { class, ui, live: None, failed: None, blob: Vec::new() }
+    pub fn new(class: Arc<Derived>, ui: Option<Ui>, uid: Option<Uid>, shared: Option<Arc<Shared>>) -> Plugin {
+        Plugin { class, ui, uid, shared, live: None, failed: None, blob: Vec::new() }
     }
 }
 
 /// On the window thread where there is one — a JUCE plugin holds the thread that loaded it to be
-/// its message thread — and inline where there is none.
-fn on<T: Send>(ui: &Option<Ui>, f: impl FnOnce() -> T + Send) -> T {
+/// its message thread — and inline, with no host, where there is none.
+fn on<T: Send>(ui: &Option<Ui>, f: impl FnOnce(Option<&mut ui::Host>) -> T + Send) -> T {
     match ui {
-        Some(ui) => ui.run(|_| f()),
-        None => f(),
+        Some(ui) => ui.run(|host| f(Some(host))),
+        None => f(None),
     }
 }
 
 impl Drop for Plugin {
     fn drop(&mut self) {
-        let live = self.live.take();
-        on(&self.ui, move || drop(live));
+        let (live, uid) = (self.live.take(), self.uid);
+        on(&self.ui, move |host| {
+            if let (Some(host), Some(uid)) = (host, uid) {
+                editor::unregister(host, uid);
+            }
+            drop(live);
+        });
     }
 }
 
@@ -76,11 +86,14 @@ impl AudioNode for Plugin {
     }
 
     fn prepare(&mut self, rate: f64) {
-        let Plugin { class, ui, live, failed, blob } = self;
-        *failed = on(ui, || match live {
+        let Plugin { class, ui, uid, shared, live, failed, blob } = self;
+        *failed = on(ui, |host| match live {
             Some(live) => live.retune(rate),
             None => Live::open(class, rate).map(|opened| {
                 opened.load(blob);
+                if let (Some(_), Some(uid), Some(shared), Some(controller)) = (host, *uid, shared.clone(), opened.controller()) {
+                    editor::register(uid, controller, class.clone(), shared);
+                }
                 *live = Some(opened)
             }),
         })
@@ -224,6 +237,11 @@ impl Live {
         self.sent.fill(f64::NAN);
         self.held = [None; MAX_CHANNELS as usize];
         Ok(())
+    }
+
+    /// The half a view is asked of: the separate controller, or the component where it is both.
+    fn controller(&self) -> Option<ComPtr<IEditController>> {
+        self.controller.clone().or_else(|| self.component.cast())
     }
 
     fn load(&self, bytes: &[u8]) {

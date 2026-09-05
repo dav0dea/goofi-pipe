@@ -14,7 +14,7 @@ pub mod type_id;
 pub use describe::{describe, engine_of, folder_of, illegal_slot, leak_manifest, node_files, parse_introspection, type_name_of};
 pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
-    EditorAction,
+    Edit, EditorAction,
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Ringer, Scanned, ScannedType, Stamp, Touched, Via,
 };

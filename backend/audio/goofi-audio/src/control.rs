@@ -105,6 +105,9 @@ pub struct Shared {
     pub rate: AtomicU64,
     /// What drives the blocks: a live stream is opened only where the device does.
     pub clock: Clock,
+    /// What a plugin's own editor wrote — node, plugin param id, normalized value — for the
+    /// worker to put through the param op.
+    pub edits: Mutex<Vec<(Uid, u32, f64)>>,
 }
 
 /// What the engine leaves for a control half: its whole desired state, the refreshes asked, and

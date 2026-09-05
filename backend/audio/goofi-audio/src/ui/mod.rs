@@ -26,6 +26,10 @@ type Job = Box<dyn FnOnce(&mut Host) + Send>;
 type Handler = Box<dyn FnMut()>;
 type OnClose = Box<dyn FnMut(&mut Host)>;
 
+thread_local! {
+    static RESIZES: RefCell<Vec<(platform::Id, (u32, u32))>> = const { RefCell::new(Vec::new()) };
+}
+
 /// The door onto the window thread from any other thread.
 #[derive(Clone)]
 pub struct Ui {
@@ -94,6 +98,7 @@ impl Loop {
             while let Ok(job) = self.jobs.try_recv() {
                 let _ = catch_unwind(AssertUnwindSafe(|| job(&mut self.host)));
             }
+            self.host.apply_resizes();
             if self.host.stopped {
                 return;
             }
@@ -129,6 +134,7 @@ impl Loop {
                 }
                 self.host.fire(|rl| rl.timers.iter_mut().find(|t| t.key == key).map(|t| &mut t.handler));
             }
+            self.host.apply_resizes();
         }
     }
 }
@@ -151,9 +157,18 @@ pub struct Host {
 }
 
 /// One native window, and the handle a plugin's view is attached to.
+#[derive(Clone, Copy)]
 pub struct Window {
     id: platform::Id,
     pub parent: *mut c_void,
+}
+
+impl Window {
+    /// Asked from inside a plugin's callback, where the host is borrowed: the loop applies it
+    /// right after.
+    pub fn request_resize(&self, size: (u32, u32)) {
+        RESIZES.with(|r| r.borrow_mut().push((self.id, size)));
+    }
 }
 
 impl Host {
@@ -173,8 +188,10 @@ impl Host {
         Ok(Window { id, parent })
     }
 
-    pub fn resize_window(&mut self, window: &Window, size: (u32, u32)) {
-        self.platform.resize(window.id, size);
+    fn apply_resizes(&mut self) {
+        for (id, size) in RESIZES.with(|r| std::mem::take(&mut *r.borrow_mut())) {
+            self.platform.resize(id, size);
+        }
     }
 
     pub fn close_window(&mut self, window: Window) {

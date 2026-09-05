@@ -797,4 +797,28 @@ fn a_patch_sounds_under_the_external_clock() {
     carried.call("session load", j!({ "path": target.to_string_lossy() }));
     assert_eq!(carried.doc()["nodes"][hex(plug)]["params"]["plugin"]["shape"]["value"], j!("soft"));
     heard(&carried, plug, "the archive carried the blob", |x| (peak(x) - 0.25).abs() < 0.02 && near(per_tenth(x), 52));
+    drop(carried);
+
+    // Step: a plugin's own editor is a window on the machine goofi runs on, off the LIVE
+    // instance's controller, and a knob turned in it reaches the record and the audio through
+    // the param door. The palette's word decides once: where no display answers, no editor.
+    g.set_param(plug, "voice", "gate", false);
+    g.link(src, "out", plug, "input");
+    heard(&g, plug, "half gain, before the window", |x| (peak(x) - 0.5).abs() < 0.02);
+    let editor = g.call("library get", j!({ "type": "audio:GoofiFixture" }))["editor"] == j!(true);
+    let gain = |g: &Goofi| g.doc()["nodes"][hex(plug)]["params"]["plugin"]["gain"]["value"].clone();
+    if editor {
+        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true);
+        g.until("the knob the editor turned to reach the record", |g| (gain(g) == j!(0.25)).then_some(()));
+        heard(&g, plug, "the quarter gain the editor asked for", |x| (peak(x) - 0.25).abs() < 0.02);
+        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], false, "already open");
+        assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], true);
+        assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], false, "already closed");
+        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true, "opens again");
+        g.call("node remove", j!({ "node": hex(plug) }));
+        assert!(g.refuse("node editor", j!({ "node": hex(plug) })).contains("no such node"), "the window went with the node");
+    } else {
+        assert_eq!(gain(&g), j!(0.5));
+        assert!(g.refuse("node editor", j!({ "node": hex(plug) })).contains("has no editor"));
+    }
 }

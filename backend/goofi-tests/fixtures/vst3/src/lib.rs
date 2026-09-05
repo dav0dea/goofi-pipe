@@ -1,6 +1,7 @@
 //! `GoofiFixture` by `goofi`: one stereo input, one event input, one stereo output, one
 //! continuous `Gain` parameter kept in its state. Its output is the input times the gain, plus
-//! a sine at every held note's pitch, at half the note's velocity.
+//! a sine at every held note's pitch, at half the note's velocity. Its editor draws nothing and
+//! turns the gain to a quarter once it is attached — the whole loop a knob in a real one makes.
 #![allow(non_snake_case)]
 
 use std::cell::{Cell, RefCell};
@@ -9,6 +10,8 @@ use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use vst3::{uid, Class, ComPtr, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::IRunLoopTrait;
 
 const NAME: &str = "GoofiFixture";
 /// A second audio class behind the same processor, differing only in the subcategories that
@@ -286,6 +289,8 @@ struct Controller {
     gain: Cell<f64>,
     /// The host, kept from `initialize` so the connection can ask it for a message.
     host: RefCell<Option<ComPtr<IHostApplication>>>,
+    /// What a view edits through, kept from `setComponentHandler`.
+    handler: RefCell<Option<ComPtr<IComponentHandler>>>,
     /// True once connected AND a host message was allocated — until then this publishes nothing,
     /// which is the exact bug the goofi host repairs.
     ready: Cell<bool>,
@@ -414,12 +419,137 @@ impl IEditControllerTrait for Controller {
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        *self.handler.borrow_mut() = ComRef::from_raw(handler).and_then(|h| h.cast::<IComponentHandler>());
         kResultOk
     }
 
-    unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
-        std::ptr::null_mut()
+    unsafe fn createView(&self, name: *const c_char) -> *mut IPlugView {
+        let editor = !name.is_null() && std::ffi::CStr::from_ptr(name).to_str() == Ok("editor");
+        let Some(handler) = self.handler.borrow().clone().filter(|_| editor) else { return std::ptr::null_mut() };
+        let view = View {
+            #[cfg(target_os = "linux")]
+            turn: ComWrapper::new(Turn { handler: handler.clone(), fired: Cell::new(false) })
+                .to_com_ptr::<Linux::ITimerHandler>()
+                .expect("a turn is a timer handler"),
+            #[cfg(target_os = "linux")]
+            run_loop: RefCell::new(None),
+            handler,
+            frame: RefCell::new(None),
+        };
+        ComWrapper::new(view).to_com_ptr::<IPlugView>().expect("a view is a plug view").into_raw()
+    }
+}
+
+/// The one gesture: the gain knob, turned to a quarter.
+unsafe fn turn(handler: &ComPtr<IComponentHandler>) {
+    handler.beginEdit(0);
+    handler.performEdit(0, 0.25);
+    handler.endEdit(0);
+}
+
+/// The editor: attached, it turns the knob — through the host's run loop on Linux, where a real
+/// editor's own events and timers ride, and straight away where the platform pumps them itself.
+struct View {
+    handler: ComPtr<IComponentHandler>,
+    frame: RefCell<Option<ComPtr<IPlugFrame>>>,
+    #[cfg(target_os = "linux")]
+    turn: ComPtr<Linux::ITimerHandler>,
+    #[cfg(target_os = "linux")]
+    run_loop: RefCell<Option<ComPtr<Linux::IRunLoop>>>,
+}
+
+impl Class for View {
+    type Interfaces = (IPlugView,);
+}
+
+const PLATFORM: &str = if cfg!(windows) { "HWND" } else if cfg!(target_os = "macos") { "NSView" } else { "X11EmbedWindowID" };
+
+impl IPlugViewTrait for View {
+    unsafe fn isPlatformTypeSupported(&self, type_: FIDString) -> tresult {
+        match !type_.is_null() && std::ffi::CStr::from_ptr(type_).to_str() == Ok(PLATFORM) {
+            true => kResultTrue,
+            false => kResultFalse,
+        }
+    }
+
+    unsafe fn attached(&self, _parent: *mut c_void, _type: FIDString) -> tresult {
+        #[cfg(target_os = "linux")]
+        {
+            let Some(run_loop) = self.frame.borrow().as_ref().and_then(|f| f.cast::<Linux::IRunLoop>()) else { return kResultFalse };
+            run_loop.registerTimer(self.turn.as_ptr(), 10);
+            *self.run_loop.borrow_mut() = Some(run_loop);
+        }
+        #[cfg(not(target_os = "linux"))]
+        turn(&self.handler);
+        kResultOk
+    }
+
+    unsafe fn removed(&self) -> tresult {
+        #[cfg(target_os = "linux")]
+        if let Some(run_loop) = self.run_loop.borrow_mut().take() {
+            run_loop.unregisterTimer(self.turn.as_ptr());
+        }
+        kResultOk
+    }
+
+    unsafe fn onWheel(&self, _distance: f32) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn onKeyDown(&self, _key: char16, _key_code: int16, _modifiers: int16) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn onKeyUp(&self, _key: char16, _key_code: int16, _modifiers: int16) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
+        *size = ViewRect { left: 0, top: 0, right: 320, bottom: 200 };
+        kResultOk
+    }
+
+    unsafe fn onSize(&self, _new_size: *mut ViewRect) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn onFocus(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn setFrame(&self, frame: *mut IPlugFrame) -> tresult {
+        *self.frame.borrow_mut() = ComRef::from_raw(frame).and_then(|f| f.cast::<IPlugFrame>());
+        kResultOk
+    }
+
+    unsafe fn canResize(&self) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn checkSizeConstraint(&self, _rect: *mut ViewRect) -> tresult {
+        kResultTrue
+    }
+}
+
+/// The timer the view registers with the host's run loop: it turns the knob once and then only ticks.
+#[cfg(target_os = "linux")]
+struct Turn {
+    handler: ComPtr<IComponentHandler>,
+    fired: Cell<bool>,
+}
+
+#[cfg(target_os = "linux")]
+impl Class for Turn {
+    type Interfaces = (Linux::ITimerHandler,);
+}
+
+#[cfg(target_os = "linux")]
+impl Linux::ITimerHandlerTrait for Turn {
+    unsafe fn onTimer(&self) {
+        if !self.fired.replace(true) {
+            turn(&self.handler);
+        }
     }
 }
 
@@ -465,7 +595,7 @@ impl IPluginFactoryTrait for Factory {
     unsafe fn createInstance(&self, cid: FIDString, iid: FIDString, obj: *mut *mut c_void) -> tresult {
         let instance = match *(cid as *const TUID) {
             Processor::CID | SYNTH_CID => ComWrapper::new(Processor::new()).to_com_ptr::<FUnknown>(),
-            Controller::CID => ComWrapper::new(Controller { gain: Cell::new(1.0), host: RefCell::new(None), ready: Cell::new(false) }).to_com_ptr::<FUnknown>(),
+            Controller::CID => ComWrapper::new(Controller { gain: Cell::new(1.0), host: RefCell::new(None), handler: RefCell::new(None), ready: Cell::new(false) }).to_com_ptr::<FUnknown>(),
             _ => None,
         };
         match instance {

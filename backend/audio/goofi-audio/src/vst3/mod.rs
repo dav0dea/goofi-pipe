@@ -4,6 +4,7 @@
 // The bindings mirror the C++ headers, so a host object's trait methods carry their names.
 #![allow(non_snake_case)]
 
+pub(crate) mod editor;
 mod host;
 mod module;
 mod node;
@@ -23,8 +24,8 @@ use vst3::{ComPtr, ComWrapper};
 
 use crate::nodes::{self, Class};
 use crate::AudioEngine;
-pub(crate) use node::Derived;
-use node::{Kind, Plugin};
+pub(crate) use node::{Derived, Kind};
+use node::Plugin;
 
 /// A stepped parameter with this many steps or fewer is a `Str` of the plugin's own strings.
 const STR_STEPS: i32 = 64;
@@ -389,7 +390,9 @@ impl AudioEngine {
             Err(reason) => return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) },
         };
         let plugin = derived.clone();
-        let make = Arc::new(move |birth: nodes::Birth| Box::new(Plugin::new(plugin.clone(), birth.ui)) as Box<dyn AudioNode>);
+        let make = Arc::new(move |birth: nodes::Birth| {
+            Box::new(Plugin::new(plugin.clone(), birth.ui, birth.uid, birth.shared)) as Box<dyn AudioNode>
+        });
         let replaced = self.classes.insert(manifest.type_name, Class { manifest, make, plugin: Some(derived) }).is_some();
         ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Registered { isolation: Isolation::Native, replaced } }
     }

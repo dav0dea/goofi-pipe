@@ -28,6 +28,8 @@ pub struct Goofi {
     patience: Duration,
     /// The handle that minted the mount, and the only one whose drop is the session's end.
     owner: bool,
+    /// The window thread, where a display answers: what the binary's main thread is.
+    windows: Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)>,
 }
 
 /// A situation ends the way a process exits: every node stopped and waited for, so no test leaves
@@ -37,6 +39,11 @@ impl Drop for Goofi {
         if self.owner {
             self.state.graph.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
             self.state.release_mount();
+            // Last: every plugin was unmade on it by the shutdown above.
+            if let Some((ui, thread)) = self.windows.take() {
+                ui.stop();
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -90,6 +97,7 @@ impl Goofi {
             std::env::set_var("CARGO_TARGET_DIR", nested);
         });
         let state = AppState::new(mode, goofi_bridge::Clock::External);
+        let windows = (!mode.demo).then(window_thread).flatten();
         {
             let mut g = state.graph.lock().unwrap();
             fixtures::register(&mut g);
@@ -97,7 +105,9 @@ impl Goofi {
             // binary — and no platform folder, so an installed plugin never reaches a test. A demo
             // registers no audio engine at all, so there is nothing to hand it.
             if !mode.demo {
-                goofi_bridge::audio_engine(&mut g).set_vst3(scanner(), Vec::new());
+                let audio = goofi_bridge::audio_engine(&mut g);
+                audio.set_vst3(scanner(), Vec::new());
+                audio.set_ui(windows.as_ref().map(|(ui, _)| ui.clone()));
             }
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
@@ -109,7 +119,7 @@ impl Goofi {
             goofi_bridge::rescan(&state, &mut g, &patch);
         }
         goofi_bridge::spawn_workers(&state);
-        Goofi { state, actor: "test".into(), patience: WAIT, owner: true }
+        Goofi { state, actor: "test".into(), patience: WAIT, owner: true, windows }
     }
 
     /// Boot one whose `/data` sockets probe on a short clock. Through [`Goofi::with_mode`], so
@@ -127,7 +137,7 @@ impl Goofi {
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
     pub fn client(&self, actor: &str) -> Goofi {
-        Goofi { state: self.state.clone(), actor: actor.into(), patience: self.patience, owner: false }
+        Goofi { state: self.state.clone(), actor: actor.into(), patience: self.patience, owner: false, windows: None }
     }
 
     /// Run an op and unwrap it; an unexpected refusal is a failure here.
@@ -374,6 +384,30 @@ impl Events {
 }
 
 /// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
+/// A window loop on a thread of its own, or none where no display answers — which a CI runner is.
+fn window_thread() -> Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name("goofi-windows".into())
+        .spawn(move || match goofi_audio::ui::Loop::open() {
+            Ok((windows, ui)) => {
+                let _ = tx.send(Some(ui));
+                windows.run();
+            }
+            Err(_) => {
+                let _ = tx.send(None);
+            }
+        })
+        .ok()?;
+    match rx.recv().ok()? {
+        Some(ui) => Some((ui, thread)),
+        None => {
+            let _ = thread.join();
+            None
+        }
+    }
+}
+
 fn scanner() -> PathBuf {
     let exe = std::env::current_exe().expect("a test has a path");
     exe.ancestors().nth(2).expect("target/<profile>/deps/<test>").join(format!("vst3scan{}", std::env::consts::EXE_SUFFIX))

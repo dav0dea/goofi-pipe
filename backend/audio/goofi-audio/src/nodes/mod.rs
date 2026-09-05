@@ -21,6 +21,10 @@ pub struct Birth {
     pub chans: Arc<AtomicU16>,
     /// The window thread, where a plugin is made and unmade; none where the machine has no display.
     pub ui: Option<crate::ui::Ui>,
+    /// Which node this is, and the engine's inbox — what a plugin's editor writes through. None
+    /// for the twin, which is no instance.
+    pub uid: Option<goofi_node::Uid>,
+    pub shared: Option<Arc<crate::control::Shared>>,
 }
 
 pub type Born = fn(Birth) -> Box<dyn AudioNode>;
