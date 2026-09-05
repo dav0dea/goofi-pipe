@@ -12,6 +12,7 @@ import { liveCatalogue } from '$lib/inspector/expr/catalogue';
 function catalog(): NodeTypeInfo[] {
 	const mk = (type: string): NodeTypeInfo => ({
 		type,
+		engine: 'signal',
 		category: 'array',
 		doc: '',
 		source: 'builtin',
@@ -21,7 +22,7 @@ function catalog(): NodeTypeInfo[] {
 		output_slots: { out: 'ARRAY' },
 		params: {}
 	});
-	return [mk('Oscillator'), mk('Buffer')];
+	return [mk('signal:Oscillator'), mk('signal:Buffer')];
 }
 
 /** A node, as the projection writes it. `scope` names the sub-patch it belongs to; a top-level
@@ -84,8 +85,8 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		});
 		seed(fc).patch({
 			nodes: {
-				n0: node('Oscillator', 'osc0'), // top-level node
-				m1: node('Buffer', 'buffer0', 'i1'), // member of i1
+				n0: node('signal:Oscillator', 'osc0'), // top-level node
+				m1: node('signal:Buffer', 'buffer0', 'i1'), // member of i1
 				...sp.nodes
 			},
 			links: sp.links
@@ -115,7 +116,7 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		const g = new GraphStore(fc);
 		g.nodeTypes = catalog();
 		const d = seed(fc).patch({
-			nodes: { m1: node('Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
+			nodes: { m1: node('signal:Buffer', 'buffer0', 'i1'), ...scope('i1', { name: 'sp0' }).nodes }
 		});
 		expect(g.nodeById('i1')?.subpatch).toBeDefined();
 		expect(g.nodeById('m1')!.scope).toBe('i1');
@@ -133,8 +134,8 @@ describe('scope-forest read cutover — scopes built from the doc when the catal
 		g.nodeTypes = catalog();
 		const d = seed(fc).patch({
 			nodes: {
-				m1: node('Buffer', 'buffer0', 'i1'),
-				n0: node('Oscillator', 'osc0'),
+				m1: node('signal:Buffer', 'buffer0', 'i1'),
+				n0: node('signal:Oscillator', 'osc0'),
 				...scope('i1', { name: 'sp0' }).nodes
 			}
 		});
@@ -154,7 +155,7 @@ describe('a collapsed scope’s inline viewer, which is a node’s inline viewer
 			name: 'sp9',
 			ports: [{ uid: 'p9', type: 'OutArray', name: 'wave', inner: ['m9', 'out'] }]
 		});
-		const spec = { nodes: { m9: node('Buffer', 'buffer9', 'i9'), ...sp9.nodes }, links: sp9.links };
+		const spec = { nodes: { m9: node('signal:Buffer', 'buffer9', 'i9'), ...sp9.nodes }, links: sp9.links };
 		// The snapshot's runtime overlay lands BEFORE the doc materializes the nodes it names — the
 		// two ride separate channels in no defined order.
 		fc.emit({
@@ -213,7 +214,7 @@ describe('the expression catalogue — what nd() can name', () => {
 			]
 		});
 		seed(fc).patch({
-			nodes: { n1: node('Oscillator', 'osc0'), m2: node('Buffer', 'buffer0', 'i2'), ...sp.nodes },
+			nodes: { n1: node('signal:Oscillator', 'osc0'), m2: node('signal:Buffer', 'buffer0', 'i2'), ...sp.nodes },
 			links: sp.links
 		});
 

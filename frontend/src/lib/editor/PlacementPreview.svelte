@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { ViewportPortal, useSvelteFlow } from '@xyflow/svelte';
 	import { dtypeColor } from './categoryColor';
+	import { bareName } from './typeId';
 	import SnapGuides from './SnapGuides.svelte';
 	import {
 		computeSnapDelta,
@@ -157,7 +158,7 @@
 		<div class="surface">
 			<div class="header">
 				<span class="health"></span>
-				<span class="name">{typeInfo.type}</span>
+				<span class="name">{bareName(typeInfo.type)}</span>
 			</div>
 			{#if outputs.length > 0}
 				<div class="viewers">

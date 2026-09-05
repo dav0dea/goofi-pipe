@@ -5,6 +5,7 @@ import type { NodeTypeInfo } from '$lib/api/control';
 function ty(over: Partial<NodeTypeInfo> = {}): NodeTypeInfo {
 	return {
 		type: 'Thing',
+		engine: 'signal',
 		category: 'python',
 		doc: '',
 		available: true,

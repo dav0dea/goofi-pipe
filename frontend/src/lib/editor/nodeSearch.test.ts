@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { rankNodeTypes } from './nodeSearch';
+import { engineOf } from './typeId';
 import type { NodeTypeInfo } from '$lib/api/control';
 
 function node(type: string, category: string, doc = ''): NodeTypeInfo {
 	return {
 		type,
+		engine: engineOf(type),
 		category,
 		doc,
 		input_slots: {},
@@ -71,6 +73,19 @@ describe('rankNodeTypes', () => {
 		const types = [node('Oscillator', 'inputs', ''), node('OSCOut', 'outputs', '')];
 		// Both are name-prefix matches at index 0 → shorter wins.
 		expect(order(types, 'osc')).toEqual(['OSCOut', 'Oscillator']);
+	});
+
+	it('ranks on the bare name, and the engine matches nothing', () => {
+		const types = [
+			node('signal:Filter', 'inputs', ''),
+			node('audio:FilterB', 'audio', ''),
+			node('signal:FilterA', 'inputs', '')
+		];
+		// Exact bare name first, then the two prefixes alphabetically — the engine decides no tier,
+		// no match position and no tie.
+		expect(order(types, 'filter')).toEqual(['signal:Filter', 'signal:FilterA', 'audio:FilterB']);
+		// The engine names a palette tab, never a node.
+		expect(order(types, 'signal')).toEqual([]);
 	});
 
 	it('drops non-matches and keeps an empty query untouched', () => {

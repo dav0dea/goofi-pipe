@@ -11,6 +11,7 @@ function catalog(): NodeTypeInfo[] {
 	return [
 		{
 			type: 'PSD',
+			engine: 'signal',
 			category: 'signal',
 			doc: '',
 			source: 'builtin',

@@ -23,7 +23,8 @@ function helloSnap(node_types?: NodeTypeInfo[], runtime: GraphSnapshot['runtime'
 function catalog(): NodeTypeInfo[] {
 	return [
 		{
-			type: 'Oscillator',
+			type: 'signal:Oscillator',
+			engine: 'signal',
 			category: 'inputs',
 			doc: 'A generator',
 			source: 'builtin',
@@ -59,11 +60,11 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog(); // catalog present → the doc becomes authoritative for node identity
-		d.node('n1', 'Oscillator', 'osc0', [10, 20]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [10, 20]);
 
 		const n = g.nodeById('n1');
 		expect(n, 'node exists purely from the doc — no node_added event').toBeDefined();
-		expect([n!.type, n!.name, n!.pos]).toEqual(['Oscillator', 'osc0', [10, 20]]);
+		expect([n!.type, n!.name, n!.pos]).toEqual(['signal:Oscillator', 'osc0', [10, 20]]);
 		// Descriptors come from the catalog by type.
 		expect(n!.category).toBe('inputs');
 		expect(n!.output_slots).toEqual({ out: 'ARRAY' });
@@ -77,7 +78,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 
 		d.patch({ nodes: { n1: { params: { common: { max_frequency: { value: 42 } } } } } });
 		expect(g.nodeById('n1')!.params.common.max_frequency.value).toBe(42);
@@ -88,7 +89,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 		expect(g.nodeById('n1')).toBeDefined();
 
 		d.remove('nodes', 'n1');
@@ -100,7 +101,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 
 		// node_added for a node NOT in the doc must not mint a phantom — the reconcile owns
 		// existence (else the announcement would race/duplicate the doc mirror).
@@ -114,7 +115,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 		d.patch({ nodes: { n1: { params: { common: { max_frequency: { value: 55 } } } } } });
 
 		// A state_update carrying a STALE value (999) + an error + stage: the value must
@@ -159,7 +160,7 @@ describe('expression live value survives a doc rebuild', () => {
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 		// Committed leaf value 99 + an ENABLED expression binding: the displayed value should track
 		// the LIVE evaluation, not this committed literal.
 		d.patch({
@@ -180,7 +181,7 @@ describe('expression live value survives a doc rebuild', () => {
 
 		// An unrelated doc change rebuilds every node from the doc. The live value must NOT revert to
 		// the committed leaf (99) — the retired fallback path guarded this; the doc path must too.
-		d.node('n2', 'Oscillator', 'osc1', [1, 1]);
+		d.node('n2', 'signal:Oscillator', 'osc1', [1, 1]);
 		expect(
 			g.nodeById('n1')!.params.common.max_frequency.value,
 			'live expression value preserved across the doc rebuild'
@@ -199,7 +200,7 @@ describe('node runtime survives a doc rebuild', () => {
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0]);
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 
 		// The three node-level fields the doc never holds, each from its own event.
 		fc.emit({ event: 'state_update', payload: { node: 'n1', params: {}, stage: 'ready', error: 'boom' } });
@@ -209,7 +210,7 @@ describe('node runtime survives a doc rebuild', () => {
 		// An unrelated doc write rebuilds every node from doc + catalog. The rebuild carries the
 		// runtime forward through `_extractRuntime` → `assembleNode`, so the survivor must not be
 		// blanked back to a healthy, statless boot state.
-		d.node('n2', 'Oscillator', 'osc1', [1, 1]);
+		d.node('n2', 'signal:Oscillator', 'osc1', [1, 1]);
 		const n = g.nodeById('n1')!;
 		expect(n.stage, 'stage survives the rebuild').toBe('ready');
 		expect(n.error, 'error survives the rebuild').toBe('boom');
@@ -241,7 +242,7 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		});
 		// The seeder is made AFTER the hello, because that is the order the manager sends: a new
 		// session's `hello` empties the replica, and the `doc_state` that follows fills it.
-		seed(fc).node('n1', 'Oscillator', 'osc0', [0, 0]);
+		seed(fc).node('n1', 'signal:Oscillator', 'osc0', [0, 0]);
 
 		const n = g.nodeById('n1')!;
 		expect(n.error).toBe('ImportError: no scipy');
@@ -257,7 +258,7 @@ describe('catalog-in-hello — the palette rides on the snapshot, no async list_
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		fc.emit({ event: 'hello', payload: helloSnap(catalog()) });
-		seed(fc).node('n9', 'Oscillator', 'osc0', [0, 0]);
+		seed(fc).node('n9', 'signal:Oscillator', 'osc0', [0, 0]);
 		expect(g.nodeById('n9')!.error).toBeFalsy();
 
 		fc.emit({
@@ -280,7 +281,7 @@ describe('inline viewer state — the document is the one holder, so it follows 
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		g.nodeTypes = catalog();
-		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
 		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'the saved collapse is what we draw').toBe(false);
 		expect(slotView(g.nodeById('n1'), 'out').kind).toBe('image');
 
@@ -295,18 +296,18 @@ describe('inline viewer state — the document is the one holder, so it follows 
 	it('an in-session load onto a re-used uid draws the loaded patch, not the outgoing one', () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
-		g.nodeTypes = [...catalog(), { ...catalog()[0], type: 'Buffer' }];
+		g.nodeTypes = [...catalog(), { ...catalog()[0], type: 'signal:Buffer' }];
 		fc.emit({ event: 'hello', payload: helloSnap() });
 		const d = seed(fc);
-		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0], blob({ out: { collapsed: true, kind: 'image' } }));
 		expect(isSlotExpanded(g.nodeById('n1'), 'out')).toBe(false);
 
 		// A patch is loaded INTO the running session: same backend (so no generation reset), and it
 		// restores the uids it was saved with — so `n1` is a SURVIVOR carrying a different node.
 		fc.emit({ event: 'graph_replaced', payload: helloSnap() });
-		d.push({ nodes: { n1: { type: 'Buffer', name: 'buf0', pos: { x: 0, y: 0 } } }, links: [], instances: {}, globals: {}, arrangement: {} });
+		d.push({ nodes: { n1: { type: 'signal:Buffer', name: 'buf0', pos: { x: 0, y: 0 } } }, links: [], instances: {}, globals: {}, arrangement: {} });
 
-		expect(g.nodeById('n1')!.type, 'precondition: the uid now carries the loaded node').toBe('Buffer');
+		expect(g.nodeById('n1')!.type, 'precondition: the uid now carries the loaded node').toBe('signal:Buffer');
 		expect(isSlotExpanded(g.nodeById('n1'), 'out'), 'the outgoing collapse did not stick').toBe(true);
 		expect(slotView(g.nodeById('n1'), 'out').kind, 'nor the outgoing kind').toBeUndefined();
 	});
@@ -318,7 +319,7 @@ describe('inline viewer state — the document is the one holder, so it follows 
 		g.nodeTypes = [{ ...catalog()[0], output_slots: { out: 'ARRAY', sig: 'ARRAY' } }];
 		// `gone` is a slot the saved blob names and the node no longer has — a node file that lost an
 		// output since the patch was written. It must not block an edit to a slot that does exist.
-		d.node('n1', 'Oscillator', 'osc0', [0, 0], blob({ out: { kind: 'image' }, sig: { collapsed: true }, gone: { collapsed: true } }));
+		d.node('n1', 'signal:Oscillator', 'osc0', [0, 0], blob({ out: { kind: 'image' }, sig: { collapsed: true }, gone: { collapsed: true } }));
 
 		g.setSlotView('n1', 'sig', { collapsed: false });
 		const call = fc.recordedCalls().find((c) => c.op === 'node edit');

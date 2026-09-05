@@ -33,6 +33,7 @@
 	import { notify } from '$lib/stores/notify.svelte';
 	import { ui, slotKey, type SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { seedSlot } from '$lib/editor/seedSlot';
+	import { bareName } from '$lib/editor/typeId';
 	import { selection } from '$lib/stores/selection.svelte';
 	import { workspace } from 'panelty';
 	import { getPanelType, type PanelProps } from 'panelty';
@@ -945,8 +946,8 @@
 		// A boundary type takes this same path: `add_node` with `inst_id` is what makes a PORT of the
 		// entered sub-patch, and the catalog gives it the slots `autoLink` matches against.
 		const label = placement.seed
-			? `Add ${placement.typeInfo.type} + connect`
-			: `Add ${placement.typeInfo.type}`;
+			? `Add ${bareName(placement.typeInfo.type)} + connect`
+			: `Add ${bareName(placement.typeInfo.type)}`;
 		await history().transaction(label, async () => {
 			try {
 				const newName = await g.addNode(placement.typeInfo.type, pos, entered ?? undefined);

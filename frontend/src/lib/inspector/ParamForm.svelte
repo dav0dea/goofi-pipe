@@ -32,6 +32,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidName } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
+	import { bareName } from '$lib/editor/typeId';
 	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
@@ -159,7 +160,7 @@
 								>
 							{/if}
 						</div>
-						<div class="pf-type">{formatName(node.type)}</div>
+						<div class="pf-type">{formatName(bareName(node.type))}</div>
 					</div>
 				{/snippet}
 				{#snippet end()}

@@ -1,5 +1,6 @@
-/** Ranking for the add-node menu's type search. */
+/** Ranking for the add-node menu's type search, on the bare name: the engine names a tab. */
 import type { NodeTypeInfo } from '$lib/api/control';
+import { bareName } from './typeId';
 
 /** Match quality, best first. */
 const TIER = {
@@ -38,10 +39,11 @@ function hasWordStartMatch(name: string, lowerName: string, q: string): boolean 
 }
 
 function tierFor(t: NodeTypeInfo, q: string): number {
-	const name = t.type.toLowerCase();
+	const bare = bareName(t.type);
+	const name = bare.toLowerCase();
 	if (name === q) return TIER.nameExact;
 	if (name.startsWith(q)) return TIER.namePrefix;
-	if (hasWordStartMatch(t.type, name, q)) return TIER.nameWord;
+	if (hasWordStartMatch(bare, name, q)) return TIER.nameWord;
 	if (name.includes(q)) return TIER.nameSubstring;
 	if (t.category.toLowerCase().includes(q)) return TIER.category;
 	if (t.doc.toLowerCase().includes(q)) return TIER.doc;
@@ -55,16 +57,17 @@ export function rankNodeTypes(types: NodeTypeInfo[], rawQuery: string): NodeType
 
 	const scored = types
 		.map((t) => {
-			const idx = t.type.toLowerCase().indexOf(q);
-			return { t, tier: tierFor(t, q), idx: idx < 0 ? Number.MAX_SAFE_INTEGER : idx };
+			const name = bareName(t.type);
+			const idx = name.toLowerCase().indexOf(q);
+			return { t, name, tier: tierFor(t, q), idx: idx < 0 ? Number.MAX_SAFE_INTEGER : idx };
 		})
 		.filter((s) => s.tier !== TIER.none);
 
 	scored.sort((a, b) => {
 		if (a.tier !== b.tier) return b.tier - a.tier; // higher tier first
 		if (a.idx !== b.idx) return a.idx - b.idx; // earlier in-name match first
-		if (a.t.type.length !== b.t.type.length) return a.t.type.length - b.t.type.length; // tighter
-		return a.t.type.localeCompare(b.t.type); // stable, alphabetical
+		if (a.name.length !== b.name.length) return a.name.length - b.name.length; // tighter
+		return a.name.localeCompare(b.name); // stable, alphabetical
 	});
 
 	return scored.map((s) => s.t);

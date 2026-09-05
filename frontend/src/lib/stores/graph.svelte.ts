@@ -12,6 +12,7 @@ import {
 	type ScanDiff
 } from '$lib/api/control';
 import { boundaryType } from '$lib/api/vocab';
+import { bareName } from '$lib/editor/typeId';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
 import { workspace } from 'panelty';
@@ -330,7 +331,7 @@ export class GraphStore {
 			inst_id: instId
 		});
 		const uid = born?.uid ?? '';
-		if (uid) this._recordGraphCmd(`Add ${type}`);
+		if (uid) this._recordGraphCmd(`Add ${bareName(type)}`);
 		return uid;
 	}
 

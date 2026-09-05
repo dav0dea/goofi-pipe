@@ -6,6 +6,7 @@ function unavailable(reason: string): NodeTypeInfo {
 	// Exactly the shape `schemas.rs` emits for a node file whose probe failed.
 	return {
 		type: 'Psd',
+		engine: 'signal',
 		category: 'unavailable',
 		doc: `This node could not be loaded: ${reason}`,
 		source: 'builtin',

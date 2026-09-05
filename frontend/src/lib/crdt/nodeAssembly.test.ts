@@ -3,12 +3,13 @@ import { assembleNode, type DocParamLeaves, type RuntimeOverlay } from './nodeAs
 import type { NodeTypeInfo } from '$lib/api/control';
 import type { NodeView } from './graphDoc';
 
-const view: NodeView = { uid: 'n1', type: 'Oscillator', name: 'osc0', pos: [10, 20], scope: '__root__' };
+const view: NodeView = { uid: 'n1', type: 'signal:Oscillator', name: 'osc0', pos: [10, 20], scope: '__root__' };
 
 /** A catalog entry with a static float param + a refreshable string param. */
 function catalog(): NodeTypeInfo {
 	return {
-		type: 'Oscillator',
+		type: 'signal:Oscillator',
+		engine: 'signal',
 		category: 'inputs',
 		doc: 'A sine generator',
 		source: 'builtin',
@@ -58,7 +59,7 @@ describe('assembleNode — three-way merge', () => {
 		const n = assembleNode(view, docParams, {}, catalog(), runtime);
 
 		// Identity + pos from the doc view.
-		expect([n.uid, n.type, n.name, n.pos]).toEqual(['n1', 'Oscillator', 'osc0', [10, 20]]);
+		expect([n.uid, n.type, n.name, n.pos]).toEqual(['n1', 'signal:Oscillator', 'osc0', [10, 20]]);
 		// Catalog supplies category/doc/slots and the param STRUCTURE.
 		expect(n.category).toBe('inputs');
 		expect(n.input_slots).toEqual({ in: 'ARRAY' });

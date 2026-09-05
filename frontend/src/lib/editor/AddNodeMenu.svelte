@@ -3,6 +3,7 @@
 	import { notify } from '$lib/stores/notify.svelte';
 	import { dtypeColor } from './categoryColor';
 	import { rankNodeTypes } from './nodeSearch';
+	import { bareName } from './typeId';
 	import { nodeTypeTitle } from './nodeTypeTitle';
 	import { nodeTypeSource } from './nodeTypeSource';
 	import type { NodeTypeInfo } from '$lib/api/control';
@@ -144,7 +145,7 @@
 				onclick={() => pick(t)}
 			>
 				<span class="cat-dot"></span>
-				<span class="t-name">{t.type}</span>
+				<span class="t-name">{bareName(t.type)}</span>
 				<span class="t-cat">{nodeTypeSource(t)}</span>
 			</button>
 		{/each}
