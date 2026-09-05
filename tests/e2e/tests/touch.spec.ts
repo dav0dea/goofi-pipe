@@ -71,12 +71,16 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			await touch.up();
 			await expect(menu, 'and the release does not close what the press opened').toBeVisible();
 			const box = (await menu.boundingBox())!;
-			expect(
-				Math.abs(box.y - spot.y),
-				'anchored to the finger vertically; the viewport clamp owns the horizontal at 412px'
-			).toBeLessThan(40);
+			const view = page.viewportSize()!;
+			// Anchored to the finger, stated as a property rather than a distance: the press point
+			// lies inside the menu it opened, wherever the clamp had to put it. A pinned number
+			// here would have to move every time the menu's own height does.
+			expect(spot.y, 'the finger is within what the press opened').toBeGreaterThanOrEqual(box.y);
+			expect(spot.y).toBeLessThanOrEqual(box.y + box.height);
 			expect(box.x, 'and the clamp keeps it wholly on screen').toBeGreaterThanOrEqual(0);
-			expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+			expect(box.x + box.width).toBeLessThanOrEqual(view.width);
+			expect(box.y).toBeGreaterThanOrEqual(0);
+			expect(box.y + box.height).toBeLessThanOrEqual(view.height + 1);
 			await page.keyboard.press('Escape');
 			await expect(menu).toHaveCount(0);
 		});

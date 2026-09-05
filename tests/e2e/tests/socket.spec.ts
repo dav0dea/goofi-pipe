@@ -140,9 +140,9 @@ test.describe('the control socket', () => {
 			});
 
 			await test.step('a global is patch state, and lands the same way', async () => {
-				await page.evaluate(() => (window as any).goofi.commands.addGlobal('seam_probe', 7, 'float'));
+				await page.evaluate(() => (window as any).goofi.commands.addGlobal('patch.seam_probe', 7, 'float'));
 				await expect
-					.poll(async () => (await backendDoc(page)).globals.seam_probe?.value)
+					.poll(async () => (await backendDoc(page)).globals['patch.seam_probe']?.value)
 					.toBe(7);
 			});
 
@@ -150,7 +150,7 @@ test.describe('the control socket', () => {
 				const before = await backendNodes(page);
 				await undo(page);
 				await expect
-					.poll(async () => (await backendDoc(page)).globals.seam_probe, {
+					.poll(async () => (await backendDoc(page)).globals['patch.seam_probe'], {
 						message: 'the undone global is gone from the manager'
 					})
 					.toBeUndefined();
@@ -160,7 +160,7 @@ test.describe('the control socket', () => {
 
 			await test.step('…and redo puts it back, through the same door', async () => {
 				await redo(page);
-				await expect.poll(async () => (await backendDoc(page)).globals.seam_probe?.value).toBe(7);
+				await expect.poll(async () => (await backendDoc(page)).globals['patch.seam_probe']?.value).toBe(7);
 				await expectAgreement(page, 'after redo');
 			});
 
@@ -637,10 +637,11 @@ test.describe('the control socket', () => {
 		try {
 			const osc = await addNode(page, 'LFO');
 			await waitForNode(page, osc);
-			await page.evaluate(
-				(u) => (window as any).goofi.commands.updateParam(u, 'output', 'sfreq', 64),
-				osc
-			);
+			await page.evaluate((u) => {
+				const g = (window as any).goofi;
+				g.commands.updateParam(u, 'output', 'mode', 'block');
+				g.commands.updateParam(u, 'output', 'sfreq', 64);
+			}, osc);
 
 			const read = () =>
 				page.evaluate((u) => (window as any).goofi.query.frameSummary(u, 'out'), osc);

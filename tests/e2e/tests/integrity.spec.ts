@@ -105,6 +105,9 @@ test('a patch under construction holds together at every stage', async ({ page }
 
 		await test.step('a spectrum on a log axis, streaming', async () => {
 			// A PSD floor sits far below 1e-22 — the range uPlot's own log walk never terminates on.
+			// A spectrum needs a run of samples that knows its own rate, so the source emits blocks
+			// and the buffer already on the canvas is what gathers them.
+			await rawCall(page, 'node param edit', { node: osc, param: 'output/mode', value: 'block' });
 			const psd = await addNode(page, 'Psd', [320, 240]);
 			await waitForNode(page, psd);
 			await page.evaluate(
@@ -115,15 +118,15 @@ test('a patch under construction holds together at every stage', async ({ page }
 						node_in: b,
 						slot_in: 'input'
 					}),
-				[osc, psd]
+				[buf, psd]
 			);
 			await rawCall(page, 'node edit', {
 				node: psd,
-				viewer: [{ slot: 'psd', kind: 'line', settings: { logY: true } }]
+				viewer: [{ slot: 'out', kind: 'line', settings: { logY: true } }]
 			});
 			await expect
 				.poll(
-					() => page.evaluate((u) => (window as any).goofi.query.frameSummary(u, 'psd') !== null, psd),
+					() => page.evaluate((u) => (window as any).goofi.query.frameSummary(u, 'out') !== null, psd),
 					{ message: 'spectra reached the tab', timeout: 30_000 }
 				)
 				.toBe(true);
