@@ -12,6 +12,7 @@ mod node;
 mod params;
 #[cfg(feature = "extension-module")]
 mod serve;
+mod stream;
 
 pub use data::Data;
 
@@ -30,6 +31,7 @@ pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<params::BoolParam>()?;
     m.add_class::<params::StringParam>()?;
     m.add_class::<params::PulseParam>()?;
+    m.add_class::<stream::Stream>()?;
     m.add_function(wrap_pyfunction!(introspect::introspect, m)?)?;
     #[cfg(feature = "extension-module")]
     m.add_function(wrap_pyfunction!(serve::serve, m)?)?;

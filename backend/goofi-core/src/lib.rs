@@ -11,6 +11,9 @@ pub mod home;
 pub mod path;
 pub mod probe;
 pub mod reduce;
+pub mod stream;
+
+pub use stream::Stream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoofiError {
@@ -251,6 +254,41 @@ impl Axes {
         }
         Axes(v)
     }
+
+    /// Remove dimension `dim`; the dimensions above it move down.
+    pub fn dropped(&self, dim: usize) -> Axes {
+        let mut v = self.0.clone();
+        if dim < v.len() {
+            v.remove(dim);
+        }
+        Axes(v)
+    }
+
+    /// Insert `axis` at `dim`; the dimensions from `dim` up move up.
+    pub fn inserted(&self, dim: usize, axis: Axis) -> Axes {
+        let mut v = self.0.clone();
+        if v.len() < dim {
+            v.resize(dim, Axis::default());
+        }
+        v.insert(dim, axis);
+        Axes(v)
+    }
+
+    /// Join `others` onto dimension `dim` in order; one unlabeled input leaves the axis unlabeled,
+    /// because a join never invents a name.
+    pub fn joined(&self, others: &[&Axes], dim: usize) -> Axes {
+        let mut coords = match self.get(dim).and_then(|a| a.coords.clone()) {
+            Some(c) => c.to_vec(),
+            None => return self.clone().with(dim, Axis::default()),
+        };
+        for o in others {
+            match o.get(dim).and_then(|a| a.coords.clone()) {
+                Some(c) => coords.extend(c.iter().cloned()),
+                None => return self.clone().with(dim, Axis::default()),
+            }
+        }
+        self.clone().with(dim, Axis::coords(coords))
+    }
 }
 
 /// A meta value. serde is `untagged`, so a value serializes as itself; `Bytes`/`Axes` are skipped
@@ -369,6 +407,38 @@ impl Meta {
     pub fn with(mut self, key: impl Into<String>, v: MetaValue) -> Meta {
         self.set(key, v);
         self
+    }
+
+    /// An axis removed takes its labels, and the rate goes with it when the axis was the last.
+    pub fn drop_axis(&self, dim: usize, ndim: usize) -> Meta {
+        let m = self.clone().with_channels(self.channels().dropped(dim));
+        if dim + 1 == ndim {
+            m.with_sfreq(None)
+        } else {
+            m
+        }
+    }
+
+    /// An axis subset keeps the selected labels, in the selected order.
+    pub fn keep(&self, dim: usize, indices: &[usize]) -> Meta {
+        self.clone().with_channels(self.channels().sliced(dim, indices))
+    }
+
+    /// A joined axis keeps its labels only while EVERY input carries them, in wire order.
+    pub fn concat(&self, others: &[&Meta], dim: usize) -> Meta {
+        let axes: Vec<&Axes> = others.iter().map(|m| m.channels()).collect();
+        self.clone().with_channels(self.channels().joined(&axes, dim))
+    }
+
+    /// A new axis, labeled only where the caller can name every entry; it takes the rate away
+    /// when it lands last, because the rate belongs to the time axis.
+    pub fn insert_axis(&self, dim: usize, axis: Axis, ndim: usize) -> Meta {
+        let m = self.clone().with_channels(self.channels().inserted(dim, axis));
+        if dim == ndim {
+            m.with_sfreq(None)
+        } else {
+            m
+        }
     }
 }
 

@@ -229,6 +229,8 @@ class Ticker(goofi.Node):
 
 const PULSE_COUNTER: &str = include_str!("fixtures/pulse_counter.py");
 const SOURCES: &str = include_str!("fixtures/sources.py");
+const STITCHER: &str = include_str!("fixtures/stitcher.py");
+const AXES: &str = include_str!("fixtures/axes.py");
 
 #[test]
 fn a_python_multi_slot_names_its_senders_and_follows_a_rename() {
@@ -279,6 +281,94 @@ fn a_python_pulse_param_is_a_request_the_node_answers_with_a_hook() {
     g.call("node param pulse", j!({ "node": hex(node), "param": "count/reset" }));
     g.until("the count to start over", |_| under(before).then_some(()));
     assert!(g.error(node).is_none(), "a pulse leaves no error");
+}
+
+/// The coords on one dimension of a frame, as strings.
+fn labels(d: &goofi_core::Data, dim: &str) -> Vec<String> {
+    d.meta()
+        .channels()
+        .dims()
+        .find(|(k, _)| k == dim)
+        .map(|(_, coords)| {
+            coords
+                .iter()
+                .map(|c| match c {
+                    goofi_core::Coord::Str(s) => s.to_string(),
+                    goofi_core::Coord::Num(n) => n.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_python_node_stitches_its_inputs_past_and_a_pulse_forgets_it() {
+    // `goofi.Stream` is the node's whole memory: the counter steps by one per FRAME, so a node
+    // reaching four samples back reads exactly four — which a node holding no past cannot.
+    let _py = require_python();
+    let g = Goofi::new();
+    install(&g, "stitcher.py", STITCHER);
+    let src = g.add("_TestCounter");
+    let node = g.add("Stitcher");
+    g.link(src, "out", node, "input");
+    free_run(&g, src, 20.0);
+    let probe = g.probe(node, "out");
+    let probe = &probe;
+    let all_four = |_: &Goofi| {
+        probe.latest().filter(|d| f32s(d).iter().all(|v| (v - 4.0).abs() < 1e-6)).map(|_| ())
+    };
+    g.until("the stitched past to reach back four samples", all_four);
+
+    g.call("node param pulse", j!({ "node": hex(node), "param": "stitcher/reset" }));
+    g.until("the forgotten past to read short", |_| {
+        probe.latest().filter(|d| f32s(d).iter().any(|v| *v < 4.0)).map(|_| ())
+    });
+    g.until("the past to fill again", all_four);
+    assert!(g.error(node).is_none(), "a stitching node carries no error");
+}
+
+#[test]
+fn a_python_node_reads_every_meta_rule_off_the_pymod() {
+    // One implementation of each rule lives in the core; a Python node reaches it through the
+    // wheel, so the labels and the rate on the wire ARE the core's answer.
+    let _py = require_python();
+    let g = Goofi::new();
+    install(&g, "axes.py", AXES);
+    let node = g.add("Axes");
+    free_run(&g, node, 50.0);
+    let probe = g.probe(node, "out");
+    let probe = &probe;
+    let under = |g: &Goofi, rule: &str, shape: Vec<usize>| {
+        g.set_param(node, "axes", "rule", rule);
+        g.until(rule, |_| {
+            probe.latest().filter(|d| d.as_array().map(|a| a.shape() == shape).unwrap_or(false))
+        })
+    };
+
+    let d = under(&g, "drop_last", vec![2]);
+    assert_eq!(labels(&d, "dim0"), ["a", "b"], "the kept axis keeps its labels");
+    assert_eq!(labels(&d, "dim1"), Vec::<String>::new(), "the dropped axis takes its labels");
+    assert_eq!(d.meta().sfreq(), None, "the rate goes with the last axis");
+
+    let d = under(&g, "drop_first", vec![3]);
+    assert_eq!(labels(&d, "dim0"), ["1", "2", "3"], "the higher axis moved down with its labels");
+    assert_eq!(d.meta().sfreq(), Some(250.0), "the last axis is still time, so the rate stays");
+
+    let d = under(&g, "keep", vec![2, 2]);
+    assert_eq!(labels(&d, "dim1"), ["1", "3"], "a subset keeps the selected labels, in order");
+
+    let d = under(&g, "insert_first", vec![1, 2, 3]);
+    assert_eq!(labels(&d, "dim0"), ["only"], "the new axis carries the names it was given");
+    assert_eq!(labels(&d, "dim2"), ["1", "2", "3"], "the old axes moved up with their labels");
+    assert_eq!(d.meta().sfreq(), Some(250.0), "an axis inserted before time leaves the rate");
+
+    let d = under(&g, "insert_last", vec![2, 3, 1]);
+    assert_eq!(labels(&d, "dim2"), Vec::<String>::new(), "a new axis is born unlabelled");
+    assert_eq!(d.meta().sfreq(), None, "a new LAST axis takes the rate away");
+
+    let d = under(&g, "concat", vec![2, 6]);
+    assert_eq!(labels(&d, "dim1"), ["1", "2", "3", "1", "2", "3"], "a join concatenates in order");
+    assert!(g.error(node).is_none(), "the meta rules leave no error");
 }
 
 #[cfg(feature = "embed")]

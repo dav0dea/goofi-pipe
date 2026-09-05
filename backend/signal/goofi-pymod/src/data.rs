@@ -3,7 +3,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
-use goofi_core::{cast_to_f32, Axes, Axis, Coord, Data as CoreData, Meta, MetaValue, SrcDtype, Value};
+use goofi_core::{cast_to_f32, resolve_axis, Axes, Axis, Coord, Data as CoreData, Meta, MetaValue, SrcDtype, Value};
 
 #[pyclass]
 pub struct Data {
@@ -104,6 +104,53 @@ impl Data {
     fn meta<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         meta_to_dict(py, self.inner.meta())
     }
+
+    /// The meta for a frame with `axis` removed: its labels go, the higher axes move down, and
+    /// the rate goes with the last axis.
+    fn drop_axis<'py>(&self, py: Python<'py>, axis: i64) -> PyResult<Bound<'py, PyDict>> {
+        let ndim = self.shape_or_empty().len();
+        let dim = resolve_axis(axis, ndim).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        meta_to_dict(py, &self.inner.meta().drop_axis(dim, ndim))
+    }
+
+    /// The meta for a frame subset to `indices` along `axis`, in the given order.
+    fn keep<'py>(&self, py: Python<'py>, axis: i64, indices: Vec<usize>) -> PyResult<Bound<'py, PyDict>> {
+        let ndim = self.shape_or_empty().len();
+        let dim = resolve_axis(axis, ndim).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        meta_to_dict(py, &self.inner.meta().keep(dim, &indices))
+    }
+
+    /// The meta for this frame joined with `others` along `axis`; one unlabeled input leaves the
+    /// axis unlabeled.
+    fn concat<'py>(
+        &self,
+        py: Python<'py>,
+        others: Vec<PyRef<'_, Data>>,
+        axis: i64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let ndim = self.shape_or_empty().len();
+        let dim = resolve_axis(axis, ndim).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let metas: Vec<&Meta> = others.iter().map(|d| d.inner.meta()).collect();
+        meta_to_dict(py, &self.inner.meta().concat(&metas, dim))
+    }
+
+    /// The meta for a frame with a new axis at `axis`, labeled by `coords` when the caller can
+    /// name every entry; a new last axis takes the rate away.
+    #[pyo3(signature = (axis, coords=None))]
+    fn insert_axis<'py>(
+        &self,
+        py: Python<'py>,
+        axis: i64,
+        coords: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let ndim = self.shape_or_empty().len();
+        let dim = resolve_axis(axis, ndim + 1).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let ax = match coords {
+            Some(c) => Axis::coords(list_to_coords(c)?),
+            None => Axis::default(),
+        };
+        meta_to_dict(py, &self.inner.meta().insert_axis(dim, ax, ndim))
+    }
 }
 
 impl Data {
@@ -156,18 +203,23 @@ fn dict_to_axes(v: &Bound<'_, PyAny>) -> PyResult<Axes> {
         let Some(dim) = key.strip_prefix("dim").and_then(|s| s.parse::<usize>().ok()) else {
             continue;
         };
-        let items = list.cast::<PyList>()?;
-        let mut coords = Vec::with_capacity(items.len());
-        for it in items.iter() {
-            if let Ok(s) = it.extract::<String>() {
-                coords.push(Coord::Str(s.into()));
-            } else {
-                coords.push(Coord::Num(it.extract::<f64>()?));
-            }
-        }
-        axes = axes.with(dim, Axis::coords(coords));
+        axes = axes.with(dim, Axis::coords(list_to_coords(&list)?));
     }
     Ok(axes)
+}
+
+/// A Python sequence of names or numbers as axis coords.
+fn list_to_coords(v: &Bound<'_, PyAny>) -> PyResult<Vec<Coord>> {
+    let items = v.cast::<PyList>()?;
+    let mut coords = Vec::with_capacity(items.len());
+    for it in items.iter() {
+        if let Ok(s) = it.extract::<String>() {
+            coords.push(Coord::Str(s.into()));
+        } else {
+            coords.push(Coord::Num(it.extract::<f64>()?));
+        }
+    }
+    Ok(coords)
 }
 
 fn meta_to_dict<'py>(py: Python<'py>, m: &Meta) -> PyResult<Bound<'py, PyDict>> {
