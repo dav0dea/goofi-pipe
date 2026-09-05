@@ -274,11 +274,12 @@ fn scan_bundle(engine: &mut AudioEngine, bundle: &Path) -> Vec<ScannedType> {
 
 /// The scanner's answer for this binary, from the cache or from a child. Keyed by the binary's own
 /// BYTES, as an authored node's artifact is: a patch mount is a fresh directory every boot, and a
-/// load restores no mtimes, so nothing about a bundle's path or stamp survives an archive.
+/// load restores no mtimes, so nothing about a bundle's path or stamp survives an archive. And by
+/// the scanner's stamp: what a host reads out of a plugin is the host's answer as much as the plugin's.
 fn described(scanner: &Path, bundle: &Path, binary: &Path) -> Result<Bundle, String> {
     let bytes = std::fs::read(binary).map_err(|e| format!("{}: {e}", binary.display()))?;
     let dir = goofi_build::base_dir(&goofi_core::home::dir()).join("vst3");
-    let key = format!("{:x}", Sha256::digest(&bytes));
+    let key = format!("{:x}", Sha256::digest([&bytes[..], &stamp_bytes(scanner)].concat()));
     let file = dir.join(format!("{key}.json"));
     if let Some(cached) = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         return Ok(cached);
@@ -299,6 +300,17 @@ fn described(scanner: &Path, bundle: &Path, binary: &Path) -> Result<Bundle, Str
             Err(e)
         }
     }
+}
+
+/// The scanner's length and mtime, little-endian — the identity that changes when goofi does.
+fn stamp_bytes(scanner: &Path) -> Vec<u8> {
+    let meta = std::fs::metadata(scanner).ok();
+    let len = meta.as_ref().map_or(0, |m| m.len());
+    let modified = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    [len.to_le_bytes().as_slice(), modified.to_le_bytes().as_slice()].concat()
 }
 
 /// One child, under a ceiling. Its own words on failure, from the file its errors go to — never a
