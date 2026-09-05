@@ -1,5 +1,5 @@
 //! The eeg bundle's declared expression, on the real evaluator: `file` follows
-//! `globals.goofi_home` and `me.params.playback.sample`, and editing the dropdown re-aims it.
+//! `globals.system.goofi_home` and `me.params.playback.sample`, and editing the dropdown re-aims it.
 //! Embed-gated for the evaluator; the node itself still runs on the subprocess tier.
 #![cfg(feature = "embed")]
 
@@ -61,7 +61,7 @@ fn the_playback_file_follows_goofi_home_and_the_sample_dropdown() {
     let file = g.doc()["nodes"][hex(play)]["params"]["playback"]["file"].clone();
     assert_eq!(file["mode"], j!("expression"), "{file}");
     let source = file["expr"].as_str().unwrap_or_default();
-    assert!(source.contains("globals.goofi_home") && source.contains("me.params.playback.sample"),
+    assert!(source.contains("globals.system.goofi_home") && source.contains("me.params.playback.sample"),
             "{source}");
 
     let d = g.until("the recording the expression aimed at to play", |g| {

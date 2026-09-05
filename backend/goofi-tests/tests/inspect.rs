@@ -161,7 +161,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
     let osc = g.add("LFO");
     g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/amplitude",
-                                   "expression": "globals.default_ufreq / 30" }));
+                                   "expression": "globals.system.default_ufreq / 30" }));
     // A rate is MEASURED, so it needs two emits and a report across the status service.
     g.until("the LFO's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
@@ -175,7 +175,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
     // …and into its expression half. This binding cannot compile (no evaluator here), shown inline.
-    assert!(out.contains("  lfo.amplitude = expr: globals.default_ufreq / 30 → 1 [error: "),
+    assert!(out.contains("  lfo.amplitude = expr: globals.system.default_ufreq / 30 → 1 [error: "),
             "{out}");
     // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.
     assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
@@ -205,7 +205,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
     let bound = g.add("LFO");
     g.call("node param edit", j!({ "node": hex(bound), "param": "lfo/amplitude",
-                                   "expression": "globals.default_ufreq / 30" }));
+                                   "expression": "globals.system.default_ufreq / 30" }));
     let live = g.until("the node's own evaluation error", |g| {
         Some(text(g, "node state", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
     });
@@ -224,7 +224,7 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
 fn list_globals_names_the_system_globals_an_expression_can_read() {
     let g = Goofi::new();
     let first = g.call("global list", j!({}))["globals"][0].clone();
-    assert_eq!(first["name"], "default_ufreq");
+    assert_eq!(first["name"], "system.default_ufreq");
     assert_eq!(first["type"], "float");
     assert_eq!(first["value"], 30.0);
     assert_eq!(first["system"], true);

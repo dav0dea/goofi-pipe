@@ -25,9 +25,9 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.link(osc, "out", buf, "data");
     g.link(buf, "out", sink, "data");
 
-    g.call("global add", j!({ "name": "gain", "value": 2.0, "type": "float" }));
+    g.call("global add", j!({ "name": "patch.gain", "value": 2.0, "type": "float" }));
     g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size",
-                                   "expression": "globals.gain * 64" }));
+                                   "expression": "globals.patch.gain * 64" }));
     // …and a reference over it: the archive carries the whole record, the expression retained.
     let level = g.add("_TestScalar");
     g.call("node edit", j!({ "node": hex(level), "name": "level" }));
@@ -58,7 +58,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     assert_eq!(recs[&scope]["scope"], outer, "membership rides the record it belongs to");
     let source = &recs[&hex(sink)]["sources"][0];
     assert_eq!((&source["mode"], &source["expression"], &source["reference"]),
-               (&j!("reference"), &j!("globals.gain * 64"), &j!("level.out")), "{source}");
+               (&j!("reference"), &j!("globals.patch.gain * 64"), &j!("level.out")), "{source}");
 
     g.call("layout panel edit", j!({ "panel": panel(&g), "type": "viewer",
                                         "state": { "node": hex(osc), "slot": "out" } }));
@@ -109,7 +109,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     assert!(!manifest["yaml"].as_str().unwrap().contains("goofi_home"),
             "a machine path in a patch file travels to the wrong machine");
     let held = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
-        .find(|e| e["name"] == "goofi_home").cloned().unwrap();
+        .find(|e| e["name"] == "system.goofi_home").cloned().unwrap();
     assert_eq!(held["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));
 
     let snap = ev.next("graph_replaced");

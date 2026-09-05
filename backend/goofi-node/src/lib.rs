@@ -286,14 +286,14 @@ pub fn scan_nd_calls(source: &str) -> Vec<NdCall<'_>> {
     out
 }
 
-/// One `globals.<name>` read [`scan_globals`] found; the span covers the `globals.` prefix too.
+/// One `globals.<group>.<element>` read [`scan_globals`] found; the span covers the prefix too.
 pub struct GlobalRead<'a> {
     pub start: usize,
     pub end: usize,
     pub name: &'a str,
 }
 
-/// Scan `source` for `globals.<name>` reads, on the same word-boundary rule.
+/// Scan `source` for `globals.<group>.<element>` reads, on the same word-boundary rule.
 pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
     const PREFIX: &str = "globals.";
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -312,8 +312,21 @@ pub fn scan_globals(source: &str) -> Vec<GlobalRead<'_>> {
             end += 1;
         }
         if end > name_start && !bytes[name_start].is_ascii_digit() {
-            out.push(GlobalRead { start, end, name: &source[name_start..end] });
-            i = end;
+            // Every global is `group.element`, so one identifier alone names nothing.
+            let Some(el_start) = (bytes.get(end) == Some(&b'.')).then(|| end + 1) else {
+                i = end;
+                continue;
+            };
+            let mut el_end = el_start;
+            while el_end < bytes.len() && is_ident(bytes[el_end]) {
+                el_end += 1;
+            }
+            if el_end == el_start || bytes[el_start].is_ascii_digit() {
+                i = end;
+                continue;
+            }
+            out.push(GlobalRead { start, end: el_end, name: &source[name_start..el_end] });
+            i = el_end;
         }
     }
     out

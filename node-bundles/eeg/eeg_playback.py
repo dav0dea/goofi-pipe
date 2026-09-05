@@ -46,7 +46,7 @@ class EegPlayback(goofi.Node):
             "file": goofi.StringParam(
                 "",
                 doc="A recording in any format mne reads.",
-                expression='globals.goofi_home + "/data/samples/" + me.params.playback.sample',
+                expression='globals.system.goofi_home + "/data/samples/" + me.params.playback.sample',
             ),
             "loop": goofi.BoolParam(True, doc="Start over at the end, or stop there."),
             "scale": goofi.FloatParam(1e6, 0.0, 1e9, doc="Multiplier on mne's volts; 1e6 reads as microvolts."),

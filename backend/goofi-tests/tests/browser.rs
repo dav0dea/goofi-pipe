@@ -73,11 +73,11 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     assert_eq!(born.map(|n| n["panel_type"].clone()), Some(j!("empty")),
                "the peer's split converged, and a split births an EMPTY panel");
 
-    assert_eq!(c.doc().read_at(&["globals", "default_ufreq", "system"]), Some(j!(true)));
-    peer.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" })).await;
-    c.until_doc(|d| d.read_at(&["globals", "subject", "value"]).is_some()).await;
-    assert_eq!(c.doc().read_at(&["globals", "subject", "value"]), Some(j!("P07")));
-    assert_eq!(c.doc().read_at(&["globals", "subject", "system"]), Some(j!(false)),
+    assert_eq!(c.doc().read_at(&["globals", "system.default_ufreq", "system"]), Some(j!(true)));
+    peer.call("global add", j!({ "name": "patch.subject", "value": "P07", "type": "string" })).await;
+    c.until_doc(|d| d.read_at(&["globals", "patch.subject", "value"]).is_some()).await;
+    assert_eq!(c.doc().read_at(&["globals", "patch.subject", "value"]), Some(j!("P07")));
+    assert_eq!(c.doc().read_at(&["globals", "patch.subject", "system"]), Some(j!(false)),
                "a user global is distinguishable from a system one in the replica");
 
     // A merge patch spells a delete as an explicit `null`, and the gate compares the whole projection.
@@ -316,7 +316,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
     });
     let tb = tokio::spawn(async move {
         for i in 0..BURST {
-            b.call("global add", j!({ "name": format!("g{i}"), "value": i as f64, "type": "float" })).await;
+            b.call("global add", j!({ "name": format!("patch.g{i}"), "value": i as f64, "type": "float" })).await;
         }
         b
     });
@@ -342,7 +342,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
             .unwrap_or_else(|| panic!("osc{i} is missing from the replica"));
         assert_eq!(d.read_at(&["nodes", uid.as_str(), "params", "lfo", "amplitude", "value"]),
                    Some(j!(0.1 * i as f64)), "A's rename and its param edit both landed on osc{i}");
-        assert_eq!(d.read_at(&["globals", &format!("g{i}"), "value"]), Some(j!(i as f64)),
+        assert_eq!(d.read_at(&["globals", &format!("patch.g{i}"), "value"]), Some(j!(i as f64)),
                    "device B's global g{i}");
     }
 }

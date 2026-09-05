@@ -47,13 +47,13 @@ pub struct GlobalDef {
 
 pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
     GlobalDef {
-        name: "default_ufreq",
+        name: "system.default_ufreq",
         value: || GlobalValue::Float(30.0),
         doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
         locked: false,
     },
     GlobalDef {
-        name: "goofi_home",
+        name: "system.goofi_home",
         value: || GlobalValue::Str(crate::path::to_slash(&crate::home::dir())),
         doc: "The .goofi folder, where goofi keeps its own files. The machine says where it is.",
         locked: true,
@@ -91,6 +91,24 @@ pub fn is_valid_identifier(name: &str) -> bool {
 /// What a node or slot name has to be, said once — it is the tail of every refusal about one.
 pub const NAME_RULE: &str =
     "a letter then letters or digits, and not a Python keyword — an expression reads a name as an attribute, and a reference spells `node.slot`";
+
+/// The group and the element of a global's name, or `None` when it is not `group.element`.
+pub fn split_global(name: &str) -> Option<(&str, &str)> {
+    let (group, element) = name.split_once('.')?;
+    match is_valid_identifier(group) && is_valid_identifier(element) {
+        true => Some((group, element)),
+        false => None,
+    }
+}
+
+/// A legal global name: a group and an element, each an identifier. Every global is in a group.
+pub fn is_valid_global_name(name: &str) -> bool {
+    split_global(name).is_some()
+}
+
+/// What a global's name has to be, said once — it is the tail of every refusal about one.
+pub const GLOBAL_NAME_RULE: &str =
+    "a group and an element, `group.element`, each a letter or underscore then letters, digits or underscores, and neither a Python keyword";
 
 /// A legal node or slot name: `[A-Za-z][A-Za-z0-9]*` and not reserved. Narrower than a global's
 /// identifier so that `node.slot` needs no quoting anywhere it is spelled.
@@ -174,8 +192,8 @@ impl GlobalStore {
     /// Add a NEW user global, at ordered position `at` (clamped) when given — the re-add a
     /// delete/rename undo needs. Errors on an invalid name or a collision.
     pub fn add(&mut self, name: &str, value: GlobalValue, at: Option<usize>) -> Result<(), String> {
-        if !is_valid_identifier(name) {
-            return Err(format!("invalid global name `{name}`"));
+        if !is_valid_global_name(name) {
+            return Err(format!("invalid global name `{name}`: {GLOBAL_NAME_RULE}"));
         }
         if self.values.contains_key(name) {
             return Err(format!("global `{name}` already exists"));
