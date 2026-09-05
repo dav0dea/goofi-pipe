@@ -1,5 +1,5 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{AudioNode, Block, Edge, Manifest, OutputDecl, ParamDecl, ParamSpec, Tag, BLOCK, GATE_HIGH, MAX_CHANNELS};
+use goofi_audio_sdk::{high, AudioNode, Block, Edge, Manifest, OutputDecl, ParamDecl, ParamSpec, Tag, BLOCK, MAX_CHANNELS};
 
 goofi_audio_sdk::params! {
     GATE = ParamDecl {
@@ -7,7 +7,7 @@ goofi_audio_sdk::params! {
         name: "gate",
         spec: ParamSpec::Bool { default: false },
         expression: None,
-        doc: Some("HIGH at 0.5 and above; an audio reference is one voice per channel"),
+        doc: Some("HIGH above zero; an audio reference is one voice per channel"),
     },
     ATTACK = ParamDecl {
         group: "env",
@@ -28,7 +28,7 @@ goofi_audio_sdk::params! {
         name: "sustain",
         spec: ParamSpec::Float { default: 1.0, min: 0.0, max: 1.0 },
         expression: None,
-        doc: None,
+        doc: Some("the level held while the gate stays HIGH"),
     },
     RELEASE = ParamDecl {
         group: "env",
@@ -85,7 +85,7 @@ impl AudioNode for Env {
             for i in 0..BLOCK {
                 if edge.rising(gate[i]) {
                     *stage = Stage::Attack;
-                } else if gate[i] < GATE_HIGH && !matches!(*stage, Stage::Idle | Stage::Release) {
+                } else if !high(gate[i]) && !matches!(*stage, Stage::Idle | Stage::Release) {
                     *stage = Stage::Release;
                 }
                 let per = |seconds: f32| self.step / seconds.max(1e-4);

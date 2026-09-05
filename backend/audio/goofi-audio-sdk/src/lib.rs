@@ -144,10 +144,14 @@ pub trait AudioNode: Send {
 }
 
 /// The conventions, stated once: a bipolar signal lives in `[-1, 1]` and `1` is full scale; a
-/// unipolar one in `[0, 1]`; a gate is HIGH at `>= GATE_HIGH`; pitch is volts per octave, zero
-/// at C4, so transposition is an addition.
-pub const GATE_HIGH: f32 = 0.5;
+/// unipolar one in `[0, 1]`; a gate is HIGH above zero; pitch is volts per octave, zero at C4,
+/// so transposition is an addition.
 pub const C4_HZ: f32 = 261.63;
+
+/// Whether a gate is HIGH, by goofi's one rule for it — the same one the signal plane reads.
+pub fn high(v: f32) -> bool {
+    goofi_node::mailbox::gate(v as f64)
+}
 
 pub fn hz_of(pitch: f32) -> f32 {
     C4_HZ * 2f32.powf(pitch)
@@ -162,7 +166,7 @@ pub struct Edge {
 
 impl Edge {
     pub fn rising(&mut self, v: f32) -> bool {
-        let high = v >= GATE_HIGH;
+        let high = high(v);
         let rose = high && !self.high;
         self.high = high;
         rose

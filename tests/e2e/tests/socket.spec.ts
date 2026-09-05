@@ -97,7 +97,7 @@ test.describe('the control socket', () => {
 							node_out: a,
 							slot_out: 'out',
 							node_in: b,
-							slot_in: 'data'
+							slot_in: 'input'
 						}),
 					[osc, buf]
 				);
@@ -236,7 +236,7 @@ test.describe('the control socket', () => {
 							node_out: p,
 							slot_out: 'value',
 							node_in: b,
-							slot_in: 'data'
+							slot_in: 'input'
 						}),
 					[port, buf]
 				);
@@ -378,7 +378,7 @@ test.describe('the control socket', () => {
 							node_out: x,
 							slot_out: 'out',
 							node_in: y,
-							slot_in: 'data'
+							slot_in: 'input'
 						}),
 					[c, d]
 				);
@@ -411,7 +411,7 @@ test.describe('the control socket', () => {
 				expect(
 					doc.links.some(
 						(l: { node_out: string; node_in: string; slot_in: string }) =>
-							within.includes(l.node_out) && within.includes(l.node_in) && l.slot_in === 'data'
+							within.includes(l.node_out) && within.includes(l.node_in) && l.slot_in === 'input'
 					),
 					'the cut carried the wiring among the cut nodes'
 				).toBe(true);

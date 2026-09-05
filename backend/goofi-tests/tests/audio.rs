@@ -88,8 +88,10 @@ fn a_patch_sounds_under_the_external_clock() {
     audio.sort_unstable();
     // The shipped set, whole: three built in because their control halves own OS handles, and
     // seven files built by the same pipeline an authored node takes.
-    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:Env", "audio:Feedback", "audio:Gain",
-                       "audio:MidiIn", "audio:Osc", "audio:SignalIn", "audio:Slew", "audio:Svf"]);
+    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:Delay", "audio:Env", "audio:Feedback",
+                       "audio:Filter", "audio:FreqShift", "audio:Gain", "audio:Limiter", "audio:MidiIn",
+                       "audio:Mixdown", "audio:Noise", "audio:Osc", "audio:Quantize", "audio:Reverb",
+                       "audio:SignalIn", "audio:Slew"]);
     let osc = g.add("Osc");
     let gain = g.add("Gain");
     let out = g.add("AudioOut");
@@ -130,7 +132,7 @@ fn a_patch_sounds_under_the_external_clock() {
     // output, the record keeps the literal, and the sound is unchanged.
     let refused = g.call(
         "node param edit",
-        j!({ "node": hex(osc), "param": "osc/shape", "reference": format!("{osc_name}.out"), "mode": "reference" }),
+        j!({ "node": hex(osc), "param": "osc/waveform", "reference": format!("{osc_name}.out"), "mode": "reference" }),
     );
     assert!(refused["error"].as_str().is_some_and(|e| e.contains("AUDIO") && e.contains("STRING")), "{refused}");
     let (e2, _) = drive(&g, TENTH);
@@ -142,14 +144,14 @@ fn a_patch_sounds_under_the_external_clock() {
     // reach. The slew is given a full-scale square and a one-second slope: what comes out is a
     // hundredth of it.
     let square = g.add("Osc");
-    g.set_param(square, "osc", "shape", "square");
-    let filter = g.add("Svf");
+    g.set_param(square, "osc", "waveform", "square");
+    let filter = g.add("audio:Filter");
     g.link(square, "out", filter, "input");
     g.set_param(filter, "filter", "cutoff", -4.0);
     heard(&g, filter, "an A4 square five octaves under the cutoff", |x| peak(x) < 0.2);
-    g.set_param(filter, "filter", "mode", "high");
+    g.set_param(filter, "filter", "mode", "highpass");
     heard(&g, filter, "the same corner, passing everything above it", |x| peak(x) > 0.9 && near(per_tenth(x), 88));
-    g.set_param(filter, "filter", "mode", "low");
+    g.set_param(filter, "filter", "mode", "lowpass");
     g.set_param(filter, "filter", "cutoff", 0.75);
     g.set_param(filter, "filter", "q", 10.0);
     heard(&g, filter, "resonance built across blocks", |x| peak(x) > 3.0);
@@ -160,6 +162,85 @@ fn a_patch_sounds_under_the_external_clock() {
     g.link(square, "out", slew, "input");
     heard(&g, slew, "a full-scale square rate-limited to a hundredth", |x| peak(x) > 0.0 && peak(x) < 0.01);
     for uid in [square, filter, slew] {
+        g.call("node remove", j!({ "node": hex(uid) }));
+    }
+
+    // Step: the seven new nodes, each read for the one thing it is for. Noise makes sound out of
+    // nothing and pink has less of the top than white; a shift is an ADDITION in hertz, so the
+    // sine that crossed 880 times a tenth crosses 1280 once it is moved up by 200.
+    let noise = g.add("audio:Noise");
+    let white = heard(&g, noise, "white noise", |x| peak(x) > 0.5 && mean(x).abs() < 0.1);
+    g.set_param(noise, "noise", "mode", "pink");
+    let pink = heard(&g, noise, "pink noise", |x| peak(x) > 0.0 && per_tenth(x) < per_tenth(&white) / 2);
+    assert!(peak(&pink) > 0.0, "pink noise is still noise");
+    let four = g.probe(noise, "out");
+    g.set_param(noise, "noise", "channels", 4);
+    g.until("four channels of it", |g| {
+        drive(g, TENTH);
+        four.latest().filter(|d| shape(d)[0] == 4).map(|_| ())
+    });
+    g.call("node remove", j!({ "node": hex(noise) }));
+
+    let tone = g.add("Osc");
+    let shift = g.add("audio:FreqShift");
+    g.link(tone, "out", shift, "input");
+    heard(&g, shift, "an A4 through a shifter set to zero", |x| near(per_tenth(x), 88));
+    g.set_param(shift, "freq_shift", "frequency", 200.0);
+    // A shifter leaves a little of the other sideband behind, so the count is close, not exact.
+    heard(&g, shift, "the same tone moved up two hundred hertz", |x| per_tenth(x).abs_diff(128) <= 6);
+
+    // A limiter is a promise about the ceiling, so it is given far more than it can pass.
+    let loud = g.add("Gain");
+    g.set_param(loud, "gain", "gain", 8.0);
+    let limiter = g.add("audio:Limiter");
+    g.set_param(limiter, "limiter", "ceiling", 0.5);
+    g.link(tone, "out", loud, "input");
+    g.link(loud, "out", limiter, "input");
+    heard(&g, limiter, "eight times full scale held under half of it", |x| peak(x) > 0.2 && peak(x) <= 0.5);
+
+    // A delay is silent for as long as it was told to be, and a reverb keeps sounding after the
+    // sound that made it has gone.
+    let delay = g.add("audio:Delay");
+    g.set_param(delay, "delay", "mix", 1.0);
+    g.set_param(delay, "delay", "time", 1.0);
+    g.link(tone, "out", delay, "input");
+    let quiet = heard(&g, delay, "a second of silence before the echo", |x| peak(x) == 0.0);
+    assert_eq!(peak(&quiet), 0.0, "nothing arrives before the delay is up");
+    g.set_param(delay, "delay", "time", 0.01);
+    heard(&g, delay, "…and the echo once the delay is short", |x| peak(x) > 0.5);
+
+    let reverb = g.add("audio:Reverb");
+    g.set_param(reverb, "reverb", "mix", 1.0);
+    g.link(tone, "out", reverb, "input");
+    heard(&g, reverb, "a room around the tone", |x| peak(x) > 0.0);
+    g.call("link remove", j!({ "from": ep(hex(tone), "out"), "to": ep(hex(reverb), "input") }));
+    heard(&g, reverb, "…that keeps sounding once the tone has gone", |x| peak(x) > 0.0);
+
+    // A quantizer answers only the notes of its scale, and a mixdown answers a fixed width.
+    let steps = g.add("audio:Quantize");
+    g.set_param(steps, "quantize", "scale", "pentatonic_major");
+    g.link(tone, "out", steps, "input");
+    let on_scale = |x: &[f32]| {
+        x.iter().all(|v| {
+            let semis = v * 12.0;
+            (semis - semis.round()).abs() < 1e-3
+                && [0, 2, 4, 7, 9].contains(&(semis.round() as i32).rem_euclid(12))
+        })
+    };
+    let held = heard(&g, steps, "a pitch pulled onto a scale step", on_scale);
+    assert!(held.iter().any(|v| *v != held[0]), "the pitch still moves: {:?}", &held[..4]);
+
+    let wide = g.add("audio:Noise");
+    g.set_param(wide, "noise", "channels", 6);
+    let down = g.add("audio:Mixdown");
+    g.link(wide, "out", down, "input");
+    let stereo = g.probe(down, "out");
+    let mixed = g.until("six channels folded to two", |g| {
+        drive(g, TENTH);
+        stereo.latest().filter(|d| shape(d)[0] == 2)
+    });
+    assert_eq!(shape(&mixed)[0], 2, "the width is the one that was asked for");
+    for uid in [tone, shift, loud, limiter, delay, reverb, steps, wide, down] {
         g.call("node remove", j!({ "node": hex(uid) }));
     }
 
@@ -418,7 +499,7 @@ fn a_patch_sounds_under_the_external_clock() {
     g.call("node remove", j!({ "node": hex(buffer) }));
     let ramp = g.add("_TestRamp");
     let signal_in = g.add("SignalIn");
-    g.link(ramp, "out", signal_in, "data");
+    g.link(ramp, "out", signal_in, "input");
     g.link(signal_in, "out", out, "input");
     let first = g.until("the ramp to enter", |g| {
         let (x, _) = drive(g, TENTH);
@@ -436,7 +517,7 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: a frame that is not a number crosses as silence — a NaN stays on the plane that made
     // it and never enters the plan.
     g.call("node remove", j!({ "node": hex(ramp) }));
-    g.link(poison, "out", signal_in, "data");
+    g.link(poison, "out", signal_in, "input");
     let poisoned = g.probe(poison, "out");
     g.until("the NaN to be emitted", |g| {
         drive(g, TENTH);
@@ -482,11 +563,15 @@ fn a_patch_sounds_under_the_external_clock() {
     sounds(&g, "…and to open", |x| x[x.len() - 1] > 0.99);
 
     // Step: an audio-rate gate is one voice per channel — a four-channel ramp through `SignalIn`
-    // as the gate: the channel still below the threshold is shut, the three above it sound.
+    // as the gate, pushed down by one so the first channel never rises above zero: it stays shut
+    // while the three above it sound. A gate is HIGH above zero, on both planes.
     let ramp4 = g.add("_TestRamp");
     g.set_param(ramp4, "ramp", "channels", 4);
+    let under = g.add("Math");
+    g.set_param(under, "math", "pre_add", -1.0);
     let in4 = g.add("SignalIn");
-    g.link(ramp4, "out", in4, "data");
+    g.link(ramp4, "out", under, "input");
+    g.link(under, "out", in4, "input");
     let in4_name = g.doc()["nodes"][hex(in4)]["name"].as_str().unwrap().to_string();
     let bound = g.call(
         "node param edit",
@@ -498,7 +583,7 @@ fn a_patch_sounds_under_the_external_clock() {
         let last = &x[x.len() - 4..];
         (channels == 4 && last[0] == 0.0 && last[1..].iter().all(|v| *v > 0.99)).then_some(())
     });
-    for uid in [env, in4, ramp4] {
+    for uid in [env, in4, under, ramp4] {
         g.call("node remove", j!({ "node": hex(uid) }));
     }
 
@@ -507,7 +592,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let ramp2 = g.add("_TestRamp");
     g.set_param(ramp2, "ramp", "channels", 2);
     let in2 = g.add("SignalIn");
-    g.link(ramp2, "out", in2, "data");
+    g.link(ramp2, "out", in2, "input");
     g.link(in2, "out", out, "input");
     g.until("stereo", |g| {
         let (x, channels) = drive(g, TENTH);

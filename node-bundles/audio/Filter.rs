@@ -5,9 +5,13 @@ goofi_audio_sdk::params! {
     MODE = ParamDecl {
         group: "filter",
         name: "mode",
-        spec: ParamSpec::Str { default: "low", options: &["low", "band", "high"], refresh: false },
+        spec: ParamSpec::Str {
+            default: "lowpass",
+            options: &["lowpass", "bandpass", "highpass"],
+            refresh: false,
+        },
         expression: None,
-        doc: None,
+        doc: Some("which part of the spectrum survives: below the cutoff, around it, or above it"),
     },
     CUTOFF = ParamDecl {
         group: "filter",
@@ -38,13 +42,13 @@ static MANIFEST: Manifest = Manifest {
 };
 
 #[derive(Default)]
-struct Svf {
+struct Filter {
     rate: f32,
     ic1: [f32; MAX_CHANNELS as usize],
     ic2: [f32; MAX_CHANNELS as usize],
 }
 
-impl AudioNode for Svf {
+impl AudioNode for Filter {
     fn prepare(&mut self, rate: f64) {
         self.rate = rate as f32;
     }
@@ -79,4 +83,4 @@ impl AudioNode for Svf {
     }
 }
 
-goofi_audio_sdk::export!(Svf, MANIFEST);
+goofi_audio_sdk::export!(Filter, MANIFEST);

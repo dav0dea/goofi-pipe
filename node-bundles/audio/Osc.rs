@@ -9,12 +9,16 @@ goofi_audio_sdk::params! {
         expression: None,
         doc: Some("volts per octave, 0 at C4 (0.75 is A4); an audio reference is one voice per channel"),
     },
-    SHAPE = ParamDecl {
+    WAVEFORM = ParamDecl {
         group: "osc",
-        name: "shape",
-        spec: ParamSpec::Str { default: "sine", options: &["sine", "saw", "square", "tri"], refresh: false },
+        name: "waveform",
+        spec: ParamSpec::Str {
+            default: "sine",
+            options: &["sine", "triangle", "sawtooth", "square"],
+            refresh: false,
+        },
         expression: None,
-        doc: None,
+        doc: Some("the shape one cycle traces, from the roundest to the brightest"),
     },
 }
 
@@ -41,17 +45,17 @@ impl AudioNode for Osc {
 
     fn process(&mut self, b: &mut Block<'_>) {
         let pitch = &b.params[P::PITCH];
-        let shape = b.params[P::SHAPE].chan(0)[0] as u8;
+        let waveform = b.params[P::WAVEFORM].chan(0)[0] as u8;
         let out = &mut b.outs[0];
         for c in 0..out.channels() as usize {
             let p = pitch.chan(c);
             let phase = &mut self.phase[c];
             let samples = out.chan_mut(c);
             for i in 0..BLOCK {
-                samples[i] = match shape {
-                    1 => 2.0 * *phase - 1.0,
-                    2 => if *phase < 0.5 { 1.0 } else { -1.0 },
-                    3 => 1.0 - 4.0 * (*phase - 0.5).abs(),
+                samples[i] = match waveform {
+                    1 => 1.0 - 4.0 * (*phase - 0.5).abs(),
+                    2 => 2.0 * *phase - 1.0,
+                    3 => if *phase < 0.5 { 1.0 } else { -1.0 },
                     _ => (std::f32::consts::TAU * *phase).sin(),
                 };
                 *phase = (*phase + hz_of(p[i]) * self.step).fract();

@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use goofi_audio_sdk::{AudioNode, Block, BLOCK, GATE_HIGH, MAX_CHANNELS};
+use goofi_audio_sdk::{high, AudioNode, Block, BLOCK, MAX_CHANNELS};
 use goofi_node::Stamp;
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
@@ -274,7 +274,7 @@ impl Live {
             let (gate, pitch, velocity) = (&b.params[0], &b.params[1], &b.params[2]);
             for c in 0..(gate.channels() as usize).min(MAX_CHANNELS as usize) {
                 for (s, &g) in gate.chan(c).iter().enumerate() {
-                    match (g >= GATE_HIGH, self.held[c]) {
+                    match (high(g), self.held[c]) {
                         (true, None) => {
                             let note = (60.0 + 12.0 * pitch.chan(c)[s]).round().clamp(0.0, 127.0) as i16;
                             self.held[c] = Some(note);

@@ -2,7 +2,7 @@ use goofi_audio_sdk::goofi_core::SlotType;
 use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, SlotDecl, Tag};
 
 static INS: &[SlotDecl] =
-    &[SlotDecl { name: "data", kind: SlotType::Array, trigger_process: false, multi: false, required: false }];
+    &[SlotDecl { name: "input", kind: SlotType::Array, trigger_process: false, multi: false, required: false }];
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 static MANIFEST: Manifest = Manifest {

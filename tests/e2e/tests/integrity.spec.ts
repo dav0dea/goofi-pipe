@@ -70,7 +70,7 @@ test('a patch under construction holds together at every stage', async ({ page }
 						node_out: a,
 						slot_out: 'out',
 						node_in: b,
-						slot_in: 'data'
+						slot_in: 'input'
 					}),
 				[osc, buf]
 			);
@@ -113,7 +113,7 @@ test('a patch under construction holds together at every stage', async ({ page }
 						node_out: a,
 						slot_out: 'out',
 						node_in: b,
-						slot_in: 'data'
+						slot_in: 'input'
 					}),
 				[osc, psd]
 			);
