@@ -416,11 +416,10 @@ async fn a_harness_runs_unwatched_and_its_roster_survives_a_reconnect() {
     state.release_mount();
 }
 
-/// Turn the line discipline's echo OFF, then have the child report where it is and what it holds.
-/// The readiness marker is spelled `REA''DY`, which only the child prints joined.
+/// Have the child report where it is and what it holds, in ONE line: a line sent at a prompt
+/// after `stty -echo` is one an MSYS shell under ConPTY never answers. The end marker is spelled
+/// `E''ND`, which only the child prints joined, so the echoed command cannot end the read.
 async fn report(term: &mut Ws) -> String {
-    term.send(Message::Binary(b"stty -echo; echo REA''DY\n".to_vec().into())).await.unwrap();
-    read_until(term, "READY").await;
     term.send(Message::Binary(
         b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]E''ND\\n' \"$(pwd -P)\" \
           \"$TERM\" \"$COLORTERM\" \"$LC_ALL\" \"$HOME\" \"$STATED_BY_THE_TEST\"\n".to_vec().into()))
