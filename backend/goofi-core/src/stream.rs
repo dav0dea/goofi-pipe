@@ -34,6 +34,40 @@ fn reorder(shape: &[usize], dim: usize, src: &[u8], to_time_major: bool) -> Vec<
     out
 }
 
+/// The lanes of `src` along `dim`: one run of values per position on the other axes, which is
+/// the shape every stitching node works in.
+pub fn lanes(shape: &[usize], dim: usize, src: &[u8]) -> Vec<Vec<f32>> {
+    let (outer, steps, inner) = split(shape, dim);
+    let mut out = Vec::with_capacity(outer * inner);
+    for o in 0..outer {
+        for i in 0..inner {
+            let at = |k: usize| (((o * steps) + k) * inner + i) * 4;
+            out.push(
+                (0..steps)
+                    .map(|k| f32::from_le_bytes(src[at(k)..at(k) + 4].try_into().expect("four bytes")))
+                    .collect(),
+            );
+        }
+    }
+    out
+}
+
+/// Lay lanes back into `shape` along `dim` — the inverse of [`lanes`].
+pub fn unlanes(shape: &[usize], dim: usize, lanes: &[Vec<f32>]) -> Vec<u8> {
+    let (outer, steps, inner) = split(shape, dim);
+    let mut out = vec![0u8; outer * steps * inner * 4];
+    for o in 0..outer {
+        for i in 0..inner {
+            let lane = &lanes[o * inner + i];
+            for (k, v) in lane.iter().enumerate().take(steps) {
+                let at = (((o * steps) + k) * inner + i) * 4;
+                out[at..at + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
 fn step(s: &[u8], i: usize, stride: usize) -> &[u8] {
     &s[i * stride..(i + 1) * stride]
 }

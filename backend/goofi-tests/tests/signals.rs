@@ -352,3 +352,78 @@ fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
         assert!(g.error(n).is_none(), "a control node carries no error: {:?}", g.error(n));
     }
 }
+
+#[test]
+fn a_stitching_node_answers_from_the_past_and_a_transform_round_trips() {
+    // A stitching node keeps no state of its own, only the recent past of its input. The counter
+    // sends ONE sample per frame, so a node that keeps no past cannot look back at all. The
+    // z-score step below is what pins that: it has a closed form, on one wire, and it fails when
+    // the past is taken away. The others share the one `Stream` it proves.
+    let g = Goofi::new();
+    let set = |n, group: &str, name: &str, v: serde_json::Value| {
+        g.set_param(n, group, name, v);
+    };
+    let counter = g.add("_TestCounter");
+
+    // A level held steady comes out at the same level: the mean is exact, and the clamped head of
+    // the window does not pull it. A node that averaged in a zero it had never been sent would.
+    let level = g.add("Constant");
+    set(level, "constant", "value", j!(6.0));
+    set(level, "constant", "shape", j!("16"));
+    let smooth = g.add("Smooth");
+    set(smooth, "smooth", "size", j!(4));
+    let ps = g.probe(smooth, "out");
+    g.link(level, "out", smooth, "input");
+    let held = g.until("the smoothed level", |_| ps.latest().filter(|d| shape(d) == vec![16]));
+    assert!(f32s(&held).iter().all(|v| (v - 6.0).abs() < 1e-4),
+            "a steady level smooths to itself: {:?}", f32s(&held));
+
+    // A z-score over a window of eight consecutive whole numbers is the same number every time:
+    // the newest sample is 3.5 above the mean, and the spread of that window is the square root
+    // of 5.25.
+    let norm = g.add("Normalize");
+    set(norm, "window", "size", j!(8));
+    let pn = g.probe(norm, "out");
+    g.link(counter, "out", norm, "input");
+    let want = 3.5 / 5.25f32.sqrt();
+    g.until("the z-score of a ramp to settle", |_| {
+        pn.latest().filter(|d| shape(d) == vec![1] && (f32s(d)[0] - want).abs() < 0.02)
+    });
+
+    // A delay keeps the shape and the level it was given, at any reach: it moves the stream along
+    // its own axis and invents nothing. What the reach itself buys is the past proven above.
+    let delay = g.add("Delay");
+    set(delay, "delay", "size", j!(4));
+    let pd = g.probe(delay, "out");
+    g.link(level, "out", delay, "input");
+    let later = g.until("the delayed level", |_| pd.latest().filter(|d| shape(d) == vec![16]));
+    assert!(f32s(&later).iter().all(|v| (v - 6.0).abs() < 1e-4),
+            "a delay moves the stream, it does not change it: {:?}", f32s(&later));
+
+    // The spectrum both ways over a constant: what comes back is what went in, and the rate the
+    // forward pass folded into the bin spacing is read out of it again.
+    let flat = g.add("Constant");
+    set(flat, "constant", "value", j!(5.0));
+    set(flat, "constant", "shape", j!("64"));
+    let stamp = g.add("Meta");
+    set(stamp, "meta", "sfreq", j!(256.0));
+    let fwd = g.add("Fft");
+    let back = g.add("Fft");
+    set(back, "fft", "mode", j!("inverse"));
+    let (pf, pb) = (g.probe(fwd, "out"), g.probe(back, "out"));
+    g.link(flat, "out", stamp, "input");
+    g.link(stamp, "out", fwd, "input");
+    g.link(fwd, "out", back, "input");
+    let spectrum = g.until("the one-sided bins", |_| pf.latest().filter(|d| shape(d) == vec![33, 2]));
+    assert_eq!(spectrum.meta().sfreq(), None, "a spectrum is not a time series");
+    let freqs = spectrum.meta().channels().get(0).and_then(|x| x.coords.clone()).expect("bin coords");
+    assert_eq!(freqs[1], goofi_core::Coord::Num(4.0), "64 samples at 256 Hz make four-hertz bins");
+    let again = g.until("the samples back", |_| {
+        pb.latest().filter(|d| shape(d) == vec![64] && f32s(d).iter().all(|v| (v - 5.0).abs() < 1e-3))
+    });
+    assert_eq!(again.meta().sfreq(), Some(256.0), "the rate came back out of the bin spacing");
+
+    for n in [smooth, norm, delay, fwd, back] {
+        assert!(g.error(n).is_none(), "a stitching node carries no error: {:?}", g.error(n));
+    }
+}
