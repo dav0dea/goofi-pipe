@@ -42,7 +42,7 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     assert!(idle["frame"].is_null() && idle["reason"].as_str().is_some_and(|r| r.contains("emit")),
             "{idle}");
     let probe = g.probe(buf, "out"); // opened BEFORE the wire: the data services keep no history
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
 
     let full = g.until("the window to fill", |_| {
         probe.latest().filter(|d| f32s(d).len() == 64).map(|d| f32s(&d))
@@ -140,7 +140,7 @@ fn each_way_a_node_can_fail_is_reported_and_none_of_them_stops_the_patch() {
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let probe = g.probe(buf, "out");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
 
     let why = g.until("the failing node's error", |g| g.error(bad));
     assert!(why.contains("the sensor is unplugged"), "the node's own words reach the client: {why}");
@@ -292,7 +292,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // never holds a frame — so a viewer on one has to land on the reducer already here rather than
     // opening a second on a slot that produces nothing.
     let buf = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     // The group minted the port itself: the cable it cut is what a boundary port IS.
@@ -319,7 +319,7 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     // Wiring BOTH sides is what puts a stream behind it, and neither half alone does — so the
     // socket has to still be there for the second one. It then joins the reducer already serving
     // that stream, rather than staying frozen on the answer it got when it opened.
-    g.call("link add", j!({ "from": ep(&bare, "value"), "to": ep(&mid, "data") }));
+    g.call("link add", j!({ "from": ep(&bare, "value"), "to": ep(&mid, "input") }));
     assert_eq!(g.state.reducers.subscribers(&key), 7, "the inside alone feeds it nothing");
     g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bare) }));
     assert!(holds_within(Duration::from_secs(5), || g.state.reducers.subscribers(&key) == 8).await,

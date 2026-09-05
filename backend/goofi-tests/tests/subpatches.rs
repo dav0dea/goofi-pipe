@@ -69,8 +69,8 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
-    g.link(buf, "out", sink, "data");
+    g.link(osc, "out", buf, "input");
+    g.link(buf, "out", sink, "input");
 
     // The SELECTION is what decides which side of the boundary a cable is on. Grouping the middle
     // node alone leaves both its cables crossing, so grouping has to mint a port for each — the
@@ -88,7 +88,7 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     assert_eq!(ports.len(), 2, "one port per crossing cable, and not one per cable: {ports:?}");
     let (inp, in_inner) = port_of(&g, &inst, "InArray");
     let (outp, out_inner) = port_of(&g, &inst, "OutArray");
-    assert_eq!(in_inner, Some((hex(buf), "data".into())), "the incoming cable's port feeds the member slot it crossed at");
+    assert_eq!(in_inner, Some((hex(buf), "input".into())), "the incoming cable's port feeds the member slot it crossed at");
     assert_eq!(out_inner, Some((hex(buf), "out".into())), "and the outgoing one drains that one");
     assert_eq!(g.members(&inst), {
         let mut want = vec![hex(buf), inp.clone(), outp.clone()];
@@ -146,7 +146,7 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
     // from the state it started in mints two `out0`s, which `nd()` cannot tell apart.
     let far = g.call("node add", j!({ "type": "Buffer", "inst_id": both, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
-    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&far, "data") }));
+    g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&far, "input") }));
     let pair = group(&g, &[hex(buf), hex(osc)]);
     let doc = g.doc();
     let mut minted: Vec<&str> =
@@ -245,7 +245,7 @@ fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]); // no links yet, so no auto boundaries
     let bnd = boundary(&g, &inst, "in");
-    wire(&g, &bnd, "in", &hex(buf), "data");
+    wire(&g, &bnd, "in", &hex(buf), "input");
 
     g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bnd) }));
 
@@ -254,7 +254,7 @@ fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
     // is the graph's to resolve, so no stored link has to spell the far end out.
     let links = g.doc()["links"].as_array().cloned().unwrap_or_default();
     assert_eq!(links.len(), 2, "the external cable and the port's inner one: {links:?}");
-    assert_eq!(g.inner(&bnd), Some((hex(buf), "data".into())), "the inner one, inside the scope");
+    assert_eq!(g.inner(&bnd), Some((hex(buf), "input".into())), "the inner one, inside the scope");
     let outer = links.iter().find(|l| l["node_out"] == hex(osc)).expect("the external cable");
     assert_eq!(outer["node_in"], bnd, "the outer cable names the PORT, not the facade or the leaf");
     assert_eq!(outer["slot_in"], "value");
@@ -269,7 +269,7 @@ fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     let g = Goofi::new();
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     let inst = group(&g, &[hex(buf)]);
 
     // Authoring ALONE is what gives the sub-patch its slot: the record is complete the moment the
@@ -361,21 +361,21 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
     let bnd = boundary(&g, &inst, "in");
-    wire(&g, &bnd, "in", &hex(buf), "data");
+    wire(&g, &bnd, "in", &hex(buf), "input");
 
     // Cutting the inner cable is `remove_link` — the same op that cuts any other.
-    let cut = g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }));
+    let cut = g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "input") }));
     assert_eq!(cut["removed"], true, "the cut says it found the wire");
     assert_eq!(g.inner(&bnd), None, "the leaf is pruned, not left stale");
     assert_eq!(g.doc()["nodes"][&bnd]["type"], "InArray", "the pill itself survives the unwire");
 
     // Idempotent like every other remove, so a second cut is a no-op that says so.
-    assert_eq!(g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }))["removed"], false);
+    assert_eq!(g.call("link remove", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "input") }))["removed"], false);
 
     // A port carries ONE inner wire, so a second is refused rather than replacing the first.
-    wire(&g, &bnd, "in", &hex(buf), "data");
+    wire(&g, &bnd, "in", &hex(buf), "input");
     let second = g.add("Buffer");
-    g.refuse("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(second), "data") }));
+    g.refuse("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(second), "input") }));
 }
 
 #[test]
@@ -405,8 +405,8 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     // takes a wire exactly as an unconnected leaf does. The stream arrives when the inside is wired.
     let made = g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bnd) }));
     assert_eq!(made["to"], ep(&bnd, "value"), "the outer cable resolves to the port: {made}");
-    wire(&g, &bnd, "in", &hex(buf), "data");
-    assert_eq!(g.inner(&bnd), Some((hex(buf), "data".into())), "and the inside fills in after it");
+    wire(&g, &bnd, "in", &hex(buf), "input");
+    assert_eq!(g.inner(&bnd), Some((hex(buf), "input".into())), "and the inside fills in after it");
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     let inst = group(&g, &[hex(buf)]);
 
     let inp = boundary(&g, &inst, "in");
-    wire(&g, &inp, "in", &hex(buf), "data");
+    wire(&g, &inp, "in", &hex(buf), "input");
     g.call("node edit", j!({ "node": inp, "name": "wall" }));
 
     // A member reads its own sub-patch's input port. Nothing feeds it yet, so the refusal names it.
@@ -594,7 +594,7 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
     let inp = boundary(&g, &inst, "in");
-    wire(&g, &inp, "in", &hex(buf), "data");
+    wire(&g, &inp, "in", &hex(buf), "input");
     g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &inp) }));
 
     // An IN port wears an output slot, so it takes a viewer exactly as a node does.
@@ -665,8 +665,8 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
-    g.link(buf, "out", sink, "data");
+    g.link(osc, "out", buf, "input");
+    g.link(buf, "out", sink, "input");
 
     // An inner sub-patch around the Buffer, then an outer one around that: a copy has to recurse.
     // The Buffer reads its neighbour by name — as an expression and as a reference — so the copy

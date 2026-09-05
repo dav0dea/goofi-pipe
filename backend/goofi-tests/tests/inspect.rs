@@ -38,7 +38,7 @@ fn fixture() -> (Goofi, String) {
         .as_str().unwrap().to_string();
     let bnd = g.call("node add", j!({ "type": "InArray", "inst_id": scope,
                                      "pos": [0.0, 0.0] }))["uid"].as_str().unwrap().to_string();
-    g.call("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "data") }));
+    g.call("link add", j!({ "from": ep(&bnd, "value"), "to": ep(hex(buf), "input") }));
     g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&scope, &bnd) }));
     // The fault is a REPORT — the graph does not hold it until the node has run and said so.
     g.until("the failing node's first fault", |g| g.error(boom));
@@ -88,7 +88,7 @@ scope: subpatch0 (000000000004)
 flowchart LR
   n000000000003[\"buffer0: signal:Buffer<br/>000000000003\"]
   n000000000005([\"in0: InArray<br/>000000000005\"])
-  n000000000005 -- value\u{2192}data --> n000000000003
+  n000000000005 -- value\u{2192}input --> n000000000003
 ```
 
 uids: a uid is its mermaid id without the leading `n`.
@@ -105,7 +105,7 @@ fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade
     let g = Goofi::new();
     let a = g.add("LFO");
     let b = g.add("Buffer");
-    g.link(a, "out", b, "data");
+    g.link(a, "out", b, "input");
     g.call("nodes group", j!({ "nodes": [hex(a), hex(b)], "pos": [0.0, 0.0] }));
 
     let out = text(&g, "nodes inspect", j!({}));
@@ -118,9 +118,9 @@ fn a_node_wired_to_itself_keeps_its_edge() {
     // A node wired to its OWN input folds onto itself honestly, and the engine tolerates the cycle.
     let g = Goofi::new();
     let buf = g.add("Buffer");
-    g.link(buf, "out", buf, "data");
+    g.link(buf, "out", buf, "input");
     let out = text(&g, "nodes inspect", j!({}));
-    assert!(out.contains(&format!("n{0} -- out→data --> n{0}\n", hex(buf))), "{out}");
+    assert!(out.contains(&format!("n{0} -- out→input --> n{0}\n", hex(buf))), "{out}");
 }
 
 #[test]

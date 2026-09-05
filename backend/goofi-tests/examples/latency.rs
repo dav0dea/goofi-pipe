@@ -14,7 +14,7 @@ fn main() {
     let buf = g.add_node("Buffer", None).unwrap();
     g.update_param(buf, "buffer", "size", Param::int(1024, 1, 10_000_000)).unwrap();
     let probe = OutputProbe::open(&g, buf, "out");
-    g.add_link(src, "out", buf, "data").unwrap();
+    g.add_link(src, "out", buf, "input").unwrap();
 
     // The link attaches over a three-phase sequence that advances on acks, so wait for it.
     let ready = Instant::now();

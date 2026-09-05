@@ -105,14 +105,14 @@ overriding a shipped type of the same name.
     import goofi
 
     class Scale(goofi.Node):
-        INPUTS = {"data": goofi.DataType.ARRAY}
+        INPUTS = {"input": goofi.DataType.ARRAY}
         OUTPUTS = {"out": goofi.DataType.ARRAY}
         PARAMS = {"scale": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
 
-        def process(self, data):
-            if data is None:
+        def process(self, input):
+            if input is None:
                 return None
-            return {"out": (data.data * self.params.scale.factor, data.meta)}
+            return {"out": (input.data * self.params.scale.factor, input.meta)}
 
     goofi library refresh → {"added": ["Scale"], "changed": [], "removed": []}
 

@@ -78,7 +78,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let g = Goofi::new();
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     g.set_param(buf, "buffer", "size", 512);
     // ONE step, whatever it carries: a rename, a move and a viewer in a single node edit.
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier", "pos": [40.0, 60.0],
@@ -223,7 +223,7 @@ fn a_stale_toggle_converges_instead_of_wedging_the_stack() {
     let two = one.client("s2");
     let osc = one.add("LFO");
     let buf = one.add("Buffer");
-    let link = j!({ "from": ep(hex(osc), "out"), "to": ep(hex(buf), "data") });
+    let link = j!({ "from": ep(hex(osc), "out"), "to": ep(hex(buf), "input") });
     one.call("link add", link.clone());
     one.call("link remove", link);
     two.call("node remove", j!({ "node": hex(buf) })); // s1's newest toggle now names a dead uid
@@ -240,7 +240,7 @@ fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     let g = Goofi::new();
     let a = g.add("LFO");
     let b = g.add("Buffer");
-    g.link(a, "out", b, "data");
+    g.link(a, "out", b, "input");
     let inst = g.call("nodes group", j!({ "nodes": [hex(a), hex(b)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let panel = first_panel(&g);
@@ -416,7 +416,7 @@ fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
     let g = Goofi::new();
     let osc = g.add("LFO");
     let buf = g.add("Buffer");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     g.call("session load", j!({ "content": yaml })); // the patch now matches "disk"
     assert_eq!(g.call("session status", j!({}))["dirty"], false);
@@ -457,12 +457,12 @@ fn a_reply_says_what_the_write_actually_did() {
     let coerced = g.set_param(buf, "buffer", "size", 512.6);
     assert_eq!(coerced["value"], 513, "an int param rounds: {coerced}");
 
-    let wired = g.call("link add", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "data") }));
+    let wired = g.call("link add", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "input") }));
     assert_eq!((&wired["from"], &wired["dtype"]), (&j!(ep(&osc, "out")), &j!("ARRAY")), "{wired}");
 
     assert_eq!(g.call("node remove", j!({ "node": GHOST }))["removed"], false);
     assert_eq!(g.call("node remove", j!({ "node": osc }))["removed"], true);
-    assert_eq!(g.call("link remove", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "data") }))["removed"],
+    assert_eq!(g.call("link remove", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "input") }))["removed"],
                false);
 }
 
@@ -493,7 +493,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     let why = g.refuse("agent start", j!({ "name": "claude-code" }));
     assert!(why.contains("claude") && why.contains("codex"), "{why}");
 
-    let why = g.refuse("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(GHOST, "data") }));
+    let why = g.refuse("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(GHOST, "input") }));
     assert!(why.contains("`to`") && why.contains(GHOST), "{why}");
 
     for (op, payload) in [

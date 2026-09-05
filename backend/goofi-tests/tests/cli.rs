@@ -161,9 +161,9 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
     assert_eq!(client::exec(&url, &batch, Some("shell_a")).unwrap().len(), 2);
     // Both halves of a wire spelled by name, made and taken back — the round-trip proves both
     // endpoint spellings resolve to the same wire.
-    ok(&url, "names", "link add osc/out win/data");
+    ok(&url, "names", "link add osc/out win/input");
     let gone: serde_json::Value =
-        serde_json::from_str(&ok(&url, "names", "link remove osc/out win/data")).unwrap();
+        serde_json::from_str(&ok(&url, "names", "link remove osc/out win/input")).unwrap();
     assert_eq!(gone["removed"], true, "the named wire was there to remove");
     // Another actor's undo takes back ITS work, never shell_a's; bare shells share `default`.
     let d: serde_json::Value = serde_json::from_str(&ok(&url, "default", "node add --type Buffer")).unwrap();

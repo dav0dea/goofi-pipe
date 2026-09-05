@@ -396,7 +396,7 @@ fn a_patch_sounds_under_the_external_clock() {
     assert_eq!(block.meta().sfreq(), Some(48_000.0));
     assert!(crossings(&f32s(&block)) > 0 && peak(&f32s(&block)) <= 1.0, "the sine, as it sounds");
     let buffer = g.add("Buffer");
-    g.link(osc3, "out", buffer, "data");
+    g.link(osc3, "out", buffer, "input");
     let buffered = g.probe(buffer, "out");
     let filled = g.until("the buffer to fill from the tap", |g| {
         drive(g, TENTH);

@@ -249,7 +249,7 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     let g = Goofi::new();
     let a = g.add("LFO");
     let b = g.add("Buffer");
-    g.link(a, "out", b, "data");
+    g.link(a, "out", b, "input");
     g.call("node param edit", j!({ "node": hex(a), "param": "common/max_frequency",
                                    "expression": "@@@ not an expression @@@" }));
     g.ready(b);
@@ -473,7 +473,7 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let buf = g.add("Buffer");
     // A pulse holds no value, which is the one param that could reach the doc as a null leaf.
     g.add("_TestResettable");
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/frequency",
                                    "expression": "globals.system.default_ufreq" }));
     g.call("global entry add", j!({ "name": "patch.subject", "value": "P07", "type": "string" }));
