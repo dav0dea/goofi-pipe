@@ -102,16 +102,18 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     victim.next().await; // the initial hello, then stall
 
     // Re-binding the SAME expression pushes a `state_update` without touching the doc, isolating events.
+    // Stalled for the WHOLE flood, and the flood sized in bytes: the ring lags only once the
+    // socket's send buffer is full, and Linux autotunes that up to 4 MB before a write blocks.
     let osc = g.add("Oscillator");
     let flood = std::thread::spawn(move || {
-        for _ in 0..1200 {
+        for _ in 0..4000 {
             g.call("node param edit", j!({ "node": hex(osc), "param": "common/max_frequency",
                                            "expression": "7" }));
         }
     });
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    flood.join().unwrap();
 
-    let recovered = tokio::time::timeout(Duration::from_secs(8), async {
+    let recovered = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(Ok(Message::Text(t))) = victim.next().await {
                 if serde_json::from_str::<Value>(t.as_str()).unwrap()["event"] == "hello" {
@@ -122,7 +124,6 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     })
     .await
     .unwrap_or(false);
-    flood.join().unwrap();
     assert!(recovered, "a lagged control client must recover via a fresh hello snapshot");
 }
 
