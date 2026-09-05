@@ -17,31 +17,25 @@ fn main() {
     embed_spa(&frontend.join("build"), false);
 }
 
-/// Build every shipped `nodes_<engine>/*.rs` through the one pipeline a scan runs, into a build
-/// dir the test harness shares, and emit `$OUT_DIR/shipped.rs`: every shipped source, and every
-/// artifact under the cache key a scan will look it up by. A shipped node that does not compile
-/// fails THIS build, so a binary never ships a node it cannot load.
+/// Build every `node-bundles/<bundle>/nodes_<engine>/*.rs` through the one pipeline a scan runs,
+/// into a build dir the test harness shares, and emit `$OUT_DIR/shipped.rs`: every file of every
+/// bundle, and every artifact under the cache key a scan will look it up by. A shipped node that
+/// does not compile fails THIS build, so a binary never ships a node it cannot load.
 fn prebuild_nodes() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bundles = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     // OUT_DIR is `<target>/<profile>/build/<pkg>-<hash>/out`; four levels up is `<target>`.
     let base = out.ancestors().nth(4).expect("a cargo OUT_DIR").join("goofi-build");
+    println!("cargo:rerun-if-changed={}", bundles.display());
     let (mut sources, mut artifacts) = (String::new(), String::new());
-    for (engine, sdk) in [("signal", &goofi_build::SIGNAL), ("audio", &goofi_build::AUDIO)] {
-        let folder = goofi_node::folder_of(engine);
-        let dir = root.join(&folder);
-        println!("cargo:rerun-if-changed={}", dir.display());
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_file()).collect();
-        paths.sort();
-        for path in paths {
+    for bundle in dirs_under(&bundles) {
+        println!("cargo:rerun-if-changed={}", bundle.display());
+        let name = bundle.file_name().unwrap().to_string_lossy().into_owned();
+        for path in files_under(&bundle) {
             println!("cargo:rerun-if-changed={}", path.display());
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            sources += &format!("    ({:?}, include_bytes!({:?})),
-", format!("{folder}/{name}"), path.display().to_string());
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
+            let within = path.strip_prefix(&bundle).unwrap().to_string_lossy().replace('\\', "/");
+            sources += &format!("    ({:?}, include_bytes!({:?})),\n", format!("{name}/{within}"), path.display().to_string());
+            let Some(sdk) = sdk_of(&path, &bundle) else { continue };
             let artifact = goofi_build::ensure(sdk, &path, &base)
                 .unwrap_or_else(|why| panic!("the shipped node {} does not build:\n{why}", path.display()));
             println!("cargo:rerun-if-changed={}", artifact.display());
@@ -53,14 +47,53 @@ fn prebuild_nodes() {
     std::fs::write(
         out.join("shipped.rs"),
         format!(
-            "pub static SHIPPED_SOURCES: &[(&str, &[u8])] = &[
-{sources}];
-             pub static SHIPPED_ARTIFACTS: &[(&str, &str, &[u8])] = &[
-{artifacts}];
-"
+            "pub static SHIPPED_SOURCES: &[(&str, &[u8])] = &[\n{sources}];\n\
+             pub static SHIPPED_ARTIFACTS: &[(&str, &str, &[u8])] = &[\n{artifacts}];\n"
         ),
     )
     .expect("write shipped.rs");
+}
+
+/// The SDK a `.rs` file directly under a bundle's `nodes_<engine>/` is built with.
+fn sdk_of(path: &Path, bundle: &Path) -> Option<&'static goofi_build::Sdk> {
+    if path.extension().is_none_or(|e| e != "rs") {
+        return None;
+    }
+    let folder = path.parent()?.strip_prefix(bundle).ok()?.to_str()?.to_string();
+    [("signal", &goofi_build::SIGNAL), ("audio", &goofi_build::AUDIO)]
+        .into_iter()
+        .find(|(engine, _)| folder == goofi_node::folder_of(engine))
+        .map(|(_, sdk)| sdk)
+}
+
+/// The directories directly under `dir`, sorted.
+fn dirs_under(dir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> =
+        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    dirs
+}
+
+/// Every file under `dir` at any depth, sorted, skipping what git skips: `__pycache__` and dot-files.
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || name == "__pycache__" {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 /// Whether this is a headless build; only a truthy value opts in, so `=0` asks for the app.

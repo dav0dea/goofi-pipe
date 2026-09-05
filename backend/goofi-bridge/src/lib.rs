@@ -76,9 +76,9 @@ pub struct AppState {
     /// Liveness policy for `/data` sockets, injectable so a test need not sit through a
     /// production-length deadline.
     pub data_liveness: DataLiveness,
-    /// The node source roots beyond the patch's own, in precedence order — the shipped tree
-    /// first, then each `--extra-nodes` — each holding a `nodes_<engine>/` per engine. The
-    /// patch's workspace is scanned last, and wins a name.
+    /// The node source roots beyond the patch's own, in precedence order — the shipped bundles
+    /// first, in name order, then each `--extra-nodes` — each holding a `nodes_<engine>/` per
+    /// engine. The patch's workspace is scanned last, and wins a name.
     pub roots: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp: the baseline the next [`rescan`]
     /// diffs against, and the only list it removes from.
@@ -162,7 +162,7 @@ impl AppState {
             reducers,
             history: Arc::new(Mutex::new(goofi_graph::CommandHistory::new())),
             data_liveness: DataLiveness::DEFAULT,
-            roots: vec![materialise_shipped()],
+            roots: materialise_shipped(),
             node_index: Arc::new(Mutex::new(Default::default())),
             mount: Arc::new(Mutex::new(mount)),
             workspace_baseline: Arc::new(Mutex::new(workspace_baseline)),
@@ -531,20 +531,26 @@ pub async fn serve_app(
 
 include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
 
-/// The shipped node tree, written under the home for this version — every source beside the
-/// artifact goofi's own build made of it — so a shipped node loads with no toolchain and
-/// `library get` finds its file. It is a root like any other; this one comes pre-warmed.
-fn materialise_shipped() -> PathBuf {
+/// The shipped bundles, written under the home for this version — every file of every bundle,
+/// beside the artifacts goofi's own build made of its nodes — so a shipped node loads with no
+/// toolchain and `library get` finds its file. Each bundle is a root like any other; these come
+/// pre-warmed.
+fn materialise_shipped() -> Vec<PathBuf> {
     let home = goofi_core::home::dir();
-    let root = home.join("shipped").join(goofi_build::VERSION);
+    let tree = home.join("shipped").join(goofi_build::VERSION);
+    let mut roots = Vec::new();
     for (rel, bytes) in SHIPPED_SOURCES {
-        goofi_build::write_if_changed(&root.join(rel), bytes);
+        goofi_build::write_if_changed(&tree.join(rel), bytes);
+        let bundle = tree.join(rel.split('/').next().unwrap_or(rel));
+        if !roots.contains(&bundle) {
+            roots.push(bundle);
+        }
     }
     let base = goofi_build::base_dir(&home);
     for (key, file, bytes) in SHIPPED_ARTIFACTS {
         let _ = goofi_build::place(&base.join("out").join(key).join(file), bytes);
     }
-    root
+    roots
 }
 
 /// Build every `.rs` node file under every root and `patch` BEFORE the graph lock is taken: a

@@ -284,9 +284,10 @@ audio, is one `.rs` file in `nodes_<engine>/`, built by one pipeline into a `cdy
 behind a version symbol. The signal ABI IS the subprocess tier's codec — one encode and one
 decode per side per run, a copy a compiled-in node never paid, accepted as the price of one
 seam; the audio ABI crosses the block as descriptors of the arena's own regions, because a block
-is memory the plan laid out, not a frame in flight. There is no static registration. The shipped
-folders are prebuilt at goofi's build time and embedded, so a toolchain is needed to author and
-never to run.
+is memory the plan laid out, not a frame in flight. There is no static registration. Every
+`node-bundles/<bundle>/` is shipped — prebuilt at goofi's build time and embedded, each bundle a
+root of its own — so `cargo run` carries them all, and a toolchain is needed to author and never
+to run; `--extra-nodes` adds a root at run time.
 
 **Exit is a real teardown.** Every node is stopped and waited for — to a CEILING, not a join,
 because a wedged node must not wedge the exit. That wait is what releases shared memory; what a

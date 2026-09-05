@@ -173,11 +173,14 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
 #[test]
 fn every_bundle_names_its_packages_and_both_interpreters_hold_them() {
     // Provisioning installs each bundle's `requirements.txt` and startup checks the same files, so
-    // a bundle without one, or an interpreter short of one, is what either would silently pass.
+    // a Python bundle without one, or an interpreter short of one, is what either would silently pass.
     let root = goofi_init::repo_root();
     let bundles = goofi_init::bundle_dirs(&root);
     assert!(!bundles.is_empty(), "the repo ships bundles under node-bundles/");
-    for b in &bundles {
+    let pythonic = |b: &Path| {
+        std::fs::read_dir(b.join("nodes_signal")).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x == "py"))
+    };
+    for b in bundles.iter().filter(|b| pythonic(b)) {
         assert!(b.join("requirements.txt").is_file(), "{} names its packages", b.display());
     }
     let reqs = goofi_init::requirements_in(&bundles);
