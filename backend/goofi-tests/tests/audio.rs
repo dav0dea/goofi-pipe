@@ -645,31 +645,31 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: what a node keeps beyond its params rides its blob in the workspace — past a
     // restart, into an archive and back over the live patch, and through a delete and its undo.
-    // Exact, not near: a birth's first frame opens on the count the node was born with.
+    // Exact, not near: the node puts out the count it was born with.
     std::fs::write(
         dir.join("Ticks.rs"),
         "use goofi_audio_sdk::goofi_core::SlotType;\n\
          use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl};\n\
          static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
-         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"counts its blocks\", inputs: &[], outputs: OUTS, params: &[] };\n\
-         #[derive(Default)]\nstruct Ticks { count: u32 }\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"counts its blocks, and says the count it was born with\", inputs: &[], outputs: OUTS, params: &[] };\n\
+         #[derive(Default)]\nstruct Ticks { born: u32, count: u32 }\n\
          impl AudioNode for Ticks {\n    \
          fn prepare(&mut self, _rate: f64) {}\n    \
          fn process(&mut self, b: &mut Block<'_>) {\n        \
-         b.outs[0].chan_mut(0).fill(self.count as f32);\n        \
+         b.outs[0].chan_mut(0).fill(self.born as f32);\n        \
          self.count += 1;\n    \
          }\n    \
          fn save(&self) -> Vec<u8> { self.count.to_le_bytes().to_vec() }\n    \
          fn load(&mut self, bytes: &[u8]) {\n        \
-         if let Ok(b) = bytes.try_into() { self.count = u32::from_le_bytes(b); }\n    \
+         if let Ok(b) = bytes.try_into() { self.count = u32::from_le_bytes(b); self.born = self.count; }\n    \
          }\n}\n\
          goofi_audio_sdk::export!(Ticks, MANIFEST);\n",
     )
     .unwrap();
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Ticks"]));
     let ticks = g.add("Ticks");
-    // Nothing is driven between a birth and this probe's opening, so the first frame published
-    // after one tenth STARTS at the count the birth loaded — or at zero.
+    // Any frame after a tenth says it. NOT the first sample of a running count: a control tick
+    // landing mid-drive splits the tenth into two frames, and the one-deep probe keeps the LAST.
     let born_at = |g: &Goofi, uid: Uid, what: &str| -> f32 {
         let probe = g.probe(uid, "out");
         drive(g, TENTH);
