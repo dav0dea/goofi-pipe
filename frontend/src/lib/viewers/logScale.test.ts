@@ -1,17 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { logSafe } from './logScale';
-
-/** uPlot's log tick generator walks `l += incr` from the minimum until it passes the maximum. A
- * non-positive minimum makes the increment -Infinity or NaN, so `l` never advances and the walk
- * never ends. This is that walk, bounded: it must terminate on whatever `logSafe` returns. */
-function ticksTerminate([min, max]: [number, number]): number {
-	const incr = 10 ** Math.floor(Math.log10(min));
-	let n = 0;
-	for (let l = min; l <= max; l += incr) {
-		if (++n > 100_000) return -1;
-	}
-	return n;
-}
+import { logSafe, logSplits } from './logScale';
 
 describe('logSafe', () => {
 	it('floors a zero minimum, which is what a PSD bin reaches', () => {
@@ -42,10 +30,26 @@ describe('logSafe', () => {
 			expect(hi, `hi for ${min}..${max}`).toBeGreaterThan(lo);
 		}
 	});
+});
 
-	it('gives uPlot a range its tick walk can finish', () => {
-		// The unguarded call is the defect: a zero minimum never terminates.
-		expect(ticksTerminate([0, 16690.5])).toBe(-1);
-		expect(ticksTerminate(logSafe(0, 16690.5))).toBeGreaterThan(0);
+describe('logSplits', () => {
+	it('places one grid line per decade across the window', () => {
+		expect(logSplits(0.5, 100)).toEqual([0.1, 1, 10, 100]);
+	});
+
+	it('is bounded and ascending on every minimum that walks uPlot off its increment table', () => {
+		// uPlot 1.6.32's own log walk never terminates on these: the top of a decade, and below 1e-22.
+		for (const [min, max] of [
+			[0.0096, 1e4],
+			[9.6e-17, 1e4],
+			[1.35e-30, 4.5e-16],
+			[0, 16690.5],
+			[NaN, NaN],
+			[1e-40, 3.4e38]
+		]) {
+			const s = logSplits(min, max);
+			expect(s.length, `count for ${min}..${max}`).toBeLessThan(100);
+			expect(s.every((v, i) => i === 0 || v > s[i - 1]), `ascending for ${min}..${max}`).toBe(true);
+		}
 	});
 });

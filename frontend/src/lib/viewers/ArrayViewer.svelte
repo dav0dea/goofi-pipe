@@ -7,7 +7,7 @@
 	import { decimateMinMax } from './decimate';
 	import { readEnvelope, envelopeBand } from './envelope';
 	import { formatTick as fmtTick } from './format';
-	import { logSafe } from './logScale';
+	import { logSafe, logSplits } from './logScale';
 	import { SERIES, AXIS_INK, tickFont } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
@@ -115,6 +115,14 @@
 		ctx.restore();
 	}
 
+	/** The index axis. A log-x index is 1-based, but a frame with NO samples hands uPlot a null
+	 * extent, and its own log range walks up from zero — so the floor is stated here too. */
+	function xScale(): uPlot.Scale {
+		return mLogX
+			? { time: false, distr: 3, range: (_u, lo, hi) => logSafe(lo, hi) }
+			: { time: false, distr: 1 };
+	}
+
 	/** The value axis. Only the log form is floored — a linear one takes the range as given. */
 	function yScale(): uPlot.Scale {
 		const distr = mLogY ? 3 : 1;
@@ -131,23 +139,25 @@
 		lastNSeries = nSeries;
 		plotIsScalar = scalarMode;
 		// `size: 0` reclaims the axis margin; the `draw` hook paints the ticks inside the canvas.
-		const noMarginAxis: uPlot.Axis = {
+		const axis = (log: boolean): uPlot.Axis => ({
 			show: true,
 			size: 0,
 			gap: 0,
 			stroke: 'transparent',
 			ticks: { show: false },
 			grid: { show: true, stroke: 'rgba(255,255,255,0.05)' },
-			values: () => []
-		};
-		// distr 3 = log10; the x index is 1-based under log-x so no x is <= 0.
+			values: () => [],
+			...(log ? { splits: (_u: uPlot, _i: number, lo: number, hi: number) => logSplits(lo, hi) } : {})
+		});
+		const axes = scalarMode ? [axis(false), axis(false)] : [axis(mLogX), axis(mLogY)];
+		// distr 3 = log10.
 		const scales: uPlot.Options['scales'] = scalarMode
 			? {
 					x: { time: false, range: () => scalarXRange() },
 					y: { auto: false, range: [0, 1] }
 				}
 			: {
-					x: { time: false, distr: mLogX ? 3 : 1 },
+					x: xScale(),
 					y: yScale()
 				};
 		const series: uPlot.Series[] = scalarMode
@@ -158,7 +168,7 @@
 			height: Math.max(60, height),
 			padding: [2, 2, 2, 2],
 			series,
-			axes: [noMarginAxis, noMarginAxis],
+			axes,
 			scales,
 			cursor: {
 				show: true,
