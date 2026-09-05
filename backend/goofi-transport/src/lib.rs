@@ -208,10 +208,34 @@ pub fn sweep_once() {
         // iceoryx2 logs at Info by default and reads `IOX2_LOG_LEVEL` only when asked. What Info
         // prints here is a multi-kilobyte dump per dropped doorbell datagram — §3.3's non-event.
         set_log_level_from_env_or(LogLevel::Error);
+        raise_fd_limit();
         ensure_root();
         reclaim_stale_resources();
     });
 }
+
+/// Raise the soft descriptor limit toward the hard one. A node costs about 45 descriptors, so the
+/// usual 1024 soft limit is a ceiling of twenty nodes, and it lands on whatever the user does
+/// next — which was a SAVE. Best effort, and capped rather than taken to the hard limit, because
+/// macOS refuses the infinite one it often reports there.
+#[cfg(unix)]
+fn raise_fd_limit() {
+    const WANTED: libc::rlim_t = 65536;
+    let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let want = WANTED.min(lim.rlim_max);
+    if want > lim.rlim_cur {
+        lim.rlim_cur = want;
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) };
+    }
+}
+
+/// Windows bounds the CRT's handles rather than a per-process descriptor rlimit, and its ceiling
+/// is already far above what a patch opens.
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
 
 /// The event service every door is: §3.2's three id ranges against one ceiling, and one listener.
 pub fn event_service(node: &IoxNode, name: &str) -> Result<EventService, String> {
