@@ -35,7 +35,8 @@ impl OutDesc {
     }
 }
 
-/// One block as it crosses: three arrays of descriptors, in declaration order.
+/// One block as it crosses: three arrays of descriptors, in declaration order, and the strip of
+/// one settled value per DECLARED param — a plain float each, so it carries no port ceiling.
 #[repr(C)]
 pub struct BlockDesc {
     pub ins: *const PortDesc,
@@ -44,6 +45,8 @@ pub struct BlockDesc {
     pub n_outs: usize,
     pub params: *const PortDesc,
     pub n_params: usize,
+    pub scalars: *const f32,
+    pub n_scalars: usize,
 }
 
 pub use goofi_node::abi::{collect, version, Bytes, Write};
@@ -156,7 +159,12 @@ pub unsafe extern "C" fn process(node: *mut c_void, block: *const BlockDesc, sin
         }
         false => PortMut::new(&mut [], 0),
     });
-    let mut block = Block { ins: &ins[..d.n_ins], outs: &mut outs[..d.n_outs], params: &params[..d.n_params] };
+    let mut block = Block {
+        ins: &ins[..d.n_ins],
+        outs: &mut outs[..d.n_outs],
+        params: &params[..d.n_params],
+        scalars: slice(d.scalars, d.n_scalars),
+    };
     with(node, sink, write, |n| n.process(&mut block))
 }
 

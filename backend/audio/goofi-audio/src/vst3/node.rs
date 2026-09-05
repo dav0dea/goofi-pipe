@@ -85,6 +85,13 @@ impl AudioNode for Plugin {
         (0..outs).map(|i| self.class.outputs.get(i).copied().unwrap_or(1).clamp(1, MAX_CHANNELS)).collect()
     }
 
+    /// Only the voice params are read per sample, to place a note inside the block. A plugin
+    /// parameter is one value per block whatever drives it, so it needs no port — which is what
+    /// lets a synth declare thousands of them.
+    fn audio_params(&self, declared: usize) -> usize {
+        declared.saturating_sub(self.class.params.len())
+    }
+
     fn prepare(&mut self, rate: f64) {
         let Plugin { class, ui, uid, shared, live, failed, blob } = self;
         *failed = on(ui, |host| match live {
@@ -255,10 +262,10 @@ impl Live {
 
     fn block(&mut self, class: &Derived, b: &mut Block<'_>) {
         // The voice params, if any, are the ones the manifest carries beyond the plugin's own.
-        let voice = b.params.len() - class.params.len();
+        let voice = b.scalars.len() - class.params.len();
         self.changes.clear();
         for (i, (_, kind)) in class.params.iter().enumerate() {
-            let raw = b.params[voice + i].chan(0)[0] as f64;
+            let raw = b.scalars[voice + i] as f64;
             let value = match kind {
                 Kind::Float => raw,
                 Kind::Stepped(steps) => raw / steps,
