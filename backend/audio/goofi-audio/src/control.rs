@@ -243,7 +243,10 @@ impl Inbox {
         let n = ((t as f64 - pos) / step).ceil().max(0.0) as usize;
         let Some(need) = n.checked_mul(c).and_then(|s| s.checked_add(2)) else { return Some(moved) };
         if let Ok(chunk) = self.ring.write_chunk_uninit(need) {
-            let at = |ch: usize, i: usize| x[ch * t + i.min(t - 1)];
+            let at = |ch: usize, i: usize| {
+                let v = x[ch * t + i.min(t - 1)];
+                if v.is_finite() { v } else { 0.0 }
+            };
             let samples = (0..n).flat_map(|k| {
                 let p = pos + k as f64 * step;
                 let i = p.floor();
@@ -621,6 +624,7 @@ impl Control {
         let evaluator = self.shared.evaluator.lock().unwrap().clone();
         let t = self.started.elapsed().as_secs_f64();
         let (value, error) = match b.expr.evaluate(evaluator.as_deref(), t, target) {
+            Ok(Some(v)) if !plan::scalar(&v).is_finite() => (None, Some(format!("evaluated to {}", plan::scalar(&v)))),
             Ok(v) => (v, None),
             Err(e) => (None, Some(e)),
         };

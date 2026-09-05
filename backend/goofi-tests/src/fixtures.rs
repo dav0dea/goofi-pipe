@@ -243,7 +243,8 @@ struct TestConst;
 
 impl Node for TestConst {
     fn process(&mut self, _inp: &Inputs<'_>, out: &mut Outputs<'_>, _ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        let value = p.f64("constant", "value").unwrap_or(0.0) as f32;
+        let nan = p.bool("constant", "nan").unwrap_or(false);
+        let value = if nan { f32::NAN } else { p.f64("constant", "value").unwrap_or(0.0) as f32 };
         let length = p.i64("constant", "length").unwrap_or(1).max(1) as usize;
         let buf: Vec<u8> = (0..length).flat_map(|_| value.to_le_bytes()).collect();
         let data = Data::array_f32(vec![length], buf, Meta::empty())
@@ -267,6 +268,13 @@ static CONST_PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Int { default: 1, min: 1, max: 1_000_000 },
         expression: None,
         doc: Some("How many elements the emitted array has."),
+    },
+    ParamDecl {
+        group: "constant",
+        name: "nan",
+        spec: ParamSpec::Bool { default: false },
+        expression: None,
+        doc: Some("Emit NaN in place of the value."),
     },
 ];
 

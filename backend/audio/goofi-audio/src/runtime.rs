@@ -124,6 +124,7 @@ pub enum Msg {
 pub enum Fault {
     Panic(String),
     Overrun,
+    NotANumber,
 }
 
 /// What comes back to be dropped off the audio thread — and what it put out of the plan.
@@ -283,6 +284,9 @@ impl Runtime {
                 let ran = catch_unwind(AssertUnwindSafe(|| slot.node.process(&mut block)));
                 match ran {
                     Err(p) => Some(Fault::Panic(goofi_node::panic_message(p))),
+                    Ok(()) if stage.outs.iter().any(|(at, ch)| unsafe { region(base, len, *at, *ch) }.iter().any(|v| !v.is_finite())) => {
+                        Some(Fault::NotANumber)
+                    }
                     Ok(()) if started.elapsed() > self.block => {
                         slot.overruns = slot.overruns.saturating_add(1);
                         (slot.overruns >= OVERRUNS).then_some(Fault::Overrun)

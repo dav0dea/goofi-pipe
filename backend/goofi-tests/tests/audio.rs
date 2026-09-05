@@ -343,6 +343,18 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(source, "constant", "value", 0.75);
     sounds(&g, "the gain to follow its source", |x| (peak(x) - 0.75).abs() < 0.01);
 
+    // Step: a binding that evaluates to NaN is a binding error like any other — the param names
+    // it and the node reads silence — because a NaN is not a value a plan can carry.
+    let poison = g.add("_TestConst");
+    let poison_name = g.doc()["nodes"][hex(poison)]["name"].as_str().unwrap().to_string();
+    g.set_param(poison, "constant", "nan", true);
+    g.call("node param edit", j!({ "node": hex(gain3), "param": "gain/gain", "reference": format!("{poison_name}.out"), "mode": "reference" }));
+    let why = g.until("the NaN to be refused", |g| g.error(gain3));
+    assert!(why.contains("evaluated to NaN"), "{why}");
+    sounds(&g, "silence where the NaN would have played", |x| x.iter().all(|v| v.is_finite()) && peak(x) == 0.0);
+    g.call("node param edit", j!({ "node": hex(gain3), "param": "gain/gain", "value": 1.0, "mode": "constant" }));
+    g.until("the error to clear", |g| g.error(gain3).is_none().then_some(()));
+
     // Step: a reference the control half cannot copy is a binding error on the node; back on a
     // constant, the literal lands and the error clears.
     g.set_param(source, "constant", "length", 4);
@@ -412,6 +424,18 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(second[0] >= top - 0.001 && second.windows(2).all(|w| w[1] >= w[0]), "…and continues: {} after {top}", second[0]);
     let span = second[second.len() - 1] - second[0];
     assert!((span - 0.05).abs() < 0.002, "a whole tenth is a twentieth of the ramp: {span}");
+
+    // Step: a frame that is not a number crosses as silence — a NaN stays on the plane that made
+    // it and never enters the plan.
+    g.call("node remove", j!({ "node": hex(ramp) }));
+    g.link(poison, "out", signal_in, "data");
+    let poisoned = g.probe(poison, "out");
+    g.until("the NaN to be emitted", |g| {
+        drive(g, TENTH);
+        poisoned.latest().filter(|d| f32s(d)[0].is_nan())
+    });
+    sounds(&g, "silence where the NaN entered", |x| x.iter().all(|v| v.is_finite()) && peak(x) == 0.0);
+    g.call("node remove", j!({ "node": hex(poison) }));
 
     // Step: a gate from the signal plane — `Env.gate` referencing a constant — opens the envelope
     // at control rate, and dropping it releases.
@@ -522,7 +546,8 @@ fn a_patch_sounds_under_the_external_clock() {
          use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec};\n\
          goofi_audio_sdk::params! {\n    \
          ARM = ParamDecl { group: \"trap\", name: \"arm\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n    \
-         STALL = ParamDecl { group: \"trap\", name: \"stall\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n\
+         STALL = ParamDecl { group: \"trap\", name: \"stall\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n    \
+         POISON = ParamDecl { group: \"trap\", name: \"poison\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n\
          }\n\
          static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
          static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"a quarter, a panic, or a stall\", inputs: &[], outputs: OUTS, params: PARAMS };\n\
@@ -535,6 +560,7 @@ fn a_patch_sounds_under_the_external_clock() {
          let t = std::time::Instant::now();\n            \
          while t.elapsed() < std::time::Duration::from_millis(3) {}\n        \
          }\n        \
+         if b.params[P::POISON].chan(0)[0] > 0.5 { b.outs[0].chan_mut(0).fill(f32::NAN); return; }\n        \
          b.outs[0].chan_mut(0).fill(0.25);\n    \
          }\n}\n\
          goofi_audio_sdk::export!(Trap, MANIFEST);\n",
@@ -571,6 +597,18 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(trap, "trap", "stall", false);
     g.call("node restart", j!({ "node": hex(trap) }));
     sounds(&g, "the quarter to rejoin once more", |x| (level(x) - 0.75).abs() < 0.01);
+
+    // Step: a block that is not a number is the same fault — the node is named, the chain reads
+    // silence where it was, and no neighbour ever sees the NaN.
+    g.set_param(trap, "trap", "poison", true);
+    g.until("the NaN to be named", |g| {
+        drive(g, TENTH);
+        state(g, trap).contains("not a number").then_some(())
+    });
+    sounds(&g, "the poisoned quarter to leave the sum", |x| x.iter().all(|v| v.is_finite()) && (level(x) - 0.5).abs() < 0.01);
+    g.set_param(trap, "trap", "poison", false);
+    g.call("node restart", j!({ "node": hex(trap) }));
+    sounds(&g, "the quarter to rejoin a third time", |x| (level(x) - 0.75).abs() < 0.01);
 
     // Step: a panic anywhere else in the contract is the same fault at the first block — a
     // constructor that panics, and a `prepare` that does, each named for where it happened.

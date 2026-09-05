@@ -388,6 +388,7 @@ impl AudioEngine {
                         let msg = match fault {
                             Fault::Panic(msg) => msg,
                             Fault::Overrun => format!("process overran the block {OVERRUNS} times in a row"),
+                            Fault::NotANumber => "process put out a value that is not a number".to_string(),
                         };
                         self.disabled.insert(uid, msg);
                         self.dirty = true;
