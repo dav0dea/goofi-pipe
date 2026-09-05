@@ -142,6 +142,10 @@ impl GraphView<'_> {
     }
 }
 
+/// What [`Engine::editor`] hands back: the open or close itself, run once the graph lock is
+/// released, because a plugin's window takes its time to come up and every other op would wait.
+pub type EditorAction = Box<dyn FnOnce() -> Result<bool, String> + Send>;
+
 /// One thing a batch of ops changed, recorded by the op path for the settle that follows. The
 /// delivery half of a write is deferred so one batch yields ONE decision, from settled state.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +257,15 @@ pub trait Engine: Send {
     fn refresh_param(&mut self, uid: Uid, key: ParamKey);
     /// Fire a pulse param on the node's own thread: a request the node acts on and stores nothing of.
     fn pulse_param(&mut self, uid: Uid, key: ParamKey);
+    /// Whether a node of this type has an editor window of its own — on the machine goofi runs
+    /// on, so a platform with no window host answers false.
+    fn has_editor(&self, _type_name: &str) -> bool {
+        false
+    }
+    /// Show or hide `uid`'s editor: the action, answering whether it changed anything.
+    fn editor(&mut self, uid: Uid, _show: bool) -> Result<EditorAction, String> {
+        Err(format!("{uid} has no editor"))
+    }
     /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
     fn reset_clock(&mut self, _origin: Instant) {}
     /// The graph's expression evaluator, shared with every engine that evaluates `nd()` bindings

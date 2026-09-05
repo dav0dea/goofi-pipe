@@ -341,6 +341,22 @@ pub(crate) fn node_restart(
     Ok(json!({ "ok": true }))
 }
 
+/// Neither an edit nor recovery: a window on the machine goofi runs on, opened or closed.
+pub(crate) fn node_editor(
+    state: &AppState,
+    payload: &Value,
+    _actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let action = {
+        let mut g = state.graph.lock().unwrap();
+        let uid = parse_uid(&g, payload, "node")?;
+        let show = payload.get("show").and_then(Value::as_bool).unwrap_or(true);
+        g.node_editor(uid, show)?
+    };
+    Ok(json!({ "changed": action()? }))
+}
+
 pub(crate) fn link_add(
     state: &AppState,
     payload: &Value,

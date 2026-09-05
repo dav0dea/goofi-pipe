@@ -402,6 +402,16 @@ fn a_scheduled_engine_beside_the_signal_one() {
 
     let got = t.call("library get", j!({ "type": "twin:Oscillator" }));
     assert_eq!(got["type"], "twin:Oscillator");
+
+    // Step: an editor window is a capability an engine answers per type, and `node editor` is the
+    // one door to it: a change is answered once, and a type without one refuses.
+    assert_eq!(got["editor"], true, "{got}");
+    assert_eq!(t.call("library get", j!({ "type": "signal:Oscillator" }))["editor"], false);
+    assert_eq!(t.call("node editor", j!({ "node": hex(b) }))["changed"], true);
+    assert_eq!(t.call("node editor", j!({ "node": hex(b) }))["changed"], false, "already open");
+    assert_eq!(t.call("node editor", j!({ "node": hex(b), "show": false }))["changed"], true);
+    assert_eq!(t.call("node editor", j!({ "node": hex(b), "show": false }))["changed"], false, "already closed");
+    assert!(t.refuse("node editor", j!({ "node": hex(a) })).contains("`signal:Oscillator` has no editor"));
     // …and away again, since the steps below walk the empty patch they always did.
     for u in [a, b, buf] {
         t.call("node remove", j!({ "node": hex(u) }));

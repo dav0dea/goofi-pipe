@@ -18,6 +18,7 @@ export type OpName =
 	| 'node param pulse'
 	| 'node remove'
 	| 'node restart'
+	| 'node editor'
 	| 'nodes inspect'
 	| 'nodes copy'
 	| 'nodes paste'

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use goofi_core::Param;
 use goofi_node::{
+    EditorAction,
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, ExprMode, GraphView, Isolation,
     IsolationCell, LibraryEntry, NodeManifest, NodeView, ParamDecl, ParamGroups, ParamKey,
     Status, Touched,
@@ -667,10 +668,36 @@ impl Graph {
         self.engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine)
     }
 
+    fn engine(&self, id: &str) -> Option<&dyn Engine> {
+        self.engines().find(|e| e.id() == id)
+    }
+
     /// One registered engine, by id — how the composition root reaches a concrete door through
     /// [`Engine::as_any_mut`].
     pub fn engine_mut(&mut self, id: &str) -> Option<&mut dyn Engine> {
         self.engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
+    }
+
+    /// Whether a node of `engine`'s `type_name` has an editor window of its own.
+    pub fn type_has_editor(&self, engine: &str, type_name: &str) -> bool {
+        self.engine(engine).is_some_and(|e| e.has_editor(type_name))
+    }
+
+    /// Show or hide a node's own editor: the action, for the caller to run off the lock.
+    pub fn node_editor(&mut self, uid: Uid, show: bool) -> Result<EditorAction, String> {
+        if self.is_facade(uid) {
+            return Err("a sub-patch has no editor".into());
+        }
+        if self.stub(uid).is_some() {
+            return Err("a port has no editor".into());
+        }
+        let (engine, type_name) =
+            self.leaf(uid).map(|e| (e.engine, e.manifest.type_name)).ok_or_else(|| format!("no such node {uid}"))?;
+        let e = self.engine_mut(engine).expect("a leaf's engine is registered");
+        if !e.has_editor(type_name) {
+            return Err(format!("`{}` has no editor", goofi_node::qualify(engine, type_name)));
+        }
+        e.editor(uid, show)
     }
 
     /// The manifest `type_name` resolves to, from whichever engine's library advertises it.

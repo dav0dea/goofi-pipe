@@ -172,6 +172,9 @@ pub static TREE: &[Entry] = &[
         Leaf(Op { name: "restart", handler: Effect(arms::node_restart), args: "node:uid!", positional: 1,
              doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
              result: "{ok: true}" }),
+        Leaf(Op { name: "editor", handler: Effect(arms::node_editor), args: "node:uid! show:bool", positional: 1,
+             doc: "Open a node's own editor window — a plugin's GUI — on the machine goofi runs on, never in the page; `--no-show` closes it. Only a type whose palette row says `editor: true` has one, and a machine with no display has none.",
+             result: "{changed: bool} — false when the editor was already open, or already closed" }),
     ]),
     Group("nodes", "the graph of several nodes — inspect, copy, paste, group", &[
         Leaf(Op { name: "inspect", handler: Read(arms::nodes_inspect), args: "scope:uid", positional: 1,

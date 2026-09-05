@@ -2,13 +2,15 @@
 //! the prefix and registered at harness boot through the one door a discovered type takes. Keep
 //! this set SMALL: a node earns a place only for a runtime behaviour.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use goofi_core::{Data, Meta, SlotType};
 use goofi_graph::Graph;
 use goofi_node::{
-    Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, OutputDecl, ParamDecl, ParamGroups, ParamKey,
-    ParamSpec, Params, SlotDecl, Status, Touched, Uid,
+    EditorAction, Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, OutputDecl, ParamDecl, ParamGroups,
+    ParamKey, ParamSpec, Params, SlotDecl, Status, Touched, Uid,
 };
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, NodeResult, Outputs};
 
@@ -77,10 +79,12 @@ static NO_PARAMS: &[ParamDecl] = &[];
 
 /// An engine that is nothing but a library: it advertises the names it was built with, and runs
 /// them nowhere. What a test registers to put a second engine behind a name a shipped one offers.
+/// Every one of its types has an editor, which is a set of uids and no window.
 pub struct LibraryEngine {
     id: &'static str,
     types: Vec<LibraryEntry>,
     pending: Vec<(Uid, Status)>,
+    shown: Arc<Mutex<HashSet<Uid>>>,
 }
 
 impl LibraryEngine {
@@ -93,7 +97,7 @@ impl LibraryEngine {
                 LibraryEntry { manifest: Box::leak(Box::new(m)), isolation: &goofi_node::NATIVE }
             })
             .collect();
-        LibraryEngine { id, types, pending: Vec::new() }
+        LibraryEngine { id, types, pending: Vec::new(), shown: Arc::default() }
     }
 }
 
@@ -121,9 +125,22 @@ impl Engine for LibraryEngine {
 
     fn remove(&mut self, uid: Uid) {
         self.pending.retain(|(u, _)| *u != uid);
+        self.shown.lock().unwrap().remove(&uid);
     }
 
     fn settle(&mut self, _view: &GraphView<'_>, _touched: &[Touched]) {}
+
+    fn has_editor(&self, type_name: &str) -> bool {
+        self.types.iter().any(|t| t.manifest.type_name == type_name)
+    }
+
+    fn editor(&mut self, uid: Uid, show: bool) -> Result<EditorAction, String> {
+        let shown = self.shown.clone();
+        Ok(Box::new(move || {
+            let mut shown = shown.lock().unwrap();
+            Ok(if show { shown.insert(uid) } else { shown.remove(&uid) })
+        }))
+    }
 
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize {
         let pending = std::mem::take(&mut self.pending);
