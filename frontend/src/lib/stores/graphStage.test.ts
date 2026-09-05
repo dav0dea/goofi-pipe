@@ -12,7 +12,7 @@ function catalog(): NodeTypeInfo[] {
 		{
 			type: 'PSD',
 			engine: 'signal',
-			category: 'signal',
+			tags: [],
 			doc: '',
 			source: 'builtin',
 			available: true,

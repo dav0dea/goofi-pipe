@@ -104,7 +104,7 @@ function catalog(): NodeTypeInfo[] {
 		{
 			type: 'Oscillator',
 			engine: 'signal',
-			category: 'inputs',
+			tags: [],
 			doc: 'A generator',
 			source: 'builtin',
 			available: true,

@@ -13,7 +13,7 @@ function catalog(): NodeTypeInfo[] {
 	const mk = (type: string): NodeTypeInfo => ({
 		type,
 		engine: 'signal',
-		category: 'array',
+		tags: [],
 		doc: '',
 		source: 'builtin',
 		available: true,

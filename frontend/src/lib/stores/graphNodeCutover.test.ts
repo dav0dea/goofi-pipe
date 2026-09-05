@@ -25,7 +25,7 @@ function catalog(): NodeTypeInfo[] {
 		{
 			type: 'signal:Oscillator',
 			engine: 'signal',
-			category: 'inputs',
+			tags: [],
 			doc: 'A generator',
 			source: 'builtin',
 			available: true,
@@ -66,7 +66,7 @@ describe('node-identity read cutover — nodes built from the doc when the catal
 		expect(n, 'node exists purely from the doc — no node_added event').toBeDefined();
 		expect([n!.type, n!.name, n!.pos]).toEqual(['signal:Oscillator', 'osc0', [10, 20]]);
 		// Descriptors come from the catalog by type.
-		expect(n!.category).toBe('inputs');
+		expect(n!.doc).toBe('A generator');
 		expect(n!.output_slots).toEqual({ out: 'ARRAY' });
 		expect(n!.params.common.max_frequency.type).toBe('float');
 		// No doc value written → the catalog default.

@@ -18,7 +18,7 @@ function catalog(): NodeTypeInfo[] {
 		{
 			type: 'Oscillator',
 			engine: 'signal',
-			category: 'inputs',
+			tags: [],
 			doc: '',
 			source: 'builtin',
 			available: true,
@@ -52,7 +52,6 @@ function nodeWithParam(uid: string, value: unknown): NodeInstanceInfo {
 		uid,
 		name: 'osc0',
 		type: 'Oscillator',
-		category: 'inputs',
 		doc: '',
 		input_slots: { in: 'ARRAY' },
 		output_slots: { out: 'ARRAY' },

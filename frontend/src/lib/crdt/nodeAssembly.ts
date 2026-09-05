@@ -89,7 +89,6 @@ export function assembleNode(
 		uid: view.uid,
 		name: view.name,
 		type: view.type,
-		category: catalog?.category ?? '',
 		doc: catalog?.doc ?? '',
 		input_slots: face?.input_slots ?? catalog?.input_slots ?? {},
 		input_multi: catalog?.input_multi,

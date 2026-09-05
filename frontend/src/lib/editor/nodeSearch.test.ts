@@ -3,11 +3,11 @@ import { rankNodeTypes } from './nodeSearch';
 import { engineOf } from './typeId';
 import type { NodeTypeInfo } from '$lib/api/control';
 
-function node(type: string, category: string, doc = ''): NodeTypeInfo {
+function node(type: string, tags: string[], doc = ''): NodeTypeInfo {
 	return {
 		type,
 		engine: engineOf(type),
-		category,
+		tags,
 		doc,
 		input_slots: {},
 		output_slots: {},
@@ -24,9 +24,9 @@ const order = (types: NodeTypeInfo[], q: string): string[] =>
 describe('rankNodeTypes', () => {
 	it('ranks name matches above a docstring-only match (the "osc" case)', () => {
 		const types = [
-			node('Kuramoto', 'inputs', 'Coupled Kuramoto oscillators producing phase signals.'),
-			node('Oscillator', 'inputs', 'Generate a periodic waveform.'),
-			node('OSCOut', 'outputs', 'Send values over Open Sound Control.')
+			node('Kuramoto', [], 'Coupled Kuramoto oscillators producing phase signals.'),
+			node('Oscillator', [], 'Generate a periodic waveform.'),
+			node('OSCOut', [], 'Send values over Open Sound Control.')
 		];
 		const result = order(types, 'osc');
 		// Both name hits come before the doc-only hit.
@@ -36,7 +36,7 @@ describe('rankNodeTypes', () => {
 	});
 
 	it('orders exact name above prefix', () => {
-		const types = [node('FFTWindow', 'signal', ''), node('FFT', 'signal', '')];
+		const types = [node('FFTWindow', [], ''), node('FFT', [], '')];
 		expect(order(types, 'fft')).toEqual(['FFT', 'FFTWindow']);
 	});
 
@@ -46,40 +46,40 @@ describe('rankNodeTypes', () => {
 		//   abcdef  → prefix          (starts with "abc")
 		//   x_abc   → word start      ("abc" begins after the "_" separator)
 		//   xabcx   → plain substring ("abc" buried in a lowercase run)
-		const types = [node('xabcx', 'misc', ''), node('x_abc', 'misc', ''), node('abcdef', 'misc', '')];
+		const types = [node('xabcx', [], ''), node('x_abc', [], ''), node('abcdef', [], '')];
 		expect(order(types, 'abc')).toEqual(['abcdef', 'x_abc', 'xabcx']);
 	});
 
 	it('matches CamelCase / acronym word starts (e.g. "out" → *Out)', () => {
 		const types = [
-			node('Buffer', 'signal', 'buffers things, optionally writing output'), // doc-only
-			node('AudioOut', 'outputs', ''), // word start "Out"
-			node('OSCOut', 'outputs', '') // word start "Out"
+			node('Buffer', [], 'buffers things, optionally writing output'), // doc-only
+			node('AudioOut', [], ''), // word start "Out"
+			node('OSCOut', [], '') // word start "Out"
 		];
 		const result = order(types, 'out');
 		expect(result.indexOf('AudioOut')).toBeLessThan(result.indexOf('Buffer'));
 		expect(result.indexOf('OSCOut')).toBeLessThan(result.indexOf('Buffer'));
 	});
 
-	it('ranks a category match above a docstring-only match', () => {
+	it('ranks a tag match above a docstring-only match', () => {
 		const types = [
-			node('Foo', 'misc', 'an array helper'), // doc has "array"
-			node('Bar', 'array', 'does things') // category "array"
+			node('Foo', [], 'an eeg helper'), // doc has "eeg"
+			node('Bar', ['eeg'], 'does things') // tagged "eeg"
 		];
-		expect(order(types, 'array')).toEqual(['Bar', 'Foo']);
+		expect(order(types, 'eeg')).toEqual(['Bar', 'Foo']);
 	});
 
 	it('breaks ties by shorter name, then alphabetically', () => {
-		const types = [node('Oscillator', 'inputs', ''), node('OSCOut', 'outputs', '')];
+		const types = [node('Oscillator', [], ''), node('OSCOut', [], '')];
 		// Both are name-prefix matches at index 0 → shorter wins.
 		expect(order(types, 'osc')).toEqual(['OSCOut', 'Oscillator']);
 	});
 
 	it('ranks on the bare name, and the engine matches nothing', () => {
 		const types = [
-			node('signal:Filter', 'inputs', ''),
-			node('audio:FilterB', 'audio', ''),
-			node('signal:FilterA', 'inputs', '')
+			node('signal:Filter', [], ''),
+			node('audio:FilterB', [], ''),
+			node('signal:FilterA', [], '')
 		];
 		// Exact bare name first, then the two prefixes alphabetically — the engine decides no tier,
 		// no match position and no tie.
@@ -89,7 +89,7 @@ describe('rankNodeTypes', () => {
 	});
 
 	it('drops non-matches and keeps an empty query untouched', () => {
-		const types = [node('Oscillator', 'inputs', ''), node('Buffer', 'signal', '')];
+		const types = [node('Oscillator', [], ''), node('Buffer', [], '')];
 		expect(order(types, 'osc')).toEqual(['Oscillator']);
 		expect(order(types, '   ')).toEqual(['Oscillator', 'Buffer']); // whitespace == empty
 	});

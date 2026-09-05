@@ -6,7 +6,7 @@ import { bareName } from './typeId';
 const TIER = {
 	none: 0,
 	doc: 1,
-	category: 2,
+	tags: 2,
 	nameSubstring: 3,
 	nameWord: 4, // query starts a CamelCase / separated word inside the name
 	namePrefix: 5,
@@ -45,7 +45,7 @@ function tierFor(t: NodeTypeInfo, q: string): number {
 	if (name.startsWith(q)) return TIER.namePrefix;
 	if (hasWordStartMatch(bare, name, q)) return TIER.nameWord;
 	if (name.includes(q)) return TIER.nameSubstring;
-	if (t.category.toLowerCase().includes(q)) return TIER.category;
+	if (t.tags.some((tag) => tag.includes(q))) return TIER.tags;
 	if (t.doc.toLowerCase().includes(q)) return TIER.doc;
 	return TIER.none;
 }

@@ -7,7 +7,7 @@ function unavailable(reason: string): NodeTypeInfo {
 	return {
 		type: 'Psd',
 		engine: 'signal',
-		category: 'unavailable',
+		tags: [],
 		doc: `This node could not be loaded: ${reason}`,
 		source: 'builtin',
 		available: false,

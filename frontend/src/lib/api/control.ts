@@ -22,7 +22,8 @@ export interface NodeTypeInfo {
 	type: string;
 	/** The engine that offers the type; null for a structural one, which runs nowhere. */
 	engine: string | null;
-	category: string;
+	/** Tags from the closed `TAGS` vocabulary, which the palette facets by. */
+	tags: string[];
 	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. */
 	source: 'builtin' | 'patch';
 	doc: string;
@@ -54,7 +55,6 @@ export interface NodeInstanceInfo {
 	/** Mutable display name — the label only, never an identity key. */
 	name: string;
 	type: string;
-	category: string;
 	doc: string;
 	input_slots: Record<string, string>;
 	/** Names of the variadic (multi) input slots. */

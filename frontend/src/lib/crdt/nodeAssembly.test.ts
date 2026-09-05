@@ -10,7 +10,7 @@ function catalog(): NodeTypeInfo {
 	return {
 		type: 'signal:Oscillator',
 		engine: 'signal',
-		category: 'inputs',
+		tags: [],
 		doc: 'A sine generator',
 		source: 'builtin',
 		available: true,
@@ -60,8 +60,8 @@ describe('assembleNode — three-way merge', () => {
 
 		// Identity + pos from the doc view.
 		expect([n.uid, n.type, n.name, n.pos]).toEqual(['n1', 'signal:Oscillator', 'osc0', [10, 20]]);
-		// Catalog supplies category/doc/slots and the param STRUCTURE.
-		expect(n.category).toBe('inputs');
+		// Catalog supplies doc/slots and the param STRUCTURE.
+		expect(n.doc).toBe('A sine generator');
 		expect(n.input_slots).toEqual({ in: 'ARRAY' });
 		expect(n.input_multi).toEqual(['in']);
 		expect(n.output_slots).toEqual({ out: 'ARRAY' });
@@ -130,7 +130,7 @@ describe('assembleNode — three-way merge', () => {
 		expect(n.pos).toEqual([10, 20]);
 		expect(n.input_slots).toEqual({});
 		expect(n.output_slots).toEqual({});
-		expect(n.category).toBe('');
+		expect(n.doc).toBe('');
 		expect(n.params.common.frequency.type).toBe('unknown');
 		expect(n.params.common.frequency.value).toBe(7);
 		expect(n.error).toBe('missing dep: numpy');

@@ -6,7 +6,7 @@ function ty(over: Partial<NodeTypeInfo> = {}): NodeTypeInfo {
 	return {
 		type: 'Thing',
 		engine: 'signal',
-		category: 'python',
+		tags: [],
 		doc: '',
 		available: true,
 		source: 'builtin',

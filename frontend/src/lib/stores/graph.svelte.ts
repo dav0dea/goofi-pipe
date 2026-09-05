@@ -124,7 +124,7 @@ export class GraphStore {
 	}
 
 	/** Re-derive every document-owned subtree, after each applied change. Runtime state
-	 * (error/stage/ufreq) and catalog metadata (slots/category) stay event-sourced. */
+	 * (error/stage/ufreq) and catalog metadata (slots/tags) stay event-sourced. */
 	private _syncFromDoc(): void {
 		const doc = this._sync.doc;
 		this.links = linkViews(doc);
