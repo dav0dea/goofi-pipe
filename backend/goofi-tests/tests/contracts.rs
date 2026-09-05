@@ -312,7 +312,7 @@ fn a_type_id_names_its_engine() {
 }
 
 #[test]
-fn two_engines_may_offer_one_type_name() {
+fn two_engines_may_share_a_type_name_and_never_an_id() {
     // A type id is `engine:Name`, so a name two engines both offer costs neither of them: both are
     // advertised and both are addressable. It cost a shipped audio filter its name, and twice
     // before that a node was renamed to dodge the silence a first-advertiser-wins lookup made.
@@ -323,6 +323,15 @@ fn two_engines_may_offer_one_type_name() {
     let why = g.refuse("node add", j!({ "type": "Oscillator" }));
     assert!(why.contains("signal:Oscillator") && why.contains("twin:Oscillator"),
             "the bare name is ambiguous, and the refusal names every candidate: {why}");
+
+    // …because the ENGINE id is what tells them apart, it is the one thing that cannot be shared:
+    // a second `twin` would name both engines from one id and send every insert to the first.
+    let twice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.state.graph.lock().unwrap().register_engine(Box::new(LibraryEngine::named("twin", &["Other"])));
+    }));
+    assert!(twice.is_err(), "a second engine was allowed to take the id `twin`");
+    // The refusal poisoned the lock, and this instance's workers are still parked on it.
+    g.state.graph.clear_poison();
 }
 
 #[test]

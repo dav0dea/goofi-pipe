@@ -629,8 +629,14 @@ impl Graph {
     }
 
     /// Register an engine, signal first by convention. Its library joins the merged view, and its
-    /// nodes ride every generic path — the trait is the whole integration.
+    /// nodes ride every generic path — the trait is the whole integration. The id must be free.
     pub fn register_engine(&mut self, engine: Box<dyn Engine>) {
+        // The id roots every type id it advertises, so a second holder makes `id:Name` name two.
+        assert!(
+            self.engines.iter().all(|e| e.id() != engine.id()),
+            "engine id `{}` is already registered",
+            engine.id()
+        );
         self.engines.push(engine);
     }
 
