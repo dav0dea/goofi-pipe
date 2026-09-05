@@ -74,6 +74,9 @@ export const VIEWER_KINDS: readonly ViewerKindInfo[] = [
 	{ id: 'table', dtype: 'TABLE', draws: null, accepts: null, doc: 'the rows of a TABLE slot' },
 ];
 
+/** The closed vocabulary a node's `tags` come from — the palette facets by it. */
+export const TAGS = ['input', 'output', 'generator', 'transform', 'analysis', 'control', 'image', 'text', 'midi', 'eeg', 'cardio', 'motion', 'music', 'ml', 'connectivity', 'simulation'] as const;
+
 /** The type a sub-patch facade wears in the document. It is not in the palette — grouping
 * is what makes one. */
 export const SCOPE_TYPE = 'SubPatch';

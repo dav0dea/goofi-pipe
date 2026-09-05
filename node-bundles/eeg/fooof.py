@@ -16,6 +16,7 @@ import goofi
 class Fooof(goofi.Node):
     """FOOOF: the aperiodic 1/f slope and the peaks that rise above it."""
 
+    TAGS = ["analysis", "eeg"]
     INPUTS = {"psd": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"aperiodic": goofi.DataType.ARRAY, "peaks": goofi.DataType.ARRAY}
     PARAMS = {

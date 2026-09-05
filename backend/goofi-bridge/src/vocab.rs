@@ -151,6 +151,7 @@ pub fn typescript() -> String {
             )
         })
         .collect::<String>();
+    let tags = goofi_node::Tag::ALL.iter().map(|t| format!("'{}'", t.as_str())).collect::<Vec<_>>().join(", ");
     let boundaries = BOUNDARY_TYPES
         .iter()
         .map(|(name, dir, dtype)| {
@@ -204,6 +205,9 @@ pub fn typescript() -> String {
          \n\
          export const VIEWER_KINDS: readonly ViewerKindInfo[] = [\n{kinds}];\n\
          \n\
+         /** The closed vocabulary a node's `tags` come from — the palette facets by it. */\n\
+         export const TAGS = [{tags}] as const;\n\
+         \n\
          /** The type a sub-patch facade wears in the document. It is not in the palette — grouping\n\
           * is what makes one. */\n\
          export const SCOPE_TYPE = '{SCOPE_TYPE}';\n\
@@ -247,7 +251,7 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
                     "type": name,
                     "engine": Value::Null,
                     "source": "builtin",
-                    "category": "boundary",
+                    "tags": [],
                     "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
                     "available": true,
                     "missing_deps": [],

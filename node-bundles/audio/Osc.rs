@@ -1,5 +1,5 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{hz_of, AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec, BLOCK, MAX_CHANNELS};
+use goofi_audio_sdk::{hz_of, AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec, Tag, BLOCK, MAX_CHANNELS};
 
 goofi_audio_sdk::params! {
     PITCH = ParamDecl {
@@ -21,7 +21,7 @@ goofi_audio_sdk::params! {
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Generator],
     doc: "An oscillator in [-1, 1], one channel per channel of `pitch`.",
     inputs: &[],
     outputs: OUTS,

@@ -31,7 +31,7 @@ fn write_rust_node(dir: &Path, file: &str, value: &str) {
          Ok(())\n    }}\n}}\n\n\
          static OUTPUTS: &[OutputDecl] = &[OutputDecl {{ name: \"out\", kind: SlotType::Array }}];\n\
          static MANIFEST: Manifest = Manifest {{\n    \
-         category: \"test\", doc: \"emits a number\", inputs: &[], outputs: OUTPUTS, params: &[], producer: true,\n}};\n\n\
+         tags: &[], doc: \"emits a number\", inputs: &[], outputs: OUTPUTS, params: &[], producer: true,\n}};\n\n\
          goofi_signal_sdk::export!(Emit, MANIFEST);\n"
     );
     std::fs::write(dir.join(file), source).unwrap();
@@ -233,7 +233,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
          impl Drop for Doomed { fn drop(&mut self) { panic!(\"doomed\") } }\n\
          impl Node for Doomed {\n    \
          fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult { Ok(()) }\n}\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"panics on drop\", inputs: &[], outputs: &[], params: &[], producer: true };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"panics on drop\", inputs: &[], outputs: &[], params: &[], producer: true };\n\
          goofi_signal_sdk::export!(Doomed, MANIFEST);\n",
     )
     .unwrap();
@@ -253,7 +253,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
          impl Node for Loud {\n    \
          fn process(&mut self, _i: &Inputs<'_>, _o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult { Ok(()) }\n}\n\
          static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"claims an audio slot\", inputs: &[], outputs: OUTS, params: &[], producer: true };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"claims an audio slot\", inputs: &[], outputs: OUTS, params: &[], producer: true };\n\
          goofi_signal_sdk::export!(Loud, MANIFEST);\n",
     )
     .unwrap();
@@ -293,7 +293,7 @@ fn write_audio_node(dir: &Path, file: &str, value: &str) {
          b.outs[0].chan_mut(0).fill({value}f32);\n    \
          }}\n}}\n\n\
          static OUTS: &[OutputDecl] = &[OutputDecl {{ name: \"out\", kind: SlotType::Audio }}];\n\
-         static MANIFEST: Manifest = Manifest {{ category: \"test\", doc: \"holds a level\", inputs: &[], outputs: OUTS, params: &[] }};\n\n\
+         static MANIFEST: Manifest = Manifest {{ tags: &[], doc: \"holds a level\", inputs: &[], outputs: OUTS, params: &[] }};\n\n\
          goofi_audio_sdk::export!(Level, MANIFEST);\n"
     );
     std::fs::write(dir.join(file), source).unwrap();

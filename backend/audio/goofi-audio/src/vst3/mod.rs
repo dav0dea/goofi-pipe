@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use goofi_audio_sdk::{AudioNode, MAX_PORTS};
 use goofi_core::probe;
-use goofi_node::{Isolation, Scanned, ScannedType, Stamp};
+use goofi_node::{Isolation, Scanned, ScannedType, Stamp, Tag};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vst3::Steinberg::Vst::*;
@@ -49,6 +49,8 @@ pub(crate) struct ClassInfo {
     outputs: Vec<u16>,
     events: bool,
     params: Vec<ParamInfo>,
+    /// The VST3 subcategory string, which holds `Instrument` for a synth.
+    sub_categories: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -126,16 +128,20 @@ fn stamp_of(binary: &Path) -> Result<Stamp, String> {
 fn describe(bundle: &Path) -> Result<Bundle, String> {
     let factory = module::factory(&binary_of(bundle)?)?;
     // One class the host cannot describe never costs the bundle its others.
-    let classes = factory.audio_classes().into_iter().filter_map(|(cid, name)| describe_class(&factory, cid, name).ok()).collect();
+    let classes = factory
+        .audio_classes()
+        .into_iter()
+        .filter_map(|(cid, name, sub)| describe_class(&factory, cid, name, sub).ok())
+        .collect();
     Ok(Bundle { vendor: factory.vendor(), classes })
 }
 
-fn describe_class(factory: &module::Factory, cid: TUID, name: String) -> Result<ClassInfo, String> {
+fn describe_class(factory: &module::Factory, cid: TUID, name: String, sub_categories: String) -> Result<ClassInfo, String> {
     let context = ComWrapper::new(host::Host).to_com_ptr::<FUnknown>().expect("a host is an FUnknown");
     let component: ComPtr<IComponent> = factory.create(&cid)?;
     unsafe {
         ok(component.initialize(context.as_ptr()), "initialize")?;
-        let described = describe_initialized(factory, &component, &context, cid, name);
+        let described = describe_initialized(factory, &component, &context, cid, name, sub_categories);
         component.terminate();
         described
     }
@@ -148,6 +154,7 @@ unsafe fn describe_initialized(
     context: &ComPtr<FUnknown>,
     cid: TUID,
     name: String,
+    sub_categories: String,
 ) -> Result<ClassInfo, String> {
     // One object or two: a controller of its own is created and initialized alongside.
     let own: Option<ComPtr<IEditController>> = component.cast();
@@ -180,7 +187,7 @@ unsafe fn describe_initialized(
     if let Some(c) = &separate {
         c.terminate();
     }
-    Ok(ClassInfo { cid: cid.map(|b| b as u8), name, inputs, outputs, events, params })
+    Ok(ClassInfo { cid: cid.map(|b| b as u8), name, inputs, outputs, events, params, sub_categories })
 }
 
 unsafe fn params_of(c: &ComPtr<IEditController>) -> Vec<ParamInfo> {
@@ -355,7 +362,10 @@ impl AudioEngine {
             return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) };
         }
         let derived = Arc::new(Derived { binary: binary.to_path_buf(), stamp, cid, inputs: class.inputs, outputs: class.outputs, params });
-        let manifest = goofi_node::leak_manifest(type_name.clone(), &intro, "audio");
+        let manifest = match goofi_node::leak_manifest(type_name.clone(), &intro) {
+            Ok(manifest) => manifest,
+            Err(reason) => return ScannedType { type_name, stamp: Some(stamp), outcome: Scanned::Unavailable(reason) },
+        };
         let plugin = derived.clone();
         let make = Arc::new(move |_| Box::new(Plugin::new(plugin.clone())) as Box<dyn AudioNode>);
         let replaced = self.classes.insert(manifest.type_name, Class { manifest, make, plugin: Some(derived) }).is_some();
@@ -408,10 +418,19 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         params.push(probe::Param { group: "plugin".into(), name, doc: Some(doc), expression: None, spec });
         kinds.push((p.id, kind));
     }
+    // A plugin has no tag to name its vendor, so the doc line does — unless its name already has.
+    let doc = match class.name.starts_with(vendor) {
+        true => class.name.clone(),
+        false => format!("{vendor}: {}", class.name),
+    };
+    let tag = match class.sub_categories.contains("Instrument") {
+        true => Tag::Generator,
+        false => Tag::Transform,
+    };
     let intro = probe::Introspection {
         gil_safe: true,
-        doc: format!("{} by {vendor}", class.name),
-        category: Some(vendor.to_string()),
+        doc,
+        tags: vec![tag.as_str().to_string()],
         producer: false,
         inputs: (0..class.inputs.len())
             .map(|i| probe::Slot { name: numbered("input", i), kind: audio.clone(), trigger: false, multi: true, required: false })

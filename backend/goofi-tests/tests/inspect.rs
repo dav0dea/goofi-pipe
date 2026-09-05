@@ -263,7 +263,7 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
         goofi_node::IsolationCell::new(goofi_node::Isolation::InProcess);
     static BOOM: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "Boom",
-        category: "python",
+        tags: &[],
         doc: "a discovered type",
         inputs: &[],
         outputs: OUT,

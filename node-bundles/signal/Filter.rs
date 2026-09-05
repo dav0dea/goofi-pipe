@@ -2,7 +2,7 @@
 //! Stateful rather than per-frame: a filter restarted on each block would ring at every boundary.
 
 use goofi_core::{resolve_axis, Data, SlotType};
-use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
 
 /// One second-order section, normalized so `a0 == 1`.
 #[derive(Clone, Copy, Default)]
@@ -202,7 +202,7 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "signal",
+    tags: &[Tag::Transform],
     doc: "Streaming Butterworth bandpass/lowpass/highpass/notch along one axis, shape unchanged.",
     inputs: INPUTS,
     outputs: OUTPUTS,

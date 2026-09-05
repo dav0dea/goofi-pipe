@@ -12,6 +12,7 @@ import goofi
 class SvdEntropy(goofi.Node):
     """SVD entropy: how many independent components the signal's history spans."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"entropy": goofi.DataType.ARRAY}
     PARAMS = {

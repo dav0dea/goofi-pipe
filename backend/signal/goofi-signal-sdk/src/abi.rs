@@ -36,7 +36,7 @@ pub struct VTable {
 /// The `goofi_describe` answer: the manifest as the probe schema — the one schema every
 /// out-of-crate node answers.
 pub fn describe_c(m: &Manifest) -> *const c_char {
-    goofi_node::abi::describe_once(|| goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, m.producer))
+    goofi_node::abi::describe_once(|| goofi_node::describe(m.tags, m.doc, m.inputs, m.outputs, m.params, m.producer))
 }
 
 /// The instance behind a `*mut c_void`: the author's node and what the shim keeps around it.

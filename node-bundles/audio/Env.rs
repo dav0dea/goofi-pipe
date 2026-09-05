@@ -1,5 +1,5 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{AudioNode, Block, Edge, Manifest, OutputDecl, ParamDecl, ParamSpec, BLOCK, GATE_HIGH, MAX_CHANNELS};
+use goofi_audio_sdk::{AudioNode, Block, Edge, Manifest, OutputDecl, ParamDecl, ParamSpec, Tag, BLOCK, GATE_HIGH, MAX_CHANNELS};
 
 goofi_audio_sdk::params! {
     GATE = ParamDecl {
@@ -42,7 +42,7 @@ goofi_audio_sdk::params! {
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Transform],
     doc: "An ADSR in [0, 1] over `gate`, one voice per channel of it.",
     inputs: &[],
     outputs: OUTS,

@@ -14,6 +14,7 @@ BANDS = ["delta", "theta", "alpha", "beta", "gamma"]
 class EegPowerBands(goofi.Node):
     """Band power per channel: delta to gamma, absolute or as a share of the whole spectrum."""
 
+    TAGS = ["analysis", "eeg"]
     INPUTS = {"psd": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"power": goofi.DataType.ARRAY}
     PARAMS = {

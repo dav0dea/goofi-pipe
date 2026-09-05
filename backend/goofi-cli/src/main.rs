@@ -782,7 +782,7 @@ mod tests {
     }
     static TRACKED: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "_TestTracked",
-        category: "test",
+        tags: &[],
         doc: "records its own teardown",
         inputs: &[],
         outputs: &[],

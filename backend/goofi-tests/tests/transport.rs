@@ -37,7 +37,7 @@ static INPUTS: &[SlotDecl] = &[SlotDecl {
 static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 static MANIFEST: NodeManifest = NodeManifest {
     type_name: "_TransportTest",
-    category: "test",
+    tags: &[],
     doc: "transport fixture",
     inputs: INPUTS,
     outputs: OUTPUTS,

@@ -12,6 +12,7 @@ import goofi
 class LempelZiv(goofi.Node):
     """LZ76 complexity: how much a signal repeats itself."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"complexity": goofi.DataType.ARRAY}
     PARAMS = {

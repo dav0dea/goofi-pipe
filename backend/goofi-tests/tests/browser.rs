@@ -11,7 +11,7 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     // The `hello` carries the runtime overlay, the one per-node truth the doc never holds.
     static DISCOVERED: goofi_node::NodeManifest = goofi_node::NodeManifest {
         type_name: "DiscoveredPyNode",
-        category: "python",
+        tags: &[],
         doc: "a runtime type registered before serving",
         inputs: &[],
         outputs: &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }],

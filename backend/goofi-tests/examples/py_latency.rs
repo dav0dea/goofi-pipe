@@ -26,7 +26,7 @@ static PY_PARAMS: &[ParamDecl] = &[];
 static PY_TIER: IsolationCell = IsolationCell::new(Isolation::InProcess);
 static PY_MANIFEST: NodeManifest = NodeManifest {
     type_name: "PyNode",
-    category: "python",
+    tags: &[],
     doc: "",
     inputs: PY_IN,
     outputs: PY_OUT,

@@ -259,7 +259,7 @@ impl AudioEngine {
             .map(|(type_name, m, make)| {
                 let manifest: &'static NodeManifest = Box::leak(Box::new(NodeManifest {
                     type_name,
-                    category: m.category,
+                    tags: m.tags,
                     doc: m.doc,
                     inputs: m.inputs,
                     outputs: m.outputs,

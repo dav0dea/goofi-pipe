@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use goofi_core::{Axis, Coord, Data, SlotType};
-use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
 use rustfft::{num_complex::Complex32, FftPlanner};
 
 struct Psd {
@@ -123,7 +123,7 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "signal",
+    tags: &[Tag::Analysis],
     doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
     inputs: INPUTS,
     outputs: OUTPUTS,

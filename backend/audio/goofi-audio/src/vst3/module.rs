@@ -64,6 +64,17 @@ fn enter(library: &libloading::Library, symbol: &[u8], argument: *mut c_void) ->
     Ok(())
 }
 
+/// A class's VST3 subcategories, which name `Instrument` for a synth. A factory older than
+/// `IPluginFactory2` declares none, and every one of its classes reads as an effect.
+fn sub_categories(two: Option<&ComPtr<IPluginFactory2>>, index: i32) -> String {
+    let Some(two) = two else { return String::new() };
+    let mut info: PClassInfo2 = unsafe { std::mem::zeroed() };
+    match unsafe { two.getClassInfo2(index, &mut info) } == kResultOk {
+        true => cstr(&info.subCategories),
+        false => String::new(),
+    }
+}
+
 pub struct Factory(ComPtr<IPluginFactory>);
 
 impl Factory {
@@ -73,13 +84,15 @@ impl Factory {
         cstr(&info.vendor)
     }
 
-    /// Every "Audio Module Class": its cid and its name.
-    pub fn audio_classes(&self) -> Vec<(TUID, String)> {
+    /// Every "Audio Module Class": its cid, its name and its subcategories.
+    pub fn audio_classes(&self) -> Vec<(TUID, String, String)> {
+        let two: Option<ComPtr<IPluginFactory2>> = self.0.cast();
         (0..unsafe { self.0.countClasses() })
             .filter_map(|i| {
                 let mut info: PClassInfo = unsafe { std::mem::zeroed() };
                 let listed = unsafe { self.0.getClassInfo(i, &mut info) } == kResultOk;
-                (listed && cstr(&info.category) == "Audio Module Class").then(|| (info.cid, cstr(&info.name)))
+                (listed && cstr(&info.category) == "Audio Module Class")
+                    .then(|| (info.cid, cstr(&info.name), sub_categories(two.as_ref(), i)))
             })
             .collect()
     }

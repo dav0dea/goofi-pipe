@@ -150,7 +150,7 @@ fn never() -> Box<dyn goofi_signal_sdk::Node> {
 }
 const fn manifest(type_name: &'static str, inputs: &'static [SlotDecl],
                   params: &'static [ParamDecl], producer: bool) -> NodeManifest {
-    NodeManifest { type_name, category: "test", doc: "a catalog fixture", inputs, outputs: OUT,
+    NodeManifest { type_name, tags: &[], doc: "a catalog fixture", inputs, outputs: OUT,
                    params, producer }
 }
 static SOURCE: NodeManifest = manifest("MyPyThing", &[], &[], true);
@@ -356,6 +356,29 @@ fn every_slot_name_is_letters_and_digits() {
     for m in graph.library_manifests() {
         let minted = format!("{}0", goofi_graph::name_base(m.type_name));
         assert!(goofi_core::globals::is_valid_name(&minted), "{}: minted `{minted}`", m.type_name);
+    }
+}
+
+#[test]
+fn every_manifest_carries_only_standard_tags_and_no_category() {
+    // The vocabulary is closed, so a palette facet is a set the client already knows. A free-text
+    // category was one string per author, and no two spelled the same idea alike.
+    let g = Goofi::new();
+    // The lock is DROPPED before the first op: `library list` takes the same one.
+    let types: Vec<String> = {
+        let graph = g.state.graph.lock().unwrap();
+        graph.library_entries().into_iter()
+            .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
+            .map(|(engine, l)| goofi_node::qualify(engine, l.manifest.type_name))
+            .collect()
+    };
+    assert!(!types.is_empty(), "a fresh goofi offers a library");
+    for ty in types {
+        let row = row(&g, &ty);
+        assert!(row.get("category").is_none(), "{ty}: category is gone");
+        for t in row["tags"].as_array().expect("a tags list") {
+            assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
+        }
     }
 }
 

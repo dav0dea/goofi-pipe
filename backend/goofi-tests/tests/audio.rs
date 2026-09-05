@@ -81,7 +81,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let g = Goofi::new();
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(FirstVar));
 
-    // Step: the palette lists the audio category, and a chain of three sounds at once.
+    // Step: the palette lists the audio engine's types, and a chain of three sounds at once.
     let types = g.call("library list", j!({}));
     let mut audio: Vec<&str> = types["types"].as_array().unwrap().iter()
         .filter(|r| r["engine"] == "audio").filter_map(|r| r["type"].as_str()).collect();
@@ -551,7 +551,7 @@ fn a_patch_sounds_under_the_external_clock() {
          POISON = ParamDecl { group: \"trap\", name: \"poison\", spec: ParamSpec::Bool { default: false }, expression: None, doc: None },\n\
          }\n\
          static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"a quarter, a panic, or a stall\", inputs: &[], outputs: OUTS, params: PARAMS };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"a quarter, a panic, or a stall\", inputs: &[], outputs: OUTS, params: PARAMS };\n\
          #[derive(Default)]\nstruct Trap;\n\
          impl AudioNode for Trap {\n    \
          fn prepare(&mut self, _rate: f64) {}\n    \
@@ -614,7 +614,7 @@ fn a_patch_sounds_under_the_external_clock() {
     // Step: a panic anywhere else in the contract is the same fault at the first block — a
     // constructor that panics, and a `prepare` that does, each named for where it happened.
     let stillborn = "use goofi_audio_sdk::{AudioNode, Block, Manifest};\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"never born\", inputs: &[], outputs: &[], params: &[] };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"never born\", inputs: &[], outputs: &[], params: &[] };\n\
          struct Stillborn;\n\
          impl Default for Stillborn { fn default() -> Stillborn { panic!(\"no birth\") } }\n\
          impl AudioNode for Stillborn {\n    \
@@ -622,7 +622,7 @@ fn a_patch_sounds_under_the_external_clock() {
          fn process(&mut self, _b: &mut Block<'_>) {}\n}\n\
          goofi_audio_sdk::export!(Stillborn, MANIFEST);\n";
     let unready = "use goofi_audio_sdk::{AudioNode, Block, Manifest};\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"never ready\", inputs: &[], outputs: &[], params: &[] };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"never ready\", inputs: &[], outputs: &[], params: &[] };\n\
          #[derive(Default)]\nstruct Unready;\n\
          impl AudioNode for Unready {\n    \
          fn prepare(&mut self, _rate: f64) { panic!(\"not at this rate\") }\n    \
@@ -647,7 +647,7 @@ fn a_patch_sounds_under_the_external_clock() {
         "use goofi_audio_sdk::goofi_core::SlotType;\n\
          use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl};\n\
          static OUTS: &[OutputDecl] = &[OutputDecl { name: \"out\", kind: SlotType::Audio }];\n\
-         static MANIFEST: Manifest = Manifest { category: \"test\", doc: \"counts its blocks\", inputs: &[], outputs: OUTS, params: &[] };\n\
+         static MANIFEST: Manifest = Manifest { tags: &[], doc: \"counts its blocks\", inputs: &[], outputs: OUTS, params: &[] };\n\
          #[derive(Default)]\nstruct Ticks { count: u32 }\n\
          impl AudioNode for Ticks {\n    \
          fn prepare(&mut self, _rate: f64) {}\n    \
@@ -739,8 +739,12 @@ fn a_patch_sounds_under_the_external_clock() {
     }
     // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
     // own words, stepped past it a number, and read-only is not a param at all.
-    let schema = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "audio:GoofiFixture").cloned().expect("the plugin is in the palette")["params"].clone();
+    let plugin = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == "audio:GoofiFixture").cloned().expect("the plugin is in the palette");
+    // A plugin declares no tag: its VST3 subcategories place it, and the vendor rides the doc line.
+    assert_eq!(plugin["tags"], j!(["transform"]), "an effect, not an instrument: {plugin}");
+    assert_eq!(plugin["doc"], j!("goofi: GoofiFixture"), "{plugin}");
+    let schema = plugin["params"].clone();
     assert_eq!(schema["plugin"]["shape"]["options"], j!(["soft", "mid", "hard"]), "{schema}");
     assert_eq!(schema["plugin"]["steps"]["vmax"], j!(200), "{schema}");
     assert!(schema["plugin"]["meter"].is_null(), "a read-only parameter is omitted: {schema}");

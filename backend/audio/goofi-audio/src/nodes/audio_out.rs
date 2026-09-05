@@ -1,5 +1,5 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{AudioNode, Block, Manifest, ParamDecl, ParamSpec, SlotDecl};
+use goofi_audio_sdk::{AudioNode, Block, Manifest, ParamDecl, ParamSpec, SlotDecl, Tag};
 
 pub const TYPE: &str = "AudioOut";
 
@@ -24,7 +24,7 @@ static INS: &[SlotDecl] =
     &[SlotDecl { name: "input", kind: SlotType::Audio, trigger_process: false, multi: true, required: false }];
 
 pub static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Output],
     doc: "The device: what reaches `input` is heard, times `gain`; every AudioOut on the device sums.",
     inputs: INS,
     outputs: &[],

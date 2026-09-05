@@ -20,7 +20,7 @@ const fn manifest(
     params: &'static [ParamDecl],
     producer: bool,
 ) -> NodeManifest {
-    NodeManifest { type_name, category: "test", doc, inputs, outputs, params, producer }
+    NodeManifest { type_name, tags: &[], doc, inputs, outputs, params, producer }
 }
 
 fn add(g: &mut Graph, manifest: NodeManifest, make: fn() -> Box<dyn Node>) {

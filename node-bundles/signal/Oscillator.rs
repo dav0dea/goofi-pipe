@@ -3,7 +3,7 @@
 
 use goofi_core::SlotType;
 use goofi_core::{Data, Meta};
-use goofi_signal_sdk::{ExprDecl, ExprMode, Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec};
+use goofi_signal_sdk::{ExprDecl, ExprMode, Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec, Tag};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy)]
@@ -164,7 +164,7 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "inputs",
+    tags: &[Tag::Generator],
     doc: "LFO/biosignal oscillator (sine/square/sawtooth/triangle), frequency slider, meta sfreq.",
     inputs: &[],
     outputs: OUTPUTS,

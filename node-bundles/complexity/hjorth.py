@@ -13,6 +13,7 @@ import goofi
 class Hjorth(goofi.Node):
     """Hjorth mobility and complexity: mean frequency, and distance from a sine."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"mobility": goofi.DataType.ARRAY, "complexity": goofi.DataType.ARRAY}
 

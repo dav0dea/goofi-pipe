@@ -25,7 +25,7 @@ static AUDIO_INS: &[SlotDecl] = &[
 ];
 static AUDIO: NodeManifest = NodeManifest {
     type_name: "SkelAudioOsc",
-    category: "audio",
+    tags: &[],
     doc: "a fixed block per tick, and the freshest boundary input echoed back",
     inputs: AUDIO_INS,
     outputs: AUDIO_OUTS,
@@ -36,7 +36,7 @@ static AUDIO: NodeManifest = NodeManifest {
 static GFX_OUTS: &[OutputDecl] = &[OutputDecl { name: "frame", kind: SlotType::Array }];
 static GFX: NodeManifest = NodeManifest {
     type_name: "SkelGfxFrame",
-    category: "graphics",
+    tags: &[],
     doc: "a static frame per tick",
     inputs: &[],
     outputs: GFX_OUTS,

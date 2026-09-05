@@ -69,12 +69,7 @@ pub enum Discovery {
 }
 
 /// Discover one Python node file; the file names the type.
-pub fn discover_one(
-    path: &Path,
-    python: &str,
-    category: &'static str,
-    isolation: Isolation,
-) -> Discovery {
+pub fn discover_one(path: &Path, python: &str, isolation: Isolation) -> Discovery {
     if path.extension().and_then(|e| e.to_str()) != Some("py") {
         return Discovery::Skip;
     }
@@ -84,13 +79,15 @@ pub fn discover_one(
             if let Some(reason) = illegal_slot(&intro) {
                 return Discovery::Unavailable { type_name, reason };
             }
-            let manifest = leak_manifest(type_name, &intro, category);
-            Discovery::Found(Discovered {
-                manifest,
-                isolation: IsolationCell::leak(isolation),
-                gil_safe: intro.gil_safe,
-                source: path.to_path_buf(),
-            })
+            match leak_manifest(type_name.clone(), &intro) {
+                Ok(manifest) => Discovery::Found(Discovered {
+                    manifest,
+                    isolation: IsolationCell::leak(isolation),
+                    gil_safe: intro.gil_safe,
+                    source: path.to_path_buf(),
+                }),
+                Err(reason) => Discovery::Unavailable { type_name, reason },
+            }
         }
         Err(reason) => Discovery::Unavailable { type_name, reason },
     }

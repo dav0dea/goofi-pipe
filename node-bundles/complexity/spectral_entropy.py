@@ -12,6 +12,7 @@ import goofi
 class SpectralEntropy(goofi.Node):
     """Spectral entropy: how flat the power spectrum is, tone to noise."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"entropy": goofi.DataType.ARRAY}
     PARAMS = {

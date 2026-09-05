@@ -52,7 +52,7 @@ impl AudioEngine {
             if let Some(reason) = goofi_node::illegal_slot(&intro) {
                 return Err(reason);
             }
-            let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro, "audio");
+            let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro)?;
             let loaded = unsafe { Loaded::open(opened.library, manifest) }?;
             self.rust_loaded.insert(artifact.to_path_buf(), Arc::new(loaded));
         }

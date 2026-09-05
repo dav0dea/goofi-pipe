@@ -12,6 +12,7 @@ import goofi
 class PermutationEntropy(goofi.Node):
     """Permutation entropy: disorder in the ORDER of neighbouring samples."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"entropy": goofi.DataType.ARRAY}
     PARAMS = {

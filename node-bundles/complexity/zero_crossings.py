@@ -12,6 +12,7 @@ import goofi
 class ZeroCrossings(goofi.Node):
     """Zero crossings: how often the signal changes sign over the window."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"count": goofi.DataType.ARRAY}
     PARAMS = {

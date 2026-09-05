@@ -12,6 +12,7 @@ import goofi
 class SampleEntropy(goofi.Node):
     """Sample entropy: how rarely a pattern that recurred keeps recurring."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"entropy": goofi.DataType.ARRAY}
     PARAMS = {

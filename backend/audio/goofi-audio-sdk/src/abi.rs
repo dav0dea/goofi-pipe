@@ -75,7 +75,7 @@ pub struct VTable {
 
 /// The `goofi_describe` answer: the manifest as the probe schema.
 pub fn describe_c(m: &Manifest) -> *const c_char {
-    goofi_node::abi::describe_once(|| goofi_node::describe(m.category, m.doc, m.inputs, m.outputs, m.params, false))
+    goofi_node::abi::describe_once(|| goofi_node::describe(m.tags, m.doc, m.inputs, m.outputs, m.params, false))
 }
 
 /// Box a fresh node for the host; a constructor that panics answers null, which the host faults

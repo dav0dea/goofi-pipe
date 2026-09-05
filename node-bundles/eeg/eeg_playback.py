@@ -33,6 +33,7 @@ SAMPLES = {
 class EegPlayback(goofi.Node):
     """Replay an EEG recording at its own rate, as if it were live."""
 
+    TAGS = ["input", "eeg"]
     OUTPUTS = {"out": goofi.DataType.ARRAY}
     PRODUCER = True
     PARAMS = {

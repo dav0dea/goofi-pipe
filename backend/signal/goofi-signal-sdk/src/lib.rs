@@ -13,11 +13,11 @@ pub mod abi;
 pub mod host;
 
 pub use goofi_core;
-pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl};
+pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamSpec, Params, SlotDecl, Tag};
 
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's.
 pub struct Manifest {
-    pub category: &'static str,
+    pub tags: &'static [Tag],
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

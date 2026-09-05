@@ -177,7 +177,7 @@ fn a_required_input_refuses_to_run_on_a_hole_and_says_so() {
 /// A node whose FIRST instance fails to boot and whose second succeeds, so a restart shows as recovery.
 static FLAKY: goofi_node::NodeManifest = goofi_node::NodeManifest {
     type_name: "_TestFlaky",
-    category: "test",
+    tags: &[],
     doc: "fails setup once, then succeeds",
     inputs: &[],
     outputs: &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }],
@@ -437,7 +437,7 @@ fn a_busy_node_never_holds_up_the_control_plane_and_never_wedges_the_exit() {
     static SLOW_OUT: &[goofi_node::OutputDecl] =
         &[goofi_node::OutputDecl { name: "out", kind: goofi_core::SlotType::Array }];
     static SLOW_BUILD: goofi_node::NodeManifest = goofi_node::NodeManifest {
-        type_name: "_TestSlowBuild", category: "test", doc: "takes 700 ms to construct",
+        type_name: "_TestSlowBuild", tags: &[], doc: "takes 700 ms to construct",
         inputs: SLOW_IN, outputs: SLOW_OUT, params: &[],
         producer: false,
     };

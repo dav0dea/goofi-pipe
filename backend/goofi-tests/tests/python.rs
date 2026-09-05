@@ -347,7 +347,7 @@ class Sleeper(goofi.Node):
         static SLEEPY_TIER: goofi_node::IsolationCell =
             goofi_node::IsolationCell::new(goofi_node::Isolation::InProcess);
         static SLEEPY: goofi_node::NodeManifest = goofi_node::NodeManifest {
-            type_name: "Sleeper", category: "python", doc: "sleeps 150 ms per run",
+            type_name: "Sleeper", tags: &[], doc: "sleeps 150 ms per run",
             inputs: IN, outputs: OUT, params: &[],
             producer: false,
         };

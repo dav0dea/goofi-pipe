@@ -3,7 +3,7 @@
 //! the file that authors one, so the two halves cannot drift.
 
 pub use goofi_core;
-pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
+pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamSpec, SlotDecl, Tag};
 
 pub mod abi;
 #[cfg(feature = "host")]
@@ -20,7 +20,7 @@ pub const MAX_PORTS: usize = 16;
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's. The
 /// signal-only slot flags are ignored; `multi: true` on an input sums its wires at the jack.
 pub struct Manifest {
-    pub category: &'static str,
+    pub tags: &'static [Tag],
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

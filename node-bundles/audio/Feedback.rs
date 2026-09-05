@@ -1,12 +1,12 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, SlotDecl};
+use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, SlotDecl, Tag};
 
 static INS: &[SlotDecl] =
     &[SlotDecl { name: "input", kind: SlotType::Audio, trigger_process: false, multi: false, required: false }];
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Transform],
     doc: "Its input one block late: the one way a loop closes. It runs first each block, reading \
           what its producer left in the last one.",
     inputs: INS,

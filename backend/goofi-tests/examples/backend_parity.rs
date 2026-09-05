@@ -68,7 +68,7 @@ static SUBPY_M: NodeManifest = manifest("bench_subpy");
 const fn manifest(type_name: &'static str) -> NodeManifest {
     NodeManifest {
         type_name,
-        category: "bench",
+        tags: &[],
         doc: "",
         inputs: IN,
         outputs: OUT,

@@ -2,7 +2,7 @@
 //! The rank never changes.
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
-use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl};
+use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
 
 #[derive(Default)]
 struct Buffer {
@@ -97,7 +97,7 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "signal",
+    tags: &[Tag::Transform],
     doc: "Rolling window along one axis: keeps the most recent `size` entries, rank unchanged.",
     inputs: INPUTS,
     outputs: OUTPUTS,

@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec};
+use goofi_audio_sdk::{AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec, Tag};
 
 use crate::nodes::Birth;
 use crate::runtime::Inbox;
@@ -22,7 +22,7 @@ goofi_audio_sdk::params! {
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 pub static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Input],
     doc: "The device's input, as many channels as it has.",
     inputs: &[],
     outputs: OUTS,

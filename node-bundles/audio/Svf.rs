@@ -1,5 +1,5 @@
 use goofi_audio_sdk::goofi_core::SlotType;
-use goofi_audio_sdk::{hz_of, AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl, BLOCK, MAX_CHANNELS};
+use goofi_audio_sdk::{hz_of, AudioNode, Block, Manifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl, Tag, BLOCK, MAX_CHANNELS};
 
 goofi_audio_sdk::params! {
     MODE = ParamDecl {
@@ -30,7 +30,7 @@ static INS: &[SlotDecl] =
 static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }];
 
 static MANIFEST: Manifest = Manifest {
-    category: "audio",
+    tags: &[Tag::Transform],
     doc: "A resonant state-variable filter, low, band or high, at audio-rate cutoff.",
     inputs: INS,
     outputs: OUTS,

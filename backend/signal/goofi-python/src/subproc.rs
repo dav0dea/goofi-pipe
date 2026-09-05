@@ -254,7 +254,7 @@ use crate::Discovery;
 
 /// Probe one file for this tier, reporting all three outcomes.
 pub fn probe(path: &Path, python: &str) -> Discovery {
-    crate::discover_one(path, python, "subprocess", Isolation::Subprocess)
+    crate::discover_one(path, python, Isolation::Subprocess)
 }
 
 /// Turn a probe-[`Discovered`] into a [`SubprocNodeType`], without a second spawn.

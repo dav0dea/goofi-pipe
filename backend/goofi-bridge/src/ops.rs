@@ -215,7 +215,7 @@ pub static TREE: &[Entry] = &[
     Group("library", "the node types — what `node add` can build", &[
         Leaf(Op { name: "list", handler: Read(arms::library_list), args: "", positional: 0,
              doc: "The node library: every registered type with its slots, params, docs and availability — what `node add` can build.",
-             result: "{types: [{type, category, doc, input_slots, output_slots, params, available}]}" }),
+             result: "{types: [{type, engine, tags, doc, input_slots, output_slots, params, available}]}" }),
         Leaf(Op { name: "get", handler: Read(arms::library_get), args: "type:string!", positional: 1,
              doc: "ONE library entry in full: the palette fields plus where the type came from and its source text. Copy a node into the patch workspace to modify one.",
              result: "the `library list` entry plus {language, tier, provenance, path, source}" }),

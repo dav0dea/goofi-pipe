@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use goofi_core::probe;
 use goofi_core::SlotType;
 
-use crate::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl};
+use crate::{NodeManifest, OutputDecl, ParamDecl, ParamSpec, SlotDecl, Tag};
 
 /// The type a node file names: a `.py` stem CamelCased, an `.rs` stem as written. `None` for a
 /// file that is not a node file, one hidden by a `_` prefix, or a stem outside the name rule.
@@ -101,7 +101,7 @@ pub fn parse_introspection(json: &str) -> Result<probe::Introspection, String> {
 
 /// A manifest as the probe schema — the one description every out-of-crate node answers, as JSON.
 pub fn describe(
-    category: &str,
+    tags: &[Tag],
     doc: &str,
     inputs: &[SlotDecl],
     outputs: &[OutputDecl],
@@ -111,7 +111,7 @@ pub fn describe(
     let intro = probe::Introspection {
         gil_safe: true,
         doc: doc.to_string(),
-        category: Some(category.to_string()),
+        tags: tags.iter().map(|t| t.as_str().to_string()).collect(),
         producer,
         inputs: inputs
             .iter()
@@ -167,12 +167,16 @@ fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-/// Build a `'static NodeManifest` from an introspection.
+/// Build a `'static NodeManifest` from an introspection; a tag outside the vocabulary refuses it.
 pub fn leak_manifest(
     type_name: String,
     intro: &probe::Introspection,
-    category: &'static str,
-) -> &'static NodeManifest {
+) -> Result<&'static NodeManifest, String> {
+    let tags = intro
+        .tags
+        .iter()
+        .map(|t| Tag::parse(t).ok_or_else(|| format!("unknown tag `{t}`; the vocabulary is {}", Tag::vocabulary())))
+        .collect::<Result<Vec<Tag>, String>>()?;
     let inputs: Vec<SlotDecl> = intro
         .inputs
         .iter()
@@ -194,15 +198,15 @@ pub fn leak_manifest(
         .collect();
     let params: Vec<ParamDecl> = intro.params.iter().map(param_decl).collect();
 
-    Box::leak(Box::new(NodeManifest {
+    Ok(Box::leak(Box::new(NodeManifest {
         type_name: leak_str(&type_name),
-        category: intro.category.as_deref().map(leak_str).unwrap_or(category),
+        tags: Box::leak(tags.into_boxed_slice()),
         doc: leak_str(&intro.doc),
         inputs: Box::leak(inputs.into_boxed_slice()),
         outputs: Box::leak(outputs.into_boxed_slice()),
         params: Box::leak(params.into_boxed_slice()),
         producer: intro.producer,
-    }))
+    })))
 }
 
 fn param_decl(p: &probe::Param) -> ParamDecl {

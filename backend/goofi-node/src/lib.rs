@@ -9,6 +9,7 @@ pub mod abi;
 pub mod describe;
 pub mod mailbox;
 pub mod seam;
+pub mod tags;
 pub mod type_id;
 pub use describe::{describe, engine_of, folder_of, illegal_slot, leak_manifest, node_files, parse_introspection, type_name_of};
 pub use mailbox::{Expression, Mailbox, Var};
@@ -16,6 +17,7 @@ pub use seam::{
     BindingView, BoundVar, DrainWaker, Edge, Engine, EventId, GraphView, LibraryEntry, NodeView,
     Ringer, Scanned, ScannedType, Stamp, Touched, Via,
 };
+pub use tags::Tag;
 pub use type_id::{bare, qualify, split as split_type_id};
 
 /// A `u64` internally, a 12-hex string in the `.gfi` and on the wire.
@@ -399,7 +401,7 @@ pub struct OutputDecl {
 /// Static, declarative node metadata — plain data, shared by every engine.
 pub struct NodeManifest {
     pub type_name: &'static str,
-    pub category: &'static str,
+    pub tags: &'static [Tag],
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

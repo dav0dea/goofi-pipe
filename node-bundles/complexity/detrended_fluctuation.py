@@ -13,6 +13,7 @@ import goofi
 class DetrendedFluctuation(goofi.Node):
     """DFA exponent: how far a signal remembers its own past."""
 
+    TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {"exponent": goofi.DataType.ARRAY}
 
