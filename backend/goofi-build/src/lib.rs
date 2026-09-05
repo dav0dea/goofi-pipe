@@ -126,11 +126,15 @@ fn build(sdk: &Sdk, source: &Path, base: &Path, key: &str, artifact: &Path) -> R
     generate(sdk, source, &sdk_root(base), &crate_dir, &crate_name)?;
     let mut cmd = Command::new(cargo);
     cmd.args(["build", "--release", "--message-format", "short", "--color", "never"]).current_dir(&crate_dir);
-    // A nested cargo must not inherit the outer build's own knobs — a build script's `OUT_DIR`,
-    // its encoded rustflags, its target triple — only the jobserver and the home.
+    // A nested cargo must not inherit the outer build's own knobs — `OUT_DIR`, encoded rustflags,
+    // a target triple — only the jobserver, the home, and the machine's own fetch settings.
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy();
-        let outer = k.starts_with("CARGO_") && !matches!(&*k, "CARGO_HOME" | "CARGO_MAKEFLAGS");
+        let machine = matches!(&*k, "CARGO_HOME" | "CARGO_MAKEFLAGS")
+            || k.starts_with("CARGO_NET_")
+            || k.starts_with("CARGO_HTTP_")
+            || k.starts_with("CARGO_REGISTRIES_");
+        let outer = k.starts_with("CARGO_") && !machine;
         if outer || matches!(&*k, "OUT_DIR" | "TARGET" | "HOST" | "PROFILE" | "OPT_LEVEL" | "DEBUG" | "NUM_JOBS" | "RUSTC" | "RUSTDOC" | "RUSTC_LINKER" | "RUSTC_WORKSPACE_WRAPPER") {
             cmd.env_remove(&*k);
         }
