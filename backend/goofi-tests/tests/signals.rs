@@ -33,7 +33,7 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     set(flt, "filter", "high", j!(20.0));
 
     let probe = g.probe(psd, "psd"); // opened before the wires: the data services keep no history
-    g.link(osc, "out", flt, "data");
+    g.link(osc, "out", flt, "input");
     g.link(flt, "out", buf, "data");
     g.link(buf, "out", psd, "data");
 
