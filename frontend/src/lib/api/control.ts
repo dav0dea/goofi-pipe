@@ -1,6 +1,7 @@
 /** Control-plane WebSocket client: typed RPC and event subscription over `/control`. */
 import type { ParamDescriptor } from '$lib/api/types';
 import type { OpName } from '$lib/api/ops';
+import type { TAGS } from '$lib/api/vocab';
 
 /** Control-plane protocol version. Bump it together with PROTOCOL_VERSION in
  * `backend/goofi-bridge/src/schemas.rs`. */
@@ -22,8 +23,7 @@ export interface NodeTypeInfo {
 	type: string;
 	/** The engine that offers the type; null for a structural one, which runs nowhere. */
 	engine: string | null;
-	/** Tags from the closed `TAGS` vocabulary, which the palette facets by. */
-	tags: string[];
+	tags: (typeof TAGS)[number][];
 	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. */
 	source: 'builtin' | 'patch';
 	doc: string;

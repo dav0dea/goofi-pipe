@@ -3,7 +3,7 @@ import { rankNodeTypes } from './nodeSearch';
 import { engineOf } from './typeId';
 import type { NodeTypeInfo } from '$lib/api/control';
 
-function node(type: string, tags: string[], doc = ''): NodeTypeInfo {
+function node(type: string, tags: NodeTypeInfo['tags'], doc = ''): NodeTypeInfo {
 	return {
 		type,
 		engine: engineOf(type),

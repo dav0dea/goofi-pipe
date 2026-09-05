@@ -112,6 +112,6 @@ function catalog(): NodeTypeInfo[] {
 			input_slots: { in: 'ARRAY' },
 			output_slots: { out: 'ARRAY' },
 			params: {}
-		} as unknown as NodeTypeInfo
+		}
 	];
 }

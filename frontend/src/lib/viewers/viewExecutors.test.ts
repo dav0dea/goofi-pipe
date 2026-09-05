@@ -22,7 +22,7 @@ function catalog(): NodeTypeInfo[] {
 			input_slots: {},
 			output_slots: { out: 'ARRAY', sig: 'ARRAY' },
 			params: {}
-		} as unknown as NodeTypeInfo
+		}
 	];
 }
 
