@@ -631,13 +631,14 @@ impl Engine for AudioEngine {
         let Some(Class { manifest, make, .. }) = self.classes.get(type_name).cloned() else {
             return Some(format!("no audio node type `{type_name}`"));
         };
-        let widest = manifest.params.len().max(manifest.inputs.len()).max(manifest.outputs.len());
-        if widest > MAX_PORTS {
-            return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
-        }
         let chans = Arc::new(AtomicU16::new(1));
         let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.shared.clone());
         let mut node = make(birth);
+        // Only the audio-rate params are ports; a control-rate one is a float in the scalar strip.
+        let widest = node.audio_params(manifest.params.len()).max(manifest.inputs.len()).max(manifest.outputs.len());
+        if widest > MAX_PORTS {
+            return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
+        }
         node.prepare(self.shared.rate());
         if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
             node.load(&bytes);

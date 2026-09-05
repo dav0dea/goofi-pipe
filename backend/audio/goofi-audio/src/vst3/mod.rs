@@ -31,6 +31,10 @@ use node::Plugin;
 /// A stepped parameter with this many steps or fewer is a `Str` of the plugin's own strings.
 const STR_STEPS: i32 = 64;
 
+/// The most parameters a plugin node declares. This is NOT the port ceiling — a plugin parameter
+/// is control rate and costs no port — but a row the document carries and the inspector draws.
+const MAX_PARAMS: usize = 512;
+
 /// A CEILING on the child, as `OPEN_WAIT` is on a device: the scan runs under the graph lock, and
 /// a plugin that blocks at load must not wedge every op.
 const SCAN_WAIT: Duration = Duration::from_secs(20);
@@ -457,9 +461,9 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     };
     let mut names: HashMap<String, Vec<String>> = HashMap::new();
     let mut kinds = Vec::new();
-    // A block's params are a stack array, so the ceiling is real; `chosen` bounds the KINDS too,
-    // which is what keeps a param's index and the id it writes back to in step.
-    let room = MAX_PORTS - params.len();
+    // `chosen` bounds the KINDS too, which is what keeps a param's index and the id it writes back
+    // to in step.
+    let room = MAX_PARAMS - params.len();
     let offered: Vec<&ParamInfo> = class.params.iter().filter(|p| p.flags & OMITTED == 0).collect();
     let total = offered.len();
     let groups = unit_groups(class);
