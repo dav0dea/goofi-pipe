@@ -67,10 +67,12 @@ jobs:
     # registry whole rather than pruning it to the workspace's direct dependencies, and the
     # `prefix-key` bump is what forces the one fresh save that replaces the bad entry. Moving the
     # key is the only way to re-save; it is a deliberate commit, like moving the toolchain pin.
+    # Saved on a red run too: a failing test is the run that most needs the next one to be fast.
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: v1-rust
         cache-all-crates: true
+        cache-on-failure: true
 
     # iceoryx2 builds its OS bindings with bindgen, which finds libclang by itself everywhere but
     # here: the runner ships LLVM and does not name it.
