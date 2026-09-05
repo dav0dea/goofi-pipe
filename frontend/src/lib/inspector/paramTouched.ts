@@ -13,6 +13,30 @@ export function isModified(d: ParamDescriptor): boolean {
 	return d.value !== d.default;
 }
 
+/** One row of the touched list: the param, and the group it had to be fetched out of. */
+export interface TouchedRow {
+	group: string;
+	name: string;
+	descriptor: ParamDescriptor;
+}
+
+/**
+ * Every touched param, ACROSS the groups. Spanning them is the whole point: a knob was turned in
+ * the plugin's own window, and which tab goofi filed it under is the one thing the reader does not
+ * know — a per-tab filter answers "nothing here" while the count says otherwise.
+ */
+export function touchedRows(
+	groups: Record<string, Record<string, ParamDescriptor>> | undefined,
+	order?: string[]
+): TouchedRow[] {
+	const names = order ?? Object.keys(groups ?? {});
+	return names.flatMap((group) =>
+		Object.entries(groups?.[group] ?? {})
+			.filter(([, descriptor]) => isModified(descriptor))
+			.map(([name, descriptor]) => ({ group, name, descriptor }))
+	);
+}
+
 /** How many of a node's params are touched, across every group. */
 export function touchedCount(groups: Record<string, Record<string, ParamDescriptor>> | undefined): number {
 	return Object.values(groups ?? {}).reduce(

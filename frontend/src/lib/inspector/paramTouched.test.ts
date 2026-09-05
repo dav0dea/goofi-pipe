@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ParamDescriptor } from '$lib/api/types';
-import { isModified, touchedCount } from './paramTouched';
+import { isModified, touchedCount, touchedRows } from './paramTouched';
 
 const base = {
 	doc: null,
@@ -56,5 +56,30 @@ describe('touchedCount', () => {
 
 	it('is zero for no node at all', () => {
 		expect(touchedCount(undefined)).toBe(0);
+	});
+});
+
+describe('touchedRows', () => {
+	const groups = {
+		osc: { tune: float(0.2, 0.5), shape: float(0.5, 0.5) },
+		env1: { attack: float(0.9, 0.5) },
+		lfo1: { rate: float(0.5, 0.5) }
+	};
+
+	it('spans every group, so a param touched in a tab nobody is looking at still shows', () => {
+		expect(touchedRows(groups).map((r) => `${r.group}.${r.name}`)).toEqual(['osc.tune', 'env1.attack']);
+	});
+
+	it('agrees with the count, which is what made the empty list a bug rather than a view', () => {
+		expect(touchedRows(groups)).toHaveLength(touchedCount(groups));
+	});
+
+	it('follows the given group order', () => {
+		expect(touchedRows(groups, ['env1', 'osc']).map((r) => r.group)).toEqual(['env1', 'osc']);
+	});
+
+	it('is empty for an untouched node, and for no node', () => {
+		expect(touchedRows({ osc: { tune: float(0.5, 0.5) } })).toEqual([]);
+		expect(touchedRows(undefined)).toEqual([]);
 	});
 });
