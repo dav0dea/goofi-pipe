@@ -13,6 +13,7 @@ import { closeSplit, splitRight, waitForApp } from '../lib/app';
 import {
 	armSocketControl,
 	backendDoc,
+	rawCall,
 	backendNodes,
 	dropSocket,
 	reachesManager,
@@ -161,6 +162,32 @@ test.describe('the control socket', () => {
 				await redo(page);
 				await expect.poll(async () => (await backendDoc(page)).globals.seam_probe?.value).toBe(7);
 				await expectAgreement(page, 'after redo');
+			});
+
+			await test.step('a delta landing mid-drag does not put the node back where it started', async () => {
+				const card = page.locator(`.svelte-flow__node[data-id="${osc}"]`);
+				const header = card.locator('.header');
+				const start = (await header.boundingBox())!;
+				const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+				await page.mouse.move(from.x, from.y);
+				await page.mouse.down();
+				await page.mouse.move(from.x + 40, from.y + 30, { steps: 4 });
+				await page.mouse.move(from.x + 120, from.y + 80, { steps: 8 });
+				const held = (await card.boundingBox())!;
+				expect(held.x, 'the drag moved it').toBeGreaterThan(start.x + 60);
+				// ANOTHER writer's edit, with the pointer still down. The document holds where the drag
+				// STARTED until the drop, so a replica that re-reads it over the gesture snaps the node back.
+				await rawCall(page, 'node edit', { node: buf, name: 'renamedmiddrag' });
+				await expect(page.locator(`.svelte-flow__node[data-id="${buf}"]`)).toContainText('renamedmiddrag');
+				const after = (await card.boundingBox())!;
+				expect(Math.abs(after.x - held.x), 'the dragged node stayed under the pointer').toBeLessThan(2);
+				expect(Math.abs(after.y - held.y)).toBeLessThan(2);
+				await page.mouse.up();
+				await expect
+					.poll(async () => (await backendDoc(page)).nodes[osc].pos.x, { timeout: 10_000 })
+					.toBeGreaterThan(60);
+				const rested = (await card.boundingBox())!;
+				expect(Math.abs(rested.x - held.x), 'and the drop holds through the round trip').toBeLessThan(2);
 			});
 
 			await test.step('a sub-patch port is a node to every op, and to the manager', async () => {
