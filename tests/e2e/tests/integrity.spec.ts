@@ -12,6 +12,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { closeAddedTab, closeSplit, splitRight, waitForApp } from '../lib/app';
 import { expectIntact } from '../lib/invariants';
 import { addNode, selectNode, waitForNode } from '../lib/goofi';
+import { rawCall } from '../lib/raw';
 
 /** Open the panel header menu, reveal its content submenu, and answer every row it shows. */
 async function panelTypeRows(page: Page): Promise<string[]> {
@@ -46,6 +47,8 @@ async function tearDown(page: Page): Promise<void> {
 }
 
 test('a patch under construction holds together at every stage', async ({ page }) => {
+	const thrown: string[] = [];
+	page.on('pageerror', (e) => thrown.push(String(e)));
 	await page.goto('/');
 	await waitForApp(page);
 	const wide = (page.viewportSize()?.width ?? 0) >= 900;
@@ -84,6 +87,34 @@ test('a patch under construction holds together at every stage', async ({ page }
 				)
 				.toBe(true);
 			await expectIntact(page, 'a streaming viewer');
+		});
+
+		await test.step('a spectrum on a log axis, streaming', async () => {
+			// A PSD floor sits far below 1e-22 — the range uPlot's own log walk never terminates on.
+			const psd = await addNode(page, 'Psd', [320, 240]);
+			await waitForNode(page, psd);
+			await page.evaluate(
+				([a, b]) =>
+					(window as any).goofi.commands.addLink({
+						node_out: a,
+						slot_out: 'out',
+						node_in: b,
+						slot_in: 'data'
+					}),
+				[osc, psd]
+			);
+			await rawCall(page, 'node edit', {
+				node: psd,
+				viewer: [{ slot: 'psd', kind: 'line', settings: { logY: true } }]
+			});
+			await expect
+				.poll(
+					() => page.evaluate((u) => (window as any).goofi.query.frameSummary(u, 'psd') !== null, psd),
+					{ message: 'spectra reached the tab', timeout: 30_000 }
+				)
+				.toBe(true);
+			await page.waitForTimeout(1500);
+			await expectIntact(page, 'a streaming spectrum');
 		});
 
 		await test.step('the inspector open over it, with every param group rendered', async () => {
@@ -148,6 +179,10 @@ test('a patch under construction holds together at every stage', async ({ page }
 				await choosePanelType(page, 'Node Editor');
 			});
 		}
+
+		await test.step('and the renderer threw nothing along the way', async () => {
+			expect(thrown).toEqual([]);
+		});
 	} finally {
 		await tearDown(page);
 	}
