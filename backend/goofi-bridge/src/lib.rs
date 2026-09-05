@@ -66,28 +66,6 @@ pub struct Mode {
     pub demo: bool,
 }
 
-/// When an untouched demo hands itself back. A public goofi is billed for as long as it talks, so
-/// going quiet IS the saving: the sockets close, nothing is broadcast, and the host platform's own
-/// idle sleep can finally engage. The process stays up — an exited one does not wake on a request.
-#[derive(Clone, Copy, Debug)]
-pub struct IdlePolicy {
-    /// Untouched for this long, and the countdown is announced.
-    pub warn_after: Duration,
-    /// How long the announcement stands before the sockets close.
-    pub grace: Duration,
-}
-
-impl IdlePolicy {
-    pub const DEFAULT: IdlePolicy =
-        IdlePolicy { warn_after: Duration::from_secs(600), grace: Duration::from_secs(60) };
-}
-
-impl Default for IdlePolicy {
-    fn default() -> Self {
-        IdlePolicy::DEFAULT
-    }
-}
-
 #[derive(Clone)]
 pub struct AppState {
     pub graph: Arc<Mutex<Graph>>,
@@ -131,17 +109,6 @@ pub struct AppState {
     bound: Arc<Mutex<std::net::SocketAddr>>,
     /// The spawned agent harnesses and their PTYs.
     pub harnesses: Arc<term::Harnesses>,
-    /// When a client last spoke through `/control` — the ONE reading of "somebody is here", and a
-    /// demo's idle clock. Stamped at the envelope rather than in [`AppState::call`], because the
-    /// status worker calls ops of its own and a machine's edit is not a visitor's touch.
-    touched: Arc<Mutex<Instant>>,
-    /// Bumped when an idle demo hands itself back: every live socket compares the value it
-    /// connected with and closes on a change. A counter rather than a flag, so the visitor who
-    /// arrives after a quiesce is not disconnected by the one before them.
-    quiesce: tokio::sync::watch::Sender<u64>,
-    /// How long a demo tolerates being untouched. Injectable so a test need not sit out ten
-    /// minutes; ignored entirely when `mode.demo` is false.
-    pub idle: IdlePolicy,
 }
 
 /// How a `/data` socket detects a dead-but-not-closed peer, which a socket with no traffic cannot
@@ -215,20 +182,7 @@ impl AppState {
             save_path: Arc::new(Mutex::new(None)),
             bound: Arc::new(Mutex::new(([127, 0, 0, 1], 8000).into())),
             harnesses: Arc::new(term::Harnesses::default()),
-            touched: Arc::new(Mutex::new(Instant::now())),
-            quiesce: tokio::sync::watch::channel(0).0,
-            idle: IdlePolicy::DEFAULT,
         }
-    }
-
-    /// Record that a client spoke. The demo watchdog reads this and nothing else.
-    fn touch(&self) {
-        *self.touched.lock().unwrap() = Instant::now();
-    }
-
-    /// How long since the last client word.
-    fn untouched_for(&self) -> Duration {
-        self.touched.lock().unwrap().elapsed()
     }
 
     /// Record the address this server actually bound — what `local_url` derives from.
@@ -425,42 +379,6 @@ fn error_transitions(
 /// is EVENT-WOKEN: a node's report notifies the waker, so nothing polls to discover one.
 const BROADCAST_PERIOD: Duration = Duration::from_millis(500);
 
-/// The demo's idle watchdog: announce a countdown when nobody has spoken for `warn_after`, and
-/// close the sockets when it runs out. Only the announcement and the closing live here — the
-/// clock itself is [`AppState::touched`], stamped by the one door a visitor speaks through.
-fn spawn_idle_watchdog(state: &AppState) {
-    let state = state.clone();
-    std::thread::spawn(move || {
-        let tick = (state.idle.grace / 4).max(Duration::from_millis(50));
-        let mut announced = false;
-        loop {
-            std::thread::sleep(tick);
-            let idle = state.untouched_for();
-            match (idle >= state.idle.warn_after, announced) {
-                // Untouched long enough: say when the sockets close, once.
-                (true, false) => {
-                    announced = true;
-                    let closing_in = state.idle.grace.as_millis() as u64;
-                    let _ = state.events.send(event("demo_idle", json!({ "closing_in_ms": closing_in })));
-                }
-                // Somebody spoke while the countdown stood: withdraw it.
-                (false, true) => {
-                    announced = false;
-                    let _ = state.events.send(event("demo_idle", json!({ "closing_in_ms": Value::Null })));
-                }
-                _ => {}
-            }
-            if announced && idle >= state.idle.warn_after + state.idle.grace {
-                announced = false;
-                // The stamp moves too: the quiesce is the last thing that happened, so the next
-                // tick does not read the same silence as a second countdown.
-                state.touch();
-                state.quiesce.send_modify(|v| *v += 1);
-            }
-        }
-    });
-}
-
 /// The background worker a live server needs — the status drain: take every node's reports, apply
 /// them to the graph, and broadcast the events that carry them.
 ///
@@ -642,11 +560,6 @@ pub async fn serve_app(
     spa: Spa,
     dev_routes: bool,
 ) -> std::io::Result<()> {
-    // Here rather than beside the status drain: the countdown is about SOCKETS, and only a server
-    // has any. It also means the policy is read from the state that is actually served.
-    if state.mode.demo {
-        spawn_idle_watchdog(&state);
-    }
     axum::serve(listener, app(state, spa, dev_routes)).await
 }
 
@@ -898,10 +811,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
     // Subscribe BEFORE snapshotting the document: in the other order a peer's edit lands in
     // neither, and the replica desyncs silently. A re-delivery is read as stale and skipped.
     let mut events = state.events.subscribe();
-    // Arriving IS speaking: a visitor who opens the page mid-countdown withdraws it.
-    state.touch();
-    let mut quiesce = state.quiesce.subscribe();
-    quiesce.mark_unchanged();
 
     let (hello, doc) = control_seeds(&state);
     if tx.send(Message::Text(hello.into())).await.is_err() {
@@ -944,8 +853,6 @@ async fn handle_control(socket: WebSocket, state: AppState) {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            // The demo went quiet. A normal close, because nothing failed: the visitor left.
-            _ = quiesce.changed() => break,
         }
     }
     farewell(tx, rx, 1000, "").await;
@@ -1147,7 +1054,6 @@ impl AppState {
 /// The `/control` envelope over [`AppState::call`]: `{id, op, payload, actor}` in, `{id, result}`
 /// or `{id, error}` out. A request with no numeric `id` wants no reply.
 fn dispatch(state: &AppState, text: &str) -> Option<String> {
-    state.touch();
     let req: Value = serde_json::from_str(text).ok()?;
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let op = req.get("op")?.as_str()?.to_string();
@@ -1424,9 +1330,6 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
     let cfg = state.data_liveness;
     let mut live = PeerLiveness::new(cfg);
     let mut keepalive = tokio::time::interval(cfg.ping_interval);
-    // This socket's ping is the loudest thing an abandoned demo says; a quiesce has to reach it.
-    let mut quiesce = state.quiesce.subscribe();
-    quiesce.mark_unchanged();
 
     loop {
         let mut recheck = false;
@@ -1480,7 +1383,6 @@ async fn handle_data(socket: WebSocket, state: AppState, node: String, slot: Str
                 Beat::Wait => {}
                 Beat::Dead => break,
             },
-            _ = quiesce.changed() => break,
         }
         if recheck {
             let want = stream_behind(&state.graph.lock().unwrap(), uid, &slot);

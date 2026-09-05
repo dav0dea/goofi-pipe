@@ -548,18 +548,6 @@ impl Client {
 }
 
 impl Client {
-    /// Read until the server closes this socket. A demo handing itself back is the one thing that
-    /// closes a healthy `/control` socket from the far end.
-    pub async fn until_closed(&mut self) {
-        loop {
-            match tokio::time::timeout(WAIT, self.ws.next()).await {
-                Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => return,
-                Ok(Some(Ok(_))) => continue,
-                Err(_) => panic!("the socket was still open when the deadline passed"),
-            }
-        }
-    }
-
     /// Send a raw text frame — for a test driving the envelope itself rather than an op.
     pub async fn send(&mut self, text: String) {
         self.ws.send(Message::Text(text.into())).await.unwrap();

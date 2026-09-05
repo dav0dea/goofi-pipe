@@ -46,4 +46,14 @@
 		justify-content: flex-end;
 		margin-top: var(--space-6);
 	}
+	h2 {
+		margin: 0 0 var(--space-4);
+		font-size: var(--fs-body);
+		font-weight: 600;
+	}
+	p {
+		margin: 0;
+		color: var(--text-dim);
+		font-size: var(--fs-small);
+	}
 </style>

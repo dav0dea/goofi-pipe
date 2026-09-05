@@ -423,21 +423,6 @@ textarea {
 /* The slim in-panel scrollbar skin. The `ScrollArea` primitive carries it, and so does the one
    scroller that must stay a native element — ConsolePanel's virtual list owns its own scrollTop
    and onscroll handle. Global rather than duplicated per component, so the two cannot drift. */
-/* A modal's content ramp: its heading and its explanatory line. Global for the same reason as the
-   two rules below it — two dialogs stated an identical `h2` and `p`, and a third would have made
-   it three. `Dialog` owns the wrapper, so the ramp belongs to the wrapper rather than to whichever
-   component happens to fill it. */
-.ui-dialog-body h2 {
-	margin: 0 0 var(--space-4);
-	font-size: var(--fs-body);
-	font-weight: 600;
-}
-.ui-dialog-body p {
-	margin: 0;
-	color: var(--text-dim);
-	font-size: var(--fs-small);
-}
-
 .thin-scrollbar {
 	scrollbar-width: thin;
 	scrollbar-color: var(--surface-3) transparent;
