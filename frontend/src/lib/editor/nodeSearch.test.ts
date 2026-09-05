@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rankNodeTypes } from './nodeSearch';
+import { ALL_TAB, VST_TAB, byTab, byTags, facetTags, paletteTabs, rankNodeTypes } from './nodeSearch';
 import type { NodeTypeInfo } from '$lib/api/control';
 import { typeInfo } from '$lib/test/typeInfo';
 
@@ -80,5 +80,73 @@ describe('rankNodeTypes', () => {
 		const types = [node('Oscillator', [], ''), node('Buffer', [], '')];
 		expect(order(types, 'osc')).toEqual(['Oscillator']);
 		expect(order(types, '   ')).toEqual(['Oscillator', 'Buffer']); // whitespace == empty
+	});
+});
+
+describe('search reaches the tree a node came from', () => {
+	it('ranks the tree under the name and over a docstring', () => {
+		const local = typeInfo({ type: 'signal:Local', source: 'patch' });
+		const documented = typeInfo({ type: 'signal:Documented', doc: 'applies a patch of noise' });
+		const named = typeInfo({ type: 'signal:PatchBay' });
+		expect(order([documented, local], 'patch')).toEqual(['signal:Local', 'signal:Documented']);
+		expect(order([local, named], 'patch')).toEqual(['signal:PatchBay', 'signal:Local']);
+	});
+
+	it('finds a plugin by the word its row shows', () => {
+		const reverb = typeInfo({ type: 'audio:Reverb', source: 'plugin' });
+		const shipped = typeInfo({ type: 'audio:Delay' });
+		expect(order([shipped, reverb], 'plugin')).toEqual(['audio:Reverb']);
+	});
+});
+
+describe('the palette tab', () => {
+	const reverb = typeInfo({ type: 'audio:Reverb', source: 'plugin' });
+	const types = [
+		node('signal:Lsl', ['input', 'eeg']),
+		node('audio:Osc', ['generator']),
+		reverb,
+		node('signal:Filter', ['transform']),
+		node('InArray', [])
+	];
+
+	it('lists `all` first, every engine once, and the plugin tab after them', () => {
+		expect(paletteTabs(types)).toEqual([ALL_TAB, 'signal', 'audio', VST_TAB]);
+		expect(paletteTabs([node('signal:Lsl', [])])).toEqual([ALL_TAB, 'signal']);
+	});
+
+	it('keeps a structural type on `all`, which no tab of its own claims', () => {
+		expect(byTab(types, ALL_TAB)).toBe(types);
+		expect(byTab(types, 'signal').map((t) => t.type)).toEqual(['signal:Lsl', 'signal:Filter']);
+	});
+
+	// A plugin's engine IS audio, so without this the two tabs would list it twice.
+	it('partitions the audio types: a plugin is under vst and nowhere else', () => {
+		expect(byTab(types, 'audio').map((t) => t.type)).toEqual(['audio:Osc']);
+		expect(byTab(types, VST_TAB).map((t) => t.type)).toEqual(['audio:Reverb']);
+	});
+});
+
+describe('the tag chips', () => {
+	const types = [
+		node('signal:Lsl', ['input', 'eeg']),
+		node('signal:Filter', ['transform']),
+		node('audio:Osc', ['generator'])
+	];
+
+	it('offers the tags the rows carry, in the vocabulary order', () => {
+		expect(facetTags(types)).toEqual(['input', 'generator', 'transform', 'eeg']);
+	});
+
+	it('narrows by every selected tag, and an empty selection keeps every row', () => {
+		expect(byTags(types, ['input']).map((t) => t.type)).toEqual(['signal:Lsl']);
+		expect(byTags(types, ['input', 'eeg']).map((t) => t.type)).toEqual(['signal:Lsl']);
+		expect(byTags(types, [])).toBe(types);
+	});
+
+	// The menu re-derives the chips from what the selection LEFT, so the empty result below is
+	// unreachable by clicking: `transform` is no longer offered once `input` is chosen.
+	it('offers no chip that would empty the list', () => {
+		expect(byTags(types, ['input', 'transform'])).toEqual([]);
+		expect(facetTags(byTags(types, ['input']))).toEqual(['input', 'eeg']);
 	});
 });

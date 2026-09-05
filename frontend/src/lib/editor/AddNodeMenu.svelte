@@ -2,8 +2,8 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { notify } from '$lib/stores/notify.svelte';
 	import { dtypeColor } from './categoryColor';
-	import { rankNodeTypes } from './nodeSearch';
-	import { bareName } from './typeId';
+	import { ALL_TAB, byTab, byTags, facetTags, paletteTabs, rankNodeTypes, tabOf } from './nodeSearch';
+	import { bareName, familyColor } from './typeId';
 	import { nodeTypeTitle } from './nodeTypeTitle';
 	import { nodeTypeSource } from './nodeTypeSource';
 	import type { NodeTypeInfo } from '$lib/api/control';
@@ -11,7 +11,7 @@
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { seedSlot } from './seedSlot';
 	import { onMount, tick } from 'svelte';
-	import { EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
+	import { Chip, EmptyState, Icon, IconButton, MODE_ATTRS, Tabs } from '$lib/ui';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
@@ -24,8 +24,12 @@
 	};
 	const { onPick, onClose, seed = null, boundary = false }: Props = $props();
 
+	type Tag = NodeTypeInfo['tags'][number];
+
 	const g = graph();
 	let query = $state('');
+	let family = $state(ALL_TAB);
+	let picked = $state<Tag[]>([]);
 	let listEl = $state<HTMLDivElement | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let highlighted = $state(0);
@@ -36,12 +40,22 @@
 		return !seed || seedSlot(seed, t) !== undefined;
 	}
 
-	const filtered = $derived.by(() => {
-		const types = (g.nodeTypes ?? [])
-			.filter((t) => boundary || !boundaryType(t.type))
-			.filter(matchesSeed);
-		return rankNodeTypes(types, query);
-	});
+	const offered = $derived(
+		(g.nodeTypes ?? []).filter((t) => boundary || !boundaryType(t.type)).filter(matchesSeed)
+	);
+	const tabs = $derived(paletteTabs(offered).map((id) => ({ id, label: id })));
+	// The tab and the chips are RESOLVED rather than corrected, so a rescan that retires either
+	// cannot strand a selection the user has no control left to undo.
+	const tab = $derived(tabs.some((t) => t.id === family) ? family : ALL_TAB);
+	const scoped = $derived(byTab(offered, tab));
+	const tags = $derived(picked.filter((tag) => scoped.some((t) => t.tags.includes(tag))));
+	const faceted = $derived(byTags(scoped, tags));
+	const chips = $derived(facetTags(faceted));
+	const filtered = $derived(rankNodeTypes(faceted, query));
+
+	function toggleTag(tag: Tag): void {
+		picked = picked.includes(tag) ? picked.filter((t) => t !== tag) : [...picked, tag];
+	}
 
 	let rescanning = $state(false);
 
@@ -66,7 +80,7 @@
 	$effect(() => {
 		highlighted = 0;
 		// The effect's only dependency; without it the list would not re-highlight.
-		void filtered.length;
+		void filtered;
 	});
 
 	onMount(() => {
@@ -107,6 +121,12 @@
 			</span>
 		</div>
 	{/if}
+	{#if tabs.length > 1}
+		<!-- Scrolls: the menu is 320px at its widest, which a growing engine set outgrows. -->
+		<div class="engine-row">
+			<Tabs items={tabs} active={tab} onSelect={(id) => (family = id)} data-testid="add-menu-tabs" />
+		</div>
+	{/if}
 	<div class="search-row">
 		<!-- Native, not `TextInput`: this filters per keystroke and owns Enter/Arrow/Escape. -->
 		<input
@@ -133,6 +153,19 @@
 		</IconButton>
 	</div>
 
+	{#if chips.length > 0}
+		<div class="tag-row" data-testid="add-menu-tags">
+			{#each chips as tag (tag)}
+				<Chip
+					tone={tags.includes(tag) ? 'accent' : 'neutral'}
+					density="chrome"
+					aria-pressed={tags.includes(tag)}
+					onclick={() => toggleTag(tag)}>{tag}</Chip
+				>
+			{/each}
+		</div>
+	{/if}
+
 	<div class="list" bind:this={listEl} data-testid="add-menu-list">
 		{#each filtered as t, idx (t.type)}
 			<button
@@ -144,9 +177,9 @@
 				onmouseenter={() => (highlighted = idx)}
 				onclick={() => pick(t)}
 			>
-				<span class="cat-dot"></span>
+				<span class="engine-dot" style="--engine: {familyColor(tabOf(t))};"></span>
 				<span class="t-name">{bareName(t.type)}</span>
-				<span class="t-cat">{nodeTypeSource(t)}</span>
+				<span class="t-source">{nodeTypeSource(t)}</span>
 			</button>
 		{/each}
 		{#if filtered.length === 0}
@@ -218,20 +251,30 @@
 		opacity: var(--disabled-opacity);
 		cursor: not-allowed;
 	}
-	.cat-dot {
+	.engine-dot {
 		width: 6px;
 		height: 6px;
-		background: var(--text-muted);
+		background: var(--engine);
 		border-radius: 50%;
 		flex-shrink: 0;
 	}
 	.t-name {
 		flex-grow: 1;
 	}
-	.t-cat {
+	.t-source {
 		color: var(--text-muted);
 		font-size: var(--fs-micro);
 		text-transform: lowercase;
+	}
+	.engine-row {
+		overflow-x: auto;
+	}
+	.tag-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		padding: var(--space-3) var(--space-5);
+		border-bottom: 1px solid var(--border);
 	}
 	.seed-chip {
 		display: flex;

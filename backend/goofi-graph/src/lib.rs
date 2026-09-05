@@ -414,6 +414,9 @@ pub struct Graph {
     /// The types that came from the open patch's workspace — the one thing about a type that only
     /// the scan can know. Re-derived wholesale by each scan.
     patch_types: std::collections::HashSet<String>,
+    /// The types an engine found on its OWN account rather than in a node root — a VST3 plugin
+    /// is one, and the palette shows them as their own family.
+    plugin_types: std::collections::HashSet<String>,
     /// One clock across every node thread rather than one per birth: `NodeCtx::now` is
     /// seconds-since-patch-start.
     start: Instant,
@@ -502,6 +505,7 @@ impl Graph {
             next_uid: 1,
             unavailable: std::collections::BTreeMap::new(),
             patch_types: std::collections::HashSet::new(),
+            plugin_types: std::collections::HashSet::new(),
             arrangement: layout::Layout::default(),
             arrangement_warning: None,
             viewpoint: serde_json::Value::Null,
@@ -778,6 +782,7 @@ impl Graph {
         let held = self.held_manifests();
         let out: Vec<_> =
             self.engines.iter_mut().flat_map(|e| qualified(e.id(), e.scan_own())).collect();
+        self.plugin_types = out.iter().map(|t| t.type_name.clone()).collect();
         self.note_scanned(&out, &held);
         out
     }
@@ -962,6 +967,11 @@ impl Graph {
     /// else — built-ins and the shipped node directory alike — reads as shipped.
     pub fn is_patch_type(&self, type_name: &str) -> bool {
         self.patch_types.contains(type_name)
+    }
+
+    /// Whether `type_name` came from an engine's own scan rather than from a node root.
+    pub fn is_plugin_type(&self, type_name: &str) -> bool {
+        self.plugin_types.contains(type_name)
     }
 
     pub fn node_count(&self) -> usize {

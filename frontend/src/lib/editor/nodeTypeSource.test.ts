@@ -8,11 +8,17 @@ describe('nodeTypeSource — the one word a palette row carries', () => {
 		expect(nodeTypeSource(ty({ source: 'builtin' }))).toBe('builtin');
 	});
 
+	// A plugin belongs to no tree at all — an engine found it on its own account. The word is
+	// `plugin` and not `vst3`, because the marker the backend sets names no format.
+	it('names a plugin, which the vst tab and the search both read', () => {
+		expect(nodeTypeSource(ty({ type: 'audio:Reverb', source: 'plugin' }))).toBe('plugin');
+	});
+
 	// Categories are gone from the menu (the user asked for a flat list), and `unavailable` was one
 	// of them. The word has to survive that removal on the row itself: greyed-and-unclickable alone
 	// does not say WHY, and a node that cannot load must never read as a node that goofi ignored.
 	it('says unavailable before it says where the file lives', () => {
 		expect(nodeTypeSource(ty({ available: false, source: 'patch' }))).toBe('unavailable');
-		expect(nodeTypeSource(ty({ available: false, source: 'builtin' }))).toBe('unavailable');
+		expect(nodeTypeSource(ty({ available: false, source: 'plugin' }))).toBe('unavailable');
 	});
 });

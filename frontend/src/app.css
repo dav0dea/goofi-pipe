@@ -161,6 +161,13 @@
 	--dtype-table: #e08060;
 	--dtype-audio: #c080f0;
 
+	/* engine palette — a node's header and its palette row read as its engine at a glance.
+	   `vst` is a plugin FORMAT, not an engine; it wears the set's shape because it is a palette tab. */
+	--engine-signal: #c29c34;
+	--engine-audio: #3f88e2;
+	--engine-graphics: #529c51;
+	--engine-vst: #c76f63;
+
 	/* Syntax highlighting for the param expression editor (X, D-X2). The ONE place in the app where
 	   the reduced-saliency brief deliberately does not apply: code is scanned by colour, and a muted
 	   scheme makes reading it harder, not calmer. So these are the CONVENTIONAL dark-editor inks (the

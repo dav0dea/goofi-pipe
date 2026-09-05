@@ -155,6 +155,8 @@ fn output_slots(m: &NodeManifest) -> Value {
 pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     if g.is_patch_type(type_name) {
         "patch"
+    } else if g.is_plugin_type(type_name) {
+        "plugin"
     } else {
         "builtin"
     }
@@ -222,7 +224,11 @@ pub fn catalog_types(g: &Graph) -> Value {
         )
     }));
     items.extend(crate::vocab::boundary_catalog());
-    items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    // By the order the engines were REGISTERED, not by their names: signal is the plane a patch
+    // starts on, and an alphabet would put audio ahead of it.
+    let order: Vec<&'static str> = g.engine_ids();
+    let rank = |id: &str| order.iter().position(|e| *e == id).unwrap_or(order.len());
+    items.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
     Value::Array(items.into_iter().map(|(_, _, v)| v).collect())
 }
 

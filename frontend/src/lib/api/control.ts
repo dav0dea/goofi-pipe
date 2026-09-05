@@ -22,8 +22,9 @@ export interface NodeTypeInfo {
 	/** The qualified `engine:Name` id; a structural type is bare. `engineOf` reads the engine. */
 	type: string;
 	tags: (typeof TAGS)[number][];
-	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. */
-	source: 'builtin' | 'patch';
+	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. `plugin` is
+	 * an engine's own find rather than any tree's — a VST3 class, window or no window. */
+	source: 'builtin' | 'patch' | 'plugin';
 	doc: string;
 	/** Whether this machine resolves the type's unconditional top-level deps. */
 	available: boolean;

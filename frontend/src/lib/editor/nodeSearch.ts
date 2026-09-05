@@ -1,16 +1,26 @@
-/** Ranking for the add-node menu's type search, on the bare name: the engine names a tab. */
+/** The add-node menu's facets, and the ranking of its search on the bare name. */
 import type { NodeTypeInfo } from '$lib/api/control';
-import { bareName } from './typeId';
+import { TAGS } from '$lib/api/vocab';
+import { bareName, engineOf } from './typeId';
+import { nodeTypeSource } from './nodeTypeSource';
+
+type Tag = NodeTypeInfo['tags'][number];
+
+/** The palette tab that facets nothing. */
+export const ALL_TAB = 'all';
+/** The tab a plugin wears instead of its engine's, so the two never list one type twice. */
+export const VST_TAB = 'vst';
 
 /** Match quality, best first. */
 const TIER = {
 	none: 0,
 	doc: 1,
-	tags: 2,
-	nameSubstring: 3,
-	nameWord: 4, // query starts a CamelCase / separated word inside the name
-	namePrefix: 5,
-	nameExact: 6
+	source: 2,
+	tags: 3,
+	nameSubstring: 4,
+	nameWord: 5, // query starts a CamelCase / separated word inside the name
+	namePrefix: 6,
+	nameExact: 7
 } as const;
 
 const isUpper = (c: string): boolean => c >= 'A' && c <= 'Z';
@@ -46,6 +56,7 @@ function tierFor(t: NodeTypeInfo, q: string): number {
 	if (hasWordStartMatch(bare, name, q)) return TIER.nameWord;
 	if (name.includes(q)) return TIER.nameSubstring;
 	if (t.tags.some((tag) => tag.includes(q))) return TIER.tags;
+	if (nodeTypeSource(t).includes(q)) return TIER.source;
 	if (t.doc.toLowerCase().includes(q)) return TIER.doc;
 	return TIER.none;
 }
@@ -71,4 +82,37 @@ export function rankNodeTypes(types: NodeTypeInfo[], rawQuery: string): NodeType
 	});
 
 	return scored.map((s) => s.t);
+}
+
+/** The tab `t` belongs to: its engine, or `vst` where an engine found it on its own account. */
+export function tabOf(t: NodeTypeInfo): string | null {
+	return t.source === 'plugin' ? VST_TAB : engineOf(t.type);
+}
+
+/** The tabs `types` offer, `all` first. A structural type has no engine and so no tab of its own. */
+export function paletteTabs(types: NodeTypeInfo[]): string[] {
+	const tabs: string[] = [];
+	for (const t of types) {
+		const tab = tabOf(t);
+		if (tab && !tabs.includes(tab)) tabs.push(tab);
+	}
+	// A plugin format is not an engine, so its tab sits after every engine's.
+	return [ALL_TAB, ...tabs.filter((t) => t !== VST_TAB), ...tabs.filter((t) => t === VST_TAB)];
+}
+
+/** `types` on one tab. `all` keeps every type, a structural one included. */
+export function byTab(types: NodeTypeInfo[], tab: string): NodeTypeInfo[] {
+	if (tab === ALL_TAB) return types;
+	return types.filter((t) => tabOf(t) === tab);
+}
+
+/** `types` carrying EVERY selected tag, so each chip narrows what the one before it left. */
+export function byTags(types: NodeTypeInfo[], tags: readonly Tag[]): NodeTypeInfo[] {
+	if (tags.length === 0) return types;
+	return types.filter((t) => tags.every((tag) => t.tags.includes(tag)));
+}
+
+/** The tags `types` carry, in the vocabulary's order: a chip that would show nothing is not offered. */
+export function facetTags(types: NodeTypeInfo[]): Tag[] {
+	return TAGS.filter((tag) => types.some((t) => t.tags.includes(tag)));
 }
