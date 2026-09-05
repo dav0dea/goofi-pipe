@@ -1,0 +1,8 @@
+# The build context is the source tree ALONE: everything below is made inside the image, and a
+# host's copy of it is either enormous or wrong for the container.
+target/
+node_modules/
+.gfivenv
+.gfivenv-ft
+.cargo/
+.git/
