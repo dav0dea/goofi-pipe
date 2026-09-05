@@ -19,7 +19,13 @@ struct Fetch<'a> {
 
 /// Whether a request bearing these headers may be served. A missing `Origin` is not a browser and
 /// is served; everything else must name a host the browser could only have reached deliberately.
-fn allowed(method: &Method, origin: Option<&str>, host: Option<&str>, fetch: Fetch<'_>) -> bool {
+fn allowed(
+    method: &Method,
+    origin: Option<&str>,
+    host: Option<&str>,
+    fetch: Fetch<'_>,
+    demo: bool,
+) -> bool {
     // A navigation is admitted whatever its `Sec-Fetch-Site`, because a browser REPLAYS the
     // original navigation's value on every later reload. `document`, not `iframe`, is the drive-by.
     if matches!(*method, Method::GET | Method::HEAD)
@@ -46,15 +52,21 @@ fn allowed(method: &Method, origin: Option<&str>, host: Option<&str>, fetch: Fet
         return true;
     }
     let Ok(ip) = name.parse::<std::net::IpAddr>() else {
-        // A DNS name other than `localhost` could have been rebound onto this machine.
-        return false;
+        // A DNS name other than `localhost` could have been rebound onto this machine — unless
+        // this goofi is the PUBLIC one, where rebinding wins an attacker nothing that opening the
+        // URL does not already give them, and a DNS name is the only way anyone reaches it.
+        return demo && host == Some(authority);
     };
     // Any IP literal that is not loopback has to BE the address this request was sent to.
     ip.is_loopback() || host == Some(authority)
 }
 
 /// The layer, applied once over the whole router.
-pub(crate) async fn guard(req: Request, next: Next) -> Response {
+pub(crate) async fn guard(
+    axum::extract::State(mode): axum::extract::State<crate::Mode>,
+    req: Request,
+    next: Next,
+) -> Response {
     // Scoped so the borrow of `req` ends before it is moved into the handler.
     let ok = {
         let h = req.headers();
@@ -64,7 +76,13 @@ pub(crate) async fn guard(req: Request, next: Next) -> Response {
             mode: get("sec-fetch-mode"),
             dest: get("sec-fetch-dest"),
         };
-        allowed(req.method(), get(header::ORIGIN.as_str()), get(header::HOST.as_str()), fetch)
+        allowed(
+            req.method(),
+            get(header::ORIGIN.as_str()),
+            get(header::HOST.as_str()),
+            fetch,
+            mode.demo,
+        )
     };
     if ok {
         return next.run(req).await;

@@ -9,7 +9,8 @@ use goofi_node::{Isolation, Scanned};
 
 #[derive(Debug)]
 struct Cli {
-    port: u16,
+    /// `None` until `--port` names one; [`DEFAULT_PORT`] otherwise.
+    port: Option<u16>,
     bind: String,
     /// Node source roots scanned before the patch's own; a later entry wins a shared type name.
     extra_nodes: Vec<String>,
@@ -19,25 +20,29 @@ struct Cli {
     headless: bool,
     /// Open `/dev/*`, the development surfaces. Also set by `GOOFI_DEBUG` in the environment.
     debug: bool,
+    /// A PUBLIC goofi: no terminal, no agents, no filesystem, no save or load, no audio. Also set
+    /// by `GOOFI_DEMO` in the environment. Not a sandbox — see `roadmap/demo-mode.md`.
+    demo: bool,
     help: bool,
 }
 
 impl Default for Cli {
     fn default() -> Self {
         Self {
-            port: 8000,
+            port: None,
             bind: String::from("127.0.0.1"),
             extra_nodes: Vec::new(),
             list_nodes: false,
             headless: false,
             debug: false,
+            demo: false,
             help: false,
         }
     }
 }
 
 const USAGE: &str = "usage: goofi [serve] [--port N] [--bind HOST] \
-     [--extra-nodes DIR] [--list-nodes] [--headless] [--debug]";
+     [--extra-nodes DIR] [--list-nodes] [--headless] [--debug] [--demo]";
 
 fn headless_env() -> bool {
     matches!(std::env::var("GOOFI_HEADLESS").as_deref(), Ok("1") | Ok("true"))
@@ -45,6 +50,13 @@ fn headless_env() -> bool {
 
 fn debug_env() -> bool {
     matches!(std::env::var("GOOFI_DEBUG").as_deref(), Ok("1") | Ok("true"))
+}
+
+/// The port with no door naming one.
+const DEFAULT_PORT: u16 = 8000;
+
+fn demo_env() -> bool {
+    matches!(std::env::var("GOOFI_DEMO").as_deref(), Ok("1") | Ok("true"))
 }
 
 /// Parse the argument list (already skipping argv[0]). `Err` is the message to print before
@@ -56,13 +68,14 @@ fn parse_args<I: Iterator<Item = String>>(mut args: I) -> Result<Cli, String> {
         match arg.as_str() {
             "--port" => {
                 let v = need(args.next())?;
-                cli.port = v.parse().map_err(|_| format!("invalid --port `{v}`"))?;
+                cli.port = Some(v.parse().map_err(|_| format!("invalid --port `{v}`"))?);
             }
             "--bind" => cli.bind = need(args.next())?,
             "--extra-nodes" => cli.extra_nodes.push(need(args.next())?),
             "--list-nodes" => cli.list_nodes = true,
             "--headless" => cli.headless = true,
             "--debug" => cli.debug = true,
+            "--demo" => cli.demo = true,
             "-h" | "--help" => cli.help = true,
             other => return Err(format!("unknown argument `{other}` (try --help)")),
         }
@@ -104,6 +117,7 @@ async fn serve_main(rest: Vec<String>) {
     // The three doors meet here, once: a binary built headless has no app to serve at all.
     cli.headless |= headless_env() || HEADLESS_BUILD;
     cli.debug |= debug_env();
+    cli.demo |= demo_env();
     if cli.help {
         // `goofi serve --help` / a flag mix that asked: the SERVE usage, not the op help door.
         println!(
@@ -127,7 +141,8 @@ async fn serve_main(rest: Vec<String>) {
             std::process::exit(1);
         }
     };
-    let state = AppState::new(cli.headless, goofi_bridge::Clock::Device);
+    let mode = goofi_bridge::Mode { headless: cli.headless, demo: cli.demo };
+    let state = AppState::new(mode, goofi_bridge::Clock::Device);
     std::process::exit(run(cli, python, state, shutdown_signal()).await);
 }
 
@@ -210,7 +225,7 @@ fn complete_line(rest: &[String]) -> i32 {
             }
         }
     }
-    let ops = goofi_bridge::ops::table(false);
+    let ops = goofi_bridge::ops::table(goofi_bridge::Mode::default());
     for (word, doc) in goofi_bridge::phrase::complete(&ops, None, line) {
         println!("{word}\t{doc}");
     }
@@ -328,7 +343,7 @@ fn help_main(rest: &[String]) -> i32 {
     let rows = goofi_client::list();
     let Some((live, _)) = rows.iter().find(|(_, p)| *p == goofi_client::Probed::Live) else {
         let words: Vec<String> = std::iter::once("help".to_string()).chain(rest.clone()).collect();
-        match goofi_bridge::phrase::help(&goofi_bridge::ops::table(false), &words) {
+        match goofi_bridge::phrase::help(&goofi_bridge::ops::table(goofi_bridge::Mode::default()), &words) {
             Some(h) => {
                 println!("no running server — the built-in index answers; `goofi serve` starts one.");
                 println!("{h}");
@@ -389,7 +404,8 @@ async fn run(
     // Before ANY use of the embedded interpreter.
     point_embedded_python_at_its_venv();
 
-    let Cli { port, bind, extra_nodes, list_nodes, headless, debug, help: _ } = cli;
+    let Cli { port, bind, extra_nodes, list_nodes, headless, debug, demo, help: _ } = cli;
+    let port = port.unwrap_or(DEFAULT_PORT);
 
     if !list_nodes {
         register_evaluator(&state);
@@ -399,7 +415,7 @@ async fn run(
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
         .set_python(goofi_signal::Python::new(subproc_python.clone()));
-    if let Ok(own) = std::env::current_exe() {
+    if let (false, Ok(own)) = (demo, std::env::current_exe()) {
         goofi_bridge::audio_engine(&mut state.graph.lock().unwrap())
             .set_vst3(own, goofi_audio::vst3::platform_dirs());
     }
@@ -440,18 +456,23 @@ async fn run(
                 // not an address a browser can visit.
                 let url = state.local_url();
                 println!("goofi → {url}");
-                println!("  MCP endpoint → {url}/mcp");
+                if !demo {
+                    println!("  MCP endpoint → {url}/mcp");
+                }
                 let spa = if headless { &[][..] } else { SPA };
                 if headless {
                     println!("  headless: the API only, no app served");
                 } else {
                     println!("  open {url} to use it");
                 }
+                if demo {
+                    println!("  demo: no terminal, no agents, no filesystem, no audio");
+                }
                 if debug && !headless {
                     println!("  debug: {url}/dev/ui is open — the UI primitive gallery");
                 }
                 // Last, and on stderr, so it is the line still on screen and survives a `> log`.
-                if let Some(warning) = exposure_warning(&bind) {
+                if let Some(warning) = exposure_warning(&bind).filter(|_| !demo) {
                     eprintln!("{warning}");
                 }
                 // The stop is here, not in `serve_app`, whose other callers serve forever.
@@ -689,13 +710,13 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::env::set_var("GOOFI_HOME", dir);
         });
-        AppState::new(false, goofi_bridge::Clock::External)
+        AppState::new(goofi_bridge::Mode::default(), goofi_bridge::Clock::External)
     }
 
     #[test]
     fn defaults_with_no_arguments() {
         let cli = parse(&[]).expect("no arguments is a valid invocation");
-        assert_eq!(cli.port, 8000);
+        assert_eq!(cli.port, None, "…and the port is decided by the doors, not by the parse");
         assert_eq!(cli.bind, "127.0.0.1");
         assert!(cli.extra_nodes.is_empty());
         assert!(!cli.list_nodes && !cli.help);
@@ -707,7 +728,7 @@ mod tests {
             "--port", "9001", "--bind", "0.0.0.0", "--extra-nodes", "b", "--list-nodes",
         ])
         .expect("a well-formed invocation");
-        assert_eq!(cli.port, 9001);
+        assert_eq!(cli.port, Some(9001));
         assert_eq!(cli.bind, "0.0.0.0");
         assert_eq!(cli.extra_nodes, ["b"]);
         assert!(cli.list_nodes);
@@ -802,7 +823,7 @@ mod tests {
             g.add_node("_TestTracked", None).expect("a test node");
         }
         // An already-resolved shutdown takes the same path ctrl-C does; port 0 binds ephemerally.
-        let cli = Cli { port: 0, ..Cli::default() };
+        let cli = Cli { port: Some(0), ..Cli::default() };
         assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
         assert!(
             released.load(std::sync::atomic::Ordering::Acquire),
@@ -816,7 +837,7 @@ mod tests {
         let state = walled();
         let mount = state.mount();
         assert!(mount.is_dir(), "the mount exists after boot: {}", mount.display());
-        let cli = Cli { port: 0, ..Cli::default() };
+        let cli = Cli { port: Some(0), ..Cli::default() };
         assert_eq!(run(cli, "python3".into(), state, std::future::ready(())).await, 0);
         let husk = mount.parent().expect("the mount is nested under a nonce dir");
         assert!(!husk.exists(), "the nonce directory goes too, not just workspace: {}", husk.display());

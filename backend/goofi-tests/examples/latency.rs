@@ -7,7 +7,7 @@ use goofi_tests::OutputProbe;
 use goofi_graph::Graph;
 
 fn main() {
-    let mut g = goofi_bridge::fresh_graph(goofi_bridge::Clock::External);
+    let mut g = goofi_bridge::fresh_graph(Some(goofi_bridge::Clock::External));
     goofi_tests::fixtures::register(&mut g);
     let src = g.add_node("_TestConst", None).unwrap();
     g.update_param(src, "constant", "length", Param::int(256, 1, 1_000_000)).unwrap();

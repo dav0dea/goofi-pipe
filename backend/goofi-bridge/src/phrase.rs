@@ -41,8 +41,9 @@ fn walk(words: &[String]) -> Stop {
 
 /// The op a word sequence names, against the rows THIS server serves. Answers the op and how many
 /// words its phrase consumed. A refusal teaches: the served phrases under the words that DID
-/// match — and a phrase the tree spells that no row serves is the headless mode by construction,
-/// since layout is the one subtree a server withholds.
+/// match — and a phrase the tree spells that no row serves is a mode withholding that group,
+/// which the refusal names rather than naming the mode: several modes withhold, and the caller
+/// wants to know WHAT is missing.
 pub fn resolve<'a>(ops: &[&'a Op], words: &[String]) -> Result<(&'a Op, usize), String> {
     let line = words.join(" ");
     let prefix = match walk(words) {
@@ -57,9 +58,10 @@ pub fn resolve<'a>(ops: &[&'a Op], words: &[String]) -> Result<(&'a Op, usize), 
         false => ops.iter().map(|o| o.name).filter(|n| n.starts_with(&prefix)).collect(),
     };
     Err(match (near.is_empty(), prefix.is_empty()) {
-        // The tree spells the phrase and no row serves it: the withheld layout subtree.
+        // The tree spells the phrase and no row serves it: a subtree this server withholds.
         (true, false) => {
-            format!("unknown op `{line}` — this server is headless, and the layout ops are not served")
+            let group = prefix.split(' ').next().unwrap_or(&prefix);
+            format!("unknown op `{line}` — this server does not serve the `{group}` ops")
         }
         (true, true) => {
             format!("unknown op `{line}` — `op list` answers every op this server speaks")

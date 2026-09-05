@@ -50,15 +50,20 @@ impl Default for Goofi {
 impl Goofi {
     /// Boot one, with the status-drain worker that makes a node addressable.
     pub fn new() -> Goofi {
-        Goofi::with_mode(false)
+        Goofi::with_mode(goofi_bridge::Mode::default())
     }
 
     /// Boot a HEADLESS one — the layout rows are not registered.
     pub fn headless() -> Goofi {
-        Goofi::with_mode(true)
+        Goofi::with_mode(goofi_bridge::Mode { headless: true, demo: false })
     }
 
-    fn with_mode(headless: bool) -> Goofi {
+    /// Boot a PUBLIC one — no host-facing ops, and no audio engine behind the catalog.
+    pub fn demo() -> Goofi {
+        Goofi::with_mode(goofi_bridge::Mode { headless: false, demo: true })
+    }
+
+    fn with_mode(mode: goofi_bridge::Mode) -> Goofi {
         // Every test process is WALLED OFF from the real `~/.goofi` — a developer's own config
         // or session records must not reach an assertion. A test that scoped its own home first
         // keeps it.
@@ -84,13 +89,16 @@ impl Goofi {
             // through builds an authored node where nothing looks for it.
             std::env::set_var("CARGO_TARGET_DIR", std::env::temp_dir().join("goofi-test-cargo-target"));
         });
-        let state = AppState::new(headless, goofi_bridge::Clock::External);
+        let state = AppState::new(mode, goofi_bridge::Clock::External);
         {
             let mut g = state.graph.lock().unwrap();
             fixtures::register(&mut g);
             // The child the audio engine scans a bundle in — the suite's own stand-in for the
-            // binary — and no platform folder, so an installed plugin never reaches a test.
-            goofi_bridge::audio_engine(&mut g).set_vst3(scanner(), Vec::new());
+            // binary — and no platform folder, so an installed plugin never reaches a test. A demo
+            // registers no audio engine at all, so there is nothing to hand it.
+            if !mode.demo {
+                goofi_bridge::audio_engine(&mut g).set_vst3(scanner(), Vec::new());
+            }
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
             if let Some(subproc) = find_python() {
@@ -107,7 +115,7 @@ impl Goofi {
     /// Boot one whose `/data` sockets probe on a short clock. Through [`Goofi::with_mode`], so
     /// the home wall stands here too.
     pub fn impatient() -> Goofi {
-        let mut g = Goofi::with_mode(false);
+        let mut g = Goofi::with_mode(goofi_bridge::Mode::default());
         g.state.data_liveness = goofi_bridge::DataLiveness {
             ping_interval: Duration::from_millis(100),
             // Wide enough that a CI runner's scheduling stall cannot read as a dead peer.
@@ -643,8 +651,14 @@ pub async fn http(
 ) -> (u16, String, Vec<u8>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // The address is the Host unless the caller named one — two Host headers is a 400, and the
+    // origin guard is only reachable at all from a request whose Host is not this loopback.
+    let host = match headers.to_ascii_lowercase().contains("host:") {
+        true => String::new(),
+        false => format!("Host: {addr}\r\n"),
+    };
     let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\n\
+        "{method} {path} HTTP/1.1\r\n{host}{headers}Content-Length: {}\r\n\
          Connection: close\r\n\r\n",
         body.len()
     );

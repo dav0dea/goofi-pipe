@@ -1168,7 +1168,7 @@ fn load_patch(state: &AppState, payload: &Value) -> Result<Value, String> {
         let _ = state.events.send(event(
             "graph_replaced",
             schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
-                              state.harnesses.roster(&agents)),
+                              state.harnesses.roster(&agents), state.mode.demo),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
         let _ = state.events.send(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
