@@ -416,9 +416,10 @@ async fn a_harness_runs_unwatched_and_its_roster_survives_a_reconnect() {
     state.release_mount();
 }
 
-/// Have the child report where it is and what it holds, in ONE line: a line sent at a prompt
-/// after `stty -echo` is one an MSYS shell under ConPTY never answers. The end marker is spelled
-/// `E''ND`, which only the child prints joined, so the echoed command cannot end the read.
+/// Have the child report where it is and what it holds, in ONE line — the shape the identity
+/// scenario proves on every runner; a second line sent after `stty -echo` once went unanswered
+/// for its whole window on Windows. The end marker is spelled `E''ND`, which only the child
+/// prints joined, so the echoed command cannot end the read.
 async fn report(term: &mut Ws) -> String {
     term.send(Message::Binary(
         b"printf 'CWD[%s]TERM[%s]COLOR[%s]LC[%s]HOME[%s]KEPT[%s]E''ND\\n' \"$(pwd -P)\" \
