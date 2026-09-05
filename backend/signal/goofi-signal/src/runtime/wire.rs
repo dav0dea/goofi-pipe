@@ -30,6 +30,8 @@ pub enum Control {
     /// Re-enumerate a refreshable `Str` param's options. The answer comes back as
     /// [`Status::RefreshOptions`] rather than on this message's ack, since the hook runs on the node.
     RefreshParam { key: ParamKey },
+    /// Fire a pulse param. There is no answer: a pulse asks the node for an action, not a value.
+    PulseParam { key: ParamKey },
 }
 
 /// A control message and the sequence number the node acks it with. `seq` is graph-minted and

@@ -66,4 +66,5 @@ pub enum ParamSpec {
         #[serde(default)]
         refresh: bool,
     },
+    Pulse {},
 }

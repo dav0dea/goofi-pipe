@@ -38,6 +38,7 @@ pub fn register(g: &mut Graph) {
     add(g, manifest("_TestSetupFail", "setup always errors, so process never runs", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(SetupFail));
     add(g, manifest("_TestSlow", "one run takes ten seconds", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Slow));
     add(g, manifest("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true), || Box::new(Counter::default()));
+    add(g, manifest("_TestResettable", "counts up, and starts over on a pulse", &[], OUT_ARRAY, RESETTABLE_PARAMS, true), || Box::new(Resettable::default()));
     add(g, manifest("_TestParamWrites", "emits how many param writes were delivered", IN_ARRAY, OUT_ARRAY, SINK_PARAMS, false), || Box::new(ParamWrites::default()));
     add(g, manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false), || Box::new(RequiredCounter::default()));
     add(g, manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Grid::default()));
@@ -125,6 +126,8 @@ impl Engine for LibraryEngine {
 
     fn refresh_param(&mut self, _uid: Uid, _key: ParamKey) {}
 
+    fn pulse_param(&mut self, _uid: Uid, _key: ParamKey) {}
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -211,6 +214,32 @@ impl Node for Counter {
         self.runs += 1;
         let bytes = (self.runs as f32).to_le_bytes().to_vec();
         o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);
+        Ok(())
+    }
+}
+
+static RESETTABLE_PARAMS: &[ParamDecl] = &[ParamDecl {
+    group: "count",
+    name: "reset",
+    spec: ParamSpec::Pulse,
+    expression: None,
+    doc: Some("Start the count over."),
+}];
+
+/// The same count, with a pulse behind it: the request a rising edge and the op both make.
+#[derive(Default)]
+struct Resettable {
+    n: u32,
+}
+impl Node for Resettable {
+    fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        self.n += 1;
+        let bytes = (self.n as f32).to_le_bytes().to_vec();
+        o.set("out", Data::array_f32(vec![1], bytes, Meta::new()).map_err(|e| e.to_string())?);
+        Ok(())
+    }
+    fn on_pulse(&mut self, _key: &ParamKey, _p: &Params<'_>) -> NodeResult {
+        self.n = 0;
         Ok(())
     }
 }

@@ -143,6 +143,7 @@ pub fn describe(
                         options: options.iter().map(|s| s.to_string()).collect(),
                         refresh,
                     },
+                    ParamSpec::Pulse => probe::ParamSpec::Pulse {},
                 },
             })
             .collect(),
@@ -226,6 +227,7 @@ fn param_decl(p: &probe::Param) -> ParamDecl {
                 refresh: *refresh,
             }
         }
+        probe::ParamSpec::Pulse {} => ParamSpec::Pulse,
     };
     ParamDecl {
         group: leak_str(&p.group),

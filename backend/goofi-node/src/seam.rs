@@ -237,6 +237,8 @@ pub trait Engine: Send {
     /// Re-enumerate a `Str` param's options on the node's own thread — the one imperative
     /// settled state cannot express.
     fn refresh_param(&mut self, uid: Uid, key: ParamKey);
+    /// Fire a pulse param on the node's own thread: a request the node acts on and stores nothing of.
+    fn pulse_param(&mut self, uid: Uid, key: ParamKey);
     /// The patch clock origin moved — a clear reset it. No-op for an engine with no patch time.
     fn reset_clock(&mut self, _origin: Instant) {}
     /// The graph's expression evaluator, shared with every engine that evaluates `nd()` bindings

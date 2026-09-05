@@ -61,7 +61,8 @@ fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
             Ok(match target {
                 Param::Float { vmin, vmax, .. } => Param::Float { value: x, vmin: *vmin, vmax: *vmax },
                 Param::Int { vmin, vmax, .. } => Param::Int { value: x.round() as i64, vmin: *vmin, vmax: *vmax },
-                Param::Bool { .. } => Param::Bool { value: x >= 0.5 },
+                // A pulse is a GATE here: the same threshold, and the runtime fires on its rise.
+                Param::Bool { .. } | Param::Pulse => Param::Bool { value: x >= 0.5 },
                 Param::Str { .. } => return Err("a string param references a STRING output".to_string()),
             })
         }

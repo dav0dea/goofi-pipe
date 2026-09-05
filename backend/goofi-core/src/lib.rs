@@ -618,6 +618,9 @@ pub enum Param {
         /// Whether the UI's ⟳ button makes the node re-enumerate `options` via `on_param_refreshed`.
         refresh: bool,
     },
+    /// A request rather than a value: fired by `node param pulse`, or by a rising edge on the
+    /// source driving it. It holds nothing, so every reader below answers `None` for it.
+    Pulse,
 }
 
 impl Param {

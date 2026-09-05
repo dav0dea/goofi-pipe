@@ -801,7 +801,9 @@ impl goofi_node::ExprEvaluator for FirstVar {
             goofi_core::Param::Float { vmin, vmax, .. } => {
                 Ok(goofi_core::Param::float(value, *vmin, *vmax))
             }
-            goofi_core::Param::Bool { .. } => Ok(goofi_core::Param::boolean(value >= 0.5)),
+            goofi_core::Param::Bool { .. } | goofi_core::Param::Pulse => {
+                Ok(goofi_core::Param::boolean(value >= 0.5))
+            }
             other => Ok(other.clone()),
         }
     }

@@ -49,6 +49,9 @@ pub fn describe_param(p: &Param, source: Option<&SourceInfo>, doc: Option<&str>)
                 options.as_ref().map(|o| json!(o)).unwrap_or(Value::Null),
             );
         }
+        Param::Pulse => {
+            m.insert("type".into(), json!("pulse"));
+        }
     }
     Value::Object(m)
 }

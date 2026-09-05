@@ -437,6 +437,10 @@ impl Engine for SignalEngine {
         self.wire.send(uid, runtime::Control::RefreshParam { key });
     }
 
+    fn pulse_param(&mut self, uid: Uid, key: ParamKey) {
+        self.wire.send(uid, runtime::Control::PulseParam { key });
+    }
+
     /// Every node born after computes from the new origin.
     fn reset_clock(&mut self, origin: Instant) {
         self.started = origin;

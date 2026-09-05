@@ -749,6 +749,9 @@ impl Engine for AudioEngine {
         }
     }
 
+    /// No audio node declares a pulse yet, so there is nothing here to ring.
+    fn pulse_param(&mut self, _uid: Uid, _key: ParamKey) {}
+
     /// Every control half born after computes `t` from the new origin.
     fn reset_clock(&mut self, origin: Instant) {
         self.started = origin;

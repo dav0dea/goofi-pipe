@@ -150,6 +150,7 @@ fn param_line(p: &goofi_core::Param, source: Option<&goofi_graph::SourceInfo>) -
             (format!("\"{value}\""), format!("string one of [{}]", o.join(", ")))
         }
         P::Str { value, .. } => (format!("\"{value}\""), "string".to_string()),
+        P::Pulse => ("—".to_string(), "pulse".to_string()),
     };
     let error = |s: &goofi_graph::SourceInfo| {
         s.error.as_ref().map(|e| format!(" [error: {e}]")).unwrap_or_default()

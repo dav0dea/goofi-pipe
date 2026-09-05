@@ -25,7 +25,11 @@ pub fn of(g: &Graph) -> Value {
                 let mut gmap = Map::new();
                 for (pname, p) in pg {
                     let mut entry = Map::new();
-                    entry.insert("value".into(), goofi_graph::param_value_json(p));
+                    // A pulse has no value, and a merge patch spends `null` on "delete this key" —
+                    // so the key stays OUT rather than reaching a replica as a deletion.
+                    if !matches!(p, goofi_core::Param::Pulse) {
+                        entry.insert("value".into(), goofi_graph::param_value_json(p));
+                    }
                     if let Some(s) = g.param_source(uid, group, pname) {
                         entry.insert("mode".into(), json!(s.state.mode));
                         if !s.state.expression.is_empty() {

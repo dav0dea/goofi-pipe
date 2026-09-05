@@ -143,6 +143,10 @@ pub trait Node: Send {
     fn on_param_refreshed(&mut self, _key: &ParamKey, _p: &Params<'_>) -> Option<Vec<String>> {
         None
     }
+    /// A pulse param fired: the op asked, or the source driving it rose. `p` is the LIVE params.
+    fn on_pulse(&mut self, _key: &ParamKey, _p: &Params<'_>) -> NodeResult {
+        Ok(())
+    }
     // Teardown is `impl Drop`, and does NOT fire between initialization retries: a `setup` that
     // fails partway must release what it acquired before returning `Err`.
 }

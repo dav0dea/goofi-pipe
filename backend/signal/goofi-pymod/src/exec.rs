@@ -122,6 +122,7 @@ fn param_to_py<'py>(py: Python<'py>, p: &Param) -> PyResult<Bound<'py, PyAny>> {
         Param::Int { value, .. } => value.into_bound_py_any(py)?,
         Param::Bool { value } => value.into_bound_py_any(py)?,
         Param::Str { value, .. } => value.into_bound_py_any(py)?,
+        Param::Pulse => py.None().into_bound(py),
     })
 }
 

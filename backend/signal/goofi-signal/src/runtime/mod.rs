@@ -294,6 +294,10 @@ impl NodeRuntime {
                     self.refresh_param(key);
                     Ok(())
                 }
+                Control::PulseParam { key } => {
+                    self.pulse_param(key);
+                    Ok(())
+                }
             };
             transport.report(WireStatus::Ack { seq, ok });
         }
@@ -325,6 +329,20 @@ impl NodeRuntime {
             }
         }
         self.transport.report(WireStatus::Health(Status::RefreshOptions { key, options }));
+    }
+
+    /// Fire a pulse param: the hook is third-party code, so a rejection or a panic in it becomes
+    /// that param's error rather than the end of this thread.
+    fn pulse_param(&mut self, key: ParamKey) {
+        // D3: an interaction retries the initialization first, exactly as a param write does.
+        if self.ensure_initialized() {
+            let params = Params::new(&self.effective);
+            let fired = crate::guard_lifecycle(|| self.node.on_pulse(&key, &params))
+                .unwrap_or_else(crate::fold_panic);
+            let recorded = self.record_binding_error(&key, fired.err().map(|e| e.0));
+            self.report_binding_errors(recorded.into_iter().collect());
+        }
+        self.publish_stage();
     }
 
     /// Apply a slot's new wire set to the node's OWN cells: a surviving wire keeps its frame, and a
@@ -489,10 +507,19 @@ impl NodeRuntime {
                     None
                 }
             };
-            values_changed |= match &evaluated {
-                Some(value) => self.evaluated.insert(key.clone(), value.clone()).as_ref() != Some(value),
-                None => self.evaluated.shift_remove(&key).is_some(),
+            let previous = match &evaluated {
+                Some(value) => self.evaluated.insert(key.clone(), value.clone()),
+                None => self.evaluated.shift_remove(&key),
             };
+            values_changed |= previous != evaluated;
+            // A pulse holds no value: what its source says is a gate, and the RISE is the request.
+            if matches!(target, Param::Pulse) {
+                let was_high = previous.as_ref().and_then(Param::as_bool).unwrap_or(false);
+                if !was_high && evaluated.as_ref().and_then(Param::as_bool) == Some(true) {
+                    self.pulse_param(key.clone());
+                }
+                continue;
+            }
             let Some(next) = evaluated.or_else(|| self.literal(&key)) else { continue };
             if goofi_node::param(&self.effective, &key.group, &key.name) == Some(&next) {
                 continue;

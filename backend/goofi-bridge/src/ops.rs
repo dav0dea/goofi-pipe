@@ -160,6 +160,11 @@ pub static TREE: &[Entry] = &[
                  args: "node:uid! param:param_addr!", positional: 2,
                  doc: "Ask a node to re-enumerate a refreshable string param's options (a device or stream picker), addressed `group/param`. The scan runs on the node's own thread, so this reply only says the request was dispatched — read the fresh options back with `node state`.",
                  result: "{ok: true} — the options land on the node; `node state` reports them" }),
+            Leaf(Op { name: "pulse", handler: Effect(arms::node_param_pulse),
+                 args: "node:uid! param:param_addr!", positional: 2,
+                 doc: "Fire a pulse param once, addressed `group/param`: a reset, a trigger, a clear. A pulse \
+                       holds no value, so this is a request to the node, never an edit of the document.",
+                 result: "{ok: true} — the pulse was dispatched to the node's own thread" }),
         ]),
         Leaf(Op { name: "remove", handler: Write(arms::node_remove), args: "node:uid!", positional: 1,
              doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",

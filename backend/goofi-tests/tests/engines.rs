@@ -257,6 +257,8 @@ impl Engine for Skeleton {
 
     fn refresh_param(&mut self, _uid: Uid, _key: goofi_node::ParamKey) {}
 
+    fn pulse_param(&mut self, _uid: Uid, _key: goofi_node::ParamKey) {}
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

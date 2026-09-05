@@ -412,6 +412,21 @@ pub(crate) fn node_param_refresh(
     Ok(json!({ "ok": true }))
 }
 
+/// NOT a command either: a pulse holds no state, so there is nothing to undo. The node acts on it
+/// on its own thread, so this reply says only that the request was dispatched.
+pub(crate) fn node_param_pulse(
+    state: &AppState,
+    payload: &Value,
+    _actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let uid = parse_uid(&g, payload, "node")?;
+    let (group, name) = parse_param_addr(payload, "node param pulse")?;
+    g.pulse_param(uid, &group, &name)?;
+    Ok(json!({ "ok": true }))
+}
+
 /// The joined `param_addr` — `group/param`, split on the FIRST `/` — one spelling on both surfaces.
 fn parse_param_addr(payload: &Value, op: &str) -> Result<(String, String), String> {
     let addr = payload

@@ -521,3 +521,59 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
                        j!({ "node": hex(osc), "param": "oscillator/waveform" }));
     assert!(why.contains("not refreshable"), "{why}");
 }
+
+#[test]
+fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
+    let _machine = MACHINE.blocking_read();
+    // A pulse is a REQUEST: the op makes it once, a source makes it on every rising edge, and
+    // neither leaves a value behind.
+    let g = Goofi::new();
+    g.state.graph.lock().unwrap().set_evaluator(Arc::new(goofi_tests::FirstVar));
+    let n = g.add("_TestResettable");
+    let gate = g.add("_TestScalar");
+    let gate_name = g.doc()["nodes"][hex(gate)]["name"].as_str().expect("a minted name").to_string();
+    g.set_param(n, "common", "max_frequency", 50.0);
+    g.ready(n);
+    g.ready(gate);
+    let probe = g.probe(n, "out");
+    let past = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v > c);
+    let under = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v < c);
+    g.until("a count past twenty", |_| past(20.0).then_some(()));
+
+    // The op fires it: the count starts over, and the document leaf holds no value.
+    g.call("node param pulse", j!({ "node": hex(n), "param": "count/reset" }));
+    g.until("the count to start over", |_| under(20.0).then_some(()));
+    let leaf = g.doc()["nodes"][hex(n)]["params"]["count"]["reset"].clone();
+    assert!(leaf["value"].is_null(), "a pulse holds no value: {leaf}");
+    let why = g.refuse("node param edit",
+                       j!({ "node": hex(n), "param": "count/reset", "value": true }));
+    assert!(why.contains("pulse"), "{why}");
+    let why = g.refuse("node param pulse", j!({ "node": hex(n), "param": "common/max_frequency" }));
+    assert!(why.contains("not a pulse"), "{why}");
+
+    // A reference on a pulse is a gate, and a low one fires nothing.
+    let bound = g.call("node param edit",
+                       j!({ "node": hex(n), "param": "count/reset",
+                            "reference": format!("{gate_name}.out"), "mode": "reference" }));
+    assert!(bound["error"].is_null(), "{bound}");
+    g.until("the count to climb under a low gate", |_| past(20.0).then_some(()));
+
+    // The gate rises and the pulse fires ONCE: the count starts over, then climbs clear of where
+    // it was — which a gate firing on every run could never let it do.
+    g.set_param(gate, "control", "value", 1.0);
+    g.until("the reset the rising edge fired", |_| under(20.0).then_some(()));
+    g.until("the count to climb clear of that reset", |_| past(40.0).then_some(()));
+
+    // The falling edge is not an edge this fires on.
+    g.set_param(gate, "control", "value", 0.0);
+    g.until("the count to climb through the falling edge", |_| past(60.0).then_some(()));
+
+    // An expression drives the same pulse the same way — one door for both sources.
+    let bound = g.call("node param edit",
+                       j!({ "node": hex(n), "param": "count/reset",
+                            "expression": format!("nd('{gate_name}')[0] >= 0.5") }));
+    assert!(bound["error"].is_null(), "{bound}");
+    g.until("the count to climb under the expression's low gate", |_| past(80.0).then_some(()));
+    g.set_param(gate, "control", "value", 1.0);
+    g.until("the reset the expression fired", |_| under(80.0).then_some(()));
+}

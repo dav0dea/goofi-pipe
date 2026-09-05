@@ -65,6 +65,9 @@ fn every_op_row_is_well_formed_and_reachable() {
     // The `!` has to reach the parse, or every argument is advertised as optional.
     let add: Vec<_> = find("node add").expect("node add is registered").args().collect();
     assert_eq!((add[0], add[1]), (("type", "string", true), ("pos", "float2", false)));
+    // A pulse is addressed exactly as every other param is: one spelling for every param op.
+    assert_eq!(find("node param pulse").expect("node param pulse is registered").args,
+               "node:uid! param:param_addr!");
 
     // A row with no dispatch arm answers `unknown op` while palette and tool list advertise it.
     let g = Goofi::new();
@@ -170,6 +173,11 @@ static OVERRIDE_PARAMS: &[ParamDecl] = &[ParamDecl {
     expression: None, doc: Some("On by default: this node is a source."),
 }];
 static OVERRIDES_COMMON: NodeManifest = manifest("OverridesCommon", &[], OVERRIDE_PARAMS, false);
+static PULSE_PARAMS: &[ParamDecl] = &[ParamDecl {
+    group: "count", name: "reset", spec: ParamSpec::Pulse,
+    expression: None, doc: Some("Start the count over."),
+}];
+static PULSING: NodeManifest = manifest("PulsingThing", &[], PULSE_PARAMS, true);
 
 fn row(g: &Goofi, type_name: &str) -> Value {
     g.call("library list", j!({}))["types"].as_array().expect("a palette").iter()
@@ -185,6 +193,7 @@ fn a_palette_row_carries_everything_a_client_renders_a_node_from() {
     g.register_dyn(&TRANSFORM, Box::new(|_| never()), &goofi_node::NATIVE);
     g.register_dyn(&DOCUMENTED, Box::new(|_| never()), &goofi_node::NATIVE);
     g.register_dyn(&OVERRIDES_COMMON, Box::new(|_| never()), &goofi_node::NATIVE);
+    g.register_dyn(&PULSING, Box::new(|_| never()), &goofi_node::NATIVE);
 
     // The two fixtures differ only in the `producer` flag, and it decides who paces the node.
     assert_eq!(row(&g, "signal:MyPyThing")["params"]["common"]["autotrigger"]["value"], true,
@@ -206,6 +215,10 @@ fn a_palette_row_carries_everything_a_client_renders_a_node_from() {
                "On by default: this node is a source.");
     assert!(overridden["params"]["common"]["max_frequency"]["doc"].as_str().unwrap()
                 .contains("Rate cap"), "the fallback still applies to the rest of the group");
+
+    // A pulse is a request: the row a client renders its button from carries a type and no value.
+    let pulse = row(&g, "signal:PulsingThing")["params"]["count"]["reset"].clone();
+    assert_eq!((&pulse["type"], &pulse["value"]), (&j!("pulse"), &j!(null)), "{pulse}");
 }
 
 #[test]
@@ -434,6 +447,8 @@ fn the_control_plane_document_carries_no_null_leaf() {
     let g = Goofi::new();
     let osc = g.add("Oscillator");
     let buf = g.add("Buffer");
+    // A pulse holds no value, which is the one param that could reach the doc as a null leaf.
+    g.add("_TestResettable");
     g.link(osc, "out", buf, "data");
     g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/frequency",
                                    "expression": "globals.default_ufreq" }));

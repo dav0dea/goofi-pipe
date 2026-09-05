@@ -150,6 +150,7 @@ pub fn param_value_json(p: &Param) -> serde_json::Value {
         Param::Int { value, .. } => json!(value),
         Param::Bool { value } => json!(value),
         Param::Str { value, .. } => json!(value),
+        Param::Pulse => serde_json::Value::Null,
     }
 }
 
@@ -168,6 +169,7 @@ pub fn param_from_json(existing: &Param, v: &serde_json::Value) -> Param {
             options: options.clone(),
             refresh: *refresh,
         },
+        Param::Pulse => Param::Pulse,
     }
 }
 
@@ -234,6 +236,9 @@ fn param_change(
         return Err(format!("unknown field `{k}` — value, expression, reference, mode, triggers"));
     }
     let field = |k: &str| o.get(k).filter(|v| !v.is_null());
+    if matches!(existing, Param::Pulse) && field("value").is_some() {
+        return Err("this param is a pulse and holds no value; fire it with `node param pulse`".to_string());
+    }
     let value = field("value").map(|v| coerced_value(existing, v));
     let text = |k: &str| {
         field(k)
@@ -2174,6 +2179,23 @@ impl Graph {
         let key = ParamKey::new(group, name);
         if let Some(e) = self.engine_mut(engine) {
             e.refresh_param(uid, key);
+        }
+        Ok(())
+    }
+
+    /// Fire a pulse param on the node's own thread — the button, and what a rising edge asks for.
+    /// Not a command: a pulse holds no state, so there is nothing to undo.
+    pub fn pulse_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
+        let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let param = goofi_node::param(&entry.params, group, name)
+            .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
+        if !matches!(param, Param::Pulse) {
+            return Err(format!("param `{group}.{name}` is not a pulse"));
+        }
+        let engine = entry.engine;
+        let key = ParamKey::new(group, name);
+        if let Some(e) = self.engine_mut(engine) {
+            e.pulse_param(uid, key);
         }
         Ok(())
     }
