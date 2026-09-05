@@ -95,9 +95,16 @@ of a per-param runtime error without an op echo is open below.
 ## Open
 
 - A canvas affordance for references, so a patch's modulation is visible where its cables are.
-  Nothing in the model prevents it; it is a UI choice.
+  Nothing in the model prevents it; it is a UI choice. `roadmap/control-panels.md` carries the same
+  question for a control element, and the two are one answer.
 - The inspector shows a param's RUNTIME error (a shape error on arrival, an evaluation failure)
   only after the next op echo for that node; the node-level `error` event carries the node's
   derived error, not the param's. A per-param runtime error event is one candidate; not decided.
 - `triggers` on a reference shares the expression's one arrival path and is unproved by a
   scenario; the editing scenario proves it on an expression only.
+
+## Control elements (2026-09-05)
+
+A control panel is a GROUP of globals, and a control element is a global carrying a `control`
+record. It reaches a param as an expression, `globals.<group>.<element>`, through the binding path
+a global already had. `cl()` was proposed and never built: a second namespace over one owner.

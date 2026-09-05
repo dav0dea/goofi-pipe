@@ -5,6 +5,7 @@ import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
 import type { LinkInfo } from '$lib/api/control';
+import type { ControlView } from '$lib/crdt/graphDoc';
 import type { GlobalType } from '$lib/crdt/graphDoc';
 
 /** The editor panel that viewport/selection verbs default to. */
@@ -29,8 +30,17 @@ export const commands = {
 		graph().groupNodes(names, pos),
 	expandInstance: (instId: string): Promise<void> => graph().expandInstance(instId),
 
-	addGlobal: (name: string, value: number | string | boolean, type: GlobalType): Promise<void> =>
-		graph().addGlobal(name, value, type),
+	addGlobal: (
+		name: string,
+		value: number | string | boolean,
+		type: GlobalType,
+		control?: ControlView
+	): Promise<void> => graph().addGlobal(name, value, type, control),
+	removeGlobal: (name: string): Promise<void> => graph().removeGlobal(name),
+	setGlobalControl: (name: string, control: ControlView): Promise<void> =>
+		graph().setGlobalControl(name, control),
+	renameGlobal: (from: string, to: string): Promise<void> => graph().renameGlobal(from, to),
+	renameGlobalGroup: (from: string, to: string): Promise<void> => graph().renameGlobalGroup(from, to),
 
 	save: (path: string): Promise<{ path: string }> => graph().save(path),
 	newPatch: (): Promise<void> => graph().newPatch(),
@@ -43,6 +53,8 @@ export const commands = {
 	},
 	bindNodeToPanel: (panelId: string, node: string): void => workspace().linkNodeToPanel(panelId, node),
 	setPanelType: (panelId: string, type: string): void => workspace().setType(panelId, type),
+	setPanelState: (panelId: string, state: Record<string, unknown>): void =>
+		workspace().setPanelState(panelId, state),
 	addTab: (panelType?: string): void => workspace().addTab(panelType),
 
 	undo: (): Promise<void> => history().undo(),

@@ -199,7 +199,48 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 				'a pan is not a press'
 			).toHaveCount(0);
 		});
+		await test.step('a control widget turns under a finger, and MOVES once the panel is in edit mode', async () => {
+			// LAST: it turns the editor panel into a control panel, so every canvas step above
+			// still has its canvas.
+			await page.evaluate(async () => {
+				const g = (window as any).goofi;
+				await g.commands.addGlobal('desk.level', 0.5, 'float', {
+					kind: 'knob', min: 0, max: 1, step: 0.01, x: 0, y: 0, w: 3, h: 3
+				});
+				const panel = g.query.panels()[0];
+				g.commands.setPanelType(panel.panelId, 'control');
+				g.commands.setPanelState(panel.panelId, { group: 'desk', edit: false });
+			});
+			const knob = page.getByTestId('control-desk-level');
+			await expect(knob).toBeVisible();
+			const level = () =>
+				page.evaluate(
+					() => (window as any).goofi.query.globals().find((g: { name: string }) => g.name === 'desk.level').value
+				);
+
+			// The claim is the GESTURE, so the finger does it: a drag up turns the knob.
+			const box = (await knob.boundingBox())!;
+			const centre = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+			await swipe(page, centre, { x: centre.x, y: centre.y - 60 });
+			await expect.poll(level, 'a drag on a widget turns it').toBeGreaterThan(0.5);
+
+			// …and the same drag MOVES it once edit mode is on, which is the whole mode switch.
+			await page.getByTestId('control-edit-toggle').tap();
+			const before = (await knob.boundingBox())!;
+			const held = await level();
+			const grip = { x: Math.round(before.x + 6), y: Math.round(before.y + 6) };
+			await swipe(page, grip, { x: grip.x + Math.round(before.width), y: grip.y });
+			await expect
+				.poll(async () => (await knob.boundingBox())!.x, 'the widget moved')
+				.toBeGreaterThan(before.x);
+			expect.soft(await level(), 'and moving it did not turn it').toBe(held);
+		});
 	} finally {
+		await page.evaluate(async () => {
+			const g = (window as any).goofi;
+			if (g.query.globals().some((v: { name: string }) => v.name === 'desk.level'))
+				await g.commands.removeGlobal('desk.level');
+		});
 		await tearDown(page);
 	}
 });
