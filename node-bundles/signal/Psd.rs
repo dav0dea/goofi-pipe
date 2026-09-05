@@ -1,32 +1,29 @@
-//! Psd — a one-sided periodogram over the last axis: `[.., T]` in, `[.., T/2 + 1]` out.
-//! Interior bins are doubled, for the energy their negative-frequency twins carry.
+//! Psd — how much power sits at each frequency. Welch averages the spectra of overlapping
+//! segments, which trades resolution for a steadier answer; `fft` takes one segment, the whole run.
 
 use std::sync::Arc;
 
-use goofi_core::{Axis, Coord, Data, SlotType};
+use goofi_core::{resolve_axis, stream, Axis, Coord, Data, SlotType};
 use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
 use rustfft::{num_complex::Complex32, FftPlanner};
 
 struct Psd {
     planner: FftPlanner<f32>,
-    /// The window, and the length and kind it was built for.
-    window: Vec<f32>,
-    built: (usize, String),
 }
 
 impl Default for Psd {
     fn default() -> Psd {
-        Psd { planner: FftPlanner::new(), window: Vec::new(), built: (0, String::new()) }
+        Psd { planner: FftPlanner::new() }
     }
 }
 
 /// A periodic cosine window: `a0 - a1·cos(x) + a2·cos(2x)`, which covers the three on offer.
-fn cosine_window(kind: &str, n: usize) -> Vec<f32> {
+fn window(kind: &str, n: usize) -> Vec<f32> {
     let (a0, a1, a2) = match kind {
         "hamming" => (0.54, 0.46, 0.0),
         "blackman" => (0.42, 0.5, 0.08),
-        "none" => return vec![1.0; n],
-        _ => (0.5, 0.5, 0.0), // hann
+        "hann" => (0.5, 0.5, 0.0),
+        _ => return vec![1.0; n],
     };
     (0..n)
         .map(|i| {
@@ -44,87 +41,179 @@ impl Node for Psd {
         _c: &mut NodeCtx,
         p: &Params<'_>,
     ) -> NodeResult {
-        let d = inp.get("data").ok_or("`data` is required")?;
+        let d = inp.get("input").ok_or("`input` is required")?;
         let a = d.assert_ndims().at_least(1)?;
-        let shape = a.shape();
-        let n = *shape.last().expect("at_least(1) rejects a rank-0 array");
+        let dim = resolve_axis(p.i64("psd", "axis").unwrap_or(-1), a.shape().len())?;
+        let n = a.shape()[dim];
         if n < 2 {
-            return Err(format!("needs at least 2 samples along the last axis, got {n}").into());
+            return Err(format!("needs at least 2 samples along the axis, got {n}").into());
         }
-        // Absent, the bins are cycles per sample — a usable spectrum, so a fallback and not an error.
-        let sfreq = d.meta().sfreq().unwrap_or(1.0);
+        let sfreq = d.meta().sfreq().ok_or("this node needs a frame that carries its sample rate")?;
 
-        let kind = p.str("psd", "window").unwrap_or("hann");
-        if self.built != (n, kind.to_string()) {
-            self.window = cosine_window(kind, n);
-            self.built = (n, kind.to_string());
+        let taper = p.str("psd", "window").unwrap_or("hann");
+        let seg = if p.str("psd", "mode").unwrap_or("welch") == "fft" {
+            n
+        } else {
+            let size = p.f64("welch", "segment").unwrap_or(0.5);
+            let samples = match p.str("welch", "unit").unwrap_or("seconds") {
+                "samples" => size,
+                "fraction" => size * n as f64,
+                _ => size * sfreq,
+            };
+            (samples.round().max(2.0) as usize).min(n)
+        };
+        let overlap = p.f64("welch", "overlap").unwrap_or(0.5).clamp(0.0, 0.95);
+        let hop = ((seg as f64 * (1.0 - overlap)).round() as usize).clamp(1, seg);
+
+        let bins = seg / 2 + 1;
+        let taper = window(taper, seg);
+        // Dividing by `sfreq · Σw²` makes the result a DENSITY: the segment length cannot move a peak.
+        let norm = 1.0 / (sfreq as f32 * taper.iter().map(|w| w * w).sum::<f32>());
+        let fft = self.planner.plan_fft_forward(seg);
+
+        let freqs: Vec<f64> = (0..bins).map(|k| k as f64 * sfreq / seg as f64).collect();
+        let low = p.f64("range", "low").unwrap_or(0.0);
+        let high = p.f64("range", "high").unwrap_or(0.0);
+        let kept: Vec<usize> = (0..bins)
+            .filter(|k| freqs[*k] >= low && (high <= 0.0 || freqs[*k] <= high))
+            .collect();
+        if kept.is_empty() {
+            return Err(format!("no bin falls between {low} Hz and {high} Hz").into());
         }
-        let fft = self.planner.plan_fft_forward(n);
+        let log = p.str("range", "scale").unwrap_or("linear") == "log";
 
-        let bins = n / 2 + 1;
-        let rows: usize = shape[..shape.len() - 1].iter().product();
-        // Dividing by `sfreq · Σw²` makes the result a DENSITY: window length cannot move a peak.
-        let norm = 1.0 / (sfreq as f32 * self.window.iter().map(|w| w * w).sum::<f32>());
-        let src = a.as_bytes();
-        let mut scratch = vec![Complex32::default(); n];
-        let mut buf = Vec::with_capacity(rows * bins * 4);
-        for r in 0..rows {
-            let row = &src[r * n * 4..(r + 1) * n * 4];
-            for (c, (x, w)) in scratch.iter_mut().zip(row.chunks_exact(4).zip(&self.window)) {
-                *c = Complex32::new(f32::from_le_bytes(x.try_into().expect("four bytes")) * w, 0.0);
-            }
-            fft.process(&mut scratch);
-            for (k, c) in scratch[..bins].iter().enumerate() {
-                // DC and, for an even length, Nyquist have no twin to fold in.
-                let fold = if k == 0 || 2 * k == n { 1.0 } else { 2.0 };
-                buf.extend_from_slice(&(c.norm_sqr() * norm * fold).to_le_bytes());
-            }
-        }
+        let mut scratch = vec![Complex32::default(); seg];
+        let spectra: Vec<Vec<f32>> = stream::lanes(a.shape(), dim, a.as_bytes())
+            .iter()
+            .map(|lane| {
+                let mut sum = vec![0.0f32; bins];
+                let mut count = 0.0f32;
+                for start in (0..=n - seg).step_by(hop) {
+                    for (c, (x, w)) in scratch.iter_mut().zip(lane[start..].iter().zip(&taper)) {
+                        *c = Complex32::new(x * w, 0.0);
+                    }
+                    fft.process(&mut scratch);
+                    for (k, (s, c)) in sum.iter_mut().zip(&scratch[..bins]).enumerate() {
+                        // DC and, for an even length, Nyquist have no twin to fold in.
+                        let fold = if k == 0 || 2 * k == seg { 1.0 } else { 2.0 };
+                        *s += c.norm_sqr() * norm * fold;
+                    }
+                    count += 1.0;
+                }
+                kept.iter()
+                    .map(|k| {
+                        let v = sum[*k] / count;
+                        if log { v.max(1e-12).ln() } else { v }
+                    })
+                    .collect()
+            })
+            .collect();
 
-        let mut shape_out = shape.to_vec();
-        let last = shape_out.len() - 1;
-        shape_out[last] = bins;
-        let freqs: Vec<Coord> =
-            (0..bins).map(|k| Coord::Num(k as f64 * sfreq / n as f64)).collect();
+        let mut shape_out = a.shape().to_vec();
+        shape_out[dim] = kept.len();
+        let coords: Vec<Coord> = kept.iter().map(|k| Coord::Num(freqs[*k])).collect();
         // No longer a time series: `sfreq` would read as the spacing of a domain that is gone.
         let mut meta = d.meta().clone();
-        let axes = meta.channels().clone().with(last, Axis::coords(Arc::from(freqs)));
+        let axes = meta.channels().clone().with(dim, Axis::coords(Arc::from(coords)));
         meta.set_channels(axes);
         meta.set_sfreq(None);
-        out.set("psd", Data::array_f32(shape_out, buf, meta).map_err(|e| e.to_string())?);
+        let buf = stream::unlanes(&shape_out, dim, &spectra);
+        out.set("out", Data::array_f32(shape_out, buf, meta).map_err(|e| e.to_string())?);
         Ok(())
     }
 }
 
-static PARAMS: &[ParamDecl] = &[ParamDecl {
-    group: "psd",
-    name: "window",
-    spec: ParamSpec::Str {
-        default: "hann",
-        options: &["hann", "hamming", "blackman", "none"],
-        refresh: false,
+static PARAMS: &[ParamDecl] = &[
+    ParamDecl {
+        group: "psd",
+        name: "mode",
+        spec: ParamSpec::Str { default: "welch", options: &["fft", "welch"], refresh: false },
+        expression: None,
+        doc: Some(
+            "`welch` averages the spectra of overlapping segments, which is steadier; `fft` takes \
+             the whole run as one segment, which is sharper and noisier.",
+        ),
     },
-    expression: None,
-    doc: Some(
-        "Taper applied before the transform. It stops a peak from smearing across the spectrum; \
-         `none` keeps the samples as they are, which is correct only for a whole number of cycles.",
-    ),
-}];
+    ParamDecl {
+        group: "psd",
+        name: "window",
+        spec: ParamSpec::Str {
+            default: "hann",
+            options: &["hann", "hamming", "blackman", "rectangular"],
+            refresh: false,
+        },
+        expression: None,
+        doc: Some(
+            "Taper applied to each segment. It stops a peak from smearing across the spectrum; \
+             `rectangular` keeps the samples as they are.",
+        ),
+    },
+    ParamDecl {
+        group: "psd",
+        name: "axis",
+        spec: ParamSpec::Int { default: -1, min: -8, max: 7 },
+        expression: None,
+        doc: Some("Which axis holds the samples. -1 is time."),
+    },
+    ParamDecl {
+        group: "welch",
+        name: "segment",
+        spec: ParamSpec::Float { default: 0.5, min: 0.0, max: 1e7 },
+        expression: None,
+        doc: Some("How long one segment is. A longer segment tells frequencies apart better."),
+    },
+    ParamDecl {
+        group: "welch",
+        name: "unit",
+        spec: ParamSpec::Str {
+            default: "seconds",
+            options: &["seconds", "samples", "fraction"],
+            refresh: false,
+        },
+        expression: None,
+        doc: Some("What `segment` counts in. `fraction` is a share of the frame."),
+    },
+    ParamDecl {
+        group: "welch",
+        name: "overlap",
+        spec: ParamSpec::Float { default: 0.5, min: 0.0, max: 0.95 },
+        expression: None,
+        doc: Some("How much of a segment the next one repeats. More overlap is steadier and slower."),
+    },
+    ParamDecl {
+        group: "range",
+        name: "low",
+        spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 10_000.0 },
+        expression: None,
+        doc: Some("The lowest frequency to keep, in Hz."),
+    },
+    ParamDecl {
+        group: "range",
+        name: "high",
+        spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 10_000.0 },
+        expression: None,
+        doc: Some("The highest frequency to keep, in Hz. 0 keeps every bin above `low`."),
+    },
+    ParamDecl {
+        group: "range",
+        name: "scale",
+        spec: ParamSpec::Str { default: "linear", options: &["linear", "log"], refresh: false },
+        expression: None,
+        doc: Some("Whether the power comes out as it is, or as its logarithm."),
+    },
+];
 static INPUTS: &[SlotDecl] = &[SlotDecl {
-    name: "data",
+    name: "input",
     kind: SlotType::Array,
     trigger_process: true,
     multi: false,
     required: true,
 }];
-static OUTPUTS: &[OutputDecl] = &[OutputDecl {
-    name: "psd",
-    kind: SlotType::Array,
-}];
+static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Analysis],
-    doc: "Power spectral density over the last axis: [.., T] becomes [.., T/2 + 1], in Hz.",
+    doc: "How much power sits at each frequency, in Hz, over the last axis.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

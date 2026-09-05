@@ -83,7 +83,7 @@ fn the_complexity_bundle_reduces_the_time_axis_and_leaves_the_channels_alone() {
     let src = g.add("_TestGrid");
     let buf = g.add("Buffer");
     g.set_param(buf, "buffer", "size", 256);
-    g.link(src, "out", buf, "data");
+    g.link(src, "out", buf, "input");
     // The window fills BEFORE a node is wired: a growing one answers, and answers differently.
     let window = g.probe(buf, "out");
     g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![3, 256]));
@@ -137,7 +137,7 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     g.set_param(osc, "output", "mode", "block");
     g.set_param(osc, "lfo", "frequency", 8.0);
     g.set_param(buf, "buffer", "size", 256);
-    g.link(osc, "out", buf, "data");
+    g.link(osc, "out", buf, "input");
     // Every oracle below is for a FULL window: a growing one holds fewer cycles, or one cut short.
     let window = g.probe(buf, "out");
     g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![256]));
@@ -278,10 +278,10 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     let fooof = g.add(&fooof_ty);
     let peaks = g.probe(fooof, "peaks");
     let aperiodic = g.probe(fooof, "aperiodic");
-    g.link(play, "out", buf, "data");
-    g.link(buf, "out", psd, "data");
-    g.link(psd, "psd", bands, "psd");
-    g.link(psd, "psd", fooof, "psd");
+    g.link(play, "out", buf, "input");
+    g.link(buf, "out", psd, "input");
+    g.link(psd, "out", bands, "psd");
+    g.link(psd, "out", fooof, "psd");
 
     let d = g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![4, 256]));
     let peak = f32s(&d).iter().fold(0f32, |m, x| m.max(x.abs()));

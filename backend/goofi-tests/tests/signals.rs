@@ -31,11 +31,12 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     set(buf, "buffer", "size", j!(512));
     set(flt, "filter", "low", j!(5.0));
     set(flt, "filter", "high", j!(20.0));
+    set(psd, "psd", "mode", j!("fft"));
 
-    let probe = g.probe(psd, "psd"); // opened before the wires: the data services keep no history
+    let probe = g.probe(psd, "out"); // opened before the wires: the data services keep no history
     g.link(osc, "out", flt, "input");
-    g.link(flt, "out", buf, "data");
-    g.link(buf, "out", psd, "data");
+    g.link(flt, "out", buf, "input");
+    g.link(buf, "out", psd, "input");
 
     // 512 real samples become 257 one-sided bins, and the rank is untouched.
     let full = g.until("a spectrum of the full window", |_| {
@@ -50,7 +51,30 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     assert_eq!(freqs[20], goofi_core::Coord::Num(10.0), "bin 20 is 10 Hz at sfreq 256 over 512");
     assert_eq!(full.meta().sfreq(), None, "a spectrum is not a time series any more");
 
+    // Welch cuts the same window into one-second segments, so the answer is steadier and the bins
+    // are twice as wide — and the sine still lands on the bin that carries 10 Hz.
+    set(psd, "psd", "mode", j!("welch"));
+    set(psd, "welch", "segment", j!(1.0));
+    let welch = g.until("a spectrum of averaged segments", |_| {
+        probe.latest().filter(|d| shape(d) == vec![129])
+    });
+    assert_eq!(peak(&welch).0, 10, "a 10 Hz sine peaks in the 10 Hz bin — bin 10 at one hertz each");
+
+    // The range page cuts the spectrum to a band, and the coordinates come with it.
+    set(psd, "range", "low", j!(8.0));
+    set(psd, "range", "high", j!(12.0));
+    let band = g.until("the spectrum cut to a band", |_| {
+        probe.latest().filter(|d| shape(d) == vec![5])
+    });
+    let coords = band.meta().channels().get(0).and_then(|a| a.coords.clone()).expect("bin coords");
+    assert_eq!(coords[0], goofi_core::Coord::Num(8.0), "the band starts where it was told to");
+    assert_eq!(coords[4], goofi_core::Coord::Num(12.0), "and ends where it was told to");
+    assert_eq!(peak(&band).0, 2, "10 Hz is the middle of an 8 to 12 Hz band");
+
     // The window is a second long, so this waits for the property rather than for the next frame.
+    set(psd, "range", "low", j!(0.0));
+    set(psd, "range", "high", j!(0.0));
+    set(psd, "psd", "mode", j!("fft"));
     set(flt, "filter", "mode", j!("lowpass"));
     set(flt, "filter", "high", j!(2.0));
     g.until("the peak to collapse once the band excludes it", |_| {
@@ -75,7 +99,7 @@ fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
 
     let (pt, pc, po) = (g.probe(time, "out"), g.probe(chans, "out"), g.probe(one, "out"));
     for b in [time, chans, one] {
-        g.link(src, "out", b, "data");
+        g.link(src, "out", b, "input");
     }
 
     // [3, 4] became [3, 8], not the 24-long vector a flattening buffer would produce.
@@ -163,7 +187,7 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     // And a wire made long afterwards receives it, with nothing to re-plan or replay.
     let buf = g.add("Buffer");
     let pb = g.probe(buf, "out");
-    g.link(konst, "out", buf, "data");
+    g.link(konst, "out", buf, "input");
     let rolled = g.until("the wire to receive the constant", |_| {
         pb.latest().filter(|d| !f32s(d).is_empty() && f32s(d).iter().all(|v| *v == 3.0))
     });
@@ -443,7 +467,7 @@ fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
     set(lfo, "common", "max_frequency", j!(20.0));
     let window = g.add("Buffer");
     set(window, "buffer", "size", j!(512));
-    g.link(lfo, "out", window, "data");
+    g.link(lfo, "out", window, "input");
 
     // A sine's envelope is its amplitude, and its instantaneous frequency is its frequency. Both
     // ring at the edges of a frame, so the middle half is what is read.
@@ -478,9 +502,10 @@ fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
     let shift = g.add("FreqShift");
     set(shift, "freq_shift", "frequency", j!(40.0));
     let psd = g.add("Psd");
-    let pp = g.probe(psd, "psd");
+    set(psd, "psd", "mode", j!("fft"));
+    let pp = g.probe(psd, "out");
     g.link(window, "out", shift, "input");
-    g.link(shift, "out", psd, "data");
+    g.link(shift, "out", psd, "input");
     let spectrum = g.until("the shifted spectrum", |_| {
         pp.latest().filter(|d| shape(d) == vec![257] && peak(d).0 > 80 && peak(d).0 < 120)
     });
@@ -497,5 +522,68 @@ fn the_analysis_nodes_read_a_known_sine_and_say_what_it_is() {
 
     for n in [hil, wav, shift, psd, emd] {
         assert!(g.error(n).is_none(), "an analysis node carries no error: {:?}", g.error(n));
+    }
+}
+
+#[test]
+fn the_text_and_table_nodes_carry_a_value_out_to_json_and_back() {
+    let g = Goofi::new();
+    let set = |n, group: &str, name: &str, v: serde_json::Value| {
+        g.set_param(n, group, name, v);
+    };
+
+    // Two strings, joined in wire order, then placed by a template that pads one of them.
+    let label = g.add("Text");
+    set(label, "text", "value", j!("alpha"));
+    let unit = g.add("Text");
+    set(unit, "text", "value", j!("beta"));
+    let fmt = g.add("Format");
+    let pf = g.probe(fmt, "out");
+    g.link(label, "out", fmt, "input");
+    g.link(unit, "out", fmt, "input");
+    g.until("the two strings joined in wire order", |_| {
+        pf.latest().filter(|d| text(d) == Some("alpha beta"))
+    });
+    set(fmt, "format", "mode", j!("template"));
+    set(fmt, "format", "template", j!("{1}:{0:>7}"));
+    g.until("the template to place each wire and pad the first", |_| {
+        pf.latest().filter(|d| text(d) == Some("beta:  alpha"))
+    });
+
+    // An array and a string become one table, under the keys asked for, and that is what json says.
+    let level = g.add("Constant");
+    set(level, "constant", "value", j!(2.5));
+    set(level, "constant", "shape", j!("2"));
+    let table = g.add("Table");
+    set(table, "table", "keys", j!("level,name"));
+    let json = g.add("ToJson");
+    let pj = g.probe(json, "out");
+    g.link(level, "out", table, "arrays");
+    g.link(fmt, "out", table, "strings");
+    g.link(table, "out", json, "input");
+    let written = r#"{"level": [2.5, 2.5], "name": "beta:  alpha"}"#;
+    g.until("the table written as json", |_| pj.latest().filter(|d| text(d) == Some(written)));
+
+    // And back: the same text parses to the same table, and one field leaves on the output whose
+    // kind it has — the other two stay silent.
+    let back = g.add("FromJson");
+    let pick = g.add("TableSelect");
+    set(pick, "table", "key", j!("level"));
+    let (pa, ps) = (g.probe(pick, "array"), g.probe(pick, "string"));
+    g.link(json, "out", back, "input");
+    g.link(back, "out", pick, "input");
+    let round = g.until("the array field back out of the parsed table", |_| {
+        pa.latest().filter(|d| shape(d) == vec![2])
+    });
+    assert_eq!(f32s(&round), vec![2.5, 2.5], "the numbers survive the text and come back");
+    assert!(ps.latest().is_none(), "an array field leaves the string output silent");
+
+    set(pick, "table", "key", j!("name"));
+    g.until("the string field on the string output", |_| {
+        ps.latest().filter(|d| text(d) == Some("beta:  alpha"))
+    });
+
+    for n in [fmt, table, json, back, pick] {
+        assert!(g.error(n).is_none(), "a text node carries no error: {:?}", g.error(n));
     }
 }

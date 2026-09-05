@@ -13,6 +13,7 @@ pub mod probe;
 pub mod reduce;
 pub mod stream;
 
+pub use indexmap;
 pub use stream::Stream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,6 +591,22 @@ impl Data {
             Value::Array(a) => Ok(a),
             Value::Str(_) => Err("expected an array, got a string".into()),
             Value::Table(_) => Err("expected an array, got a table".into()),
+        }
+    }
+
+    pub fn as_str(&self) -> std::result::Result<&str, String> {
+        match &self.0.value {
+            Value::Str(s) => Ok(s),
+            Value::Array(_) => Err("expected a string, got an array".into()),
+            Value::Table(_) => Err("expected a string, got a table".into()),
+        }
+    }
+
+    pub fn as_table(&self) -> std::result::Result<&IndexMap<String, Data>, String> {
+        match &self.0.value {
+            Value::Table(t) => Ok(t),
+            Value::Array(_) => Err("expected a table, got an array".into()),
+            Value::Str(_) => Err("expected a table, got a string".into()),
         }
     }
 
