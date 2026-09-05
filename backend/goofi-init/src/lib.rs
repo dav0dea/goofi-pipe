@@ -324,6 +324,9 @@ fn query(py: &Path, code: &str) -> Option<String> {
 
 fn uv<'a>(args: impl IntoIterator<Item = &'a str>) -> Command {
     let mut cmd = Command::new("uv");
+    // Before the subcommand, and before the caller's own arguments: a terminal that forces colour
+    // wraps uv's listing in escapes, and the dry-run parser reads that listing.
+    cmd.arg("--color").arg("never");
     // uv drives a DIFFERENT interpreter: the caller's stdlib kills it with "SRE module mismatch".
     cmd.args(args).env_remove("PYTHONHOME").env_remove("PYTHONPATH");
     cmd
