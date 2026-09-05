@@ -28,6 +28,13 @@
 			.catch((e) => console.warn('restart failed', e));
 	}
 
+	function openEditor(): void {
+		if (!renderedNode) return;
+		void graph()
+			.showNodeEditor(renderedNode.uid)
+			.catch((e) => console.warn('editor failed', e));
+	}
+
 	/** A persisted pane size, or `null` — the resting size is then the stylesheet's own `clamp()`. */
 	function storedSize(axis: PaneAxis): number | null {
 		try {
@@ -119,6 +126,17 @@
 			data-testid="panel-resize-handle"
 		></div>
 		<ScrollArea>
+			<!-- Above the params: a plugin with sixty of them would bury it. -->
+			{#if renderedNode?.editor}
+				<section class="node-actions">
+					<Button
+						size="sm"
+						onclick={openEditor}
+						title="Open this plugin's own editor, in a window on the machine goofi runs on"
+						data-testid="inspector-editor">▤ Open plugin editor</Button
+					>
+				</section>
+			{/if}
 			<ParamForm node={renderedNode} {onClose} />
 			{#if renderedNode}
 				<MetadataPanel node={renderedNode} />
@@ -186,6 +204,10 @@
 	}
 	.side-panel.resizing * {
 		user-select: none;
+	}
+	.node-actions {
+		padding: var(--space-3) var(--space-6);
+		border-bottom: 1px solid var(--border);
 	}
 	.node-error {
 		padding: var(--space-6);

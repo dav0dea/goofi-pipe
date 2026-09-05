@@ -353,6 +353,12 @@ export class GraphStore {
 		await this.ctl.call('node restart', { node: uid });
 	}
 
+	/** Open a node's own editor window. It appears on the machine the SERVER runs on, so this is a
+	 * request the page sends, never something it draws. */
+	async showNodeEditor(uid: string): Promise<void> {
+		await this.ctl.call('node editor', { node: uid });
+	}
+
 	async addLink(link: LinkInfo): Promise<void> {
 		await this.ctl.call('link add', linkEndpoints(link));
 		this._recordGraphCmd('Connect');

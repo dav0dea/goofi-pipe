@@ -90,6 +90,7 @@ export function assembleNode(
 		name: view.name,
 		type: view.type,
 		doc: catalog?.doc ?? '',
+		editor: catalog?.editor,
 		input_slots: face?.input_slots ?? catalog?.input_slots ?? {},
 		input_multi: catalog?.input_multi,
 		output_slots: face?.output_slots ?? catalog?.output_slots ?? {},

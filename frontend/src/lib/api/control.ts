@@ -28,6 +28,8 @@ export interface NodeTypeInfo {
 	/** Whether this machine resolves the type's unconditional top-level deps. */
 	available: boolean;
 	missing_deps: string[];
+	/** Whether a node of this type has an editor window of its own — on the machine goofi runs on. */
+	editor?: boolean;
 	input_slots: Record<string, string>;
 	/** Names of the variadic (multi) input slots. */
 	input_multi?: string[];
@@ -54,6 +56,8 @@ export interface NodeInstanceInfo {
 	name: string;
 	type: string;
 	doc: string;
+	/** Whether this node has an editor window of its own to open, from its type's row. */
+	editor?: boolean;
 	input_slots: Record<string, string>;
 	/** Names of the variadic (multi) input slots. */
 	input_multi?: string[];
