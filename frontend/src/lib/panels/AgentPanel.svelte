@@ -5,6 +5,7 @@
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
 	import type { PanelProps } from 'panelty';
+	import { graph } from '$lib/stores/graph.svelte';
 	import { harnesses, harnessLabel } from '$lib/stores/harness.svelte';
 	import { termSession, type TerminalLike } from '$lib/stores/termSession';
 	import { Bar, ChoiceGrid, EmptyState, Icon, IconButton, Select, type Choice } from '$lib/ui';
@@ -12,6 +13,7 @@
 
 	let { panelId }: PanelProps = $props();
 	const hs = harnesses();
+	const g = graph();
 
 	// `untrack`: claiming WRITES the map it reads, so a tracked effect would remount on every
 	// roster event and re-claim the instance a Detach just let go of.
@@ -105,6 +107,15 @@
 			{/snippet}
 		</Bar>
 		<div class="host" bind:this={host} data-testid="agent-terminal"></div>
+	{:else if g.demo}
+		<div class="launcher" data-testid="agent-launcher">
+			<EmptyState>
+				{#snippet title()}Agents are off in this demo{/snippet}
+				{#snippet hint()}
+					A public goofi runs no terminal and spawns no agent. Run goofi locally for those.
+				{/snippet}
+			</EmptyState>
+		</div>
 	{:else}
 		<div class="launcher" data-testid="agent-launcher">
 			<EmptyState>

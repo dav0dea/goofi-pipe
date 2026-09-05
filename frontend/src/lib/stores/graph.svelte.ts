@@ -58,6 +58,9 @@ export class GraphStore {
 	links = $state<LinkInfo[]>([]);
 	savePath = $state<string | null>(null);
 	unsavedChanges = $state(false);
+	/** What the server said it is. Every affordance a demo withholds reads THIS, never a list of
+	 * its own. */
+	demo = $state(false);
 	connected = $state(false);
 	/** Latches on the first connect and never clears — see {@link disconnected}. */
 	private _everConnected = $state(false);
@@ -153,6 +156,8 @@ export class GraphStore {
 		}
 		this.savePath = snap.save_path;
 		this.unsavedChanges = snap.unsaved_changes;
+		// `hello` alone carries it; a `graph_replaced` snapshot must not clear what the mode is.
+		if (snap.demo !== undefined) this.demo = snap.demo;
 
 		// The arrangement rides the doc; what the snapshot carries is the VIEWPOINT, this client's
 		// alone — persisted, never converged.

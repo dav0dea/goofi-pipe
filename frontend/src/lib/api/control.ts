@@ -134,6 +134,9 @@ export interface GraphSnapshot {
 	viewpoint?: unknown;
 	/** The spawned agent harnesses and the installed ones. Absent on an older backend. */
 	harnesses?: HarnessRoster;
+	/** A PUBLIC goofi: no terminal, no agents, no filesystem, no save or load, no audio. Carried
+	 * on `hello` alone, because it is decided once at start. */
+	demo?: boolean;
 }
 
 /** One spawned harness. `stopping` spans the grace period between the stop and the exit. */

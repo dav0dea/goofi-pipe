@@ -262,10 +262,12 @@
 			});
 		if (isSpilled('topbar-redo'))
 			items.push({ label: 'Redo', icon: 'redo-2', disabled: !h.canRedo, action: () => void h.redo() });
-		if (isSpilled('topbar-save')) items.push({ label: 'Save', icon: 'save', action: onSave });
-		if (isSpilled('topbar-save-caret')) items.push(...saveOptions());
-		if (isSpilled('topbar-load'))
-			items.push({ label: 'Load…', icon: 'folder-open', action: onLoad });
+		if (!g.demo) {
+			if (isSpilled('topbar-save')) items.push({ label: 'Save', icon: 'save', action: onSave });
+			if (isSpilled('topbar-save-caret')) items.push(...saveOptions());
+			if (isSpilled('topbar-load'))
+				items.push({ label: 'Load…', icon: 'folder-open', action: onLoad });
+		}
 		return items;
 	}
 
@@ -347,6 +349,8 @@
 				label="Redo"
 				onclick={() => void h.redo()}><Icon name="redo-2" /></IconButton
 			>
+			<!-- A demo has no patch file to write or read, so neither button is drawn. -->
+			{#if !g.demo}
 			<!-- `.no-caret` restores Save's right-hand corners once the caret has spilled. -->
 			<div class="split" class:spilled={isSpilled('topbar-save')} class:no-caret={isSpilled('topbar-save-caret')}>
 				<IconButton
@@ -371,6 +375,7 @@
 				label="Load…"
 				onclick={onLoad}><Icon name="folder-open" /></IconButton
 			>
+			{/if}
 		</div>
 		<!-- Resident at every width; its accent is multi-select mode's always-visible tell. -->
 		<IconButton
