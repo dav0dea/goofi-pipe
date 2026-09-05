@@ -8,7 +8,7 @@ use std::ffi::{c_char, c_void, CString};
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use vst3::{uid, Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
+use vst3::{uid, Class, ComPtr, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
 
 const NAME: &str = "GoofiFixture";
 /// A second audio class behind the same processor, differing only in the subcategories that
@@ -54,7 +54,20 @@ struct Processor {
 }
 
 impl Class for Processor {
-    type Interfaces = (IComponent, IAudioProcessor);
+    type Interfaces = (IComponent, IAudioProcessor, IConnectionPoint);
+}
+
+// The processor accepts the connection; it is the controller that gates on it.
+impl IConnectionPointTrait for Processor {
+    unsafe fn connect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn notify(&self, _message: *mut IMessage) -> tresult {
+        kResultOk
+    }
 }
 
 impl Processor {
@@ -271,10 +284,39 @@ impl IAudioProcessorTrait for Processor {
 
 struct Controller {
     gain: Cell<f64>,
+    /// The host, kept from `initialize` so the connection can ask it for a message.
+    host: RefCell<Option<ComPtr<IHostApplication>>>,
+    /// True once connected AND a host message was allocated — until then this publishes nothing,
+    /// which is the exact bug the goofi host repairs.
+    ready: Cell<bool>,
 }
 
 impl Class for Controller {
-    type Interfaces = (IEditController,);
+    type Interfaces = (IEditController, IConnectionPoint);
+}
+
+impl IConnectionPointTrait for Controller {
+    /// Introduced to the processor: allocate a message from the host, and only then publish params.
+    /// A host that connects but cannot allocate a message leaves this controller mute.
+    unsafe fn connect(&self, _other: *mut IConnectionPoint) -> tresult {
+        let Some(host) = self.host.borrow().clone() else { return kResultOk };
+        let mut obj: *mut c_void = std::ptr::null_mut();
+        let rc = host.createInstance(&IMessage_iid as *const _ as *mut _, &IMessage_iid as *const _ as *mut _, &mut obj);
+        if rc == kResultOk && !obj.is_null() {
+            if let Some(msg) = ComPtr::<FUnknown>::from_raw(obj as *mut FUnknown) {
+                drop(msg);
+            }
+            self.ready.set(true);
+        }
+        kResultOk
+    }
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        self.ready.set(false);
+        kResultOk
+    }
+    unsafe fn notify(&self, _message: *mut IMessage) -> tresult {
+        kResultOk
+    }
 }
 
 impl Controller {
@@ -282,7 +324,10 @@ impl Controller {
 }
 
 impl IPluginBaseTrait for Controller {
-    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+    unsafe fn initialize(&self, context: *mut FUnknown) -> tresult {
+        if let Some(ctx) = ComRef::from_raw(context) {
+            *self.host.borrow_mut() = ctx.cast::<IHostApplication>();
+        }
         kResultOk
     }
 
@@ -311,7 +356,8 @@ impl IEditControllerTrait for Controller {
     }
 
     unsafe fn getParameterCount(&self) -> i32 {
-        4
+        // Nothing until the host has introduced the two halves — the failure this pins.
+        if self.ready.get() { 4 } else { 0 }
     }
 
     /// One of each shape the manifest derivation has a rule for: continuous, stepped within the
@@ -419,7 +465,7 @@ impl IPluginFactoryTrait for Factory {
     unsafe fn createInstance(&self, cid: FIDString, iid: FIDString, obj: *mut *mut c_void) -> tresult {
         let instance = match *(cid as *const TUID) {
             Processor::CID | SYNTH_CID => ComWrapper::new(Processor::new()).to_com_ptr::<FUnknown>(),
-            Controller::CID => ComWrapper::new(Controller { gain: Cell::new(1.0) }).to_com_ptr::<FUnknown>(),
+            Controller::CID => ComWrapper::new(Controller { gain: Cell::new(1.0), host: RefCell::new(None), ready: Cell::new(false) }).to_com_ptr::<FUnknown>(),
             _ => None,
         };
         match instance {
