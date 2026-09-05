@@ -1109,11 +1109,7 @@ pub(crate) fn session_save(
 
 /// The core every patch replacement shares, so nothing after the read can drift between the
 /// sources: a `.gfi`, an inline manifest, or nothing at all — the empty patch.
-fn load_patch(
-    state: &AppState,
-    payload: &Value,
-    events: &mut Vec<String>,
-) -> Result<Value, String> {
+fn load_patch(state: &AppState, payload: &Value) -> Result<Value, String> {
     // Read OFF the graph lock, as the hello does: the roster's config half is a disk read.
     let agents = goofi_core::home::agents();
     // Every source mounts FRESH, and the live mount is swapped only once the manifest has parsed,
@@ -1139,26 +1135,30 @@ fn load_patch(
         // one, and the replaced mount goes with the harnesses spawned into it.
         let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
         state.retire_mount(&replaced);
-        events.push(event("harness_changed", state.harnesses.roster(&agents)));
+        // Sent under the lock, not queued for the dispatcher: the status worker's next stage delta
+        // needs this lock, so nothing it says can overtake the snapshot it is a delta over.
+        let _ = state.events.send(event("harness_changed", state.harnesses.roster(&agents)));
         // `read_gfi` restores no mtimes, so without a baseline taken HERE a patch would be dirty
         // from the moment it finished loading.
         *state.workspace_baseline.lock().unwrap() =
             goofi_graph::archive::fingerprint(&state.mount());
         // A load fully resets the session: there is nothing to undo across it.
         state.history.lock().unwrap().clear();
-        events.extend(state.set_dirty(false));
+        if let Some(e) = state.set_dirty(false) {
+            let _ = state.events.send(e);
+        }
         // NONE for an inline load and for `session new`, neither with a file behind it: an
         // inherited path would aim the next silent save at an unrelated `.gfi`.
         *state.save_path.lock().unwrap() = from_path.clone();
-        events.push(event(
+        let _ = state.events.send(event(
             "graph_replaced",
             schemas::snapshot(&g, &state.instance_id, false, false, from_path.as_deref(),
                               state.harnesses.roster(&agents)),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
-        events.push(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
+        let _ = state.events.send(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
         if let Some(path) = from_path {
-            events.push(event("save_path_changed", json!({ "save_path": path })));
+            let _ = state.events.send(event("save_path_changed", json!({ "save_path": path })));
         }
         // A stored arrangement this model admits but cannot render falls back to the default, so
         // the reply says so rather than leaving the change unexplained.
@@ -1172,7 +1172,7 @@ pub(crate) fn session_load(
     state: &AppState,
     payload: &Value,
     _actor: &str,
-    events: &mut Vec<String>,
+    _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     // A source is REQUIRED: no bare word may be the destructive New. `session new` is explicit.
     let has_source = payload.get("path").and_then(|v| v.as_str()).is_some_and(|p| !p.is_empty())
@@ -1180,16 +1180,16 @@ pub(crate) fn session_load(
     if !has_source {
         return Err("session load: give a `path` or `--content` — `session new` opens the empty patch".into());
     }
-    load_patch(state, payload, events)
+    load_patch(state, payload)
 }
 
 pub(crate) fn session_new(
     state: &AppState,
     _payload: &Value,
     _actor: &str,
-    events: &mut Vec<String>,
+    _events: &mut Vec<String>,
 ) -> Result<Value, String> {
-    load_patch(state, &json!({}), events)
+    load_patch(state, &json!({}))
 }
 
 pub(crate) fn undo(
