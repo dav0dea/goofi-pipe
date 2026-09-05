@@ -9,7 +9,7 @@ use goofi_tests::{j, Goofi};
 fn a_headless_server_serves_no_layout_op_and_carries_an_arrangement_through() {
     // A patch AUTHORED with a layout, on a full instance.
     let full = Goofi::new();
-    full.add("Oscillator");
+    full.add("LFO");
     full.call("layout panel add", j!({ "name": "Scope" }));
     let yaml = full.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     let authored = full.doc()["arrangement"].clone();
@@ -48,7 +48,7 @@ fn a_headless_server_serves_no_layout_op_and_carries_an_arrangement_through() {
     assert_eq!(saved, yaml, "a headless save is the manifest it loaded, byte for byte");
 
     // Everything OUTSIDE the group still runs: the mode is one group absent, not a second track.
-    let osc = g.add("Oscillator");
-    g.set_param(osc, "oscillator", "sfreq", 32.0);
+    let osc = g.add("LFO");
+    g.set_param(osc, "output", "sfreq", 32.0);
     assert_eq!(g.call("undo", j!({}))["changed"], true);
 }

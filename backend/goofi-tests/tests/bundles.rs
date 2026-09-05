@@ -131,10 +131,11 @@ fn a_complexity_node_reads_a_real_signal_rather_than_answering_a_constant() {
     // complexity of exactly 1, and every entropy solidly inside its range rather than at an edge.
     let _py = require_python();
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
-    g.set_param(osc, "oscillator", "sfreq", 256.0);
-    g.set_param(osc, "oscillator", "frequency", 8.0);
+    g.set_param(osc, "output", "sfreq", 256.0);
+    g.set_param(osc, "output", "mode", "block");
+    g.set_param(osc, "lfo", "frequency", 8.0);
     g.set_param(buf, "buffer", "size", 256);
     g.link(osc, "out", buf, "data");
     // Every oracle below is for a FULL window: a growing one holds fewer cycles, or one cut short.

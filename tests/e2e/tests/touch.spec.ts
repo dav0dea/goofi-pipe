@@ -83,7 +83,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 		let osc = '';
 		await test.step('a tap selects a node, and the inspector arrives as a sheet', async () => {
-			osc = await addNode(page, 'Oscillator', [40, 40]);
+			osc = await addNode(page, 'LFO', [40, 40]);
 			await waitForNode(page, osc);
 			await tapNode(page, osc);
 			await expect
@@ -93,7 +93,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 		});
 
 		await test.step('a reference is picked by finger: the mode chip, then the node, then its slot', async () => {
-			const lfo = await addNode(page, 'Oscillator', [40, 260]);
+			const lfo = await addNode(page, 'LFO', [40, 260]);
 			await waitForNode(page, lfo);
 			const nameOf = (u: string): Promise<string> =>
 				page.evaluate(
@@ -113,7 +113,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 				page.evaluate(
 					([u, k]) =>
 						(window as any).goofi.query.graph().nodes.find((n: { uid: string }) => n.uid === u)?.params
-							.oscillator.frequency[k],
+							.lfo.frequency[k],
 					[osc, key] as const
 				);
 			await expect

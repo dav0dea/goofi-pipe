@@ -2,7 +2,7 @@
 //! sample per update, or the block real time advanced by.
 
 use goofi_core::{Data, Meta, SlotType};
-use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec, Tag};
+use goofi_signal_sdk::{ExprDecl, ExprMode, Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec, Tag};
 
 /// One channel's generator state: a 64-bit stream, plus the poles pink noise needs.
 #[derive(Clone, Copy)]
@@ -196,6 +196,18 @@ static PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Int { default: 1, min: 1, max: 64 },
         expression: None,
         doc: Some("How many independent noise streams to emit, one per channel."),
+    },
+    // A manifest's own `common.*` is never overwritten by the universal declaration, and the
+    // universal default is uncapped — which makes a block one sample long.
+    ParamDecl {
+        group: "common",
+        name: "max_frequency",
+        spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
+        expression: Some(ExprDecl { source: "globals.default_ufreq", mode: ExprMode::On, trigger: true }),
+        doc: Some(
+            "How many frames a second to emit. Bound to the patch's `default_ufreq` global, so \
+             editing that global re-rates every generator at once.",
+        ),
     },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];

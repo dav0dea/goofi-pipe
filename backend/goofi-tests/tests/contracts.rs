@@ -240,14 +240,14 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
 
     assert_eq!(ty["source"], "patch", "a greyed row is provenanced too");
     assert_eq!(row(&g, "signal:MyPyThing")["source"], "patch");
-    assert_eq!(row(&g, "signal:Oscillator")["source"], "builtin", "a shipped node ships with goofi");
+    assert_eq!(row(&g, "signal:LFO")["source"], "builtin", "a shipped node ships with goofi");
 }
 
 #[tokio::test]
 async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     // The snapshot carries only what the doc cannot: the per-node runtime, whose stream emits transitions.
     let g = Goofi::new();
-    let a = g.add("Oscillator");
+    let a = g.add("LFO");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
     g.call("node param edit", j!({ "node": hex(a), "param": "common/max_frequency",
@@ -330,11 +330,11 @@ fn two_engines_may_share_a_type_name_and_never_an_id() {
     // advertised and both are addressable. It cost a shipped audio filter its name, and twice
     // before that a node was renamed to dodge the silence a first-advertiser-wins lookup made.
     let g = Goofi::new();
-    g.state.graph.lock().unwrap().register_engine(Box::new(LibraryEngine::named("twin", &["Oscillator"])));
+    g.state.graph.lock().unwrap().register_engine(Box::new(LibraryEngine::named("twin", &["LFO"])));
 
-    assert_ne!(g.add("signal:Oscillator"), g.add("twin:Oscillator"), "each engine's own is reachable");
-    let why = g.refuse("node add", j!({ "type": "Oscillator" }));
-    assert!(why.contains("signal:Oscillator") && why.contains("twin:Oscillator"),
+    assert_ne!(g.add("signal:LFO"), g.add("twin:LFO"), "each engine's own is reachable");
+    let why = g.refuse("node add", j!({ "type": "LFO" }));
+    assert!(why.contains("signal:LFO") && why.contains("twin:LFO"),
             "the bare name is ambiguous, and the refusal names every candidate: {why}");
 
     // …because the ENGINE id is what tells them apart, it is the one thing that cannot be shared:
@@ -461,7 +461,7 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
         .map(|t| t["type"].as_str().unwrap()).collect();
     assert!(!listed.iter().any(|t| goofi_node::bare(t).starts_with('_')),
             "a test node reached the palette: {listed:?}");
-    assert!(listed.contains(&"signal:Oscillator") && listed.contains(&"signal:Buffer"), "{listed:?}");
+    assert!(listed.contains(&"signal:LFO") && listed.contains(&"signal:Buffer"), "{listed:?}");
 }
 
 #[test]
@@ -469,12 +469,12 @@ fn the_control_plane_document_carries_no_null_leaf() {
     // A delta is an RFC 7386 merge patch, which spends `null` on "delete this key", so a null leaf
     // would be ambiguous. If one is ever needed this fails and NAMES the path.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     // A pulse holds no value, which is the one param that could reach the doc as a null leaf.
     g.add("_TestResettable");
     g.link(osc, "out", buf, "data");
-    g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/frequency",
+    g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/frequency",
                                    "expression": "globals.default_ufreq" }));
     g.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" }));
     let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]

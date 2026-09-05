@@ -92,13 +92,13 @@ export const sizeOn = (axis: PaneAxis, b: { width: number; height: number }): nu
 	axis === 'y' ? b.height : b.width;
 
 /**
- * Add an Oscillator and select it, so the inspector slides in. Returns its uid.
+ * Add an LFO and select it, so the inspector slides in. Returns its uid.
  *
  * `.open`, not merely attached: the pane is MOUNTED at every moment and hidden off-edge until a
  * selection lands, so attachment alone does not say that the slide has started.
  */
 export async function openInspector(page: Page): Promise<string> {
-	const uid = await addNode(page, 'Oscillator', [40, 40]);
+	const uid = await addNode(page, 'LFO', [40, 40]);
 	await waitForNode(page, uid);
 	await selectNode(page, uid);
 	await expect(pane(page), 'a single selection opens the inspector').toHaveClass(/open/);

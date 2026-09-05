@@ -31,7 +31,7 @@ fn text(g: &Goofi, op: &str, payload: Value) -> String {
 /// through that port, and a node that is erroring.
 fn fixture() -> (Goofi, String) {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let boom = g.add("_TestFail");
     let buf = g.add("Buffer");
     let scope = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [40.0, 10.0] }))["inst_id"]
@@ -55,7 +55,7 @@ scope: root
 
 ```mermaid
 flowchart LR
-  n000000000001[\"oscillator0: signal:Oscillator<br/>000000000001\"]
+  n000000000001[\"lfo0: signal:LFO<br/>000000000001\"]
   n000000000002[\"⚠ testfail0: signal:_TestFail<br/>000000000002\"]
   n000000000004[[\"subpatch0<br/>000000000004\"]]
   n000000000001 -- out→value --> n000000000004
@@ -103,7 +103,7 @@ uids: a uid is its mermaid id without the leading `n`.
 fn a_wire_inside_a_collapsed_sub_patch_is_not_drawn_as_a_self_loop_on_its_facade() {
     // Both ends of an internal wire fold onto the same facade; the wire is a fact one level down.
     let g = Goofi::new();
-    let a = g.add("Oscillator");
+    let a = g.add("LFO");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
     g.call("nodes group", j!({ "nodes": [hex(a), hex(b)], "pos": [0.0, 0.0] }));
@@ -132,7 +132,7 @@ fn an_empty_scope_says_so_rather_than_drawing_an_empty_diagram() {
     assert_eq!(g.call("session status", j!({}))["errors"], j!([]), "and nothing is broken");
 
     // A scope uid that names a LEAF is refused rather than drawn as empty.
-    let n = g.add("Oscillator");
+    let n = g.add("LFO");
     g.refuse("nodes inspect", j!({ "scope": hex(n) }));
 }
 
@@ -159,23 +159,23 @@ impl ExprEvaluator for Flaky {
 #[test]
 fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
-    g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
+    let osc = g.add("LFO");
+    g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/amplitude",
                                    "expression": "globals.default_ufreq / 30" }));
     // A rate is MEASURED, so it needs two emits and a report across the status service.
-    g.until("the oscillator's measured rate", |g| {
+    g.until("the LFO's measured rate", |g| {
         g.state.graph.lock().unwrap().node_ufreq(osc)
     });
 
     let out = text(&g, "node state", j!({ "node": hex(osc) }));
-    assert!(out.starts_with(&format!("oscillator0: signal:Oscillator (uid {}, native, stage ready)", hex(osc))),
+    assert!(out.starts_with(&format!("lfo0: signal:LFO (uid {}, native, stage ready)", hex(osc))),
             "{out}");
     // The goldened inline param format, round-trippable into `node param edit`…
-    assert!(out.contains("  oscillator.frequency = 1 (float 0..100)"), "{out}");
+    assert!(out.contains("  lfo.frequency = 1 (float 0..1000)"), "{out}");
     assert!(out.contains("  common.frequency_mode = \"updates-per-second\" (string one of [updates-per-second, "),
             "{out}");
     // …and into its expression half. This binding cannot compile (no evaluator here), shown inline.
-    assert!(out.contains("  oscillator.amplitude = expr: globals.default_ufreq / 30 → 1 [error: "),
+    assert!(out.contains("  lfo.amplitude = expr: globals.default_ufreq / 30 → 1 [error: "),
             "{out}");
     // The slot line never carries the frame: there is one door onto a node's data and it is `/data`.
     assert!(out.contains("  out: ARRAY — emitting at "), "the emitting line: {out}");
@@ -203,8 +203,8 @@ fn inspect_node_reports_params_whether_each_slot_is_emitting_and_the_error() {
     // one is born after the injection.
     let broken = Arc::new(AtomicBool::new(true));
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Flaky { broken: broken.clone() }));
-    let bound = g.add("Oscillator");
-    g.call("node param edit", j!({ "node": hex(bound), "param": "oscillator/amplitude",
+    let bound = g.add("LFO");
+    g.call("node param edit", j!({ "node": hex(bound), "param": "lfo/amplitude",
                                    "expression": "globals.default_ufreq / 30" }));
     let live = g.until("the node's own evaluation error", |g| {
         Some(text(g, "node state", j!({ "node": hex(bound) }))).filter(|t| t.contains(BLEW_UP))
@@ -236,10 +236,10 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
     // with the wide one rather than be assembled a second way.
     let all = g.call("library list", j!({}))["types"].as_array().cloned().unwrap_or_default();
-    let listed = all.iter().find(|t| t["type"] == "signal:Oscillator").expect("Oscillator is in the palette");
+    let listed = all.iter().find(|t| t["type"] == "signal:LFO").expect("the LFO is in the palette");
 
     // A bare name resolves while one engine offers it, and answers the QUALIFIED row.
-    let v = g.call("library get", j!({ "type": "Oscillator" }));
+    let v = g.call("library get", j!({ "type": "LFO" }));
     assert_eq!(v["type"], listed["type"]);
     assert_eq!(v["doc"], listed["doc"], "one entry says what the catalog says");
     assert_eq!(v["params"], listed["params"]);
@@ -247,8 +247,8 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     assert_eq!(v["tier"], "native");
     // A shipped Rust node is SOURCE in the shipped root, exactly as a Python one would be.
     assert_eq!(v["provenance"], "shipped", "{v}");
-    assert!(v["path"].as_str().is_some_and(|p| p.ends_with("/signal/Oscillator.rs")), "{v}");
-    assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{v}");
+    assert!(v["path"].as_str().is_some_and(|p| p.ends_with("/signal/LFO.rs")), "{v}");
+    assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for Lfo")), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
     assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("unknown node type `Nope`"));

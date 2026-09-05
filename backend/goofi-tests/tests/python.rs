@@ -628,29 +628,31 @@ class Sleeper(goofi.Node):
         let g = Goofi::new();
         g.state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(
             goofi_python::inproc::PyExprEvaluator::new().expect("the evaluator constructs")));
-        let osc = g.add("Oscillator");
+        let osc = g.add("LFO");
         let probe = g.probe(osc, "out");
         g.ready(osc);
-        g.set_param(osc, "oscillator", "frequency", 8.0);
+        g.set_param(osc, "output", "mode", "block");
+        g.set_param(osc, "lfo", "frequency", 8.0);
         // `me` is this node: the amplitude follows the node's OWN frequency param.
-        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
-            "expression": "me.params.oscillator.frequency / 4" }));
+        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/amplitude",
+            "expression": "me.params.lfo.frequency / 4" }));
         assert!(r["error"].is_null(), "{r}");
         g.until("the amplitude to read 2 through `me`", |_| {
             probe.latest().filter(|d| f32s(d).iter().any(|v| v.abs() > 1.5)).map(|_| ())
         });
         // An authored edit of the referenced param re-binds its reader.
-        g.set_param(osc, "oscillator", "frequency", 2.0);
+        g.set_param(osc, "lfo", "frequency", 2.0);
         g.until("the edit to re-evaluate the reader", |_| {
             probe.latest().filter(|d| f32s(d).iter().all(|v| v.abs() < 0.9)).map(|_| ())
         });
         // The same reference across nodes, by name.
-        let osc2 = g.add("Oscillator");
+        let osc2 = g.add("LFO");
         let probe2 = g.probe(osc2, "out");
         g.ready(osc2);
+        g.set_param(osc2, "output", "mode", "block");
         let name = g.doc()["nodes"][hex(osc)]["name"].as_str().unwrap().to_string();
-        let r = g.call("node param edit", j!({ "node": hex(osc2), "param": "oscillator/amplitude",
-            "expression": format!("nd('{name}').params.oscillator.frequency + 1") }));
+        let r = g.call("node param edit", j!({ "node": hex(osc2), "param": "lfo/amplitude",
+            "expression": format!("nd('{name}').params.lfo.frequency + 1") }));
         assert!(r["error"].is_null(), "{r}");
         g.until("the cross-node read to evaluate", |_| {
             probe2.latest().filter(|d| f32s(d).iter().any(|v| v.abs() > 2.0)).map(|_| ())
@@ -665,7 +667,7 @@ class Sleeper(goofi.Node):
             goofi_python::inproc::PyExprEvaluator::new().expect("the evaluator constructs")));
         g.call("global edit", j!({ "name": "default_ufreq", "value": 5.0 }));
 
-        let osc = g.add("Oscillator");
+        let osc = g.add("LFO");
         let probe = g.probe(osc, "out");
         g.ready(osc);
         let bound = g.doc()["nodes"][hex(osc)]["params"]["common"]["max_frequency"].clone();
@@ -693,7 +695,7 @@ class Sleeper(goofi.Node):
                 |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
 
         // The evaluator's namespace: `math`'s names and `time()` are simply there, beside `np`.
-        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "oscillator/amplitude",
+        let r = g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/amplitude",
             "expression": "2 * sin(pi / 2) + exp(0) * (1 if time() > 0 else 0)" }));
         assert!(r["error"].is_null(), "the namespace compiles: {r}");
         // The doc keeps the STORED value; the evaluated one shows in `node state`'s text.

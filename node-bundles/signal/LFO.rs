@@ -2,7 +2,7 @@
 //! samples real time advanced by, carrying phase across frames so blocks join without a click.
 
 use goofi_core::{Data, Meta, SlotType};
-use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec, Tag};
+use goofi_signal_sdk::{ExprDecl, ExprMode, Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, ParamKey, Params, ParamSpec, Tag};
 
 /// The waveform's value at `t` cycles in `[0, 1)`, in `[-1, 1]`.
 fn wave(kind: &str, t: f64, duty: f64) -> f64 {
@@ -169,6 +169,18 @@ static PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Float { default: 250.0, min: 1.0, max: 10_000.0 },
         expression: None,
         doc: Some("Sample rate within an emitted block, in Hz. `value` mode ignores it."),
+    },
+    // A manifest's own `common.*` is never overwritten by the universal declaration, and the
+    // universal default is uncapped — which makes a block one sample long.
+    ParamDecl {
+        group: "common",
+        name: "max_frequency",
+        spec: ParamSpec::Float { default: 30.0, min: 0.0, max: 1000.0 },
+        expression: Some(ExprDecl { source: "globals.default_ufreq", mode: ExprMode::On, trigger: true }),
+        doc: Some(
+            "How many frames a second to emit. Bound to the patch's `default_ufreq` global, so \
+             editing that global re-rates every generator at once.",
+        ),
     },
 ];
 static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Array }];

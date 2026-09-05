@@ -181,9 +181,9 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
 fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let g = Goofi::new();
     // A shipped node is SOURCE in the shipped root, where `library get` finds it.
-    let r = g.call("library get", j!({ "type": "Oscillator" }));
+    let r = g.call("library get", j!({ "type": "LFO" }));
     assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for Oscillator")), "{r}");
+    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for Lfo")), "{r}");
     let shipped_osc = std::path::PathBuf::from(r["path"].as_str().unwrap());
 
     // An authored file builds through cargo into the same cache, and runs.
@@ -265,13 +265,13 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
 
     // A shipped file copied into the patch shadows it, and the palette says so — a copy that kept
     // its source's mtime included, which is what a Finder copy and `fs::copy` on macOS make.
-    let copy = mount.join("nodes_signal").join("Oscillator.rs");
+    let copy = mount.join("nodes_signal").join("LFO.rs");
     std::fs::copy(&shipped_osc, &copy).unwrap();
     let kept = std::fs::metadata(&shipped_osc).unwrap().modified().unwrap();
     std::fs::File::options().write(true).open(&copy).unwrap().set_modified(kept).unwrap();
-    assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("signal:Oscillator")));
+    assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("signal:LFO")));
     let source = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "signal:Oscillator").unwrap()["source"].clone();
+        .find(|v| v["type"] == "signal:LFO").unwrap()["source"].clone();
     assert_eq!(source, "patch");
 
     // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.

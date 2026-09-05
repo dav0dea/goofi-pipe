@@ -76,14 +76,14 @@ const GHOST: &str = "ffffffffffff";
 #[test]
 fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     g.set_param(buf, "buffer", "size", 512);
     // ONE step, whatever it carries: a rename, a move and a viewer in a single node edit.
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier", "pos": [40.0, 60.0],
                              "viewer": [{ "slot": "out", "kind": "line" }] }));
-    g.set_param(osc, "oscillator", "sfreq", 128.0);
+    g.set_param(osc, "output", "sfreq", 128.0);
     g.call("global add", j!({ "name": "subj", "value": "P01", "type": "string" }));
     // A rename is a compound: set the new name, delete the old, ONE undo step.
     g.call("compound", j!({ "ops": [
@@ -184,7 +184,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
 fn a_fresh_command_clears_the_redo_run_and_a_session_undoes_only_its_own_work() {
     let one = Goofi::new();
     let two = one.client("s2");
-    let a = one.add("Oscillator");
+    let a = one.add("LFO");
     let b = two.add("Buffer");
 
     one.call("undo", j!({}));
@@ -205,7 +205,7 @@ fn a_fresh_command_clears_the_redo_run_and_a_session_undoes_only_its_own_work() 
 fn a_stale_toggle_converges_instead_of_wedging_the_stack() {
     let one = Goofi::new();
     let two = one.client("s2");
-    let osc = one.add("Oscillator");
+    let osc = one.add("LFO");
     let buf = one.add("Buffer");
     let link = j!({ "from": ep(hex(osc), "out"), "to": ep(hex(buf), "data") });
     one.call("link add", link.clone());
@@ -222,7 +222,7 @@ fn a_stale_toggle_converges_instead_of_wedging_the_stack() {
 #[test]
 fn a_deleted_sub_patch_comes_back_whole_with_the_panels_that_named_it() {
     let g = Goofi::new();
-    let a = g.add("Oscillator");
+    let a = g.add("LFO");
     let b = g.add("Buffer");
     g.link(a, "out", b, "data");
     let inst = g.call("nodes group", j!({ "nodes": [hex(a), hex(b)], "pos": [0.0, 0.0] }))["inst_id"]
@@ -398,7 +398,7 @@ fn each_frozen_drag_gesture_is_one_op_and_therefore_one_undo() {
 fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
     // `restart_node` is the one op where "could have mutated the graph" does not imply dirty.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
@@ -430,11 +430,11 @@ fn a_restart_is_recovery_and_touches_neither_the_stack_nor_the_file() {
 fn a_reply_says_what_the_write_actually_did() {
     let g = Goofi::new();
 
-    let born = g.call("node add", j!({ "type": "Oscillator" }));
+    let born = g.call("node add", j!({ "type": "LFO" }));
     let osc = born["uid"].as_str().unwrap().to_string();
     assert!(born["name"].as_str().is_some_and(|n| !n.is_empty()), "{born}");
     assert_eq!(born["output_slots"]["out"], "ARRAY", "{born}");
-    assert_eq!(born["params"]["oscillator"]["frequency"], 1.0, "{born}");
+    assert_eq!(born["params"]["lfo"]["frequency"], 1.0, "{born}");
 
     // A literal is COERCED to the param's declared type, so the value stored may differ.
     let buf = g.add("Buffer");
@@ -453,7 +453,7 @@ fn a_reply_says_what_the_write_actually_did() {
 #[test]
 fn a_refusal_names_what_the_caller_could_try_instead() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
 
     // A global's TYPE is what every expression reading it depends on, so it is immutable: an
     // edit coerces to the type held, and a value the type cannot read is refused by naming it.
@@ -497,7 +497,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         assert!(why.contains("letters or digits"), "the refusal states the rule: {why}");
         // The same rule at birth — refused, never silently swapped for a minted name.
         if !bad.is_empty() {
-            let why = g.refuse("node add", j!({ "type": "Oscillator", "name": bad }));
+            let why = g.refuse("node add", j!({ "type": "LFO", "name": bad }));
             assert!(why.contains("letters or digits"), "{why}");
         }
     }
@@ -512,8 +512,12 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
 #[test]
 fn an_expression_binds_carries_its_error_and_follows_the_rename_of_what_it_names() {
     let g = Goofi::new();
-    let producer = g.add("Oscillator");
-    let consumer = g.add("Oscillator");
+    let producer = g.add("LFO");
+    // Block mode at a stated rate, so a frame carries several samples: the shape error below
+    // needs one. There is no evaluator here, so the rate cap's binding cannot stand in for it.
+    g.set_param(producer, "output", "mode", "block");
+    g.set_param(producer, "common", "max_frequency", 20.0);
+    let consumer = g.add("LFO");
     g.call("node edit", j!({ "node": hex(producer), "name": "src" }));
 
     // A binding that cannot compile is STORED, so the refusal has to travel in the reply.
@@ -639,7 +643,7 @@ fn a_node_can_be_born_configured_at_a_chosen_uid_and_name() {
     // Params are applied under the graph lock, before `node_added`, so the node is born configured.
     let g = Goofi::new();
     let mut ev = g.events();
-    let born = g.call("node add", j!({ "type": "Oscillator",
+    let born = g.call("node add", j!({ "type": "LFO",
                                        "param": [{ "name": "common/max_frequency", "value": 42.0 }] }));
     let uid = born["uid"].as_str().unwrap().to_string();
     assert_eq!(ev.next("node_added")["uid"], uid);
@@ -647,7 +651,7 @@ fn a_node_can_be_born_configured_at_a_chosen_uid_and_name() {
 
     // Undo/redo do NOT come through here — they restore via the command history.
     g.call("node remove", j!({ "node": uid.clone() }));
-    let again = g.call("node add", j!({ "type": "Oscillator", "member_uid": uid.clone(),
+    let again = g.call("node add", j!({ "type": "LFO", "member_uid": uid.clone(),
                                         "name": "restoredOsc" }));
     assert_eq!((&again["uid"], &g.doc()["nodes"][&uid]["name"]), (&j!(uid), &j!("restoredOsc")));
 }
@@ -656,7 +660,7 @@ fn a_node_can_be_born_configured_at_a_chosen_uid_and_name() {
 fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     // `viewers(uid)` answers `Some({})` for every node, so an unconditional insert would stamp them all.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     assert!(g.doc()["nodes"][hex(osc)].get("viewers").is_none(), "no viewers leaf when empty");
 
     let why = g.refuse("node edit", j!({ "node": hex(osc),
@@ -711,7 +715,7 @@ fn eight_writers_all_land_and_none_deadlock() {
     const N: usize = 8;
     const ROUNDS: usize = 5;
     let g = Goofi::new();
-    let uids: Vec<_> = (0..N).map(|_| g.add("Oscillator")).collect();
+    let uids: Vec<_> = (0..N).map(|_| g.add("LFO")).collect();
     std::thread::scope(|s| {
         for (i, u) in uids.iter().enumerate() {
             let client = g.client(&format!("s{i}"));

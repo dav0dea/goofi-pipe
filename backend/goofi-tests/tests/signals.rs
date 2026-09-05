@@ -18,15 +18,16 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
     // 256 Hz of a 10 Hz sine through a band that admits it, windowed to two seconds — so a bin is
     // half a hertz and a spectrum labelled in bins instead of hertz reads WRONG.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let flt = g.add("Filter");
     let buf = g.add("Buffer");
     let psd = g.add("Psd");
     let set = |n, group: &str, name: &str, v: serde_json::Value| {
         g.set_param(n, group, name, v);
     };
-    set(osc, "oscillator", "sfreq", j!(256.0));
-    set(osc, "oscillator", "frequency", j!(10.0));
+    set(osc, "output", "sfreq", j!(256.0));
+    set(osc, "output", "mode", j!("block"));
+    set(osc, "lfo", "frequency", j!(10.0));
     set(buf, "buffer", "size", j!(512));
     set(flt, "filter", "low", j!(5.0));
     set(flt, "filter", "high", j!(20.0));

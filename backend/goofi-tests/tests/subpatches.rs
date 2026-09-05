@@ -66,7 +66,7 @@ fn port_of(g: &Goofi, inst: &str, ty: &str) -> (String, Option<(String, String)>
 #[test]
 fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
     g.link(osc, "out", buf, "data");
@@ -181,7 +181,7 @@ fn grouping_mints_a_port_for_every_crossing_cable_and_expanding_gives_them_back(
 fn a_node_added_inside_an_entered_scope_stays_inside_it_through_undo_and_redo() {
     // The placement rides on the COMMAND, so a missing field shows up at undo→redo first.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let scope = group(&g, &[hex(osc), hex(buf)]);
 
@@ -200,7 +200,7 @@ fn a_node_added_inside_an_entered_scope_stays_inside_it_through_undo_and_redo() 
 fn add_node_refuses_an_inst_id_it_cannot_honour_and_creates_nothing() {
     // No partial mutation and no silent rooting.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
 
     g.refuse("node add", j!({ "type": "Buffer", "inst_id": "deadbeef" }));   // hex, but no scope
     g.refuse("node add", j!({ "type": "Buffer", "inst_id": "not-a-uid" }));  // not hex at all
@@ -211,7 +211,7 @@ fn add_node_refuses_an_inst_id_it_cannot_honour_and_creates_nothing() {
 #[test]
 fn removing_a_grouped_member_leaves_no_dangling_entry() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(osc), hex(buf)]);
 
@@ -232,7 +232,7 @@ fn removing_a_grouped_member_leaves_no_dangling_entry() {
     assert_eq!(g.members(&inst), vec![bnd.clone()], "the port is all the scope still holds");
 
     // Standing means usable: a fresh member takes the port that is already there.
-    let member = g.call("node add", j!({ "type": "Oscillator", "inst_id": inst, "pos": [0.0, 0.0] }))
+    let member = g.call("node add", j!({ "type": "LFO", "inst_id": inst, "pos": [0.0, 0.0] }))
         ["uid"].as_str().expect("a uid").to_string();
     wire(&g, &bnd, "out", &member, "out");
     assert_eq!(g.inner(&bnd), Some((member, "out".into())), "the standing port re-wired");
@@ -241,7 +241,7 @@ fn removing_a_grouped_member_leaves_no_dangling_entry() {
 #[test]
 fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]); // no links yet, so no auto boundaries
     let bnd = boundary(&g, &inst, "in");
@@ -267,7 +267,7 @@ fn a_cable_onto_a_boundary_stops_at_the_port_and_the_stream_runs_through() {
 #[test]
 fn a_boundary_is_authored_wired_and_renamed_without_changing_its_id() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     g.link(osc, "out", buf, "data");
     let inst = group(&g, &[hex(buf)]);
@@ -381,7 +381,7 @@ fn unwiring_a_boundary_prunes_its_target_and_keeps_the_pill() {
 #[test]
 fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
 
@@ -430,7 +430,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     // be re-resolved by the graph rather than re-written by the user.
     let g = Goofi::new();
     g.state.graph.lock().unwrap().set_evaluator(Arc::new(Always));
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
 
@@ -482,7 +482,7 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
 
     // A second output makes it ambiguous, and the refusal names the way out — again the node rule.
     // It drains a second member, because one leaf slot sits behind exactly one chain of ports.
-    let other_member = g.call("node add", j!({ "type": "Oscillator", "inst_id": inst, "pos": [0.0, 0.0] }))
+    let other_member = g.call("node add", j!({ "type": "LFO", "inst_id": inst, "pos": [0.0, 0.0] }))
         ["uid"].as_str().unwrap().to_string();
     let second = boundary(&g, &inst, "out");
     g.call("node edit", j!({ "node": second, "name": "other" }));
@@ -590,7 +590,7 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
     // the source's own viewer uses, because there is one stream per (node, slot) whatever the
     // viewer count.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let inst = group(&g, &[hex(buf)]);
     let inp = boundary(&g, &inst, "in");
@@ -662,7 +662,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     // it is the same pair of ops for a leaf, for a selection, and across two goofi processes: one
     // door rather than a clone path per node kind.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
     g.link(osc, "out", buf, "data");
@@ -672,12 +672,12 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     // The Buffer reads its neighbour by name — as an expression and as a reference — so the copy
     // has both to get right. A third member is NAMED like a slot: a paste must rename the copied
     // node and never the slot label that happens to spell the same word.
-    let lfo = g.add("Oscillator");
+    let lfo = g.add("LFO");
     g.call("node edit", j!({ "node": hex(lfo), "name": "lfo" }));
     g.call("node param edit", j!({ "node": hex(buf), "param": "common/max_frequency",
                                    "expression": "nd('lfo')" }));
     g.call("node param edit", j!({ "node": hex(buf), "param": "buffer/size", "reference": "lfo.out" }));
-    let decoy = g.add("Oscillator");
+    let decoy = g.add("LFO");
     g.call("node edit", j!({ "node": hex(decoy), "name": "out" }));
     let inner = group(&g, &[hex(buf), hex(lfo), hex(decoy)]);
     let outer = group(&g, std::slice::from_ref(&inner));
@@ -728,7 +728,7 @@ fn a_sub_patch_is_copied_whole_and_the_copy_owes_the_original_nothing() {
     // to the original, and deleting the original then breaks a sub-patch that only looks separate.
     let doc_now = g.doc();
     let inner_osc = g.members(&copied_inner).into_iter()
-        .find(|m| doc_now["nodes"][m]["type"] == "signal:Oscillator")
+        .find(|m| doc_now["nodes"][m]["type"] == "signal:LFO")
         .expect("the copied oscillator");
     let copy_name = doc_now["nodes"][&inner_osc]["name"].as_str().unwrap().to_string();
     let bound = g.call("node state", j!({ "node": leaf }))["text"].as_str().unwrap().to_string();

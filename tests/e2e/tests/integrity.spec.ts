@@ -60,7 +60,7 @@ test('a patch under construction holds together at every stage', async ({ page }
 		let osc = '';
 		let buf = '';
 		await test.step('two nodes on the canvas, wired', async () => {
-			osc = await addNode(page, 'Oscillator', [40, 40]);
+			osc = await addNode(page, 'LFO', [40, 40]);
 			await waitForNode(page, osc);
 			buf = await addNode(page, 'Buffer', [320, 40]);
 			await waitForNode(page, buf);

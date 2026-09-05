@@ -130,7 +130,7 @@ test('a harness runs in a panel, and its transcript survives closing that panel'
 			const before = await nodes();
 			const born = execFileSync(
 				BIN,
-				['node', 'add', '--type', 'Oscillator', '--name', 'cliBorn', '--json'],
+				['node', 'add', '--type', 'LFO', '--name', 'cliBorn', '--json'],
 				{ env }
 			).toString();
 			expect(JSON.parse(born).name, 'the client round-trips argv to JSON').toBe('cliBorn');

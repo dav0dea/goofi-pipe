@@ -57,7 +57,7 @@ async fn a_public_goofi_serves_the_graph_and_none_of_the_host_around_it() {
     assert!(types(&g).iter().any(|t| t.starts_with("signal:")), "…and every signal node stands");
 
     // The graph itself is untouched by the mode: a node is added, and it runs.
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     assert_eq!(g.call("node state", j!({ "node": goofi_tests::hex(osc) }))["error"], j!(null));
 
     let base = g.serve().await;

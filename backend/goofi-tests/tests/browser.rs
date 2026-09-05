@@ -29,13 +29,13 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     assert!(hello["runtime"].as_object().is_some_and(|m| m.is_empty()), "{hello}");
 
     let types = c.call("library list", j!({})).await["types"].as_array().cloned().unwrap();
-    for want in ["signal:Oscillator", "signal:Buffer", "signal:DiscoveredPyNode"] {
+    for want in ["signal:LFO", "signal:Buffer", "signal:DiscoveredPyNode"] {
         // Two shipped nodes, loaded from the artifacts built into the binary, beside a scanned one.
         assert!(types.iter().any(|t| t["type"] == want), "`{want}` is missing: {types:?}");
     }
     assert!(!types.iter().any(|t| t["type"] == "signal:_TestEcho"), "test nodes stay out of the palette");
 
-    let uid = c.call("node add", j!({ "type": "Oscillator", "pos": [10.0, 20.0] })).await["uid"]
+    let uid = c.call("node add", j!({ "type": "LFO", "pos": [10.0, 20.0] })).await["uid"]
         .as_str().unwrap().to_string();
     let added = c.event("node_added").await;
     assert_eq!(added, j!({ "uid": uid }), "no graph state rides an event: {added}");
@@ -59,10 +59,10 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     assert_eq!(c.doc().version(), 1, "and at the manager's version, not at its own zero");
 
     // `call` reads past the delta on the way to the reply, and the replica takes it as it goes by.
-    let uid = c.call("node add", j!({ "type": "Oscillator" })).await["uid"].as_str().unwrap().to_string();
+    let uid = c.call("node add", j!({ "type": "LFO" })).await["uid"].as_str().unwrap().to_string();
     c.until_doc(|d| d.node_ids().contains(&uid)).await;
     assert_eq!(c.doc().read_at(&["nodes", uid.as_str(), "type"]).as_ref().and_then(Value::as_str),
-               Some("signal:Oscillator"), "the delta carried the node");
+               Some("signal:LFO"), "the delta carried the node");
 
     let panel = panels(c.doc()).first().cloned().expect("the default tab's one panel");
     let fresh = peer.call("layout panel add", j!({ "beside": panel,
@@ -104,7 +104,7 @@ async fn a_tab_that_fell_behind_is_recovered_with_a_fresh_snapshot() {
     // Re-binding the SAME expression pushes a `state_update` without touching the doc, isolating events.
     // Stalled for the WHOLE flood, and the flood sized in bytes: the ring lags only once the
     // socket's send buffer is full, and Linux autotunes that up to 4 MB before a write blocks.
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let flood = std::thread::spawn(move || {
         for _ in 0..4000 {
             g.call("node param edit", j!({ "node": hex(osc), "param": "common/max_frequency",
@@ -132,7 +132,7 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     // Two servers, because a round trip through one would pass against a route that packed nothing.
     let src = Goofi::new();
     let source = host(&src.serve().await).to_string();
-    tool(&source, "node add --type Oscillator").await;
+    tool(&source, "node add --type LFO").await;
     tool(&source, "node add --type Buffer").await;
 
     let (status, head, gfi) = http(&source, "GET", "/patch.gfi", "", b"").await;
@@ -144,12 +144,12 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     let dst = Goofi::new();
     let dest = host(&dst.serve().await).to_string();
     let octet = "Content-Type: application/octet-stream\r\n";
-    assert!(!tool(&dest, "nodes inspect").await.contains("Oscillator"), "it starts empty");
+    assert!(!tool(&dest, "nodes inspect").await.contains("LFO"), "it starts empty");
     let (status, head, _) = http(&dest, "POST", "/patch.gfi", octet, &gfi).await;
     assert_eq!(status, 200, "{head}");
 
     let after = tool(&dest, "nodes inspect").await;
-    assert!(after.contains("Oscillator") && after.contains("Buffer"), "the whole patch: {after}");
+    assert!(after.contains("LFO") && after.contains("Buffer"), "the whole patch: {after}");
     // The staging path is deleted the moment the load returns, so it must not become the patch's home.
     assert_eq!(dst.call("session status", goofi_tests::j!({}))["save_path"], serde_json::Value::Null,
                "an uploaded patch has no server-side home");
@@ -157,7 +157,7 @@ async fn a_patch_travels_as_bytes_between_two_instances_and_a_bad_upload_changes
     let (status, head, body) = http(&dest, "POST", "/patch.gfi", octet, b"not a zip").await;
     assert_eq!(status, 400, "a bad upload is the caller's error, not the server's: {head}");
     assert!(!body.is_empty(), "the refusal says why");
-    assert!(tool(&dest, "nodes inspect").await.contains("Oscillator"),
+    assert!(tool(&dest, "nodes inspect").await.contains("LFO"),
             "the live patch survived a refused upload");
 }
 
@@ -306,10 +306,10 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
 
     let ta = tokio::spawn(async move {
         for i in 0..BURST {
-            let uid = a.call("node add", j!({ "type": "Oscillator" })).await["uid"]
+            let uid = a.call("node add", j!({ "type": "LFO" })).await["uid"]
                 .as_str().unwrap().to_string();
             a.call("node edit", j!({ "node": uid, "name": format!("osc{i}") })).await;
-            a.call("node param edit", j!({ "node": uid, "param": "oscillator/amplitude",
+            a.call("node param edit", j!({ "node": uid, "param": "lfo/amplitude",
                                            "value": 0.1 * i as f64 })).await;
         }
         a
@@ -340,7 +340,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
         let uid = d.to_json()["nodes"].as_object().unwrap().iter()
             .find(|(_, n)| n["name"] == j!(format!("osc{i}"))).map(|(u, _)| u.clone())
             .unwrap_or_else(|| panic!("osc{i} is missing from the replica"));
-        assert_eq!(d.read_at(&["nodes", uid.as_str(), "params", "oscillator", "amplitude", "value"]),
+        assert_eq!(d.read_at(&["nodes", uid.as_str(), "params", "lfo", "amplitude", "value"]),
                    Some(j!(0.1 * i as f64)), "A's rename and its param edit both landed on osc{i}");
         assert_eq!(d.read_at(&["globals", &format!("g{i}"), "value"]), Some(j!(i as f64)),
                    "device B's global g{i}");

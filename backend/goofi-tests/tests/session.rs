@@ -12,12 +12,12 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     let g = Goofi::new();
 
     let types = g.call("library list", j!({}))["types"].as_array().cloned().unwrap();
-    for want in ["signal:Oscillator", "signal:Buffer"] {
+    for want in ["signal:LFO", "signal:Buffer"] {
         assert!(types.iter().any(|t| t["type"] == want), "{want} is in the palette");
     }
     assert!(!types.iter().any(|t| t["type"] == "signal:_TestEcho"), "test nodes are not");
 
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let sink = g.add("Buffer");
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier" }));
@@ -73,7 +73,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     // Opened in an instance that has already held other nodes — a fresh one renumbers to the saved uids.
     let other = Goofi::new();
     for _ in 0..5 {
-        other.add("Oscillator");
+        other.add("LFO");
     }
     other.call("session load", j!({ "path": path.to_string_lossy() }));
 
@@ -91,7 +91,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
 
     // …and reopened over ITSELF, in the session that has been running it all along.
     let mut ev = g.events();
-    let late = g.add("Oscillator");
+    let late = g.add("LFO");
     g.ready(late);
     // A uid the status worker has never reported on, so its `ready` is the tick that also memoized
     // every node already running.
@@ -129,7 +129,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
 #[test]
 fn a_refused_load_leaves_the_open_patch_exactly_as_it_was() {
     let g = Goofi::new();
-    g.add("Oscillator");
+    g.add("LFO");
     std::fs::write(g.state.mount().join("notes.md"), b"work in progress").unwrap();
     let before = g.doc();
     let mount = g.state.mount();
@@ -164,7 +164,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
     let g = Goofi::new();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("patch.gfi");
-    g.add("Oscillator");
+    g.add("LFO");
     g.call("layout panel add", j!({ "name": "Second" }));
     g.call("session save", j!({ "path": path.to_string_lossy() }));
     let old_mount = g.state.mount();
@@ -192,7 +192,7 @@ fn a_new_patch_inherits_nothing_from_the_one_before_it() {
 fn a_patch_whose_arrangement_cannot_be_rendered_still_opens() {
     // A layout the flat model admits but cannot render must never make a patch unopenable.
     let g = Goofi::new();
-    g.add("Oscillator");
+    g.add("LFO");
     let yaml = g.call("session manifest", j!({}))["yaml"].as_str().unwrap().to_string();
     // A DUPLICATE id is the one corruption the tree admits and a flat map could not.
     let broken = yaml.replace("id: panel-2", "id: tab-1");
@@ -228,7 +228,7 @@ fn only_a_patch_with_a_file_behind_it_keeps_a_name_and_every_tab_is_told_which()
     // The manager owns the stored path, because a plain Save overwrites it silently from any tab.
     let g = Goofi::new();
     assert_eq!(save_path(&g), None, "an unsaved patch has no home yet");
-    g.add("Oscillator");
+    g.add("LFO");
 
     // A save's ONLY job is writing to a backend path, so a save with no path is malformed.
     let why = g.refuse("session save", j!({}));
@@ -243,7 +243,7 @@ fn only_a_patch_with_a_file_behind_it_keeps_a_name_and_every_tab_is_told_which()
     // Readable only through `read_gfi` — a bare-YAML write would leave it "not a zip archive".
     let dest = dir.path().join("unpacked");
     let manifest = goofi_graph::archive::read_gfi(&path, &dest).unwrap();
-    assert!(manifest.contains("Oscillator"), "the manifest is the serialized patch: {manifest}");
+    assert!(manifest.contains("LFO"), "the manifest is the serialized patch: {manifest}");
     assert!(dest.is_dir(), "the workspace tree rides along, empty or not");
 
     // A save that FAILS leaves the previous home standing; naming it would aim the next overwrite at it.

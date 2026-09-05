@@ -118,12 +118,12 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
 
     // One command executes directly: flags typed by the schema — a NEGATIVE float2 value, a
     // chosen name, and a `json` flag quoted as bash would quote it.
-    let born = ok_exec(&addr, 3, "node add --type Oscillator --pos -100,-50 --name osc").await;
+    let born = ok_exec(&addr, 3, "node add --type LFO --pos -100,-50 --name osc").await;
     let born: Value = serde_json::from_str(&born).expect("the rendered reply is the op's JSON");
     let uid = born["uid"].as_str().expect("a uid").to_string();
     assert_eq!(born["name"], json!("osc"));
     // …and both 2b positionals at once: the uid, then the joined `group/param` address.
-    let line = format!("node param edit {uid} oscillator/frequency --value 7.5");
+    let line = format!("node param edit {uid} lfo/frequency --value 7.5");
     let edited = ok_exec(&addr, 4, &line).await;
     assert!(edited.contains("7.5"), "the param came back as stored: {edited}");
     let patch = ok_exec(&addr, 5, "nodes inspect").await;
@@ -144,25 +144,25 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     // A refusal teaches: the op index, the op's own flags, the required set.
     let (text, err) = exec(&addr, "/mcp", 9, &["frobnicate --hard"]).await;
     assert!(err && text.contains("unknown op") && text.contains("op list"), "{text}");
-    let (text, err) = exec(&addr, "/mcp", 10, &["node add --type Oscillator --sideways 3"]).await;
+    let (text, err) = exec(&addr, "/mcp", 10, &["node add --type LFO --sideways 3"]).await;
     assert!(err && text.contains("--sideways") && text.contains("--pos"), "{text}");
     let (text, err) = exec(&addr, "/mcp", 11, &["node add"]).await;
     assert!(err && text.contains("--type") && text.contains("required"), "{text}");
     let (text, err) = exec(&addr, "/mcp", 12, &["undo --hard"]).await;
     assert!(err && text.contains("takes no arguments"), "{text}");
-    let (text, err) = exec(&addr, "/mcp", 13, &["node add --type Oscillator --type Buffer"]).await;
+    let (text, err) = exec(&addr, "/mcp", 13, &["node add --type LFO --type Buffer"]).await;
     assert!(err && text.contains("twice"), "{text}");
     let (text, err) = exec(&addr, "/mcp", 14, &["node add --type"]).await;
     assert!(err && text.contains("needs a value"), "{text}");
 
     // …and each spelling the schema promises parses: `--flag=value`, the bool's `--no-` form on
     // a declared bool only, `any` as JSON-or-bare-string, and a variadic positional list.
-    let born = ok_exec(&addr, 15, "node add --type=Oscillator --name inlineOsc").await;
+    let born = ok_exec(&addr, 15, "node add --type=LFO --name inlineOsc").await;
     let born: Value = serde_json::from_str(&born).unwrap();
     assert_eq!(born["name"], json!("inlineOsc"));
     let bare = ok_exec(&addr, 16, &format!("node state {} --no-params", born["uid"].as_str().unwrap())).await;
     assert!(!bare.contains("params:"), "the bool's negative spelling gates the section: {bare}");
-    let (text, err) = exec(&addr, "/mcp", 17, &["node add --type Oscillator --no-name x"]).await;
+    let (text, err) = exec(&addr, "/mcp", 17, &["node add --type LFO --no-name x"]).await;
     assert!(err && text.contains("--no-name"), "`--no-` binds only to a declared bool: {text}");
     ok_exec(&addr, 18, "global add gain --type float --value 2.5").await;
     let tag: Value =
@@ -191,7 +191,7 @@ async fn several_commands_are_one_batch_and_a_refused_step_takes_the_whole_batch
     // births — a per-step broadcast would land a patch holding only the first.
     let (mut tab, _hello) = Client::connect(&g.serve().await).await;
     let (text, err) =
-        exec(&addr, "/mcp", 1, &["node add --type Oscillator", "node add --type Buffer"]).await;
+        exec(&addr, "/mcp", 1, &["node add --type LFO", "node add --type Buffer"]).await;
     assert!(!err, "{text}");
     let results: Value = serde_json::from_str(&text).expect("the batch answers a JSON list");
     assert_eq!(results.as_array().map(|a| a.len()), Some(2), "each step's result, in order: {text}");
@@ -208,15 +208,15 @@ async fn several_commands_are_one_batch_and_a_refused_step_takes_the_whole_batch
     assert_eq!(nodes(&g), 0, "one undo took back both steps");
 
     // A step that is not an undoable write refuses the batch BEFORE anything lands.
-    let (text, err) = exec(&addr, "/mcp", 3, &["node add --type Oscillator", "session new"]).await;
+    let (text, err) = exec(&addr, "/mcp", 3, &["node add --type LFO", "session new"]).await;
     assert!(err && text.contains("not a step"), "{text}");
     assert_eq!(nodes(&g), 0, "a refused batch left nothing behind");
 
     // A READ rides a batch, its reply in order beside the write's.
-    let (text, err) = exec(&addr, "/mcp", 5, &["node add --type Oscillator", "nodes inspect"]).await;
+    let (text, err) = exec(&addr, "/mcp", 5, &["node add --type LFO", "nodes inspect"]).await;
     assert!(!err, "{text}");
     let results: Value = serde_json::from_str(&text).unwrap();
-    assert!(results[1]["text"].as_str().is_some_and(|t| t.contains("Oscillator")), "{text}");
+    assert!(results[1]["text"].as_str().is_some_and(|t| t.contains("LFO")), "{text}");
     ok_exec(&addr, 6, "undo").await;
 
     // The same Effect alone is legal — the total surface includes the lifecycle.
@@ -246,7 +246,7 @@ async fn two_agents_drive_one_server_at_once_and_read_their_work_back_out_of_it(
             uids
         })
     };
-    let (a, b) = (spawn("Oscillator", 100), spawn("Buffer", 200));
+    let (a, b) = (spawn("LFO", 100), spawn("Buffer", 200));
     let mut uids = a.await.unwrap();
     uids.extend(b.await.unwrap());
     assert_eq!(uids.iter().collect::<std::collections::HashSet<_>>().len(), 8,
@@ -344,7 +344,7 @@ async fn a_harness_spawns_carries_bytes_both_ways_and_is_reaped_with_the_code_it
     read_until(&mut term, "42").await;
 
     // An edit under the shell's own actor, so the exit below can prove the stack dies with it.
-    g.client(&term::actor_of(&id)).call("node add", json!({ "type": "Oscillator" }));
+    g.client(&term::actor_of(&id)).call("node add", json!({ "type": "LFO" }));
 
     // `TAIL''MARK` is what the terminal echoes, so `TAILMARK` can only come from the child.
     term.send(Message::Binary(
@@ -625,7 +625,7 @@ async fn an_agent_carries_its_identity_in_its_environment_and_dies_with_the_patc
     // A stack's lifetime follows its actor: the stopped shell keeps its edits, loses its undo.
     // The reaper drops the stack and THEN broadcasts, so the exited event is the settled signal.
     let actor = term::actor_of(&id);
-    g.client(&actor).call("node add", json!({ "type": "Oscillator" }));
+    g.client(&actor).call("node add", json!({ "type": "LFO" }));
     call(&mut ctl, 3, "agent stop", json!({ "instance": id })).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {

@@ -31,10 +31,11 @@ fn npy_f32s(bytes: &[u8]) -> Vec<f32> {
 fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
     let _machine = MACHINE.blocking_read();
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     g.set_param(buf, "buffer", "size", 64);
-    g.set_param(osc, "oscillator", "sfreq", 64.0);
+    g.set_param(osc, "output", "sfreq", 64.0);
+    g.set_param(osc, "output", "mode", "block");
     // Nothing has flowed yet, so the raw read answers null WITH the reason — and the ask itself
     // is what opens the slot's feed.
     let idle = g.call("node snapshot", j!({ "output": ep(hex(buf), "out") }));
@@ -86,7 +87,7 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     let _machine = MACHINE.blocking_write();
     // Counting emitted frames is the only way to see a cap: a stated value reads correct anyway.
     let g = Goofi::new();
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let probe = g.probe(osc, "out");
     g.set_param(osc, "common", "max_frequency", 5.0);
     g.ready(osc);
@@ -111,7 +112,8 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
 
     // The delivered rate sits just UNDER the cap, never over — and a low cap hides that, so the
     // window that judges it is a fast one.
-    g.set_param(osc, "oscillator", "sfreq", 1000.0);
+    g.set_param(osc, "output", "sfreq", 1000.0);
+    g.set_param(osc, "output", "mode", "block");
     g.set_param(osc, "common", "max_frequency", 200.0);
     runs(Duration::from_millis(300)); // let the new cap take hold before the window that judges it
     // The floor is the MACHINE's, not a constant: the pacer spends one sleep per period, so what
@@ -135,7 +137,7 @@ fn each_way_a_node_can_fail_is_reported_and_none_of_them_stops_the_patch() {
     let bad = g.add("_TestFail");
     let panics = g.add("_TestPanic");
     let unborn = g.add("_TestSetupFail");
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let buf = g.add("Buffer");
     let probe = g.probe(buf, "out");
     g.link(osc, "out", buf, "data");
@@ -241,9 +243,12 @@ async fn many_viewers_of_one_slot_share_one_reducer_and_each_gets_what_it_can_dr
     let _machine = MACHINE.read().await;
     let g = Goofi::new();
     let base = g.serve().await;
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     // Far more samples per frame than any viewer asks for, so there is a reduction to fold at all.
-    g.set_param(osc, "oscillator", "sfreq", 20000.0);
+    g.set_param(osc, "output", "sfreq", 20000.0);
+    g.set_param(osc, "output", "mode", "block");
+    // A block holds the samples the clock advanced by, so the rate cap is what makes it big.
+    g.set_param(osc, "common", "max_frequency", 20.0);
     let key = (osc, "out".to_string());
 
     // Every viewer passes through the undeclared state on its way in, and a slot nobody has sized
@@ -383,7 +388,7 @@ async fn a_viewer_that_stops_answering_is_reclaimed_and_a_merely_slow_one_is_not
     // The hard half is the second one: a viewer on a slow link must not be mistaken for a dead one.
     let g = Goofi::impatient();
     let base = g.serve().await;
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let key = (osc, "out".to_string());
 
     let dead = Viewer::open(&base, &hex(osc), "out").await;
@@ -517,9 +522,9 @@ fn a_refreshable_param_is_re_enumerated_on_the_nodes_own_thread() {
     assert_eq!(p["params"]["io"]["device"]["options"], j!(["none"]), "options left as declared");
 
     // A fixed list is refused, which is what lifts the spinner on the frontend's side.
-    let osc = g.add("Oscillator");
+    let osc = g.add("LFO");
     let why = g.refuse("node param refresh",
-                       j!({ "node": hex(osc), "param": "oscillator/waveform" }));
+                       j!({ "node": hex(osc), "param": "lfo/waveform" }));
     assert!(why.contains("not refreshable"), "{why}");
 }
 

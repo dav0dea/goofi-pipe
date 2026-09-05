@@ -10,9 +10,9 @@ fn a_shipped_node_runs_with_no_cargo_and_an_authored_one_says_what_it_needs() {
     std::env::set_var("GOOFI_BUILD_DIR", fresh.path());
     std::env::set_var("CARGO", fresh.path().join("no-cargo"));
     let g = Goofi::new();
-    let uid = g.add("Oscillator");
+    let uid = g.add("LFO");
     let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
-    g.until("the shipped oscillator to emit", |g| probe.frame(&mut g.state.graph.lock().unwrap()));
+    g.until("the shipped LFO to emit", |g| probe.frame(&mut g.state.graph.lock().unwrap()));
     let osc = g.add("Osc");
     let tap = OutputProbe::open(&g.state.graph.lock().unwrap(), osc, "out");
     g.until("the shipped audio oscillator to sound", |g| {

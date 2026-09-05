@@ -81,7 +81,7 @@ test.describe('the control socket', () => {
 
 			let osc = '';
 			await test.step('an added node reaches the manager, and reaches it once', async () => {
-				osc = await addNode(page, 'Oscillator');
+				osc = await addNode(page, 'LFO');
 				await waitForNode(page, osc);
 				const uids = await expectAgreement(page, 'after add_node');
 				expect(uids, 'one op, one node — an echo applied twice would show here').toEqual([osc]);
@@ -113,15 +113,15 @@ test.describe('the control socket', () => {
 
 			await test.step('a param edit round-trips to the manager’s own document', async () => {
 				await page.evaluate(
-					(u) => (window as any).goofi.commands.updateParam(u, 'oscillator', 'amplitude', 0.42),
+					(u) => (window as any).goofi.commands.updateParam(u, 'lfo', 'amplitude', 0.42),
 					osc
 				);
 				await expect
-					.poll(async () => (await backendDoc(page)).nodes[osc].params.oscillator.amplitude.value)
+					.poll(async () => (await backendDoc(page)).nodes[osc].params.lfo.amplitude.value)
 					.toBeCloseTo(0.42, 5);
 				// Polled: the manager's delta reaches the replica by broadcast, after its own reply.
 				await expect
-					.poll(async () => (await nodeParams(page, osc))?.oscillator?.amplitude?.value, {
+					.poll(async () => (await nodeParams(page, osc))?.lfo?.amplitude?.value, {
 						message: 'and the replica reads what the manager holds, not what it sent'
 					})
 					.toBeCloseTo(0.42, 5);
@@ -129,13 +129,13 @@ test.describe('the control socket', () => {
 
 			await test.step('an expression carries its mode across, not only its text', async () => {
 				await page.evaluate(
-					(u) => (window as any).goofi.commands.setSource(u, 'oscillator', 'frequency', { expression: '2 * 3' }),
+					(u) => (window as any).goofi.commands.setSource(u, 'lfo', 'frequency', { expression: '2 * 3' }),
 					osc
 				);
 				await expect
-					.poll(async () => (await backendDoc(page)).nodes[osc].params.oscillator.frequency.expr)
+					.poll(async () => (await backendDoc(page)).nodes[osc].params.lfo.frequency.expr)
 					.toBe('2 * 3');
-				const param = (await backendDoc(page)).nodes[osc].params.oscillator.frequency;
+				const param = (await backendDoc(page)).nodes[osc].params.lfo.frequency;
 				expect(param.mode, 'the mode rode with the text').toBe('expression');
 			});
 
@@ -252,7 +252,7 @@ test.describe('the control socket', () => {
 				// handle. The link and the drawing are two different questions, and only a browser
 				// answers the second: the manager holds `feeder → port`, while the top level draws
 				// `feeder → scope@port`, and nothing outside this file crosses that gap.
-				const feeder = await addNode(page, 'Oscillator', [-200, 0]);
+				const feeder = await addNode(page, 'LFO', [-200, 0]);
 				await waitForNode(page, feeder);
 				await page.evaluate(
 					([f, sc, p]) =>
@@ -323,7 +323,7 @@ test.describe('the control socket', () => {
 				// the store sends — but only a browser carries a payload OUT through the platform
 				// clipboard and back in, which is what a copy and a paste actually are.
 				await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-				const a = await addNode(page, 'Oscillator', [0, 300]);
+				const a = await addNode(page, 'LFO', [0, 300]);
 				const b = await addNode(page, 'Buffer', [280, 300]);
 				await waitForNode(page, a);
 				await waitForNode(page, b);
@@ -368,7 +368,7 @@ test.describe('the control socket', () => {
 				// CUT a plain selection, then paste it INSIDE a sub-patch. Cut is a copy and a
 				// delete in one undo step; the paste lands where the editor is ENTERED, which is
 				// the only way a node reaches the inside of a sub-patch by gesture.
-				const c = await addNode(page, 'Oscillator', [0, 600]);
+				const c = await addNode(page, 'LFO', [0, 600]);
 				const d = await addNode(page, 'Buffer', [280, 600]);
 				await waitForNode(page, c);
 				await waitForNode(page, d);
@@ -465,7 +465,7 @@ test.describe('the control socket', () => {
 
 			let mine = '';
 			await test.step('what this tab adds, the other tab sees', async () => {
-				mine = await addNode(page, 'Oscillator');
+				mine = await addNode(page, 'LFO');
 				await expect
 					.poll(() => replicaNodes(other), { message: 'the peer mirrored the add' })
 					.toContain(mine);
@@ -524,7 +524,7 @@ test.describe('the control socket', () => {
 
 			let doomed = '';
 			await test.step('the tab holds a node before it goes dark', async () => {
-				doomed = await addNode(page, 'Oscillator');
+				doomed = await addNode(page, 'LFO');
 				await waitForNode(page, doomed);
 				await expectAgreement(page, 'before the drop');
 			});
@@ -635,10 +635,10 @@ test.describe('the control socket', () => {
 		await page.goto('/');
 		await waitForApp(page);
 		try {
-			const osc = await addNode(page, 'Oscillator');
+			const osc = await addNode(page, 'LFO');
 			await waitForNode(page, osc);
 			await page.evaluate(
-				(u) => (window as any).goofi.commands.updateParam(u, 'oscillator', 'sfreq', 64),
+				(u) => (window as any).goofi.commands.updateParam(u, 'output', 'sfreq', 64),
 				osc
 			);
 
