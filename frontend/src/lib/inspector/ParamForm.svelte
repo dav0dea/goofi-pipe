@@ -9,6 +9,9 @@
 		warn: 'warning',
 		error: 'danger'
 	};
+
+	/** The param count a node needs before it is worth offering a filter. */
+	export const SEARCH_FROM = 8;
 </script>
 
 <!--
@@ -26,6 +29,7 @@
 	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
+	import { matchParams, type ParamHit } from './paramSearch';
 	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
 
 	let {
@@ -109,10 +113,23 @@
 		if (activeGroup !== frontGroup) frontGroup = activeGroup;
 	});
 
-	const activeParams = $derived.by<[string, ParamDescriptor][]>(() => {
+	// One search box over every family, because a plugin's parameters are spread across as many tabs
+	// as it has units and the one you want is rarely in the tab you are on.
+	let query = $state('');
+	const searching = $derived(query.trim().length > 0);
+	// A short node is faster to read than to filter; a plugin with no units is one long tab.
+	const searchable = $derived(
+		Object.values(node?.params ?? {}).reduce((n, named) => n + Object.keys(named ?? {}).length, 0) > SEARCH_FROM
+	);
+
+	// Both modes reduce to the same row list, so a field is rendered from one place either way.
+	const rows = $derived.by<ParamHit[]>(() => {
 		const n = node;
-		if (!n || !activeGroup) return [];
-		return Object.entries(n.params[activeGroup] ?? {}) as [string, ParamDescriptor][];
+		if (!n) return [];
+		if (searching) return matchParams(n.params, query);
+		if (!activeGroup) return [];
+		const named = (n.params[activeGroup] ?? {}) as Record<string, ParamDescriptor>;
+		return Object.entries(named).map(([name, descriptor]) => ({ group: activeGroup, name, descriptor }));
 	});
 </script>
 
@@ -197,7 +214,23 @@
 		{#if node.subpatch}
 			<SubPatchInspector {node} />
 		{:else}
-			{#if tabItems.length > 0}
+			{#if searchable || searching}
+				<!-- Native, not `TextInput`: this filters per keystroke and owns Escape. -->
+				<input
+					class="pf-search"
+					{...MODE_ATTRS.search}
+					bind:value={query}
+					onkeydown={(e) => {
+						if (e.key === 'Escape') query = '';
+					}}
+					placeholder="Search parameters…"
+					autocomplete="off"
+					aria-label="Search parameters"
+					data-testid="param-search"
+				/>
+			{/if}
+
+			{#if tabItems.length > 0 && !searching}
 				<Tabs
 					items={tabItems}
 					active={activeGroup ?? undefined}
@@ -209,25 +242,32 @@
 			<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
 			<div
 				class="pf-rows"
-				role={tabItems.length > 0 ? 'tabpanel' : undefined}
-				aria-label={activeGroup ?? undefined}
+				role={tabItems.length > 0 && !searching ? 'tabpanel' : undefined}
+				aria-label={searching ? undefined : (activeGroup ?? undefined)}
 				data-testid="param-rows"
 			>
-				{#if activeParams.length === 0}
-					<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
+				{#if rows.length === 0}
+					<div class="pf-empty-group" data-testid={searching ? 'param-no-matches' : 'param-empty-group'}>
+						{searching ? 'No parameters match.' : 'No parameters in this group.'}
+					</div>
 				{:else}
-					{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
-						<ParamField
-							{paramName}
-							selfName={node?.name}
-							{descriptor}
-							data-testid={`param-field-${paramName}`}
-							refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}
-							onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
-							onSetSource={(source) => setSource(activeGroup ?? '', paramName, source)}
-							onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
-							onPulse={() => pulse(activeGroup ?? '', paramName)}
-						/>
+					{#each rows as { group, name: paramName, descriptor } (node.uid + '/' + group + '/' + paramName)}
+						<div class="pf-row">
+							{#if searching}
+								<span class="pf-row-group" data-testid={`param-hit-group-${paramName}`}>{group}</span>
+							{/if}
+							<ParamField
+								{paramName}
+								selfName={node?.name}
+								{descriptor}
+								data-testid={`param-field-${paramName}`}
+								refreshing={node != null && g.isRefreshing(node.uid, group, paramName)}
+								onCommit={(v) => setValue(group, paramName, v)}
+								onSetSource={(source) => setSource(group, paramName, source)}
+								onRefresh={() => refreshOptions(group, paramName)}
+								onPulse={() => pulse(group, paramName)}
+							/>
+						</div>
 					{/each}
 				{/if}
 			</div>
@@ -350,6 +390,29 @@
 		font-size: var(--fs-small);
 		text-align: center;
 		padding: var(--space-6) 0;
+	}
+	.pf-search {
+		font: inherit;
+		color: var(--text-1);
+		background: var(--surface-2);
+		border: 1px solid var(--border-1);
+		border-radius: var(--radius-2);
+		padding: var(--space-2) var(--space-3);
+		margin: var(--space-3) var(--space-6) 0;
+		min-width: 0;
+	}
+	.pf-search::placeholder {
+		color: var(--text-muted);
+	}
+	.pf-row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		min-width: 0;
+	}
+	.pf-row-group {
+		color: var(--text-muted);
+		font-size: var(--fs-small);
 	}
 	/* The editable cue is a hover underline, so with no hover it rests visible instead. */
 	@media (hover: none) and (pointer: coarse) {
