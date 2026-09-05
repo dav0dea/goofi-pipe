@@ -29,7 +29,7 @@ impl Node for FailedNode {
 }
 
 /// Build a [`PyNode`], or a [`FailedNode`] — never a panic, because this runs under the graph mutex.
-fn build_py_node(source: &str, in_slots: Vec<&'static str>, out_slots: Vec<&'static str>) -> Box<dyn Node> {
+fn build_py_node(source: &str, in_slots: Vec<(&'static str, bool)>, out_slots: Vec<&'static str>) -> Box<dyn Node> {
     match PyNode::from_source(source, in_slots, out_slots) {
         Ok(n) => Box::new(n),
         Err(e) => Box::new(FailedNode(format!("Python node construction failed: {e}"))),
@@ -39,7 +39,7 @@ fn build_py_node(source: &str, in_slots: Vec<&'static str>, out_slots: Vec<&'sta
 /// As [`build_py_node`], with the node wired to demote its own type when the GIL tripwire fires.
 pub fn build_routed(
     source: &str,
-    in_slots: Vec<&'static str>,
+    in_slots: Vec<(&'static str, bool)>,
     out_slots: Vec<&'static str>,
     tier: &'static goofi_node::IsolationCell,
 ) -> Box<dyn Node> {
@@ -70,7 +70,7 @@ pub fn node_type_from(d: Discovered) -> PyNodeType {
 
 fn py_type_from_discovered(path: &Path, d: Discovered) -> PyNodeType {
     let manifest = d.manifest;
-    let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
+    let in_slots: Vec<(&'static str, bool)> = manifest.inputs.iter().map(|s| (s.name, s.multi)).collect();
     let out_slots: Vec<&'static str> = manifest.outputs.iter().map(|o| o.name).collect();
     let source = std::fs::read_to_string(path).unwrap_or_default();
     let factory: NodeFactory =
@@ -91,7 +91,7 @@ fn interp() -> std::sync::MutexGuard<'static, ()> {
     #[test]
     fn a_broken_python_source_builds_an_error_node_instead_of_panicking() {
         let _interp = interp();
-        let mut node = build_py_node("def process(:\n    pass\n", vec!["data"], vec!["out"]); // invalid syntax → from_source Err
+        let mut node = build_py_node("def process(:\n    pass\n", vec![("data", false)], vec!["out"]); // invalid syntax → from_source Err
         let mut ctx = NodeCtx::new();
         let params = ParamGroups::new();
         let err = node.setup(&mut ctx, &Params::new(&params)).expect_err("construction failure must error");

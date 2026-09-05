@@ -12,7 +12,7 @@ use crate::attach;
 /// A live `goofi.Node` subclass instance running in-process on the free-threaded interpreter.
 pub struct PyNode {
     instance: Py<PyAny>,
-    in_slots: Vec<&'static str>,
+    in_slots: Vec<(&'static str, bool)>,
     out_slots: Vec<&'static str>,
     /// Set only once the GIL tripwire has come back CLEAN, so a serialized interpreter keeps
     /// being re-checked, and re-reported, for as long as it is serialized.
@@ -28,7 +28,7 @@ impl PyNode {
     /// Compile a node module from `source` and instantiate its `goofi.Node` subclass.
     pub fn from_source(
         source: &str,
-        in_slots: Vec<&'static str>,
+        in_slots: Vec<(&'static str, bool)>,
         out_slots: Vec<&'static str>,
     ) -> PyResult<PyNode> {
         // Unique per instance: a shared name lets concurrent builds clobber each other's module.
@@ -98,8 +98,18 @@ impl Node for PyNode {
     }
 
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        let inputs: Vec<(&str, Option<&Data>)> =
-            self.in_slots.iter().map(|name| (*name, inp.get(name))).collect();
+        let inputs: Vec<(&str, goofi_pymod::exec::SlotIn<'_>)> = self
+            .in_slots
+            .iter()
+            .map(|(name, multi)| {
+                let slot = if *multi {
+                    goofi_pymod::exec::SlotIn::Multi(inp.get_multi(name).iter().map(|(s, d)| (s.as_str(), d)).collect())
+                } else {
+                    goofi_pymod::exec::SlotIn::Single(inp.get(name))
+                };
+                (*name, slot)
+            })
+            .collect();
 
         let check_gil = !self.gil_checked;
         let (outs, tripped): (Vec<(String, Data)>, bool) = attach(|py| -> Result<_, String> {

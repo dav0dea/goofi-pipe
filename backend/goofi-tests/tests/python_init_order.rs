@@ -18,6 +18,6 @@ const NODE: &str = concat!(
 fn evaluator_first_then_python_node_does_not_panic() {
     let _ev = PyExprEvaluator::new().expect("evaluator constructs");
     // The `goofi` module must already be in the inittab, registered before the first attach.
-    let _node = PyNode::from_source(NODE, vec!["data"], vec!["out"])
+    let _node = PyNode::from_source(NODE, vec![("data", false)], vec!["out"])
         .expect("PyNode built after the evaluator inited the interpreter must not panic");
 }

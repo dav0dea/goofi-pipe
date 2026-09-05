@@ -168,13 +168,14 @@ fn one_roundtrip(
 pub struct RemoteNode {
     python: String,
     source: String,
-    /// Declared INPUT slot names only: the child is authoritative for output naming.
-    in_slots: Vec<&'static str>,
+    /// Declared INPUT slots only, each with whether it is `multi`: the child is authoritative for
+    /// output naming.
+    in_slots: Vec<(&'static str, bool)>,
     proc: Option<Running>,
 }
 
 impl RemoteNode {
-    pub fn new(python: impl Into<String>, source: impl Into<String>, in_slots: Vec<&'static str>) -> RemoteNode {
+    pub fn new(python: impl Into<String>, source: impl Into<String>, in_slots: Vec<(&'static str, bool)>) -> RemoteNode {
         RemoteNode {
             python: python.into(),
             source: source.into(),
@@ -207,9 +208,16 @@ impl RemoteNode {
 
 impl Node for RemoteNode {
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        // Only the PRESENT slots cross the wire; the child rebuilds the declared kwarg set from `INPUTS`.
-        let present: Vec<(&str, &Data)> =
-            self.in_slots.iter().filter_map(|name| inp.get(name).map(|d| (*name, d))).collect();
+        // Only the PRESENT frames cross the wire, a `multi` slot's each with its source; the child
+        // rebuilds the declared kwarg set from `INPUTS`.
+        let mut present: Vec<(&str, &str, &Data)> = Vec::new();
+        for (name, multi) in &self.in_slots {
+            if *multi {
+                present.extend(inp.get_multi(name).iter().map(|(source, d)| (*name, source.as_str(), d)));
+            } else if let Some(d) = inp.get(name) {
+                present.push((*name, "", d));
+            }
+        }
         // A node RAISE does not kill the child: its state is preserved and the error is instant.
         match self.ask(&goofi_codec::encode_request(p.groups(), &present)).map_err(NodeError)? {
             goofi_codec::Response::Slots(outs) => {
@@ -271,7 +279,7 @@ pub fn node_type_from(python: &str, d: Discovered) -> SubprocNodeType {
 
 fn subproc_type_from_discovered(python: &str, d: Discovered) -> SubprocNodeType {
     let manifest = d.manifest;
-    let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
+    let in_slots: Vec<(&'static str, bool)> = manifest.inputs.iter().map(|s| (s.name, s.multi)).collect();
     let source = std::fs::read_to_string(&d.source).unwrap_or_default();
     let python = python.to_string();
     let factory: NodeFactory = Box::new(move |_p| {
@@ -426,7 +434,7 @@ class Double(goofi.Node):
     #[test]
     fn the_child_stops_when_the_parents_liveness_pipe_closes() {
         let py = require_python();
-        let mut node = RemoteNode::new(&*py, DOUBLE, vec!["data"]);
+        let mut node = RemoteNode::new(&*py, DOUBLE, vec![("data", false)]);
         // A real tick first, so the child is fully up and inside its serve loop.
         assert_eq!(floats(&run(&mut node, arr(vec![1], &[2.0], Meta::empty()))), vec![4.0]);
 

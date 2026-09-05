@@ -695,6 +695,14 @@ pub fn f32s(d: &goofi_core::Data) -> Vec<f32> {
     a.as_bytes().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()
 }
 
+/// A STRING frame's text; `None` for any other kind.
+pub fn text(d: &goofi_core::Data) -> Option<&str> {
+    match d.value() {
+        goofi_core::Value::Str(s) => Some(s),
+        _ => None,
+    }
+}
+
 /// An ARRAY frame's shape.
 pub fn shape(d: &goofi_core::Data) -> Vec<usize> {
     let goofi_core::Value::Array(a) = d.value() else { panic!("not an array: {d:?}") };

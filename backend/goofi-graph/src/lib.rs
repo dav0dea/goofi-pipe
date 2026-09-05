@@ -1306,6 +1306,12 @@ impl Graph {
         // …and re-resolve the ones ALREADY written against the new name: such a binding has no
         // `nd('<old>')` for the rewrite to follow, and this rename is what makes it resolvable.
         self.rebind_naming(name);
+        // A multi slot names its senders, so the new name must reach every slot this node feeds.
+        let fed: Vec<(Uid, &'static str)> =
+            self.links.iter().filter(|l| l.node_out == uid).map(|l| (l.node_in, l.slot_in)).collect();
+        for (node_in, slot_in) in fed {
+            self.touched.push(Touched::Slot(node_in, slot_in));
+        }
         Ok(touched)
     }
 
@@ -3418,6 +3424,7 @@ fn build_view<'a>(
                 *uid,
                 NodeView {
                     engine: leaf.engine,
+                    name: e.name.as_str(),
                     generation: generations.get(uid).copied().unwrap_or(0),
                     rings: rings.get(leaf.engine).copied().unwrap_or(true),
                     manifest: leaf.manifest,

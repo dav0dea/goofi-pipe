@@ -317,13 +317,19 @@ fn mp_to_mv(v: &Mp) -> MetaValue {
 /// `group -> name -> Param`, spelled out because the codec has no goofi-node dep.
 pub type ParamMap = indexmap::IndexMap<String, indexmap::IndexMap<String, goofi_core::Param>>;
 
-/// Append a named-slot list: `[u16 n]` then n × `[u16 name_len][name][u32 frame_len][GOOF frame]`.
-pub fn encode_slots(slots: &[(&str, &Data)], out: &mut Vec<u8>) {
+/// The slot entries of a run request: `(slot, source, frame)`, the source empty on a single slot.
+pub type SourcedSlots = Vec<(String, String, Data)>;
+
+/// Append a named-slot list: `[u16 n]` then n × `[u16 name_len][name][u16 src_len][src]
+/// [u32 frame_len][GOOF frame]`; `src` is the `node.slot` a multi-slot frame came from, else empty.
+pub fn encode_slots(slots: &[(&str, &str, &Data)], out: &mut Vec<u8>) {
     out.extend_from_slice(&(slots.len() as u16).to_le_bytes());
-    for (name, d) in slots {
-        let nb = name.as_bytes();
-        out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
-        out.extend_from_slice(nb);
+    for (name, source, d) in slots {
+        for text in [name, source] {
+            let tb = text.as_bytes();
+            out.extend_from_slice(&(tb.len() as u16).to_le_bytes());
+            out.extend_from_slice(tb);
+        }
         let frame = encode(d);
         out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         out.extend_from_slice(&frame);
@@ -331,16 +337,18 @@ pub fn encode_slots(slots: &[(&str, &Data)], out: &mut Vec<u8>) {
 }
 
 /// Decode the named-slot list written by [`encode_slots`].
-pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, String> {
+pub fn decode_slots(body: &[u8]) -> std::result::Result<SourcedSlots, String> {
     let mut cur = Cursor::new(body);
     let n = cur.u16("slot count")?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         let nlen = cur.u16("slot name length")?;
         let name = std::str::from_utf8(cur.take(nlen, "slot name")?).map_err(|e| e.to_string())?.to_string();
+        let slen = cur.u16("slot source length")?;
+        let source = std::str::from_utf8(cur.take(slen, "slot source")?).map_err(|e| e.to_string())?.to_string();
         let flen = cur.u32("slot frame length")?;
         let data = decode(cur.take(flen, "slot frame")?)?;
-        out.push((name, data));
+        out.push((name, source, data));
     }
     Ok(out)
 }
@@ -348,7 +356,7 @@ pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, Str
 /// A decoded subprocess request, always carrying the node's live params: one tick, the ⟳ on
 /// one string param, or a pulse on one pulse param.
 pub enum Request {
-    Process { params: ParamMap, slots: Vec<(String, Data)> },
+    Process { params: ParamMap, slots: SourcedSlots },
     Refresh { params: ParamMap, group: String, name: String },
     Pulse { params: ParamMap, group: String, name: String },
 }
@@ -359,8 +367,8 @@ fn encode_params(params: &ParamMap, out: &mut Vec<u8>) {
     out.extend_from_slice(&pbytes);
 }
 
-/// Encode a tick request: `[0][u32 params_len][params msgpack][slots]`.
-pub fn encode_request(params: &ParamMap, slots: &[(&str, &Data)]) -> Vec<u8> {
+/// Encode a tick request: `[0][u32 params_len][params msgpack][slots]`, each slot with its source.
+pub fn encode_request(params: &ParamMap, slots: &[(&str, &str, &Data)]) -> Vec<u8> {
     let mut out = vec![0u8];
     encode_params(params, &mut out);
     encode_slots(slots, &mut out);
@@ -411,10 +419,11 @@ pub enum Response {
     Options(Option<Vec<String>>),
 }
 
-/// Encode an OK response: `[0][slots]`.
+/// Encode an OK response: `[0][slots]`; an output has no source, so each crosses with none.
 pub fn encode_response(slots: &[(&str, &Data)]) -> Vec<u8> {
     let mut out = vec![0u8];
-    encode_slots(slots, &mut out);
+    let unsourced: Vec<(&str, &str, &Data)> = slots.iter().map(|(name, d)| (*name, "", *d)).collect();
+    encode_slots(&unsourced, &mut out);
     out
 }
 
@@ -436,7 +445,7 @@ pub fn encode_options_response(options: &Option<Vec<String>>) -> Vec<u8> {
 pub fn decode_response(buf: &[u8]) -> std::result::Result<Response, String> {
     let (&tag, rest) = buf.split_first().ok_or("empty response frame")?;
     match tag {
-        0 => Ok(Response::Slots(decode_slots(rest)?)),
+        0 => Ok(Response::Slots(decode_slots(rest)?.into_iter().map(|(name, _, d)| (name, d)).collect())),
         1 => Ok(Response::NodeError(String::from_utf8_lossy(rest).into_owned())),
         2 => Ok(Response::Options(rmp_serde::from_slice(rest).map_err(|e| e.to_string())?)),
         other => Err(format!("unknown response tag {other}")),

@@ -111,6 +111,7 @@ pub struct BindingView<'a> {
 /// One running node as the settled view carries it.
 pub struct NodeView<'a> {
     pub engine: &'static str,
+    pub name: &'a str,
     pub generation: u64,
     /// Whether this node's engine wakes it by doorbell; a scheduled consumer is never rung.
     pub rings: bool,

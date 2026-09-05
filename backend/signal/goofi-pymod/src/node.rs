@@ -55,8 +55,9 @@ impl Node {
     fn setup(&self) -> PyResult<()> {
         Ok(())
     }
-    /// The tick body. `**inputs` is one keyword argument per DECLARED input slot, `None` where
-    /// the slot holds no frame.
+    /// The tick body. `**inputs` is one keyword argument per DECLARED input slot: a `Data`, or
+    /// `None` where the slot holds no frame; a `multi` slot is `list[tuple[str, Data]]`, each
+    /// frame with the `node.slot` that sent it, in wire order.
     #[pyo3(signature = (**_inputs))]
     fn process(&self, _inputs: Option<&Bound<'_, PyDict>>) -> Option<Py<PyAny>> {
         None

@@ -86,7 +86,7 @@ unsafe fn call(
     write(sink, Bytes::of(&reply));
 }
 
-fn process_request(req: &[u8]) -> Result<(goofi_codec::ParamMap, Vec<(String, Data)>), String> {
+fn process_request(req: &[u8]) -> Result<(goofi_codec::ParamMap, goofi_codec::SourcedSlots), String> {
     match goofi_codec::decode_request(req)? {
         goofi_codec::Request::Process { params, slots } => Ok((params, slots)),
         goofi_codec::Request::Refresh { .. } | goofi_codec::Request::Pulse { .. } => {
@@ -112,11 +112,11 @@ pub unsafe extern "C" fn process(node: *mut c_void, ctx: Ctx, request: Bytes, si
         let (params, slots) = process_request(req)?;
         let mut singles: IndexMap<&'static str, Option<Data>> =
             inst.manifest.inputs.iter().filter(|s| !s.multi).map(|s| (s.name, None)).collect();
-        let mut multis: IndexMap<&'static str, Vec<Data>> =
+        let mut multis: crate::MultiFrames =
             inst.manifest.inputs.iter().filter(|s| s.multi).map(|s| (s.name, Vec::new())).collect();
-        for (name, data) in slots {
+        for (name, source, data) in slots {
             if let Some(frames) = multis.get_mut(name.as_str()) {
-                frames.push(data);
+                frames.push((source, data));
             } else if let Some(slot) = singles.get_mut(name.as_str()) {
                 *slot = Some(data);
             }

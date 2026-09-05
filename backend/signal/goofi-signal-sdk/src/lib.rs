@@ -52,20 +52,20 @@ pub type NodeResult = std::result::Result<(), NodeError>;
 /// Builds a fresh boxed instance of a runtime-registered node type from its params.
 pub type NodeFactory = Box<dyn Fn(&ParamGroups) -> Box<dyn Node> + Send + Sync>;
 
+/// A `multi` slot's frames, each with the `node.slot` that sent it, in wire order.
+pub type MultiFrames = IndexMap<&'static str, Vec<(String, Data)>>;
+
 /// The per-run input view; the two maps are keyed disjointly, so a slot is single XOR multi.
 pub struct Inputs<'a> {
     singles: &'a IndexMap<&'static str, Option<Data>>,
-    multis: Option<&'a IndexMap<&'static str, Vec<Data>>>,
+    multis: Option<&'a MultiFrames>,
 }
 
 impl<'a> Inputs<'a> {
     pub fn new(singles: &'a IndexMap<&'static str, Option<Data>>) -> Inputs<'a> {
         Inputs { singles, multis: None }
     }
-    pub fn with_multi(
-        singles: &'a IndexMap<&'static str, Option<Data>>,
-        multis: &'a IndexMap<&'static str, Vec<Data>>,
-    ) -> Inputs<'a> {
+    pub fn with_multi(singles: &'a IndexMap<&'static str, Option<Data>>, multis: &'a MultiFrames) -> Inputs<'a> {
         Inputs { singles, multis: Some(multis) }
     }
     /// The latest frame on a single slot, or the first present frame on a `multi` slot.
@@ -75,19 +75,12 @@ impl<'a> Inputs<'a> {
                 return Some(d);
             }
         }
-        self.multis.and_then(|m| m.get(name)).and_then(|v| v.first())
+        self.multis.and_then(|m| m.get(name)).and_then(|v| v.first()).map(|(_, d)| d)
     }
-    /// The present frames on a `multi` slot, or a 0/1-element slice on a single slot.
-    pub fn get_multi(&self, name: &str) -> &[Data] {
-        if let Some(m) = self.multis {
-            if let Some(v) = m.get(name) {
-                return v.as_slice();
-            }
-        }
-        match self.singles.get(name) {
-            Some(Some(d)) => std::slice::from_ref(d),
-            _ => &[],
-        }
+    /// The present frames on a `multi` slot, each with the `node.slot` that sent it, in wire
+    /// order; an empty slice on a single slot.
+    pub fn get_multi(&self, name: &str) -> &[(String, Data)] {
+        self.multis.and_then(|m| m.get(name)).map_or(&[], |v| v.as_slice())
     }
 }
 

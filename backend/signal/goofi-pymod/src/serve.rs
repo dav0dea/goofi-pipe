@@ -11,6 +11,7 @@ use iceoryx2::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use crate::exec::SlotIn;
 use crate::loader::{find_node_class, module_from_source};
 
 /// iceoryx2 byte-slice pool ceiling — matches the parent publisher's default.
@@ -38,11 +39,11 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
     let module = module_from_source(py, "goofi_node_main", &source)?;
     let instance = find_node_class(py, &module)?.call0()?;
     let out_slots = slot_names(&instance, "OUTPUTS")?;
-    let in_slots = slot_names(&instance, "INPUTS")?;
+    let in_slots: Vec<(String, bool)> =
+        crate::introspect::slots(&instance.getattr("INPUTS")?)?.into_iter().map(|s| (s.name, s.multi)).collect();
     let out_refs: Vec<&str> = out_slots.iter().map(|s| s.as_str()).collect();
-    let in_refs: Vec<&str> = in_slots.iter().map(|s| s.as_str()).collect();
 
-    run_loop(py, &instance, &in_refs, &out_refs, &req_name, &resp_name)
+    run_loop(py, &instance, &in_slots, &out_refs, &req_name, &resp_name)
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)
 }
 
@@ -60,7 +61,7 @@ fn env(key: &str) -> PyResult<String> {
 fn run_loop(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
-    in_slots: &[&str],
+    in_slots: &[(String, bool)],
     out_slots: &[&str],
     req_name: &str,
     resp_name: &str,
@@ -135,7 +136,7 @@ fn run_loop(
 fn handle(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
-    in_slots: &[&str],
+    in_slots: &[(String, bool)],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
     did_setup: &mut bool,
@@ -153,11 +154,18 @@ fn handle(
             });
         }
     };
-    // The wire carries only the slots that hold a frame; widen it back to every declared slot,
-    // `None` where nothing arrived.
-    let inputs: Vec<(&str, Option<&CoreData>)> = in_slots
+    // The wire carries only the frames that arrived; widen it back to every declared slot — a
+    // `multi` slot gathers every entry under its name in order, a single one takes the last.
+    let inputs: Vec<(&str, SlotIn<'_>)> = in_slots
         .iter()
-        .map(|name| (*name, arrived.iter().find(|(n, _)| n == name).map(|(_, d)| d)))
+        .map(|(name, multi)| {
+            let slot = if *multi {
+                SlotIn::Multi(arrived.iter().filter(|(n, _, _)| n == name).map(|(_, s, d)| (s.as_str(), d)).collect())
+            } else {
+                SlotIn::Single(arrived.iter().rev().find(|(n, _, _)| n == name).map(|(_, _, d)| d))
+            };
+            (name.as_str(), slot)
+        })
         .collect();
     match run_node(py, instance, &params, &inputs, out_slots, warned, did_setup) {
         Ok(outs) => {
@@ -174,7 +182,7 @@ fn run_node(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
     params: &crate::exec::Groups,
-    inputs: &[(&str, Option<&CoreData>)],
+    inputs: &[(&str, SlotIn<'_>)],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
     did_setup: &mut bool,

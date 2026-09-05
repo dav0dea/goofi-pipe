@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use goofi_tests::{f32s, Goofi, Viewer, ep, hex, holds_within, j};
+use goofi_tests::{f32s, text, Goofi, Viewer, ep, hex, holds_within, j};
 
 // A wall-clock oracle needs a QUIET machine: a measuring test takes it alone (write), the rest
 // share it (read) — CI's two cores made parallel tests corrupt each other's time.
@@ -584,4 +584,31 @@ fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
     assert_eq!(g.call("undo", j!({}))["changed"], j!(true));
     assert_eq!(g.doc()["nodes"][hex(n)]["params"]["common"]["max_frequency"]["value"], j!(50.0),
                "the undo took back the param edit, so the pulse left nothing on the stack");
+}
+
+#[test]
+fn a_multi_slot_names_its_senders_in_wire_order_and_follows_a_rename() {
+    // A frame on a multi slot arrives with the `node.slot` that sent it: the order is the wire
+    // order, a rename reaches the consumer, and a removed wire takes its name with it.
+    let g = Goofi::new();
+    let a = g.add("_TestCounter");
+    let b = g.add("_TestCounter");
+    let s = g.add("_TestSenders");
+    g.call("node edit", j!({ "node": hex(a), "name": "alpha" }));
+    g.call("node edit", j!({ "node": hex(b), "name": "beta" }));
+    for n in [a, b, s] {
+        g.ready(n);
+    }
+    let probe = g.probe(s, "out");
+    let probe = &probe;
+    let names = |want: &'static str| move |_: &Goofi| probe.latest().filter(|d| text(d) == Some(want)).map(|_| ());
+    g.link(b, "out", s, "input");
+    g.link(a, "out", s, "input");
+    g.until("both senders named, in wire order", names("beta.out,alpha.out"));
+
+    g.call("node edit", j!({ "node": hex(b), "name": "gamma" }));
+    g.until("the rename to reach the consumer", names("gamma.out,alpha.out"));
+
+    g.call("link remove", j!({ "from": ep(hex(b), "out"), "to": ep(hex(s), "input") }));
+    g.until("one sender left", names("alpha.out"));
 }

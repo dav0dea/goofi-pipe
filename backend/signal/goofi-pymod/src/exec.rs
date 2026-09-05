@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use goofi_core::{warn_cast_once, Data as CoreData, Meta, Param, SrcDtype, Value};
 use indexmap::IndexMap;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
 
 use crate::data::{array_to_f32, dict_to_meta, Data};
@@ -63,24 +63,38 @@ pub fn run_pulse(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups, g
     method.call0().err().map(|e| e.to_string())
 }
 
+/// What one declared input slot holds for a run: a single slot's latest frame, or a `multi`
+/// slot's frames with their `node.slot` sources, in wire order.
+pub enum SlotIn<'a> {
+    Single(Option<&'a CoreData>),
+    Multi(Vec<(&'a str, &'a CoreData)>),
+}
+
 /// Apply the live params, call `node.process(**inputs)`, and marshal the return into per-slot
-/// `Data`. `inputs` names every DECLARED slot in order, `None` where no frame arrived;
-/// `out_slots` names the slot a bare (non-dict) return goes to.
+/// `Data`. `inputs` names every DECLARED slot in order; `out_slots` names the slot a bare
+/// (non-dict) return goes to.
 pub fn run_process(
     py: Python<'_>,
     instance: &Bound<'_, PyAny>,
     params: &Groups,
-    inputs: &[(&str, Option<&CoreData>)],
+    inputs: &[(&str, SlotIn<'_>)],
     out_slots: &[&str],
     warned: &mut HashSet<SrcDtype>,
 ) -> PyResult<Vec<(String, CoreData)>> {
     apply_params(py, instance, params)?;
 
     let kwargs = PyDict::new(py);
-    for (name, core) in inputs {
-        match core {
-            Some(c) => kwargs.set_item(*name, Py::new(py, Data::from_core((*c).clone()))?)?,
-            None => kwargs.set_item(*name, py.None())?,
+    for (name, slot) in inputs {
+        match slot {
+            SlotIn::Single(Some(c)) => kwargs.set_item(*name, Py::new(py, Data::from_core((*c).clone()))?)?,
+            SlotIn::Single(None) => kwargs.set_item(*name, py.None())?,
+            SlotIn::Multi(frames) => {
+                let list = PyList::empty(py);
+                for (source, c) in frames {
+                    list.append((*source, Py::new(py, Data::from_core((*c).clone()))?))?;
+                }
+                kwargs.set_item(*name, list)?;
+            }
         }
     }
     let ret = instance.call_method("process", (), Some(&kwargs))?;
@@ -90,7 +104,10 @@ pub fn run_process(
 
     // The first PRESENT frame, not the first declared slot: a node whose leading slot is unwired
     // must still carry meta from the input it did get.
-    let primary = inputs.iter().find_map(|(_, c)| *c);
+    let primary = inputs.iter().find_map(|(_, slot)| match slot {
+        SlotIn::Single(c) => *c,
+        SlotIn::Multi(frames) => frames.first().map(|(_, d)| *d),
+    });
     if let Ok(dict) = ret.cast::<PyDict>() {
         let mut outs = Vec::with_capacity(dict.len());
         for (k, v) in dict.iter() {
@@ -146,6 +163,9 @@ fn value_to_core(
 ) -> PyResult<CoreData> {
     if let Ok(d) = v.cast::<Data>() {
         return Ok(d.borrow().core().clone());
+    }
+    if let Ok(s) = v.extract::<String>() {
+        return Ok(CoreData::string(s, Meta::empty()));
     }
     if let Ok(tup) = v.cast::<PyTuple>() {
         if tup.len() == 2 {

@@ -75,13 +75,14 @@ impl Node for Handle {
     }
 
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, ctx: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
-        // Every present frame crosses, a `multi` slot's under its one name repeated.
-        let mut present: Vec<(&str, &Data)> = Vec::new();
+        // Every present frame crosses, a `multi` slot's under its one name repeated, each with
+        // its source; a single slot's has none.
+        let mut present: Vec<(&str, &str, &Data)> = Vec::new();
         for slot in self.manifest.inputs {
             if slot.multi {
-                present.extend(inp.get_multi(slot.name).iter().map(|d| (slot.name, d)));
+                present.extend(inp.get_multi(slot.name).iter().map(|(source, d)| (slot.name, source.as_str(), d)));
             } else if let Some(d) = inp.get(slot.name) {
-                present.push((slot.name, d));
+                present.push((slot.name, "", d));
             }
         }
         match self.call(self.vtable.process, ctx.now, &goofi_codec::encode_request(p.groups(), &present)) {

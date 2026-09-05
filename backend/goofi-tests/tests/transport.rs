@@ -99,7 +99,7 @@ fn an_undrained_control_mailbox_keeps_the_whole_burst() {
     for seq in 1..=BURST {
         channel.send(Envelope {
             seq,
-            control: Control::InSlot { slot: "input".to_string(), services: Vec::new() },
+            control: Control::InSlot { slot: "input".to_string(), wires: Vec::new() },
         });
     }
 

@@ -172,10 +172,10 @@ fn main() {
 fn rebuild(m: &'static NodeManifest, python: &str) -> Factory {
     match m.type_name {
         "bench_native" => Box::new(|_| Box::new(NativeMul) as Box<dyn Node>),
-        "bench_ftpy" => Box::new(|_| Box::new(PyNode::from_source(PY_SRC, vec!["data"], vec!["out"]).expect("PyNode")) as Box<dyn Node>),
+        "bench_ftpy" => Box::new(|_| Box::new(PyNode::from_source(PY_SRC, vec![("data", false)], vec!["out"]).expect("PyNode")) as Box<dyn Node>),
         _ => {
             let py = python.to_string();
-            Box::new(move |_| Box::new(RemoteNode::new(py.clone(), PY_SRC, vec!["data"])) as Box<dyn Node>)
+            Box::new(move |_| Box::new(RemoteNode::new(py.clone(), PY_SRC, vec![("data", false)])) as Box<dyn Node>)
         }
     }
 }

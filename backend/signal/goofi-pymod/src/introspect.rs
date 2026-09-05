@@ -45,20 +45,19 @@ enum SlotDescr<'py> {
     Full(Bound<'py, InputSlot>),
 }
 
-/// `{name: DataType | InputSlot}` → the input slots. `multi` stays false: this tier has no
-/// variadic plumbing to honour it.
-fn slots(d: &Bound<'_, PyAny>) -> PyResult<Vec<Slot>> {
+/// `{name: DataType | InputSlot}` → the input slots.
+pub(crate) fn slots(d: &Bound<'_, PyAny>) -> PyResult<Vec<Slot>> {
     d.cast::<PyDict>()?
         .iter()
         .map(|(k, v)| {
-            let (kind, required, trigger) = match v.extract::<SlotDescr>()? {
-                SlotDescr::Bare(t) => (slot_kind(t.as_any())?, false, true),
+            let (kind, required, trigger, multi) = match v.extract::<SlotDescr>()? {
+                SlotDescr::Bare(t) => (slot_kind(t.as_any())?, false, true, false),
                 SlotDescr::Full(s) => {
                     let s = s.borrow();
-                    (slot_kind(s.dtype.bind(v.py()).as_any())?, s.required, s.trigger)
+                    (slot_kind(s.dtype.bind(v.py()).as_any())?, s.required, s.trigger, s.multi)
                 }
             };
-            Ok(Slot { name: k.extract()?, kind, trigger, multi: false, required })
+            Ok(Slot { name: k.extract()?, kind, trigger, multi, required })
         })
         .collect()
 }

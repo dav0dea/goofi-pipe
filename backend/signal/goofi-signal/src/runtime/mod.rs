@@ -12,6 +12,9 @@ pub use goofi_node::NodeFault;
 
 /// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
 /// worker polling to discover one.
+/// One wire's cell on a `multi` slot: its service, its `node.slot` source, and its newest frame.
+type MultiCells = Vec<(ServiceName, String, Option<Data>)>;
+
 pub struct WakingTransport {
     pub inner: Arc<dyn Transport>,
     pub waker: Arc<goofi_node::DrainWaker>,
@@ -132,9 +135,9 @@ pub struct NodeRuntime {
 
     /// Latest-wins input cells, one per declared single input slot.
     pub(crate) inputs: IndexMap<&'static str, Option<Data>>,
-    /// Per-WIRE latest-wins cells for each `multi` input slot, in the order the last `InSlot` set
-    /// named — which IS `Inputs::get_multi`'s connection order.
-    pub(crate) multi_wires: IndexMap<&'static str, Vec<(ServiceName, Option<Data>)>>,
+    /// Per-WIRE latest-wins cells for each `multi` input slot, each with its `node.slot` source, in
+    /// the order the last `InSlot` set named — which IS `Inputs::get_multi`'s connection order.
+    pub(crate) multi_wires: IndexMap<&'static str, MultiCells>,
     pub(crate) ctx: NodeCtx,
     /// Per-output-slot emit counter for `meta["index"]` — engine-owned, the node never sees it.
     index_counters: HashMap<&'static str, u64>,
@@ -278,11 +281,12 @@ impl NodeRuntime {
         let transport = self.transport.clone();
         for Envelope { seq, control } in transport.drain_control() {
             let ok = match control {
-                Control::InSlot { slot, services } => {
+                Control::InSlot { slot, wires } => {
+                    let services: Vec<ServiceName> = wires.iter().map(|(service, _)| service.clone()).collect();
                     let wired = transport.wire_in(&slot, &services);
                     // The node's own cells follow the set it was told to hold: a slot with no wire
                     // left holds no frame, and a `multi` slot's cells keep their producers' order.
-                    self.reslot(&slot, &services);
+                    self.reslot(&slot, &wires);
                     wired
                 }
                 Control::OutSlot { slot, targets } => transport.wire_out(&slot, &targets),
@@ -347,24 +351,24 @@ impl NodeRuntime {
 
     /// Apply a slot's new wire set to the node's OWN cells: a surviving wire keeps its frame, and a
     /// wire that left takes its frame with it.
-    fn reslot(&mut self, slot: &str, services: &[ServiceName]) {
+    fn reslot(&mut self, slot: &str, wires: &[(ServiceName, String)]) {
         if let Some(cells) = self.multi_wires.get_mut(slot) {
             let mut previous = std::mem::take(cells);
-            *cells = services
+            *cells = wires
                 .iter()
-                .map(|service| {
+                .map(|(service, source)| {
                     let held = previous
                         .iter_mut()
-                        .find(|(name, _)| name == service)
-                        .and_then(|(_, frame)| frame.take());
-                    (service.clone(), held)
+                        .find(|(name, _, _)| name == service)
+                        .and_then(|(_, _, frame)| frame.take());
+                    (service.clone(), source.clone(), held)
                 })
                 .collect();
             return;
         }
         // A single slot has at most one wire, so an empty set is a disconnection: the cell it fed
         // must clear, or a node keeps running on the frame of a producer it is no longer wired to.
-        if services.is_empty() {
+        if wires.is_empty() {
             if let Some(cell) = self.inputs.get_mut(slot) {
                 *cell = None;
             }
@@ -453,7 +457,7 @@ impl NodeRuntime {
         };
         if decl.multi {
             match self.multi_wires.get_mut(decl.name).and_then(|cells| cells.get_mut(wire)) {
-                Some(cell) => cell.1 = Some(frame),
+                Some(cell) => cell.2 = Some(frame),
                 // A wire index the last `InSlot` set does not name. Dropped rather than appended:
                 // appending would put the frame where `Inputs::get_multi` reads another producer.
                 None => return,
@@ -654,7 +658,7 @@ impl NodeRuntime {
     fn missing_required(&self) -> Option<&'static str> {
         self.manifest.inputs.iter().filter(|s| s.required).find_map(|slot| {
             let absent = if slot.multi {
-                self.multi_wires.get(slot.name).is_none_or(|c| !c.iter().any(|(_, f)| f.is_some()))
+                self.multi_wires.get(slot.name).is_none_or(|c| !c.iter().any(|(_, _, f)| f.is_some()))
             } else {
                 self.inputs.get(slot.name).and_then(Option::as_ref).is_none()
             };
@@ -664,10 +668,12 @@ impl NodeRuntime {
 
     /// The present frames on each `multi` slot, in wire order — absent wires dropped, so a node
     /// sees only the frames that actually arrived.
-    fn materialize_multis(&self) -> IndexMap<&'static str, Vec<Data>> {
+    fn materialize_multis(&self) -> goofi_signal_sdk::MultiFrames {
         self.multi_wires
             .iter()
-            .map(|(slot, cells)| (*slot, cells.iter().filter_map(|(_, f)| f.clone()).collect()))
+            .map(|(slot, cells)| {
+                (*slot, cells.iter().filter_map(|(_, source, f)| f.clone().map(|d| (source.clone(), d))).collect())
+            })
             .collect()
     }
 

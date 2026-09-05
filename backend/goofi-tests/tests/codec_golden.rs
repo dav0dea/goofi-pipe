@@ -127,3 +127,22 @@ fn goof_encoder_matches_python_golden() {
         );
     }
 }
+
+#[test]
+fn a_request_carries_each_multi_frame_with_its_source() {
+    // A multi slot's entries cross under one name repeated, each with the `node.slot` that sent
+    // it; a single slot's entry crosses with no source, and an output never has one.
+    let cases = build_cases();
+    let (a, b) = (&cases[0].1, &cases[1].1);
+    let params = goofi_codec::ParamMap::new();
+    let bytes = goofi_codec::encode_request(&params, &[("input", "alpha.out", a), ("input", "beta.out", b), ("gate", "", a)]);
+    let goofi_codec::Request::Process { slots, .. } = goofi_codec::decode_request(&bytes).expect("a request") else {
+        panic!("a run, not a refresh");
+    };
+    let named: Vec<(&str, &str)> = slots.iter().map(|(n, s, _)| (n.as_str(), s.as_str())).collect();
+    assert_eq!(named, vec![("input", "alpha.out"), ("input", "beta.out"), ("gate", "")]);
+    assert_eq!(encode(&slots[1].2), encode(b), "the second entry is beta's own frame");
+    let reply = goofi_codec::decode_response(&goofi_codec::encode_response(&[("out", b)])).expect("a response");
+    let goofi_codec::Response::Slots(outs) = reply else { panic!("slots") };
+    assert_eq!((outs[0].0.as_str(), encode(&outs[0].1)), ("out", encode(b)));
+}

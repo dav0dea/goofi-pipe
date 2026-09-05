@@ -47,7 +47,7 @@ pub(crate) use pyinit::attach;
 pub fn routed_node_type(d: Discovered, subproc_python: &str) -> inproc::PyNodeType {
     let manifest = d.manifest;
     let tier = d.isolation;
-    let in_slots: Vec<&'static str> = manifest.inputs.iter().map(|s| s.name).collect();
+    let in_slots: Vec<(&'static str, bool)> = manifest.inputs.iter().map(|s| (s.name, s.multi)).collect();
     let out_slots: Vec<&'static str> = manifest.outputs.iter().map(|o| o.name).collect();
     let source = std::fs::read_to_string(&d.source).unwrap_or_default();
     let python = subproc_python.to_string();

@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use goofi_tests::{f32s, hex, install, require_python, j, Goofi, Uid};
+use goofi_tests::{ep, f32s, hex, install, require_python, j, text, Goofi, Uid};
 
 /// Set a consumer to free-run, so it produces with nothing wired upstream.
 fn free_run(g: &Goofi, uid: Uid, hz: f64) {
@@ -228,6 +228,36 @@ class Ticker(goofi.Node):
 }
 
 const PULSE_COUNTER: &str = include_str!("fixtures/pulse_counter.py");
+const SOURCES: &str = include_str!("fixtures/sources.py");
+
+#[test]
+fn a_python_multi_slot_names_its_senders_and_follows_a_rename() {
+    // The probe honours `multi`, and a multi slot reaches `process` as `list[tuple[str, Data]]`
+    // in wire order; a rename reaches the child, and a removed wire takes its name with it.
+    let _py = require_python();
+    let g = Goofi::new();
+    install(&g, "sources.py", SOURCES);
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|t| t["type"] == "signal:Sources").expect("Sources is in the palette").clone();
+    assert_eq!(row["input_multi"], j!(["input"]), "{row}");
+
+    let a = g.add("_TestCounter");
+    let b = g.add("_TestCounter");
+    let s = g.add("Sources");
+    g.call("node edit", j!({ "node": hex(a), "name": "alpha" }));
+    g.call("node edit", j!({ "node": hex(b), "name": "beta" }));
+    let probe = g.probe(s, "out");
+    let probe = &probe;
+    let names = |want: &'static str| move |_: &Goofi| probe.latest().filter(|d| text(d) == Some(want)).map(|_| ());
+    g.link(b, "out", s, "input");
+    g.link(a, "out", s, "input");
+    g.until("both senders named, in wire order", names("beta.out,alpha.out"));
+    g.call("node edit", j!({ "node": hex(b), "name": "gamma" }));
+    g.until("the rename to reach the child", names("gamma.out,alpha.out"));
+    g.call("link remove", j!({ "from": ep(hex(b), "out"), "to": ep(hex(s), "input") }));
+    g.until("one sender left", names("alpha.out"));
+    assert!(g.error(s).is_none(), "a healthy python node carries no error");
+}
 
 #[test]
 fn a_python_pulse_param_is_a_request_the_node_answers_with_a_hook() {
@@ -321,6 +351,35 @@ class Absent(goofi.Node):
         return {"out": data.data * 2.0}
 "#;
 
+    /// Run one node once with two frames on its multi slot `input`, reading back `out`.
+    fn once_multi(node: &mut dyn Node, sources: &[&str]) -> Option<Data> {
+        let singles: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        let mut multis: IndexMap<&'static str, Vec<(String, Data)>> = IndexMap::new();
+        multis.insert("input", sources.iter().map(|s| (s.to_string(), frame())).collect());
+        let inp = Inputs::with_multi(&singles, &multis);
+        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
+        outmap.insert("out", None);
+        let params = ParamGroups::new();
+        let mut ctx = NodeCtx::new();
+        {
+            let mut out = Outputs::new(&mut outmap);
+            node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).expect("a run");
+        }
+        outmap.get("out").unwrap().clone()
+    }
+
+    #[test]
+    fn a_multi_slot_reaches_a_node_on_both_tiers_with_its_sources() {
+        let py = subproc_python();
+        let mut here = PyNode::from_source(SOURCES, vec![("input", true)], vec!["out"]).expect("PyNode");
+        let mut there = RemoteNode::new(&py, SOURCES, vec![("input", true)]);
+        for node in [&mut here as &mut dyn Node, &mut there] {
+            let out = once_multi(node, &["alpha.out", "beta.out"]).expect("a frame");
+            assert_eq!(text(&out), Some("alpha.out,beta.out"), "the sources in wire order");
+            assert_eq!(text(&once_multi(node, &[]).expect("a frame")), Some(""), "no wire, no name");
+        }
+    }
+
     #[test]
     fn a_pulse_reaches_a_node_on_both_tiers_through_its_hook() {
         let py = subproc_python();
@@ -394,10 +453,10 @@ class Loud(goofi.Node):
         params.insert("gain".into(), IndexMap::from([("factor".to_string(), Param::int(3, 0, 100))]));
 
         // In-process seeds params and runs setup; the child runs setup lazily on its first request.
-        let mut here = PyNode::from_source(PARITY, vec!["data"], vec!["out"]).expect("PyNode");
+        let mut here = PyNode::from_source(PARITY, vec![("data", false)], vec!["out"]).expect("PyNode");
         here.setup(&mut NodeCtx::new(), &Params::new(&params)).expect("in-process setup");
         let (_, a) = once(&mut here, Some(frame()), &params);
-        let mut there = RemoteNode::new(&py, PARITY, vec!["data"]);
+        let mut there = RemoteNode::new(&py, PARITY, vec![("data", false)]);
         let (_, b) = once(&mut there, Some(frame()), &params);
 
         let (a, b) = (a.expect("in-process frame"), b.expect("subprocess frame"));
@@ -416,10 +475,10 @@ class Loud(goofi.Node):
         // The subprocess wire carries only the slots that HOLD a frame, so the child widens it back.
         let py = subproc_python();
         let p = ParamGroups::new();
-        let mut here = PyNode::from_source(ABSENT, vec!["data"], vec!["out"]).expect("PyNode");
+        let mut here = PyNode::from_source(ABSENT, vec![("data", false)], vec!["out"]).expect("PyNode");
         here.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("in-process setup");
         let (a_res, a) = once(&mut here, None, &p);
-        let mut there = RemoteNode::new(&py, ABSENT, vec!["data"]);
+        let mut there = RemoteNode::new(&py, ABSENT, vec![("data", false)]);
         let (b_res, b) = once(&mut there, None, &p);
 
         assert!(a_res.is_ok(), "in-process tier errored on an absent input: {:?}", a_res.err());
@@ -462,7 +521,7 @@ class Sleeper(goofi.Node):
 
         let g = Goofi::new();
         g.register_dyn(&SLEEPY, Box::new(|_| {
-            Box::new(PyNode::from_source(SLEEPER, vec!["data"], vec!["out"]).expect("PyNode"))
+            Box::new(PyNode::from_source(SLEEPER, vec![("data", false)], vec!["out"]).expect("PyNode"))
         }), &SLEEPY_TIER);
         let src = g.add("_TestCounter");
 

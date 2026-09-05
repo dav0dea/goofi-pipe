@@ -18,9 +18,9 @@ pub type VarName = String;
 /// complete desired set for that slot and the node diffs it, so wiring is idempotent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Control {
-    /// Every producer service feeding this input slot, in wire order — a position survives a
-    /// producer restart, a service name does not.
-    InSlot { slot: String, services: Vec<ServiceName> },
+    /// Every producer service feeding this input slot, in wire order, each with the `node.slot`
+    /// it comes from — a position survives a producer restart, a service name does not.
+    InSlot { slot: String, wires: Vec<(ServiceName, String)> },
     /// Every doorbell to ring after publishing on this output slot, with the [`EventId`] that
     /// says WHY the far node woke.
     OutSlot { slot: String, targets: Vec<(ServiceName, EventId)> },

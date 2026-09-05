@@ -10,7 +10,7 @@ use goofi_node::{BoundVar, DrainWaker, Engine, EventId, GraphView, IsolationCell
 
 use crate::runtime::{
     self,
-    plan::{Phase, Slot, SlotKey, WirePlanner},
+    plan::{same_end, Phase, Slot, SlotKey, Wire, WirePlanner},
 };
 
 
@@ -155,10 +155,10 @@ impl SignalEngine {
         if !foreign && matches!(key.1, Slot::In(_)) && desired == previous {
             return;
         }
-        let removed = previous.iter().copied().filter(|w| !desired.contains(w)).collect();
+        let removed = previous.iter().filter(|w| !desired.iter().any(|d| same_end(d, w))).cloned().collect();
         // A rebirth renames a foreign consumer's door where this planner cannot see it, so every
         // touch re-tells its producers the whole set.
-        let added = desired.iter().copied().filter(|w| foreign || !previous.contains(w)).collect();
+        let added = desired.iter().filter(|w| foreign || !previous.iter().any(|p| same_end(p, w))).cloned().collect();
         // A begin cancels the key's previous sequence — and any ack collected for it, or a stale
         // deferred advance would step the NEW sequence past a phase nobody acked.
         self.pending_advance.retain(|k| k != &key);
@@ -193,13 +193,13 @@ impl SignalEngine {
             // service set, or a binding's whole re-resolved expression. Both are declarative.
             Phase::Apply => match &key.1 {
                 Slot::In(slot) => {
-                    let services = self
+                    let wires = self
                         .wire
                         .desired(key)
-                        .iter()
-                        .filter_map(|(uid, slot)| goofi_transport::output_of(view, *uid, slot))
+                        .into_iter()
+                        .filter_map(|(uid, out, source)| Some((goofi_transport::output_of(view, uid, out)?, source)))
                         .collect();
-                    vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), services })]
+                    vec![(key.0, runtime::Control::InSlot { slot: slot.to_string(), wires })]
                 }
                 Slot::Bind(k) => self.compose_set_param(view, key.0, k).into_iter().collect(),
             },
@@ -207,7 +207,7 @@ impl SignalEngine {
                 .wire
                 .recipients(key, phase)
                 .into_iter()
-                .map(|(uid, slot)| {
+                .map(|(uid, slot, _)| {
                     let targets = self.out_targets(view, uid, slot);
                     (uid, runtime::Control::OutSlot { slot: slot.to_string(), targets })
                 })
@@ -264,8 +264,8 @@ impl SignalEngine {
     }
 }
 
-/// A consumer subscription's desired producers, read off the settled view.
-fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<(Uid, &'static str)> {
+/// A consumer subscription's desired producers, read off the settled view, each named `node.slot`.
+fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<Wire> {
     match &key.1 {
         Slot::In(slot) => {
             // A slot past the event-id budget takes no wires, exactly as it takes no rings.
@@ -277,14 +277,19 @@ fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<(Uid, &'static str)
             if !in_budget {
                 return Vec::new();
             }
-            view.wires_into(key.0, slot).collect()
+            view.wires_into(key.0, slot)
+                .map(|(producer, out)| {
+                    let source = view.nodes.get(&producer).map_or_else(String::new, |n| format!("{}.{out}", n.name));
+                    (producer, out, source)
+                })
+                .collect()
         }
         Slot::Bind(k) => view
             .nodes
             .get(&key.0)
             .and_then(|n| n.bindings.iter().find(|b| b.key == k))
             .filter(|b| b.live)
-            .map(|b| b.vars.iter().filter_map(BoundVar::wire).collect())
+            .map(|b| b.vars.iter().filter_map(BoundVar::wire).map(|(uid, out)| (uid, out, String::new())).collect())
             .unwrap_or_default(),
     }
 }

@@ -32,7 +32,7 @@ fn lingering_user_modules() -> usize {
 fn building_nodes_does_not_leak_modules_into_sys_modules() {
     // Keep the nodes ALIVE: the point is that the `sys.modules` entries are evicted regardless.
     let _nodes: Vec<PyNode> = (0..8)
-        .map(|_| PyNode::from_source(NODE, vec!["data"], vec!["out"]).expect("build node"))
+        .map(|_| PyNode::from_source(NODE, vec![("data", false)], vec!["out"]).expect("build node"))
         .collect();
     assert_eq!(
         lingering_user_modules(),

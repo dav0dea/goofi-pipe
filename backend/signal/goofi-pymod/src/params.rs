@@ -26,8 +26,9 @@ impl DataType {
     }
 }
 
-/// `goofi.InputSlot(dtype, required=False, trigger=True)` — the per-slot options a bare
-/// `goofi.DataType` has nowhere to put; the defaults are the bare form's behaviour.
+/// `goofi.InputSlot(dtype, required=False, trigger=True, multi=False)` — the per-slot options a
+/// bare `goofi.DataType` has nowhere to put; the defaults are the bare form's behaviour. A `multi`
+/// slot reaches `process` as `list[tuple[str, Data]]`, one entry per wire, in wire order.
 #[pyclass]
 pub struct InputSlot {
     #[pyo3(get)]
@@ -36,14 +37,16 @@ pub struct InputSlot {
     pub required: bool,
     #[pyo3(get)]
     pub trigger: bool,
+    #[pyo3(get)]
+    pub multi: bool,
 }
 
 #[pymethods]
 impl InputSlot {
     #[new]
-    #[pyo3(signature = (dtype, required=false, trigger=true))]
-    fn new(dtype: Py<DataType>, required: bool, trigger: bool) -> InputSlot {
-        InputSlot { dtype, required, trigger }
+    #[pyo3(signature = (dtype, required=false, trigger=true, multi=false))]
+    fn new(dtype: Py<DataType>, required: bool, trigger: bool, multi: bool) -> InputSlot {
+        InputSlot { dtype, required, trigger, multi }
     }
 }
 

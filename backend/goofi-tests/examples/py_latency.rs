@@ -41,7 +41,7 @@ fn build(n: usize, src: &'static str, len: i64) -> (Graph, Vec<OutputProbe>) {
     g.apply_global_change("default_ufreq", Some(GlobalValue::Float(1e6)), None).unwrap();
     goofi_bridge::register_dyn_type(&mut g, 
         &PY_MANIFEST,
-        Box::new(move |_| Box::new(PyNode::from_source(src, vec!["data"], vec!["out"]).unwrap()) as Box<dyn Node>),
+        Box::new(move |_| Box::new(PyNode::from_source(src, vec![("data", false)], vec!["out"]).unwrap()) as Box<dyn Node>),
         &PY_TIER,
     );
     let osc = g.add_node("_TestConst", None).unwrap();
@@ -140,7 +140,7 @@ fn main() {
         let rounds = 2000u32;
         // Warm.
         {
-            let mut nd = PyNode::from_source(work, vec!["data"], vec!["out"]).unwrap();
+            let mut nd = PyNode::from_source(work, vec![("data", false)], vec!["out"]).unwrap();
             run_once(&mut nd, &bytes);
         }
         let t = Instant::now();
@@ -148,7 +148,7 @@ fn main() {
             for _ in 0..n {
                 let b = bytes.clone();
                 s.spawn(move || {
-                    let mut nd = PyNode::from_source(work, vec!["data"], vec!["out"]).unwrap();
+                    let mut nd = PyNode::from_source(work, vec![("data", false)], vec!["out"]).unwrap();
                     for _ in 0..rounds {
                         run_once(&mut nd, &b);
                     }
