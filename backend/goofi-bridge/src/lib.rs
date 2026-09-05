@@ -635,7 +635,13 @@ pub use goofi_audio::Clock;
 
 /// The audio engine registered in `g` — its external clock is the concrete door a test drives.
 pub fn audio_engine(g: &mut Graph) -> &mut goofi_audio::AudioEngine {
-    g.engine_mut("audio").and_then(|e| e.as_any_mut().downcast_mut()).expect("the audio engine is registered")
+    try_audio_engine(g).expect("the audio engine is registered")
+}
+
+/// …or nothing, on a demo, which registers no audio engine at all. One resolution behind both
+/// doors: a caller that can be answered without audio asks here.
+pub fn try_audio_engine(g: &mut Graph) -> Option<&mut goofi_audio::AudioEngine> {
+    g.engine_mut("audio").and_then(|e| e.as_any_mut().downcast_mut())
 }
 
 /// The signal engine registered in `g` — the composition root's reach to its concrete doors.

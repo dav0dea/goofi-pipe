@@ -1072,7 +1072,8 @@ pub(crate) fn session_status(
     let dirty = state.is_dirty();
     let mut g = state.graph.lock().unwrap();
     let errors = inspect::errors(&g);
-    let audio = crate::audio_engine(&mut g).status();
+    // A demo registers no audio engine, and status is a READ: it answers what is there.
+    let audio = crate::try_audio_engine(&mut g).map(|a| a.status());
     Ok(json!({
         // The id is what the session-file probe verifies: a listener that answers with another
         // id — or none — is not this session.
@@ -1082,15 +1083,16 @@ pub(crate) fn session_status(
         "dirty": dirty,
         "errors": errors,
         // The timing door: what the clock is doing, read by hand on a device before it is trusted.
-        "audio": {
-            "clock": audio.clock,
-            "device": audio.device,
-            "rate": audio.rate,
-            "channels": audio.channels,
-            "callbacks": audio.callbacks,
-            "xruns": audio.xruns,
-            "render_max_us": audio.render_max_us,
-        },
+        // Null where there is no audio engine to ask — a demo runs the signal plane alone.
+        "audio": audio.map(|a| json!({
+            "clock": a.clock,
+            "device": a.device,
+            "rate": a.rate,
+            "channels": a.channels,
+            "callbacks": a.callbacks,
+            "xruns": a.xruns,
+            "render_max_us": a.render_max_us,
+        })),
     }))
 }
 
