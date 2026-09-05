@@ -22,6 +22,16 @@ replaces it.
 - **reference** is ONE producer output slot and no Python. The param takes the producer's value at
   the producer's rate. A reference is what a cable is, for a param.
 
+**A pulse is a request, never a value** (landed 2026-09-05). `ParamSpec::Pulse` holds no value:
+its record carries only a source (`mode`, `expr`, `ref`, `triggers`), so a reference on it
+survives a save and a `.gfi` never carries a fired state. The op `node param pulse` fires it
+once, through the same request door as a refresh, and it changes no document state, so it is
+not a command and leaves no undo entry. A reference or an expression on a pulse fires on a
+rising edge — zero or false to non-zero or true — detected at the param boundary, once, for
+every engine. A Rust node receives `on_pulse`; a Python node declares `goofi.PulseParam(doc=...)`
+and defines `pulse_<group>_<name>(self)` beside `refresh_<group>_<name>(self)`; an audio node
+gets it through its control half; the inspector draws a button.
+
 **A reference is the string `node.slot`, by name**, in the record, the document, the `.gfi` and
 the op. A rename rewrites it exactly as it rewrites `nd('name')` in an expression — one rename
 mechanism. A deleted producer leaves the reference in place with a binding error and the literal

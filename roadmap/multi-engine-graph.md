@@ -84,10 +84,10 @@ construction carries the boot reclaim sweep) and registers it first on a bare `G
 the shipped nodes reach every engine through its scan of the folders the root's `build.rs`
 prebuilt (2026-09-02: `goofi-nodes` and its inventory are deleted; a shipped Rust node is a
 `.rs` file the engine loads from goofi's build cache, `node-sources.md`). A bare graph is a MODEL — it serializes, and runs
-nothing. A type's engine is WHICH
-library advertises it — no tag field exists anywhere; two libraries claiming one name resolve to
-the first registered advertiser, signal first. Adding an engine is one line there plus its
-library; nothing engine-specific enters the graph.
+nothing. A type id is `engine:Name` (2026-09-05): two engines may offer one name, the record —
+the document, the `.gfi`, every projection — always stores the qualified id, a bare name
+resolves only while one engine offers it, and the palette derives the engine from the id. Adding
+an engine is one line there plus its library; nothing engine-specific enters the graph.
 
 **Settle carries a touched set, because a settled view has no delta.** Link, unlink and topology
 collapse into settle bare — the signal planner's `planned` map is already their diff base. Param
@@ -318,7 +318,7 @@ thread — and its dependency floor becomes `goofi-core` + `goofi-node` + `goofi
 (none of which carries iceoryx2 threads or tokio into the DSP path, so the block-callback
 testability claim survives); graphics loses its two stale sentences (the "CRDT doc", and the
 archive as the reason the wire name is fixed — the true anchor is the engine's registered id,
-which library advertises the type, and the dtype vocabulary).
+which every type id now records as its first half, and the dtype vocabulary).
 
 ## The order decided
 

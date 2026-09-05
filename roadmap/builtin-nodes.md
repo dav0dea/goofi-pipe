@@ -4,6 +4,10 @@ The node library was reset to a **tabula rasa** so that growing it is a design e
 an act of archaeology. Growing it is the next major project, and it is to be **co-designed with the
 user**, not chosen unilaterally.
 
+The node library program's step 1 — the seam: `engine:Name` type ids, tags, pulse params, page
+order, multi-slot senders — landed 2026-09-05. The library itself is rewritten in the program's
+later steps; `library.md` holds the set.
+
 ## What ships today
 
 Fourteen nodes, and each one was added to prove a seam rather than to fill a category:
@@ -69,8 +73,15 @@ known to be short, and each is a param design rather than a new node:
   the Rust manifest. There are no `config_*` functions.
 - A node that cannot load must explain itself in the palette rather than vanish.
 - Params persist one-to-one with no migration, ever, so a param name is a permanent decision.
-- The universal `common` group is injected at one site; a node that declares a `common` param has
-  said what it means by it and nothing overwrites that.
+- The universal `common` group is injected at one site, LAST; a node that declares a `common` param
+  has said what it means by it and nothing overwrites that.
+- Param pages show in the manifest's declared order, `common` last: the record's insertion order
+  is the wire's, and the client sorts nothing (2026-09-05).
+- A node declares `tags` from goofi's closed vocabulary — `goofi_node::Tag` in Rust, `TAGS = [...]`
+  in Python — and `category` is gone; the engine and the bundle are facets the palette derives,
+  never tags (2026-09-05).
+- A `multi` input slot hands the node every frame with the `node.slot` that sent it, in wire
+  order, and a rename of a sender reaches every consumer (2026-09-05).
 
 ## Open questions
 

@@ -30,9 +30,9 @@ The four answers, in build order:
 - **One graph, one document, two engines.** Same uid space, commands, history, plain-JSON doc,
   `.gfi`, palette, sub-patch scopes and panels. What differs is only WHERE a node executes.
 - **The wire name is `graphics`**, not `video` — this engine is compute, geometry and distance
-  fields, and video describes one output. It is fixed now by the engine's registered id — which
-  library advertises a type is its engine — and the dtype vocabulary; the archive records
-  nothing about engines.
+  fields, and video describes one output. It is fixed now by the engine's registered id — the
+  first half of every type id, `graphics:Name`, which the archive records — and the dtype
+  vocabulary.
 - **UX cost is proportional to compute cost.** Free reinterpretation is invisible; cheap GPU-side
   conversion is automatic but measured; a **clock crossing gets an explicit bridge node**.
 - **Every graphics preview is a server-rendered image stream**, atlas-composited into one encoded
