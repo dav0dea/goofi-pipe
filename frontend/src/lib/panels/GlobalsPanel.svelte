@@ -1,11 +1,13 @@
-<!-- Globals panel — a key/value table over the patch's globals. System globals are editable in
-     value but locked for delete/rename. -->
+<!-- Globals panel — a key/value table over the patch's globals, one collapsed section per group.
+     System globals are editable in value but locked for delete/rename; an element owned by a
+     control panel is read-only here, because that panel owns it. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { isValidIdentifier, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
+	import { groupedGlobals, isValidIdentifier, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 	import {
 		Button,
+		Disclosure,
 		Icon,
 		IconButton,
 		MODE_ATTRS,
@@ -21,11 +23,18 @@
 	let {}: PanelProps = $props();
 	const g = graph();
 	const globals = $derived(g.globals);
+	const groups = $derived(groupedGlobals(globals));
 
+	let newGroup = $state('patch');
 	let newName = $state('');
 	let newType = $state<GlobalType>('float');
-	const nameTaken = $derived(globals.some((gv) => gv.name === newName));
-	const canAdd = $derived(isValidIdentifier(newName) && !nameTaken);
+	const fullName = $derived(`${newGroup}.${newName}`);
+	const nameTaken = $derived(globals.some((gv) => gv.name === fullName));
+	const nameOk = $derived(isValidIdentifier(newGroup) && isValidIdentifier(newName));
+	const canAdd = $derived(nameOk && !nameTaken);
+
+	// A group starts closed: a patch has many, and the panel is a list of them, not of every value.
+	let open = $state<Record<string, boolean>>({});
 
 	function zeroFor(type: GlobalType): number | string | boolean {
 		return type === 'bool' ? false : type === 'string' ? '' : 0;
@@ -34,7 +43,8 @@
 	async function add(): Promise<void> {
 		if (!canAdd) return;
 		try {
-			await g.addGlobal(newName, zeroFor(newType), newType);
+			await g.addGlobal(fullName, zeroFor(newType), newType);
+			open[newGroup] = true;
 			newName = '';
 		} catch {
 			/* server rejected (invalid name / collision) — keep the field for correction */
@@ -57,8 +67,8 @@
 
 	function commitName(gv: GlobalView, raw: string): void {
 		const next = raw.trim();
-		if (next === gv.name) return;
-		void g.renameGlobal(gv.name, next).catch(() => {
+		if (next === gv.element) return;
+		void g.renameGlobal(gv.name, `${gv.group}.${next}`).catch(() => {
 			/* rejected — the field reverts to gv.name on the next mirror-back render */
 		});
 	}
@@ -66,92 +76,135 @@
 	function numberDisplay(gv: GlobalView): number {
 		return typeof gv.value === 'number' ? gv.value : 0;
 	}
+
+	function commitGroup(from: string, raw: string): void {
+		const next = raw.trim();
+		if (next === from) return;
+		void g.renameGlobalGroup(from, next).catch(() => {
+			/* rejected — the header reverts on the next mirror-back render */
+		});
+	}
 </script>
 
 <div class="wrap" data-testid="globals-panel">
 	<ScrollArea>
 		<div class="gp-body">
-			<table>
-				<thead>
-					<tr>
-						<th class="c-name">Name</th>
-						<th class="c-val">Value</th>
-						<th class="c-act" aria-label="Actions"></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each globals as gv (gv.name)}
-						<tr data-testid="global-row" data-name={gv.name} data-system={gv.system}>
-							<td class="c-name">
-								{#if gv.system}
-									<span
-										class="sysname"
-										title={gv.locked
-											? 'Machine global — the value is this machine\u2019s, read-only'
-											: 'System global — value editable, name locked'}
-									>
-										<span class="lock" aria-hidden="true">🔒</span>{gv.name}
-									</span>
-								{:else}
-									<TextInput
-										inputmode="search"
-										data-testid="global-name"
-										value={gv.name}
-										autocomplete="off"
-										onChange={(v) => commitName(gv, v)}
-									/>
-								{/if}
-							</td>
-							<td class="c-val">
-								{#if gv.locked}
-									<span class="ro-value" data-testid="global-value">{String(gv.value)}</span>
-								{:else if gv.type === 'bool'}
-									<Toggle
-										data-testid="global-value"
-										value={gv.value === true}
-										onChange={(v) => commitValue(gv, v)}
-									/>
-								{:else if gv.type === 'string'}
-									<!-- Machine-read: the `text` default's autocorrect would corrupt a good value. -->
-									<TextInput
-										inputmode="search"
-										data-testid="global-value"
-										value={String(gv.value)}
-										autocomplete="off"
-										onChange={(v) => commitValue(gv, v)}
-									/>
-								{:else}
-									<NumberInput
-										data-testid="global-value"
-										value={numberDisplay(gv)}
-										onChange={(v) => commitValue(gv, v)}
-									/>
-								{/if}
-							</td>
-							<td class="c-act">
-								<span class="type" title="type">{gv.type}</span>
-								{#if !gv.system}
-									<IconButton
-										variant="ghost"
-										size="sm"
-										data-testid="global-delete"
-										title="Delete global"
-										label="Delete {gv.name}"
-										onclick={() => void g.removeGlobal(gv.name)}><Icon name="x" /></IconButton
-									>
-								{/if}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+			{#each groups as grp (grp.group)}
+				<Disclosure
+					class="grp"
+					data-testid="global-group"
+					data-group={grp.group}
+					bind:open={open[grp.group]}
+				>
+					{#snippet summary()}
+						<span class="grp-name">{grp.group}</span>
+						<span class="grp-count">{grp.entries.length}</span>
+					{/snippet}
+					<table>
+						<tbody>
+							{#each grp.entries as gv (gv.name)}
+								<tr
+									data-testid="global-row"
+									data-name={gv.name}
+									data-system={gv.system}
+									data-control={gv.control ? gv.control.kind : undefined}
+								>
+									<td class="c-name">
+										{#if gv.system || gv.control}
+											<span
+												class="sysname"
+												title={gv.control
+													? 'Control element — the control panel owns it'
+													: gv.locked
+														? 'Machine global — the value is this machine\u2019s, read-only'
+														: 'System global — value editable, name locked'}
+											>
+												<span class="lock" aria-hidden="true">🔒</span>{gv.element}
+											</span>
+										{:else}
+											<TextInput
+												inputmode="search"
+												data-testid="global-name"
+												value={gv.element}
+												autocomplete="off"
+												onChange={(v) => commitName(gv, v)}
+											/>
+										{/if}
+									</td>
+									<td class="c-val">
+										{#if gv.locked || gv.control}
+											<span class="ro-value" data-testid="global-value">{String(gv.value)}</span>
+										{:else if gv.type === 'bool'}
+											<Toggle
+												data-testid="global-value"
+												value={gv.value === true}
+												onChange={(v) => commitValue(gv, v)}
+											/>
+										{:else if gv.type === 'string'}
+											<!-- Machine-read: the `text` default's autocorrect would corrupt a good value. -->
+											<TextInput
+												inputmode="search"
+												data-testid="global-value"
+												value={String(gv.value)}
+												autocomplete="off"
+												onChange={(v) => commitValue(gv, v)}
+											/>
+										{:else}
+											<NumberInput
+												data-testid="global-value"
+												value={numberDisplay(gv)}
+												onChange={(v) => commitValue(gv, v)}
+											/>
+										{/if}
+									</td>
+									<td class="c-act">
+										<span class="type" title="type">{gv.type}</span>
+										{#if !gv.system && !gv.control}
+											<IconButton
+												variant="ghost"
+												size="sm"
+												data-testid="global-delete"
+												title="Delete global"
+												label="Delete {gv.name}"
+												onclick={() => void g.removeGlobal(gv.name)}><Icon name="x" /></IconButton
+											>
+										{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+					{#if grp.entries.every((e) => !e.system)}
+						<div class="grp-rename">
+							<TextInput
+								inputmode="search"
+								data-testid="global-group-name"
+								value={grp.group}
+								autocomplete="off"
+								onChange={(v) => commitGroup(grp.group, v)}
+							/>
+						</div>
+					{/if}
+				</Disclosure>
+			{/each}
 
 			<div class="add" data-testid="global-add">
 				<input
 					{...MODE_ATTRS.search}
 					class="name"
+					data-testid="global-add-group"
+					placeholder="group"
+					bind:value={newGroup}
+					autocomplete="off"
+					onkeydown={(e) => {
+						if (e.key === 'Enter') add();
+					}}
+				/>
+				<input
+					{...MODE_ATTRS.search}
+					class="name"
 					data-testid="global-add-name"
-					placeholder="new_global"
+					placeholder="element"
 					bind:value={newName}
 					autocomplete="off"
 					onkeydown={(e) => {
@@ -167,10 +220,10 @@
 				/>
 				<Button size="sm" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</Button>
 			</div>
-			{#if newName && !isValidIdentifier(newName)}
-				<div class="hint bad">Not a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
+			{#if newName && !nameOk}
+				<div class="hint bad">Every global is `group.element`, each a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
 			{:else if nameTaken}
-				<div class="hint bad">A global named “{newName}” already exists.</div>
+				<div class="hint bad">A global named “{fullName}” already exists.</div>
 			{/if}
 		</div>
 	</ScrollArea>
@@ -191,15 +244,17 @@
 		border-collapse: collapse;
 		font-size: var(--fs-small);
 	}
-	th {
-		text-align: left;
-		font-weight: 500;
+	.grp-name {
+		font-family: var(--font-mono);
+		font-size: var(--fs-small);
+	}
+	.grp-count {
+		margin-left: var(--space-2);
 		color: var(--text-muted);
 		font-size: var(--fs-micro);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		padding: var(--space-1) var(--space-3) var(--space-3);
-		border-bottom: 1px solid var(--border);
+	}
+	.grp-rename {
+		padding: var(--space-2) var(--space-3) var(--space-4);
 	}
 	td {
 		padding: var(--space-2) var(--space-3);

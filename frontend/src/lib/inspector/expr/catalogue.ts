@@ -21,7 +21,10 @@ export interface CatalogueNode {
 }
 
 export interface CatalogueGlobal {
+	/** The full `group.element`. */
 	name: string;
+	group: string;
+	element: string;
 	type: string;
 }
 
@@ -54,6 +57,6 @@ export function liveCatalogue(g: GraphStore = graph()): ExprCatalogue {
 				}))
 			}];
 		}),
-		globals: g.globals.map((gv) => ({ name: gv.name, type: gv.type }))
+		globals: g.globals.map((gv) => ({ name: gv.name, group: gv.group, element: gv.element, type: gv.type }))
 	};
 }

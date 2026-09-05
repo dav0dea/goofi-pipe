@@ -220,10 +220,28 @@ export function linkViews(doc: Doc): LinkView[] {
 /** A global's declared scalar type — it disambiguates float↔int after JS's number normalization. */
 export type GlobalType = 'float' | 'int' | 'bool' | 'string';
 
+/** A control element's widget, its range and its place in the panel's grid. */
+export interface ControlView {
+	kind: 'knob' | 'slider' | 'number' | 'field' | 'toggle' | 'dropdown';
+	min?: number;
+	max?: number;
+	step?: number;
+	options?: string[];
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
 export interface GlobalView {
+	/** The full `group.element` — what an expression spells and every op names. */
 	name: string;
+	group: string;
+	element: string;
 	value: number | string | boolean;
 	type: GlobalType;
+	/** Present when this global is a control-panel element; the Globals panel draws it read-only. */
+	control?: ControlView;
 	/** A system global (editable value, but never deletable/renamable). */
 	system: boolean;
 	/** A machine-owned global: the value is read-only too. */
@@ -237,12 +255,34 @@ export function globalViews(doc: Doc): GlobalView[] {
 		const g = obj(raw);
 		const value = g.value;
 		const type = g.type;
+		const dot = name.indexOf('.');
 		if (
+			dot > 0 &&
 			(typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') &&
 			(type === 'float' || type === 'int' || type === 'bool' || type === 'string')
 		) {
-			out.push({ name, value, type, system: g.system === true, locked: g.locked === true });
+			out.push({
+				name,
+				group: name.slice(0, dot),
+				element: name.slice(dot + 1),
+				value,
+				type,
+				system: g.system === true,
+				locked: g.locked === true,
+				control: (g.control as ControlView | undefined) ?? undefined
+			});
 		}
+	}
+	return out;
+}
+
+/** Globals folded into their groups, each group in first-appearance order. */
+export function groupedGlobals(views: GlobalView[]): { group: string; entries: GlobalView[] }[] {
+	const out: { group: string; entries: GlobalView[] }[] = [];
+	for (const v of views) {
+		const held = out.find((g) => g.group === v.group);
+		if (held) held.entries.push(v);
+		else out.push({ group: v.group, entries: [v] });
 	}
 	return out;
 }

@@ -36,8 +36,9 @@ const CAT: ExprCatalogue = {
 	],
 	self: 'buffer0',
 	globals: [
-		{ name: 'default_ufreq', type: 'float' },
-		{ name: 'gain', type: 'float' }
+		{ name: 'system.default_ufreq', group: 'system', element: 'default_ufreq', type: 'float' },
+		{ name: 'mixer.gain', group: 'mixer', element: 'gain', type: 'float' },
+		{ name: 'mixer.pan', group: 'mixer', element: 'pan', type: 'float' }
 	]
 };
 
@@ -203,13 +204,15 @@ describe('the reference paths: .out, .params, and me', () => {
 });
 
 describe('globals. and np.', () => {
-	it('offers the patch’s global keys after globals.', () => {
-		expect(labels('globals.')).toEqual(['default_ufreq', 'gain']);
-		expect(labels('globals.ga'), 'partially typed').toEqual(['default_ufreq', 'gain']);
+	it('offers the GROUPS after globals., and the group’s elements after one', () => {
+		expect(labels('globals.')).toEqual(['system', 'mixer']);
+		expect(labels('globals.mi'), 'partially typed').toEqual(['system', 'mixer']);
+		expect(labels('globals.mixer.')).toEqual(['gain', 'pan']);
+		expect(labels('globals.mixer.ga'), 'partially typed').toEqual(['gain', 'pan']);
 	});
 
-	it('carries the global’s declared type as the detail', () => {
-		expect(entriesFor(at('globals.')!, CAT)[0].detail).toBe('float');
+	it('carries the element’s declared type as the detail', () => {
+		expect(entriesFor(at('globals.mixer.')!, CAT)[0].detail).toBe('float');
 	});
 
 	it('offers the curated numpy surface after np.', () => {
@@ -226,7 +229,7 @@ describe('globals. and np.', () => {
 	});
 
 	it('reads globals. as the right operand of an expression', () => {
-		expect(labels("nd('a').out + globals.")).toEqual(['default_ufreq', 'gain']);
+		expect(labels("nd('a').out + globals.")).toEqual(['system', 'mixer']);
 	});
 });
 

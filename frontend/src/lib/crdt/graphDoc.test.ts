@@ -8,6 +8,7 @@ import {
 	facadeFaces,
 	docParams,
 	globalViews,
+	groupedGlobals,
 	isValidIdentifier,
 	isValidName,
 	arrangementTabs,
@@ -186,15 +187,40 @@ describe('graphDoc globals', () => {
 		const doc: Doc = {
 			...seedDoc(),
 			globals: {
-				default_ufreq: { value: 30, type: 'float', system: true },
-				goofi_home: { value: '/home/u/.goofi', type: 'string', system: true, locked: true },
-				subject: { value: 'P07', type: 'string', system: false }
+				'system.default_ufreq': { value: 30, type: 'float', system: true },
+				'system.goofi_home': { value: '/home/u/.goofi', type: 'string', system: true, locked: true },
+				'patch.subject': { value: 'P07', type: 'string', system: false },
+				'mixer.gain': {
+					value: 0.5,
+					type: 'float',
+					system: false,
+					control: { kind: 'knob', min: 0, max: 1, x: 2, y: 1, w: 2, h: 2 }
+				},
+				// Every global is `group.element`; one without a group is malformed and is skipped,
+				// exactly as one with an unreadable type is.
+				loose: { value: 1, type: 'float', system: false }
 			}
 		};
 		expect(globalViews(doc)).toEqual([
-			{ name: 'default_ufreq', value: 30, type: 'float', system: true, locked: false },
-			{ name: 'goofi_home', value: '/home/u/.goofi', type: 'string', system: true, locked: true },
-			{ name: 'subject', value: 'P07', type: 'string', system: false, locked: false }
+			{ name: 'system.default_ufreq', group: 'system', element: 'default_ufreq', value: 30, type: 'float', system: true, locked: false, control: undefined },
+			{ name: 'system.goofi_home', group: 'system', element: 'goofi_home', value: '/home/u/.goofi', type: 'string', system: true, locked: true, control: undefined },
+			{ name: 'patch.subject', group: 'patch', element: 'subject', value: 'P07', type: 'string', system: false, locked: false, control: undefined },
+			{ name: 'mixer.gain', group: 'mixer', element: 'gain', value: 0.5, type: 'float', system: false, locked: false, control: { kind: 'knob', min: 0, max: 1, x: 2, y: 1, w: 2, h: 2 } }
+		]);
+	});
+
+	it('folds globals into groups, each group in first-appearance order', () => {
+		const views = globalViews({
+			...seedDoc(),
+			globals: {
+				'mixer.gain': { value: 1, type: 'float', system: false },
+				'patch.subject': { value: 'P07', type: 'string', system: false },
+				'mixer.pan': { value: 0, type: 'float', system: false }
+			}
+		});
+		expect(groupedGlobals(views).map((g) => [g.group, g.entries.map((e) => e.element)])).toEqual([
+			['mixer', ['gain', 'pan']],
+			['patch', ['subject']]
 		]);
 	});
 
