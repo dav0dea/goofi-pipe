@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use vst3::{uid, Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
 
 const NAME: &str = "GoofiFixture";
+/// A second audio class behind the same processor, differing only in the subcategories that
+/// name it an instrument — which is what the palette reads to tag a plugin.
+const SYNTH_NAME: &str = "GoofiSynth";
+const SYNTH_CID: TUID = uid(0x2B3C4D5E, 0x6F708192, 0xA3B4C5D6, 0xE7F80919);
 const VOICES: usize = 16;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
@@ -376,8 +380,16 @@ impl IEditControllerTrait for Controller {
 struct Factory;
 
 impl Class for Factory {
-    type Interfaces = (IPluginFactory,);
+    type Interfaces = (IPluginFactory, IPluginFactory2);
 }
+
+/// One row per class the factory offers: cid, class category, name, VST3 subcategories.
+/// Both `getClassInfo` and `getClassInfo2` read it, so the two answers cannot disagree.
+const CLASSES: [(TUID, &str, &str, &str); 3] = [
+    (Processor::CID, "Audio Module Class", NAME, "Fx"),
+    (Controller::CID, "Component Controller Class", NAME, ""),
+    (SYNTH_CID, "Audio Module Class", SYNTH_NAME, "Instrument|Synth"),
+];
 
 impl IPluginFactoryTrait for Factory {
     unsafe fn getFactoryInfo(&self, info: *mut PFactoryInfo) -> tresult {
@@ -389,26 +401,24 @@ impl IPluginFactoryTrait for Factory {
     }
 
     unsafe fn countClasses(&self) -> i32 {
-        2
+        CLASSES.len() as i32
     }
 
     unsafe fn getClassInfo(&self, index: i32, info: *mut PClassInfo) -> tresult {
-        let (cid, category) = match index {
-            0 => (Processor::CID, "Audio Module Class"),
-            1 => (Controller::CID, "Component Controller Class"),
-            _ => return kInvalidArgument,
+        let Some(&(cid, category, name, _)) = CLASSES.get(index as usize) else {
+            return kInvalidArgument;
         };
         let info = &mut *info;
         info.cid = cid;
         info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
         copy_cstring(category, &mut info.category);
-        copy_cstring(NAME, &mut info.name);
+        copy_cstring(name, &mut info.name);
         kResultOk
     }
 
     unsafe fn createInstance(&self, cid: FIDString, iid: FIDString, obj: *mut *mut c_void) -> tresult {
         let instance = match *(cid as *const TUID) {
-            Processor::CID => ComWrapper::new(Processor::new()).to_com_ptr::<FUnknown>(),
+            Processor::CID | SYNTH_CID => ComWrapper::new(Processor::new()).to_com_ptr::<FUnknown>(),
             Controller::CID => ComWrapper::new(Controller { gain: Cell::new(1.0) }).to_com_ptr::<FUnknown>(),
             _ => None,
         };
@@ -419,6 +429,25 @@ impl IPluginFactoryTrait for Factory {
             }
             None => kInvalidArgument,
         }
+    }
+}
+
+impl IPluginFactory2Trait for Factory {
+    unsafe fn getClassInfo2(&self, index: i32, info: *mut PClassInfo2) -> tresult {
+        let Some(&(cid, category, name, sub_categories)) = CLASSES.get(index as usize) else {
+            return kInvalidArgument;
+        };
+        let info = &mut *info;
+        info.cid = cid;
+        info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
+        info.classFlags = 0;
+        copy_cstring(category, &mut info.category);
+        copy_cstring(name, &mut info.name);
+        copy_cstring(sub_categories, &mut info.subCategories);
+        copy_cstring("goofi", &mut info.vendor);
+        copy_cstring("1.0.0", &mut info.version);
+        copy_cstring("VST 3.7.0", &mut info.sdkVersion);
+        kResultOk
     }
 }
 

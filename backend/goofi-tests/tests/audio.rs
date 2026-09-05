@@ -735,7 +735,8 @@ fn a_patch_sounds_under_the_external_clock() {
         std::fs::copy(&artifact, into.join(file)).unwrap();
     };
     bundled("GoofiFixture", built(false));
-    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiFixture"]));
+    // Two audio classes in the one bundle: an effect, and a synth whose subcategories say so.
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiFixture", "audio:GoofiSynth"]));
     let plug = g.add("GoofiFixture");
     let params = g.doc()["nodes"][hex(plug)]["params"].clone();
     for (group, name) in [("voice", "gate"), ("voice", "pitch"), ("voice", "velocity"), ("plugin", "gain")] {
@@ -743,11 +744,14 @@ fn a_patch_sounds_under_the_external_clock() {
     }
     // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
     // own words, stepped past it a number, and read-only is not a param at all.
-    let plugin = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
-        .find(|v| v["type"] == "audio:GoofiFixture").cloned().expect("the plugin is in the palette");
+    let row = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == ty).cloned().unwrap_or_else(|| panic!("{ty} is in the palette"));
+    let plugin = row("audio:GoofiFixture");
     // A plugin declares no tag: its VST3 subcategories place it, and the vendor rides the doc line.
     assert_eq!(plugin["tags"], j!(["transform"]), "an effect, not an instrument: {plugin}");
     assert_eq!(plugin["doc"], j!("goofi: GoofiFixture"), "{plugin}");
+    let synth = row("audio:GoofiSynth");
+    assert_eq!(synth["tags"], j!(["generator"]), "`Instrument` in its subcategories: {synth}");
     let schema = plugin["params"].clone();
     assert_eq!(schema["plugin"]["shape"]["options"], j!(["soft", "mid", "hard"]), "{schema}");
     assert_eq!(schema["plugin"]["steps"]["vmax"], j!(200), "{schema}");

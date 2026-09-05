@@ -1,8 +1,8 @@
 //! The `goofi.Node` base class Python node authors derive from. A node declares itself in the
-//! `INPUTS`/`OUTPUTS`/`PARAMS` class constants and the `PRODUCER` flag; each may be omitted.
+//! `INPUTS`/`OUTPUTS`/`PARAMS`/`TAGS` class constants and the `PRODUCER` flag; each may be omitted.
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 #[pyclass(subclass)]
 pub struct Node {}
@@ -40,6 +40,13 @@ impl Node {
     #[pyo3(name = "PRODUCER")]
     fn producer() -> bool {
         false
+    }
+
+    /// The palette facets, from goofi's closed tag vocabulary — `["analysis", "eeg"]`.
+    #[classattr]
+    #[pyo3(name = "TAGS")]
+    fn tags(py: Python<'_>) -> Bound<'_, PyList> {
+        PyList::empty(py)
     }
 
     /// Init after params are seeded, once it succeeds; a raise is retried on this same instance,

@@ -29,7 +29,7 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
         producer: cls.getattr("PRODUCER")?.extract()?,
-        tags: cls.getattr("TAGS").ok().map(|v| v.extract::<Vec<String>>()).transpose()?.unwrap_or_default(),
+        tags: cls.getattr("TAGS")?.extract()?,
         inputs: slots(&cls.getattr("INPUTS")?)?,
         outputs: out_slots(&cls.getattr("OUTPUTS")?)?,
         params: params(&cls.getattr("PARAMS")?)?,

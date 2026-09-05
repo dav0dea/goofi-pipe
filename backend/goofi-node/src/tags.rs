@@ -1,7 +1,6 @@
 //! The closed tag vocabulary. The engine and the bundle are facets the palette derives, never tags.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
 pub enum Tag {
     Input,
     Output,

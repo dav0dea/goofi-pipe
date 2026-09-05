@@ -376,7 +376,11 @@ fn every_manifest_carries_only_standard_tags_and_no_category() {
     for ty in types {
         let row = row(&g, &ty);
         assert!(row.get("category").is_none(), "{ty}: category is gone");
-        for t in row["tags"].as_array().expect("a tags list") {
+        let tags = row["tags"].as_array().expect("a tags list");
+        // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
+        // wheel looks: the probe emits no tags and the feature is inert while the suite is green.
+        assert!(!tags.is_empty(), "{ty}: a shipped type declares a tag");
+        for t in tags {
             assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
         }
     }
