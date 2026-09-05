@@ -523,6 +523,9 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     // Python cannot parse as one breaks every reference to it, and the rewrite that follows the
     // NEXT rename can no longer find what it broke. The name is refused instead, for every kind
     // of node: the namespace is one, so the rule on it is one.
+    // Read once the node is settled: the dump carries its stage, and a boot that no longer waits on
+    // a probe can reach this line while the node is still creating.
+    g.ready(buf);
     let before_bad = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
     for bad in ["nd()", "a b", "1st", "a.b", "", "class", "it's"] {
         g.refuse("node edit", j!({ "node": outp, "name": bad }));
