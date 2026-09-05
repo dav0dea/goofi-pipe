@@ -142,29 +142,24 @@ fn http_post(url: &str, path: &str, body: &str, timeout: Duration) -> Result<(u1
         .parse::<std::net::SocketAddr>()
         .map_err(|_| HttpErr::After(format!("`{url}` is not `http://ip:port`")))?;
     // The CONNECT is always short: a listener answers a SYN at once or not at all, and only the
-    // read may lawfully be slow (a `session load` provisions nodes). So a connect that fails
-    // means the address holds nothing — by STAGE, never by error kind, because Windows DROPS a
-    // SYN to a closed port and the kind then reads "timed out" for the one definitively dead
-    // state. The exception is the unreachable/refused-by-policy family: the caller's OWN side
-    // (an agent harness sandboxes shells with no network by default) said "I cannot even ask",
-    // which proves nothing about the server and must never sweep its record.
+    // read may lawfully be slow (a `session load` provisions nodes). So the one DEFINITIVE failure
+    // is a refusal — the host answered, and nothing listens there — plus, on Windows, the dropped
+    // SYN a closed port gets, which reads as timed out. Everything else is the caller's OWN side
+    // saying it could not even ask (an agent harness sandboxes shells with no network by default,
+    // and each OS names that its own way), which proves nothing about the server and must never
+    // sweep its record.
     let mut s = TcpStream::connect_timeout(&addr, PROBE).map_err(|e| {
         use std::io::ErrorKind as K;
         match e.kind() {
+            K::ConnectionRefused => HttpErr::NoListener,
             // A unix closed port answers the SYN with a reset at once, so a connect that timed
             // out was DROPPED — by a firewall, or a sandbox — and proves nothing there.
-            K::PermissionDenied | K::NetworkUnreachable | K::HostUnreachable
-            | K::AddrNotAvailable => HttpErr::After(
+            K::TimedOut if !cfg!(unix) => HttpErr::NoListener,
+            _ => HttpErr::After(
                 "the connect was blocked on this side — a sandboxed shell does this; \
                  retry with network access allowed"
                     .into(),
             ),
-            K::TimedOut if cfg!(unix) => HttpErr::After(
-                "the connect was blocked on this side — a sandboxed shell does this; \
-                 retry with network access allowed"
-                    .into(),
-            ),
-            _ => HttpErr::NoListener,
         }
     })?;
     s.set_read_timeout(Some(timeout)).map_err(after)?;
