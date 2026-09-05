@@ -71,6 +71,9 @@ pub struct SignalEngine {
     pending_ready: Vec<Uid>,
     /// Sequences whose phase an ack completed; the settle that follows advances each.
     pending_advance: Vec<SlotKey>,
+    /// The graph's OWN iceoryx2 node, shared by every [`runtime::NodeChannel`]. Declared LAST: it
+    /// must drop after every port built from it, or it leaves its own directory behind.
+    graph_node: Option<goofi_transport::IoxNode>,
 }
 
 impl SignalEngine {
@@ -91,6 +94,7 @@ impl SignalEngine {
             rust_loaded: HashMap::new(),
             pending_ready: Vec::new(),
             pending_advance: Vec::new(),
+            graph_node: None,
         }
     }
 
@@ -334,8 +338,15 @@ impl Engine for SignalEngine {
         let manifest = self.find_entry(type_name).expect("resolved above").manifest;
         let halt = Arc::new(runtime::Halt::default());
         let base = goofi_transport::service_base(&self.instance, uid, generation);
+        if self.graph_node.is_none() {
+            match goofi_transport::iox_node() {
+                Ok(node) => self.graph_node = Some(node),
+                Err(e) => return Some(e),
+            }
+        }
+        let graph_node = self.graph_node.as_ref().expect("just ensured");
         let started = runtime::IoxTransport::create(&self.instance, uid, generation, manifest)
-            .and_then(|transport| Ok((transport, runtime::NodeChannel::open(&base)?)))
+            .and_then(|transport| Ok((transport, runtime::NodeChannel::open(graph_node, &base)?)))
             .and_then(|(transport, channel)| {
                 let env = runtime::NodeEnv {
                     evaluator: self.evaluator.clone(),

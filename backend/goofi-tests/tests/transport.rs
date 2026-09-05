@@ -94,7 +94,8 @@ fn an_undrained_control_mailbox_keeps_the_whole_burst() {
     // past any plausible drain interval: a node deep inside `process` is the burst this has to survive.
     const BURST: u64 = 200;
     let transport = IoxTransport::create(&instance(), Uid(30), 0, manifest()).unwrap();
-    let channel = NodeChannel::open(&base_of(Uid(30))).unwrap();
+    let graph_node = goofi_transport::iox_node().unwrap();
+    let channel = NodeChannel::open(&graph_node, &base_of(Uid(30))).unwrap();
     for seq in 1..=BURST {
         channel.send(Envelope {
             seq,
@@ -150,7 +151,8 @@ fn a_control_message_crosses_shared_memory_and_comes_back_acked() {
         transport.clone(),
         NodeEnv::detached(),
     );
-    let channel = NodeChannel::open(&base_of(Uid(4))).unwrap();
+    let graph_node = goofi_transport::iox_node().unwrap();
+    let channel = NodeChannel::open(&graph_node, &base_of(Uid(4))).unwrap();
 
     assert_eq!(node.next_wake(), None, "parked: nothing has asked this node to run");
     channel.send(Envelope {

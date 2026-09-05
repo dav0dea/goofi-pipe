@@ -227,21 +227,19 @@ pub struct NodeChannel {
     control: BytePublisher,
     status: ByteSubscriber,
     door: Doorbell,
-    /// Last, for the reason [`IoxTransport::node`] states: it must drop AFTER every port built
-    /// from it, or it leaves its own directory behind.
-    _node: IoxNode,
 }
 
 impl NodeChannel {
-    pub fn open(base: &str) -> Result<NodeChannel, String> {
-        let node = iox_node()?;
-        let control = publisher(&message_service(&node, &control_service(base))?, "control", MESSAGE_SLICE)?;
-        let status = message_service(&node, &status_service(base))?
+    /// `node` is the GRAPH's own, shared by every channel: the graph is one owner, and one
+    /// iceoryx2 node per host cost a monitor triple and a `node.details` per graph node.
+    pub fn open(node: &IoxNode, base: &str) -> Result<NodeChannel, String> {
+        let control = publisher(&message_service(node, &control_service(base))?, "control", MESSAGE_SLICE)?;
+        let status = message_service(node, &status_service(base))?
             .subscriber_builder()
             .create()
             .map_err(|e| format!("status subscriber: {e}"))?;
-        let door = Doorbell::open(&node, &door_service(base))?;
-        Ok(NodeChannel { _node: node, control, status, door })
+        let door = Doorbell::open(node, &door_service(base))?;
+        Ok(NodeChannel { control, status, door })
     }
 
     /// Ring the node's door with no message behind it — how a parked node is made to look at the
