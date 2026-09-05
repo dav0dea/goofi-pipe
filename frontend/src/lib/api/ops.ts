@@ -17,6 +17,7 @@ export type OpName =
 	| 'node param refresh'
 	| 'node remove'
 	| 'node restart'
+	| 'node editor'
 	| 'nodes inspect'
 	| 'nodes copy'
 	| 'nodes paste'

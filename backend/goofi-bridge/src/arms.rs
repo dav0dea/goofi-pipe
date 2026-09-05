@@ -324,6 +324,23 @@ pub(crate) fn node_remove(
 
 /// Recovery, not an edit, so it is NOT routed through the command history: the client records no
 /// `graph_cmd` for a restart and the two stacks must stay 1:1.
+pub(crate) fn node_editor(
+    state: &AppState,
+    payload: &Value,
+    _actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let shown = {
+        let mut g = state.graph.lock().unwrap();
+        let uid = parse_uid(&g, payload, "node")?;
+        // Absent reads as "show": `node editor <uid>` is the whole gesture, and hiding is the
+        // flagged one.
+        let show = payload.get("show").and_then(|v| v.as_bool()).unwrap_or(true);
+        g.node_editor(uid, show)?
+    };
+    Ok(json!({ "shown": shown }))
+}
+
 pub(crate) fn node_restart(
     state: &AppState,
     payload: &Value,

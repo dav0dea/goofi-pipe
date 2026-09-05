@@ -184,6 +184,20 @@ pub trait Engine: Send {
         Vec::new()
     }
 
+    /// Whether a node of this type has an editor of its own to show. Asked so the app can offer
+    /// the door rather than guess at what a type is — the frontend draws a button, never a branch
+    /// on what kind of node it is looking at.
+    fn has_editor(&self, _type_name: &str) -> bool {
+        false
+    }
+
+    /// Show or hide a node type's own editor window, on the machine the SERVER runs on. Defaulted
+    /// to a refusal because only a plugin host has one to show — and it is per NODE, not per type,
+    /// so two instances of one plugin get a window each.
+    fn editor(&mut self, _node: &str, _type_name: &str, _show: bool) -> Result<bool, String> {
+        Err("this engine's nodes have no editor of their own".into())
+    }
+
     /// Forget a type a scan registered; whether this engine held it.
     fn remove_type(&mut self, _type_name: &str) -> bool {
         false

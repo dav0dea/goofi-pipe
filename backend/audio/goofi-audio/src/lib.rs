@@ -237,6 +237,9 @@ pub struct AudioEngine {
     next_serial: u64,
     live: HashMap<Uid, Instance>,
     workspace: Option<PathBuf>,
+    /// The plugin editors open right now, by the node each belongs to. Dropping one shuts its
+    /// window, so a removed node's editor goes with it.
+    editors: HashMap<String, vst3::Editor>,
     /// A workspace that turned over, swept of dead blobs at the first settled state after it.
     sweep: bool,
     /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
@@ -297,6 +300,7 @@ impl AudioEngine {
             next_serial: 0,
             live: HashMap::new(),
             workspace: None,
+            editors: HashMap::new(),
             sweep: false,
             disabled: HashMap::new(),
             faulted: HashMap::new(),
@@ -567,6 +571,24 @@ impl Engine for AudioEngine {
     fn scan_own(&mut self) -> Vec<goofi_node::ScannedType> {
         let dirs = self.vst3.as_ref().map(|(_, dirs)| dirs.clone()).unwrap_or_default();
         dirs.iter().filter(|d| d.is_dir()).flat_map(|d| vst3::scan_dir(self, d)).collect()
+    }
+
+    fn has_editor(&self, type_name: &str) -> bool {
+        self.classes.get(type_name).is_some_and(|c| c.plugin.is_some())
+    }
+
+    fn editor(&mut self, node: &str, type_name: &str, show: bool) -> Result<bool, String> {
+        if !show {
+            return Ok(self.editors.remove(node).is_some());
+        }
+        if self.editors.contains_key(node) {
+            return Ok(false);
+        }
+        let class = self.classes.get(type_name).ok_or_else(|| format!("no type named `{type_name}`"))?;
+        let plugin = class.plugin.clone().ok_or_else(|| format!("`{type_name}` is not a plugin, so it has no editor"))?;
+        let editor = vst3::Editor::open(plugin, Vec::new(), format!("{type_name} — goofi"))?;
+        self.editors.insert(node.to_string(), editor);
+        Ok(true)
     }
 
     fn remove_type(&mut self, type_name: &str) -> bool {

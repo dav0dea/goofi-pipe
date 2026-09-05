@@ -21,6 +21,15 @@
 		onClose: () => void;
 	} = $props();
 
+	/** Open the node's own editor. It appears on the server's desktop, which is this machine only
+	 * when goofi is running here — the op says so, and a refusal surfaces on the console. */
+	function openEditor(): void {
+		if (!renderedNode) return;
+		void graph()
+			.showNodeEditor(renderedNode.uid, true)
+			.catch((e) => console.warn('editor failed', e));
+	}
+
 	function restart(): void {
 		if (!renderedNode) return;
 		void graph()
@@ -119,6 +128,17 @@
 			data-testid="panel-resize-handle"
 		></div>
 		<ScrollArea>
+			<!-- ABOVE the params on purpose: a plugin with sixty of them buries anything under it. -->
+			{#if renderedNode?.editor}
+				<section class="node-actions">
+					<Button
+						size="sm"
+						onclick={openEditor}
+						title="Open this plugin's own editor, in a window on the machine goofi runs on"
+						data-testid="inspector-editor">▤ Open plugin editor</Button
+					>
+				</section>
+			{/if}
 			<ParamForm node={renderedNode} {onClose} />
 			{#if renderedNode}
 				<MetadataPanel node={renderedNode} />
@@ -187,6 +207,10 @@
 	.side-panel.resizing * {
 		user-select: none;
 	}
+	.node-actions {
+		padding: var(--space-3);
+	}
+
 	.node-error {
 		padding: var(--space-6);
 		border-top: 1px solid var(--border);

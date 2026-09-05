@@ -167,6 +167,9 @@ pub static TREE: &[Entry] = &[
         Leaf(Op { name: "restart", handler: Effect(arms::node_restart), args: "node:uid!", positional: 1,
              doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
              result: "{ok: true}" }),
+        Leaf(Op { name: "editor", handler: Effect(arms::node_editor), args: "node:uid! show:bool", positional: 1,
+             doc: "Show a plugin's OWN editor, or hide it with `--no-show`. The window opens on the desktop the SERVER runs on, never in the browser — a VST3 editor is an OS window handed a parent handle, so a phone asking for one puts it on the server's screen and a headless server has nowhere to put it. goofi's own param UI is the portable answer; this is the plugin's. A node whose type has no editor is refused by saying so.",
+             result: "{shown: bool} — false when it was already in the state asked for" }),
     ]),
     Group("nodes", "the graph of several nodes — inspect, copy, paste, group", &[
         Leaf(Op { name: "inspect", handler: Read(arms::nodes_inspect), args: "scope:uid", positional: 1,

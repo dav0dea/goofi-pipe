@@ -4,6 +4,7 @@
 // The bindings mirror the C++ headers, so a host object's trait methods carry their names.
 #![allow(non_snake_case)]
 
+mod editor;
 mod host;
 mod module;
 mod node;
@@ -23,6 +24,7 @@ use vst3::{ComPtr, ComWrapper};
 
 use crate::nodes::Class;
 use crate::AudioEngine;
+pub(crate) use editor::Editor;
 pub(crate) use node::Derived;
 use node::{Kind, Plugin};
 

@@ -2040,6 +2040,25 @@ impl Graph {
 
     /// Respawn a node's instance IN PLACE. Everything that identifies it in the patch survives, so
     /// remove+add is no substitute. A Python node re-runs the source CAPTURED AT DISCOVERY.
+    /// Whether `type_name` has an editor of its own — what the app draws its button from.
+    pub fn type_has_editor(&self, type_name: &str) -> bool {
+        self.engines().any(|e| e.has_editor(type_name))
+    }
+
+    /// Show or hide `uid`'s own editor window. Asked of the engine that OWNS the type, so a node
+    /// whose engine has no editors is refused in that engine's own words.
+    pub fn node_editor(&mut self, uid: Uid, show: bool) -> Result<bool, String> {
+        let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
+        let type_name = entry.manifest.type_name;
+        let owner = self.library_entry(type_name).map(|(id, _)| id).ok_or_else(|| self.reject_type(type_name))?;
+        let node = uid.to_string();
+        let engine = self
+            .engines_mut()
+            .find(|e| e.id() == owner)
+            .ok_or_else(|| format!("no engine named `{owner}`"))?;
+        engine.editor(&node, type_name, show)
+    }
+
     pub fn restart_node(&mut self, uid: Uid) -> Result<(), String> {
         // A facade has no thread of its own, so restarting it is restarting what is inside it — to
         // any depth. A port has neither thread nor members, so it is a restart of nothing.

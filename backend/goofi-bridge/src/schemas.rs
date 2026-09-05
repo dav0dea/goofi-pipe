@@ -167,6 +167,9 @@ pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest,
         "doc": m.doc,
         "available": true,
         "missing_deps": [],
+        // A CAPABILITY, not a kind: the app offers the door when there is one behind it, and never
+        // asks what sort of node it is looking at.
+        "editor": g.type_has_editor(m.type_name),
         "input_slots": input_slots(m),
         "input_multi": input_multi(m),
         "output_slots": output_slots(m),

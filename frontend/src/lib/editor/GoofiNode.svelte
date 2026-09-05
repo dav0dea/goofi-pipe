@@ -9,6 +9,7 @@
 	import { nodeHealth } from './nodeHealth';
 	import { StatusDot } from '$lib/ui';
 	import { formatUpdateRate } from './nodeStats';
+	import { graph } from '$lib/stores/graph.svelte';
 	import type { NodeInstanceInfo } from '$lib/api/control';
 
 	let { data, selected }: NodeProps = $props();
@@ -29,6 +30,14 @@
 	function onOutputClick(e: MouseEvent, slot: string, dtype: string): void {
 		e.stopPropagation();
 		uiStore.requestSlotClick({ node: node.uid, slot, dtype, side: 'source', clientX: e.clientX, clientY: e.clientY });
+	}
+
+	/** Open the plugin's own editor. It appears on the machine goofi runs on, never in the page. */
+	function onEditorClick(e: MouseEvent): void {
+		e.stopPropagation();
+		void graph()
+			.showNodeEditor(node.uid, true)
+			.catch((err) => console.warn('editor failed', err));
 	}
 
 	const health = $derived(nodeHealth(node));
@@ -84,6 +93,16 @@
 				<span class="boot-label" data-testid="boot-label">{health.label}</span>
 			{:else if rateLabel}
 				<span class="rate" title="update rate">{rateLabel}</span>
+			{/if}
+			<!-- `nodrag` so the press opens the editor rather than starting a node drag. -->
+			{#if node?.editor}
+				<button
+					class="editor nodrag"
+					onclick={onEditorClick}
+					title="Open this plugin's own editor window"
+					aria-label="Open plugin editor"
+					data-testid="node-editor">▤</button
+				>
 			{/if}
 		</div>
 
@@ -189,6 +208,27 @@
 			animation: none;
 		}
 	}
+	.editor {
+		margin-left: auto;
+		flex: 0 0 auto;
+		display: grid;
+		place-items: center;
+		/* The one hit target on a node header, so it carries the app's touch floor. */
+		min-width: var(--hit);
+		min-height: var(--hit);
+		padding: 0;
+		border: 0;
+		background: none;
+		color: var(--text-2);
+		font-size: 12px;
+		line-height: 1;
+		cursor: pointer;
+	}
+
+	.editor:hover {
+		color: var(--text-1);
+	}
+
 	.header {
 		flex: 0 0 auto;
 		height: var(--node-header);

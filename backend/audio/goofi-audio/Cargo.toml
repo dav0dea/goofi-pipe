@@ -22,3 +22,14 @@ vst3 = "0.3.0"
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The editor's window: a VST3 editor is attached to a real HWND on a thread that pumps messages,
+# which no portable crate here provides.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    # WNDCLASSW carries an HBRUSH, so registering a class needs the GDI types.
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
