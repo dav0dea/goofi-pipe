@@ -28,7 +28,7 @@ pub struct Goofi {
     patience: Duration,
     /// The handle that minted the mount, and the only one whose drop is the session's end.
     owner: bool,
-    /// The window thread, where a display answers: what the binary's main thread is.
+    /// The window thread, with no screen: what the binary's main thread is where a display answers.
     windows: Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)>,
 }
 
@@ -97,7 +97,7 @@ impl Goofi {
             std::env::set_var("CARGO_TARGET_DIR", nested);
         });
         let state = AppState::new(mode, goofi_bridge::Clock::External);
-        let windows = (!mode.demo).then(window_thread).flatten();
+        let windows = (!mode.demo).then(window_thread);
         {
             let mut g = state.graph.lock().unwrap();
             fixtures::register(&mut g);
@@ -384,28 +384,19 @@ impl Events {
 }
 
 /// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
-/// A window loop on a thread of its own, or none where no display answers — which a CI runner is.
-fn window_thread() -> Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)> {
+/// A window loop on a thread of its own, with no screen — as the clock has no device — so the
+/// editor seam is proven on every machine and no window reaches anyone's desktop.
+fn window_thread() -> (goofi_audio::ui::Ui, std::thread::JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("goofi-windows".into())
-        .spawn(move || match goofi_audio::ui::Loop::open() {
-            Ok((windows, ui)) => {
-                let _ = tx.send(Some(ui));
-                windows.run();
-            }
-            Err(_) => {
-                let _ = tx.send(None);
-            }
+        .spawn(move || {
+            let (windows, ui) = goofi_audio::ui::Loop::headless();
+            let _ = tx.send(ui);
+            windows.run();
         })
-        .ok()?;
-    match rx.recv().ok()? {
-        Some(ui) => Some((ui, thread)),
-        None => {
-            let _ = thread.join();
-            None
-        }
-    }
+        .expect("the window thread");
+    (rx.recv().expect("the window thread answers"), thread)
 }
 
 fn scanner() -> PathBuf {

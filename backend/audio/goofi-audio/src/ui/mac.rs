@@ -2,6 +2,7 @@
 //! carry a deadline. A window the user closed is one that is no longer visible.
 
 use std::ffi::c_void;
+use std::sync::Arc;
 use std::time::Instant;
 
 use objc2::rc::{Allocated, Retained};
@@ -9,9 +10,7 @@ use objc2::runtime::AnyObject;
 use objc2::{class, msg_send, MainThreadMarker};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 
-use super::Pumped;
-
-pub type Id = usize;
+use super::{Id, Pumped, Screen, Wake};
 
 pub struct Platform {
     app: Retained<AnyObject>,
@@ -29,8 +28,8 @@ const TITLED_CLOSABLE_MINIATURIZABLE: usize = 1 | 2 | 4;
 const BUFFERED: usize = 2;
 const REGULAR: isize = 0;
 
-impl Waker {
-    pub fn wake(&self) {
+impl Wake for Waker {
+    fn wake(&self) {
         unsafe {
             let app = self.0 as *mut AnyObject;
             let event: *mut AnyObject = msg_send![
@@ -61,11 +60,14 @@ impl Platform {
         }
     }
 
-    pub fn waker(&self) -> Waker {
-        Waker(Retained::as_ptr(&self.app) as usize)
+}
+
+impl Screen for Platform {
+    fn waker(&self) -> Arc<dyn Wake> {
+        Arc::new(Waker(Retained::as_ptr(&self.app) as usize))
     }
 
-    pub fn create(&mut self, title: &str, (w, h): (u32, u32)) -> Result<(Id, *mut c_void), String> {
+    fn create(&mut self, title: &str, (w, h): (u32, u32)) -> Result<(Id, *mut c_void), String> {
         unsafe {
             let rect = NSRect::new(NSPoint::ZERO, NSSize::new(w as f64, h as f64));
             let window: Allocated<AnyObject> = msg_send![class!(NSWindow), alloc];
@@ -85,26 +87,26 @@ impl Platform {
             if view.is_null() {
                 return Err("the window has no content view".into());
             }
-            let id = Retained::as_ptr(&window) as usize;
+            let id = Retained::as_ptr(&window) as usize as Id;
             self.windows.push((id, window, true));
             Ok((id, view as *mut c_void))
         }
     }
 
-    pub fn resize(&mut self, id: Id, (w, h): (u32, u32)) {
+    fn resize(&mut self, id: Id, (w, h): (u32, u32)) {
         if let Some((_, window, _)) = self.windows.iter().find(|(i, ..)| *i == id) {
             let _: () = unsafe { msg_send![&**window, setContentSize: NSSize::new(w as f64, h as f64)] };
         }
     }
 
-    pub fn destroy(&mut self, id: Id) {
+    fn destroy(&mut self, id: Id) {
         if let Some(at) = self.windows.iter().position(|(i, ..)| *i == id) {
             let (_, window, _) = self.windows.remove(at);
             let _: () = unsafe { msg_send![&*window, close] };
         }
     }
 
-    pub fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
+    fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
         let first: Retained<NSDate> = match until {
             Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
             None => NSDate::distantFuture(),

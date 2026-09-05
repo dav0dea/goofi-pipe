@@ -3,6 +3,7 @@
 
 use std::ffi::c_void;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use std::time::Instant;
 
 use x11rb::connection::Connection;
@@ -13,9 +14,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::COPY_DEPTH_FROM_PARENT;
 
-use super::Pumped;
-
-pub type Id = Window;
+use super::{Id, Pumped, Screen, Wake};
 
 pub struct Platform {
     conn: RustConnection,
@@ -29,8 +28,8 @@ pub struct Platform {
 
 pub struct Waker(i32);
 
-impl Waker {
-    pub fn wake(&self) {
+impl Wake for Waker {
+    fn wake(&self) {
         unsafe { libc::write(self.0, [1u8].as_ptr() as *const c_void, 1) };
     }
 }
@@ -54,11 +53,22 @@ impl Platform {
         Ok(Platform { conn, root, black, wm_protocols, wm_delete, wake })
     }
 
-    pub fn waker(&self) -> Waker {
-        Waker(self.wake[1])
+    /// The plugin draws at one size, so the window manager is told not to offer another.
+    fn fix_size(&self, id: Window, (w, h): (u16, u16)) -> Result<(), String> {
+        let mut hints = WmSizeHints::new();
+        hints.min_size = Some((w as i32, h as i32));
+        hints.max_size = Some((w as i32, h as i32));
+        hints.set_normal_hints(&self.conn, id).map_err(err)?;
+        Ok(())
+    }
+}
+
+impl Screen for Platform {
+    fn waker(&self) -> Arc<dyn Wake> {
+        Arc::new(Waker(self.wake[1]))
     }
 
-    pub fn create(&mut self, title: &str, (w, h): (u32, u32)) -> Result<(Id, *mut c_void), String> {
+    fn create(&mut self, title: &str, (w, h): (u32, u32)) -> Result<(Id, *mut c_void), String> {
         let id = self.conn.generate_id().map_err(err)?;
         let aux = CreateWindowAux::new().background_pixel(self.black).event_mask(EventMask::STRUCTURE_NOTIFY);
         let (w, h) = (w.clamp(1, u16::MAX as u32) as u16, h.clamp(1, u16::MAX as u32) as u16);
@@ -70,32 +80,23 @@ impl Platform {
         self.fix_size(id, (w, h))?;
         self.conn.map_window(id).map_err(err)?;
         self.conn.flush().map_err(err)?;
-        Ok((id, id as usize as *mut c_void))
+        Ok((id as Id, id as usize as *mut c_void))
     }
 
-    /// The plugin draws at one size, so the window manager is told not to offer another.
-    fn fix_size(&self, id: Id, (w, h): (u16, u16)) -> Result<(), String> {
-        let mut hints = WmSizeHints::new();
-        hints.min_size = Some((w as i32, h as i32));
-        hints.max_size = Some((w as i32, h as i32));
-        hints.set_normal_hints(&self.conn, id).map_err(err)?;
-        Ok(())
-    }
-
-    pub fn resize(&mut self, id: Id, (w, h): (u32, u32)) {
+    fn resize(&mut self, id: Id, (w, h): (u32, u32)) {
+        let id = id as Window;
         let (w, h) = (w.clamp(1, u16::MAX as u32) as u16, h.clamp(1, u16::MAX as u32) as u16);
         let _ = self.fix_size(id, (w, h));
         let _ = self.conn.configure_window(id, &ConfigureWindowAux::new().width(w as u32).height(h as u32));
         let _ = self.conn.flush();
     }
 
-    pub fn destroy(&mut self, id: Id) {
-        let _ = self.conn.destroy_window(id);
+    fn destroy(&mut self, id: Id) {
+        let _ = self.conn.destroy_window(id as Window);
         let _ = self.conn.flush();
     }
 
-    /// Park until a window event, a wake, a readable plugin descriptor or `until`.
-    pub fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped {
+    fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped {
         let dead = self.conn.flush().is_err();
         let mut polled: Vec<libc::pollfd> = [self.conn.stream().as_raw_fd(), self.wake[0]]
             .into_iter()
@@ -111,7 +112,7 @@ impl Platform {
         loop {
             match self.conn.poll_for_event() {
                 Ok(Some(Event::ClientMessage(m))) if m.type_ == self.wm_protocols && m.data.as_data32()[0] == self.wm_delete => {
-                    closed.push(m.window)
+                    closed.push(m.window as Id)
                 }
                 Ok(Some(_)) => {}
                 Ok(None) => break,

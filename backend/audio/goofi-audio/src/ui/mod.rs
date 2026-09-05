@@ -12,6 +12,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
+mod headless;
 #[cfg(target_os = "linux")]
 #[path = "x11.rs"]
 mod platform;
@@ -26,15 +27,33 @@ type Job = Box<dyn FnOnce(&mut Host) + Send>;
 type Handler = Box<dyn FnMut()>;
 type OnClose = Box<dyn FnMut(&mut Host)>;
 
+/// A window as the loop names it, whatever the screen calls it.
+pub type Id = u64;
+
 thread_local! {
-    static RESIZES: RefCell<Vec<(platform::Id, (u32, u32))>> = const { RefCell::new(Vec::new()) };
+    static RESIZES: RefCell<Vec<(Id, (u32, u32))>> = const { RefCell::new(Vec::new()) };
+}
+
+/// What a screen does for the loop: the platform's windows, or none where the suite runs.
+trait Screen {
+    fn waker(&self) -> Arc<dyn Wake>;
+    fn create(&mut self, title: &str, size: (u32, u32)) -> Result<(Id, *mut c_void), String>;
+    fn resize(&mut self, id: Id, size: (u32, u32));
+    fn destroy(&mut self, id: Id);
+    /// Park until a window event, a wake, a readable plugin descriptor or `until`.
+    fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped;
+}
+
+/// Wakes the pump from any thread.
+trait Wake: Send + Sync {
+    fn wake(&self);
 }
 
 /// The door onto the window thread from any other thread.
 #[derive(Clone)]
 pub struct Ui {
     jobs: mpsc::Sender<Job>,
-    waker: Arc<platform::Waker>,
+    waker: Arc<dyn Wake>,
     thread: ThreadId,
 }
 
@@ -74,21 +93,30 @@ pub struct Loop {
 }
 
 impl Loop {
-    /// Open the platform on THIS thread; refused where no display answers, and on macOS off the
+    /// Open the display on THIS thread; refused where no display answers, and on macOS off the
     /// main thread.
     pub fn open() -> Result<(Loop, Ui), String> {
-        let platform = platform::Platform::open()?;
-        let waker = Arc::new(platform.waker());
+        Ok(Loop::on(Box::new(platform::Platform::open()?)))
+    }
+
+    /// A loop with no screen: the suite's, as its clock has no device. Every job, timer and plugin
+    /// callback runs as with a display; a window is a number, and nothing reaches a desktop.
+    pub fn headless() -> (Loop, Ui) {
+        Loop::on(Box::new(headless::Platform::default()))
+    }
+
+    fn on(screen: Box<dyn Screen>) -> (Loop, Ui) {
+        let waker = screen.waker();
         let (jobs, rx) = mpsc::channel();
         let ui = Ui { jobs, waker, thread: std::thread::current().id() };
         let host = Host {
-            platform,
+            screen,
             runloop: Rc::new(RefCell::new(Runloop::default())),
             on_close: HashMap::new(),
             dead: false,
             stopped: false,
         };
-        Ok((Loop { jobs: rx, host }, ui))
+        (Loop { jobs: rx, host }, ui)
     }
 
     /// Pump until [`Ui::stop`]. A display that goes away ends no server: jobs are still answered,
@@ -115,7 +143,7 @@ impl Loop {
                 let rl = self.host.runloop.borrow();
                 (rl.timers.iter().map(|t| t.next).min(), rl.fds.iter().map(|f| f.fd).collect::<Vec<i32>>())
             };
-            let pumped = self.host.platform.pump(until, &fds);
+            let pumped = self.host.screen.pump(until, &fds);
             self.host.dead = pumped.dead;
             for id in pumped.closed {
                 if let Some(mut on_close) = self.host.on_close.remove(&id) {
@@ -139,19 +167,19 @@ impl Loop {
     }
 }
 
-/// What the platform's pump found: windows the user closed, descriptors a plugin watches that
-/// are readable, and whether the display is gone.
+/// What a pump found: windows the user closed, descriptors a plugin watches that are readable,
+/// and whether the display is gone.
 pub struct Pumped {
-    pub closed: Vec<platform::Id>,
+    pub closed: Vec<Id>,
     pub ready: Vec<i32>,
     pub dead: bool,
 }
 
-/// The window thread's own state: the platform's windows, and what a plugin registered with it.
+/// The window thread's own state: the screen's windows, and what a plugin registered with it.
 pub struct Host {
-    platform: platform::Platform,
+    screen: Box<dyn Screen>,
     runloop: Rc<RefCell<Runloop>>,
-    on_close: HashMap<platform::Id, OnClose>,
+    on_close: HashMap<Id, OnClose>,
     dead: bool,
     stopped: bool,
 }
@@ -159,7 +187,7 @@ pub struct Host {
 /// One native window, and the handle a plugin's view is attached to.
 #[derive(Clone, Copy)]
 pub struct Window {
-    id: platform::Id,
+    id: Id,
     pub parent: *mut c_void,
 }
 
@@ -174,29 +202,24 @@ impl Window {
 impl Host {
     /// A top-level window of `size`; `on_close` runs when the user closes it, and is what tears
     /// down whatever was inside.
-    pub fn open_window(
-        &mut self,
-        title: &str,
-        size: (u32, u32),
-        on_close: OnClose,
-    ) -> Result<Window, String> {
+    pub fn open_window(&mut self, title: &str, size: (u32, u32), on_close: OnClose) -> Result<Window, String> {
         if self.dead {
             return Err("the display is gone".into());
         }
-        let (id, parent) = self.platform.create(title, size)?;
+        let (id, parent) = self.screen.create(title, size)?;
         self.on_close.insert(id, on_close);
         Ok(Window { id, parent })
     }
 
     fn apply_resizes(&mut self) {
         for (id, size) in RESIZES.with(|r| std::mem::take(&mut *r.borrow_mut())) {
-            self.platform.resize(id, size);
+            self.screen.resize(id, size);
         }
     }
 
     pub fn close_window(&mut self, window: Window) {
         self.on_close.remove(&window.id);
-        self.platform.destroy(window.id);
+        self.screen.destroy(window.id);
     }
 
     /// The tables a plugin registers its descriptors and timers in.

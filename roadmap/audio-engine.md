@@ -270,12 +270,15 @@ knob in the window moves the audio; the edit enters the document through `node p
 an actor of its own, and a settle tells the controller the record back. On Linux the frame is the
 plugin's run loop too — the descriptors and timers a JUCE editor rides on. `Engine::has_editor` is
 the capability a palette row carries, false wherever no window host answers, `node editor` is the
-one door, and the open runs OFF the graph lock because a window takes its time to come up. **The
+one door, and the open runs OFF the graph lock because a window takes its time to come up. The
+suite's window host has no screen, as its clock has no device: the fixture plugin's editor opens
+on every machine and CI runner, and no test puts a window on anyone's desktop. **The
 cost is named: a plugin whose value IS its editor is degraded to a parameter list everywhere but
 the server's own desktop — a phone, an agent and a headless server get the parameter route, which
 is also the only one another node can modulate.** Not yet proven on a real JUCE or BABY Audio
-editor: the fixture plugin's editor is the suite's proof, and a Windows or macOS machine with such
-a plugin is where the next finding comes from.
+editor: the fixture plugin's editor is the suite's proof — through the screenless host, so the three
+display halves are exercised only by the binary — and a Windows or macOS machine with such a plugin
+is where the next finding comes from.
 
 **VST3 hosting is one more implementor of the trait, over the MIT `vst3` bindings.** Landed
 2026-09-02 as `backend/audio/goofi-audio/src/vst3/`. (0.3, after

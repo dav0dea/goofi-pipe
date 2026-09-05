@@ -801,24 +801,20 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a plugin's own editor is a window on the machine goofi runs on, off the LIVE
     // instance's controller, and a knob turned in it reaches the record and the audio through
-    // the param door. The palette's word decides once: where no display answers, no editor.
+    // the param door. The suite's host has no screen, as its clock has no device: the window is
+    // a number here, and what is proven is the seam.
     g.set_param(plug, "voice", "gate", false);
     g.link(src, "out", plug, "input");
     heard(&g, plug, "half gain, before the window", |x| (peak(x) - 0.5).abs() < 0.02);
-    let editor = g.call("library get", j!({ "type": "audio:GoofiFixture" }))["editor"] == j!(true);
+    assert_eq!(g.call("library get", j!({ "type": "audio:GoofiFixture" }))["editor"], true, "the palette says so");
     let gain = |g: &Goofi| g.doc()["nodes"][hex(plug)]["params"]["plugin"]["gain"]["value"].clone();
-    if editor {
-        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true);
-        g.until("the knob the editor turned to reach the record", |g| (gain(g) == j!(0.25)).then_some(()));
-        heard(&g, plug, "the quarter gain the editor asked for", |x| (peak(x) - 0.25).abs() < 0.02);
-        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], false, "already open");
-        assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], true);
-        assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], false, "already closed");
-        assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true, "opens again");
-        g.call("node remove", j!({ "node": hex(plug) }));
-        assert!(g.refuse("node editor", j!({ "node": hex(plug) })).contains("no such node"), "the window went with the node");
-    } else {
-        assert_eq!(gain(&g), j!(0.5));
-        assert!(g.refuse("node editor", j!({ "node": hex(plug) })).contains("has no editor"));
-    }
+    assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true);
+    g.until("the knob the editor turned to reach the record", |g| (gain(g) == j!(0.25)).then_some(()));
+    heard(&g, plug, "the quarter gain the editor asked for", |x| (peak(x) - 0.25).abs() < 0.02);
+    assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], false, "already open");
+    assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], true);
+    assert_eq!(g.call("node editor", j!({ "node": hex(plug), "show": false }))["changed"], false, "already closed");
+    assert_eq!(g.call("node editor", j!({ "node": hex(plug) }))["changed"], true, "opens again");
+    g.call("node remove", j!({ "node": hex(plug) }));
+    assert!(g.refuse("node editor", j!({ "node": hex(plug) })).contains("no such node"), "the window went with the node");
 }

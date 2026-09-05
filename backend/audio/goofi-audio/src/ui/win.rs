@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::sync::Arc;
 use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -10,9 +11,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, INFINITE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use super::Pumped;
-
-pub type Id = isize;
+use super::{Id, Pumped, Screen, Wake};
 
 pub struct Platform {
     class: Vec<u16>,
@@ -25,8 +24,8 @@ pub struct Waker(isize);
 unsafe impl Send for Waker {}
 unsafe impl Sync for Waker {}
 
-impl Waker {
-    pub fn wake(&self) {
+impl Wake for Waker {
+    fn wake(&self) {
         unsafe { SetEvent(self.0 as HANDLE) };
     }
 }
@@ -44,7 +43,7 @@ fn wide(s: &str) -> Vec<u16> {
 /// A close is REPORTED, never performed here: the window goes once the plugin's view is off it.
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_CLOSE {
-        CLOSED.with(|c| c.borrow_mut().push(hwnd as Id));
+        CLOSED.with(|c| c.borrow_mut().push(hwnd as usize as Id));
         return 0;
     }
     DefWindowProcW(hwnd, msg, wp, lp)
@@ -75,11 +74,14 @@ impl Platform {
         }
     }
 
-    pub fn waker(&self) -> Waker {
-        Waker(self.event as isize)
+}
+
+impl Screen for Platform {
+    fn waker(&self) -> Arc<dyn Wake> {
+        Arc::new(Waker(self.event as isize))
     }
 
-    pub fn create(&mut self, title: &str, size: (u32, u32)) -> Result<(Id, *mut c_void), String> {
+    fn create(&mut self, title: &str, size: (u32, u32)) -> Result<(Id, *mut c_void), String> {
         let name = wide(title);
         let (w, h) = framed(size);
         let hwnd = unsafe {
@@ -105,19 +107,19 @@ impl Platform {
             ShowWindow(hwnd, SW_SHOWNORMAL);
             SetForegroundWindow(hwnd);
         }
-        Ok((hwnd as Id, hwnd))
+        Ok((hwnd as usize as Id, hwnd))
     }
 
-    pub fn resize(&mut self, id: Id, size: (u32, u32)) {
+    fn resize(&mut self, id: Id, size: (u32, u32)) {
         let (w, h) = framed(size);
-        unsafe { SetWindowPos(id as HWND, std::ptr::null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER) };
+        unsafe { SetWindowPos(id as usize as HWND, std::ptr::null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER) };
     }
 
-    pub fn destroy(&mut self, id: Id) {
-        unsafe { DestroyWindow(id as HWND) };
+    fn destroy(&mut self, id: Id) {
+        unsafe { DestroyWindow(id as usize as HWND) };
     }
 
-    pub fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
+    fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
         let timeout = until.map_or(INFINITE, |t| t.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128) as u32);
         unsafe {
             MsgWaitForMultipleObjects(1, &self.event, 0, timeout, QS_ALLINPUT);
