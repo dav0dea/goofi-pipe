@@ -186,7 +186,7 @@ impl NodeRuntime {
             transport,
             evaluator: env.evaluator,
             started: env.started,
-            trigger_pending: false,
+            trigger_pending: manifest.inputs.is_empty() && !manifest.producer,
             run_policy,
             last_run: None,
             common_dirty: false,
@@ -226,6 +226,12 @@ impl NodeRuntime {
 
     /// Whether this wake runs `process()`. An autotriggering node always wants to; any other node
     /// runs when something triggered it; both are held to the rate cap.
+    /// A node with no input that is not a producer: nothing can ever ring it, so its own birth
+    /// and its own param edits are the only things that run it.
+    fn settled_source(&self) -> bool {
+        self.manifest.inputs.is_empty() && !self.manifest.producer
+    }
+
     pub fn should_process(&self) -> bool {
         (self.run_policy.autotrigger || self.trigger_pending) && self.rate_cap_elapsed()
     }
@@ -289,7 +295,12 @@ impl NodeRuntime {
                     self.reslot(&slot, if wired.is_ok() { &wires } else { &[] });
                     wired
                 }
-                Control::OutSlot { slot, targets } => transport.wire_out(&slot, &targets),
+                Control::OutSlot { slot, targets } => {
+                    // A settled source emits once, and pub/sub keeps no history: without this, a
+                    // wire made after that one emit would never see a frame.
+                    self.trigger_pending |= self.settled_source();
+                    transport.wire_out(&slot, &targets)
+                }
                 Control::SetParam { key, value } => {
                     self.set_param(key, value);
                     Ok(())
@@ -475,7 +486,7 @@ impl NodeRuntime {
         if key.group == COMMON {
             // Re-pacing is not a reason to run, so `trigger` is IGNORED on this namespace.
             self.common_dirty = true;
-        } else if trigger {
+        } else if trigger || self.settled_source() {
             self.trigger_pending = true;
         }
     }
