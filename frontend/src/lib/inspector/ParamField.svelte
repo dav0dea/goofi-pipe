@@ -8,6 +8,7 @@
 	import type { ParamDescriptor, ParamMode, SourcePatch } from '$lib/api/types';
 	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Button, Icon, Chip, type BadgeTone } from '$lib/ui';
 	import { controlKind } from './controlKind';
+	import { literalFor } from './paramSeed';
 	import ExprEditor from './expr/ExprEditor.svelte';
 	import RefPicker from './RefPicker.svelte';
 
@@ -48,11 +49,12 @@
 	const driven = $derived(descriptor.mode !== 'constant');
 	// A reference chosen before one is retained shows the picker without a record to show yet.
 	let picking = $state(false);
-	const showPicker = $derived(kind === 'reference' || picking);
+	// The MODE, not the kind: a pulse is a button in every mode, so its kind cannot name its source.
+	const showPicker = $derived(descriptor.mode === 'reference' || picking);
+	const showSource = $derived(showPicker || descriptor.mode === 'expression');
 	// The error and preview belong to a source that IS live: a picker over a retained expression
 	// shows neither.
-	const shown = $derived(kind === 'reference' || (kind === 'expression' && !picking));
-	// The MODE, not the kind: a pulse keeps its button in reference mode, and would never close this.
+	const shown = $derived(descriptor.mode === 'reference' || (descriptor.mode === 'expression' && !picking));
 	$effect(() => {
 		if (descriptor.mode === 'reference') picking = false;
 	});
@@ -60,14 +62,6 @@
 	function tone(mode: ParamMode): BadgeTone {
 		if (descriptor.mode !== mode) return 'neutral';
 		return descriptor.error ? 'danger' : 'accent';
-	}
-
-	// The current value as a Python literal — the seed when an expression is first switched on.
-	function literalFor(d: ParamDescriptor): string {
-		const v = d.value;
-		if (typeof v === 'number') return String(v);
-		if (typeof v === 'boolean') return v ? 'True' : 'False';
-		return JSON.stringify(v);
 	}
 
 	function choose(mode: ParamMode): void {
@@ -140,7 +134,10 @@
 	<!-- `display: contents` so the face inherits WITHOUT laying out: Field requires paired controls to
 	     be its direct children, and a real box would take them out of the @container column-flip. -->
 	<div class="pf-value">
-		{#if showPicker || kind === 'expression'}
+		{#if kind === 'pulse'}
+			<Button size="sm" onclick={onPulse} data-testid="param-pulse">{paramName}</Button>
+		{/if}
+		{#if showSource}
 			<div class="src-region">
 				{#if showPicker}
 					<RefPicker
@@ -165,15 +162,13 @@
 						<span class="prefix"><Icon name="triangle-alert" /></span>
 						<span class="msg">{descriptor.error}</span>
 					</div>
-				{:else if shown}
+				{:else if shown && kind !== 'pulse'}
 					<div class="src-preview" title={String(descriptor.value)}>
 						<span class="prefix" aria-hidden="true">=</span>
 						<span class="value">{previewText()}</span>
 					</div>
 				{/if}
 			</div>
-		{:else if kind === 'pulse'}
-			<Button size="sm" onclick={onPulse} data-testid="param-pulse">{paramName}</Button>
 		{:else if num}
 			<!-- SOFT bounds → Slider only; the NumberInput is UNBOUNDED (the engine does not clamp on set). -->
 			<Slider value={num.value} onChange={onCommit} min={num.vmin} max={num.vmax} {step} data-testid="param-slider" />
@@ -193,7 +188,7 @@
 			/>
 		{:else if kind === 'text'}
 			<TextInput value={String(descriptor.value)} onChange={onCommit} data-testid="param-text" />
-		{:else}
+		{:else if kind === 'unknown'}
 			<code class="unknown" data-testid="param-unknown">{JSON.stringify(descriptor.value)}</code>
 		{/if}
 	</div>

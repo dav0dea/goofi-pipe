@@ -10,12 +10,12 @@ import type {
 	UnknownParam
 } from '$lib/api/types';
 
-// The pure descriptor → control discriminant (spec §2, D-N2). First-match over the descriptor: a
-// pulse is a button whatever its mode; a driven mode wins over type; numeric = float|int; a plain
-// bool is a toggle; a string with options OR that is refreshable is a select (an
-// empty-but-refreshable list still gets a dropdown so its ⟳ re-scan survives); a plain string is
-// text; anything else is unknown. Kept pure + unit-tested so ParamField is a thin switch and the
-// mapping is one SSOT.
+// The pure descriptor → control discriminant (spec §2, D-N2). First-match over the descriptor:
+// a pulse is a button whatever its mode;
+// a driven mode wins over type; numeric = float|int; a plain bool
+// is a toggle; a string with options OR that is refreshable is a select (an empty-but-refreshable
+// list still gets a dropdown so its ⟳ re-scan survives); a plain string is text; anything else is
+// unknown. Kept pure + unit-tested so ParamField is a thin switch and the mapping is one SSOT.
 const base: Omit<BaseParam, 'value'> = {
 	doc: null,
 	refreshable: false,

@@ -22,7 +22,7 @@ const cat: ExprCatalogue = {
 describe('the reference picker offers only what the param may reference', () => {
 	it('types by the param: a string reads a STRING output, everything else an ARRAY one', () => {
 		expect(wantedDtype('string')).toBe('STRING');
-		for (const t of ['float', 'int', 'bool', 'unknown']) expect(wantedDtype(t)).toBe('ARRAY');
+		for (const t of ['float', 'int', 'bool', 'pulse', 'unknown']) expect(wantedDtype(t)).toBe('ARRAY');
 	});
 
 	it('lists the nodes with at least one output of the kind, naming those outputs', () => {

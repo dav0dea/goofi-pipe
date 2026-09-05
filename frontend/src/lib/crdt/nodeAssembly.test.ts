@@ -153,6 +153,11 @@ describe('assembleNode — three-way merge', () => {
 	it('keeps a pulse a pulse: no value key in its leaf, and no live gate value on it', () => {
 		// A pulse holds no value, so its doc leaf has no `value` — a merge patch spends `null` on
 		// "delete this key" — and the gate its source reports is not a value to show.
+		const unbound = assembleNode(view, { count: { reset: {} } }, {}, catalog(), {}).params.count.reset;
+		expect(unbound.type).toBe('pulse');
+		expect(unbound.value).toBeNull();
+		expect(unbound.mode).toBe('constant');
+
 		const docParams: DocParamLeaves = { count: { reset: { source: { mode: 'reference', ref: 'clock.out' } } } };
 		const runtime: RuntimeOverlay = { params: { count: { reset: { liveValue: true } } } };
 		const reset = assembleNode(view, docParams, {}, catalog(), runtime).params.count.reset;
