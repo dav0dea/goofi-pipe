@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import { dtypeColor } from './categoryColor';
+	import { engineColor } from './typeId';
 	import SlotViewer from '$lib/viewers/SlotViewer.svelte';
 	import { isSlotExpanded } from '$lib/viewers/inlineView';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -65,7 +66,7 @@
 	class:has-error={isError}
 	class:booting={isBooting}
 	class:undo-flash={flashing}
-	style="min-height: calc(var(--node-header) + {minBody} * var(--node-u));"
+	style="min-height: calc(var(--node-header) + {minBody} * var(--node-u)); --engine: {engineColor(node?.type ?? '')};"
 	data-testid={node?.subpatch ? 'subpatch-node' : undefined}
 >
 	<!-- Clipped to the rounded node shape, so nothing inside it needs to round itself. -->
@@ -197,7 +198,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 0 10px;
-		background: var(--surface-2);
+		background: color-mix(in srgb, var(--engine) 18%, var(--surface-2));
 		border-bottom: 1px solid var(--border);
 		cursor: pointer;
 		user-select: none;
