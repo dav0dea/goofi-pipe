@@ -1,5 +1,6 @@
 <script module lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
+	import type { ParamDescriptor } from '$lib/api/types';
 	import type { StatusTone } from '$lib/ui';
 	import type { BadgeTone } from '$lib/ui/Badge.svelte';
 
@@ -12,6 +13,7 @@
 
 	/** The param count a node needs before it is worth offering a filter. */
 	export const SEARCH_FROM = 8;
+
 </script>
 
 <!--
@@ -21,7 +23,6 @@
 <script lang="ts">
 	import type { SourcePatch } from '$lib/api/types';
 	import type { HTMLAttributes } from 'svelte/elements';
-	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidName } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
@@ -30,7 +31,8 @@
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 	import { matchParams, type ParamHit } from './paramSearch';
-	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
+	import { isModified, touchedCount } from './paramTouched';
+	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS, Toggle } from '$lib/ui';
 
 	let {
 		node,
@@ -122,6 +124,11 @@
 		Object.values(node?.params ?? {}).reduce((n, named) => n + Object.keys(named ?? {}).length, 0) > SEARCH_FROM
 	);
 
+	// A plugin declares every param it has, so browsing one is a scroll; touched-only is the way
+	// through. A SEARCH still spans everything — hiding is for the eye, never for reach.
+	let touchedOnly = $state(false);
+	const touched = $derived(touchedCount(node?.params));
+
 	// Both modes reduce to the same row list, so a field is rendered from one place either way.
 	const rows = $derived.by<ParamHit[]>(() => {
 		const n = node;
@@ -129,7 +136,8 @@
 		if (searching) return matchParams(n.params, query);
 		if (!activeGroup) return [];
 		const named = (n.params[activeGroup] ?? {}) as Record<string, ParamDescriptor>;
-		return Object.entries(named).map(([name, descriptor]) => ({ group: activeGroup, name, descriptor }));
+		const all = Object.entries(named).map(([name, descriptor]) => ({ group: activeGroup, name, descriptor }));
+		return touchedOnly ? all.filter((r) => isModified(r.descriptor)) : all;
 	});
 </script>
 
@@ -230,6 +238,14 @@
 				/>
 			{/if}
 
+			{#if searchable}
+				<label class="pf-touched" data-testid="param-touched-only">
+					<Toggle value={touchedOnly} onChange={(v) => (touchedOnly = v)} />
+					<span>Touched only</span>
+					<span class="pf-touched-count">{touched}</span>
+				</label>
+			{/if}
+
 			{#if tabItems.length > 0 && !searching}
 				<Tabs
 					items={tabItems}
@@ -248,7 +264,7 @@
 			>
 				{#if rows.length === 0}
 					<div class="pf-empty-group" data-testid={searching ? 'param-no-matches' : 'param-empty-group'}>
-						{searching ? 'No parameters match.' : 'No parameters in this group.'}
+						{#if searching}No parameters match.{:else if touchedOnly}Nothing touched here yet.{:else}No parameters in this group.{/if}
 					</div>
 				{:else}
 					{#each rows as { group, name: paramName, descriptor } (node.uid + '/' + group + '/' + paramName)}
@@ -391,6 +407,20 @@
 		text-align: center;
 		padding: var(--space-6) 0;
 	}
+	.pf-touched {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin: var(--space-3) var(--space-6) 0;
+		color: var(--text-2);
+		cursor: pointer;
+	}
+	.pf-touched-count {
+		margin-left: auto;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
 	.pf-search {
 		font: inherit;
 		color: var(--text-1);
