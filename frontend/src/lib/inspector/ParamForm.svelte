@@ -31,7 +31,7 @@
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 	import { matchParams, type ParamHit } from './paramSearch';
-	import { isModified, touchedCount } from './paramTouched';
+	import { isModified, touchedCount, touchedRows } from './paramTouched';
 	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS, Toggle } from '$lib/ui';
 
 	let {
@@ -129,15 +129,21 @@
 	let touchedOnly = $state(false);
 	const touched = $derived(touchedCount(node?.params));
 
-	// Both modes reduce to the same row list, so a field is rendered from one place either way.
+	/** True while the list spans every group rather than the fronted tab. */
+	const across = $derived(searching || touchedOnly);
+
+	// All three modes reduce to the same row list, so a field is rendered from one place whichever
+	// is on. Touched-only spans EVERY group: a knob was turned in the plugin's own window, and
+	// which tab goofi filed it under is the one thing the reader does not know.
 	const rows = $derived.by<ParamHit[]>(() => {
 		const n = node;
 		if (!n) return [];
 		if (searching) return matchParams(n.params, query);
-		if (!activeGroup) return [];
-		const named = (n.params[activeGroup] ?? {}) as Record<string, ParamDescriptor>;
-		const all = Object.entries(named).map(([name, descriptor]) => ({ group: activeGroup, name, descriptor }));
-		return touchedOnly ? all.filter((r) => isModified(r.descriptor)) : all;
+		const named = (g: string) => (n.params[g] ?? {}) as Record<string, ParamDescriptor>;
+		const of = (g: string) =>
+			Object.entries(named(g)).map(([name, descriptor]) => ({ group: g, name, descriptor }));
+		if (touchedOnly) return touchedRows(n.params, groupNames);
+		return activeGroup ? of(activeGroup) : [];
 	});
 </script>
 
@@ -246,7 +252,7 @@
 				</label>
 			{/if}
 
-			{#if tabItems.length > 0 && !searching}
+			{#if tabItems.length > 0 && !across}
 				<Tabs
 					items={tabItems}
 					active={activeGroup ?? undefined}
@@ -258,18 +264,18 @@
 			<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
 			<div
 				class="pf-rows"
-				role={tabItems.length > 0 && !searching ? 'tabpanel' : undefined}
-				aria-label={searching ? undefined : (activeGroup ?? undefined)}
+				role={tabItems.length > 0 && !across ? 'tabpanel' : undefined}
+				aria-label={across ? undefined : (activeGroup ?? undefined)}
 				data-testid="param-rows"
 			>
 				{#if rows.length === 0}
 					<div class="pf-empty-group" data-testid={searching ? 'param-no-matches' : 'param-empty-group'}>
-						{#if searching}No parameters match.{:else if touchedOnly}Nothing touched here yet.{:else}No parameters in this group.{/if}
+						{#if searching}No parameters match.{:else if touchedOnly}Nothing touched yet — move a control here or in the plugin's own window.{:else}No parameters in this group.{/if}
 					</div>
 				{:else}
 					{#each rows as { group, name: paramName, descriptor } (node.uid + '/' + group + '/' + paramName)}
 						<div class="pf-row">
-							{#if searching}
+							{#if across}
 								<span class="pf-row-group" data-testid={`param-hit-group-${paramName}`}>{group}</span>
 							{/if}
 							<ParamField
