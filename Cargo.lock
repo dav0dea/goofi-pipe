@@ -743,6 +743,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "vst3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
