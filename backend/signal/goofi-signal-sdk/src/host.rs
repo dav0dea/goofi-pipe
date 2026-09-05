@@ -107,6 +107,11 @@ impl Node for Handle {
             _ => None,
         }
     }
+
+    fn on_pulse(&mut self, key: &ParamKey, p: &Params<'_>) -> NodeResult {
+        let request = goofi_codec::encode_pulse_request(p.groups(), &key.group, &key.name);
+        Self::done(self.call(self.vtable.on_pulse, 0.0, &request))
+    }
 }
 
 impl Drop for Handle {

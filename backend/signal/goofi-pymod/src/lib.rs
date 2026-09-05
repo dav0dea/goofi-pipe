@@ -29,6 +29,7 @@ pub fn goofi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<params::FloatParam>()?;
     m.add_class::<params::BoolParam>()?;
     m.add_class::<params::StringParam>()?;
+    m.add_class::<params::PulseParam>()?;
     m.add_function(wrap_pyfunction!(introspect::introspect, m)?)?;
     #[cfg(feature = "extension-module")]
     m.add_function(wrap_pyfunction!(serve::serve, m)?)?;

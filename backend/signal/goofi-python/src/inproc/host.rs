@@ -92,6 +92,11 @@ impl Node for PyNode {
         })
     }
 
+    fn on_pulse(&mut self, key: &goofi_node::ParamKey, p: &Params<'_>) -> NodeResult {
+        attach(|py| goofi_pymod::exec::run_pulse(py, self.instance.bind(py), p.groups(), &key.group, &key.name))
+            .map_or(Ok(()), |e| Err(NodeError(e)))
+    }
+
     fn process(&mut self, inp: &Inputs<'_>, out: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         let inputs: Vec<(&str, Option<&Data>)> =
             self.in_slots.iter().map(|name| (*name, inp.get(name))).collect();

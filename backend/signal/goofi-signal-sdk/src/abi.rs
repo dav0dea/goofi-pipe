@@ -31,6 +31,7 @@ pub struct VTable {
     pub process: Call,
     pub on_param_changed: Call,
     pub on_param_refreshed: Call,
+    pub on_pulse: Call,
 }
 
 /// The `goofi_describe` answer: the manifest as the probe schema — the one schema every
@@ -88,7 +89,9 @@ unsafe fn call(
 fn process_request(req: &[u8]) -> Result<(goofi_codec::ParamMap, Vec<(String, Data)>), String> {
     match goofi_codec::decode_request(req)? {
         goofi_codec::Request::Process { params, slots } => Ok((params, slots)),
-        goofi_codec::Request::Refresh { .. } => Err("a refresh where a run was expected".into()),
+        goofi_codec::Request::Refresh { .. } | goofi_codec::Request::Pulse { .. } => {
+            Err("a refresh or a pulse where a run was expected".into())
+        }
     }
 }
 
@@ -154,6 +157,19 @@ pub unsafe extern "C" fn on_param_refreshed(node: *mut c_void, ctx: Ctx, request
     })
 }
 
+/// # Safety
+/// As [`setup`]; `request` is a codec pulse request.
+pub unsafe extern "C" fn on_pulse(node: *mut c_void, ctx: Ctx, request: Bytes, sink: *mut c_void, write: Write) {
+    let _ = ctx;
+    call(node, None, request, sink, write, |inst, req| {
+        let goofi_codec::Request::Pulse { params, group, name } = goofi_codec::decode_request(req)? else {
+            return Err("a run where a pulse was expected".into());
+        };
+        inst.node.on_pulse(&ParamKey::new(group, name), &Params::new(&params)).map_err(|e| e.0)?;
+        Ok(goofi_codec::encode_response(&[]))
+    })
+}
+
 /// What a node file spells once: the type that implements [`Node`] and the manifest it declares.
 #[macro_export]
 macro_rules! export {
@@ -189,6 +205,7 @@ macro_rules! cdylib {
             process: $crate::abi::process,
             on_param_changed: $crate::abi::on_param_changed,
             on_param_refreshed: $crate::abi::on_param_refreshed,
+            on_pulse: $crate::abi::on_pulse,
         };
         #[no_mangle]
         pub extern "C" fn goofi_signal_node() -> *const $crate::abi::VTable {

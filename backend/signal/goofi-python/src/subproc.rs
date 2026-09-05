@@ -229,6 +229,13 @@ impl Node for RemoteNode {
             _ => None,
         }
     }
+
+    fn on_pulse(&mut self, key: &ParamKey, p: &Params<'_>) -> NodeResult {
+        match self.ask(&goofi_codec::encode_pulse_request(p.groups(), &key.group, &key.name)).map_err(NodeError)? {
+            goofi_codec::Response::NodeError(msg) => Err(NodeError(msg)),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Drop for RemoteNode {

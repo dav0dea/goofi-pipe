@@ -345,11 +345,12 @@ pub fn decode_slots(body: &[u8]) -> std::result::Result<Vec<(String, Data)>, Str
     Ok(out)
 }
 
-/// A decoded subprocess request, always carrying the node's live params: one tick, or the ⟳ on
-/// one string param.
+/// A decoded subprocess request, always carrying the node's live params: one tick, the ⟳ on
+/// one string param, or a pulse on one pulse param.
 pub enum Request {
     Process { params: ParamMap, slots: Vec<(String, Data)> },
     Refresh { params: ParamMap, group: String, name: String },
+    Pulse { params: ParamMap, group: String, name: String },
 }
 
 fn encode_params(params: &ParamMap, out: &mut Vec<u8>) {
@@ -368,13 +369,23 @@ pub fn encode_request(params: &ParamMap, slots: &[(&str, &Data)]) -> Vec<u8> {
 
 /// Encode a refresh request: `[1][u32 params_len][params msgpack][(group, name) msgpack]`.
 pub fn encode_refresh_request(params: &ParamMap, group: &str, name: &str) -> Vec<u8> {
-    let mut out = vec![1u8];
+    encode_keyed_request(1, params, group, name)
+}
+
+/// Encode a pulse request: `[2][u32 params_len][params msgpack][(group, name) msgpack]`.
+pub fn encode_pulse_request(params: &ParamMap, group: &str, name: &str) -> Vec<u8> {
+    encode_keyed_request(2, params, group, name)
+}
+
+fn encode_keyed_request(tag: u8, params: &ParamMap, group: &str, name: &str) -> Vec<u8> {
+    let mut out = vec![tag];
     encode_params(params, &mut out);
     out.extend_from_slice(&rmp_serde::to_vec(&(group, name)).expect("two strings"));
     out
 }
 
-/// Decode a request frame written by [`encode_request`] or [`encode_refresh_request`].
+/// Decode a request frame written by [`encode_request`], [`encode_refresh_request`] or
+/// [`encode_pulse_request`].
 pub fn decode_request(buf: &[u8]) -> std::result::Result<Request, String> {
     let (&tag, rest) = buf.split_first().ok_or("empty request frame")?;
     let mut cur = Cursor::new(rest);
@@ -383,10 +394,10 @@ pub fn decode_request(buf: &[u8]) -> std::result::Result<Request, String> {
     let params: ParamMap = rmp_serde::from_slice(pbytes).map_err(|e| e.to_string())?;
     match tag {
         0 => Ok(Request::Process { params, slots: decode_slots(cur.rest())? }),
-        1 => {
+        1 | 2 => {
             let (group, name): (String, String) =
                 rmp_serde::from_slice(cur.rest()).map_err(|e| e.to_string())?;
-            Ok(Request::Refresh { params, group, name })
+            Ok(if tag == 1 { Request::Refresh { params, group, name } } else { Request::Pulse { params, group, name } })
         }
         other => Err(format!("unknown request tag {other}")),
     }

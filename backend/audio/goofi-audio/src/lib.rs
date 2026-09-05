@@ -749,8 +749,12 @@ impl Engine for AudioEngine {
         }
     }
 
-    /// No audio node declares a pulse yet, so there is nothing here to ring.
-    fn pulse_param(&mut self, _uid: Uid, _key: ParamKey) {}
+    /// A pulse rings the control half, which raises the param for one control tick.
+    fn pulse_param(&mut self, uid: Uid, key: ParamKey) {
+        if let Some(inst) = self.live.get(&uid) {
+            inst.control.pulse(key);
+        }
+    }
 
     /// Every control half born after computes `t` from the new origin.
     fn reset_clock(&mut self, origin: Instant) {

@@ -53,6 +53,16 @@ pub fn run_refresh(
     }
 }
 
+/// Fire `pulse_<group>_<name>()` on the instance, against its current params; a node without the
+/// hook answers nothing. `Some` is the text of what the hook raised.
+pub fn run_pulse(py: Python<'_>, instance: &Bound<'_, PyAny>, params: &Groups, group: &str, name: &str) -> Option<String> {
+    let Ok(method) = instance.getattr(format!("pulse_{group}_{name}").as_str()) else { return None };
+    if let Err(e) = apply_params(py, instance, params) {
+        return Some(e.to_string());
+    }
+    method.call0().err().map(|e| e.to_string())
+}
+
 /// Apply the live params, call `node.process(**inputs)`, and marshal the return into per-slot
 /// `Data`. `inputs` names every DECLARED slot in order, `None` where no frame arrived;
 /// `out_slots` names the slot a bare (non-dict) return goes to.

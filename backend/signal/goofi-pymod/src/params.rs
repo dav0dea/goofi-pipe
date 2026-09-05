@@ -134,3 +134,19 @@ impl StringParam {
         StringParam { default, options: options.unwrap_or_default(), refresh, doc, expression }
     }
 }
+
+/// `goofi.PulseParam(doc=None)` — a request with no value; `pulse_<group>_<name>(self)` answers it.
+#[pyclass]
+pub struct PulseParam {
+    #[pyo3(get)]
+    pub doc: Option<String>,
+}
+
+#[pymethods]
+impl PulseParam {
+    #[new]
+    #[pyo3(signature = (doc=None))]
+    fn new(doc: Option<String>) -> PulseParam {
+        PulseParam { doc }
+    }
+}

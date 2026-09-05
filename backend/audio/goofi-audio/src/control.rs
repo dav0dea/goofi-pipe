@@ -107,11 +107,13 @@ pub struct Shared {
     pub clock: Clock,
 }
 
-/// What the engine leaves for a control half: its whole desired state, and the refreshes asked.
+/// What the engine leaves for a control half: its whole desired state, the refreshes asked, and
+/// the pulses fired.
 #[derive(Default)]
 pub struct Mail {
     pub desired: Option<Desired>,
     pub refresh: Vec<ParamKey>,
+    pub pulse: Vec<ParamKey>,
 }
 
 impl Shared {
@@ -138,6 +140,11 @@ impl Handle {
 
     pub fn refresh(&self, key: ParamKey) {
         self.mail.lock().unwrap().refresh.push(key);
+        let _ = self.bell.ring(0);
+    }
+
+    pub fn pulse(&self, key: ParamKey) {
+        self.mail.lock().unwrap().pulse.push(key);
         let _ = self.bell.ring(0);
     }
 
@@ -188,6 +195,7 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
         ports: spawn.ports,
         evaluated: IndexMap::new(),
         errors: IndexMap::new(),
+        pulsed: Vec::new(),
         shared,
         mail: mail.clone(),
         last_tick: Instant::now(),
@@ -327,6 +335,8 @@ struct Control {
     ports: Ports,
     evaluated: IndexMap<ParamKey, Param>,
     errors: IndexMap<ParamKey, String>,
+    /// The params a pulse raised this tick, lowered again at the next.
+    pulsed: Vec<usize>,
     shared: Arc<Shared>,
     mail: Arc<Mutex<Mail>>,
     last_tick: Instant,
@@ -342,6 +352,9 @@ impl Control {
             if halt.stopped() {
                 break;
             }
+            for i in self.pulsed.drain(..) {
+                self.params[i].store(0.0f64.to_bits(), Ordering::Relaxed);
+            }
             let mail = std::mem::take(&mut *self.mail.lock().unwrap());
             if let Some(d) = mail.desired {
                 self.apply(d);
@@ -350,6 +363,11 @@ impl Control {
             for key in mail.refresh {
                 let options = self.enumerate();
                 self.shared.report(self.uid, Status::RefreshOptions { key, options });
+            }
+            let raised: Vec<usize> = mail.pulse.iter().filter_map(|key| self.index_of(key)).collect();
+            for i in raised {
+                self.params[i].store(1.0f64.to_bits(), Ordering::Relaxed);
+                self.pulsed.push(i);
             }
             self.receive();
             if self.last_tick.elapsed() >= TICK {
@@ -533,6 +551,14 @@ impl Control {
         ParamKey::new(d.group, d.name)
     }
 
+    fn index_of(&self, key: &ParamKey) -> Option<usize> {
+        self.manifest.params.iter().position(|d| d.group == key.group && d.name == key.name)
+    }
+
+    fn is_pulse(&self, key: &ParamKey) -> bool {
+        self.index_of(key).is_some_and(|i| matches!(self.consts[i], Param::Pulse))
+    }
+
     /// Record or clear a param's error, keeping only what CHANGED: the graph files the delta
     /// against the instance.
     fn record_error(&mut self, key: ParamKey, error: Option<String>, pass: &mut Pass) {
@@ -549,7 +575,8 @@ impl Control {
     /// evaluating a node's every binding is one batch.
     fn report(&self, pass: Pass) {
         if pass.values {
-            let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let evaluated =
+                self.evaluated.iter().filter(|(k, _)| !self.is_pulse(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
             self.shared.report(self.uid, Status::ParamValues { evaluated });
         }
         if !pass.errors.is_empty() {

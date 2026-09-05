@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use goofi_tests::{f32s, install, require_python, j, Goofi, Uid};
+use goofi_tests::{f32s, hex, install, require_python, j, Goofi, Uid};
 
 /// Set a consumer to free-run, so it produces with nothing wired upstream.
 fn free_run(g: &Goofi, uid: Uid, hz: f64) {
@@ -227,6 +227,31 @@ class Ticker(goofi.Node):
     assert!(later - first > 10.0, "the node's thread must run while the child idles: {first} → {later}");
 }
 
+const PULSE_COUNTER: &str = include_str!("fixtures/pulse_counter.py");
+
+#[test]
+fn a_python_pulse_param_is_a_request_the_node_answers_with_a_hook() {
+    // The probe carries the pulse spec through the wheel, the op crosses to the child as a
+    // request of its own, and `pulse_count_reset` answers it.
+    let _py = require_python();
+    let g = Goofi::new();
+    install(&g, "pulse_counter.py", PULSE_COUNTER);
+    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|t| t["type"] == "signal:PulseCounter").expect("PulseCounter is in the palette").clone();
+    assert_eq!(row["params"]["count"]["reset"]["type"], "pulse", "{row}");
+    assert!(row["params"]["count"]["reset"]["value"].is_null(), "{row}");
+
+    let node = g.add("PulseCounter");
+    let probe = g.probe(node, "out");
+    free_run(&g, node, 50.0);
+    let past = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v > c);
+    let under = |c: f32| probe.latest().map(|d| f32s(&d)[0]).is_some_and(|v| v < c);
+    g.until("a count past twenty", |_| past(20.0).then_some(()));
+    g.call("node param pulse", j!({ "node": hex(node), "param": "count/reset" }));
+    g.until("the count to start over", |_| under(10.0).then_some(()));
+    assert!(g.error(node).is_none(), "a pulse leaves no error");
+}
+
 #[cfg(feature = "embed")]
 mod inproc {
     use std::time::Duration;
@@ -296,6 +321,26 @@ class Absent(goofi.Node):
             return {"out": np.array([-1.0], dtype=np.float32)}
         return {"out": data.data * 2.0}
 "#;
+
+    #[test]
+    fn a_pulse_reaches_a_node_on_both_tiers_through_its_hook() {
+        let py = subproc_python();
+        let mut params = ParamGroups::new();
+        params.insert("count".into(), IndexMap::from([("reset".to_string(), Param::Pulse)]));
+        let key = goofi_node::ParamKey::new("count", "reset");
+        let count = |node: &mut dyn Node| f32s(&once(node, None, &params).1.expect("a frame"))[0];
+
+        let mut here = PyNode::from_source(super::PULSE_COUNTER, vec![], vec!["out"]).expect("PyNode");
+        here.setup(&mut NodeCtx::new(), &Params::new(&params)).expect("in-process setup");
+        assert_eq!((count(&mut here), count(&mut here)), (1.0, 2.0));
+        here.on_pulse(&key, &Params::new(&params)).expect("the hook answers in process");
+        assert_eq!(count(&mut here), 1.0, "the count starts over after a pulse");
+
+        let mut there = RemoteNode::new(&py, super::PULSE_COUNTER, vec![]);
+        assert_eq!((count(&mut there), count(&mut there)), (1.0, 2.0));
+        there.on_pulse(&key, &Params::new(&params)).expect("the hook answers in the child");
+        assert_eq!(count(&mut there), 1.0, "the child's count starts over after a pulse");
+    }
 
     #[test]
     fn one_source_run_on_both_tiers_produces_the_same_frame() {

@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::loader::{find_node_class, module_from_path};
-use crate::params::{BoolParam, DataType, FloatParam, InputSlot, IntParam, StringParam};
+use crate::params::{BoolParam, DataType, FloatParam, InputSlot, IntParam, PulseParam, StringParam};
 
 #[pyfunction]
 pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
@@ -96,6 +96,7 @@ enum ParamDescr<'py> {
     Float(Bound<'py, FloatParam>),
     Bool(Bound<'py, BoolParam>),
     Str(Bound<'py, StringParam>),
+    Pulse(Bound<'py, PulseParam>),
 }
 
 /// The kind-specific spec plus the kind-independent `doc=` and `expression=` texts.
@@ -121,5 +122,6 @@ fn param_spec(descr: &Bound<'_, PyAny>) -> PyResult<(ParamSpec, Option<String>, 
                 p.expression.clone(),
             )
         }
+        ParamDescr::Pulse(p) => (ParamSpec::Pulse {}, p.borrow().doc.clone(), None),
     })
 }

@@ -237,6 +237,9 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(status["audio"]["device"].is_null(), "no device under the external clock: {status}");
     assert!(status["audio"]["channels"].as_u64().is_some_and(|c| c >= 1), "{status}");
     assert_eq!((status["audio"]["callbacks"].as_u64(), status["audio"]["xruns"].as_u64()), (Some(0), Some(0)), "{status}");
+    // A pulse is refused on a param that is not one; no shipped audio node declares a pulse yet.
+    let why = g.refuse("node param pulse", j!({ "node": hex(gain3), "param": "gain/gain" }));
+    assert!(why.contains("not a pulse"), "{why}");
 
     // Step: a device or a port that is not there is an error on the param that named it, and
     // what can be named is a refresh; a MIDI port's voices are the channels a gate sees.

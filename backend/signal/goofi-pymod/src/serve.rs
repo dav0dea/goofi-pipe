@@ -146,6 +146,12 @@ fn handle(
         Request::Refresh { params, group, name } => {
             return Ok(encode_options_response(&crate::exec::run_refresh(py, instance, &params, &group, &name)));
         }
+        Request::Pulse { params, group, name } => {
+            return Ok(match crate::exec::run_pulse(py, instance, &params, &group, &name) {
+                None => encode_response(&[]),
+                Some(raised) => encode_error_response(&raised),
+            });
+        }
     };
     // The wire carries only the slots that hold a frame; widen it back to every declared slot,
     // `None` where nothing arrived.

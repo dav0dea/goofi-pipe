@@ -1,5 +1,6 @@
 //! The `goofi.Node` base class Python node authors derive from. A node declares itself in the
 //! `INPUTS`/`OUTPUTS`/`PARAMS`/`TAGS` class constants and the `PRODUCER` flag; each may be omitted.
+//! A `pulse_<group>_<name>(self)` method answers the `goofi.PulseParam` it names.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
