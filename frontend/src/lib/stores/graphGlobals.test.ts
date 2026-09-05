@@ -21,8 +21,8 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		await g.addGlobal('gain', 2.5, 'float');
-		expect(found(fc, 'global add')).toEqual({ name: 'gain', value: 2.5, type: 'float' });
+		await g.addGlobal('patch.gain', 2.5, 'float');
+		expect(found(fc, 'global entry add')).toEqual({ name: 'patch.gain', value: 2.5, type: 'float' });
 		expect(history().canUndo).toBe(true);
 	});
 
@@ -30,18 +30,18 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		d.global('gain', { value: 1, type: 'float', system: false });
-		await expect(g.addGlobal('gain', 2.5, 'float')).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'global add')).toBe(false);
+		d.global('patch.gain', { value: 1, type: 'float', system: false });
+		await expect(g.addGlobal('patch.gain', 2.5, 'float')).rejects.toThrow();
+		expect(fc.recordedCalls().some((c) => c.op === 'global entry add')).toBe(false);
 	});
 
 	it('setGlobalValue issues global edit — the held type stays, unsent', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		seedSystemGlobal(d, 'default_ufreq', 30);
-		await g.setGlobalValue('default_ufreq', 45);
-		expect(found(fc, 'global edit')).toEqual({ name: 'default_ufreq', value: 45 });
+		seedSystemGlobal(d, 'system.default_ufreq', 30);
+		await g.setGlobalValue('system.default_ufreq', 45);
+		expect(found(fc, 'global entry edit')).toEqual({ name: 'system.default_ufreq', value: 45 });
 	});
 
 	it('setGlobalValue rejects an unknown global (no command sent)', async () => {
@@ -49,38 +49,43 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		const g = new GraphStore(fc);
 		const d = seed(fc);
 		await expect(g.setGlobalValue('ghost', 1)).rejects.toThrow();
-		expect(fc.recordedCalls().some((c) => c.op === 'global edit')).toBe(false);
+		expect(fc.recordedCalls().some((c) => c.op === 'global entry edit')).toBe(false);
 	});
 
 	it('removeGlobal issues global remove', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		await g.removeGlobal('subject');
-		expect(found(fc, 'global remove')).toEqual({ name: 'subject' });
+		await g.removeGlobal('patch.subject');
+		expect(found(fc, 'global entry remove')).toEqual({ name: 'patch.subject' });
 	});
 
-	it('renameGlobal compounds the set and the delete into one undoable step', async () => {
+	it('renameGlobal is ONE op, and the manager rewrites every expression reading it', async () => {
 		const fc = new FakeControl();
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		d.global('gain', { value: 2.5, type: 'float', system: false });
-		await g.renameGlobal('gain', 'gain_a');
-		expect(found(fc, 'compound')).toEqual({
-			ops: [
-				{ op: 'global add', payload: { name: 'gain_a', value: 2.5, type: 'float' } },
-				{ op: 'global remove', payload: { name: 'gain' } }
-			]
-		});
+		d.global('patch.gain', { value: 2.5, type: 'float', system: false });
+		await g.renameGlobal('patch.gain', 'patch.level');
+		expect(found(fc, 'global entry rename')).toEqual({ name: 'patch.gain', to: 'patch.level' });
+		expect(history().canUndo).toBe(true);
+	});
+
+	it('renameGlobalGroup is ONE op too, and moves every member with it', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		const d = seed(fc);
+		d.global('patch.gain', { value: 2.5, type: 'float', system: false });
+		await g.renameGlobalGroup('patch', 'desk');
+		expect(found(fc, 'global group rename')).toEqual({ from: 'patch', to: 'desk' });
 		expect(history().canUndo).toBe(true);
 	});
 
 	it('a server rejection propagates (name/collision/system are validated server-side)', async () => {
 		const fc = new FakeControl();
-		fc.failNext('global add');
+		fc.failNext('global entry add');
 		const g = new GraphStore(fc);
 		const d = seed(fc);
-		await expect(g.addGlobal('1bad', 0, 'int')).rejects.toThrow();
+		await expect(g.addGlobal('bad', 0, 'int')).rejects.toThrow();
 		// A rejected add records no undo step.
 		expect(history().canUndo).toBe(false);
 	});

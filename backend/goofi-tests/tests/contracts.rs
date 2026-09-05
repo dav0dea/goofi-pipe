@@ -475,8 +475,8 @@ fn the_control_plane_document_carries_no_null_leaf() {
     g.add("_TestResettable");
     g.link(osc, "out", buf, "data");
     g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/frequency",
-                                   "expression": "globals.default_ufreq" }));
-    g.call("global add", j!({ "name": "subject", "value": "P07", "type": "string" }));
+                                   "expression": "globals.system.default_ufreq" }));
+    g.call("global entry add", j!({ "name": "patch.subject", "value": "P07", "type": "string" }));
     let inst = g.call("nodes group", j!({ "nodes": [hex(buf)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     // Grouping a node fed from outside mints a WIRED port, which is how this reaches the two

@@ -924,12 +924,12 @@ pub(crate) fn global_add(
     let mut g = state.graph.lock().unwrap();
     let name = parse_str(payload, "name")?.to_string();
     if g.globals().get(&name).is_some() {
-        return Err(format!("global add: `{name}` already exists — `global edit` changes it"));
+        return Err(format!("global entry add: `{name}` already exists — `global entry edit` changes it"));
     }
     let ty = parse_str(payload, "type")?;
-    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global add: missing value")?;
+    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global entry add: missing value")?;
     let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
-        .ok_or_else(|| format!("global add: `{val}` is not a {ty}"))?;
+        .ok_or_else(|| format!("global entry add: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
@@ -949,12 +949,12 @@ pub(crate) fn global_edit(
     let name = parse_str(payload, "name")?.to_string();
     let held = g.globals().get(&name).map(goofi_graph::global_to_json);
     let Some(held) = held else {
-        return Err(format!("global edit: no global `{name}` — `global add` creates one"));
+        return Err(format!("global entry edit: no global `{name}` — `global entry add` creates one"));
     };
     let ty = held["type"].as_str().unwrap_or_default().to_string();
-    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global edit: missing value")?;
+    let val = payload.get("value").filter(|v| !v.is_null()).ok_or("global entry edit: missing value")?;
     let value = goofi_graph::global_from_json(&json!({ "value": val, "type": ty }))
-        .ok_or_else(|| format!("global edit: `{val}` is not a {ty}"))?;
+        .ok_or_else(|| format!("global entry edit: `{val}` is not a {ty}"))?;
     state.history.lock().unwrap().apply(
         &mut g,
         actor,
@@ -972,7 +972,7 @@ pub(crate) fn global_remove(
     let mut g = state.graph.lock().unwrap();
     let name = parse_str(payload, "name")?.to_string();
     if g.globals().get(&name).is_none() {
-        return Err(format!("global remove: no global `{name}`"));
+        return Err(format!("global entry remove: no global `{name}`"));
     }
     state.history.lock().unwrap().apply(
         &mut g,
@@ -980,6 +980,40 @@ pub(crate) fn global_remove(
         goofi_graph::Command::EditGlobal { name, value: None, at: None },
     )?;
     Ok(json!({ "removed": true }))
+}
+
+pub(crate) fn global_rename(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let from = parse_str(payload, "name")?.to_string();
+    let to = parse_str(payload, "to")?.to_string();
+    state.history.lock().unwrap().apply(
+        &mut g,
+        actor,
+        goofi_graph::Command::RenameGlobal { from, to: to.clone() },
+    )?;
+    Ok(json!({ "name": to }))
+}
+
+pub(crate) fn global_group_rename(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let from = parse_str(payload, "from")?.to_string();
+    let to = parse_str(payload, "to")?.to_string();
+    state.history.lock().unwrap().apply(
+        &mut g,
+        actor,
+        goofi_graph::Command::RenameGlobalGroup { from, to: to.clone() },
+    )?;
+    Ok(json!({ "group": to }))
 }
 
 pub(crate) fn nodes_group(

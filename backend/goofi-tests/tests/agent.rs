@@ -164,9 +164,9 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     assert!(!bare.contains("params:"), "the bool's negative spelling gates the section: {bare}");
     let (text, err) = exec(&addr, "/mcp", 17, &["node add --type LFO --no-name x"]).await;
     assert!(err && text.contains("--no-name"), "`--no-` binds only to a declared bool: {text}");
-    ok_exec(&addr, 18, "global add patch.gain --type float --value 2.5").await;
+    ok_exec(&addr, 18, "global entry add patch.gain --type float --value 2.5").await;
     let tag: Value =
-        serde_json::from_str(&ok_exec(&addr, 19, "global add patch.tag --type string --value hello").await)
+        serde_json::from_str(&ok_exec(&addr, 19, "global entry add patch.tag --type string --value hello").await)
             .unwrap();
     assert_eq!(tag["value"], json!("hello"), "`any` falls back to the bare string");
     let second = ok_exec(&addr, 20, "node add --type Buffer").await;

@@ -84,19 +84,32 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     g.call("node edit", j!({ "node": hex(osc), "name": "carrier", "pos": [40.0, 60.0],
                              "viewer": [{ "slot": "out", "kind": "line" }] }));
     g.set_param(osc, "output", "sfreq", 128.0);
-    g.call("global add", j!({ "name": "patch.subj", "value": "P01", "type": "string" }));
+    g.call("global entry add", j!({ "name": "patch.subj", "value": "P01", "type": "string" }));
     // Every global is in a group, so a bare name names nothing and is refused.
-    let why = g.refuse("global add", j!({ "name": "loose", "value": 1.0, "type": "float" }));
+    let why = g.refuse("global entry add", j!({ "name": "loose", "value": 1.0, "type": "float" }));
     assert!(why.contains("group"), "an ungrouped global names the rule: {why}");
     // A rename is a compound: set the new name, delete the old, ONE undo step.
     g.call("compound", j!({ "ops": [
-        { "op": "global add", "payload": { "name": "patch.participant", "value": "P01", "type": "string" } },
-        { "op": "global remove", "payload": { "name": "patch.subj" } },
+        { "op": "global entry add", "payload": { "name": "patch.participant", "value": "P01", "type": "string" } },
+        { "op": "global entry remove", "payload": { "name": "patch.subj" } },
     ] }));
+    // A rename of an element or of its group follows into every expression that reads it, and
+    // each is ONE command with an exact inverse.
+    g.call("node param edit", j!({ "node": hex(osc), "param": "lfo/amplitude",
+                                   "expression": "globals.patch.participant * 2" }));
+    let expr = |g: &Goofi| g.doc()["nodes"][hex(osc)]["params"]["lfo"]["amplitude"]["expr"].clone();
+    g.call("global entry rename", j!({ "name": "patch.participant", "to": "patch.handle" }));
+    assert_eq!(expr(&g), j!("globals.patch.handle * 2"), "the element rename followed");
+    g.call("global group rename", j!({ "from": "patch", "to": "desk" }));
+    assert_eq!(expr(&g), j!("globals.desk.handle * 2"), "the group rename followed");
+    assert!(g.doc()["globals"]["desk.handle"].is_object(), "the member moved with its group");
+    let why = g.refuse("global entry rename", j!({ "name": "desk.handle", "to": "loose" }));
+    assert!(why.contains("group"), "a rename out of every group is refused: {why}");
+
     // …and a compound is a UNIT: a refused step takes back the one that landed, and records nothing,
     // which is what the step count below would catch.
     let why = g.refuse("compound", j!({ "ops": [
-        { "op": "global add", "payload": { "name": "patch.tmp", "value": 1.0, "type": "float" } },
+        { "op": "global entry add", "payload": { "name": "patch.tmp", "value": 1.0, "type": "float" } },
         { "op": "node edit", "payload": { "node": GHOST, "name": "renamed" } },
     ] }));
     assert!(why.contains("step 1"), "the refusal names the step that failed: {why}");
@@ -144,8 +157,8 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
         assert!(steps < 50, "the stack never emptied");
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
-    assert!(g.doc()["globals"]["participant"].is_null() && g.doc()["globals"]["subj"].is_null());
-    assert_eq!(steps, 13, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
+    assert_eq!(steps, 16, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
@@ -460,11 +473,11 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
 
     // A global's TYPE is what every expression reading it depends on, so it is immutable: an
     // edit coerces to the type held, and a value the type cannot read is refused by naming it.
-    let why = g.refuse("global edit", j!({ "name": "system.default_ufreq", "value": "fast" }));
+    let why = g.refuse("global entry edit", j!({ "name": "system.default_ufreq", "value": "fast" }));
     assert!(why.contains("float") && why.contains("fast"), "{why}");
-    let why = g.refuse("global add", j!({ "name": "system.default_ufreq", "value": 9.0, "type": "float" }));
-    assert!(why.contains("already exists") && why.contains("global edit"), "{why}");
-    assert_eq!(g.call("global edit", j!({ "name": "system.default_ufreq", "value": 12.5 }))["value"], 12.5);
+    let why = g.refuse("global entry add", j!({ "name": "system.default_ufreq", "value": 9.0, "type": "float" }));
+    assert!(why.contains("already exists") && why.contains("global entry edit"), "{why}");
+    assert_eq!(g.call("global entry edit", j!({ "name": "system.default_ufreq", "value": 12.5 }))["value"], 12.5);
 
     // A LOCKED global is the machine's: the value refuses the edit the way the name refuses the
     // remove, and what it holds is this machine's .goofi folder, not anything a patch said.
@@ -472,9 +485,9 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
         .find(|e| e["name"] == "system.goofi_home").cloned().expect("goofi_home is seeded");
     assert_eq!((&home["locked"], &home["type"]), (&j!(true), &j!("string")), "{home}");
     assert_eq!(home["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));
-    let why = g.refuse("global edit", j!({ "name": "system.goofi_home", "value": "/tmp/elsewhere" }));
+    let why = g.refuse("global entry edit", j!({ "name": "system.goofi_home", "value": "/tmp/elsewhere" }));
     assert!(why.contains("read-only"), "{why}");
-    let why = g.refuse("global remove", j!({ "name": "system.goofi_home" }));
+    let why = g.refuse("global entry remove", j!({ "name": "system.goofi_home" }));
     assert!(why.contains("system"), "{why}");
 
     let why = g.refuse("agent start", j!({ "name": "claude-code" }));
@@ -707,7 +720,7 @@ fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     g.call("node edit", j!({ "node": hex(osc), "viewer": [{ "slot": "out", "clear": true }] }));
     assert!(!view(&g).contains("yScale"), "the clear dropped the stored view: {}", view(&g));
 
-    g.call("global add", j!({ "name": "patch.subject", "value": "P01", "type": "string" }));
+    g.call("global entry add", j!({ "name": "patch.subject", "value": "P01", "type": "string" }));
     assert_eq!(g.doc()["globals"]["system.default_ufreq"]["system"], true);
     assert_eq!(g.doc()["globals"]["patch.subject"]["system"], false);
 }

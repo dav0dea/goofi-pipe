@@ -661,17 +661,17 @@ class Sleeper(goofi.Node):
 
     #[test]
     fn the_patch_rate_global_re_rates_every_producer_at_once() {
-        // `common.max_frequency` is BOUND to `globals.default_ufreq`, and a binding needs the evaluator.
+        // `common.max_frequency` is BOUND to `globals.system.default_ufreq`, and a binding needs the evaluator.
         let g = Goofi::new();
         g.state.graph.lock().unwrap().set_evaluator(std::sync::Arc::new(
             goofi_python::inproc::PyExprEvaluator::new().expect("the evaluator constructs")));
-        g.call("global edit", j!({ "name": "default_ufreq", "value": 5.0 }));
+        g.call("global entry edit", j!({ "name": "system.default_ufreq", "value": 5.0 }));
 
         let osc = g.add("LFO");
         let probe = g.probe(osc, "out");
         g.ready(osc);
         let bound = g.doc()["nodes"][hex(osc)]["params"]["common"]["max_frequency"].clone();
-        assert_eq!((&bound["expr"], &bound["mode"]), (&j!("globals.default_ufreq"), &j!("expression")),
+        assert_eq!((&bound["expr"], &bound["mode"]), (&j!("globals.system.default_ufreq"), &j!("expression")),
                    "the manifest's declared binding was seeded live, not flattened to a literal");
 
         // Counting emitted frames is the only way to see a rate: a stated value reads correct anyway.
@@ -690,7 +690,7 @@ class Sleeper(goofi.Node):
         let slow = runs(Duration::from_millis(800));
         assert!(slow <= 8, "5 Hz produced {slow} frames in 0.8 s — the global is not pacing it");
 
-        g.call("global edit", j!({ "name": "default_ufreq", "value": 60.0 }));
+        g.call("global entry edit", j!({ "name": "system.default_ufreq", "value": 60.0 }));
         g.until("every producer to be re-rated by one global edit",
                 |_| (runs(Duration::from_millis(400)) > 8).then_some(()));
 

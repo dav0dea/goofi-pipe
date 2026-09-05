@@ -25,7 +25,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.link(osc, "out", buf, "data");
     g.link(buf, "out", sink, "data");
 
-    g.call("global add", j!({ "name": "patch.gain", "value": 2.0, "type": "float" }));
+    g.call("global entry add", j!({ "name": "patch.gain", "value": 2.0, "type": "float" }));
     g.call("node param edit", j!({ "node": hex(sink), "param": "buffer/size",
                                    "expression": "globals.patch.gain * 64" }));
     // …and a reference over it: the archive carries the whole record, the expression retained.

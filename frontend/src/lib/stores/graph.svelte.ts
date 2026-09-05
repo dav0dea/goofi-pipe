@@ -380,35 +380,34 @@ export class GraphStore {
 	/** Add a NEW user global; the server refuses a name the patch already holds. */
 	async addGlobal(name: string, value: number | string | boolean, type: GlobalType): Promise<void> {
 		if (this.globals.some((g) => g.name === name)) throw new Error(`global ${name} already exists`);
-		await this.ctl.call('global add', { name, value, type });
+		await this.ctl.call('global entry add', { name, value, type });
 		this._recordGraphCmd(`Add global ${name}`);
 	}
 
 	/** Edit an existing global's value (system or user); the type is immutable and stays. */
 	async setGlobalValue(name: string, value: number | string | boolean): Promise<void> {
 		if (!this.globals.some((g) => g.name === name)) throw new Error(`no global ${name}`);
-		await this.ctl.call('global edit', { name, value });
+		await this.ctl.call('global entry edit', { name, value });
 		this._recordGraphCmd(`Set global ${name}`);
 	}
 
 	/** Remove a user global (a system global is refused by the server). */
 	async removeGlobal(name: string): Promise<void> {
-		await this.ctl.call('global remove', { name });
+		await this.ctl.call('global entry remove', { name });
 		this._recordGraphCmd(`Remove global ${name}`);
 	}
 
-	/** Rename a user global; refs are NOT rewritten, so a stale `globals.<old>` throws at eval time.
-	 * A set of the new name compounded with a delete of the old, so it is one undo step. */
+	/** Rename a user global; every expression that reads it is rewritten by the manager. */
 	async renameGlobal(oldName: string, newName: string): Promise<void> {
-		const held = this.globals.find((g) => g.name === oldName);
-		if (!held) throw new Error(`no global ${oldName}`);
-		await this.ctl.call('compound', {
-			ops: [
-				{ op: 'global add', payload: { name: newName, value: held.value, type: held.type } },
-				{ op: 'global remove', payload: { name: oldName } }
-			]
-		});
+		if (!this.globals.some((g) => g.name === oldName)) throw new Error(`no global ${oldName}`);
+		await this.ctl.call('global entry rename', { name: oldName, to: newName });
 		this._recordGraphCmd(`Rename global ${oldName} → ${newName}`);
+	}
+
+	/** Rename a group, moving every member with it. */
+	async renameGlobalGroup(from: string, to: string): Promise<void> {
+		await this.ctl.call('global group rename', { from, to });
+		this._recordGraphCmd(`Rename global group ${from} → ${to}`);
 	}
 
 	/** Ask a live node to re-evaluate a param's options. Options only, never the value, so it is

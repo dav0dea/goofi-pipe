@@ -110,6 +110,16 @@ pub enum Command {
         value: Option<GlobalValue>,
         at: Option<usize>,
     },
+    /// Rename a global, or a whole group of them. Each inverts as the reverse rename, planned
+    /// forward, so nothing puts back raw state.
+    RenameGlobal {
+        from: String,
+        to: String,
+    },
+    RenameGlobalGroup {
+        from: String,
+        to: String,
+    },
     /// Move a tab to a position in the strip. Its CONTENT is a position, so it cannot ride
     /// [`Command::LayoutContents`]; it inverts as another reorder, aimed at where the tab is now.
     LayoutReorderTab {
@@ -414,6 +424,16 @@ impl Command {
                 let inv_at = if value.is_none() { g.globals().index_of(&name) } else { None };
                 g.apply_global_change(&name, value, at)?;
                 Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at }))
+            }
+
+            Command::RenameGlobal { from, to } => {
+                let touched = g.rename_global(&from, &to)?;
+                Ok((Outcome::Nodes(touched), Command::RenameGlobal { from: to, to: from }))
+            }
+
+            Command::RenameGlobalGroup { from, to } => {
+                let touched = g.rename_global_group(&from, &to)?;
+                Ok((Outcome::Nodes(touched), Command::RenameGlobalGroup { from: to, to: from }))
             }
 
             Command::LayoutReorderTab { tab, to_index } => {

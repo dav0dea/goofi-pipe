@@ -248,6 +248,27 @@ pub fn rename_refs(
     Some(out)
 }
 
+/// Rewrite the `globals.<group>.<element>` terms `rename` answers for, leaving every other byte
+/// alone.
+pub fn rename_globals(source: &str, rename: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for read in goofi_node::scan_globals(source) {
+        if let Some(to) = rename(read.name) {
+            edits.push((read.end - read.name.len(), read.end, to));
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    // Splice right-to-left, so earlier byte offsets stay valid as the string is edited.
+    let mut out = source.to_string();
+    edits.sort_by_key(|(start, _, _)| *start);
+    for (start, end, repl) in edits.into_iter().rev() {
+        out.replace_range(start..end, &repl);
+    }
+    Some(out)
+}
+
 /// The same rename over a reference's `node.slot`, so one closure serves both retained texts.
 pub fn rename_reference(
     reference: &str,

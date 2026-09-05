@@ -74,7 +74,7 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
                "the peer's split converged, and a split births an EMPTY panel");
 
     assert_eq!(c.doc().read_at(&["globals", "system.default_ufreq", "system"]), Some(j!(true)));
-    peer.call("global add", j!({ "name": "patch.subject", "value": "P07", "type": "string" })).await;
+    peer.call("global entry add", j!({ "name": "patch.subject", "value": "P07", "type": "string" })).await;
     c.until_doc(|d| d.read_at(&["globals", "patch.subject", "value"]).is_some()).await;
     assert_eq!(c.doc().read_at(&["globals", "patch.subject", "value"]), Some(j!("P07")));
     assert_eq!(c.doc().read_at(&["globals", "patch.subject", "system"]), Some(j!(false)),
@@ -316,7 +316,7 @@ async fn three_devices_edit_one_patch_at_once_and_end_on_the_same_document() {
     });
     let tb = tokio::spawn(async move {
         for i in 0..BURST {
-            b.call("global add", j!({ "name": format!("patch.g{i}"), "value": i as f64, "type": "float" })).await;
+            b.call("global entry add", j!({ "name": format!("patch.g{i}"), "value": i as f64, "type": "float" })).await;
         }
         b
     });

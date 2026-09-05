@@ -219,6 +219,50 @@ impl GlobalStore {
         Ok(())
     }
 
+    /// Rename a USER global, keeping its ordered position.
+    pub fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+        if self.system.contains(from) {
+            return Err(format!("cannot rename system global `{from}`"));
+        }
+        if !is_valid_global_name(to) {
+            return Err(format!("invalid global name `{to}`: {GLOBAL_NAME_RULE}"));
+        }
+        if self.values.contains_key(to) {
+            return Err(format!("global `{to}` already exists"));
+        }
+        let at = self.values.get_index_of(from).ok_or_else(|| format!("no such global `{from}`"))?;
+        let value = self.values.shift_remove(from).expect("the index answered");
+        self.values.shift_insert(at, to.to_string(), value);
+        Ok(())
+    }
+
+    /// Rename a group, answering every member's old and new name in order.
+    pub fn rename_group(&mut self, from: &str, to: &str) -> Result<Vec<(String, String)>, String> {
+        if !is_valid_identifier(to) {
+            return Err(format!("invalid group name `{to}`: {GLOBAL_NAME_RULE}"));
+        }
+        let moved: Vec<(String, String)> = self
+            .values
+            .keys()
+            .filter_map(|k| split_global(k).filter(|(g, _)| *g == from).map(|(_, e)| (k.clone(), format!("{to}.{e}"))))
+            .collect();
+        if moved.is_empty() {
+            return Err(format!("no global group `{from}`"));
+        }
+        for (old, new) in &moved {
+            if self.system.contains(old.as_str()) {
+                return Err(format!("cannot rename system group `{from}`"));
+            }
+            if self.values.contains_key(new.as_str()) {
+                return Err(format!("global `{new}` already exists"));
+            }
+        }
+        for (old, new) in &moved {
+            self.rename(old, new)?;
+        }
+        Ok(moved)
+    }
+
     /// Apply one change: `Some(v)` sets or adds (a NEW global lands at `at`), `None` removes.
     pub fn apply_change(
         &mut self,

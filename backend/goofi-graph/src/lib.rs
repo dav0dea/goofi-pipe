@@ -551,6 +551,49 @@ impl Graph {
         Ok(())
     }
 
+    /// Rename one global, and rewrite every expression that reads it.
+    pub fn rename_global(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
+        self.globals.rename(from, to)?;
+        let touched = self.rewrite_global_reads(&[(from.to_string(), to.to_string())]);
+        self.invalidate_bindings_reading(to);
+        Ok(touched)
+    }
+
+    /// Rename a group, and rewrite every expression that reads any member.
+    pub fn rename_global_group(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
+        let moved = self.globals.rename_group(from, to)?;
+        let touched = self.rewrite_global_reads(&moved);
+        for (_, new) in &moved {
+            self.invalidate_bindings_reading(new);
+        }
+        Ok(touched)
+    }
+
+    /// Follow a set of global renames into every expression that spells one, answering the nodes
+    /// whose source text changed.
+    fn rewrite_global_reads(&mut self, moved: &[(String, String)]) -> Vec<Uid> {
+        let rename = |name: &str| {
+            moved.iter().find(|(old, _)| old == name).map(|(_, new)| new.clone())
+        };
+        let mut edits: Vec<(Uid, ParamKey, SourceState)> = Vec::new();
+        for (uid, entry) in self.leaves() {
+            for (key, b) in &entry.sources {
+                if let Some(expression) = expr_rewrite::rename_globals(&b.state.expression, rename) {
+                    let mut state = b.state.clone();
+                    state.expression = expression;
+                    edits.push((uid, key.clone(), state));
+                }
+            }
+        }
+        let mut referrers: Vec<Uid> = Vec::new();
+        for (uid, key, state) in edits {
+            if self.set_source(uid, &key.group, &key.name, state).is_ok() && !referrers.contains(&uid) {
+                referrers.push(uid);
+            }
+        }
+        referrers
+    }
+
     /// Re-resolve every expression that names a boundary PORT or a sub-patch FACADE. A leaf's
     /// stream is fixed by its manifest, but a port relays and a facade exposes its ports — so
     /// anything that moves a wire moves what `nd()` reads there. Free when the patch has neither.
