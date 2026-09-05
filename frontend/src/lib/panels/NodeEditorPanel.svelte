@@ -316,7 +316,7 @@
 			next.push({
 				id: uid,
 				type: 'goofi',
-				position: { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
+				position: pinned.get(uid) ?? { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
 				data: { node: n, label: n.name },
 				selected: sel.nodes(panelId).has(uid)
 			});
@@ -512,6 +512,9 @@
 
 	// Positions at drag start, so a node snaps back when the drag turns into a panel-link.
 	let dragOrigin = new Map<string, { x: number; y: number }>();
+	// Where the gesture has each node, from drag start until the document holds the drop: the
+	// derivation reads this over the document, or a delta landing mid-drag snaps the node back.
+	let pinned = new Map<string, { x: number; y: number }>();
 	// The chip that follows the cursor while a drag is a reference; null = a reposition drag.
 	let linkGhost = $state<{ x: number; y: number; name: string } | null>(null);
 
@@ -540,13 +543,17 @@
 		flowNodes = flowNodes.map((n) => {
 			if (!dragged.has(n.id)) return n;
 			const o = dragOrigin.get(n.id);
+			if (o) pinned.set(n.id, { x: o.x, y: o.y });
 			return o ? { ...n, position: { x: o.x, y: o.y } } : n;
 		});
 	}
 
 	function onNodeDragStart(args: { nodes: Node[]; event: MouseEvent | TouchEvent }): void {
 		dragOrigin = new Map();
-		for (const n of args.nodes) dragOrigin.set(n.id, { x: n.position.x, y: n.position.y });
+		for (const n of args.nodes) {
+			dragOrigin.set(n.id, { x: n.position.x, y: n.position.y });
+			pinned.set(n.id, { x: n.position.x, y: n.position.y });
+		}
 		uiStore.nodeDrag = args.nodes[0]?.id ?? null;
 	}
 
@@ -570,6 +577,7 @@
 		const alt = (args.event as MouseEvent).altKey === true;
 		const { dx, dy, guides } = dragSnapDelta(current, alt);
 		snapGuides = guides;
+		for (const [id, c] of current) pinned.set(id, { x: c.x + dx, y: c.y + dy });
 		if (dx === 0 && dy === 0) return;
 		flowNodes = flowNodes.map((n) => {
 			if (!dragged.has(n.id)) return n;
@@ -588,6 +596,7 @@
 		const target = linkTargetAt(args.event);
 		if (target) {
 			revertDragged(dragged);
+			for (const id of dragged) pinned.delete(id);
 			const name = args.nodes[0]?.id;
 			if (name) ws.linkNodeToPanel(target.id, name);
 		} else {
@@ -605,11 +614,18 @@
 			}
 			// One transaction, so moving N nodes is a single undo. Each set*Pos records AFTER its RPC
 			// resolves, so the calls must be AWAITED inside it or the buffer is empty at flush.
+			for (const n of args.nodes) {
+				pinned.set(n.id, { x: Math.round(n.position.x + dx), y: Math.round(n.position.y + dy) });
+			}
 			const label = args.nodes.length > 1 ? `Move ${args.nodes.length} nodes` : 'Move node';
 			void history().transaction(label, async () => {
-				for (const n of args.nodes) {
-					const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
-					await g.setNodePos(n.id, pos);
+				try {
+					for (const n of args.nodes) {
+						const pos: [number, number] = [Math.round(n.position.x + dx), Math.round(n.position.y + dy)];
+						await g.setNodePos(n.id, pos);
+					}
+				} finally {
+					for (const n of args.nodes) pinned.delete(n.id);
 				}
 			});
 		}
