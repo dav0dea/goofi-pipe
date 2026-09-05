@@ -52,7 +52,7 @@ pub enum Var {
 /// One frame as a scalar param of `target`'s type — what a reference copies on arrival.
 /// The one threshold a number crosses to read as true — for a `Bool` and for a pulse's gate.
 pub fn gate(x: f64) -> bool {
-    x >= 0.5
+    x > 0.0
 }
 
 /// A global's value read into `target`'s shape, so a bare variable is coerced like any other source.

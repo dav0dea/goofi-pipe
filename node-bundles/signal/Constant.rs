@@ -65,7 +65,7 @@ static MANIFEST: Manifest = Manifest {
     inputs: &[],
     outputs: OUTPUTS,
     params: PARAMS,
-    producer: false,
+    producer: true,
 };
 
 goofi_signal_sdk::export!(Constant, MANIFEST);

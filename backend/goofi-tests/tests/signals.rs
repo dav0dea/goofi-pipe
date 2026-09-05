@@ -148,17 +148,18 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     });
     assert_eq!(shape(&grid)[0], 4, "channels stay on the first axis: {:?}", shape(&grid));
 
-    // A Constant has no input and does not autotrigger, so nothing in the graph can ring it. An
-    // edit is what runs it, and the shape it is asked for is the shape that comes out.
+    // A Constant is a source like any other: it emits on its own schedule, so a viewer opened at
+    // any moment sees it and a wire made at any moment receives it. The shape it is asked for is
+    // the shape that comes out.
     let pk = g.probe(konst, "out");
     set(konst, "constant", "value", j!(3.0));
     set(konst, "constant", "shape", j!("2,3"));
-    let filled = g.until("the constant to answer its edit", |_| {
+    let filled = g.until("the constant to carry its edit", |_| {
         pk.latest().filter(|d| shape(d) == vec![2, 3] && f32s(d).iter().all(|v| *v == 3.0))
     });
     assert_eq!(f32s(&filled).len(), 6, "the shape it was asked for is the shape it filled");
 
-    // And a wire made long after that one emit still gets a frame, because pub/sub keeps none.
+    // And a wire made long afterwards receives it, with nothing to re-plan or replay.
     let buf = g.add("Buffer");
     let pb = g.probe(buf, "out");
     g.link(konst, "out", buf, "data");
@@ -298,9 +299,8 @@ fn the_array_nodes_reshape_a_grid_and_the_rate_follows_the_time_axis() {
 
 #[test]
 fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
-    // The three nodes that carry no signal of their own. Each configuration gets its OWN node and
-    // is wired after it is set: a consumer fed by a constant never re-runs on a param edit,
-    // because a literal edit is not a trigger and no second frame is coming.
+    // The three nodes that carry no signal of their own, each read against a source that repeats,
+    // so a param edit shows on the next frame rather than needing one to be provoked.
     let g = Goofi::new();
     let set = |n, group: &str, name: &str, v: serde_json::Value| {
         g.set_param(n, group, name, v);
@@ -326,8 +326,7 @@ fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
         pu.latest().filter(|d| f32s(d).iter().all(|v| *v == 0.0))
     });
 
-    // Switch reads its wires in the order they were connected, and a live source lets the
-    // param edit show: the next frame carries the new route.
+    // Switch reads its wires in the order they were connected; the next frame carries a new route.
     let grid = g.add("_TestGrid");
     let count = g.add("_TestCounter");
     let route = g.add("Switch");

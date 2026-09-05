@@ -858,7 +858,7 @@ impl goofi_node::ExprEvaluator for FirstVar {
                 Ok(goofi_core::Param::float(value, *vmin, *vmax))
             }
             goofi_core::Param::Bool { .. } | goofi_core::Param::Pulse => {
-                Ok(goofi_core::Param::boolean(value >= 0.5))
+                Ok(goofi_core::Param::boolean(goofi_node::mailbox::gate(value)))
             }
             other => Ok(other.clone()),
         }

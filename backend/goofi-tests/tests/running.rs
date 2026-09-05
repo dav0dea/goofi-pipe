@@ -580,6 +580,7 @@ fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
     g.set_param(gate, "control", "value", 0.0);
     g.until("the count to climb through the falling edge", |_| past(80.0).then_some(()));
 
+
     // An expression drives the same pulse the same way — one door for both sources.
     let bound = g.call("node param edit",
                        j!({ "node": hex(n), "param": "count/reset",
@@ -588,6 +589,12 @@ fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
     g.until("the count to climb under the expression's low gate", |_| past(100.0).then_some(()));
     g.set_param(gate, "control", "value", 1.0);
     g.until("the reset the expression fired", |_| under(100.0).then_some(()));
+
+    // High is ANY value above zero, not a half: a gate at a fifth is a gate.
+    g.set_param(gate, "control", "value", 0.0);
+    g.until("the count to climb after the gate falls", |_| past(60.0).then_some(()));
+    g.set_param(gate, "control", "value", 0.2);
+    g.until("the reset a small positive gate fired", |_| under(60.0).then_some(()));
 
     // A pulse is no command: the edit BEFORE it is what one undo takes back.
     g.set_param(n, "common", "max_frequency", 25.0);
