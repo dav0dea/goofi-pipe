@@ -303,6 +303,8 @@ fn write_audio_node(dir: &Path, file: &str, value: &str) {
     std::fs::write(dir.join(file), source).unwrap();
 }
 
+const PY_LEVEL: &str = "import goofi\nimport numpy as np\nclass Level(goofi.Node):\n    OUTPUTS = {\"out\": goofi.DataType.ARRAY}\n    def process(self):\n        return {\"out\": np.zeros(1, dtype=np.float32)}\n";
+
 /// Drive the audio clock and watch one node's `out` tap until it holds `want`.
 fn holds(g: &Goofi, uid: goofi_tests::Uid, want: f32) {
     let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
@@ -324,6 +326,13 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     assert_eq!(rescan(&g)["added"], j!(["audio:Level"]), "the file becomes a type");
     let live = g.add("Level");
     holds(&g, live, 0.25);
+    // A signal node with the same stem is another type, and `library get` finds each one's file.
+    std::fs::create_dir_all(mount.join("nodes_signal")).unwrap();
+    std::fs::write(mount.join("nodes_signal").join("Level.py"), PY_LEVEL).unwrap();
+    assert_eq!(rescan(&g)["added"], j!(["signal:Level"]), "two engines offer one name");
+    let (audio, signal) = (g.call("library get", j!({ "type": "audio:Level" })), g.call("library get", j!({ "type": "signal:Level" })));
+    assert!(audio["source"].as_str().is_some_and(|s| s.contains("impl AudioNode for Level")), "{audio}");
+    assert!(signal["source"].as_str().is_some_and(|s| s.contains("class Level")), "{signal}");
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "an edited file reports as changed");
     holds(&g, live, 0.5);
@@ -336,7 +345,7 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
         .find(|v| v["type"] == "audio:Level").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
     assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
-    assert!(g.refuse("node add", j!({ "type": "Level" })).contains("unavailable"));
+    assert!(g.refuse("node add", j!({ "type": "audio:Level" })).contains("unavailable"));
     holds(&g, live, 0.5);
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "the fix is a change, built from the cache");

@@ -565,18 +565,29 @@ fn a_pulse_fires_from_the_op_and_from_a_rising_edge_and_holds_no_value() {
     g.until("the reset the rising edge fired", |_| under(20.0).then_some(()));
     g.until("the count to climb clear of that reset", |_| past(40.0).then_some(()));
 
+    // The gate's rebirth keeps it high, and a level that never fell fires nothing.
+    g.call("node restart", j!({ "node": hex(gate) }));
+    g.ready(gate);
+    let mut last = 0.0f32;
+    g.until("the count to climb through the gate's rebirth", |_| {
+        let c = probe.latest().map(|d| f32s(&d)[0])?;
+        assert!(c >= last, "the reborn gate re-armed the pulse: {c} after {last}");
+        last = c;
+        (c > 60.0).then_some(())
+    });
+
     // The falling edge is not an edge this fires on.
     g.set_param(gate, "control", "value", 0.0);
-    g.until("the count to climb through the falling edge", |_| past(60.0).then_some(()));
+    g.until("the count to climb through the falling edge", |_| past(80.0).then_some(()));
 
     // An expression drives the same pulse the same way — one door for both sources.
     let bound = g.call("node param edit",
                        j!({ "node": hex(n), "param": "count/reset",
                             "expression": format!("nd('{gate_name}')[0] >= 0.5") }));
     assert!(bound["error"].is_null(), "{bound}");
-    g.until("the count to climb under the expression's low gate", |_| past(80.0).then_some(()));
+    g.until("the count to climb under the expression's low gate", |_| past(100.0).then_some(()));
     g.set_param(gate, "control", "value", 1.0);
-    g.until("the reset the expression fired", |_| under(80.0).then_some(()));
+    g.until("the reset the expression fired", |_| under(100.0).then_some(()));
 
     // A pulse is no command: the edit BEFORE it is what one undo takes back.
     g.set_param(n, "common", "max_frequency", 25.0);
@@ -611,4 +622,10 @@ fn a_multi_slot_names_its_senders_in_wire_order_and_follows_a_rename() {
 
     g.call("link remove", j!({ "from": ep(hex(b), "out"), "to": ep(hex(s), "input") }));
     g.until("one sender left", names("alpha.out"));
+
+    // A port relays: a sender grouped into a sub-patch keeps its own name at the consumer, and a
+    // rename behind the port still arrives.
+    g.call("nodes group", j!({ "nodes": [hex(a)] }));
+    g.call("node edit", j!({ "node": hex(a), "name": "omega" }));
+    g.until("the rename behind the port to reach the consumer", names("omega.out"));
 }

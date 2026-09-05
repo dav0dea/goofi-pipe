@@ -40,6 +40,7 @@ pub fn register(g: &mut Graph) {
     add(g, manifest("_TestCounter", "emits its own run count", IN_ARRAY, OUT_ARRAY, NO_PARAMS, true), || Box::new(Counter::default()));
     add(g, manifest("_TestSenders", "names the senders on its multi slot, in wire order", IN_MULTI, OUT_STRING, NO_PARAMS, false), || Box::new(Senders));
     add(g, manifest("_TestResettable", "counts up, and starts over on a pulse", &[], OUT_ARRAY, RESETTABLE_PARAMS, true), || Box::new(Resettable::default()));
+    add(g, manifest("_TestCommonFirst", "declares its common page first, with its own max_frequency", &[], OUT_ARRAY, COMMON_FIRST_PARAMS, true), || Box::new(Counter::default()));
     add(g, manifest("_TestParamWrites", "emits how many param writes were delivered", IN_ARRAY, OUT_ARRAY, SINK_PARAMS, false), || Box::new(ParamWrites::default()));
     add(g, manifest("_TestRequired", "refuses to run without its input", IN_REQUIRED, OUT_ARRAY, NO_PARAMS, false), || Box::new(RequiredCounter::default()));
     add(g, manifest("_TestGrid", "a [3, 4] frame of three offset rising signals", &[], OUT_ARRAY, NO_PARAMS, true), || Box::new(Grid::default()));
@@ -214,15 +215,6 @@ impl Node for Slow {
 }
 
 /// Emits how many times it has run, as a length-1 array.
-struct Senders;
-impl Node for Senders {
-    fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
-        let names: Vec<&str> = i.get_multi("input").iter().map(|(source, _)| source.as_str()).collect();
-        o.set("out", Data::string(names.join(","), Meta::new()));
-        Ok(())
-    }
-}
-
 #[derive(Default)]
 struct Counter {
     runs: u64,
@@ -235,6 +227,21 @@ impl Node for Counter {
         Ok(())
     }
 }
+
+/// Emits the `node.slot` names on its multi slot, joined by commas, in wire order.
+struct Senders;
+impl Node for Senders {
+    fn process(&mut self, i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, _p: &Params<'_>) -> NodeResult {
+        let names: Vec<&str> = i.get_multi("input").iter().map(|(source, _)| source.as_str()).collect();
+        o.set("out", Data::string(names.join(","), Meta::new()));
+        Ok(())
+    }
+}
+
+static COMMON_FIRST_PARAMS: &[ParamDecl] = &[
+    ParamDecl { group: "common", name: "max_frequency", spec: ParamSpec::Float { default: 5.0, min: 1.0, max: 100.0 }, expression: None, doc: None },
+    ParamDecl { group: "own", name: "level", spec: ParamSpec::Float { default: 0.0, min: -1.0e9, max: 1.0e9 }, expression: None, doc: None },
+];
 
 static RESETTABLE_PARAMS: &[ParamDecl] = &[ParamDecl {
     group: "count",

@@ -353,7 +353,8 @@ fn every_slot_name_is_letters_and_digits() {
     // held by every manifest a fresh goofi offers — the shipped nodes and the fixtures.
     let g = Goofi::new();
     let graph = g.state.graph.lock().unwrap();
-    for m in graph.library_manifests() {
+    for (_, l) in graph.library_entries() {
+        let m = l.manifest;
         let slots = m.inputs.iter().map(|s| s.name).chain(m.outputs.iter().map(|o| o.name));
         for slot in slots {
             assert!(goofi_core::globals::is_valid_name(slot),
@@ -366,44 +367,20 @@ fn every_slot_name_is_letters_and_digits() {
     }
     // The graph mints a display name from the type, `_Test*` included: what it mints must pass
     // its own rule, or a node is born under a name nothing can reference.
-    for m in graph.library_manifests() {
+    for (_, l) in graph.library_entries() {
+        let m = l.manifest;
         let minted = format!("{}0", goofi_graph::name_base(m.type_name));
         assert!(goofi_core::globals::is_valid_name(&minted), "{}: minted `{minted}`", m.type_name);
     }
 }
 
 #[test]
-fn every_manifest_carries_only_standard_tags_and_no_category() {
-    // The vocabulary is closed, so a palette facet is a set the client already knows. A free-text
-    // category was one string per author, and no two spelled the same idea alike.
+fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
+    // The vocabulary is closed, so a palette facet is a set the client already knows — a free-text
+    // category was one string per author. A page order is a statement the author makes; the
+    // client draws what it is given.
     let g = Goofi::new();
     // The lock is DROPPED before the first op: `library list` takes the same one.
-    let types: Vec<String> = {
-        let graph = g.state.graph.lock().unwrap();
-        graph.library_entries().into_iter()
-            .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
-            .map(|(engine, l)| goofi_node::qualify(engine, l.manifest.type_name))
-            .collect()
-    };
-    assert!(!types.is_empty(), "a fresh goofi offers a library");
-    let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
-    for ty in types {
-        let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
-        assert!(row.get("category").is_none(), "{ty}: category is gone");
-        let tags = row["tags"].as_array().expect("a tags list");
-        // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
-        // wheel looks: the probe emits no tags and the feature is inert while the suite is green.
-        assert!(!tags.is_empty(), "{ty}: a shipped type declares a tag");
-        for t in tags {
-            assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
-        }
-    }
-}
-
-#[test]
-fn every_palette_row_lists_its_pages_in_declared_order_with_common_last() {
-    // A page order is a statement the author makes; the client draws what it is given.
-    let g = Goofi::new();
     let declared: Vec<(String, Vec<&'static str>)> = {
         let graph = g.state.graph.lock().unwrap();
         graph.library_entries().into_iter()
@@ -419,14 +396,31 @@ fn every_palette_row_lists_its_pages_in_declared_order_with_common_last() {
             })
             .collect()
     };
+    assert!(!declared.is_empty(), "a fresh goofi offers a library");
     let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
     for (ty, groups) in declared {
         let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
+        assert!(row.get("category").is_none(), "{ty}: category is gone");
+        let tags = row["tags"].as_array().expect("a tags list");
+        // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
+        // wheel looks: the probe emits no tags and the feature is inert while the suite is green.
+        assert!(!tags.is_empty(), "{ty}: a shipped type declares a tag");
+        for t in tags {
+            assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
+        }
         let pages: Vec<&str> = row["params"].as_object().expect("pages").keys().map(String::as_str).collect();
         let own: Vec<&str> = pages.iter().copied().filter(|p| *p != "common").collect();
         assert_eq!(own, groups, "{ty}: pages in declared order");
         assert!(!pages.contains(&"common") || pages.last() == Some(&"common"), "{ty}: common is the last page: {pages:?}");
     }
+    // An author who declares `common` FIRST, with a default of their own for one universal param,
+    // still gets it last, in the engine's order, holding their default.
+    let row = g.call("library get", j!({ "type": "_TestCommonFirst" }));
+    let pages: Vec<&str> = row["params"].as_object().expect("pages").keys().map(String::as_str).collect();
+    assert_eq!(pages, ["own", "common"], "{row}");
+    let common: Vec<&str> = row["params"]["common"].as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(common, ["autotrigger", "max_frequency", "frequency_mode"], "the engine's order: {common:?}");
+    assert_eq!(row["params"]["common"]["max_frequency"]["value"], j!(5.0), "the author's default: {row}");
 }
 
 #[test]
@@ -456,7 +450,7 @@ fn every_test_node_is_registered_and_hidden_from_the_palette() {
     // Both or neither: registering without the `_` prefix ships a product node, and the prefix
     // without registration is invisible to the tests it exists for.
     let g = Goofi::new();
-    let names: Vec<&str> = g.state.graph.lock().unwrap().library_manifests().into_iter().map(|m| m.type_name).collect();
+    let names: Vec<&str> = g.state.graph.lock().unwrap().library_entries().into_iter().map(|(_, l)| l.manifest.type_name).collect();
     for want in ["_TestEcho", "_TestSink", "_TestFail", "_TestPanic", "_TestSetupFail", "_TestSlow",
                  "_TestCounter", "_TestRequired", "_TestPicker", "_TestMute", "_TestConst"] {
         assert!(names.contains(&want), "{want} is not in the catalog: {names:?}");

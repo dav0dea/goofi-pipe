@@ -155,10 +155,10 @@ impl SignalEngine {
         if !foreign && matches!(key.1, Slot::In(_)) && desired == previous {
             return;
         }
-        let removed = previous.iter().filter(|w| !desired.iter().any(|d| same_end(d, w))).cloned().collect();
+        let removed = previous.iter().filter(|w| !desired.iter().any(|d| same_end(d, (w.0, w.1)))).cloned().collect();
         // A rebirth renames a foreign consumer's door where this planner cannot see it, so every
         // touch re-tells its producers the whole set.
-        let added = desired.iter().filter(|w| foreign || !previous.iter().any(|p| same_end(p, w))).cloned().collect();
+        let added = desired.iter().filter(|w| foreign || !previous.iter().any(|p| same_end(p, (w.0, w.1)))).cloned().collect();
         // A begin cancels the key's previous sequence — and any ack collected for it, or a stale
         // deferred advance would step the NEW sequence past a phase nobody acked.
         self.pending_advance.retain(|k| k != &key);
@@ -269,18 +269,19 @@ fn desired_wires(view: &GraphView<'_>, key: &SlotKey) -> Vec<Wire> {
     match &key.1 {
         Slot::In(slot) => {
             // A slot past the event-id budget takes no wires, exactly as it takes no rings.
-            let in_budget = view
+            let Some((_, decl)) = view
                 .nodes
                 .get(&key.0)
-                .and_then(|n| n.manifest.inputs.iter().position(|s| s.name == *slot))
-                .is_some_and(|at| at < 64);
-            if !in_budget {
+                .and_then(|n| n.manifest.inputs.iter().enumerate().find(|(_, s)| s.name == *slot))
+                .filter(|(at, _)| *at < 64)
+            else {
                 return Vec::new();
-            }
+            };
             view.wires_into(key.0, slot)
-                .map(|(producer, out)| {
-                    let source = view.nodes.get(&producer).map_or_else(String::new, |n| format!("{}.{out}", n.name));
-                    (producer, out, source)
+                .filter_map(|(producer, out)| {
+                    let name = &view.nodes.get(&producer)?.name;
+                    let source = if decl.multi { format!("{name}.{out}") } else { String::new() };
+                    Some((producer, out, source))
                 })
                 .collect()
         }

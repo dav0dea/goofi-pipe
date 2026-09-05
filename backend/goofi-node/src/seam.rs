@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use goofi_core::Param;
+use indexmap::IndexMap;
 
 use crate::{
     BindingId, ExprEvaluator, Isolation, IsolationCell, NodeManifest, ParamDecl, ParamGroups,
@@ -203,21 +204,32 @@ pub trait Engine: Send {
         Vec::new()
     }
     /// The record a fresh instance of `manifest` starts from: the declared defaults in declared
-    /// order — the editor renders in insertion order — then this engine's universal groups LAST,
-    /// never overriding a declared name, then `supplied` folded on top, so a patch saved before a
-    /// param existed still gets that param's default. By MANIFEST, not by name, so a type the
-    /// library no longer answers for can still say what its live nodes hold. Every engine answers
-    /// this one way; none overrides it.
+    /// order — the editor renders in insertion order — with `supplied` folded on top, so a patch
+    /// saved before a param existed still gets that param's default; then each universal group
+    /// rebuilt LAST in this engine's order, a declared or supplied value winning over the default.
+    /// By MANIFEST, not by name, so a type the library no longer answers for can still say what
+    /// its live nodes hold. Every engine answers this one way; none overrides it.
     fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
         let mut params = ParamGroups::new();
         for (group, entries) in manifest.default_params() {
             params.entry(group).or_default().extend(entries);
         }
-        for d in self.universal_decls(manifest) {
-            params.entry(d.group.to_string()).or_default().entry(d.name.to_string()).or_insert_with(|| d.spec.to_param());
-        }
         for (group, entries) in supplied.into_iter().flatten() {
             params.entry(group).or_default().extend(entries);
+        }
+        let mut universal = ParamGroups::new();
+        for d in self.universal_decls(manifest) {
+            universal.entry(d.group.to_string()).or_default().insert(d.name.to_string(), d.spec.to_param());
+        }
+        for (group, defaults) in universal {
+            let mut held = params.shift_remove(&group).unwrap_or_default();
+            let mut page: IndexMap<String, Param> =
+                defaults.into_iter().map(|(name, default)| { let value = held.shift_remove(&name).unwrap_or(default); (name, value) }).collect();
+            page.extend(held);
+            params.insert(group, page);
+        }
+        if let Some(common) = params.shift_remove("common") {
+            params.insert("common".to_string(), common);
         }
         params
     }

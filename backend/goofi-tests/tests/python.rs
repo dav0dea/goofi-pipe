@@ -286,21 +286,21 @@ mod inproc {
     use std::time::Duration;
 
     use super::*;
-    use super::SOURCES;
     use goofi_core::{Data, Meta, Param, Value};
     use goofi_node::{ParamGroups, Params};
-use goofi_signal_sdk::{Inputs, Node, NodeCtx, Outputs};
+    use goofi_signal_sdk::{Inputs, MultiFrames, Node, NodeCtx, Outputs};
     use goofi_python::inproc::PyNode;
     use goofi_python::subproc::RemoteNode;
     use indexmap::IndexMap;
 
-    /// Run one node once with the named input and params, reading back `out`. Below the graph:
-    /// what is compared is the MARSHALLING.
-    fn once(node: &mut dyn Node, input: Option<Data>, params: &ParamGroups)
+    /// Run one node once with `data` on its single slot, one frame per source on its multi slot
+    /// `input`, and params, reading back `out`. Below the graph: what is compared is the MARSHALLING.
+    fn once(node: &mut dyn Node, input: Option<Data>, sources: &[&str], params: &ParamGroups)
         -> (goofi_signal_sdk::NodeResult, Option<Data>) {
-        let mut inmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
-        inmap.insert("data", input);
-        let inp = Inputs::new(&inmap);
+        let singles: IndexMap<&'static str, Option<Data>> = IndexMap::from([("data", input)]);
+        let mut multis = MultiFrames::new();
+        multis.insert("input", sources.iter().map(|s| (s.to_string(), frame())).collect());
+        let inp = Inputs::with_multi(&singles, &multis);
         let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
         outmap.insert("out", None);
         let mut ctx = NodeCtx::new();
@@ -351,32 +351,15 @@ class Absent(goofi.Node):
         return {"out": data.data * 2.0}
 "#;
 
-    /// Run one node once with two frames on its multi slot `input`, reading back `out`.
-    fn once_multi(node: &mut dyn Node, sources: &[&str]) -> Option<Data> {
-        let singles: IndexMap<&'static str, Option<Data>> = IndexMap::new();
-        let mut multis: IndexMap<&'static str, Vec<(String, Data)>> = IndexMap::new();
-        multis.insert("input", sources.iter().map(|s| (s.to_string(), frame())).collect());
-        let inp = Inputs::with_multi(&singles, &multis);
-        let mut outmap: IndexMap<&'static str, Option<Data>> = IndexMap::new();
-        outmap.insert("out", None);
-        let params = ParamGroups::new();
-        let mut ctx = NodeCtx::new();
-        {
-            let mut out = Outputs::new(&mut outmap);
-            node.process(&inp, &mut out, &mut ctx, &Params::new(&params)).expect("a run");
-        }
-        outmap.get("out").unwrap().clone()
-    }
-
     #[test]
     fn a_multi_slot_reaches_a_node_on_both_tiers_with_its_sources() {
         let py = subproc_python();
         let mut here = PyNode::from_source(SOURCES, vec![("input", true)], vec!["out"]).expect("PyNode");
         let mut there = RemoteNode::new(&py, SOURCES, vec![("input", true)]);
         for node in [&mut here as &mut dyn Node, &mut there] {
-            let out = once_multi(node, &["alpha.out", "beta.out"]).expect("a frame");
+            let out = once(node, None, &["alpha.out", "beta.out"], &ParamGroups::new()).1.expect("a frame");
             assert_eq!(text(&out), Some("alpha.out,beta.out"), "the sources in wire order");
-            assert_eq!(text(&once_multi(node, &[]).expect("a frame")), Some(""), "no wire, no name");
+            assert_eq!(text(&once(node, None, &[], &ParamGroups::new()).1.expect("a frame")), Some(""), "no wire, no name");
         }
     }
 
@@ -386,7 +369,7 @@ class Absent(goofi.Node):
         let mut params = ParamGroups::new();
         params.insert("count".into(), IndexMap::from([("reset".to_string(), Param::Pulse)]));
         let key = goofi_node::ParamKey::new("count", "reset");
-        let count = |node: &mut dyn Node| f32s(&once(node, None, &params).1.expect("a frame"))[0];
+        let count = |node: &mut dyn Node| f32s(&once(node, None, &[], &params).1.expect("a frame"))[0];
 
         let mut here = PyNode::from_source(super::PULSE_COUNTER, vec![], vec!["out"]).expect("PyNode");
         here.setup(&mut NodeCtx::new(), &Params::new(&params)).expect("in-process setup");
@@ -455,9 +438,9 @@ class Loud(goofi.Node):
         // In-process seeds params and runs setup; the child runs setup lazily on its first request.
         let mut here = PyNode::from_source(PARITY, vec![("data", false)], vec!["out"]).expect("PyNode");
         here.setup(&mut NodeCtx::new(), &Params::new(&params)).expect("in-process setup");
-        let (_, a) = once(&mut here, Some(frame()), &params);
+        let (_, a) = once(&mut here, Some(frame()), &[], &params);
         let mut there = RemoteNode::new(&py, PARITY, vec![("data", false)]);
-        let (_, b) = once(&mut there, Some(frame()), &params);
+        let (_, b) = once(&mut there, Some(frame()), &[], &params);
 
         let (a, b) = (a.expect("in-process frame"), b.expect("subprocess frame"));
         assert_eq!(f32s(&a), f32s(&b), "the two tiers must produce identical values");
@@ -477,9 +460,9 @@ class Loud(goofi.Node):
         let p = ParamGroups::new();
         let mut here = PyNode::from_source(ABSENT, vec![("data", false)], vec!["out"]).expect("PyNode");
         here.setup(&mut NodeCtx::new(), &Params::new(&p)).expect("in-process setup");
-        let (a_res, a) = once(&mut here, None, &p);
+        let (a_res, a) = once(&mut here, None, &[], &p);
         let mut there = RemoteNode::new(&py, ABSENT, vec![("data", false)]);
-        let (b_res, b) = once(&mut there, None, &p);
+        let (b_res, b) = once(&mut there, None, &[], &p);
 
         assert!(a_res.is_ok(), "in-process tier errored on an absent input: {:?}", a_res.err());
         assert!(b_res.is_ok(), "subprocess tier errored on an absent input: {:?}", b_res.err());
@@ -488,8 +471,8 @@ class Loud(goofi.Node):
         assert_eq!(f32s(&a), f32s(&b), "the tiers must answer an absent input identically");
         assert_eq!(f32s(&a), vec![-1.0], "both took the node's own `data is None` branch");
 
-        assert_eq!(f32s(&once(&mut here, Some(frame()), &p).1.unwrap()), vec![2.0, 4.0, 6.0]);
-        assert_eq!(f32s(&once(&mut there, Some(frame()), &p).1.unwrap()), vec![2.0, 4.0, 6.0]);
+        assert_eq!(f32s(&once(&mut here, Some(frame()), &[], &p).1.unwrap()), vec![2.0, 4.0, 6.0]);
+        assert_eq!(f32s(&once(&mut there, Some(frame()), &[], &p).1.unwrap()), vec![2.0, 4.0, 6.0]);
     }
 
     #[test]

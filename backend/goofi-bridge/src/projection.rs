@@ -74,8 +74,6 @@ pub fn of(g: &Graph) -> Value {
         })
         .collect();
 
-    // Known limitation: this Map is a BTreeMap, so a full mirror shows globals alphabetized until
-    // the next live edit. A stable doc order needs an ordered globals shape.
     let mut globals = Map::new();
     for (name, value, is_system, locked) in g.globals().entries() {
         let mut entry = goofi_graph::global_to_json(value);

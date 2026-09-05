@@ -673,11 +673,6 @@ impl Graph {
         self.engines.iter_mut().map(|e| e.as_mut() as &mut dyn Engine).find(|e| e.id() == id)
     }
 
-    /// The one merged view the palette reads: every engine's library, in registration order.
-    pub fn library_manifests(&self) -> Vec<&'static NodeManifest> {
-        self.engines().flat_map(|e| e.library()).map(|l| l.manifest).collect()
-    }
-
     /// The manifest `type_name` resolves to, from whichever engine's library advertises it.
     pub fn type_manifest(&self, type_name: &str) -> Option<&'static NodeManifest> {
         self.library_entry(type_name).map(|(_, l)| l.manifest)
@@ -1306,9 +1301,10 @@ impl Graph {
         // …and re-resolve the ones ALREADY written against the new name: such a binding has no
         // `nd('<old>')` for the rewrite to follow, and this rename is what makes it resolvable.
         self.rebind_naming(name);
-        // A multi slot names its senders, so the new name must reach every slot this node feeds.
+        // A multi slot names its senders, so the new name must reach every leaf this node feeds —
+        // the resolved consumers, because a port relays and no engine plans a port.
         let fed: Vec<(Uid, &'static str)> =
-            self.links.iter().filter(|l| l.node_out == uid).map(|l| (l.node_in, l.slot_in)).collect();
+            self.resolved_edges().into_iter().filter(|e| e.producer.0 == uid).map(|e| e.consumer).collect();
         for (node_in, slot_in) in fed {
             self.touched.push(Touched::Slot(node_in, slot_in));
         }
@@ -2183,13 +2179,12 @@ impl Graph {
     /// only that the request was DISPATCHED; the options arrive as a later `RefreshOptions` status.
     pub fn refresh_param(&mut self, uid: Uid, group: &str, name: &str) -> Result<(), String> {
         let entry = self.leaf(uid).ok_or_else(|| format!("no such node {uid}"))?;
-        let live = entry.params.clone();
-        let param = goofi_node::param(&live, group, name)
+        let param = goofi_node::param(&entry.params, group, name)
             .ok_or_else(|| format!("no such param `{group}.{name}`"))?;
         if !matches!(param, Param::Str { refresh: true, .. }) {
             return Err(format!("param `{group}.{name}` is not refreshable"));
         }
-        let engine = self.leaf(uid).map(|e| e.engine).expect("checked above");
+        let engine = entry.engine;
         let key = ParamKey::new(group, name);
         if let Some(e) = self.engine_mut(engine) {
             e.refresh_param(uid, key);
@@ -2862,8 +2857,9 @@ impl Graph {
             let mut params = Map::new();
             if let Some(leaf) = e.leaf() {
                 for (group, names) in &*leaf.params.clone() {
-                    let gmap: Map<String, Value> =
-                        names.iter().map(|(n, p)| (n.clone(), param_value_json(p))).collect();
+                    let gmap: Map<String, Value> = names.iter()
+                        .filter(|(_, p)| !matches!(p, Param::Pulse))
+                        .map(|(n, p)| (n.clone(), param_value_json(p))).collect();
                     params.insert(group.clone(), Value::Object(gmap));
                 }
                 // Persist source records (sorted for a stable diff) — else a save/load silently

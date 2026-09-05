@@ -50,6 +50,22 @@ pub enum Var {
 }
 
 /// One frame as a scalar param of `target`'s type — what a reference copies on arrival.
+/// The one threshold a number crosses to read as true — for a `Bool` and for a pulse's gate.
+pub fn gate(x: f64) -> bool {
+    x >= 0.5
+}
+
+/// A global's value read into `target`'s shape, so a bare variable is coerced like any other source.
+fn value_as(value: &Param, target: &Param) -> Result<Param, String> {
+    match (value.as_f64(), target) {
+        (Some(x), Param::Float { vmin, vmax, .. }) => Ok(Param::Float { value: x, vmin: *vmin, vmax: *vmax }),
+        (Some(x), Param::Int { vmin, vmax, .. }) => Ok(Param::Int { value: x.round() as i64, vmin: *vmin, vmax: *vmax }),
+        (Some(x), Param::Bool { .. } | Param::Pulse) => Ok(Param::Bool { value: gate(x) }),
+        (_, Param::Str { .. }) if matches!(value, Param::Str { .. }) => Ok(value.clone()),
+        _ => Err(format!("`{value:?}` does not fit `{target:?}`")),
+    }
+}
+
 fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
     match (frame.value(), target) {
         (goofi_core::Value::Str(s), Param::Str { options, refresh, .. }) => {
@@ -62,7 +78,7 @@ fn scalar_of(frame: &Data, target: &Param) -> Result<Param, String> {
                 Param::Float { vmin, vmax, .. } => Param::Float { value: x, vmin: *vmin, vmax: *vmax },
                 Param::Int { vmin, vmax, .. } => Param::Int { value: x.round() as i64, vmin: *vmin, vmax: *vmax },
                 // A pulse is a GATE here: the same threshold, and the runtime fires on its rise.
-                Param::Bool { .. } | Param::Pulse => Param::Bool { value: x >= 0.5 },
+                Param::Bool { .. } | Param::Pulse => Param::Bool { value: gate(x) },
                 Param::Str { .. } => return Err("a string param references a STRING output".to_string()),
             })
         }
@@ -135,7 +151,7 @@ impl Expression {
         // A bare variable is read without the evaluator: a global's value as it is, and a
         // referenced producer's frame as the one element it must hold.
         match self.vars.get(self.source.trim()).and_then(Mailbox::value) {
-            Some(Local::Value(value)) => return Ok(Some(value.clone())),
+            Some(Local::Value(value)) => return value_as(value, target).map(Some),
             Some(Local::Frame(frame)) if self.id.is_none() => return scalar_of(frame, target).map(Some),
             _ => {}
         }

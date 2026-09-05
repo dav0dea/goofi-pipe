@@ -371,8 +371,7 @@ impl Control {
             }
             for key in &mail.pulse {
                 if let Some(i) = self.index_of(key) {
-                    self.params[i].store(1.0f64.to_bits(), Ordering::Relaxed);
-                    self.pulsed.push((i, Instant::now()));
+                    self.raise(i);
                 }
             }
             self.receive();
@@ -390,7 +389,9 @@ impl Control {
         self.apply_binds(binds);
         self.apply_bells(d.targets);
         for (i, c) in self.consts.iter().enumerate() {
-            if !self.binds.iter().any(|b| b.param == i) {
+            let bound = self.binds.iter().any(|b| b.param == i);
+            let raised = self.pulsed.iter().any(|(p, _)| *p == i);
+            if !bound && !raised {
                 self.params[i].store(plan::scalar(c).to_bits(), Ordering::Relaxed);
             }
         }
@@ -645,11 +646,18 @@ impl Control {
         }
     }
 
+    /// Raise a pulse param for one control tick.
+    fn raise(&mut self, i: usize) {
+        self.params[i].store(1.0f64.to_bits(), Ordering::Relaxed);
+        self.pulsed.push((i, Instant::now()));
+    }
+
     /// One binding's value into its atomic — the literal when nothing has arrived or it cannot be
     /// evaluated — and the report of what changed.
     fn evaluate(&mut self, i: usize, pass: &mut Pass) {
         let b = &self.binds[i];
-        let target = &self.consts[b.param];
+        let param = b.param;
+        let target = &self.consts[param];
         let evaluator = self.shared.evaluator.lock().unwrap().clone();
         let t = self.started.elapsed().as_secs_f64();
         let (value, error) = match b.expr.evaluate(evaluator.as_deref(), t, target) {
@@ -657,8 +665,20 @@ impl Control {
             Ok(v) => (v, None),
             Err(e) => (None, Some(e)),
         };
-        self.params[b.param].store(plan::scalar(value.as_ref().unwrap_or(target)).to_bits(), Ordering::Relaxed);
         let key = b.key.clone();
+        // A source on a pulse is a gate: the RISE is the request, and an unevaluated pass keeps
+        // the edge memory.
+        if matches!(target, Param::Pulse) {
+            if let Some(level) = value {
+                let was_high = self.evaluated.insert(key.clone(), level.clone()).and_then(|p| p.as_bool()).unwrap_or(false);
+                if !was_high && level.as_bool() == Some(true) {
+                    self.raise(param);
+                }
+            }
+            self.record_error(key, error, pass);
+            return;
+        }
+        self.params[param].store(plan::scalar(value.as_ref().unwrap_or(target)).to_bits(), Ordering::Relaxed);
         pass.values |= match value {
             Some(v) => self.evaluated.insert(key.clone(), v.clone()).as_ref() != Some(&v),
             None => self.evaluated.shift_remove(&key).is_some(),

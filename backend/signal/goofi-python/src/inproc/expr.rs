@@ -120,7 +120,10 @@ fn coerce(result: &Bound<'_, PyAny>, target: &Param) -> Result<Param, String> {
             Ok(Param::Int { value: v.round() as i64, vmin: *vmin, vmax: *vmax })
         }
         // A pulse is a GATE to an expression: the runtime fires on the rise of this bool.
-        Param::Bool { .. } | Param::Pulse => Ok(Param::Bool { value: to_scalar::<bool>(result, "bool")? }),
+        Param::Bool { .. } | Param::Pulse => {
+            let value = to_scalar::<bool>(result, "bool").or_else(|_| to_scalar::<f64>(result, "bool or number").map(goofi_node::mailbox::gate))?;
+            Ok(Param::Bool { value })
+        }
         Param::Str { options, refresh, .. } => {
             let v: String = result.extract().map_err(|_| "expression result is not a string".to_string())?;
             Ok(Param::Str { value: v, options: options.clone(), refresh: *refresh })

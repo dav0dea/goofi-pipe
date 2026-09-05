@@ -14,9 +14,9 @@ use goofi_node::Uid;
 /// hears it as. A rename changes the third and none of the first two.
 pub(crate) type Wire = (Uid, &'static str, String);
 
-/// Whether two wires share a producer end, whatever they are named.
-pub(crate) fn same_end(a: &Wire, b: &Wire) -> bool {
-    a.0 == b.0 && a.1 == b.1
+/// Whether a wire has the producer end `(node, slot)`, whatever it is named.
+pub(crate) fn same_end(a: &Wire, end: (Uid, &str)) -> bool {
+    a.0 == end.0 && a.1 == end.1
 }
 
 /// What a consumer subscribes THROUGH. An expression binding attaches through the same three
@@ -151,7 +151,7 @@ impl WirePlanner {
             .map(|previous| previous.added.clone())
             .unwrap_or_default();
         let added: Vec<Wire> =
-            desired.iter().filter(|w| added.iter().chain(&carried).any(|a| same_end(a, w))).cloned().collect();
+            desired.iter().filter(|w| added.iter().chain(&carried).any(|a| same_end(a, (w.0, w.1)))).cloned().collect();
         self.abandon(&key);
         self.planned.insert(key.clone(), desired);
         self.sequences.insert(key, Sequence { removed, added, phase: None });
@@ -185,7 +185,7 @@ impl WirePlanner {
     /// Whether `key`'s in-flight sequence is still ABOUT to subscribe `wire`. A producer must not
     /// be told to ring it until then (§4).
     pub(crate) fn unapplied(&self, key: &SlotKey, wire: (Uid, &str)) -> bool {
-        self.sequences.get(key).is_some_and(|s| s.unapplied() && s.added.iter().any(|a| a.0 == wire.0 && a.1 == wire.1))
+        self.sequences.get(key).is_some_and(|s| s.unapplied() && s.added.iter().any(|a| same_end(a, wire)))
     }
 
     /// Move to the next phase, or finish the sequence and answer `None`.

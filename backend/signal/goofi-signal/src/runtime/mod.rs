@@ -10,11 +10,11 @@ use crate::RunPolicy;
 use goofi_signal_sdk::{Inputs, Node, NodeCtx, Outputs};
 pub use goofi_node::NodeFault;
 
-/// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
-/// worker polling to discover one.
 /// One wire's cell on a `multi` slot: its service, its `node.slot` source, and its newest frame.
 type MultiCells = Vec<(ServiceName, String, Option<Data>)>;
 
+/// A [`Transport`] that also notifies the drain worker on every report — the alternative to the
+/// worker polling to discover one.
 pub struct WakingTransport {
     pub inner: Arc<dyn Transport>,
     pub waker: Arc<goofi_node::DrainWaker>,
@@ -284,9 +284,9 @@ impl NodeRuntime {
                 Control::InSlot { slot, wires } => {
                     let services: Vec<ServiceName> = wires.iter().map(|(service, _)| service.clone()).collect();
                     let wired = transport.wire_in(&slot, &services);
-                    // The node's own cells follow the set it was told to hold: a slot with no wire
-                    // left holds no frame, and a `multi` slot's cells keep their producers' order.
-                    self.reslot(&slot, &wires);
+                    // The node's own cells follow the set the transport holds, so a cell's index is
+                    // its wire's index; a slot with no wire left holds no frame.
+                    self.reslot(&slot, if wired.is_ok() { &wires } else { &[] });
                     wired
                 }
                 Control::OutSlot { slot, targets } => transport.wire_out(&slot, &targets),
@@ -511,19 +511,22 @@ impl NodeRuntime {
                     None
                 }
             };
+            // A pulse holds no value: what its source says is a gate, and the RISE is the request.
+            // An unevaluated pass keeps the edge memory, so a producer's rebirth re-arms nothing.
+            if matches!(target, Param::Pulse) {
+                if let Some(level) = evaluated {
+                    let was_high = self.evaluated.insert(key.clone(), level.clone()).and_then(|p| p.as_bool()).unwrap_or(false);
+                    if !was_high && level.as_bool() == Some(true) {
+                        self.pulse_param(key.clone());
+                    }
+                }
+                continue;
+            }
             let previous = match &evaluated {
                 Some(value) => self.evaluated.insert(key.clone(), value.clone()),
                 None => self.evaluated.shift_remove(&key),
             };
             values_changed |= previous != evaluated;
-            // A pulse holds no value: what its source says is a gate, and the RISE is the request.
-            if matches!(target, Param::Pulse) {
-                let was_high = previous.as_ref().and_then(Param::as_bool).unwrap_or(false);
-                if !was_high && evaluated.as_ref().and_then(Param::as_bool) == Some(true) {
-                    self.pulse_param(key.clone());
-                }
-                continue;
-            }
             let Some(next) = evaluated.or_else(|| self.literal(&key)) else { continue };
             if goofi_node::param(&self.effective, &key.group, &key.name) == Some(&next) {
                 continue;
@@ -542,8 +545,8 @@ impl NodeRuntime {
     }
 
     /// The whole sparse map, never a delta — the graph replaces its copy with this, so a value it
-    /// is no longer told about is one it would otherwise preview for ever. A PULSE is left out: its
-    /// evaluated bool is this thread's edge memory, and a pulse has no value for anyone to read.
+    /// is no longer told about is one it would otherwise preview for ever. A pulse's evaluated
+    /// bool rides along as this thread's edge memory; the graph is what drops it.
     fn report_param_values(&mut self) {
         let evaluated = self.evaluated.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.transport.report(WireStatus::Health(Status::ParamValues { evaluated }));

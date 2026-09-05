@@ -162,8 +162,9 @@ impl Transport for IoxTransport {
                 Err(e) => failed.push(e),
             }
         }
-        inputs.push((slot.to_string(), wires));
+        // A slot holds its whole set or nothing: a missing wire would shift every later one's index.
         if failed.is_empty() {
+            inputs.push((slot.to_string(), wires));
             Ok(())
         } else {
             Err(failed.join("; "))

@@ -276,7 +276,7 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
         let path = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .find(|p| goofi_node::type_name_of(p).as_deref() == Some(goofi_node::bare(ty)))?;
+            .find(|p| goofi_node::type_name_of(p).as_deref() == Some(goofi_node::bare(ty)) && goofi_node::engine_of(p).as_deref() == Some(engine))?;
         Some((path, provenance))
     });
     let tier = g.type_tier(ty);
