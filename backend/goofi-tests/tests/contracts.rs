@@ -401,6 +401,35 @@ fn every_manifest_carries_only_standard_tags_and_no_category() {
 }
 
 #[test]
+fn every_palette_row_lists_its_pages_in_declared_order_with_common_last() {
+    // A page order is a statement the author makes; the client draws what it is given.
+    let g = Goofi::new();
+    let declared: Vec<(String, Vec<&'static str>)> = {
+        let graph = g.state.graph.lock().unwrap();
+        graph.library_entries().into_iter()
+            .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
+            .map(|(engine, l)| {
+                let mut groups: Vec<&'static str> = Vec::new();
+                for d in l.manifest.params {
+                    if d.group != "common" && !groups.contains(&d.group) {
+                        groups.push(d.group);
+                    }
+                }
+                (goofi_node::qualify(engine, l.manifest.type_name), groups)
+            })
+            .collect()
+    };
+    let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
+    for (ty, groups) in declared {
+        let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
+        let pages: Vec<&str> = row["params"].as_object().expect("pages").keys().map(String::as_str).collect();
+        let own: Vec<&str> = pages.iter().copied().filter(|p| *p != "common").collect();
+        assert_eq!(own, groups, "{ty}: pages in declared order");
+        assert!(!pages.contains(&"common") || pages.last() == Some(&"common"), "{ty}: common is the last page: {pages:?}");
+    }
+}
+
+#[test]
 fn every_declared_expression_reads_only_a_global_a_fresh_patch_has() {
     // Cheap and evaluator-free: a typo'd `globals.defualt_ufreq` compiles, binds, then errors on every
     // instance. Read AS EACH TYPE SEES IT, since a declaration may condition on the manifest.

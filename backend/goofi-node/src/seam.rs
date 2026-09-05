@@ -201,18 +201,19 @@ pub trait Engine: Send {
     fn universal_decls(&self, _manifest: &'static NodeManifest) -> Vec<ParamDecl> {
         Vec::new()
     }
-    /// The record a fresh instance of `manifest` starts from: this engine's universal groups
-    /// FIRST — the editor renders in insertion order — then the declared defaults, then `supplied`
-    /// folded on top, so a patch saved before a param existed still gets that param's default. By
-    /// MANIFEST, not by name, so a type the library no longer answers for can still say what its
-    /// live nodes hold. Every engine answers this one way; none overrides it.
+    /// The record a fresh instance of `manifest` starts from: the declared defaults in declared
+    /// order — the editor renders in insertion order — then this engine's universal groups LAST,
+    /// never overriding a declared name, then `supplied` folded on top, so a patch saved before a
+    /// param existed still gets that param's default. By MANIFEST, not by name, so a type the
+    /// library no longer answers for can still say what its live nodes hold. Every engine answers
+    /// this one way; none overrides it.
     fn normalize_params(&self, manifest: &'static NodeManifest, supplied: Option<ParamGroups>) -> ParamGroups {
         let mut params = ParamGroups::new();
-        for d in self.universal_decls(manifest) {
-            params.entry(d.group.to_string()).or_default().insert(d.name.to_string(), d.spec.to_param());
-        }
         for (group, entries) in manifest.default_params() {
             params.entry(group).or_default().extend(entries);
+        }
+        for d in self.universal_decls(manifest) {
+            params.entry(d.group.to_string()).or_default().entry(d.name.to_string()).or_insert_with(|| d.spec.to_param());
         }
         for (group, entries) in supplied.into_iter().flatten() {
             params.entry(group).or_default().extend(entries);

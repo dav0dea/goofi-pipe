@@ -30,7 +30,8 @@ futures-util = "0.3"
 # The mount nonce only has to be unguessable-enough to keep two concurrent goofis apart.
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# A palette row lists its pages in the manifest's declared order, so the map keeps insertion order.
+serde_json = { version = "1", features = ["preserve_order"] }
 # `node snapshot` answers an ARRAY frame as base64 NPY.
 base64 = "0.22"
 # The command-line split the phrase layer parses with: the same quoting bash gives argv, which is
