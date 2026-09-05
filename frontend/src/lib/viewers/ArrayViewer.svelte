@@ -7,6 +7,7 @@
 	import { decimateMinMax } from './decimate';
 	import { readEnvelope, envelopeBand } from './envelope';
 	import { formatTick as fmtTick } from './format';
+	import { logSafe } from './logScale';
 	import { SERIES, AXIS_INK, tickFont } from './palette';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
@@ -114,6 +115,17 @@
 		ctx.restore();
 	}
 
+	/** The value axis. Only the log form is floored — a linear one takes the range as given. */
+	function yScale(): uPlot.Scale {
+		const distr = mLogY ? 3 : 1;
+		if (!mLogY) {
+			return mYAuto ? { auto: true, distr } : { auto: false, distr, range: [mYMin, mYMax] };
+		}
+		return mYAuto
+			? { auto: true, distr, range: (_u, lo, hi) => logSafe(lo, hi) }
+			: { auto: false, distr, range: logSafe(mYMin, mYMax) };
+	}
+
 	function makePlot(width: number, height: number, nSeries: number): void {
 		plot?.destroy();
 		lastNSeries = nSeries;
@@ -136,9 +148,7 @@
 				}
 			: {
 					x: { time: false, distr: mLogX ? 3 : 1 },
-					y: mYAuto
-						? { auto: true, distr: mLogY ? 3 : 1 }
-						: { auto: false, distr: mLogY ? 3 : 1, range: [mYMin, mYMax] }
+					y: yScale()
 				};
 		const series: uPlot.Series[] = scalarMode
 			? [{ label: 'x' }, { label: 'v', stroke: SERIES[0], width: 2, points: { show: false } }]
