@@ -147,18 +147,9 @@ fn sync_frontend(frontend: &Path) {
         goofi_init::RUN_ME
     );
 
-    // Past tense, after the fact: cargo REPLAYS a build script's warnings on later builds where
-    // npm never ran, so only a completed-event wording stays true.
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    let started = SystemTime::now();
     match Command::new(npm).args(["run", "build"]).current_dir(frontend).status() {
-        Ok(s) if s.success() => {
-            let secs = started.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
-            println!(
-                "cargo:warning=rebuilt the served SPA (frontend/build) from changed sources in \
-                 {secs:.1}s — cargo REPLAYS this line on later no-op builds, where npm did not re-run"
-            );
-        }
+        Ok(s) if s.success() => {}
         Ok(s) => panic!("`npm run build` failed in frontend/ ({s})"),
         Err(e) => panic!(
             "could not run `{npm}` ({e}) — it builds the SPA compiled into this binary. Install \
