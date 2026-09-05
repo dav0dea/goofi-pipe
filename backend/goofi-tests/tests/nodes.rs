@@ -263,8 +263,12 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     assert_eq!(loud["available"], false, "{loud}");
     assert!(loud["missing_deps"].to_string().contains("goofi_audio_sdk"), "{loud}");
 
-    // A shipped file copied into the patch shadows it, and the palette says so.
-    std::fs::copy(&shipped_osc, mount.join("nodes_signal").join("Oscillator.rs")).unwrap();
+    // A shipped file copied into the patch shadows it, and the palette says so — a copy that kept
+    // its source's mtime included, which is what a Finder copy and `fs::copy` on macOS make.
+    let copy = mount.join("nodes_signal").join("Oscillator.rs");
+    std::fs::copy(&shipped_osc, &copy).unwrap();
+    let kept = std::fs::metadata(&shipped_osc).unwrap().modified().unwrap();
+    std::fs::File::options().write(true).open(&copy).unwrap().set_modified(kept).unwrap();
     assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("signal:Oscillator")));
     let source = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "signal:Oscillator").unwrap()["source"].clone();

@@ -82,7 +82,7 @@ pub struct AppState {
     pub roots: Vec<PathBuf>,
     /// What the last scan found, by type name → the file's stamp: the baseline the next [`rescan`]
     /// diffs against, and the only list it removes from.
-    node_index: Arc<Mutex<std::collections::BTreeMap<String, Option<Stamp>>>>,
+    node_index: Arc<Mutex<std::collections::BTreeMap<String, Seen>>>,
     /// The tree a `.gfi` packs and unpacks. Behind a lock because a LOAD replaces it while every
     /// handler holds its own clone of the state.
     mount: Arc<Mutex<PathBuf>>,
@@ -642,6 +642,11 @@ pub fn catalog_type_names(g: &Graph) -> Vec<String> {
         .collect()
 }
 
+/// The root a name was found under — none for an engine's own types — and that file's stamp: a
+/// copy that keeps its source's mtime, which a Finder copy and `fs::copy` on macOS do, is still
+/// another file.
+type Seen = (Option<PathBuf>, Option<Stamp>);
+
 /// What a [`rescan`] changed, for the caller that asked.
 #[derive(Default)]
 pub struct ScanDiff {
@@ -652,14 +657,14 @@ pub struct ScanDiff {
 
 /// Re-derive the registry from the roots that exist RIGHT NOW — every shipped root, then the
 /// patch's own workspace, one engine folder at a time, so a patch-local node of the same name
-/// wins. The previous scan's stamps are the baseline, so this answers a DIFF and removes only what
-/// it registered.
+/// wins. The previous scan's root and stamp per name are the baseline, so this answers a DIFF and
+/// removes only what it registered.
 pub fn rescan(
     state: &AppState,
     g: &mut Graph,
     patch: &std::path::Path,
 ) -> (ScanDiff, Vec<ScannedType>) {
-    let mut found: std::collections::BTreeMap<String, Option<Stamp>> = Default::default();
+    let mut found: std::collections::BTreeMap<String, Seen> = Default::default();
     let mut patch_types: HashSet<String> = HashSet::new();
     let mut outcomes = Vec::new();
     let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| patch.join(goofi_node::folder_of(id))).collect();
@@ -669,22 +674,22 @@ pub fn rescan(
             if is_patch {
                 patch_types.insert(t.type_name.clone());
             }
-            found.insert(t.type_name.clone(), t.stamp);
+            found.insert(t.type_name.clone(), (Some(root.clone()), t.stamp));
             outcomes.push(t);
         }
     }
     for t in g.scan_own() {
-        found.insert(t.type_name.clone(), t.stamp);
+        found.insert(t.type_name.clone(), (None, t.stamp));
         outcomes.push(t);
     }
     g.set_patch_types(patch_types);
 
     let mut prev = state.node_index.lock().unwrap();
     let mut diff = ScanDiff::default();
-    for (name, stamp) in &found {
+    for (name, seen) in &found {
         match prev.get(name) {
             None => diff.added.push(name.clone()),
-            Some(before) if before != stamp => diff.changed.push(name.clone()),
+            Some(before) if before != seen => diff.changed.push(name.clone()),
             Some(_) => {}
         }
     }
