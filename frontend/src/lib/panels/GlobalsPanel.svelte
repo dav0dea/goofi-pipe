@@ -94,7 +94,8 @@
 					class="grp"
 					data-testid="global-group"
 					data-group={grp.group}
-					bind:open={open[grp.group]}
+					open={open[grp.group] === true}
+					onToggle={(v) => (open[grp.group] = v)}
 				>
 					{#snippet summary()}
 						<span class="grp-name">{grp.group}</span>
