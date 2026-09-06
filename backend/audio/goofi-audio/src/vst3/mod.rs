@@ -433,8 +433,12 @@ impl AudioEngine {
 
 const OMITTED: i32 = ParameterInfo_::ParameterFlags_::kIsHidden
     | ParameterInfo_::ParameterFlags_::kIsReadOnly
-    | ParameterInfo_::ParameterFlags_::kIsBypass
-    | ParameterInfo_::ParameterFlags_::kIsProgramChange;
+    | ParameterInfo_::ParameterFlags_::kIsBypass;
+
+/// A program list is the plugin's own PRESETS, and it is the one param a plugin is entitled to
+/// refuse automation on and still mean something: choosing a preset is what a player does first.
+/// Its step strings are the preset names, so it arrives as a named list rather than an index.
+const PROGRAM: i32 = ParameterInfo_::ParameterFlags_::kIsProgramChange;
 
 /// A param goofi can drive says so itself. Requiring it is what keeps the 128x16 MIDI CC mapping
 /// block a JUCE plugin declares — 2080 params, every one of them flagless — out of the node.
@@ -462,8 +466,11 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         Vec::new()
     };
     let mut names: HashMap<String, Vec<String>> = HashMap::new();
-    let offered: Vec<&ParamInfo> =
-        class.params.iter().filter(|p| p.flags & OMITTED == 0 && p.flags & AUTOMATABLE != 0).collect();
+    let offered: Vec<&ParamInfo> = class
+        .params
+        .iter()
+        .filter(|p| p.flags & OMITTED == 0 && (p.flags & AUTOMATABLE != 0 || p.flags & PROGRAM != 0))
+        .collect();
     let total = offered.len();
     let groups = unit_groups(class);
     // Named and specced over the WHOLE offered set, so the name a param gets never depends on
