@@ -73,10 +73,15 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			const box = (await menu.boundingBox())!;
 			const view = page.viewportSize()!;
 			// Anchored to the finger, stated as a property rather than a distance: the press point
-			// lies inside the menu it opened, wherever the clamp had to put it. A pinned number
-			// here would have to move every time the menu's own height does.
-			expect(spot.y, 'the finger is within what the press opened').toBeGreaterThanOrEqual(box.y);
-			expect(spot.y).toBeLessThanOrEqual(box.y + box.height);
+			// lies within one touch target of the menu it opened, wherever the clamp had to put it.
+			// A pinned number here would have to move every time the menu's own height does, and
+			// containment alone was one: the menu clears the finger by design, so it holds only
+			// while the menu is tall enough for the clamp to push it back up.
+			const hit = await page.evaluate(() =>
+				parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'))
+			);
+			expect(spot.y, 'the finger is at what the press opened').toBeGreaterThanOrEqual(box.y - hit);
+			expect(spot.y).toBeLessThanOrEqual(box.y + box.height + hit);
 			expect(box.x, 'and the clamp keeps it wholly on screen').toBeGreaterThanOrEqual(0);
 			expect(box.x + box.width).toBeLessThanOrEqual(view.width);
 			expect(box.y).toBeGreaterThanOrEqual(0);

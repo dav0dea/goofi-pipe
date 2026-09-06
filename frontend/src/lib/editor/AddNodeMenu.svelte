@@ -2,7 +2,7 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import { notify } from '$lib/stores/notify.svelte';
 	import { dtypeColor } from './categoryColor';
-	import { ALL_TAB, byTab, byTags, facetTags, paletteTabs, rankNodeTypes, tabOf } from './nodeSearch';
+	import { ALL_TAB, byTab, paletteTabs, rankNodeTypes, tabOf } from './nodeSearch';
 	import { bareName, familyColor } from './typeId';
 	import { nodeTypeTitle } from './nodeTypeTitle';
 	import { nodeTypeSource } from './nodeTypeSource';
@@ -11,7 +11,7 @@
 	import type { SlotClickSeed } from '$lib/stores/ui.svelte';
 	import { seedSlot } from './seedSlot';
 	import { onMount, tick } from 'svelte';
-	import { Chip, EmptyState, Icon, IconButton, MODE_ATTRS, Tabs } from '$lib/ui';
+	import { EmptyState, Icon, IconButton, MODE_ATTRS, Tabs } from '$lib/ui';
 
 	type Props = {
 		onPick: (type: NodeTypeInfo) => void;
@@ -24,12 +24,9 @@
 	};
 	const { onPick, onClose, seed = null, boundary = false }: Props = $props();
 
-	type Tag = NodeTypeInfo['tags'][number];
-
 	const g = graph();
 	let query = $state('');
 	let family = $state(ALL_TAB);
-	let picked = $state<Tag[]>([]);
 	let listEl = $state<HTMLDivElement | null>(null);
 	let inputEl = $state<HTMLInputElement | null>(null);
 	let highlighted = $state(0);
@@ -44,17 +41,20 @@
 		(g.nodeTypes ?? []).filter((t) => boundary || !boundaryType(t.type)).filter(matchesSeed)
 	);
 	const tabs = $derived(paletteTabs(offered).map((id) => ({ id, label: id })));
-	// The tab and the chips are RESOLVED rather than corrected, so a rescan that retires either
-	// cannot strand a selection the user has no control left to undo.
+	// The tab is RESOLVED rather than corrected, so a rescan that retires it cannot strand a
+	// selection the user has no control left to undo.
 	const tab = $derived(tabs.some((t) => t.id === family) ? family : ALL_TAB);
 	const scoped = $derived(byTab(offered, tab));
-	const tags = $derived(picked.filter((tag) => scoped.some((t) => t.tags.includes(tag))));
-	const faceted = $derived(byTags(scoped, tags));
-	const chips = $derived(facetTags(faceted));
-	const filtered = $derived(rankNodeTypes(faceted, query));
+	const filtered = $derived(rankNodeTypes(scoped, query));
 
-	function toggleTag(tag: Tag): void {
-		picked = picked.includes(tag) ? picked.filter((t) => t !== tag) : [...picked, tag];
+	// A tag reaches the list through the search, so panelty's Tabs carries the only facet left —
+	// and it has no ink hook, so the engine's colour goes on the tokens a tab reads.
+	function engineInk(id: string): { style?: string } {
+		if (id === ALL_TAB) return {};
+		const ink = familyColor(id);
+		return {
+			style: `--panelty-text: ${ink}; --panelty-text-dim: color-mix(in srgb, ${ink} 65%, transparent)`
+		};
 	}
 
 	let rescanning = $state(false);
@@ -121,12 +121,6 @@
 			</span>
 		</div>
 	{/if}
-	{#if tabs.length > 1}
-		<!-- Scrolls: the menu is 320px at its widest, which a growing engine set outgrows. -->
-		<div class="engine-row">
-			<Tabs items={tabs} active={tab} onSelect={(id) => (family = id)} data-testid="add-menu-tabs" />
-		</div>
-	{/if}
 	<div class="search-row">
 		<!-- Native, not `TextInput`: this filters per keystroke and owns Enter/Arrow/Escape. -->
 		<input
@@ -143,6 +137,7 @@
 		<!-- Always visible, never hover-only: touch has to reach the rescan too. -->
 		<IconButton
 			label="Rescan node files"
+			variant="ghost"
 			size="sm"
 			density="chrome"
 			disabled={rescanning}
@@ -153,16 +148,16 @@
 		</IconButton>
 	</div>
 
-	{#if chips.length > 0}
-		<div class="tag-row" data-testid="add-menu-tags">
-			{#each chips as tag (tag)}
-				<Chip
-					tone={tags.includes(tag) ? 'accent' : 'neutral'}
-					density="chrome"
-					aria-pressed={tags.includes(tag)}
-					onclick={() => toggleTag(tag)}>{tag}</Chip
-				>
-			{/each}
+	{#if tabs.length > 1}
+		<!-- Scrolls: the menu is 320px at its widest, which a growing engine set outgrows. -->
+		<div class="engine-row">
+			<Tabs
+				items={tabs}
+				active={tab}
+				onSelect={(id) => (family = id)}
+				tabProps={(item) => engineInk(item.id)}
+				data-testid="add-menu-tabs"
+			/>
 		</div>
 	{/if}
 
@@ -268,13 +263,6 @@
 	}
 	.engine-row {
 		overflow-x: auto;
-	}
-	.tag-row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-2);
-		padding: var(--space-3) var(--space-5);
-		border-bottom: 1px solid var(--border);
 	}
 	.seed-chip {
 		display: flex;

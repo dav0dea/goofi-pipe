@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ALL_TAB, VST_TAB, byTab, byTags, facetTags, paletteTabs, rankNodeTypes } from './nodeSearch';
+import { ALL_TAB, VST_TAB, byTab, paletteTabs, rankNodeTypes } from './nodeSearch';
 import type { NodeTypeInfo } from '$lib/api/control';
 import { typeInfo } from '$lib/test/typeInfo';
 
@@ -123,30 +123,5 @@ describe('the palette tab', () => {
 	it('partitions the audio types: a plugin is under vst and nowhere else', () => {
 		expect(byTab(types, 'audio').map((t) => t.type)).toEqual(['audio:Osc']);
 		expect(byTab(types, VST_TAB).map((t) => t.type)).toEqual(['audio:Reverb']);
-	});
-});
-
-describe('the tag chips', () => {
-	const types = [
-		node('signal:Lsl', ['input', 'eeg']),
-		node('signal:Filter', ['transform']),
-		node('audio:Osc', ['generator'])
-	];
-
-	it('offers the tags the rows carry, in the vocabulary order', () => {
-		expect(facetTags(types)).toEqual(['input', 'generator', 'transform', 'eeg']);
-	});
-
-	it('narrows by every selected tag, and an empty selection keeps every row', () => {
-		expect(byTags(types, ['input']).map((t) => t.type)).toEqual(['signal:Lsl']);
-		expect(byTags(types, ['input', 'eeg']).map((t) => t.type)).toEqual(['signal:Lsl']);
-		expect(byTags(types, [])).toBe(types);
-	});
-
-	// The menu re-derives the chips from what the selection LEFT, so the empty result below is
-	// unreachable by clicking: `transform` is no longer offered once `input` is chosen.
-	it('offers no chip that would empty the list', () => {
-		expect(byTags(types, ['input', 'transform'])).toEqual([]);
-		expect(facetTags(byTags(types, ['input']))).toEqual(['input', 'eeg']);
 	});
 });

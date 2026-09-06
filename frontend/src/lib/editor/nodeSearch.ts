@@ -1,10 +1,7 @@
 /** The add-node menu's facets, and the ranking of its search on the bare name. */
 import type { NodeTypeInfo } from '$lib/api/control';
-import { TAGS } from '$lib/api/vocab';
 import { bareName, engineOf } from './typeId';
 import { nodeTypeSource } from './nodeTypeSource';
-
-type Tag = NodeTypeInfo['tags'][number];
 
 /** The palette tab that facets nothing. */
 export const ALL_TAB = 'all';
@@ -104,15 +101,4 @@ export function paletteTabs(types: NodeTypeInfo[]): string[] {
 export function byTab(types: NodeTypeInfo[], tab: string): NodeTypeInfo[] {
 	if (tab === ALL_TAB) return types;
 	return types.filter((t) => tabOf(t) === tab);
-}
-
-/** `types` carrying EVERY selected tag, so each chip narrows what the one before it left. */
-export function byTags(types: NodeTypeInfo[], tags: readonly Tag[]): NodeTypeInfo[] {
-	if (tags.length === 0) return types;
-	return types.filter((t) => tags.every((tag) => t.tags.includes(tag)));
-}
-
-/** The tags `types` carry, in the vocabulary's order: a chip that would show nothing is not offered. */
-export function facetTags(types: NodeTypeInfo[]): Tag[] {
-	return TAGS.filter((tag) => types.some((t) => t.tags.includes(tag)));
 }
