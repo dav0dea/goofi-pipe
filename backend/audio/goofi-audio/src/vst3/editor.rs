@@ -18,7 +18,7 @@ use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 use super::node::Derived;
 use crate::control::AudioShared;
-use crate::ui::{Host, Runloop, Window};
+use goofi_window::{Host, Runloop, Window};
 
 #[cfg(target_os = "linux")]
 const PLATFORM: FIDString = kPlatformTypeX11EmbedWindowID;
@@ -122,7 +122,7 @@ impl Editor {
         let attached = unsafe { view.attached(window.parent, PLATFORM) };
         if attached != kResultOk {
             unsafe { view.setFrame(std::ptr::null_mut()) };
-            host.close_window(window);
+            host.close_window(window.id());
             return Err(format!("attaching the editor answered {attached}"));
         }
         Ok(Editor { view, window, frame })
@@ -133,7 +133,7 @@ impl Editor {
             self.view.removed();
             self.view.setFrame(std::ptr::null_mut());
         }
-        host.close_window(self.window);
+        host.close_window(self.window.id());
         drop(self.view);
         drop(self.frame);
     }

@@ -10,6 +10,7 @@ goofi-node = { path = "../../goofi-node" }
 goofi-codec = { path = "../../goofi-codec" }
 goofi-transport = { path = "../../goofi-transport" }
 goofi-control = { path = "../../goofi-control" }
+goofi-window = { path = "../../goofi-window" }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "std"] }
 naga = { version = "30", features = ["wgsl-in"] }
 pollster = "0.4"

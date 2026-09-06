@@ -18,6 +18,7 @@ pub type Built = Arc<OnceLock<Result<Arc<wgpu::RenderPipeline>, String>>>;
 pub struct Class {
     pub manifest: &'static NodeManifest,
     pub feedback: bool,
+    pub window: bool,
     pub pipeline: Built,
 }
 
@@ -51,7 +52,7 @@ impl GraphicsEngine {
         let full = format!("{source}{}", shader::prelude(manifest));
         shader::validate(&full)?;
         let pipeline = self.compiler.build(full, !manifest.params.is_empty(), manifest.inputs.len());
-        let class = Arc::new(Class { manifest, feedback: intro.feedback, pipeline });
+        let class = Arc::new(Class { manifest, feedback: intro.feedback, window: intro.window, pipeline });
         let displaced = self.classes.insert(type_name.to_string(), class);
         let replaced = displaced.is_some();
         crate::gpu::give_back(displaced);

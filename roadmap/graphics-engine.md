@@ -209,6 +209,41 @@ Two smaller ones: the compile thread gives its finished job back BEHIND the gate
 can hold the last handle on a pipeline whose class was already dropped; and `Isolation::language`
 lost the wildcard that answered `python` for a `.wgsl`.
 
+### The presentation window (2026-09-06)
+
+`Window` is a `.wgsl` node like any other, with `"window": true` in its header — the flag `feedback`
+already showed the shape of. It shows its input on the machine's own screen and still has the one
+output every graphics node has, so a viewer or another node reads the same texture.
+
+- **The window host left the audio engine for `goofi-window`.** An audio plugin's editor and a
+  graphics node's window are one screen, and a process has one main thread to give them. Neither
+  engine owns it now.
+- **The window is the FRAME's size**, set by the universal `output` group, so nothing scales and no
+  platform needs a scaler. The title is the node's own name, because a patch may open several.
+- **A screen is a READER.** `Stage::read()` is the one answer to "does anything read this stage" —
+  a subscriber on its data service, or a window — and it drives both the demand walk and whether a
+  readback is made at all. Without the second half the window opened and stayed black.
+- **The frame is the one the tap already reads back.** A wgpu swapchain would be better and is not
+  reachable: Vulkan wants an Xlib `Display*` or an xcb connection, our X11 host is x11rb's pure-Rust
+  connection, and neither `x11-dl` nor `as-raw-xcb-connection` is in the offline registry. So the
+  window is fed the readback, converted to RGBA and blitted — `PutImage` in bands on X11,
+  `SetDIBitsToDevice` on Win32, an `NSBitmapImageRep` on macOS. The buffer handed to a screen is
+  RGBA, row 0 top; the two platforms that want BGRA share one swizzle. Revisit when a connection
+  pointer can be had.
+- **A screen is slower than a clock, so the presenter is latest-wins with ONE job outstanding.** A
+  job per frame on the window thread's unbounded queue starved every other job on it — an op among
+  them — because the clock always posted the next frame before the screen had finished the last.
+  The in-flight flag clears AFTER the draw, which is what lets the queue empty between two frames.
+- **An op never waits on a render.** The engine stopped taking the runtime lock: it appends a
+  `runtime::Cmd` to an inbox the tick drains. A tick is long — 165 ms at 512 square in a debug
+  build — and a lock a render holds is a lock an op cannot have; std's mutex is not fair, so a
+  clock that overran its period locked the graph out for good rather than merely being slow.
+
+Proved by hand on this machine: a `Ramp` at 45 degrees into a `Window` at 480x270 puts a real X11
+window on the desktop, and `xwd` reads black at the top-left and white at the bottom-right — the
+gradient, the right way up. The suite proves the seam through the screenless host: a window asked
+for, sized, fed, counted in `session status`, and closed with its node.
+
 ## Kept from the first design
 
 - **The wire name is `graphics`**, not `video`: the engine's registered id, the first half of

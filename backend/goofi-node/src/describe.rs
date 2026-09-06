@@ -116,6 +116,7 @@ pub fn describe(
         tags: tags.iter().map(|t| t.as_str().to_string()).collect(),
         producer,
         feedback: false,
+        window: false,
         inputs: inputs
             .iter()
             .map(|s| probe::Slot {

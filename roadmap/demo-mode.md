@@ -31,13 +31,20 @@ see each other's nodes. That is the architecture, and the reset is a restart.
   host in a second variable. Rebinding wins an attacker nothing that opening a public URL already
   gives them, and a DNS name is the only way anyone reaches this deployment. goofi reads no `PORT`
   either — that is a hosting platform's spelling, and the container passes `--port`.
+- **Idle is the PLATFORM's job, not goofi's.** goofi has no idle timer of its own. The host's
+  serverless app-sleep stops the container after its own idle window, and the next visitor's request
+  wakes a FRESH process — which is the reset. A goofi-owned countdown was built and removed: it made
+  a SECOND idle authority racing the platform's, and the two cannot both own "is this idle" (an
+  idle `/control` socket emits nothing, so the platform slept the process before goofi's warning
+  fired). One owner, and it is the platform. The cost this targets is EGRESS — streaming frames to
+  connected viewers, ~99% of the bill — and sleep ends it by ending the process; there is no
+  in-goofi warning before the wake-reset, which is the accepted trade for one owner.
 - **No audio.** `fresh_graph` registers the signal engine alone. A container has no sound server, so
   the engine would open nothing; leaving it out also takes every audio node out of the catalog, at
   one line and with no second list to keep in step.
 
 ## Open
 
-- Whether a demo should reset itself on a timer, or stay until a redeploy.
 - The `agent` panel type stays in the panel dropdown, because `panelty` registers a type for the
   session and offers no way to withdraw one. The panel answers for itself instead. Withdrawing it
   is a panelty release, never a patch here.

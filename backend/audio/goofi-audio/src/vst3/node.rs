@@ -15,7 +15,7 @@ use super::host::{Changes, Events, Host, Stream};
 use super::module;
 use super::ok;
 use crate::control::AudioShared;
-use crate::ui::{self, Ui};
+use goofi_window::{self as ui, Ui};
 use goofi_node::Uid;
 
 /// The tempo the host reports. A CONSTANT for now, and a lie only in the sense that goofi has no

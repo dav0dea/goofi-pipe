@@ -847,6 +847,7 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-transport",
+ "goofi-window",
  "indexmap",
  "libc",
  "libloading 0.8.9",
@@ -921,6 +922,7 @@ dependencies = [
  "goofi-python",
  "goofi-signal",
  "goofi-signal-sdk",
+ "goofi-window",
  "serde_json",
  "shell-words",
  "tokio",
@@ -994,6 +996,7 @@ dependencies = [
  "goofi-core",
  "goofi-node",
  "goofi-transport",
+ "goofi-window",
  "half",
  "naga",
  "pollster",
@@ -1096,6 +1099,7 @@ dependencies = [
  "goofi-signal-sdk",
  "goofi-transport",
  "goofi-view",
+ "goofi-window",
  "indexmap",
  "midir",
  "pyo3",
@@ -1123,6 +1127,17 @@ version = "3.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "goofi-window"
+version = "3.1.0"
+dependencies = [
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

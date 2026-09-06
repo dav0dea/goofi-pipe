@@ -1480,6 +1480,7 @@ pub(crate) fn session_status(
             "clock": a.clock,
             "adapter": a.adapter,
             "backend": a.backend,
+            "windows": a.windows,
             "frames": a.frames,
             "stages": a.stages,
             "tick_max_us": a.tick_max_us,

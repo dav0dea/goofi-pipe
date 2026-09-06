@@ -9,6 +9,7 @@ members = [
     "backend/goofi-node",
     "backend/goofi-transport",
     "backend/goofi-control",
+    "backend/goofi-window",
     "backend/goofi-build",
     "backend/goofi-graph",
     "backend/signal/goofi-signal-sdk",

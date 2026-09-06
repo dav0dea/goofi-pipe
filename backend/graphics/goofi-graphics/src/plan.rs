@@ -37,8 +37,18 @@ pub struct Stage {
     pub uploads: Vec<Arc<Mutex<Option<Upload>>>>,
     /// Whether anyone drinks from this output right now — the half writes it each tick.
     pub readers: Arc<AtomicBool>,
+    /// The window on the machine's own screen this stage draws into, once one is open.
+    pub window: Option<goofi_window::Id>,
     /// Where the tick leaves the frame it read back, for the half to publish.
     pub tap: Arc<Mutex<Option<Data>>>,
+}
+
+impl Stage {
+    /// Whether anything reads this stage's output: a subscriber on its data service, or a window
+    /// on the machine's own screen — the one reader the transport cannot count.
+    pub fn read(&self) -> bool {
+        self.readers.load(Ordering::Relaxed) || self.window.is_some()
+    }
 }
 
 #[derive(Default)]
@@ -51,8 +61,7 @@ impl Plan {
     /// node nobody reads costs nothing, which is what makes a big idle patch free.
     pub fn demanded(&self) -> Vec<bool> {
         let mut want = vec![false; self.stages.len()];
-        let mut stack: Vec<usize> =
-            (0..self.stages.len()).filter(|&i| self.stages[i].readers.load(Ordering::Relaxed)).collect();
+        let mut stack: Vec<usize> = (0..self.stages.len()).filter(|&i| self.stages[i].read()).collect();
         while let Some(i) = stack.pop() {
             if std::mem::replace(&mut want[i], true) {
                 continue;
@@ -70,13 +79,12 @@ impl Plan {
 /// The order, the sizes and the wiring, from settled state. A node whose class answers `feedback`
 /// ignores its in-edges and runs first, reading its producer's texture as the last tick left it;
 /// a loop with no such node is excluded and named.
-pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Vec<(Uid, String)>) {
-    let mut wires: HashMap<(Uid, &str), Uid> = HashMap::new();
-    for e in view.edges {
-        if live.contains_key(&e.consumer.0) && live.contains_key(&e.producer.0) {
-            wires.insert(e.consumer, e.producer.0);
-        }
-    }
+pub fn compile(
+    view: &GraphView<'_>,
+    live: &HashMap<Uid, Instance>,
+    windows: &HashMap<Uid, goofi_window::Id>,
+) -> (Plan, Vec<(Uid, String)>) {
+    let wires = texture_wires(view, live);
     let feeds = |consumer: Uid| -> Vec<Uid> {
         let inst = &live[&consumer];
         inst.class
@@ -105,10 +113,7 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
         .collect();
     faults.extend(mine.iter().map(|u| (*u, "wired to its own output, so it does not render".to_string())));
 
-    let mut sizes: HashMap<Uid, (u32, u32)> = HashMap::new();
-    for uid in &order {
-        size_of(*uid, view, live, &wires, &mut sizes, &mut Vec::new());
-    }
+    let sizes = sizes(view, live);
     let at: HashMap<Uid, usize> = order.iter().enumerate().map(|(i, u)| (*u, i)).collect();
     let mut stages = Vec::with_capacity(order.len());
     for uid in &order {
@@ -145,9 +150,32 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
             uploads: inst.uploads.clone(),
             readers: inst.readers.clone(),
             tap: inst.tap.clone(),
+            window: windows.get(uid).copied(),
         });
     }
     (Plan { stages }, faults)
+}
+
+/// Every wire between two live nodes, by the input it lands on.
+fn texture_wires<'v>(view: &GraphView<'v>, live: &HashMap<Uid, Instance>) -> HashMap<(Uid, &'v str), Uid> {
+    let mut wires = HashMap::new();
+    for e in view.edges {
+        if live.contains_key(&e.consumer.0) && live.contains_key(&e.producer.0) {
+            wires.insert(e.consumer, e.producer.0);
+        }
+    }
+    wires
+}
+
+/// Every live node's texture size, from settled state alone — the engine reads it to size a
+/// window, and the plan to size a target.
+pub fn sizes(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> HashMap<Uid, (u32, u32)> {
+    let wires = texture_wires(view, live);
+    let mut sizes = HashMap::new();
+    for uid in live.keys() {
+        size_of(*uid, view, live, &wires, &mut sizes, &mut Vec::new());
+    }
+    sizes
 }
 
 /// A node's size: what `output/width` and `output/height` say, and for a zero on an axis the

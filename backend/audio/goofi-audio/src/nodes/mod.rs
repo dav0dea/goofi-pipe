@@ -25,7 +25,7 @@ pub struct Birth {
     pub notes: Option<rtrb::Consumer<midi_in::Note>>,
     pub chans: Arc<AtomicU16>,
     /// The window thread, where a plugin is made and unmade; none where the machine has no display.
-    pub ui: Option<crate::ui::Ui>,
+    pub ui: Option<goofi_window::Ui>,
     /// Which node this is, and the engine's inbox — what a plugin's editor writes through. None
     /// for the twin, which is no instance.
     pub uid: Option<goofi_node::Uid>,

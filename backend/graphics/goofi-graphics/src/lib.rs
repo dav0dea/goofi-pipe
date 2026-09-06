@@ -44,6 +44,8 @@ pub struct GraphicsStatus {
     pub adapter: String,
     pub backend: String,
     pub clock: &'static str,
+    /// How many `Window` nodes have a window open on the machine's screen.
+    pub windows: u64,
     pub frames: u64,
     pub stages: u64,
     pub tick_max_us: u64,
@@ -68,9 +70,13 @@ pub struct GraphicsEngine {
     pub(crate) classes: HashMap<String, Arc<Class>>,
     live: HashMap<Uid, Instance>,
     runtime: Arc<Mutex<Runtime>>,
+    inbox: Arc<Mutex<Vec<runtime::Cmd>>>,
     stats: Arc<Stats>,
     ticker: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)>,
     faults: goofi_control::Faults,
+    ui: Option<goofi_window::Ui>,
+    /// The window each window node has open, and the size it was last given.
+    windows: HashMap<Uid, (goofi_window::Id, (u32, u32))>,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
     /// After the classes and the runtime, for the reason [`Gpu`] states.
@@ -109,6 +115,7 @@ impl GraphicsEngine {
         let shared = Arc::new(Shared::new(waker));
         let stats = Arc::new(Stats::default());
         let runtime = Arc::new(Mutex::new(Runtime::new(gpu.clone(), started, stats.clone())));
+        let inbox = runtime.lock().expect("the runtime").inbox.clone();
         let ticker = (clock == Clock::Timer).then(|| {
             let stop = Arc::new(AtomicBool::new(false));
             let (rt, halt) = (runtime.clone(), stop.clone());
@@ -141,13 +148,29 @@ impl GraphicsEngine {
             classes: HashMap::new(),
             live: HashMap::new(),
             runtime,
+            inbox,
             stats,
             ticker,
             faults: goofi_control::Faults::default(),
+            ui: None,
+            windows: HashMap::new(),
             pending: Vec::new(),
             dirty: false,
             bells: goofi_transport::iox_node().expect("an iceoryx2 node for the graphics engine's bells"),
         })
+    }
+
+    /// The window thread, where a `Window` node's frames go. Without one there are no windows,
+    /// and a `Window` node is a pass-through with a viewer like any other node.
+    pub fn set_ui(&mut self, ui: Option<goofi_window::Ui>) {
+        self.ask(runtime::Cmd::Ui(ui.clone()));
+        self.ui = ui;
+    }
+
+    /// Ask the render thread for something. Never blocks: a tick is long, and an op that waited
+    /// on one would be an op that waits on a render.
+    fn ask(&self, cmd: runtime::Cmd) {
+        self.inbox.lock().expect("the inbox").push(cmd);
     }
 
     /// The external clock: run `frames` ticks on the caller's thread. The harness's door.
@@ -155,6 +178,11 @@ impl GraphicsEngine {
         for _ in 0..frames {
             self.runtime.lock().expect("the runtime").tick();
         }
+    }
+
+    /// The window `uid` has open on the machine's screen, if it is a window node with one.
+    pub fn window_of(&self, uid: Uid) -> Option<goofi_window::Id> {
+        self.windows.get(&uid).map(|(id, _)| *id)
     }
 
     pub fn status(&self) -> GraphicsStatus {
@@ -165,6 +193,7 @@ impl GraphicsEngine {
                 Clock::External => "external",
                 Clock::Timer => "timer",
             },
+            windows: self.windows.len() as u64,
             frames: self.stats.frames.load(Ordering::Relaxed),
             stages: self.stats.stages.load(Ordering::Relaxed),
             tick_max_us: self.stats.tick_max_us.load(Ordering::Relaxed),
@@ -239,6 +268,54 @@ impl GraphicsEngine {
         }
     }
 
+    /// The window each window node should have, opened, resized or closed to match settled state.
+    /// A window is the frame's own size, so nothing scales and no platform needs a scaler.
+    fn follow_windows(&mut self, view: &GraphView<'_>, sizes: &HashMap<Uid, (u32, u32)>) {
+        let Some(ui) = self.ui.clone() else { return };
+        let want: HashMap<Uid, (u32, u32)> = self
+            .live
+            .iter()
+            .filter(|(_, inst)| inst.class.window)
+            .map(|(uid, _)| (*uid, sizes.get(uid).copied().unwrap_or((plan::GENERATOR, plan::GENERATOR))))
+            .collect();
+        for uid in self.windows.keys().copied().collect::<Vec<_>>() {
+            if !want.contains_key(&uid) {
+                let (id, _) = self.windows.remove(&uid).expect("just listed");
+                ui.post(move |host| host.close_window(id));
+            }
+        }
+        for (uid, size) in want {
+            match self.windows.get_mut(&uid) {
+                Some(held) if held.1 == size => {}
+                Some(held) => {
+                    held.1 = size;
+                    let id = held.0;
+                    ui.post(move |host| host.resize_window(id, size));
+                }
+                None => {
+                    // The node's own name, because a patch may open several.
+                    let title = view.nodes.get(&uid).map_or_else(String::new, |nv| nv.name.to_string());
+                    let opened =
+                        ui.run(move |host| host.open_window(&title, size, Box::new(|_| {})).map(|w| w.id()));
+                    match opened {
+                        Ok(id) => {
+                            self.windows.insert(uid, (id, size));
+                        }
+                        Err(why) => self.pending.push((
+                            uid,
+                            Status::Fault {
+                                fault: Some(goofi_node::NodeFault::Process {
+                                    msg: format!("no window: {why}"),
+                                    since: self.started.elapsed().as_secs_f64(),
+                                }),
+                            },
+                        )),
+                    }
+                }
+            }
+        }
+    }
+
     /// How many ARRAY inputs a node has — one upload cell each.
     fn uploads_of(manifest: &goofi_node::NodeManifest) -> usize {
         manifest.inputs.iter().filter(|s| s.kind != SlotType::Texture).count()
@@ -309,7 +386,7 @@ impl Engine for GraphicsEngine {
             Ok(handle) => handle,
             Err(e) => return Some(e),
         };
-        self.runtime.lock().expect("the runtime").insert(uid, runtime::params_len(manifest.params));
+        self.ask(runtime::Cmd::Insert(uid, runtime::params_len(manifest.params)));
         self.live.insert(uid, Instance { class, params: atomics, uploads, readers, tap, control });
         // A synchronous engine is ready the moment its insert answers.
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
@@ -321,7 +398,7 @@ impl Engine for GraphicsEngine {
     fn remove(&mut self, uid: Uid) {
         if let Some(inst) = self.live.remove(&uid) {
             inst.control.stop();
-            self.runtime.lock().expect("the runtime").remove(uid);
+            self.ask(runtime::Cmd::Remove(uid));
             gpu::give_back(inst);
             self.faults.forget(uid);
             self.pending.retain(|(u, _)| *u != uid);
@@ -338,10 +415,13 @@ impl Engine for GraphicsEngine {
             self.live[&uid].control.send_if_changed(desired);
             self.pending.push((uid, Status::BindingErrors { errors }));
         }
-        let (plan, faults) = plan::compile(view, &self.live);
+        // Windows first: a screen is a reader, so one opened here must be in THIS plan's demand.
+        self.follow_windows(view, &plan::sizes(view, &self.live));
+        let open: HashMap<Uid, goofi_window::Id> = self.windows.iter().map(|(u, (id, _))| (*u, *id)).collect();
+        let (plan, faults) = plan::compile(view, &self.live, &open);
         let since = self.started.elapsed().as_secs_f64();
         self.pending.extend(self.faults.settle(faults, since));
-        self.runtime.lock().expect("the runtime").set_plan(plan);
+        self.ask(runtime::Cmd::Plan(plan));
         if !self.pending.is_empty() {
             self.shared.waker.notify();
         }
@@ -365,7 +445,7 @@ impl Engine for GraphicsEngine {
 
     fn reset_clock(&mut self, origin: Instant) {
         self.started = origin;
-        self.runtime.lock().expect("the runtime").reset_clock(origin);
+        self.ask(runtime::Cmd::Clock(origin));
     }
 
     fn set_evaluator(&mut self, evaluator: Arc<dyn goofi_node::ExprEvaluator>) {
@@ -381,6 +461,11 @@ impl Engine for GraphicsEngine {
         if let Some((stop, thread)) = self.ticker.take() {
             stop.store(true, Ordering::Relaxed);
             let _ = thread.join();
+        }
+        if let Some(ui) = self.ui.take() {
+            for (id, _) in std::mem::take(&mut self.windows).into_values() {
+                ui.post(move |host| host.close_window(id));
+            }
         }
         let halts: Vec<Arc<goofi_transport::Halt>> = self.live.values().map(|i| i.control.halt.clone()).collect();
         for inst in self.live.values() {

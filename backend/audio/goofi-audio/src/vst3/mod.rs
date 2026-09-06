@@ -521,6 +521,7 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
     let intro = probe::Introspection {
         // A plugin is an effect or an instrument; neither closes a loop through the block.
         feedback: false,
+        window: false,
         gil_safe: true,
         doc,
         tags: vec![tag.as_str().to_string()],

@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetDC, ReleaseDC, SetDIBitsToDevice, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, INFINITE};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -16,6 +19,8 @@ use super::{Id, Pumped, Screen, Wake};
 pub struct Platform {
     class: Vec<u16>,
     event: HANDLE,
+    /// The scratch the swizzle reuses, because this runs once a frame.
+    scratch: Vec<u8>,
 }
 
 /// An auto-reset event the pump waits on beside the queue; setting it is thread-safe.
@@ -70,7 +75,7 @@ impl Platform {
             if event.is_null() {
                 return Err("no wake event".into());
             }
-            Ok(Platform { class, event })
+            Ok(Platform { class, event, scratch: Vec::new() })
         }
     }
 
@@ -117,6 +122,48 @@ impl Screen for Platform {
 
     fn destroy(&mut self, id: Id) {
         unsafe { DestroyWindow(id as usize as HWND) };
+    }
+
+    /// One `SetDIBitsToDevice` a frame. `biHeight` is NEGATIVE, which is how a DIB says its first
+    /// row is the top one; a positive height would show the frame upside down.
+    fn present(&mut self, id: Id, (w, h): (u32, u32), rgba: &[u8]) {
+        super::bgra_into(rgba, &mut self.scratch);
+        let hwnd = id as usize as HWND;
+        let mut info: BITMAPINFO = unsafe { std::mem::zeroed() };
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w as i32,
+            biHeight: -(h as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        unsafe {
+            let dc = GetDC(hwnd);
+            if dc.is_null() {
+                return;
+            }
+            SetDIBitsToDevice(
+                dc,
+                0,
+                0,
+                w,
+                h,
+                0,
+                0,
+                0,
+                h,
+                self.scratch.as_ptr() as *const std::ffi::c_void,
+                &info,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(hwnd, dc);
+        }
     }
 
     fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {

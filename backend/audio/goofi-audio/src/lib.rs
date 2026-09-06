@@ -24,7 +24,6 @@ mod plan;
 mod runtime;
 mod scan;
 pub mod wav;
-pub mod ui;
 pub mod vst3;
 
 use control::{AudioHalf, AudioShared};
@@ -190,7 +189,7 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
 /// the control half's in the ports. A node that owns no OS handle gets neither.
-fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui>, shared: Arc<AudioShared>) -> (nodes::Birth, control::Ports) {
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<goofi_window::Ui>, shared: Arc<AudioShared>) -> (nodes::Birth, control::Ports) {
     let mut birth = nodes::Birth { chans: chans.clone(), ui, uid: Some(uid), shared: Some(shared), ..Default::default() };
     let mut ports = control::Ports::default();
     match type_name {
@@ -251,7 +250,7 @@ pub struct AudioEngine {
     /// The child a bundle is scanned in, and the platform's plugin folders: the composition root's.
     vst3: Option<(PathBuf, Vec<PathBuf>)>,
     /// The window thread: where a plugin is loaded and its editor lives. None without a display.
-    ui: Option<ui::Ui>,
+    ui: Option<goofi_window::Ui>,
     runtime: Arc<Mutex<Runtime>>,
     inbox: rtrb::Producer<Msg>,
     outbox: rtrb::Consumer<Retired>,
@@ -337,7 +336,7 @@ impl AudioEngine {
     }
 
     /// The window thread every plugin from here on is made on — before anything scans.
-    pub fn set_ui(&mut self, ui: Option<ui::Ui>) {
+    pub fn set_ui(&mut self, ui: Option<goofi_window::Ui>) {
         self.ui = ui;
     }
 

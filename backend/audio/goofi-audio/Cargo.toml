@@ -10,6 +10,7 @@ goofi-node = { path = "../../goofi-node" }
 goofi-codec = { path = "../../goofi-codec" }
 goofi-transport = { path = "../../goofi-transport" }
 goofi-control = { path = "../../goofi-control" }
+goofi-window = { path = "../../goofi-window" }
 goofi-audio-sdk = { path = "../goofi-audio-sdk", features = ["host"] }
 goofi-build = { path = "../../goofi-build" }
 sha2 = "0.10"

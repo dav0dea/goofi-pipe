@@ -6,7 +6,7 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::Instant;
 
-use x11rb::connection::Connection;
+use x11rb::connection::{Connection, RequestConnection};
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -24,6 +24,10 @@ pub struct Platform {
     wm_delete: Atom,
     /// A pipe: any thread writes to wake the pump out of its `poll`.
     wake: [i32; 2],
+    depth: u8,
+    /// One graphics context per presented window, and the scratch the swizzle reuses.
+    gcs: std::collections::HashMap<Window, Gcontext>,
+    scratch: Vec<u8>,
 }
 
 pub struct Waker(i32);
@@ -50,7 +54,18 @@ impl Platform {
         if unsafe { libc::pipe2(wake.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
             return Err("no wake pipe".into());
         }
-        Ok(Platform { conn, root, black, wm_protocols, wm_delete, wake })
+        let depth = screen.root_depth;
+        Ok(Platform {
+            conn,
+            root,
+            black,
+            wm_protocols,
+            wm_delete,
+            wake,
+            depth,
+            gcs: std::collections::HashMap::new(),
+            scratch: Vec::new(),
+        })
     }
 
     /// The plugin draws at one size, so the window manager is told not to offer another.
@@ -92,7 +107,53 @@ impl Screen for Platform {
     }
 
     fn destroy(&mut self, id: Id) {
+        if let Some(gc) = self.gcs.remove(&(id as Window)) {
+            let _ = self.conn.free_gc(gc);
+        }
         let _ = self.conn.destroy_window(id as Window);
+        let _ = self.conn.flush();
+    }
+
+    /// `PutImage`, in bands: one request carries at most the server's maximum, and a frame is
+    /// far larger than the 256 KB a server without BIG-REQUESTS accepts.
+    fn present(&mut self, id: Id, (w, h): (u32, u32), rgba: &[u8]) {
+        let win = id as Window;
+        let gc = match self.gcs.get(&win) {
+            Some(gc) => *gc,
+            None => {
+                let Ok(gc) = self.conn.generate_id() else { return };
+                if self.conn.create_gc(gc, win, &CreateGCAux::new()).is_err() {
+                    return;
+                }
+                self.gcs.insert(win, gc);
+                gc
+            }
+        };
+        super::bgra_into(rgba, &mut self.scratch);
+        let stride = w as usize * 4;
+        let cap = RequestConnection::maximum_request_bytes(&self.conn).saturating_sub(64);
+        let per = (cap / stride.max(1)).max(1);
+        let mut y = 0usize;
+        while y < h as usize {
+            let rows = per.min(h as usize - y);
+            let band = &self.scratch[y * stride..(y + rows) * stride];
+            let put = self.conn.put_image(
+                ImageFormat::Z_PIXMAP,
+                win,
+                gc,
+                w as u16,
+                rows as u16,
+                0,
+                y as i16,
+                0,
+                self.depth,
+                band,
+            );
+            if put.is_err() {
+                return;
+            }
+            y += rows;
+        }
         let _ = self.conn.flush();
     }
 

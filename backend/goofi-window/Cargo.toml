@@ -1,0 +1,26 @@
+[package]
+name = "goofi-window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+# The window thread's platform half: goofi's own windows on the machine it runs on, and no
+# portable crate in the offline registry covers all three.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", default-features = false }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSGeometry", "NSObjCRuntime", "NSRunLoop", "NSString", "objc2-core-foundation"] }

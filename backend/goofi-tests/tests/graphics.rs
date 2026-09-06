@@ -293,6 +293,37 @@ fn shaders_render_on_the_gpu() {
         (stages(g) == a).then_some(())
     });
 
+    // Step: a Window node opens a window on the machine's screen and feeds it. The suite's screen
+    // is a headless one, so what stands here is the SEAM — a window asked for, sized, fed and
+    // closed — and never a desktop.
+    let win = g.add("graphics:Window");
+    g.ready(win);
+    g.set_param(win, "output", "width", 64);
+    g.set_param(win, "output", "height", 32);
+    g.link(c, "out", win, "input");
+    let ui = g.ui();
+    let opened = |g: &Goofi| goofi_bridge::graphics_engine(&mut g.state.graph.lock().unwrap()).window_of(win);
+    let id = g.until("the window is open", |g| {
+        render(g, 1);
+        opened(g)
+    });
+    assert_eq!(g.call("session status", j!({}))["graphics"]["windows"], j!(1), "status names the window");
+    let frames = g.until("and the screen is given frames", |g| {
+        render(g, 1);
+        let seen = ui.run(move |host| host.presents(id));
+        (seen > 0).then_some(seen)
+    });
+    // A window is a reader, so the stage renders with no viewer anywhere on it.
+    assert!(g.error(win).is_none(), "an open window is not a fault");
+    render(&g, 4);
+    assert!(ui.run(move |host| host.presents(id)) > frames, "the window keeps being fed");
+    // And what it shows is what it was wired: the node is a pass-through like any other.
+    drawn(&g, win, "the window's own output", |d| close(px(d, 0, 0), [0.25, 0.5, 1.0, 1.0]));
+    g.call("node remove", j!({ "node": hex(win) }));
+    render(&g, 2);
+    assert_eq!(ui.run(move |host| host.presents(id)), 0, "a removed node takes its window with it");
+    assert_eq!(g.call("session status", j!({}))["graphics"]["windows"], j!(0), "and status says so");
+
     // Step: a restart is a rebirth through the same trait doors — new generation, new services.
     let generation = g.state.graph.lock().unwrap().node_generation(c);
     let stale = g.probe(c, "out");

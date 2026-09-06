@@ -29,7 +29,7 @@ pub struct Goofi {
     /// The handle that minted the mount, and the only one whose drop is the session's end.
     owner: bool,
     /// The window thread, with no screen: what the binary's main thread is where a display answers.
-    windows: Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)>,
+    windows: Option<(goofi_window::Ui, std::thread::JoinHandle<()>)>,
 }
 
 /// A situation ends the way a process exits: every node stopped and waited for, so no test leaves
@@ -119,6 +119,11 @@ impl Goofi {
                 audio.set_vst3(scanner(), Vec::new());
                 audio.set_ui(windows.as_ref().map(|(ui, _)| ui.clone()));
             }
+            // The graphics engine gets the same screenless host, so a `Window` node opens a window
+            // the loop knows about and no test reaches a desktop.
+            if let Some(graphics) = goofi_bridge::try_graphics_engine(&mut g) {
+                graphics.set_ui(windows.as_ref().map(|(ui, _)| ui.clone()));
+            }
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
             if let Some(subproc) = find_python() {
@@ -143,6 +148,12 @@ impl Goofi {
             send_timeout: Duration::from_millis(200),
         };
         g
+    }
+
+    /// The window thread this instance runs on. Screenless, so what it proves is the SEAM: a
+    /// window was asked for, and frames reached it.
+    pub fn ui(&self) -> goofi_window::Ui {
+        self.windows.as_ref().map(|(ui, _)| ui.clone()).expect("a window thread")
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
@@ -403,12 +414,12 @@ impl Events {
 /// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
 /// A window loop on a thread of its own, with no screen — as the clock has no device — so the
 /// editor seam is proven on every machine and no window reaches anyone's desktop.
-fn window_thread() -> (goofi_audio::ui::Ui, std::thread::JoinHandle<()>) {
+fn window_thread() -> (goofi_window::Ui, std::thread::JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("goofi-windows".into())
         .spawn(move || {
-            let (windows, ui) = goofi_audio::ui::Loop::headless();
+            let (windows, ui) = goofi_window::Loop::headless();
             let _ = tx.send(ui);
             windows.run();
         })

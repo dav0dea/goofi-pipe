@@ -99,7 +99,7 @@ fn main() {
         Some(first) if first.starts_with('-') => argv,
         Some(_) => std::process::exit(client_main(argv)),
     };
-    let (windows, ui) = match goofi_audio::ui::Loop::open() {
+    let (windows, ui) = match goofi_window::Loop::open() {
         Ok((windows, ui)) => (Some(windows), Some(ui)),
         Err(_) => (None, None),
     };
@@ -121,7 +121,7 @@ fn main() {
     }
 }
 
-async fn serve_main(rest: Vec<String>, ui: Option<goofi_audio::ui::Ui>) {
+async fn serve_main(rest: Vec<String>, ui: Option<goofi_window::Ui>) {
     let mut cli = match parse_args(rest.into_iter()) {
         Ok(cli) => cli,
         Err(e) => {
@@ -415,7 +415,7 @@ async fn run(
     subproc_python: String,
     mut state: AppState,
     shutdown: impl Future<Output = ()>,
-    ui: Option<goofi_audio::ui::Ui>,
+    ui: Option<goofi_window::Ui>,
 ) -> i32 {
     // Before ANY use of the embedded interpreter.
     point_embedded_python_at_its_venv();
@@ -431,13 +431,19 @@ async fn run(
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
         .set_python(goofi_signal::Python::new(subproc_python.clone()));
-    if !demo {
+    {
         let mut g = state.graph.lock().unwrap();
-        let audio = goofi_bridge::audio_engine(&mut g);
-        if let Ok(own) = std::env::current_exe() {
-            audio.set_vst3(own, goofi_audio::vst3::platform_dirs());
+        if !demo {
+            let audio = goofi_bridge::audio_engine(&mut g);
+            if let Ok(own) = std::env::current_exe() {
+                audio.set_vst3(own, goofi_audio::vst3::platform_dirs());
+            }
+            audio.set_ui(ui.clone());
         }
-        audio.set_ui(ui);
+        // One screen for both engines: a plugin's editor and a `Window` node are the same thread.
+        if let Some(graphics) = goofi_bridge::try_graphics_engine(&mut g) {
+            graphics.set_ui(ui);
+        }
     }
     boot_scan(&state);
 

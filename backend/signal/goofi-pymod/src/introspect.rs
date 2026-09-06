@@ -32,6 +32,7 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
         producer: cls.getattr("PRODUCER")?.extract()?,
         // A Python node is the signal plane's, and no signal node closes a loop.
         feedback: false,
+        window: false,
         tags: cls.getattr("TAGS")?.extract()?,
         inputs: slots(&cls.getattr("INPUTS")?)?,
         outputs: out_slots(&cls.getattr("OUTPUTS")?)?,

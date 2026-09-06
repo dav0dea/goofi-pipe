@@ -20,6 +20,10 @@ pub struct Introspection {
     /// loop may close through. `serde(default)`: only a scheduled engine asks.
     #[serde(default)]
     pub feedback: bool,
+    /// Whether the node shows its frame in a window on the machine goofi runs on.
+    /// `serde(default)`: only the graphics engine asks.
+    #[serde(default)]
+    pub window: bool,
     #[serde(default)]
     pub inputs: Vec<Slot>,
     #[serde(default)]
