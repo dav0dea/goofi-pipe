@@ -130,12 +130,18 @@ fn a_producer_paces_itself_to_its_rate_cap_and_follows_a_live_change() {
     runs(Duration::from_millis(300)); // let the new cap take hold before the window that judges it
     // The floor is the MACHINE's, not a constant: the pacer spends one sleep per period, so what
     // a 5 ms sleep costs here bounds any cap — macOS CI rounds it to ~16 ms and tops out near 60.
-    let t0 = Instant::now();
-    for _ in 0..40 {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let paceable = (40_000u128 / t0.elapsed().as_millis().max(1)).min(200) as u64;
+    // Read on BOTH sides of the window, and the SLOWER one is the bar: a runner that loses half its
+    // speed to a neighbour mid-window is a slow machine, not a producer that stopped pacing.
+    let pace = || {
+        let t0 = Instant::now();
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (40_000u128 / t0.elapsed().as_millis().max(1)).min(200) as u64
+    };
+    let before = pace();
     let fast = runs(Duration::from_millis(1000));
+    let paceable = before.min(pace());
     assert!(fast <= 201, "a 200 Hz cap delivered {fast} frames in a second — OVER the cap");
     assert!(fast >= paceable * 85 / 100,
             "a 200 Hz cap delivered {fast} frames in a second, where this machine paces {paceable}");
