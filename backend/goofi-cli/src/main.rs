@@ -517,7 +517,7 @@ async fn run(
     };
     // The order is load-bearing: the agents leave before their workspace goes, and a node's
     // thread releases its shared memory before the mount goes.
-    state.harnesses.reap_all(std::time::Duration::from_secs(5));
+    state.harnesses.reap_all();
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code

@@ -12,9 +12,9 @@ use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NS
 
 use super::{Id, Pumped, Screen, Wake};
 
-/// AppKit, linked by hand: `objc2-app-kit` is not in the offline registry, so nothing else in the
-/// graph pulls the framework in — and `class!(NSApplication)` on a class the process never loaded
-/// panics rather than answering, which took the whole server down at start.
+// AppKit, linked by hand: `objc2-app-kit` is not in the offline registry, so nothing else in the
+// graph pulls the framework in — and `class!(NSApplication)` on a class the process never loaded
+// panics rather than answering, which took the whole server down at start.
 #[link(name = "AppKit", kind = "framework")]
 extern "C" {}
 

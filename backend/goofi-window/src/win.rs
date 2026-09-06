@@ -39,7 +39,9 @@ thread_local! {
     static CLOSED: RefCell<Vec<Id>> = const { RefCell::new(Vec::new()) };
 }
 
-const STYLE: u32 = WS_OVERLAPPEDWINDOW & !WS_MAXIMIZEBOX & !WS_THICKFRAME;
+/// `WS_CLIPCHILDREN`: a plugin's editor is a CHILD window, and a parent paint without this
+/// flickers over it once a frame.
+const STYLE: u32 = (WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN) & !WS_MAXIMIZEBOX & !WS_THICKFRAME;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()

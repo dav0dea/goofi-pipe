@@ -107,6 +107,8 @@
 		margin: 0;
 		padding: var(--space-2) var(--space-4);
 		overflow: hidden;
+		/* It cannot scroll — it takes no pointer — so a long value ENDS, and says so. */
+		text-overflow: ellipsis;
 		white-space: pre;
 		color: var(--text);
 		pointer-events: none;

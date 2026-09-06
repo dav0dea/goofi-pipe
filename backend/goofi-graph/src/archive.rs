@@ -119,6 +119,17 @@ pub fn fingerprint(mount: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
         .collect()
 }
 
+/// The first pair of names that are ONE file where the filesystem folds case. macOS and Windows
+/// give both the second's bytes, so a patch holding a pair is refused at both ends rather than
+/// packed at one and silently truncated at the other.
+fn case_clash<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    names.into_iter().find_map(|name| {
+        seen.insert(name.to_lowercase(), name)
+            .map(|first| format!("`{first}` and `{name}` are one file where names fold case"))
+    })
+}
+
 /// Pack `manifest` plus every regular file under `workspace_dir` into a `.gfi` at `out`. The walk
 /// is sorted so an unchanged tree packs byte-identically.
 pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(), String> {
@@ -128,16 +139,22 @@ pub fn write_gfi(out: &Path, manifest: &str, workspace_dir: &Path) -> Result<(),
     zip.start_file(MANIFEST, opts).map_err(|e| at(out, &e))?;
     zip.write_all(manifest.as_bytes()).map_err(|e| at(out, &e))?;
 
+    let mut packed = Vec::new();
     for entry in files(workspace_dir) {
         let entry = entry.map_err(|e| at(workspace_dir, &e))?;
         let rel = entry.path().strip_prefix(workspace_dir).map_err(|e| e.to_string())?;
         let rel = rel.to_str().ok_or_else(|| format!("{}: name is not UTF-8", rel.display()))?;
         // A zip entry name is `/`-separated BY SPEC; replacing `MAIN_SEPARATOR` rather than `\`
         // keeps a unix file genuinely called `a\b` intact.
-        let rel = rel.replace(std::path::MAIN_SEPARATOR, "/");
-        zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| at(entry.path(), &e))?;
-        let mut src = File::open(entry.path()).map_err(|e| at(entry.path(), &e))?;
-        std::io::copy(&mut src, &mut zip).map_err(|e| at(entry.path(), &e))?;
+        packed.push((rel.replace(std::path::MAIN_SEPARATOR, "/"), entry.into_path()));
+    }
+    if let Some(clash) = case_clash(packed.iter().map(|(rel, _)| rel.as_str())) {
+        return Err(at(workspace_dir, &clash));
+    }
+    for (rel, path) in packed {
+        zip.start_file(format!("{WORKSPACE}/{rel}"), opts).map_err(|e| at(&path, &e))?;
+        let mut src = File::open(&path).map_err(|e| at(&path, &e))?;
+        std::io::copy(&mut src, &mut zip).map_err(|e| at(&path, &e))?;
     }
     zip.finish().map_err(|e| at(out, &e))?;
     Ok(())
@@ -157,6 +174,9 @@ pub fn read_gfi(archive: &Path, dest: &Path) -> Result<String, String> {
 
     // Scratch sits beside `dest` (suffix appended, not substituted) so the move below is a same-fs rename.
     let scratch = PathBuf::from({ let mut s = dest.as_os_str().to_owned(); s.push(".unpack"); s });
+    if let Some(clash) = case_clash(zip.file_names()) {
+        return Err(named(clash));
+    }
     let _ = fs::remove_dir_all(&scratch);
     zip.extract(&scratch).map_err(|e| named(e.to_string()))?;
     let packed = scratch.join(WORKSPACE);

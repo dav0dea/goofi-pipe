@@ -1,46 +1,58 @@
 # Cross-platform audit, 2026-09-06
 
-Three finders over Windows, macOS and what is written once but behaves differently. What was fixed
-is in the commit; what is LEFT is here, because a finding nobody records is a finding nobody acts on.
+Three finders over Windows, macOS and what is written once but behaves differently. Two rounds are
+done; what is LEFT is here, because a finding nobody records is a finding nobody acts on.
 
 The one fact behind most of it: **nothing in this tree has run on a Windows or a macOS machine.**
 The suite's window host is screenless on every platform, so the whole `present` path — three
 platform bodies and the swizzle — has never executed anywhere. CI compiles it and no test calls it.
 
-## Open, and worth doing next
+## Open
 
-- **A macOS VST3 plugin never gets `InitModule()`.** `vst3/module.rs:40` passes NULL to
-  `bundleEntry`. The SDK's `macmain.cpp` runs `InitModule()` only inside `if (ref)` and returns
-  `true` either way, so goofi reads success and the plugin's own initialization never ran. The fix
-  needs a `CFBundleRef` from `CFBundleCreate`; `objc2-core-foundation` is already in the lock.
-- **The process is DPI-unaware on Windows.** Nothing embeds a manifest or calls
-  `SetProcessDpiAwarenessContext`, and `framed()` uses the system-DPI `AdjustWindowRect`. On a
-  scaled display DWM stretches the window, so `Screen::present`'s "one texel to one pixel" is false
-  and every plugin editor is bitmap-scaled.
-- **`STYLE` has no `WS_CLIPCHILDREN`**, so a parent paint flickers over an embedded VST3 editor.
-- **`gpu.rs` asks one adapter and treats a refusal as final**, and never calls `.with_env()`, so
-  `WGPU_BACKEND=dx12` does nothing. Windows is the platform with two backends, and a broken Vulkan
-  ICD there takes DX12 down with it. `shared()` then caches the `Err` for the process life.
+- **The process is DPI-unaware on Windows**, and making it aware is TWO halves. Nothing embeds a
+  manifest or calls `SetProcessDpiAwarenessContext`, so DWM stretches every window on a scaled
+  display and `Screen::present`'s "one texel to one pixel" is false. The call alone is not the fix:
+  a DPI-aware host must also tell each plugin its scale through
+  `IPlugViewContentScaleSupport::setContentScaleFactor`, or a crisp editor comes back at a third of
+  its size. Both halves need a scaled Windows display to judge, which nothing here has.
 - **The graphics suite needs an adapter on all three runners and CI provisions one on Linux only.**
   Reading says macOS answers with Metal and Windows with the DX12 WARP software adapter, so the job
   is green by the runner images alone and nothing in the tree says so. WARP also renders every
   shipped `.wgsl` in software against the 240-minute ceiling.
-- **`stop_all` does not wait, so Windows cannot delete a retired mount.** `taskkill` is
-  asynchronous and a live process holds its working directory, so `remove_dir_all` fails and the
-  error is discarded. Every `session new`, `session load` and test teardown leaks a temp tree.
-  `reap_all` already has the bounded wait this needs.
-- **Up to eight e2e backends now share one `GOOFI_BUILD_DIR`.** `goofi-build` discards a failed
-  rename and Windows refuses to rename onto a mapped DLL, so a lost race leaves a `.tmp.<pid>`.
-- **A `.gfi` can merge two workspace files into one** on a case-insensitive filesystem: `zip.extract`
-  writes one file per entry and the second truncates the first, and the load reports success.
-  `camel()` has the same collision on Linux, where both files can exist at once.
-- **CI starts three 240-minute jobs per push and cancels none** — no `concurrency:` group.
-- Smaller: `Loop::open()` cannot fail on Windows, so the "display is gone" state is unreachable
-  there; the agent e2e scenario is POSIX-only by construction; `subproc.rs` puts a whole node source
-  into an environment variable against Windows's 32767-character block; extension tests are
-  case-sensitive, so `Patch.GFI` and `Plug.VST3` are not seen; `patchfile.rs` builds one op argument
-  with `to_string_lossy` rather than `to_slash`, and puts an unquoted filename in
-  `Content-Disposition`; the embedded asset table is built from an unsorted `read_dir`.
+- **A node file's extension is matched case-sensitively**, so a Windows author's `Node.PY` is
+  invisible with no message. Left because goofi writes the extension itself at every door it owns,
+  and because the real finding underneath is that four sites — `scan.rs`, `bridge/lib.rs`, two build
+  scripts — each spell "is this a `.rs`" for themselves. One owner first, then the folding.
+- **Two Playwright steps fail on CI and on no machine here.** `integrity.spec.ts` reports
+  "frames reached the tab" timing out after 30 s, and it has now done so on a different viewport
+  project in each of two runs. It is not the viewer rate cap: the same failure stands on
+  `pr-audio-watchdog`, whose base predates that commit. Nothing here reproduces it, and a deadline
+  raised without a reason is how a real defect gets hidden, so it is written down instead.
+- **`Loop::open()` cannot fail on Windows**, so the "the display is gone" state is unreachable
+  there; the agent e2e scenario is POSIX-only by construction; `patchfile.rs` writes an unquoted
+  filename into `Content-Disposition` — now sanitized, but the header still has no `filename*`
+  form, so a non-ASCII patch name reaches the browser mangled.
+
+## Fixed, second round
+
+- **A macOS VST3 plugin never got `InitModule()`.** `bundleEntry` took NULL, and the SDK's
+  `macmain.cpp` runs `InitModule()` only inside `if (ref)` and returns `true` either way, so goofi
+  read success and the plugin's own initialization never ran. It gets a real `CFBundleRef` now,
+  from the bundle three levels above the binary.
+- **`gpu.rs` asked one adapter and treated a refusal as final**, and never read `WGPU_BACKEND`.
+  Windows is the platform with two backends, and a broken Vulkan ICD there took DX12 down with it.
+  It reads the environment and falls back to the software adapter — WARP, on Windows.
+- **`stop_all` did not wait, so Windows could not delete a retired mount.** It is gone: `reap_all`
+  is the one teardown, and both callers get the bounded wait that exit already had.
+- **A `.gfi` merged two workspace files into one** on a case-insensitive filesystem, and the load
+  reported success. Both ends refuse the pair now, naming it.
+- **A node's source rode an environment variable** against Windows's 32767-character block. It
+  rides stdin, whose size is the pipe's problem.
+- **`goofi-build` left a `.tmp.<pid>` behind on a lost rename**, which Windows also answers when
+  the target is a mapped DLL. A lost race cleans up and reads as the success it is.
+- **`STYLE` had no `WS_CLIPCHILDREN`**, so a parent paint flickered over an embedded VST3 editor.
+- **`.gfi` and `.vst3` were matched case-sensitively**, so `Patch.GFI` was not a patch.
+- **CI started three 240-minute jobs per push and cancelled none.** There is a `concurrency` group.
 
 ## Judged and NOT a defect
 
@@ -54,3 +66,7 @@ platform bodies and the swizzle — has never executed anywhere. CI compiles it 
   negative `biHeight` for a top-down DIB and the DWORD-aligned scan lines.
 - **Every selector and enum value in `mac.rs`** matches `objc2-app-kit`'s own bindings, and objc2's
   encoding assertions accept the integer widths used.
+- **`shared()` caches a device failure for the process life**, and that is right: no adapter appears
+  while goofi runs, and re-asking would pay the refusal at every node.
+- **The embedded asset tables are sorted.** `embed_spa` sorts after its walk and `files_under`
+  sorts before it returns; a finder read the `read_dir` inside and not the `sort` after.

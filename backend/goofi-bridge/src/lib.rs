@@ -224,7 +224,7 @@ impl AppState {
     /// Reclaim one mount and everything living IN it: the harnesses spawned into it are asked to
     /// leave FIRST, or one survives editing a patch out of a directory the next line deletes.
     fn retire_mount(&self, mount: &std::path::Path) {
-        self.harnesses.stop_all();
+        self.harnesses.reap_all();
         remove_mount(mount);
     }
 }

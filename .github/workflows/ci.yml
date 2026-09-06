@@ -5,6 +5,13 @@ on:
     # `**`, not `*`: a single star does not cross a `/`, so a `feat/x` branch ran no gate at all.
     branches: [ '**' ]
 
+# A push replaces the run its branch already has: three 240-minute jobs per push and a branch that
+# is pushed twice in a minute otherwise queues six. The ref is the group, so two branches never
+# cancel each other.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
 # `bash` on every machine, so a step written once behaves once: Windows would otherwise run these
 # in PowerShell, which spells a pipe, `&&` and a variable differently. The one pwsh step says so.
 defaults:

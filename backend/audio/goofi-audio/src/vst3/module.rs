@@ -37,9 +37,54 @@ fn load(path: &Path) -> Result<&'static libloading::Library, String> {
     let library = unsafe { Library::open(Some(path), RTLD_NOW | RTLD_LOCAL) }.map_err(|e| format!("could not load: {e}"))?;
     let handle = library.into_raw();
     let library: &'static libloading::Library = Box::leak(Box::new(unsafe { Library::from_raw(handle) }.into()));
-    let (entry, argument) = if cfg!(target_os = "macos") { (&b"bundleEntry\0"[..], std::ptr::null_mut()) } else { (&b"ModuleEntry\0"[..], handle) };
+    let (entry, argument) = entry_of(path, handle);
     enter(library, entry, argument)?;
     Ok(library)
+}
+
+/// macOS enters through the BUNDLE, and the ref is what makes it count: the SDK's `bundleEntry`
+/// runs the plugin's own `InitModule` only inside `if (ref)` and answers true either way, so a null
+/// one reads as a plugin that started and never did. Never released — nothing is ever unloaded.
+#[cfg(target_os = "macos")]
+fn entry_of(binary: &Path, _handle: *mut c_void) -> (&'static [u8], *mut c_void) {
+    use std::os::unix::ffi::OsStrExt;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFURLCreateFromFileSystemRepresentation(
+            alloc: *const c_void,
+            path: *const u8,
+            len: isize,
+            is_directory: u8,
+        ) -> *const c_void;
+        fn CFBundleCreate(alloc: *const c_void, url: *const c_void) -> *mut c_void;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    // `<bundle>/Contents/MacOS/<name>`, so the bundle is three levels up.
+    let bundle = binary.ancestors().nth(3).map(|b| b.as_os_str().as_bytes()).unwrap_or_default();
+    let reference = unsafe {
+        let url = CFURLCreateFromFileSystemRepresentation(
+            std::ptr::null(),
+            bundle.as_ptr(),
+            bundle.len() as isize,
+            1,
+        );
+        match url.is_null() {
+            true => std::ptr::null_mut(),
+            false => {
+                let made = CFBundleCreate(std::ptr::null(), url);
+                CFRelease(url);
+                made
+            }
+        }
+    };
+    (&b"bundleEntry\0"[..], reference)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn entry_of(_binary: &Path, handle: *mut c_void) -> (&'static [u8], *mut c_void) {
+    (&b"ModuleEntry\0"[..], handle)
 }
 
 #[cfg(windows)]

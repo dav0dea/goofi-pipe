@@ -276,7 +276,7 @@ fn bundles_under(dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     let (mut bundles, folders): (Vec<PathBuf>, Vec<PathBuf>) =
-        paths.into_iter().partition(|p| p.extension().is_some_and(|e| e == "vst3"));
+        paths.into_iter().partition(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("vst3")));
     for folder in folders.iter().filter(|p| p.is_dir()) {
         bundles.extend(bundles_under(folder));
     }

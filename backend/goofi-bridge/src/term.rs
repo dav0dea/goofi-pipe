@@ -196,25 +196,16 @@ impl Harnesses {
         begin_stop(inst)
     }
 
-    /// Stop every instance and clear the roster — what opening another patch does. The roster is
-    /// cleared at once, so a doomed child lives briefly on a deleted cwd rather than holding it.
-    pub fn stop_all(&self) {
-        for (_, inst) in std::mem::take(&mut *self.instances.lock().unwrap()) {
-            if inst.exit_code().is_none() {
-                let _ = begin_stop(inst);
-            }
-        }
-    }
-
-    /// Exit's teardown: ask every instance, wait to a CEILING, then insist — synchronously,
-    /// because `process::exit` destroys the grace threads `stop_all` would lean on.
-    pub fn reap_all(&self, ceiling: std::time::Duration) {
+    /// Stop every instance and clear the roster: ask, WAIT to the grace, then insist. The wait is
+    /// synchronous because both callers need the children gone — `process::exit` destroys a grace
+    /// thread, and a mount cannot be deleted on Windows while a child holds it as a cwd.
+    pub fn reap_all(&self) {
         let taken = std::mem::take(&mut *self.instances.lock().unwrap());
         for (_, inst) in &taken {
             inst.stopping.store(true, Ordering::Relaxed);
             let _ = signal(inst, crate::proc::request_stop);
         }
-        let deadline = std::time::Instant::now() + ceiling;
+        let deadline = std::time::Instant::now() + GRACE;
         while taken.iter().any(|(_, i)| i.exit_code().is_none())
             && std::time::Instant::now() < deadline
         {

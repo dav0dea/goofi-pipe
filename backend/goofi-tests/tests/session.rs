@@ -318,6 +318,27 @@ fn a_save_packs_the_live_mount_refuses_to_pack_into_it_and_never_truncates_a_goo
         assert!(err.contains("temporary workspace"), "the refusal says why: {err}");
         assert!(!inside.exists(), "a refused save writes nothing");
     }
+
+    // Two names that fold to one file: packed here and unpacked on macOS, the second would take
+    // the first's place and the load would report success. Both ends refuse instead.
+    std::fs::write(mount.join("Agent.md"), b"the other one").unwrap();
+    let clash = tmp.path().join("clash.gfi");
+    let err = goofi_bridge::save_archive(&clash, "version: 7\n", &mount).unwrap_err();
+    assert!(err.contains("fold case"), "the refusal names the reason: {err}");
+    assert!(!clash.exists(), "and it writes nothing");
+    std::fs::remove_file(mount.join("Agent.md")).unwrap();
+
+    // The same pair reaching a load from anywhere else — an older goofi, another tool.
+    let made = tmp.path().join("made.gfi");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&made).unwrap());
+    for entry in ["patch.yaml", "workspace/agent.md", "workspace/Agent.md"] {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"version: 7\n").unwrap();
+    }
+    zip.finish().unwrap();
+    let err = goofi_graph::archive::read_gfi(&made, &tmp.path().join("never")).unwrap_err();
+    assert!(err.contains("fold case"), "the load refuses it too: {err}");
+    assert!(!tmp.path().join("never").exists(), "and unpacks nothing");
 }
 
 #[test]

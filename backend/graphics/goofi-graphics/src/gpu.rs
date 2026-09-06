@@ -47,14 +47,21 @@ impl Gpu {
         // the device on a headless machine — a server, a CI runner — that has a GPU regardless.
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::PRIMARY;
-        let instance = wgpu::Instance::new(desc);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-            ..Default::default()
-        }))
-        .map_err(|e| format!("no GPU adapter answered: {e}"))?;
+        // `with_env` LAST, so `WGPU_BACKEND` overrides rather than is overridden — Windows is the
+        // platform with two backends, and a broken ICD on one is a driver away from either.
+        let instance = wgpu::Instance::new(desc.with_env());
+        let ask = |fallback| {
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: fallback,
+                compatible_surface: None,
+                ..Default::default()
+            }))
+        };
+        // The software adapter is a slow answer, never no answer — and on Windows it is WARP.
+        let adapter = ask(false)
+            .or_else(|refused| ask(true).map_err(|_| refused))
+            .map_err(|e| format!("no GPU adapter answered: {e}"))?;
         let info = adapter.get_info();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("goofi-graphics"),

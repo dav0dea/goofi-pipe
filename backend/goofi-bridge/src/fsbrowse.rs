@@ -132,7 +132,7 @@ fn entries(base: &Path, hidden: bool) -> Value {
             "name": name,
             "path": display(&path),
             "kind": if is_dir { "dir" } else { "file" },
-            "is_gfi": path.extension().is_some_and(|e| e == "gfi"),
+            "is_gfi": path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gfi")),
         });
         rows.push((!is_dir, name.to_lowercase(), row));
     }
