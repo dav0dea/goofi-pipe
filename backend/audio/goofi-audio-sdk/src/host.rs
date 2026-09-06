@@ -109,6 +109,8 @@ impl AudioNode for Handle {
             n_outs: b.outs.len(),
             params: params.as_ptr(),
             n_params: b.params.len(),
+            scalars: b.scalars.as_ptr(),
+            n_scalars: b.scalars.len(),
         };
         if let Err(text) = self.call(|node, sink, write| unsafe { (self.vtable.process)(node, &desc, sink, write) }) {
             std::panic::resume_unwind(Box::new(text));

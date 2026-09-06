@@ -23,7 +23,13 @@ use goofi_node::Uid;
 /// needs to run at all, where zero is what stops it.
 const TEMPO: f64 = 120.0;
 
+/// One voice's gate, pitch or velocity for one sample, whichever source is carrying it.
+type Reader<'a> = dyn Fn(usize, usize, usize) -> f32 + 'a;
+/// Whether a gate reading means the note is down — a level for a param, a velocity for the cable.
+type Gate = dyn Fn(f32) -> bool;
+
 /// How a goofi param's scalar becomes the plugin's normalized value.
+#[derive(Clone, Copy)]
 pub enum Kind {
     Float,
     Stepped(f64),
@@ -83,6 +89,13 @@ impl Drop for Plugin {
 impl AudioNode for Plugin {
     fn channels(&self, _ins: &[u16], _params: &[f64], outs: usize) -> Vec<u16> {
         (0..outs).map(|i| self.class.outputs.get(i).copied().unwrap_or(1).clamp(1, MAX_CHANNELS)).collect()
+    }
+
+    /// Only the voice params are read per sample, to place a note inside the block. A plugin
+    /// parameter is one value per block whatever drives it, so it needs no port — which is what
+    /// lets a synth declare thousands of them.
+    fn audio_params(&self, declared: usize) -> usize {
+        declared.saturating_sub(self.class.params.len())
     }
 
     fn prepare(&mut self, rate: f64) {
@@ -255,10 +268,10 @@ impl Live {
 
     fn block(&mut self, class: &Derived, b: &mut Block<'_>) {
         // The voice params, if any, are the ones the manifest carries beyond the plugin's own.
-        let voice = b.params.len() - class.params.len();
+        let voice = b.scalars.len() - class.params.len();
         self.changes.clear();
         for (i, (_, kind)) in class.params.iter().enumerate() {
-            let raw = b.params[voice + i].chan(0)[0] as f64;
+            let raw = b.scalars[voice + i] as f64;
             let value = match kind {
                 Kind::Float => raw,
                 Kind::Stepped(steps) => raw / steps,
@@ -271,14 +284,31 @@ impl Live {
         }
         self.events.clear();
         if voice == 3 {
-            let (gate, pitch, velocity) = (&b.params[0], &b.params[1], &b.params[2]);
-            for c in 0..(gate.channels() as usize).min(MAX_CHANNELS as usize) {
-                for (s, &g) in gate.chan(c).iter().enumerate() {
-                    match (high(g), self.held[c]) {
+            // The `voice` cable is the last input and carries pitches then velocities, so it
+            // answers the same three reads the params do — one wire where there were three
+            // bindings. It carries no gate because MIDI carries none: a velocity of zero is the
+            // note off, which is what lets eight voices fit where five did.
+            let cable = b.ins.last().filter(|p| p.wired() && p.channels() >= 2);
+            // Each source answers the same three reads, but NOT the same gate: a param gate is a
+            // level and crosses at GATE_HIGH, while the cable's gate is MIDI's — any velocity
+            // above zero is on, so a note played softly still sounds.
+            let (voices, read, held): (usize, &Reader<'_>, &Gate) = match cable {
+                    Some(p) => {
+                        let n = p.channels() as usize / 2;
+                        (n, &move |which, c, s| if which == 1 { p.chan(c)[s] } else { p.chan(n + c)[s] }, &|v| v > 0.0)
+                    }
+                    None => {
+                        let n = (b.params[0].channels() as usize).min(MAX_CHANNELS as usize);
+                        (n, &|which, c, s| b.params[which].chan(c)[s], &high)
+                    }
+                };
+            for c in 0..voices.min(MAX_CHANNELS as usize) {
+                for s in 0..BLOCK {
+                    match (held(read(0, c, s)), self.held[c]) {
                         (true, None) => {
-                            let note = (60.0 + 12.0 * pitch.chan(c)[s]).round().clamp(0.0, 127.0) as i16;
+                            let note = (60.0 + 12.0 * read(1, c, s)).round().clamp(0.0, 127.0) as i16;
                             self.held[c] = Some(note);
-                            self.events.push(note_on(c, s, note, velocity.chan(c)[s]));
+                            self.events.push(note_on(c, s, note, read(2, c, s)));
                         }
                         (false, Some(note)) => {
                             self.held[c] = None;

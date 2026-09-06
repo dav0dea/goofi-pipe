@@ -548,10 +548,12 @@ impl Control {
         self.report(pass);
     }
 
-    /// A `Str` param's text; every other kind — a number, a bool, a valueless pulse — has none.
+    /// A `Str` param's text; every other kind — a number, a bool, a valueless pulse — has none,
+    /// and so has a param the first `apply` has not delivered yet: a control half ticks from the
+    /// moment its thread starts, and its consts arrive with the first desired state, not before.
     fn text(&self, param: usize) -> String {
-        match &self.consts[param] {
-            Param::Str { value, .. } => value.clone(),
+        match self.consts.get(param) {
+            Some(Param::Str { value, .. }) => value.clone(),
             _ => String::new(),
         }
     }

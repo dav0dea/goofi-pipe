@@ -11,10 +11,11 @@ pub const PROTOCOL_VERSION: i64 = 4;
 /// A single param descriptor, discriminated on `type`. `doc` is the type declaration's help text,
 /// which the runtime [`Param`] cannot carry. The source fields are the record's: an empty text is
 /// `null`, and a param with no record is a constant.
-pub fn describe_param(p: &Param, source: Option<&SourceInfo>, doc: Option<&str>) -> Value {
+pub fn describe_param(p: &Param, source: Option<&SourceInfo>, decl: Option<goofi_node::ParamDecl>) -> Value {
     let mut m = Map::new();
     m.insert("value".into(), goofi_graph::param_value_json(p));
-    m.insert("doc".into(), doc.map(|d| json!(d)).unwrap_or(Value::Null));
+    m.insert("doc".into(), decl.and_then(|d| d.doc).map(|d| json!(d)).unwrap_or(Value::Null));
+    m.insert("default".into(), decl.map(|d| declared_default(d.spec)).unwrap_or(Value::Null));
     m.insert(
         "refreshable".into(),
         json!(matches!(p, Param::Str { refresh: true, .. })),
@@ -56,20 +57,33 @@ pub fn describe_param(p: &Param, source: Option<&SourceInfo>, doc: Option<&str>)
     Value::Object(m)
 }
 
-/// A param's declared help text; a node's own declaration wins over the owning engine's
-/// universal one — resolved once per node by the caller, not once per param.
-fn param_doc(
+/// A param's declaration; a node's own wins over the owning engine's universal one — resolved
+/// once per node by the caller, not once per param. The help text and the default both come off
+/// it, so the two cannot name different params.
+fn param_decl(
     m: &NodeManifest,
     universal: &[goofi_node::ParamDecl],
     group: &str,
     name: &str,
-) -> Option<&'static str> {
+) -> Option<goofi_node::ParamDecl> {
     m.params
         .iter()
         .copied()
         .chain(universal.iter().copied())
         .find(|d| d.group == group && d.name == name)
-        .and_then(|d| d.doc)
+}
+
+/// What the declaration says this param is worth before anyone edits it, so a reader can tell a
+/// touched param from an untouched one without keeping a second record of which were touched.
+fn declared_default(spec: goofi_node::ParamSpec) -> Value {
+    use goofi_node::ParamSpec as S;
+    match spec {
+        S::Float { default, .. } => json!(default),
+        S::Int { default, .. } => json!(default),
+        S::Bool { default } => json!(default),
+        S::Str { default, .. } => json!(default),
+        S::Pulse => Value::Null,
+    }
 }
 
 /// Type-level params for the palette, and the projection param tooltips are rendered from.
@@ -79,7 +93,7 @@ pub fn describe_params(g: &Graph, engine: &str, p: &ParamGroups, m: &'static Nod
     for (gname, grp) in p {
         let mut names = Map::new();
         for (n, param) in grp {
-            names.insert(n.clone(), describe_param(param, None, param_doc(m, &universal, gname, n)));
+            names.insert(n.clone(), describe_param(param, None, param_decl(m, &universal, gname, n)));
         }
         groups.insert(gname.clone(), Value::Object(names));
     }
@@ -98,7 +112,7 @@ pub fn describe_node_params(g: &Graph, uid: Uid) -> Value {
         let mut names = Map::new();
         for (n, param) in group {
             let source = g.param_source(uid, gname, n);
-            let mut v = describe_param(param, source.as_ref(), param_doc(m, &universal, gname, n));
+            let mut v = describe_param(param, source.as_ref(), param_decl(m, &universal, gname, n));
             if let (Param::Str { .. }, Some(live)) = (param, g.refreshed_options(uid, gname, n)) {
                 v["options"] = json!(live);
             }

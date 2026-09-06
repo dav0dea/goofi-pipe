@@ -33,6 +33,7 @@ function catalog(): NodeTypeInfo[] {
 					max_frequency: {
 						type: 'float',
 						value: 30,
+						default: 30,
 						vmin: 0,
 						vmax: 1000,
 						doc: null,

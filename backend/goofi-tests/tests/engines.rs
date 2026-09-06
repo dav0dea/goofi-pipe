@@ -322,7 +322,7 @@ fn audio_block() -> goofi_core::Data {
     let params = [Port::new(&level, 1, true)];
     let mut arena = [0f32; BLOCK];
     let mut outs = [PortMut::new(&mut arena, 1)];
-    Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params });
+    Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params, scalars: &[level[0]] });
     goofi_tests::frame(&arena)
 }
 

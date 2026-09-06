@@ -1,5 +1,6 @@
 <script module lang="ts">
 	import type { NodeInstanceInfo } from '$lib/api/control';
+	import type { ParamDescriptor } from '$lib/api/types';
 	import type { StatusTone } from '$lib/ui';
 	import type { BadgeTone } from '$lib/ui/Badge.svelte';
 
@@ -9,6 +10,14 @@
 		warn: 'warning',
 		error: 'danger'
 	};
+
+	/** The param count a node needs before it is worth offering a filter. */
+	export const SEARCH_FROM = 8;
+
+	/** …and before browsing is hopeless enough to want a touched-only filter as well. A hand-written
+	    node is read; a plugin's hundreds are hunted, and only the second wants the switch. */
+	export const TOUCHED_FROM = 40;
+
 </script>
 
 <!--
@@ -18,7 +27,6 @@
 <script lang="ts">
 	import type { SourcePatch } from '$lib/api/types';
 	import type { HTMLAttributes } from 'svelte/elements';
-	import type { ParamDescriptor } from '$lib/api/types';
 	import { graph } from '$lib/stores/graph.svelte';
 	import { isValidName } from '$lib/crdt/graphDoc';
 	import { formatName } from '$lib/editor/categoryColor';
@@ -26,7 +34,9 @@
 	import { nodeHealth } from '$lib/editor/nodeHealth';
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
-	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS } from '$lib/ui';
+	import { matchParams, type ParamHit } from './paramSearch';
+	import { onlyTouched, touchedCount, touchedRows } from './paramTouched';
+	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS, Toggle } from '$lib/ui';
 
 	let {
 		node,
@@ -109,10 +119,52 @@
 		if (activeGroup !== frontGroup) frontGroup = activeGroup;
 	});
 
-	const activeParams = $derived.by<[string, ParamDescriptor][]>(() => {
+	// One search box over every family, because a plugin's parameters are spread across as many tabs
+	// as it has units and the one you want is rarely in the tab you are on.
+	let query = $state('');
+	const searching = $derived(query.trim().length > 0);
+	// A short node is faster to read than to filter; a plugin with no units is one long tab.
+	const paramCount = $derived(
+		Object.values(node?.params ?? {}).reduce((n, named) => n + Object.keys(named ?? {}).length, 0)
+	);
+	const searchable = $derived(paramCount > SEARCH_FROM);
+	const filterable = $derived(paramCount > TOUCHED_FROM);
+
+	// A plugin declares every param it has, so browsing one is a scroll; touched-only is the way
+	// through. It starts OFF and returns there whenever the selection moves: the control only shows
+	// on a node with params enough to need it, so a filter carried onto a small node would hide its
+	// params behind a switch that is not on screen to turn off.
+	let touchedOnly = $state(false);
+	let filtered = $state<string | null>(null);
+	$effect(() => {
+		const uid = node?.uid ?? null;
+		if (uid !== filtered) {
+			filtered = uid;
+			touchedOnly = false;
+		}
+	});
+	const touched = $derived(touchedCount(node?.params));
+
+	/** True while the list spans every group rather than the fronted tab. */
+	const across = $derived(searching || touchedOnly);
+
+	// All three modes reduce to the same row list, so a field is rendered from one place whichever
+	// is on. Touched-only spans EVERY group: a knob was turned in the plugin's own window, and
+	// which tab goofi filed it under is the one thing the reader does not know.
+	const rows = $derived.by<ParamHit[]>(() => {
 		const n = node;
-		if (!n || !activeGroup) return [];
-		return Object.entries(n.params[activeGroup] ?? {}) as [string, ParamDescriptor][];
+		if (!n) return [];
+		// A search inside the filter searches what the filter admits: the toggle is the standing
+		// question, and a query narrows that rather than reopening everything behind it.
+		if (searching) {
+			const hits = matchParams(n.params, query);
+			return touchedOnly ? onlyTouched(hits) : hits;
+		}
+		const named = (g: string) => (n.params[g] ?? {}) as Record<string, ParamDescriptor>;
+		const of = (g: string) =>
+			Object.entries(named(g)).map(([name, descriptor]) => ({ group: g, name, descriptor }));
+		if (touchedOnly) return touchedRows(n.params, groupNames);
+		return activeGroup ? of(activeGroup) : [];
 	});
 </script>
 
@@ -197,7 +249,31 @@
 		{#if node.subpatch}
 			<SubPatchInspector {node} />
 		{:else}
-			{#if tabItems.length > 0}
+			{#if searchable || searching}
+				<!-- Native, not `TextInput`: this filters per keystroke and owns Escape. -->
+				<input
+					class="pf-search"
+					{...MODE_ATTRS.search}
+					bind:value={query}
+					onkeydown={(e) => {
+						if (e.key === 'Escape') query = '';
+					}}
+					placeholder={touchedOnly ? 'Search touched…' : 'Search parameters…'}
+					autocomplete="off"
+					aria-label="Search parameters"
+					data-testid="param-search"
+				/>
+			{/if}
+
+			{#if filterable}
+				<label class="pf-touched" data-testid="param-touched-only">
+					<Toggle value={touchedOnly} onChange={(v) => (touchedOnly = v)} />
+					<span>Touched only</span>
+					<span class="pf-touched-count">{touched}</span>
+				</label>
+			{/if}
+
+			{#if tabItems.length > 0 && !across}
 				<Tabs
 					items={tabItems}
 					active={activeGroup ?? undefined}
@@ -209,25 +285,32 @@
 			<!-- A tabpanel only when a tablist exists: an orphaned `tabpanel` role would have no owning tablist. -->
 			<div
 				class="pf-rows"
-				role={tabItems.length > 0 ? 'tabpanel' : undefined}
-				aria-label={activeGroup ?? undefined}
+				role={tabItems.length > 0 && !across ? 'tabpanel' : undefined}
+				aria-label={across ? undefined : (activeGroup ?? undefined)}
 				data-testid="param-rows"
 			>
-				{#if activeParams.length === 0}
-					<div class="pf-empty-group" data-testid="param-empty-group">No parameters in this group.</div>
+				{#if rows.length === 0}
+					<div class="pf-empty-group" data-testid={searching ? 'param-no-matches' : 'param-empty-group'}>
+						{#if searching}{touchedOnly ? 'No touched parameters match.' : 'No parameters match.'}{:else if touchedOnly}Nothing touched yet — move a control here or in the plugin's own window.{:else}No parameters in this group.{/if}
+					</div>
 				{:else}
-					{#each activeParams as [paramName, descriptor] (node.uid + '/' + paramName)}
-						<ParamField
-							{paramName}
-							selfName={node?.name}
-							{descriptor}
-							data-testid={`param-field-${paramName}`}
-							refreshing={node != null && g.isRefreshing(node.uid, activeGroup ?? '', paramName)}
-							onCommit={(v) => setValue(activeGroup ?? '', paramName, v)}
-							onSetSource={(source) => setSource(activeGroup ?? '', paramName, source)}
-							onRefresh={() => refreshOptions(activeGroup ?? '', paramName)}
-							onPulse={() => pulse(activeGroup ?? '', paramName)}
-						/>
+					{#each rows as { group, name: paramName, descriptor } (node.uid + '/' + group + '/' + paramName)}
+						<div class="pf-row">
+							{#if across}
+								<span class="pf-row-group" data-testid={`param-hit-group-${paramName}`}>{group}</span>
+							{/if}
+							<ParamField
+								{paramName}
+								selfName={node?.name}
+								{descriptor}
+								data-testid={`param-field-${paramName}`}
+								refreshing={node != null && g.isRefreshing(node.uid, group, paramName)}
+								onCommit={(v) => setValue(group, paramName, v)}
+								onSetSource={(source) => setSource(group, paramName, source)}
+								onRefresh={() => refreshOptions(group, paramName)}
+								onPulse={() => pulse(group, paramName)}
+							/>
+						</div>
 					{/each}
 				{/if}
 			</div>
@@ -350,6 +433,43 @@
 		font-size: var(--fs-small);
 		text-align: center;
 		padding: var(--space-6) 0;
+	}
+	.pf-touched {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin: var(--space-3) var(--space-6) 0;
+		color: var(--text-2);
+		cursor: pointer;
+	}
+	.pf-touched-count {
+		margin-left: auto;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.pf-search {
+		font: inherit;
+		color: var(--text-1);
+		background: var(--surface-2);
+		border: 1px solid var(--border-1);
+		border-radius: var(--radius-2);
+		padding: var(--space-2) var(--space-3);
+		margin: var(--space-3) var(--space-6) 0;
+		min-width: 0;
+	}
+	.pf-search::placeholder {
+		color: var(--text-muted);
+	}
+	.pf-row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		min-width: 0;
+	}
+	.pf-row-group {
+		color: var(--text-muted);
+		font-size: var(--fs-small);
 	}
 	/* The editable cue is a hover underline, so with no hover it rests visible instead. */
 	@media (hover: none) and (pointer: coarse) {

@@ -37,6 +37,10 @@ pub struct Stage {
     pub ins: Vec<Source>,
     pub params: Vec<Source>,
     pub outs: Vec<(Region, u16)>,
+    /// How many of `params` become ports; the rest reach the node as scalars only.
+    pub audio_params: usize,
+    /// This stage's one scalar per param: `params.len()` floats, not a block each.
+    pub scalars_at: Region,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +97,13 @@ pub(crate) fn inbox_of(manifest: &NodeManifest, input: usize) -> Option<usize> {
 fn alloc(channels: u16, len: &mut usize) -> Region {
     let at = *len;
     *len += channels as usize * BLOCK;
+    at
+}
+
+/// A strip of plain floats, for what is one value per block rather than one per frame.
+fn alloc_strip(floats: usize, len: &mut usize) -> Region {
+    let at = *len;
+    *len += floats;
     at
 }
 
@@ -230,7 +241,9 @@ pub fn compile(
         if inst.manifest.type_name == crate::nodes::audio_out::TYPE && !silent.contains(uid) {
             plan.sinks.push((ins[0].clone(), params[crate::nodes::audio_out::P::GAIN].clone()));
         }
-        plan.stages.push(Stage { idx: inst.idx, serial: inst.serial, ins, params, outs });
+        let audio_params = inst.twin.audio_params(params.len()).min(params.len());
+        let scalars_at = alloc_strip(params.len(), &mut plan.arena_len);
+        plan.stages.push(Stage { idx: inst.idx, serial: inst.serial, ins, params, outs, audio_params, scalars_at });
     }
     let width = plan
         .sinks
