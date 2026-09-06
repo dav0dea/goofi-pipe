@@ -10,12 +10,6 @@ padding on the way in is dropped, so a `Tuning` output feeds straight in.
 
 `n_steps` is the size of the mode you want: 5 for something pentatonic, 7 for something diatonic.
 Asking for more degrees than the scale holds returns the scale.
-
-Inputs:
-  input  a tuning: ratios inside an octave, as `Tuning` emits them
-
-Outputs:
-  reduced  the mode's degrees, always `n_steps` wide and NaN-padded
 """
 
 import numpy as np
@@ -27,7 +21,14 @@ FUNCTIONS = {"harmsim": dyad_similarity, "cons": compute_consonance, "denom": me
 
 
 class TuningReduction(goofi.Node):
-    """The most consonant subset of a scale, as a mode."""
+    """The most consonant subset of a scale, as a mode.
+
+    Inputs:
+      input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+    Outputs:
+      reduced  the mode's degrees, always `n_steps` wide and NaN-padded
+    """
 
     TAGS = ["analysis"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
