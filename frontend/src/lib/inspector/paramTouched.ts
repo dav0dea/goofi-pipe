@@ -37,6 +37,11 @@ export function touchedRows(
 	);
 }
 
+/** The touched subset of rows already gathered — a search narrowed to what the filter admits. */
+export function onlyTouched(rows: TouchedRow[]): TouchedRow[] {
+	return rows.filter((r) => isModified(r.descriptor));
+}
+
 /** How many of a node's params are touched, across every group. */
 export function touchedCount(groups: Record<string, Record<string, ParamDescriptor>> | undefined): number {
 	return Object.values(groups ?? {}).reduce(
