@@ -39,6 +39,9 @@ pub struct Inbox {
     chans: usize,
     left: usize,
     last: [f32; MAX_CHANNELS as usize],
+    /// Whether a pile-up is latency to drop. A live source has no past to keep; a file does, and
+    /// dropping there would skip through it.
+    catch_up: bool,
 }
 
 /// Chunks a block may leave queued behind the one in hand. What a stalled clock let pile up is
@@ -46,8 +49,8 @@ pub struct Inbox {
 const QUEUED: usize = 2;
 
 impl Inbox {
-    pub fn new(ring: rtrb::Consumer<f32>) -> Inbox {
-        Inbox { ring, chans: 0, left: 0, last: [0.0; MAX_CHANNELS as usize] }
+    pub fn new(ring: rtrb::Consumer<f32>, catch_up: bool) -> Inbox {
+        Inbox { ring, chans: 0, left: 0, last: [0.0; MAX_CHANNELS as usize], catch_up }
     }
 
     /// Empty the ring and forget the chunk in hand — what the previous producer left.
@@ -81,7 +84,9 @@ impl Inbox {
 
     /// One block: per channel the next sample entered, or the last one held.
     pub fn fill(&mut self, out: &mut PortMut<'_>) {
-        self.catch_up();
+        if self.catch_up {
+            self.catch_up();
+        }
         let channels = out.channels();
         for i in 0..BLOCK {
             if self.left == 0 {

@@ -20,7 +20,7 @@ use goofi_transport::{
 use indexmap::IndexMap;
 
 use crate::nodes::midi_in::{Note, NO_PORT};
-use crate::nodes::{audio_in, audio_out, midi_in};
+use crate::nodes::{audio_in, audio_out, audio_playback, midi_in};
 use crate::{plan, wav, Clock, DEFAULT_DEVICE, NO_DEVICE, RATE};
 
 /// How often the paced duties run: a tapped output is published, and a binding with no stream
@@ -37,6 +37,8 @@ pub const REC_RING: usize = (1 + MAX_CHANNELS as usize * BLOCK) * (RATE as usize
 pub const NOTE_RING: usize = 1024;
 /// How often a take patches its size fields, so a goofi that dies leaves a file that still plays.
 const SYNC: Duration = Duration::from_secs(1);
+/// How much of a file one read takes, in frames of the file's own rate.
+const READ_CHUNK: usize = 2048;
 
 /// A ring's producer as an OS callback holds it: successive streams on one node share it, and a
 /// callback that finds it taken drops that buffer rather than wait.
@@ -50,6 +52,8 @@ pub struct Ports {
     pub midi_in: Option<Feed<Note>>,
     /// The control half's end of an `AudioOut`'s take ring.
     pub rec: Option<rtrb::Consumer<f32>>,
+    /// The ring an `AudioPlayback` fills from its file, and the width the file answered.
+    pub play: Option<(rtrb::Producer<f32>, Arc<AtomicU16>)>,
 }
 
 /// What a control half opens on its own thread and never lets cross it: a stream is not `Send`
@@ -204,10 +208,12 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
         slots: Vec::new(),
         binds: Vec::new(),
         rec: ports.rec.take().map(Rec::new),
+        play: ports.play.take().map(Play::new),
         ports,
         evaluated: IndexMap::new(),
         errors: IndexMap::new(),
         pulsed: Vec::new(),
+        pulses: Vec::new(),
         shared,
         mail: mail.clone(),
         last_tick: Instant::now(),
@@ -382,6 +388,46 @@ impl Rec {
     }
 }
 
+/// An `AudioPlayback`'s file: the reader, the crossing that resamples it into the DSP half's
+/// ring, and what the params last asked for.
+struct Play {
+    inbox: Inbox,
+    file: Option<wav::Reader>,
+    named: Option<String>,
+    position: f64,
+    ended: bool,
+    error: Option<String>,
+}
+
+impl Play {
+    fn new((ring, chans): (rtrb::Producer<f32>, Arc<AtomicU16>)) -> Play {
+        let inbox = Inbox { ring, chans, pos: 0.0 };
+        Play { inbox, file: None, named: None, position: 0.0, ended: false, error: None }
+    }
+}
+
+/// One planar chunk of a file through the crossing every Array input enters by, so a file at its
+/// own rate arrives at the engine's.
+fn enter_planar(inbox: &mut Inbox, channels: u16, frames: usize, planar: &[f32], from: f64, rate: f64) -> bool {
+    let bytes: Vec<u8> = planar.iter().flat_map(|v| v.to_le_bytes()).collect();
+    match Data::array_f32(vec![channels as usize, frames], bytes, Meta::new().with_sfreq(Some(from))) {
+        Ok(frame) => inbox.enter(&frame, rate).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Where a name is looked for: the recordings folder for a bare one, an absolute path as it is,
+/// and `.wav` joined on where it is not already there — the spelling a take is written under.
+fn source_path(name: &str) -> PathBuf {
+    let name = name.trim();
+    let name = if name.to_ascii_lowercase().ends_with(".wav") { name.to_string() } else { format!("{name}.wav") };
+    if Path::new(&name).is_absolute() {
+        PathBuf::from(name)
+    } else {
+        crate::recordings().join(name)
+    }
+}
+
 /// Where a take lands: a bare name under the recordings folder, an absolute path as it is, and
 /// the time joined on when the name must not be reused.
 fn take_stem(file: &str, unique: bool) -> PathBuf {
@@ -454,12 +500,15 @@ struct Control {
     slots: Vec<SlotSub>,
     binds: Vec<Bind>,
     ports: Ports,
-    /// An `AudioOut`'s take; every other node has none.
+    /// An `AudioOut`'s take, and an `AudioPlayback`'s file; every other node has neither.
     rec: Option<Rec>,
+    play: Option<Play>,
     evaluated: IndexMap<ParamKey, Param>,
     errors: IndexMap<ParamKey, String>,
     /// The params a pulse raised, each lowered once a control tick has passed since its raise.
     pulsed: Vec<(usize, Instant)>,
+    /// Every raise since the last tick, so a duty on the tick's cadence cannot miss the edge.
+    pulses: Vec<usize>,
     shared: Arc<Shared>,
     mail: Arc<Mutex<Mail>>,
     last_tick: Instant,
@@ -706,6 +755,83 @@ impl Control {
         rec.error.clone()
     }
 
+    /// The file, driven from settled state: a name that moved is opened, a `position` that moved
+    /// or a `reset` skips, and the ring is kept a second ahead so the DSP half never runs dry. A
+    /// name that will not open stands as an error on it until it moves.
+    fn playback(&mut self, pulses: &[usize]) -> Option<String> {
+        let rate = self.shared.rate();
+        let named = self.text(audio_playback::P::FILE);
+        let position = f64::from_bits(self.params[audio_playback::P::POSITION].load(Ordering::Relaxed));
+        let reset = pulses.contains(&audio_playback::P::RESET);
+        let looping = self.flag(audio_playback::P::LOOPING);
+        let play = self.play.as_mut()?;
+        let mut moved = false;
+        if play.named.as_deref() != Some(named.as_str()) {
+            play.named = Some(named.clone());
+            play.file = None;
+            play.error = None;
+            play.ended = false;
+            play.position = position;
+            play.inbox.pos = 0.0;
+            let name = named.trim();
+            if !name.is_empty() {
+                match wav::Reader::open(&source_path(name)) {
+                    Ok(f) if f.frames == 0 => play.error = Some(format!("{} holds no samples", f.path.display())),
+                    Ok(f) => {
+                        moved = play.inbox.chans.swap(f.channels, Ordering::Relaxed) != f.channels;
+                        play.file = Some(f);
+                    }
+                    Err(e) => play.error = Some(e),
+                }
+            }
+        }
+        let mut dead = None;
+        if let Some(file) = play.file.as_mut() {
+            if reset || position != play.position {
+                play.position = position;
+                let at = if reset { 0 } else { (position * file.frames as f64) as u64 };
+                dead = file.seek(at).err();
+                play.ended = false;
+                play.inbox.pos = 0.0;
+            }
+            // An eighth of a second ahead: enough over a tick, and what a skip waits out.
+            let want = (rate as usize / 8).saturating_mul(file.channels as usize).min(INBOX_RING / 2);
+            while dead.is_none() && INBOX_RING - play.inbox.ring.slots() < want {
+                let (got, planar) = match file.read(READ_CHUNK) {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        dead = Some(e);
+                        break;
+                    }
+                };
+                if got == 0 {
+                    if looping {
+                        dead = file.seek(0).err();
+                        continue;
+                    }
+                    if !play.ended {
+                        play.ended = true;
+                        // One quiet chunk, or `fill` holds the last sample it had as an offset.
+                        let quiet = vec![0.0; file.channels as usize * BLOCK];
+                        moved |= enter_planar(&mut play.inbox, file.channels, BLOCK, &quiet, file.rate as f64, rate);
+                    }
+                    break;
+                }
+                moved |= enter_planar(&mut play.inbox, file.channels, got, &planar, file.rate as f64, rate);
+            }
+        }
+        if let Some(e) = dead {
+            play.error = Some(e);
+            play.file = None;
+        }
+        let error = play.error.clone();
+        if moved {
+            self.shared.replan.store(true, Ordering::Release);
+            self.shared.waker.notify();
+        }
+        error
+    }
+
     fn key_of(&self, param: usize) -> ParamKey {
         let d = &self.manifest.params[param];
         ParamKey::new(d.group, d.name)
@@ -778,6 +904,7 @@ impl Control {
 
     /// The paced duties: a binding with no stream re-evaluates, and every tapped output goes out.
     fn tick(&mut self) {
+        let pulses = std::mem::take(&mut self.pulses);
         let mut pass = Pass::default();
         for i in 0..self.binds.len() {
             if self.binds[i].streams.is_empty() {
@@ -787,6 +914,10 @@ impl Control {
         if self.rec.is_some() {
             let error = self.record();
             self.record_error(self.key_of(audio_out::P::ON), error, &mut pass);
+        }
+        if self.play.is_some() {
+            let error = self.playback(&pulses);
+            self.record_error(self.key_of(audio_playback::P::FILE), error, &mut pass);
         }
         self.report(pass);
         for out in &mut self.outs {
@@ -807,6 +938,7 @@ impl Control {
     fn raise(&mut self, i: usize) {
         self.params[i].store(1.0f64.to_bits(), Ordering::Relaxed);
         self.pulsed.push((i, Instant::now()));
+        self.pulses.push(i);
     }
 
     /// One binding's value into its atomic — the literal when nothing has arrived or it cannot be

@@ -88,7 +88,7 @@ fn a_patch_sounds_under_the_external_clock() {
     audio.sort_unstable();
     // The shipped set, whole: three built in because their control halves own OS handles, and
     // seven files built by the same pipeline an authored node takes.
-    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:Delay", "audio:Env", "audio:Feedback",
+    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:AudioPlayback", "audio:Delay", "audio:Env", "audio:Feedback",
                        "audio:Filter", "audio:FreqShift", "audio:Gain", "audio:Limiter", "audio:MidiIn",
                        "audio:Mixdown", "audio:Noise", "audio:Osc", "audio:Quantize", "audio:Reverb",
                        "audio:SignalIn", "audio:Slew"]);
@@ -360,6 +360,39 @@ fn a_patch_sounds_under_the_external_clock() {
     g.set_param(out, "record", "file", "scenario");
     g.set_param(out, "audio", "gain", 1.0);
     sounds(&g, "the monitor level back where the scenario left it", |x| (peak(x) - 1.0).abs() < 0.02);
+
+    // Step: a WAV file plays back at the engine's rate, as wide as it is. The take made here
+    // changes tone halfway, so WHERE playback starts is audible: it plays from the head, skips,
+    // runs out, loops, and resets — and a name that is not there says so.
+    g.set_param(out, "record", "file", "sweep");
+    g.set_param(out, "record", "on", true);
+    drive(&g, 4 * TENTH);
+    g.set_param(osc3, "osc", "pitch", 1.75);
+    sounds(&g, "an octave up, into the same take", |x| near(crossings(x), 176));
+    drive(&g, 3 * TENTH);
+    g.set_param(out, "record", "on", false);
+    g.call("link remove", j!({ "from": ep(hex(gain3), "out"), "to": ep(hex(out), "input") }));
+    let player = g.add("AudioPlayback");
+    g.link(player, "out", out, "input");
+    g.set_param(player, "play", "file", "sweep");
+    sounds(&g, "the take plays back from its head", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    sounds(&g, "…and reaches the octave it was recorded into", |x| near(crossings(x), 176));
+    g.set_param(player, "play", "position", 0.05);
+    sounds(&g, "…which position skips back to the A at its head", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    sounds(&g, "…and then the file runs out", |x| peak(x) < 0.01);
+    g.set_param(player, "play", "loop", true);
+    sounds(&g, "…which looping starts over", |x| peak(x) > 0.5);
+    g.set_param(player, "play", "loop", false);
+    sounds(&g, "…and without it, out again", |x| peak(x) < 0.01);
+    g.call("node param pulse", j!({ "node": hex(player), "param": "play/reset" }));
+    sounds(&g, "…until reset plays it from the start", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    g.set_param(player, "play", "file", "not-a-take");
+    let missing = g.until("the file that is not there to say so", |g| g.error(player));
+    assert!(missing.contains("not-a-take.wav"), "the path it looked for: {missing}");
+    g.call("node remove", j!({ "node": hex(player) }));
+    g.link(gain3, "out", out, "input");
+    g.set_param(osc3, "osc", "pitch", 0.75);
+    sounds(&g, "the chain back where the scenario left it", |x| (peak(x) - 1.0).abs() < 0.02 && near(crossings(x), 88));
 
     // Step: the device list is a refresh answered by the node's own thread and echoed to every
     // client, the host default first; the clock itself reports through `session status`.

@@ -18,8 +18,8 @@ Fourteen nodes, and each one was added to prove a seam rather than to fill a cat
   shape in `nodes_audio/`, against the audio SDK (`audio-engine.md`). They are a VOCABULARY rather
   than a category sweep — a source, a level, a shape, a filter, a rate limit, a cycle and the door
   from the signal plane — and the §13 set that would grow them is still the user's to choose.
-- **Audio, native** — `AudioOut`, `AudioIn`, `MidiIn`: the engine's own rather than files, because
-  a device and a port are the engine's to own.
+- **Audio, native** — `AudioOut`, `AudioIn`, `MidiIn`, `AudioPlayback`: the engine's own rather
+  than files, because a device, a port and a file NAME are the engine's to own.
 - **Python** — none in the shipped tree (`nodes_signal/`). `LempelZiv`, `PermutationEntropy`, `SpectralEntropy` and
   `DetrendedFluctuation` were the four, all complexity measures over `[C, T]` that existed
   because the subprocess tier had to be proved against real packages that hold the GIL; they now
@@ -40,15 +40,16 @@ already compose to, and is this genuinely outside that span?"
 
 ## What the library needs, by area
 
-- **Sinks.** Audio leaves the patch now: `AudioOut` writes a WAV (`audio-engine.md`, 2026-09-06).
-  Streaming out, and a plain "write this to a file" for the signal plane, are still missing.
+- **Sinks.** Audio leaves the patch now: `AudioOut` writes a WAV and `AudioPlayback` reads one
+  back (`audio-engine.md`, 2026-09-06). Streaming out, and a plain "write this to a file" for the
+  signal plane, are still missing.
 - **Real biosignal inputs.** LSL, OSC, serial, and whatever devices the user actually runs. These
   are the canonical shape of a node with a background receiver thread started in `setup()` — the
   subprocess tier exists for exactly this.
 - **Array maths.** The general-purpose middle of any patch: reshape, slice, reduce, arithmetic.
   Where the temptation to add fifty nodes is strongest and most wrong.
-- **Recording and playback.** Recording is done for audio; playback, and both for the signal
-  plane, are open. An EEG stream written to disk and played back makes a patch reproducible.
+- **Recording and playback.** Done for audio, open for the signal plane: an EEG stream written to
+  disk and played back is what makes a patch reproducible.
 - **More spectral work**, now that `Psd` and `Filter` stand: envelopes, coherence, time-frequency.
   Each is a test of whether the span already covers it.
 

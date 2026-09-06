@@ -198,6 +198,11 @@ fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui
             birth.inbox = Some(consumer);
             ports.audio_in = Some((Arc::new(Mutex::new(producer)), chans));
         }
+        nodes::audio_playback::TYPE => {
+            let (producer, consumer) = rtrb::RingBuffer::new(control::INBOX_RING);
+            birth.inbox = Some(consumer);
+            ports.play = Some((producer, chans));
+        }
         nodes::audio_out::TYPE => {
             let (producer, consumer) = rtrb::RingBuffer::new(control::REC_RING);
             birth.rec = Some(producer);
@@ -687,7 +692,7 @@ impl Engine for AudioEngine {
             serial,
             node,
             params: atomics,
-            inboxes: inbox_out.into_iter().map(Inbox::new).collect(),
+            inboxes: inbox_out.into_iter().map(|ring| Inbox::new(ring, true)).collect(),
             taps: tap_in,
             dead: false,
             overruns: 0,
