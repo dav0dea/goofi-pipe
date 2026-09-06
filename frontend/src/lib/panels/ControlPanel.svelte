@@ -21,7 +21,8 @@
 		Select,
 		Slider,
 		TextInput,
-		Toggle
+		Toggle,
+		isTextEditingTarget
 	} from '$lib/ui';
 	import {
 		BORN,
@@ -33,6 +34,7 @@
 		freshName,
 		movedBy,
 		resizedBy,
+		sameCell,
 		type Cell,
 		type Kind,
 		type Units
@@ -42,6 +44,8 @@
 		group?: string;
 		edit?: boolean;
 	}
+
+	type Value = number | string | boolean;
 
 	let props: PanelProps = $props();
 	const g = graph();
@@ -61,7 +65,14 @@
 	// The two gestures in flight: a widget being moved or resized, and a chip lifted off the palette.
 	let drag: { name: string; from: Cell; x: number; y: number; units: Units; resize: boolean; to: Cell | null } | null =
 		$state(null);
-	let lift: { kind: Kind; x: number; y: number; from: { x: number; y: number } } | null = $state(null);
+	let lift: { kind: Kind; name: string; x: number; y: number; w: number; h: number; from: { x: number; y: number } } | null =
+		$state(null);
+	// A drop's cell outlives the pointer until the document agrees, so it never flashes back.
+	let pending: { name: string; to: Cell } | null = $state(null);
+	$effect(() => {
+		const p = pending;
+		if (p && elements.some((el) => el.name === p.name && sameCell(cellOf(el), p.to))) pending = null;
+	});
 
 	function cellOf(gv: GlobalView): Cell {
 		const c = gv.control as ControlView;
@@ -69,16 +80,18 @@
 	}
 
 	function placed(gv: GlobalView): Cell {
-		return drag?.name === gv.name && drag.to ? drag.to : cellOf(gv);
+		if (drag?.name === gv.name && drag.to) return drag.to;
+		if (pending?.name === gv.name) return pending.to;
+		return cellOf(gv);
 	}
 
-	function unitsOf(el: HTMLElement): Units {
+	function unitsOf(el: HTMLElement): Units & { gap: number } {
 		const cs = getComputedStyle(el);
 		const gap = parseFloat(cs.rowGap) || 0;
 		const inner = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
 		const x = (inner + gap) / COLUMNS;
 		const row = parseFloat(cs.gridAutoRows);
-		return { x, y: Number.isFinite(row) ? row + gap : x };
+		return { x, y: Number.isFinite(row) ? row + gap : x, gap };
 	}
 
 	function onBoard(e: PointerEvent): { x: number; y: number } | null {
@@ -106,19 +119,21 @@
 		void g.setGlobalControl(gv.name, { ...(gv.control as ControlView), ...patch }).catch(() => {});
 	}
 
-	function commitValue(gv: GlobalView, v: number | string | boolean): void {
+	function commitValue(gv: GlobalView, v: Value): void {
 		void g.setGlobalValue(gv.name, v).catch(() => {});
 	}
 
-	function num(gv: GlobalView): number {
-		return typeof gv.value === 'number' ? gv.value : 0;
+	function num(v: Value): number {
+		return typeof v === 'number' ? v : 0;
 	}
 
 	function down(e: PointerEvent, gv: GlobalView, resize: boolean): void {
 		if (!edit || !board) return;
 		picked = gv.name;
 		drag = { name: gv.name, from: cellOf(gv), x: e.clientX, y: e.clientY, units: unitsOf(board), resize, to: null };
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		const el = e.currentTarget as HTMLElement;
+		el.setPointerCapture(e.pointerId);
+		(el.closest('.cell') as HTMLElement | null)?.focus();
 		e.preventDefault();
 		e.stopPropagation();
 	}
@@ -137,11 +152,30 @@
 		const { name, from, to } = drag;
 		drag = null;
 		const gv = elements.find((el) => el.name === name);
-		if (gv && to && (to.x !== from.x || to.y !== from.y || to.w !== from.w || to.h !== from.h)) setControl(gv, to);
+		if (!gv || !to || sameCell(to, from)) return;
+		pending = { name, to };
+		void g.setGlobalControl(gv.name, { ...(gv.control as ControlView), ...to }).catch(() => (pending = null));
+	}
+
+	function zap(e: KeyboardEvent, gv: GlobalView): void {
+		if (!edit || isTextEditingTarget(e.target) || (e.key !== 'Delete' && e.key !== 'Backspace')) return;
+		e.preventDefault();
+		void g.removeGlobal(gv.name);
 	}
 
 	function liftChip(e: PointerEvent, kind: Kind): void {
-		lift = { kind, x: e.clientX, y: e.clientY, from: { x: e.clientX, y: e.clientY } };
+		if (!board) return;
+		const u = unitsOf(board);
+		const born = BORN[kind];
+		lift = {
+			kind,
+			name: freshName(kind, members.map((gv) => gv.element)),
+			x: e.clientX,
+			y: e.clientY,
+			w: born.w * u.x - u.gap,
+			h: born.h * u.y - u.gap,
+			from: { x: e.clientX, y: e.clientY }
+		};
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		e.preventDefault();
 	}
@@ -174,11 +208,15 @@
 		if (type === 'float') Object.assign(control, { min: 0, max: 1, step: 0.01 });
 		const name = `${group}.${freshName(kind, members.map((gv) => gv.element))}`;
 		try {
-			await g.addGlobal(name, type === 'bool' ? false : type === 'string' ? '' : 0, type, control);
+			await g.addGlobal(name, zero(type), type, control);
 			picked = name;
 		} catch {
 			/* refused */
 		}
+	}
+
+	function zero(type: GlobalView['type']): Value {
+		return type === 'bool' ? false : type === 'string' ? '' : 0;
 	}
 
 	async function rename(gv: GlobalView, raw: string): Promise<void> {
@@ -208,7 +246,28 @@
 			.map((s) => s.trim())
 			.filter((s) => s !== '');
 	}
+
+	/** What the palette ghost of `kind` shows: a value in the middle of the range it is born with. */
+	function sample(kind: Kind): Value {
+		return TYPE_OF[kind] === 'float' ? 0.5 : zero(TYPE_OF[kind]);
+	}
 </script>
+
+{#snippet widget(c: ControlView, value: Value, label: string, onChange: (v: Value) => void)}
+	{#if c.kind === 'knob'}
+		<Knob {label} value={num(value)} min={c.min ?? 0} max={c.max ?? 1} step={c.step ?? 0} {onChange} />
+	{:else if c.kind === 'slider'}
+		<Slider value={num(value)} min={c.min ?? 0} max={c.max ?? 1} step={c.step} {onChange} />
+	{:else if c.kind === 'number'}
+		<NumberInput value={num(value)} min={c.min} max={c.max} step={c.step ?? 1} scrub {onChange} />
+	{:else if c.kind === 'toggle'}
+		<Toggle value={value === true} {onChange} />
+	{:else if c.kind === 'dropdown'}
+		<Select value={String(value)} options={c.options ?? []} {onChange} />
+	{:else}
+		<TextInput inputmode="search" value={String(value)} autocomplete="off" {onChange} />
+	{/if}
+{/snippet}
 
 <div class="wrap" data-testid="control-panel" data-group={group} data-edit={edit}>
 	<div class="bar">
@@ -287,56 +346,18 @@
 					{@const c = gv.control as ControlView}
 					{@const at = placed(gv)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 					<div
 						class="cell"
 						class:picked={edit && picked === gv.name}
 						data-testid={`control-${group}-${gv.element}`}
 						style={`grid-column: ${at.x + 1} / span ${at.w}; grid-row: ${at.y + 1} / span ${at.h}`}
+						tabindex={edit ? 0 : undefined}
 						onpointerdown={(e) => down(e, gv, false)}
+						onkeydown={(e) => zap(e, gv)}
 					>
 						<div class="widget">
-							{#if c.kind === 'knob'}
-								<Knob
-									label={gv.element}
-									value={num(gv)}
-									min={c.min ?? 0}
-									max={c.max ?? 1}
-									step={c.step ?? 0}
-									onChange={(v) => commitValue(gv, v)}
-								/>
-							{:else if c.kind === 'slider'}
-								<Slider
-									value={num(gv)}
-									min={c.min ?? 0}
-									max={c.max ?? 1}
-									step={c.step}
-									onChange={(v) => commitValue(gv, v)}
-								/>
-							{:else if c.kind === 'number'}
-								<NumberInput
-									value={num(gv)}
-									min={c.min}
-									max={c.max}
-									step={c.step ?? 1}
-									scrub
-									onChange={(v) => commitValue(gv, v)}
-								/>
-							{:else if c.kind === 'toggle'}
-								<Toggle value={gv.value === true} onChange={(v) => commitValue(gv, v)} />
-							{:else if c.kind === 'dropdown'}
-								<Select
-									value={String(gv.value)}
-									options={c.options ?? []}
-									onChange={(v) => commitValue(gv, v)}
-								/>
-							{:else}
-								<TextInput
-									inputmode="search"
-									value={String(gv.value)}
-									autocomplete="off"
-									onChange={(v) => commitValue(gv, v)}
-								/>
-							{/if}
+							{@render widget(c, gv.value, gv.element, (v) => commitValue(gv, v))}
 						</div>
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<span
@@ -435,7 +456,7 @@
 				variant="ghost"
 				size="sm"
 				data-testid="control-delete"
-				title="Delete element"
+				title="Delete element (Delete)"
 				label="Delete {pv.element}"
 				onclick={() => void g.removeGlobal(pv.name)}><Icon name="x" /></IconButton
 			>
@@ -444,7 +465,17 @@
 
 	{#if lift}
 		<div class="ghost" style={`left: ${lift.x}px; top: ${lift.y}px`} aria-hidden="true">
-			<Chip tone="accent">{lift.kind}</Chip>
+			<div class="cell born" style={`width: ${lift.w}px; height: ${lift.h}px`}>
+				<div class="widget">
+					{@render widget(
+						{ kind: lift.kind, min: 0, max: 1, step: 0.01, x: 0, y: 0, w: 0, h: 0 },
+						sample(lift.kind),
+						lift.name,
+						() => {}
+					)}
+				</div>
+				<span class="label">{lift.name}</span>
+			</div>
 		</div>
 	{/if}
 </div>
@@ -493,11 +524,11 @@
 		--gap: var(--space-1);
 		--pad: var(--space-3);
 		--col: calc((100cqw - 2 * var(--pad) - (var(--columns) - 1) * var(--gap)) / var(--columns));
-		--label-h: calc(var(--fs-micro) + var(--space-3));
+		--label-h: calc(var(--fs-small) + var(--space-3));
 		display: grid;
 		grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
-		/* A row is a square of the column, floored so a one-row widget still fits a tap target. */
-		grid-auto-rows: max(var(--col), calc(var(--hit) + var(--label-h) + 2 * var(--space-2)));
+		/* A row is a square of the column, floored so a two-row widget still fits a tap target. */
+		grid-auto-rows: max(var(--col), calc((var(--hit) + var(--label-h) + 2 * var(--space-2)) / 2));
 		gap: var(--gap);
 		padding: var(--pad);
 		min-height: 100%;
@@ -517,6 +548,7 @@
 		padding: var(--space-2);
 		border-radius: var(--radius-md);
 		background: var(--surface-1);
+		overflow: hidden;
 	}
 	[data-edit='true'] .cell {
 		outline: 1px dashed var(--border-strong);
@@ -524,6 +556,9 @@
 	}
 	.cell.picked {
 		outline: var(--focus-width) solid var(--accent);
+	}
+	.cell:focus-visible {
+		outline: var(--focus-width) solid var(--focus-ink);
 	}
 	.widget {
 		flex: 1;
@@ -534,7 +569,8 @@
 		justify-content: center;
 		--number-width: 100%;
 	}
-	[data-edit='true'] .widget {
+	[data-edit='true'] .widget,
+	.born .widget {
 		pointer-events: none;
 	}
 	.label {
@@ -542,7 +578,7 @@
 		line-height: var(--label-h);
 		text-align: center;
 		font-family: var(--font-mono);
-		font-size: var(--fs-micro);
+		font-size: var(--fs-small);
 		color: var(--text-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -551,7 +587,8 @@
 	}
 	.cell:hover .label,
 	.cell:focus-within .label,
-	[data-edit='true'] .label {
+	[data-edit='true'] .label,
+	.born .label {
 		visibility: visible;
 	}
 	@media (hover: none) and (pointer: coarse) {
@@ -601,10 +638,15 @@
 	.prop.narrow {
 		flex: 0 1 5rem;
 	}
+	/* The ghost IS the widget it will bear, at the size it will be born, carried by its centre. */
 	.ghost {
 		position: fixed;
 		z-index: var(--z-drag-ghost);
 		transform: translate(-50%, -50%);
 		pointer-events: none;
+	}
+	.born {
+		outline: 1px dashed var(--accent);
+		opacity: 0.85;
 	}
 </style>

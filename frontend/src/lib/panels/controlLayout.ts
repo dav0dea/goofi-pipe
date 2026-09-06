@@ -21,12 +21,12 @@ export const TYPE_OF: Record<Kind, GlobalType> = {
 
 /** The box a widget is born in, in grid units. */
 export const BORN: Record<Kind, { w: number; h: number }> = {
-	knob: { w: 2, h: 2 },
-	slider: { w: 4, h: 1 },
-	number: { w: 2, h: 1 },
-	field: { w: 3, h: 1 },
-	toggle: { w: 1, h: 1 },
-	dropdown: { w: 3, h: 1 }
+	knob: { w: 4, h: 4 },
+	slider: { w: 8, h: 2 },
+	number: { w: 4, h: 2 },
+	field: { w: 6, h: 2 },
+	toggle: { w: 2, h: 2 },
+	dropdown: { w: 6, h: 2 }
 };
 
 export interface Cell {
@@ -44,7 +44,7 @@ export interface Units {
 }
 
 /** How many columns the board is, whatever its pixel width. */
-export const COLUMNS = 8;
+export const COLUMNS = 16;
 
 /** The smallest a widget may be, in grid units. */
 export const MIN_W = 1;
@@ -64,6 +64,10 @@ export function snap(cell: Cell): Cell {
 function inside(cell: Cell, columns: number): Cell {
 	const w = Math.min(cell.w, columns);
 	return { ...cell, w, x: Math.min(cell.x, columns - w) };
+}
+
+export function sameCell(a: Cell, b: Cell): boolean {
+	return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 }
 
 export function overlaps(a: Cell, b: Cell): boolean {

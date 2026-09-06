@@ -6,6 +6,7 @@ import {
 	movedBy,
 	overlaps,
 	resizedBy,
+	sameCell,
 	snap,
 	turnedBy,
 	type Cell
@@ -90,6 +91,11 @@ describe('a drag in edit mode', () => {
 
 	it('stops at the right edge instead of leaving the board', () => {
 		expect(movedBy(origin, 4000, 0, square, 8)).toEqual({ x: 6, y: 1, w: 2, h: 2 });
+	});
+
+	it('knows a cell that did not move, so a drag that ends where it began sends nothing', () => {
+		expect(sameCell(origin, { ...origin })).toBe(true);
+		expect(sameCell(origin, { ...origin, w: 3 })).toBe(false);
 	});
 
 	it('resizes the far edge and leaves the near one where it is', () => {
