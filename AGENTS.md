@@ -501,7 +501,10 @@ merely stale. After changing the Python package, delete the venv — or the prob
 old wheel and a node using a new authoring feature silently disappears from the palette.
 
 The cross-language tests find these interpreters themselves and **fail with an actionable message**
-when none can import goofi. They never skip, and nothing in the suite is `#[ignore]`d.
+when none can import goofi. They never skip, and nothing in the suite is `#[ignore]`d. The graphics
+suite is the same rule against a GPU: a machine with no adapter has no graphics engine and no
+graphics type in the catalog, and the scenario fails naming the package to install
+(`mesa-vulkan-drivers`, which is lavapipe) rather than skipping.
 
 `/dev/shm/iox2_*` is not a leak, and two reviews have now misread it as one. The count PEAKS
 during a run and settles back, because every node releases its shared memory when it drops. Delete
