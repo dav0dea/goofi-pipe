@@ -124,6 +124,10 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(group_of(&g), j!("duo"), "the memberless group renamed through its panel");
     let why = g.refuse("global group rename", j!({ "from": "nobody", "to": "somebody" }));
     assert!(why.contains("no global group"), "{why}");
+    // A panel made a control panel with no group of its own is born naming a fresh one.
+    g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "viewer" }));
+    g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "control" }));
+    assert_eq!(group_of(&g), j!("control0"), "the first free `controlN` was minted for it");
     // A lock holds what it names: a group's `config` freezes every name and the membership, an
     // entry's `value` freezes its value — and each lock is ONE undoable command.
     g.call("global group lock", j!({ "group": "desk", "config": true }));
@@ -201,7 +205,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
-    assert_eq!(steps, 26, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert_eq!(steps, 28, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");

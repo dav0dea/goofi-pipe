@@ -776,6 +776,21 @@ pub(crate) fn layout_panel_edit(
         })
         .and_then(Uid::from_hex);
     vocab::check_panel(&g, ty.as_deref(), panel_state.as_ref(), bound)?;
+    // A control panel is born naming a group of its own, `control0`, `control1`, … — the first
+    // that nothing holds — so no panel ever waits on a name.
+    let panel_state = match (ty.as_deref(), panel_state) {
+        (Some("control"), state) if state.as_ref().and_then(|s| s.get("group")).is_none() => {
+            let taken = g.arrangement().control_groups();
+            let fresh = (0..)
+                .map(|n| format!("control{n}"))
+                .find(|c| !g.globals().has_group(c) && !taken.contains(c))
+                .expect("the integers do not run out");
+            let mut s = state.and_then(|s| s.as_object().cloned()).unwrap_or_default();
+            s.insert("group".into(), json!(fresh));
+            Some(Value::Object(s))
+        }
+        (_, state) => state,
+    };
     let writes = g.arrangement().set_panel(&panel, ty.as_deref(), panel_state)?;
     apply_layout(state, &mut g, actor, goofi_graph::Command::LayoutContents { writes })
 }

@@ -934,6 +934,18 @@ impl Layout {
         writes
     }
 
+    /// Every group a control panel names, in panel order.
+    pub fn control_groups(&self) -> Vec<String> {
+        self.nodes()
+            .filter_map(|n| match n {
+                Node::Panel { panel_type, state, .. } if panel_type == "control" => {
+                    state.get("group").and_then(|v| v.as_str()).map(str::to_string)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Re-aim every control panel naming group `from` at `to`. A group's identity is its name, so
     /// a panel holds it the way an expression does, and one rename moves both.
     pub fn regroup(&self, from: &str, to: &str) -> Vec<Write> {

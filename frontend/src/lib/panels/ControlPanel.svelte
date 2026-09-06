@@ -106,8 +106,7 @@
 	function nameGroup(raw: string): void {
 		const to = raw.trim();
 		if (to === group || !isValidIdentifier(to)) return;
-		if (!named) props.setState({ ...st, group: to }, 'authored', `Name control panel ${to}`);
-		else void g.renameGlobalGroup(group, to).catch(() => {});
+		void g.renameGlobalGroup(group, to).catch(() => {});
 	}
 
 	function setEdit(on: boolean): void {
@@ -272,12 +271,11 @@
 
 <div class="wrap" data-testid="control-panel" data-group={group} data-edit={edit}>
 	<div class="bar">
-		{#if edit || !named}
+		{#if edit}
 			<div class="grow">
 				<TextInput
 					inputmode="search"
 					data-testid="control-group-name"
-					placeholder="name this panel"
 					value={group}
 					autocomplete="off"
 					onChange={nameGroup}
@@ -328,14 +326,7 @@
 				onpointerup={up}
 				onpointercancel={up}
 			>
-				{#if !named}
-					<div class="fill">
-						<EmptyState data-testid="control-unnamed">
-							{#snippet title()}Name this panel{/snippet}
-							{#snippet hint()}Its name is the group its globals live in: <code>globals.name.element</code>.{/snippet}
-						</EmptyState>
-					</div>
-				{:else if elements.length === 0}
+				{#if elements.length === 0}
 					<div class="fill">
 						<EmptyState data-testid="control-empty">
 							{#snippet title()}No widgets yet{/snippet}
