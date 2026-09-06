@@ -79,6 +79,36 @@ export const VIEWER_KINDS: readonly ViewerKindInfo[] = [
 /** The closed vocabulary a node's `tags` come from — the palette facets by it. */
 export const TAGS = ['input', 'output', 'generator', 'transform', 'analysis', 'control', 'image', 'text', 'midi', 'eeg', 'cardio', 'motion', 'music', 'ml', 'connectivity', 'simulation'] as const;
 
+export type ControlKindId =
+	| 'knob'
+	| 'slider'
+	| 'number'
+	| 'field'
+	| 'toggle'
+	| 'dropdown';
+
+export interface ControlKindInfo {
+	readonly id: ControlKindId;
+	/** The value type a widget of this kind draws, which is the global's type at birth. */
+	readonly type: 'float' | 'int' | 'bool' | 'string';
+	/** The box it is born in, in grid units. */
+	readonly w: number;
+	readonly h: number;
+}
+
+/** The widget kinds a control panel offers, in palette order. */
+export const CONTROL_KINDS: readonly ControlKindInfo[] = [
+	{ id: 'knob', type: 'float', w: 4, h: 4 },
+	{ id: 'slider', type: 'float', w: 8, h: 2 },
+	{ id: 'number', type: 'float', w: 4, h: 2 },
+	{ id: 'field', type: 'string', w: 6, h: 2 },
+	{ id: 'toggle', type: 'bool', w: 2, h: 2 },
+	{ id: 'dropdown', type: 'string', w: 6, h: 2 },
+];
+
+/** How many columns a control panel's grid is, whatever its pixel width. */
+export const CONTROL_COLUMNS = 16;
+
 /** The type a sub-patch facade wears in the document. It is not in the palette — grouping
 * is what makes one. */
 export const SCOPE_TYPE = 'SubPatch';

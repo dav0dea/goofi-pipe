@@ -249,13 +249,23 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 			// Edit mode also opens the palette, and a chip dragged onto the board bears a widget where
 			// it lands, named for its kind — the one door a new element has.
+			// The palette rides the inspector pane, which SLIDES in: the chip is measured once it rests.
 			const chip = page.getByTestId('control-palette-slider');
-			const cb = (await chip.boundingBox())!;
+			let cb = (await chip.boundingBox())!;
+			await expect
+				.poll(async () => {
+					await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+					const now = (await chip.boundingBox())!;
+					const same = now.x === cb.x && now.y === cb.y;
+					cb = now;
+					return same;
+				}, 'the pane came to rest')
+				.toBe(true);
 			const bb = (await page.getByTestId('control-board').boundingBox())!;
 			await swipe(
 				page,
 				{ x: Math.round(cb.x + cb.width / 2), y: Math.round(cb.y + cb.height / 2) },
-				{ x: Math.round(bb.x + bb.width * 0.7), y: Math.round(bb.y + bb.height * 0.7) }
+				{ x: Math.round(bb.x + bb.width * 0.3), y: Math.round(bb.y + bb.height * 0.3) }
 			);
 			await expect(
 				page.getByTestId('control-desk-slider0'),

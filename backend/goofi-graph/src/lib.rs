@@ -552,12 +552,50 @@ impl Graph {
         at: Option<usize>,
         control: Option<Option<goofi_core::globals::Control>>,
     ) -> Result<(), String> {
+        let removing = value.is_none();
         self.globals.apply_change(name, value, at)?;
-        if let Some(c) = control {
+        // A remove takes the record with it, so a `control` beside one has nothing to land on.
+        if let (false, Some(c)) = (removing, control) {
             self.globals.set_control(name, c)?;
         }
         self.invalidate_bindings_reading(name);
         Ok(())
+    }
+
+    /// Set or clear what a global follows, answering what it followed. The reference is held to
+    /// the spelling a param's is; what it names is resolved by the follower, as nodes come and go.
+    pub fn set_global_source(
+        &mut self,
+        name: &str,
+        source: Option<goofi_core::globals::GlobalSource>,
+    ) -> Result<Option<goofi_core::globals::GlobalSource>, String> {
+        if let Some(s) = &source {
+            parse_reference(&s.reference)?;
+        }
+        self.globals.set_source(name, source)
+    }
+
+    /// The follower's write: what a global's source delivered. Answers whether anything changed,
+    /// and re-sends every binding that reads it when it did.
+    pub fn follow_global(&mut self, name: &str, value: goofi_core::globals::GlobalValue) -> bool {
+        let changed = self.globals.follow(name, value);
+        if changed {
+            self.invalidate_bindings_reading(name);
+        }
+        changed
+    }
+
+    /// Every followed global, resolved: the global, the producer's uid and slot, and the index.
+    /// A reference naming no node is left out — the follower re-asks as nodes come and go.
+    pub fn global_sources(&self) -> Vec<(String, Uid, String, Option<usize>)> {
+        self.globals
+            .entries()
+            .filter_map(|(name, _, _, _, source)| {
+                let s = source?;
+                let (node, slot) = s.reference.split_once('.')?;
+                Some((name.to_string(), self.uid_by_name(node)?, slot.to_string(), s.index))
+            })
+            .collect()
     }
 
     /// Lock or unlock one global, answering the lock it held.
@@ -1460,6 +1498,19 @@ impl Graph {
             if self.set_source(ruid, &key.group, &key.name, state).is_ok() && !referrers.contains(&ruid) {
                 referrers.push(ruid);
             }
+        }
+        // A global follows a producer by the same spelling, so the one rename reaches it too.
+        let followed: Vec<(String, goofi_core::globals::GlobalSource)> = self
+            .globals
+            .entries()
+            .filter_map(|(name, _, _, _, source)| {
+                let s = source?;
+                let reference = expr_rewrite::rename_reference(&s.reference, rename)?;
+                Some((name.to_string(), goofi_core::globals::GlobalSource { reference, index: s.index }))
+            })
+            .collect();
+        for (name, source) in followed {
+            let _ = self.globals.set_source(&name, Some(source));
         }
         // Expressions live only on the live flat nodes now (no def templates) — the loop above has
         // already followed the rename into every one.
@@ -3177,12 +3228,15 @@ impl Graph {
             // A machine global's value is this machine's; writing it into a patch would carry one
             // machine's path onto another.
             .filter(|(name, ..)| !self.globals.is_machine(name))
-            .map(|(name, value, lock, control)| {
+            .map(|(name, value, lock, control, source)| {
                 let mut e = global_to_json(value); // {value, type}
                 if let Value::Object(ref mut m) = e {
                     m.insert("name".to_string(), Value::String(name.to_string()));
                     if let Some(c) = control {
                         m.insert("control".to_string(), serde_json::to_value(c).expect("a plain record"));
+                    }
+                    if let Some(s) = source {
+                        m.insert("source".to_string(), serde_json::to_value(s).expect("a plain record"));
                     }
                     if !lock.is_default() {
                         m.insert("lock".to_string(), serde_json::to_value(lock).expect("a plain record"));
@@ -3277,6 +3331,9 @@ impl Graph {
                         if let Ok(c) = serde_json::from_value(c.clone()) {
                             let _ = self.globals.set_control(name, Some(c));
                         }
+                    }
+                    if let Some(s) = entry.get("source").and_then(|s| serde_json::from_value(s.clone()).ok()) {
+                        let _ = self.globals.set_source(name, Some(s));
                     }
                     if let Some(l) = entry.get("lock").and_then(|l| serde_json::from_value(l.clone()).ok()) {
                         let _ = self.globals.set_lock(name, l);

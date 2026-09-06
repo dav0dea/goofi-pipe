@@ -35,6 +35,24 @@ import {
 	type GlobalType,
 	type LockView
 } from '$lib/crdt/graphDoc';
+
+/** A grid cell, in the control panel's units. */
+export interface Cell {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
+/** What `control edit` takes: any subset, and `name` is the element's new name. */
+export interface ControlPatch extends Partial<Cell> {
+	name?: string;
+	kind?: ControlView['kind'];
+	min?: number;
+	max?: number;
+	step?: number;
+	options?: string[];
+}
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import type { StringParam, SourcePatch } from '$lib/api/types';
 import type { GraphFragment } from '$lib/editor/clipboard';
@@ -427,6 +445,37 @@ export class GraphStore {
 	async renameGlobalGroup(from: string, to: string): Promise<void> {
 		await this.ctl.call('global group rename', { from, to });
 		this._recordGraphCmd(`Rename global group ${from} → ${to}`);
+	}
+
+	/** Make a global follow `node.slot` (and `index` into a wide frame); an empty reference clears. */
+	async setGlobalSource(name: string, reference: string, index?: number): Promise<void> {
+		await this.ctl.call('global entry source', index === undefined ? { name, reference } : { name, reference, index });
+		this._recordGraphCmd(`Source global ${name}`);
+	}
+
+	/** Bear a widget in a control panel's group through the `control` door, which lifts the
+	 * group's lock for the one command: the manager mints the name and the cell when none is given. */
+	async addControl(group: string, kind: ControlView['kind'], cell?: Cell): Promise<string> {
+		const r = await this.ctl.call('control add', { group, kind, ...(cell ?? {}) });
+		this._recordGraphCmd(`Add ${kind} to ${group}`);
+		return String((r as { name?: unknown }).name ?? '');
+	}
+
+	/** Change a widget's name, kind, range, options or place, through the `control` door. */
+	async editControl(group: string, element: string, patch: ControlPatch): Promise<void> {
+		await this.ctl.call('control edit', { group, element, ...patch });
+		this._recordGraphCmd(`Edit ${group}.${element}`);
+	}
+
+	/** Make a widget follow `node.slot` (and `index` into a wide frame); an empty reference clears. */
+	async sourceControl(group: string, element: string, reference: string, index?: number): Promise<void> {
+		await this.ctl.call('control source', index === undefined ? { group, element, reference } : { group, element, reference, index });
+		this._recordGraphCmd(`Source ${group}.${element}`);
+	}
+
+	async removeControl(group: string, element: string): Promise<void> {
+		await this.ctl.call('control remove', { group, element });
+		this._recordGraphCmd(`Remove ${group}.${element}`);
 	}
 
 	/** Lock or unlock one global on its own account; an axis not named keeps what it has. */

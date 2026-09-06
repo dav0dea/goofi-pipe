@@ -1,15 +1,21 @@
 <!-- Control panel — knobs, sliders and fields over ONE group of globals. Edit mode is the group's
      config lock, inverted: out of it a drag turns a widget; in it the same drag moves it, the
-     corner resizes it, and a chip dragged off the palette bears a new one. Every change is a
-     globals op, so the manager owns the state and this panel owns only the drawing and the gesture
-     in flight. -->
+     corner resizes it, and the inspector slides in with the palette and the picked widget's form.
+     Every change is a globals op, so the manager owns the state and this panel owns only the
+     drawing and the gesture in flight. -->
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import type { PanelProps } from 'panelty';
 	import { asStateObject } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { ControlView, GlobalView, LockView } from '$lib/crdt/graphDoc';
 	import { effectiveLock, isValidIdentifier } from '$lib/crdt/graphDoc';
+	import type { ParamDescriptor, SourcePatch } from '$lib/api/types';
+	import { bindViewer } from '$lib/api/frames';
+	import type { ArrayData, DataFrame } from '$lib/codec/decode';
+	import { viewSpecForKind } from '$lib/viewers/capacity';
+	import ParamField from '$lib/inspector/ParamField.svelte';
+	import SidePane from './SidePane.svelte';
 	import {
 		Chip,
 		EmptyState,
@@ -31,8 +37,6 @@
 		KINDS,
 		TYPE_OF,
 		cellAt,
-		freeCell,
-		freshName,
 		movedBy,
 		resizedBy,
 		sameCell,
@@ -55,8 +59,7 @@
 	const named = $derived(group !== '');
 	const groupLock = $derived<LockView>(g.globalGroups[group] ?? { config: false, value: false });
 	const edit = $derived(named && !groupLock.config);
-	const members = $derived(g.globals.filter((gv) => gv.group === group));
-	const elements = $derived(members.filter((gv) => gv.control));
+	const elements = $derived(g.globals.filter((gv) => gv.group === group && gv.control));
 
 	let board: HTMLDivElement | null = $state(null);
 	let picked = $state<string | null>(null);
@@ -66,8 +69,7 @@
 	// The two gestures in flight: a widget being moved or resized, and a chip lifted off the palette.
 	let drag: { name: string; from: Cell; x: number; y: number; units: Units; resize: boolean; to: Cell | null } | null =
 		$state(null);
-	let lift: { kind: Kind; name: string; x: number; y: number; w: number; h: number; from: { x: number; y: number } } | null =
-		$state(null);
+	let lift: { kind: Kind; x: number; y: number; w: number; h: number; from: { x: number; y: number } } | null = $state(null);
 	// A drop's cell outlives the pointer until the document agrees, so it never flashes back.
 	let pending: { name: string; to: Cell } | null = $state(null);
 	$effect(() => {
@@ -112,11 +114,12 @@
 	function setEdit(on: boolean): void {
 		picked = null;
 		renaming = null;
+		stopLearning();
 		void g.lockGlobalGroup(group, { config: !on }).catch(() => {});
 	}
 
 	function setControl(gv: GlobalView, patch: Partial<ControlView>): void {
-		void g.setGlobalControl(gv.name, { ...(gv.control as ControlView), ...patch }).catch(() => {});
+		void g.editControl(group, gv.element, patch).catch(() => {});
 	}
 
 	function commitValue(gv: GlobalView, v: Value): void {
@@ -154,13 +157,13 @@
 		const gv = elements.find((el) => el.name === name);
 		if (!gv || !to || sameCell(to, from)) return;
 		pending = { name, to };
-		void g.setGlobalControl(gv.name, { ...(gv.control as ControlView), ...to }).catch(() => (pending = null));
+		void g.editControl(group, gv.element, to).catch(() => (pending = null));
 	}
 
 	function zap(e: KeyboardEvent, gv: GlobalView): void {
 		if (!edit || isTextEditingTarget(e.target) || (e.key !== 'Delete' && e.key !== 'Backspace')) return;
 		e.preventDefault();
-		void g.removeGlobal(gv.name);
+		void g.removeControl(group, gv.element);
 	}
 
 	function liftChip(e: PointerEvent, kind: Kind): void {
@@ -169,7 +172,6 @@
 		const born = BORN[kind];
 		lift = {
 			kind,
-			name: freshName(kind, members.map((gv) => gv.element)),
 			x: e.clientX,
 			y: e.clientY,
 			w: born.w * u.x - u.gap,
@@ -186,7 +188,7 @@
 		lift.y = e.clientY;
 	}
 
-	// A tap bears the widget in the first free cell; a drag bears it where it was let go.
+	// A tap bears the widget where the manager places it; a drag bears it where it was let go.
 	function dropChip(e: PointerEvent): void {
 		if (!lift) return;
 		const { kind, from } = lift;
@@ -199,17 +201,9 @@
 
 	async function bear(kind: Kind, point: { x: number; y: number } | null): Promise<void> {
 		const born = BORN[kind];
-		const cell =
-			point && board
-				? cellAt(point.x, point.y, born.w, born.h, unitsOf(board), COLUMNS)
-				: freeCell(elements.map(cellOf), born.w, born.h, COLUMNS);
-		const type = TYPE_OF[kind];
-		const control: ControlView = { kind, ...cell };
-		if (type === 'float') Object.assign(control, { min: 0, max: 1, step: 0.01 });
-		const name = `${group}.${freshName(kind, members.map((gv) => gv.element))}`;
+		const cell = point && board ? cellAt(point.x, point.y, born.w, born.h, unitsOf(board), COLUMNS) : undefined;
 		try {
-			await g.addGlobal(name, zero(type), type, control);
-			picked = name;
+			picked = await g.addControl(group, kind, cell);
 		} catch {
 			/* refused */
 		}
@@ -223,10 +217,9 @@
 		renaming = null;
 		const element = raw.trim();
 		if (element === gv.element || !isValidIdentifier(element)) return;
-		const to = `${group}.${element}`;
 		try {
-			await g.renameGlobal(gv.name, to);
-			if (picked === gv.name) picked = to;
+			await g.editControl(group, gv.element, { name: element });
+			if (picked === gv.name) picked = `${group}.${element}`;
 		} catch {
 			/* refused */
 		}
@@ -251,6 +244,72 @@
 	function sample(kind: Kind): Value {
 		return TYPE_OF[kind] === 'float' ? 0.5 : zero(TYPE_OF[kind]);
 	}
+
+	/** The widget's value as the inspector field reads it: a param whose one other source is a
+	 * reference, since a global follows a producer and never an expression. */
+	function valueDescriptor(pv: GlobalView, pc: ControlView): ParamDescriptor {
+		const base = {
+			doc: null,
+			refreshable: false,
+			mode: pv.source ? ('reference' as const) : ('constant' as const),
+			expression: null,
+			reference: pv.source?.reference ?? null,
+			triggers: false,
+			error: null
+		};
+		if (pv.type === 'float' || pv.type === 'int') {
+			return { ...base, type: pv.type, value: num(pv.value), vmin: pc.min ?? 0, vmax: pc.max ?? 1 };
+		}
+		if (pv.type === 'bool') return { ...base, type: 'bool', value: pv.value === true };
+		return { ...base, type: 'string', value: String(pv.value), options: pc.kind === 'dropdown' ? (pc.options ?? []) : null };
+	}
+
+	function setSource(pv: GlobalView, patch: SourcePatch): void {
+		stopLearning();
+		if (patch.reference !== undefined) void g.sourceControl(group, pv.element, patch.reference).catch(() => {});
+		else if (patch.mode === 'constant') void g.sourceControl(group, pv.element, '').catch(() => {});
+	}
+
+	function setIndex(pv: GlobalView, index: number): void {
+		const ref = pv.source?.reference;
+		if (!ref) return;
+		void g.sourceControl(group, pv.element, ref, Math.max(0, Math.round(index))).catch(() => {});
+	}
+
+	// MIDI learn: listen to the followed slot, and the first number that moves is the one.
+	let learning = $state<(() => void) | null>(null);
+	function stopLearning(): void {
+		learning?.();
+		learning = null;
+	}
+	function toggleLearn(pv: GlobalView): void {
+		if (learning) return stopLearning();
+		const ref = pv.source?.reference;
+		const [nodeName, slot] = ref?.split('.') ?? [];
+		const uid = g.nodes.find((n) => n.name === nodeName)?.uid;
+		if (!ref || !slot || !uid) return;
+		const element = pv.element;
+		let baseline: number[] | null = null;
+		learning = bindViewer(uid, slot, `learn:${group}.${element}`, viewSpecForKind('line', 4096, 64), (f: DataFrame) => {
+			const values = (f.data as ArrayData).values;
+			if (!values || typeof values.length !== 'number') return;
+			if (!baseline) {
+				baseline = Array.from(values);
+				return;
+			}
+			for (let i = 0; i < values.length; i++) {
+				if (Math.abs(values[i] - (baseline[i] ?? values[i])) > 1e-6) {
+					stopLearning();
+					void g.sourceControl(group, element, ref, i).catch(() => {});
+					return;
+				}
+			}
+		});
+	}
+	$effect(() => {
+		if (!edit || !pickedView) stopLearning();
+	});
+	onDestroy(stopLearning);
 </script>
 
 {#snippet widget(c: ControlView, value: Value, label: string, onChange: (v: Value) => void)}
@@ -271,19 +330,7 @@
 
 <div class="wrap" data-testid="control-panel" data-group={group} data-edit={edit}>
 	<div class="bar">
-		{#if edit}
-			<div class="grow">
-				<TextInput
-					inputmode="search"
-					data-testid="control-group-name"
-					value={group}
-					autocomplete="off"
-					onChange={nameGroup}
-				/>
-			</div>
-		{:else}
-			<span class="title">{group}</span>
-		{/if}
+		<span class="title">{group}</span>
 		<IconButton
 			variant={edit ? 'primary' : 'ghost'}
 			size="sm"
@@ -294,25 +341,6 @@
 			onclick={() => setEdit(!edit)}><Icon name={edit ? 'check' : 'pencil'} /></IconButton
 		>
 	</div>
-
-	{#if edit}
-		<div class="palette" data-testid="control-palette">
-			{#each KINDS as kind (kind)}
-				<Chip
-					tone={lift?.kind === kind ? 'accent' : 'neutral'}
-					data-testid={`control-palette-${kind}`}
-					title="Drag onto the board, or tap to add"
-					onpointerdown={(e) => liftChip(e, kind)}
-					onpointermove={driftChip}
-					onpointerup={dropChip}
-					onpointercancel={() => (lift = null)}
-					onclick={(e) => {
-						if (e.detail === 0) void bear(kind, null);
-					}}>{kind}</Chip
-				>
-			{/each}
-		</div>
-	{/if}
 
 	<ScrollArea>
 		<div class="sheet">
@@ -349,7 +377,11 @@
 						onpointerdown={(e) => down(e, gv, false)}
 						onkeydown={(e) => zap(e, gv)}
 					>
-						<div class="widget" class:held={held.value} title={held.value ? 'Value-locked' : undefined}>
+						<div
+							class="widget"
+							class:held={held.value || gv.source !== undefined}
+							title={gv.source ? `Follows ${gv.source.reference}` : held.value ? 'Value-locked' : undefined}
+						>
 							{@render widget(c, gv.value, gv.element, (v) => commitValue(gv, v))}
 						</div>
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -391,70 +423,119 @@
 		</div>
 	</ScrollArea>
 
-	{#if edit && pickedView && !pickedView.lock.config}
-		{@const pv = pickedView}
-		{@const pc = pv.control as ControlView}
-		<div class="props" data-testid="control-props">
-			<div class="prop">
-				<Field label="name">
+	<SidePane open={edit} testid="control-inspector" storage="goofi.controlPane">
+		<ScrollArea>
+			<div class="pane">
+				<Field label="panel" doc="The group its globals live in: globals.panel.element">
 					<TextInput
 						inputmode="search"
-						data-testid="control-props-name"
-						value={pv.element}
+						data-testid="control-group-name"
+						value={group}
 						autocomplete="off"
-						onChange={(v) => void rename(pv, v)}
+						onChange={nameGroup}
 					/>
 				</Field>
-			</div>
-			<div class="prop narrow">
-				<Field label="widget">
-					<Select
-						data-testid="control-props-kind"
-						value={pc.kind}
-						options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
-						onChange={(v) => setControl(pv, { kind: v as Kind })}
-					/>
-				</Field>
-			</div>
-			{#if pv.type === 'float' || pv.type === 'int'}
-				<div class="prop narrow">
-					<Field label="min">
-						<NumberInput value={pc.min ?? 0} onChange={(v) => setControl(pv, { min: v })} />
-					</Field>
+				<div class="palette" data-testid="control-palette">
+					{#each KINDS as kind (kind)}
+						<Chip
+							tone={lift?.kind === kind ? 'accent' : 'neutral'}
+							data-testid={`control-palette-${kind}`}
+							title="Drag onto the board, or tap to add"
+							onpointerdown={(e) => liftChip(e, kind)}
+							onpointermove={driftChip}
+							onpointerup={dropChip}
+							onpointercancel={() => (lift = null)}
+							onclick={(e) => {
+								if (e.detail === 0) void bear(kind, null);
+							}}>{kind}</Chip
+						>
+					{/each}
 				</div>
-				<div class="prop narrow">
-					<Field label="max">
-						<NumberInput value={pc.max ?? 1} onChange={(v) => setControl(pv, { max: v })} />
-					</Field>
-				</div>
-				<div class="prop narrow">
-					<Field label="step">
-						<NumberInput value={pc.step ?? 0} min={0} onChange={(v) => setControl(pv, { step: v })} />
-					</Field>
-				</div>
-			{/if}
-			{#if pc.kind === 'dropdown'}
-				<div class="prop">
-					<Field label="options" doc="Comma-separated">
-						<TextInput
-							inputmode="text"
-							data-testid="control-props-options"
-							value={(pc.options ?? []).join(', ')}
-							onChange={(v) => setControl(pv, { options: optionsOf(v) })}
+				{#if pickedView && !pickedView.lock.config}
+					{@const pv = pickedView}
+					{@const pc = pv.control as ControlView}
+					<div class="props" data-testid="control-props">
+						<Field label="name">
+							<TextInput
+								inputmode="search"
+								data-testid="control-props-name"
+								value={pv.element}
+								autocomplete="off"
+								onChange={(v) => void rename(pv, v)}
+							/>
+						</Field>
+						<Field label="widget">
+							<Select
+								data-testid="control-props-kind"
+								value={pc.kind}
+								options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
+								onChange={(v) => setControl(pv, { kind: v as Kind })}
+							/>
+						</Field>
+						<ParamField
+							paramName="value"
+							descriptor={valueDescriptor(pv, pc)}
+							modes={['constant', 'reference']}
+							onCommit={(v) => commitValue(pv, v as Value)}
+							onSetSource={(patch) => setSource(pv, patch)}
+							data-testid="control-props-value"
 						/>
-					</Field>
-				</div>
-			{/if}
-			<IconButton
-				variant="ghost"
-				size="sm"
-				data-testid="control-delete"
-				title="Delete element (Delete)"
-				label="Delete {pv.element}"
-				onclick={() => void g.removeGlobal(pv.name)}><Icon name="x" /></IconButton
-			>
-		</div>
-	{/if}
+						{#if pv.source}
+							<div class="row">
+								<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128">
+									<NumberInput value={pv.source.index ?? 0} min={0} step={1} onChange={(v) => setIndex(pv, v)} />
+								</Field>
+								<Chip
+									tone={learning ? 'accent' : 'neutral'}
+									aria-pressed={learning !== null}
+									data-testid="control-learn"
+									title="Move one control on the source, and the widget follows that one"
+									onclick={() => toggleLearn(pv)}>{learning ? 'listening…' : 'learn'}</Chip
+								>
+							</div>
+						{/if}
+						{#if pv.type === 'float' || pv.type === 'int'}
+							<div class="row">
+								<Field label="min">
+									<NumberInput value={pc.min ?? 0} onChange={(v) => setControl(pv, { min: v })} />
+								</Field>
+								<Field label="max">
+									<NumberInput value={pc.max ?? 1} onChange={(v) => setControl(pv, { max: v })} />
+								</Field>
+								<Field label="step">
+									<NumberInput value={pc.step ?? 0} min={0} onChange={(v) => setControl(pv, { step: v })} />
+								</Field>
+							</div>
+						{/if}
+						{#if pc.kind === 'dropdown'}
+							<Field label="options" doc="Comma-separated">
+								<TextInput
+									inputmode="text"
+									data-testid="control-props-options"
+									value={(pc.options ?? []).join(', ')}
+									onChange={(v) => setControl(pv, { options: optionsOf(v) })}
+								/>
+							</Field>
+						{/if}
+						<div class="row end">
+							<IconButton
+								variant="ghost"
+								size="sm"
+								data-testid="control-delete"
+								title="Delete element (Delete)"
+								label="Delete {pv.element}"
+								onclick={() => void g.removeControl(group, pv.element)}><Icon name="x" /></IconButton
+							>
+						</div>
+					</div>
+				{:else}
+					<EmptyState>
+						{#snippet hint()}{pickedView ? 'This widget is config-locked.' : 'Tap a widget to edit it.'}{/snippet}
+					</EmptyState>
+				{/if}
+			</div>
+		</ScrollArea>
+	</SidePane>
 
 	{#if lift}
 		<div class="ghost" style={`left: ${lift.x}px; top: ${lift.y}px`} aria-hidden="true">
@@ -463,11 +544,11 @@
 					{@render widget(
 						{ kind: lift.kind, min: 0, max: 1, step: 0.01, x: 0, y: 0, w: 0, h: 0 },
 						sample(lift.kind),
-						lift.name,
+						lift.kind,
 						() => {}
 					)}
 				</div>
-				<span class="label">{lift.name}</span>
+				<span class="label">{lift.kind}</span>
 			</div>
 		</div>
 	{/if}
@@ -475,6 +556,7 @@
 
 <style>
 	.wrap {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		height: 100%;
@@ -496,17 +578,30 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 	}
-	.grow {
-		flex: 1;
-		min-width: 0;
+	.pane {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-5);
+		padding: var(--space-4) var(--space-5) var(--space-6);
 	}
 	.palette {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 1px dashed var(--border);
 		touch-action: none;
+	}
+	.props {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+	.row {
+		display: flex;
+		align-items: flex-end;
+		gap: var(--space-4);
+	}
+	.row.end {
+		justify-content: flex-end;
 	}
 	/* The board is a container, so a grid unit is a share of ITS width and follows every resize. */
 	.sheet {
@@ -619,21 +714,6 @@
 		height: var(--space-6);
 		background: var(--accent);
 		border-radius: var(--radius-sm) 0 var(--radius-md) 0;
-	}
-	.props {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: flex-end;
-		gap: var(--space-3) var(--space-4);
-		padding: var(--space-3);
-		border-top: 1px solid var(--border);
-	}
-	.prop {
-		flex: 1 1 8rem;
-		min-width: 0;
-	}
-	.prop.narrow {
-		flex: 0 1 5rem;
 	}
 	/* The ghost IS the widget it will bear, at the size it will be born, carried by its centre. */
 	.ghost {

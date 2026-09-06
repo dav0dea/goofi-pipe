@@ -124,10 +124,44 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(group_of(&g), j!("duo"), "the memberless group renamed through its panel");
     let why = g.refuse("global group rename", j!({ "from": "nobody", "to": "somebody" }));
     assert!(why.contains("no global group"), "{why}");
+    // A global can FOLLOW a producer: the manager writes it on every frame that changes it, and
+    // nobody else may set it until the source is cleared. The reference follows a node rename.
+    g.call("global entry add", j!({ "name": "desk.level", "value": 0.0, "type": "float" }));
+    g.call("global entry source", j!({ "name": "desk.level", "reference": "carrier.out" }));
+    g.until("the followed global to take the LFO's value", |g| {
+        g.doc()["globals"]["desk.level"]["value"].as_f64().filter(|v| *v != 0.0)
+    });
+    let why = g.refuse("global entry edit", j!({ "name": "desk.level", "value": 0.5 }));
+    assert!(why.contains("follows") && why.contains("carrier.out"), "{why}");
+    g.call("node edit", j!({ "node": hex(osc), "name": "lfo" }));
+    assert_eq!(g.doc()["globals"]["desk.level"]["source"]["reference"], j!("lfo.out"), "the source followed the rename");
+    g.call("node edit", j!({ "node": hex(osc), "name": "carrier" }));
+    g.call("global entry source", j!({ "name": "desk.level", "reference": "" }));
+    assert!(g.doc()["globals"]["desk.level"].get("source").is_none(), "an empty reference clears it");
+    assert_eq!(g.call("global entry edit", j!({ "name": "desk.level", "value": 0.5 }))["value"], 0.5);
+
     // A panel made a control panel with no group of its own is born naming a fresh one.
     g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "viewer" }));
     g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "control" }));
     assert_eq!(group_of(&g), j!("control0"), "the first free `controlN` was minted for it");
+    // The `control` door edits a control panel's group THROUGH its lock and leaves it locked, ONE
+    // undo step each; the manager mints the element and the cell where none is given.
+    let born = g.call("control add", j!({ "group": "control0", "kind": "knob" }));
+    assert_eq!(born["name"], "control0.knob0", "{born}");
+    g.call("global group lock", j!({ "group": "control0", "config": true }));
+    let born = g.call("control add", j!({ "group": "control0", "kind": "slider" }));
+    assert_eq!((&born["name"], &born["control"]["x"], &born["control"]["y"]), (&j!("control0.slider0"), &j!(4.0), &j!(0.0)),
+               "placed in the first free cell beside the knob: {born}");
+    assert_eq!(g.doc()["global_groups"]["control0"]["lock"]["config"], true, "…and the group stayed locked");
+    g.call("control edit", j!({ "group": "control0", "element": "slider0", "name": "level", "max": 10.0 }));
+    assert_eq!(g.doc()["globals"]["control0.level"]["control"]["max"], 10.0);
+    g.call("control source", j!({ "group": "control0", "element": "level", "reference": "carrier.out" }));
+    let listed = g.call("control list", j!({}));
+    assert_eq!(listed["groups"]["control0"]["elements"][1]["source"]["reference"], "carrier.out", "{listed}");
+    assert_eq!(listed["panels"][0]["group"], "control0", "{listed}");
+    g.call("control remove", j!({ "group": "control0", "element": "level" }));
+    assert!(g.doc()["globals"]["control0.level"].is_null());
+    g.call("global group lock", j!({ "group": "control0", "config": false }));
     // A lock holds what it names: a group's `config` freezes every name and the membership, an
     // entry's `value` freezes its value — and each lock is ONE undoable command.
     g.call("global group lock", j!({ "group": "desk", "config": true }));
@@ -205,7 +239,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
-    assert_eq!(steps, 28, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert_eq!(steps, 41, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");

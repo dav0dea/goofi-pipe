@@ -154,6 +154,15 @@ pub fn typescript() -> String {
         })
         .collect::<String>();
     let tags = goofi_node::Tag::ALL.iter().map(|t| format!("'{}'", t.as_str())).collect::<Vec<_>>().join(", ");
+    let control_ids = goofi_core::globals::ControlKind::ALL.iter().map(|k| format!("\n\t| '{}'", k.as_str())).collect::<String>();
+    let controls = goofi_core::globals::ControlKind::ALL
+        .iter()
+        .map(|k| {
+            let (w, h) = k.born_box();
+            format!("\t{{ id: '{}', type: '{}', w: {w}, h: {h} }},\n", k.as_str(), k.born_value().type_name())
+        })
+        .collect::<String>();
+    let columns = goofi_core::globals::CONTROL_COLUMNS;
     let boundaries = BOUNDARY_TYPES
         .iter()
         .map(|(name, dir, dtype)| {
@@ -209,6 +218,23 @@ pub fn typescript() -> String {
          \n\
          /** The closed vocabulary a node's `tags` come from — the palette facets by it. */\n\
          export const TAGS = [{tags}] as const;\n\
+         \n\
+         export type ControlKindId ={control_ids};\n\
+         \n\
+         export interface ControlKindInfo {{\n\
+         \treadonly id: ControlKindId;\n\
+         \t/** The value type a widget of this kind draws, which is the global's type at birth. */\n\
+         \treadonly type: 'float' | 'int' | 'bool' | 'string';\n\
+         \t/** The box it is born in, in grid units. */\n\
+         \treadonly w: number;\n\
+         \treadonly h: number;\n\
+         }}\n\
+         \n\
+         /** The widget kinds a control panel offers, in palette order. */\n\
+         export const CONTROL_KINDS: readonly ControlKindInfo[] = [\n{controls}];\n\
+         \n\
+         /** How many columns a control panel's grid is, whatever its pixel width. */\n\
+         export const CONTROL_COLUMNS = {columns};\n\
          \n\
          /** The type a sub-patch facade wears in the document. It is not in the palette — grouping\n\
           * is what makes one. */\n\

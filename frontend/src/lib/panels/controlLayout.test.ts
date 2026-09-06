@@ -1,16 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-	cellAt,
-	freeCell,
-	freshName,
-	movedBy,
-	overlaps,
-	resizedBy,
-	sameCell,
-	snap,
-	turnedBy,
-	type Cell
-} from './controlLayout';
+import { cellAt, movedBy, overlaps, resizedBy, sameCell, snap, turnedBy, type Cell } from './controlLayout';
 
 /* The control panel's decisions, driven the way the component drives them. The component cannot
  * mount in vitest, so everything that DECIDES lives here and everything that draws lives there. */
@@ -38,27 +27,6 @@ describe('overlaps', () => {
 	});
 });
 
-describe('freeCell', () => {
-	it('puts a new widget in the first free square, in reading order', () => {
-		expect(freeCell([], 2, 2, 6)).toEqual({ x: 0, y: 0, w: 2, h: 2 });
-		expect(freeCell([{ x: 0, y: 0, w: 2, h: 2 }], 2, 2, 6)).toEqual({ x: 2, y: 0, w: 2, h: 2 });
-	});
-
-	it('wraps to the next row when the row is full, and never lands on a taken cell', () => {
-		const taken: Cell[] = [
-			{ x: 0, y: 0, w: 2, h: 2 },
-			{ x: 2, y: 0, w: 2, h: 2 }
-		];
-		const got = freeCell(taken, 2, 2, 4);
-		expect(got).toEqual({ x: 0, y: 2, w: 2, h: 2 });
-		expect(taken.some((t) => overlaps(t, got))).toBe(false);
-	});
-
-	it('narrows a widget too wide for the grid rather than placing it off the edge', () => {
-		expect(freeCell([], 9, 1, 4)).toEqual({ x: 0, y: 0, w: 4, h: 1 });
-	});
-});
-
 describe('a drop from the palette', () => {
 	it('lands the widget centred under the finger', () => {
 		// The centre of a 2×2 at (144, 96) is its top-left at (96, 48): cell (2, 1).
@@ -72,14 +40,6 @@ describe('a drop from the palette', () => {
 
 	it('reads rows and columns as two units, because a row may be taller than a column is wide', () => {
 		expect(cellAt(48, 120, 1, 1, { x: 48, y: 60 }, 8)).toEqual({ x: 1, y: 2, w: 1, h: 1 });
-	});
-});
-
-describe('a widget is born with a fresh name', () => {
-	it('counts from zero and skips what the group already holds', () => {
-		expect(freshName('knob', [])).toBe('knob0');
-		expect(freshName('knob', ['knob0', 'knob1', 'slider0'])).toBe('knob2');
-		expect(freshName('slider', ['slider0', 'slider2'])).toBe('slider1');
 	});
 });
 

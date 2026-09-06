@@ -27,6 +27,18 @@ Nothing draws a control element on the canvas, so a patch's modulation is invisi
 cables are. This is the same open item `roadmap/param-sources.md` already carries for a reference,
 and the two should be answered together rather than separately.
 
+## What a widget follows, and what is still open there (2026-09-05, later)
+
+A global now carries a `source` and the manager writes it from a producer's frames; `learn` in
+the widget's inspector binds the first number that moves. Open beside it:
+
+- A source naming a node that is not there is silent: the follower has nothing to read and says
+  nothing. A param's reference carries an `error` for the same case; the global's should too.
+- The source is chosen through the reference picker. The owner floated dragging a MIDI node off
+  the canvas onto the field; nothing prevents it, and the picker is the door until then.
+- A double-click renames a widget's label; on touch the inspector's name field is the door, and
+  a double-tap is unproved.
+
 ## Not going to happen
 
 `cl()` was proposed and dropped. A control element IS a global, so `globals.group.element` is its

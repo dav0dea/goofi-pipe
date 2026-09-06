@@ -1,6 +1,6 @@
 /** Flat, typed command facade over the store logic the UI uses; paired with `query` for reads. */
 import type { SourcePatch } from '$lib/api/types';
-import { graph } from '$lib/stores/graph.svelte';
+import { graph, type Cell, type ControlPatch } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
@@ -41,6 +41,15 @@ export const commands = {
 		graph().setGlobalControl(name, control),
 	renameGlobal: (from: string, to: string): Promise<void> => graph().renameGlobal(from, to),
 	renameGlobalGroup: (from: string, to: string): Promise<void> => graph().renameGlobalGroup(from, to),
+	setGlobalSource: (name: string, reference: string, index?: number): Promise<void> =>
+		graph().setGlobalSource(name, reference, index),
+	addControl: (group: string, kind: ControlView['kind'], cell?: Cell): Promise<string> =>
+		graph().addControl(group, kind, cell),
+	editControl: (group: string, element: string, patch: ControlPatch): Promise<void> =>
+		graph().editControl(group, element, patch),
+	removeControl: (group: string, element: string): Promise<void> => graph().removeControl(group, element),
+	sourceControl: (group: string, element: string, reference: string, index?: number): Promise<void> =>
+		graph().sourceControl(group, element, reference, index),
 	lockGlobal: (name: string, lock: Partial<LockView>): Promise<void> => graph().lockGlobal(name, lock),
 	lockGlobalGroup: (group: string, lock: Partial<LockView>): Promise<void> =>
 		graph().lockGlobalGroup(group, lock),

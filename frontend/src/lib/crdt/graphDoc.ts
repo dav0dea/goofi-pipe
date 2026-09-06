@@ -239,6 +239,12 @@ export interface LockView {
 	value: boolean;
 }
 
+/** What a global follows: one producer output, and the number it reads out of a wide frame. */
+export interface SourceView {
+	reference: string;
+	index?: number;
+}
+
 export interface GlobalView {
 	/** The full `group.element` — what an expression spells and every op names. */
 	name: string;
@@ -248,8 +254,16 @@ export interface GlobalView {
 	type: GlobalType;
 	/** Present when this global is a control-panel element. */
 	control?: ControlView;
+	/** Present when the manager writes this global from a producer; nobody else may set it. */
+	source?: SourceView;
 	/** The global's OWN lock; its group's reaches it too — see `effectiveLock`. */
 	lock: LockView;
+}
+
+function sourceOf(raw: unknown): SourceView | undefined {
+	const s = obj(raw);
+	if (typeof s.reference !== 'string') return undefined;
+	return typeof s.index === 'number' ? { reference: s.reference, index: s.index } : { reference: s.reference };
 }
 
 function lockOf(raw: unknown): LockView {
@@ -289,6 +303,7 @@ export function globalViews(doc: Doc): GlobalView[] {
 				value,
 				type,
 				control: (g.control as ControlView | undefined) ?? undefined,
+				source: sourceOf(g.source),
 				lock: lockOf(g.lock)
 			});
 		}

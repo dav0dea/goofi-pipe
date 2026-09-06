@@ -245,13 +245,16 @@ pub fn globals(g: &Graph) -> Value {
     let entries: Vec<Value> = g
         .globals()
         .entries()
-        .map(|(name, v, _, control)| {
+        .map(|(name, v, _, control, source)| {
             let mut e = goofi_graph::global_to_json(v);
             e["name"] = json!(name);
             // What holds it, its own lock and its group's together — the answer a writer needs.
             e["lock"] = serde_json::to_value(g.globals().lock_of(name)).expect("a plain record");
             if let Some(c) = control {
                 e["control"] = serde_json::to_value(c).expect("a plain record");
+            }
+            if let Some(s) = source {
+                e["source"] = serde_json::to_value(s).expect("a plain record");
             }
             e
         })

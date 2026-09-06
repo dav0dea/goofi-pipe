@@ -21,6 +21,7 @@
 		onPulse,
 		refreshing = false,
 		selfName,
+		modes = ['constant', 'expression', 'reference'],
 		class: klass = '',
 		...rest
 	}: HTMLAttributes<HTMLDivElement> & {
@@ -33,6 +34,8 @@
 		refreshing?: boolean;
 		/** The node's display name, handed to the expression editor as `me`. */
 		selfName?: string;
+		/** The sources this field offers; a global follows a reference and never an expression. */
+		modes?: ParamMode[];
 	} = $props();
 
 	const kind = $derived(controlKind(descriptor));
@@ -109,24 +112,28 @@
 		>
 			=
 		</Chip>
-		<Chip
-			tone={tone('expression')}
-			aria-pressed={descriptor.mode === 'expression'}
-			onclick={() => choose('expression')}
-			title="An expression over nd(), globals and me, at control rate"
-			data-testid="param-mode-expression"
-		>
-			fx
-		</Chip>
-		<Chip
-			tone={tone('reference')}
-			aria-pressed={descriptor.mode === 'reference' || picking}
-			onclick={() => choose('reference')}
-			title="A reference to one node's output, at that node's rate"
-			data-testid="param-mode-reference"
-		>
-			ref
-		</Chip>
+		{#if modes.includes('expression')}
+			<Chip
+				tone={tone('expression')}
+				aria-pressed={descriptor.mode === 'expression'}
+				onclick={() => choose('expression')}
+				title="An expression over nd(), globals and me, at control rate"
+				data-testid="param-mode-expression"
+			>
+				fx
+			</Chip>
+		{/if}
+		{#if modes.includes('reference')}
+			<Chip
+				tone={tone('reference')}
+				aria-pressed={descriptor.mode === 'reference' || picking}
+				onclick={() => choose('reference')}
+				title="A reference to one node's output, at that node's rate"
+				data-testid="param-mode-reference"
+			>
+				ref
+			</Chip>
+		{/if}
 	</div>
 {/snippet}
 

@@ -934,12 +934,12 @@ impl Layout {
         writes
     }
 
-    /// Every group a control panel names, in panel order.
-    pub fn control_groups(&self) -> Vec<String> {
+    /// Every control panel and the group it names, in panel order.
+    pub fn control_panels(&self) -> Vec<(String, String)> {
         self.nodes()
             .filter_map(|n| match n {
-                Node::Panel { panel_type, state, .. } if panel_type == "control" => {
-                    state.get("group").and_then(|v| v.as_str()).map(str::to_string)
+                Node::Panel { id, panel_type, state, .. } if panel_type == "control" => {
+                    state.get("group").and_then(|v| v.as_str()).map(|g| (id.clone(), g.to_string()))
                 }
                 _ => None,
             })

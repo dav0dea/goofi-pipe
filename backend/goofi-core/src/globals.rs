@@ -16,6 +16,16 @@ pub enum GlobalValue {
 }
 
 impl GlobalValue {
+    /// The type's name, as the doc and every op spell it.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            GlobalValue::Float(_) => "float",
+            GlobalValue::Int(_) => "int",
+            GlobalValue::Bool(_) => "bool",
+            GlobalValue::Str(_) => "string",
+        }
+    }
+
     /// Coerce to `template`'s variant, so an existing global's declared type stays stable on set.
     fn coerced_like(self, template: &GlobalValue) -> GlobalValue {
         use GlobalValue as G;
@@ -48,7 +58,11 @@ pub enum ControlKind {
 }
 
 impl ControlKind {
-    fn as_str(self) -> &'static str {
+    /// Every kind, in the order a palette offers them.
+    pub const ALL: [ControlKind; 6] =
+        [ControlKind::Knob, ControlKind::Slider, ControlKind::Number, ControlKind::Field, ControlKind::Toggle, ControlKind::Dropdown];
+
+    pub fn as_str(self) -> &'static str {
         match self {
             ControlKind::Knob => "knob",
             ControlKind::Slider => "slider",
@@ -57,6 +71,50 @@ impl ControlKind {
             ControlKind::Toggle => "toggle",
             ControlKind::Dropdown => "dropdown",
         }
+    }
+
+    /// The value a widget of this kind is born holding — which is also its type.
+    pub fn born_value(self) -> GlobalValue {
+        match self {
+            ControlKind::Knob | ControlKind::Slider | ControlKind::Number => GlobalValue::Float(0.0),
+            ControlKind::Toggle => GlobalValue::Bool(false),
+            ControlKind::Field | ControlKind::Dropdown => GlobalValue::Str(String::new()),
+        }
+    }
+
+    /// The box it is born in, in grid units.
+    pub fn born_box(self) -> (f64, f64) {
+        match self {
+            ControlKind::Knob => (4.0, 4.0),
+            ControlKind::Slider => (8.0, 2.0),
+            ControlKind::Number => (4.0, 2.0),
+            ControlKind::Field | ControlKind::Dropdown => (6.0, 2.0),
+            ControlKind::Toggle => (2.0, 2.0),
+        }
+    }
+}
+
+/// How many columns a control panel's grid is, whatever its pixel width.
+pub const CONTROL_COLUMNS: f64 = 16.0;
+
+/// Where a `w × h` box lands among `taken` boxes `(x, y, w, h)`: the first free cell in reading
+/// order, never off the right edge.
+pub fn free_cell(taken: &[(f64, f64, f64, f64)], w: f64, h: f64) -> (f64, f64) {
+    let w = w.clamp(1.0, CONTROL_COLUMNS);
+    let h = h.max(1.0);
+    let overlaps = |x: f64, y: f64| {
+        taken.iter().any(|(tx, ty, tw, th)| x < tx + tw && *tx < x + w && y < ty + th && *ty < y + h)
+    };
+    let mut y = 0.0;
+    loop {
+        let mut x = 0.0;
+        while x + w <= CONTROL_COLUMNS {
+            if !overlaps(x, y) {
+                return (x, y);
+            }
+            x += 1.0;
+        }
+        y += 1.0;
     }
 }
 
@@ -97,13 +155,7 @@ impl Control {
 
     /// Why this widget cannot draw `value`, in the words a refusal uses.
     pub fn mismatch(&self, value: &GlobalValue) -> String {
-        let ty = match value {
-            GlobalValue::Float(_) => "float",
-            GlobalValue::Int(_) => "int",
-            GlobalValue::Bool(_) => "bool",
-            GlobalValue::Str(_) => "string",
-        };
-        format!("a `{}` cannot draw a {ty}", self.kind.as_str())
+        format!("a `{}` cannot draw a {}", self.kind.as_str(), value.type_name())
     }
 }
 
@@ -125,6 +177,16 @@ impl Lock {
     pub fn or(self, other: Lock) -> Lock {
         Lock { config: self.config || other.config, value: self.value || other.value }
     }
+}
+
+/// What a global follows: one producer output, `node.slot`, and for a frame wider than one
+/// number the index it reads. A followed global is written by the manager on every frame and by
+/// nobody else — a MIDI knob bound to a widget is one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GlobalSource {
+    pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
 }
 
 /// A code-owned system global: its group is config-locked for life. A MACHINE one is
@@ -230,6 +292,7 @@ fn group_of(name: &str) -> &str {
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
     controls: IndexMap<String, Control>,
+    sources: IndexMap<String, GlobalSource>,
     locks: IndexMap<String, Lock>,
     group_locks: IndexMap<String, Lock>,
 }
@@ -245,6 +308,7 @@ impl GlobalStore {
         let mut s = GlobalStore {
             values: IndexMap::new(),
             controls: IndexMap::new(),
+            sources: IndexMap::new(),
             locks: IndexMap::new(),
             group_locks: IndexMap::new(),
         };
@@ -274,11 +338,43 @@ impl GlobalStore {
         self.values.contains_key(name)
     }
 
-    /// Every global in order, with its OWN lock and the control record that makes it an element.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, Lock, Option<&Control>)> {
-        self.values
-            .iter()
-            .map(|(k, v)| (k.as_str(), v, self.locks.get(k).copied().unwrap_or_default(), self.controls.get(k)))
+    /// Every global in order, with its OWN lock, the control record that makes it an element, and
+    /// the source it follows.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, Lock, Option<&Control>, Option<&GlobalSource>)> {
+        self.values.iter().map(|(k, v)| {
+            (k.as_str(), v, self.locks.get(k).copied().unwrap_or_default(), self.controls.get(k), self.sources.get(k))
+        })
+    }
+
+    pub fn source(&self, name: &str) -> Option<&GlobalSource> {
+        self.sources.get(name)
+    }
+
+    /// Set or clear what a global follows, answering what it followed. A source is config.
+    pub fn set_source(&mut self, name: &str, source: Option<GlobalSource>) -> Result<Option<GlobalSource>, String> {
+        if !self.values.contains_key(name) {
+            return Err(format!("no such global `{name}`"));
+        }
+        self.config_locked(name)?;
+        Ok(match source {
+            Some(s) => self.sources.insert(name.to_string(), s),
+            None => self.sources.shift_remove(name),
+        })
+    }
+
+    /// The follower's own write: what the source delivered, coerced to the type held. It answers
+    /// whether the value CHANGED, and a value-locked global takes nothing, silently.
+    pub fn follow(&mut self, name: &str, value: GlobalValue) -> bool {
+        if is_machine(name) || self.lock_of(name).value {
+            return false;
+        }
+        let Some(existing) = self.values.get(name) else { return false };
+        let coerced = value.coerced_like(existing);
+        if *existing == coerced {
+            return false;
+        }
+        self.values.insert(name.to_string(), coerced);
+        true
     }
 
     /// Every group that holds a lock, in the order the locks were set.
@@ -289,6 +385,11 @@ impl GlobalStore {
     /// Whether a `.gfi` must leave `name` out: a machine global's value is this machine's.
     pub fn is_machine(&self, name: &str) -> bool {
         is_machine(name)
+    }
+
+    /// A global's OWN lock, apart from its group's.
+    pub fn own_lock(&self, name: &str) -> Lock {
+        self.locks.get(name).copied().unwrap_or_default()
     }
 
     pub fn group_lock(&self, group: &str) -> Lock {
@@ -370,6 +471,9 @@ impl GlobalStore {
         if self.lock_of(name).value {
             return Err(format!("global `{name}` is value-locked"));
         }
+        if let Some(s) = self.sources.get(name) {
+            return Err(format!("global `{name}` follows `{}`; clear its source to set it", s.reference));
+        }
         match self.values.get(name) {
             Some(existing) => {
                 let coerced = value.coerced_like(existing);
@@ -410,6 +514,7 @@ impl GlobalStore {
         self.config_locked(name)?;
         self.values.shift_remove(name);
         self.controls.shift_remove(name);
+        self.sources.shift_remove(name);
         self.locks.shift_remove(name);
         Ok(())
     }
@@ -437,6 +542,9 @@ impl GlobalStore {
         }
         if let Some(l) = self.locks.shift_remove(from) {
             self.locks.insert(to.to_string(), l);
+        }
+        if let Some(s) = self.sources.shift_remove(from) {
+            self.sources.insert(to.to_string(), s);
         }
         Ok(())
     }

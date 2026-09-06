@@ -780,10 +780,10 @@ pub(crate) fn layout_panel_edit(
     // that nothing holds — so no panel ever waits on a name.
     let panel_state = match (ty.as_deref(), panel_state) {
         (Some("control"), state) if state.as_ref().and_then(|s| s.get("group")).is_none() => {
-            let taken = g.arrangement().control_groups();
+            let taken = g.arrangement().control_panels();
             let fresh = (0..)
                 .map(|n| format!("control{n}"))
-                .find(|c| !g.globals().has_group(c) && !taken.contains(c))
+                .find(|c| !g.globals().has_group(c) && !taken.iter().any(|(_, held)| held == c))
                 .expect("the integers do not run out");
             let mut s = state.and_then(|s| s.as_object().cloned()).unwrap_or_default();
             s.insert("group".into(), json!(fresh));
@@ -939,6 +939,224 @@ fn parse_control(payload: &Value) -> Result<Option<Option<goofi_core::globals::C
     }
 }
 
+/// `cmds`, lifted past the group's config lock for their one command: a control panel owns its
+/// group, so its door edits a locked group and leaves it locked — the undo of the whole is one step.
+fn through_the_lock(g: &goofi_graph::Graph, group: &str, cmds: Vec<goofi_graph::Command>) -> goofi_graph::Command {
+    use goofi_graph::Command;
+    let held = g.globals().group_lock(group);
+    if !held.config {
+        return Command::Compound(cmds);
+    }
+    let mut all = vec![Command::LockGlobalGroup {
+        group: group.to_string(),
+        lock: goofi_core::globals::Lock { config: false, value: held.value },
+    }];
+    all.extend(cmds);
+    all.push(Command::LockGlobalGroup { group: group.to_string(), lock: held });
+    Command::Compound(all)
+}
+
+fn parse_kind(v: &Value) -> Result<goofi_core::globals::ControlKind, String> {
+    serde_json::from_value(v.clone()).map_err(|_| {
+        let kinds = goofi_core::globals::ControlKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>().join("/");
+        format!("`kind` is one of {kinds}, not `{v}`")
+    })
+}
+
+/// A control panel's element, addressed `group` + `element`, as the `control` ops read it.
+fn element_of(g: &goofi_graph::Graph, op: &str, payload: &Value) -> Result<(String, String, String), String> {
+    let group = parse_str(payload, "group")?.to_string();
+    let element = parse_str(payload, "element")?.to_string();
+    let name = format!("{group}.{element}");
+    if g.globals().control(&name).is_none() {
+        return Err(format!("{op}: no element `{element}` in control panel `{group}`"));
+    }
+    Ok((group, element, name))
+}
+
+fn element_json(g: &goofi_graph::Graph, name: &str, value: &goofi_core::globals::GlobalValue) -> Value {
+    let mut e = goofi_graph::global_to_json(value);
+    e["name"] = json!(name);
+    e["element"] = json!(name.split_once('.').map(|(_, el)| el).unwrap_or(name));
+    e["lock"] = serde_json::to_value(g.globals().lock_of(name)).expect("a plain record");
+    e["control"] = serde_json::to_value(g.globals().control(name)).expect("a plain record");
+    if let Some(s) = g.globals().source(name) {
+        e["source"] = serde_json::to_value(s).expect("a plain record");
+    }
+    e
+}
+
+pub(crate) fn control_list(
+    state: &AppState,
+    _payload: &Value,
+    _actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let g = state.graph.lock().unwrap();
+    let panels: Vec<Value> =
+        g.arrangement().control_panels().into_iter().map(|(panel, group)| json!({ "panel": panel, "group": group })).collect();
+    let mut groups = serde_json::Map::new();
+    let named: Vec<String> = g.arrangement().control_panels().into_iter().map(|(_, group)| group).collect();
+    let mut order: Vec<String> = named.clone();
+    for (name, _, _, control, _) in g.globals().entries() {
+        if let (Some(_), Some((group, _))) = (control, name.split_once('.')) {
+            if !order.iter().any(|o| o == group) {
+                order.push(group.to_string());
+            }
+        }
+    }
+    for group in order {
+        let elements: Vec<Value> = g
+            .globals()
+            .entries()
+            .filter(|(name, _, _, control, _)| control.is_some() && name.split_once('.').is_some_and(|(gr, _)| gr == group))
+            .map(|(name, value, ..)| element_json(&g, name, value))
+            .collect();
+        groups.insert(group.clone(), json!({ "lock": g.globals().group_lock(&group), "elements": elements }));
+    }
+    Ok(json!({ "panels": panels, "groups": groups }))
+}
+
+/// Bear a widget: the manager mints its name and its cell where none is given.
+pub(crate) fn control_add(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    use goofi_core::globals::{free_cell, is_valid_identifier};
+    let mut g = state.graph.lock().unwrap();
+    let group = parse_str(payload, "group")?.to_string();
+    if !is_valid_identifier(&group) {
+        return Err(format!("control add: invalid group `{group}`: {}", goofi_core::globals::GLOBAL_NAME_RULE));
+    }
+    let kind = parse_kind(payload.get("kind").ok_or("control add: missing kind")?).map_err(|e| format!("control add: {e}"))?;
+    let element = match payload.get("element").and_then(|v| v.as_str()) {
+        Some(e) => e.to_string(),
+        None => (0..)
+            .map(|n| format!("{}{n}", kind.as_str()))
+            .find(|e| g.globals().get(&format!("{group}.{e}")).is_none())
+            .expect("the integers do not run out"),
+    };
+    let name = format!("{group}.{element}");
+    if g.globals().get(&name).is_some() {
+        return Err(format!("control add: `{name}` already exists — `control edit` changes it"));
+    }
+    let born = kind.born_value();
+    let value = match payload.get("value").filter(|v| !v.is_null()) {
+        Some(v) => goofi_graph::global_from_json(&json!({ "value": v, "type": born.type_name() }))
+            .ok_or_else(|| format!("control add: `{v}` is not a {}", born.type_name()))?,
+        None => born,
+    };
+    let (bw, bh) = kind.born_box();
+    let num = |key: &str, or: f64| payload.get(key).and_then(|v| v.as_f64()).unwrap_or(or);
+    let (w, h) = (num("w", bw), num("h", bh));
+    let (x, y) = match (payload.get("x").and_then(|v| v.as_f64()), payload.get("y").and_then(|v| v.as_f64())) {
+        (Some(x), Some(y)) => (x, y),
+        _ => {
+            let taken: Vec<(f64, f64, f64, f64)> = g
+                .globals()
+                .entries()
+                .filter(|(n, ..)| n.split_once('.').is_some_and(|(gr, _)| gr == group))
+                .filter_map(|(_, _, _, c, _)| c.map(|c| (c.x, c.y, c.w, c.h)))
+                .collect();
+            free_cell(&taken, w, h)
+        }
+    };
+    let mut record = json!({ "kind": kind, "x": x, "y": y, "w": w, "h": h });
+    for key in ["min", "max", "step", "options"] {
+        if let Some(v) = payload.get(key).filter(|v| !v.is_null()) {
+            record[key] = v.clone();
+        }
+    }
+    if matches!(value, goofi_core::globals::GlobalValue::Float(_)) {
+        for (key, or) in [("min", json!(0.0)), ("max", json!(1.0)), ("step", json!(0.01))] {
+            record.as_object_mut().unwrap().entry(key).or_insert(or);
+        }
+    }
+    let control: goofi_core::globals::Control = serde_json::from_value(record.clone()).map_err(|e| format!("control add: {e}"))?;
+    let cmd = through_the_lock(
+        &g,
+        &group,
+        vec![goofi_graph::Command::EditGlobal { name: name.clone(), value: Some(value), at: None, control: Some(Some(control)) }],
+    );
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
+    Ok(json!({ "name": name, "control": record }))
+}
+
+pub(crate) fn control_edit(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let (group, _, name) = element_of(&g, "control edit", payload)?;
+    let mut cmds = Vec::new();
+    let mut target = name.clone();
+    if let Some(to) = payload.get("name").and_then(|v| v.as_str()) {
+        target = format!("{group}.{to}");
+        if target != name {
+            cmds.push(goofi_graph::Command::RenameGlobal { from: name.clone(), to: target.clone() });
+        }
+    }
+    let mut record = serde_json::to_value(g.globals().control(&name)).expect("a plain record");
+    let mut touched = false;
+    for key in ["kind", "min", "max", "step", "options", "x", "y", "w", "h"] {
+        if let Some(v) = payload.get(key) {
+            if key == "kind" {
+                parse_kind(v).map_err(|e| format!("control edit: {e}"))?;
+            }
+            record[key] = v.clone();
+            touched = true;
+        }
+    }
+    if touched {
+        let control: goofi_core::globals::Control = serde_json::from_value(record).map_err(|e| format!("control edit: {e}"))?;
+        // The value it holds rides along under the new name: `None` would be a remove.
+        let value = g.globals().get(&name).cloned();
+        cmds.push(goofi_graph::Command::EditGlobal { name: target.clone(), value, at: None, control: Some(Some(control)) });
+    }
+    if cmds.is_empty() {
+        return Err("control edit: nothing to change — give a name, a kind, a range, options or a cell".into());
+    }
+    let cmd = through_the_lock(&g, &group, cmds);
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
+    Ok(json!({ "name": target }))
+}
+
+pub(crate) fn control_remove(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let (group, _, name) = element_of(&g, "control remove", payload)?;
+    let cmd = through_the_lock(&g, &group, vec![goofi_graph::Command::EditGlobal { name, value: None, at: None, control: None }]);
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
+    Ok(json!({ "removed": true }))
+}
+
+pub(crate) fn control_source(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let (group, _, name) = element_of(&g, "control source", payload)?;
+    let reference = parse_str(payload, "reference")?.trim().to_string();
+    let index = match payload.get("index") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().map(|i| i as usize).ok_or_else(|| format!("control source: `index` is a whole number, not `{v}`"))?),
+    };
+    let source = (!reference.is_empty()).then_some(goofi_core::globals::GlobalSource { reference, index });
+    let cmd = through_the_lock(&g, &group, vec![goofi_graph::Command::SourceGlobal { name, source: source.clone() }]);
+    state.history.lock().unwrap().apply(&mut g, actor, cmd)?;
+    Ok(json!({ "source": source }))
+}
+
 /// Create a global. Every expression reading one depends on its TYPE, so the type is declared
 /// at birth and immutable after — re-typing is a remove and an add.
 pub(crate) fn global_add(
@@ -1055,10 +1273,33 @@ pub(crate) fn global_lock(
     if g.globals().get(&name).is_none() {
         return Err(format!("global entry lock: no global `{name}`"));
     }
-    let held = g.globals().entries().find(|(n, ..)| *n == name).map(|(_, _, l, _)| l).unwrap_or_default();
+    let held = g.globals().entries().find(|(n, ..)| *n == name).map(|(_, _, l, ..)| l).unwrap_or_default();
     let lock = parse_lock(payload, held).map_err(|e| format!("global entry lock: {e}"))?;
     state.history.lock().unwrap().apply(&mut g, actor, goofi_graph::Command::LockGlobal { name, lock })?;
     Ok(json!({ "lock": lock }))
+}
+
+pub(crate) fn global_source(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let name = parse_str(payload, "name")?.to_string();
+    if g.globals().get(&name).is_none() {
+        return Err(format!("global entry source: no global `{name}`"));
+    }
+    let reference = parse_str(payload, "reference")?.trim().to_string();
+    let index = match payload.get("index") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_u64().map(|i| i as usize).ok_or_else(|| format!("global entry source: `index` is a whole number, not `{v}`"))?,
+        ),
+    };
+    let source = (!reference.is_empty()).then_some(goofi_core::globals::GlobalSource { reference, index });
+    state.history.lock().unwrap().apply(&mut g, actor, goofi_graph::Command::SourceGlobal { name, source: source.clone() })?;
+    Ok(json!({ "source": source }))
 }
 
 pub(crate) fn global_group_lock(

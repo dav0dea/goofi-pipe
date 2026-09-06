@@ -131,6 +131,11 @@ pub enum Command {
         group: String,
         lock: goofi_core::globals::Lock,
     },
+    /// Set or clear what a global follows. Inverts as the source it replaced.
+    SourceGlobal {
+        name: String,
+        source: Option<goofi_core::globals::GlobalSource>,
+    },
     /// Move a tab to a position in the strip. Its CONTENT is a position, so it cannot ride
     /// [`Command::LayoutContents`]; it inverts as another reorder, aimed at where the tab is now.
     LayoutReorderTab {
@@ -431,11 +436,28 @@ impl Command {
 
             Command::EditGlobal { name, value, at, control } => {
                 let old = g.globals().get(&name).cloned();
-                let old_control = control.as_ref().map(|_| g.globals().control(&name).cloned());
-                // A delete's inverse re-adds at the removed index; add/edit inverses carry no slot.
-                let inv_at = if value.is_none() { g.globals().index_of(&name) } else { None };
+                let removing = value.is_none();
+                let old_control = (removing || control.is_some()).then(|| g.globals().control(&name).cloned());
+                // A delete's inverse re-adds at the removed index, with everything that rode on the
+                // entry — its widget, what it followed, its own lock; add/edit inverses carry no slot.
+                let inv_at = if removing { g.globals().index_of(&name) } else { None };
+                let (old_source, old_lock) = (g.globals().source(&name).cloned(), g.globals().own_lock(&name));
                 g.apply_global_change(&name, value, at, control)?;
-                Ok((Outcome::Ok, Command::EditGlobal { name, value: old, at: inv_at, control: old_control }))
+                let re_add = Command::EditGlobal { name: name.clone(), value: old, at: inv_at, control: old_control };
+                if !removing {
+                    return Ok((Outcome::Ok, re_add));
+                }
+                let mut inverse = vec![re_add];
+                if old_source.is_some() {
+                    inverse.push(Command::SourceGlobal { name: name.clone(), source: old_source });
+                }
+                if !old_lock.is_default() {
+                    inverse.push(Command::LockGlobal { name, lock: old_lock });
+                }
+                Ok((Outcome::Ok, match inverse.len() {
+                    1 => inverse.pop().expect("one"),
+                    _ => Command::Compound(inverse),
+                }))
             }
 
             Command::RenameGlobal { from, to } => {
@@ -456,6 +478,11 @@ impl Command {
             Command::LockGlobalGroup { group, lock } => {
                 let old = g.set_global_group_lock(&group, lock)?;
                 Ok((Outcome::Ok, Command::LockGlobalGroup { group, lock: old }))
+            }
+
+            Command::SourceGlobal { name, source } => {
+                let old = g.set_global_source(&name, source)?;
+                Ok((Outcome::Ok, Command::SourceGlobal { name, source: old }))
             }
 
             Command::LayoutReorderTab { tab, to_index } => {

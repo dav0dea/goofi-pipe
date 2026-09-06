@@ -3,31 +3,20 @@
  * a widget lives with the widget, in `$lib/ui/knob`. */
 
 import type { GlobalType } from '$lib/crdt/graphDoc';
+import { CONTROL_COLUMNS, CONTROL_KINDS, type ControlKindId } from '$lib/api/vocab';
 
 export { turnedBy } from '$lib/ui/knob';
 
-export type Kind = 'knob' | 'slider' | 'number' | 'field' | 'toggle' | 'dropdown';
-export const KINDS: Kind[] = ['knob', 'slider', 'number', 'field', 'toggle', 'dropdown'];
+export type Kind = ControlKindId;
+export const KINDS: Kind[] = CONTROL_KINDS.map((k) => k.id);
 
 /** The value type each widget draws, so a widget asks for one thing, not two. */
-export const TYPE_OF: Record<Kind, GlobalType> = {
-	knob: 'float',
-	slider: 'float',
-	number: 'float',
-	field: 'string',
-	toggle: 'bool',
-	dropdown: 'string'
-};
+export const TYPE_OF: Record<Kind, GlobalType> = Object.fromEntries(CONTROL_KINDS.map((k) => [k.id, k.type])) as Record<Kind, GlobalType>;
 
 /** The box a widget is born in, in grid units. */
-export const BORN: Record<Kind, { w: number; h: number }> = {
-	knob: { w: 4, h: 4 },
-	slider: { w: 8, h: 2 },
-	number: { w: 4, h: 2 },
-	field: { w: 6, h: 2 },
-	toggle: { w: 2, h: 2 },
-	dropdown: { w: 6, h: 2 }
-};
+export const BORN: Record<Kind, { w: number; h: number }> = Object.fromEntries(
+	CONTROL_KINDS.map((k) => [k.id, { w: k.w, h: k.h }])
+) as Record<Kind, { w: number; h: number }>;
 
 export interface Cell {
 	x: number;
@@ -44,7 +33,7 @@ export interface Units {
 }
 
 /** How many columns the board is, whatever its pixel width. */
-export const COLUMNS = 16;
+export const COLUMNS = CONTROL_COLUMNS;
 
 /** The smallest a widget may be, in grid units. */
 export const MIN_W = 1;
@@ -74,29 +63,10 @@ export function overlaps(a: Cell, b: Cell): boolean {
 	return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-/** Where a new widget lands: the first free cell in reading order, on a grid `columns` wide. */
-export function freeCell(taken: Cell[], w: number, h: number, columns: number): Cell {
-	const width = Math.max(MIN_W, Math.min(w, columns));
-	for (let y = 0; ; y++) {
-		for (let x = 0; x + width <= columns; x++) {
-			const want = { x, y, w: width, h: Math.max(MIN_H, h) };
-			if (!taken.some((t) => overlaps(t, want))) return want;
-		}
-	}
-}
-
 /** The cell a `w × h` widget lands on when dropped with its centre `px, py` pixels into the
  * board. It may cover another — a drop is free — but never hangs off the right edge. */
 export function cellAt(px: number, py: number, w: number, h: number, units: Units, columns: number): Cell {
 	return inside(snap({ x: px / units.x - w / 2, y: py / units.y - h / 2, w, h }), columns);
-}
-
-/** A fresh element name for `kind` among `taken`: the lowest `kind0`, `kind1`, … not yet used. */
-export function freshName(kind: Kind, taken: string[]): string {
-	for (let n = 0; ; n++) {
-		const name = `${kind}${n}`;
-		if (!taken.includes(name)) return name;
-	}
 }
 
 /** The cell a drag from `origin` by `dx, dy` pixels lands on. */

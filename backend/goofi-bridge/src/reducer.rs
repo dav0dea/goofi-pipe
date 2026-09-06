@@ -18,6 +18,14 @@ use tokio::sync::broadcast;
 pub type SlotKey = (Uid, String);
 /// A unique id per `/data` connection, so its spec contribution can be tracked + removed.
 pub type ConnId = u64;
+/// One global following this slot, and the number it reads out of each frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tap {
+    pub global: String,
+    pub index: Option<usize>,
+}
+/// What a tap delivers: the global, and the value its frame held.
+pub type Followed = (String, goofi_core::globals::GlobalValue);
 
 /// Flatten every connection's `ViewSpec`s into the single list the planner merges; a slot nobody
 /// has declared for folds to the undeclared preview rather than to the full frame.
@@ -28,6 +36,8 @@ fn union_specs(by_conn: &HashMap<ConnId, Vec<ViewSpec>>) -> Vec<ViewSpec> {
 
 struct SlotReducer {
     specs: Arc<Mutex<HashMap<ConnId, Vec<ViewSpec>>>>,
+    /// The globals that follow this slot, fed the RAW frame — never a reduction.
+    taps: Arc<Mutex<Vec<Tap>>>,
     /// `Bytes` so the socket task forwards the SHARED buffer — a per-subscriber copy undoes dedup.
     tx: broadcast::Sender<Bytes>,
     stop: Arc<AtomicBool>,
@@ -53,14 +63,32 @@ pub struct SlotReducers {
     inner: Arc<Mutex<HashMap<SlotKey, SlotReducer>>>,
     graph: Arc<Mutex<Graph>>,
     next_conn: Arc<AtomicU64>,
+    /// Where every tap's pick goes: the follower, which writes the global and broadcasts.
+    follow: std::sync::mpsc::Sender<Followed>,
 }
 
 impl SlotReducers {
-    pub fn new(graph: Arc<Mutex<Graph>>) -> SlotReducers {
+    pub fn new(graph: Arc<Mutex<Graph>>, follow: std::sync::mpsc::Sender<Followed>) -> SlotReducers {
         SlotReducers {
             inner: Arc::new(Mutex::new(HashMap::new())),
             graph,
             next_conn: Arc::new(AtomicU64::new(1)),
+            follow,
+        }
+    }
+
+    /// Declare every followed slot at once, from settled state: a slot in `taps` feeds its
+    /// globals from here on, and every other slot feeds none.
+    pub fn set_taps(&self, taps: HashMap<SlotKey, Vec<Tap>>) {
+        let mut map = self.inner.lock().unwrap();
+        for (key, reducer) in map.iter() {
+            if !taps.contains_key(key) {
+                reducer.taps.lock().unwrap().clear();
+            }
+        }
+        for (key, list) in taps {
+            let reducer = self.ensure(&mut map, &key);
+            *reducer.taps.lock().unwrap() = list;
         }
     }
 
@@ -79,13 +107,14 @@ impl SlotReducers {
         map.entry(key.clone()).or_insert_with(|| {
             let reducer = SlotReducer {
                 specs: Arc::new(Mutex::new(HashMap::new())),
+                taps: Arc::new(Mutex::new(Vec::new())),
                 tx: broadcast::channel(16).0,
                 stop: Arc::new(AtomicBool::new(false)),
                 reductions: Arc::new(AtomicU64::new(0)),
                 gen: Arc::new(AtomicU64::new(0)),
                 latest: Arc::new(Mutex::new(None)),
             };
-            spawn_reducer(key.clone(), &reducer, self.graph.clone(), slots);
+            spawn_reducer(key.clone(), &reducer, self.graph.clone(), slots, self.follow.clone());
             reducer
         })
     }
@@ -189,8 +218,9 @@ fn spawn_reducer(
     reducer: &SlotReducer,
     graph: Arc<Mutex<Graph>>,
     slots: Weak<Mutex<HashMap<SlotKey, SlotReducer>>>,
+    follow: std::sync::mpsc::Sender<Followed>,
 ) {
-    let (specs, tx) = (reducer.specs.clone(), reducer.tx.clone());
+    let (specs, tx, taps) = (reducer.specs.clone(), reducer.tx.clone(), reducer.taps.clone());
     let (reductions, gen) = (reducer.reductions.clone(), reducer.gen.clone());
     let (latest, stop) = (reducer.latest.clone(), reducer.stop.clone());
     let (uid, slot) = key.clone();
@@ -235,6 +265,16 @@ fn spawn_reducer(
                     }
                 }
             }
+            if fresh {
+                let taps = taps.lock().unwrap().clone();
+                if let (false, Some(d)) = (taps.is_empty(), latest.lock().unwrap().clone()) {
+                    for tap in taps {
+                        if let Some(v) = pick(&d, tap.index) {
+                            let _ = follow.send((tap.global, v));
+                        }
+                    }
+                }
+            }
             // Nobody is watching: the receives above still keep the cache warm for whoever returns.
             if specs.lock().unwrap().is_empty() {
                 continue;
@@ -252,4 +292,24 @@ fn spawn_reducer(
             served = Some(g_now);
         }
     });
+}
+
+/// The one number a tap reads out of a frame: the indexed element of an array, the only element
+/// of a one-element array, or a string whole. A wider array with no index answers nothing.
+fn pick(d: &goofi_core::Data, index: Option<usize>) -> Option<goofi_core::globals::GlobalValue> {
+    use goofi_core::globals::GlobalValue;
+    match d.value() {
+        goofi_core::Value::Str(s) => Some(GlobalValue::Str(s.to_string())),
+        goofi_core::Value::Array(a) => {
+            let bytes = a.as_bytes();
+            let i = match index {
+                Some(i) => i,
+                None if bytes.len() == 4 => 0,
+                None => return None,
+            };
+            let chunk: [u8; 4] = bytes.get(i * 4..i * 4 + 4)?.try_into().ok()?;
+            Some(GlobalValue::Float(f32::from_le_bytes(chunk) as f64))
+        }
+        _ => None,
+    }
 }

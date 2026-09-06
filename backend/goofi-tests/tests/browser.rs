@@ -73,12 +73,13 @@ async fn a_tab_mirrors_the_graph_off_the_document_events_and_follows_a_peer_edit
     assert_eq!(born.map(|n| n["panel_type"].clone()), Some(j!("empty")),
                "the peer's split converged, and a split births an EMPTY panel");
 
-    assert_eq!(c.doc().read_at(&["globals", "system.default_ufreq", "system"]), Some(j!(true)));
+    assert_eq!(c.doc().read_at(&["global_groups", "system", "lock", "config"]), Some(j!(true)),
+               "the system group's lock rides the replica");
     peer.call("global entry add", j!({ "name": "patch.subject", "value": "P07", "type": "string" })).await;
     c.until_doc(|d| d.read_at(&["globals", "patch.subject", "value"]).is_some()).await;
     assert_eq!(c.doc().read_at(&["globals", "patch.subject", "value"]), Some(j!("P07")));
-    assert_eq!(c.doc().read_at(&["globals", "patch.subject", "system"]), Some(j!(false)),
-               "a user global is distinguishable from a system one in the replica");
+    assert_eq!(c.doc().read_at(&["globals", "patch.subject", "lock"]), None,
+               "a user global carries no lock until one is set");
 
     // A merge patch spells a delete as an explicit `null`, and the gate compares the whole projection.
     peer.call("node remove", j!({ "node": uid.clone() })).await;

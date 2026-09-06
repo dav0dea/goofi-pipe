@@ -163,8 +163,9 @@ impl AppState {
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
         let graph = Arc::new(Mutex::new(graph_val));
-        let reducers = reducer::SlotReducers::new(graph.clone());
-        AppState {
+        let (follow_tx, follow_rx) = std::sync::mpsc::channel();
+        let reducers = reducer::SlotReducers::new(graph.clone(), follow_tx);
+        let state = AppState {
             graph,
             events,
             instance_id: Arc::from(format!("{iid:x}").as_str()),
@@ -182,7 +183,9 @@ impl AppState {
             save_path: Arc::new(Mutex::new(None)),
             bound: Arc::new(Mutex::new(([127, 0, 0, 1], 8000).into())),
             harnesses: Arc::new(term::Harnesses::default()),
-        }
+        };
+        spawn_follower(state.clone(), follow_rx);
+        state
     }
 
     /// Record the address this server actually bound — what `local_url` derives from.
@@ -1090,12 +1093,43 @@ fn doc_state(state: &AppState) -> String {
     event("doc_state", json!({ "v": doc.version(), "doc": doc.to_json() }))
 }
 
+/// The follower: every tap's pick lands here, a batch at a time, and what changed a global is
+/// written under the graph lock and broadcast as any edit is. It is the manager writing, not a
+/// caller, so it is no command and leaves no undo entry.
+fn spawn_follower(state: AppState, rx: std::sync::mpsc::Receiver<reducer::Followed>) {
+    std::thread::spawn(move || {
+        while let Ok(first) = rx.recv() {
+            let mut batch = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                batch.push(more);
+            }
+            let mut g = state.graph.lock().unwrap();
+            let changed = batch.into_iter().fold(false, |acc, (name, value)| g.follow_global(&name, value) || acc);
+            if changed {
+                g.settle();
+                let mut doc = state.doc.lock().unwrap();
+                remirror_and_broadcast_locked(&state, &g, &mut doc);
+            }
+        }
+    });
+}
+
+/// Hand the reducers every followed slot, from settled state, after each mutation.
+fn sync_followers(state: &AppState, g: &Graph) {
+    let mut taps: HashMap<reducer::SlotKey, Vec<reducer::Tap>> = HashMap::new();
+    for (global, uid, slot, index) in g.global_sources() {
+        taps.entry((uid, slot)).or_default().push(reducer::Tap { global, index });
+    }
+    state.reducers.set_taps(taps);
+}
+
 /// Re-project the authoritative graph into the document and broadcast the delta, after an RPC
 /// mutates the graph. The projection is built WHOLE, so a stale leaf converges too.
 fn resync_and_broadcast(state: &AppState) {
     let mut g = state.graph.lock().unwrap();
     // The settle point: one delivery per batch, before the projection, from settled state.
     g.settle();
+    sync_followers(state, &g);
     let mut doc = state.doc.lock().unwrap();
     remirror_and_broadcast_locked(state, &g, &mut doc);
 }
