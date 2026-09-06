@@ -569,8 +569,8 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let refused = t.refuse("link add", j!({ "from": ep(hex(gfx), "frame"), "to": ep(hex(gfx2), "tex") }));
     assert!(refused.contains("ARRAY") && refused.contains("TEXTURE"), "{refused}");
 
-    // Step: a texture port is a node like any other — born in a sub-patch, wired on both faces,
-    // and the archive brings the whole arrangement back.
+    // Step: a texture port is a node like any other — born in a sub-patch and wired on both faces.
+    // The archive is the audio port's step above: one mechanism, and a port type is a string in it.
     let scope = t.call("nodes group", j!({ "nodes": [hex(gfx2)], "pos": [0.0, 0.0] }))["inst_id"]
         .as_str().unwrap().to_string();
     let port_in = t.call("node add", j!({ "type": "InTexture", "inst_id": scope, "pos": [0.0, 0.0] }))["uid"]
@@ -580,20 +580,9 @@ fn a_scheduled_engine_beside_the_signal_one() {
     t.call("link add", j!({ "from": ep(&port_in, "value"), "to": ep(hex(gfx2), "tex") }));
     t.call("link add", j!({ "from": ep(hex(gfx2), "tex"), "to": ep(&port_out, "value") }));
     t.call("link add", j!({ "from": ep(hex(gfx), "tex"), "to": ep(&port_in, "value") }));
-    let wires = t.doc()["links"].clone();
-    let archive = tempfile::tempdir().unwrap();
-    let path = archive.path().join("texture-ports.gfi");
-    t.call("session save", j!({ "path": path.to_string_lossy() }));
-    let again = Goofi::new();
-    register_skeletons(&again);
-    again.call("session load", j!({ "path": path.to_string_lossy() }));
-    let doc = again.doc();
-    for (uid, ty) in [(&port_in, "InTexture"), (&port_out, "OutTexture")] {
-        assert_eq!(doc["nodes"][uid]["type"], ty, "the port is back at its uid: {doc}");
-    }
-    assert_eq!(doc["nodes"][&port_in]["scope"], scope, "...in the sub-patch it is a port of");
-    assert_eq!(doc["links"], wires, "every texture cable is back, the ports' inner wires included");
-    drop(again);
+    let doc = t.doc();
+    assert_eq!(doc["nodes"][&port_in]["scope"], scope, "the port is in the sub-patch: {doc}");
+    assert_eq!(doc["nodes"][&port_out]["type"], "OutTexture", "{doc}");
     t.call("node remove", j!({ "node": scope }));
     t.call("node remove", j!({ "node": hex(sink) }));
 

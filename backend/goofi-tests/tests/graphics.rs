@@ -37,7 +37,8 @@ fn shaders_render_on_the_gpu() {
     assert!(names.contains(&"graphics:Constant"), "{NO_GPU}\n{names:?}");
     let row = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "graphics:Constant").unwrap();
     assert_eq!(row["output_slots"]["out"], "TEXTURE", "{row}");
-    assert_eq!(g.call("library get", j!({ "type": "graphics:Constant" }))["tier"], "shader");
+    let got = g.call("library get", j!({ "type": "graphics:Constant" }));
+    assert_eq!((&got["tier"], &got["language"]), (&j!("shader"), &j!("wgsl")), "{got}");
     let status = g.call("session status", j!({}))["graphics"].clone();
     assert_eq!(status["clock"], "external", "{status}");
     assert!(status["adapter"].as_str().is_some_and(|a| !a.is_empty()), "{status}");
@@ -118,6 +119,21 @@ fn shaders_render_on_the_gpu() {
     g.set_param(knob, "control", "value", 2.0);
     drawn(&g, level, "double gain by reference", |d| close(px(d, 0, 0), [0.5, 1.0, 2.0, 1.0]));
 
+    // Step: the `output` size is settled state, so a reference on it is refused in words rather
+    // than accepted and quietly ignored.
+    g.call("node param edit", j!({ "node": hex(level), "param": "output/width",
+                                   "reference": format!("{knob_name}.out"), "mode": "reference" }));
+    let why = g.until("the engine says the size takes no reference", |g| {
+        render(g, 1);
+        g.error(level)
+    });
+    assert!(why.contains("settled state"), "{why}");
+    g.call("node param edit", j!({ "node": hex(level), "param": "output/width", "mode": "constant" }));
+    g.until("and it clears when the reference goes", |g| {
+        render(g, 1);
+        g.error(level).is_none().then_some(())
+    });
+
     // Step: a loop closes through Feedback and accumulates a tenth a tick; one without it faults.
     let fb = g.add("graphics:Feedback");
     g.ready(fb);
@@ -130,14 +146,32 @@ fn shaders_render_on_the_gpu() {
     let after = drawn(&g, acc, "five ticks on", |d| px(d, 0, 0)[0] > px(&first, 0, 0)[0] + 0.4);
     assert!(px(&after, 0, 0)[0] < 10.0, "a tenth a tick, not a runaway: {:?}", px(&after, 0, 0));
     assert!(g.error(fb).is_none() && g.error(acc).is_none(), "a loop through Feedback is not a fault");
-    let lone = g.add("graphics:Level");
-    g.ready(lone);
-    g.link(lone, "out", lone, "input");
+    // A loop with no feedback node in it faults and does not render; the rest of the patch does.
+    let (one, two) = (g.add("graphics:Level"), g.add("graphics:Level"));
+    g.ready(one);
+    g.ready(two);
+    g.link(one, "out", two, "input");
+    g.link(two, "out", one, "input");
     g.until("a loop with no feedback node faults", |g| {
         render(g, 1);
-        g.error(lone).filter(|e| e.contains("feedback"))
+        g.error(one).filter(|e| e.contains("feedback"))
     });
-    g.call("node remove", j!({ "node": hex(lone) }));
+    g.call("node remove", j!({ "node": hex(one) }));
+    g.call("node remove", j!({ "node": hex(two) }));
+
+    // A node wired to ITSELF is out too, feedback node or not: a pass cannot read what it writes,
+    // and one that tried took the whole tick's command buffer down with it.
+    for ty in ["graphics:Level", "graphics:Feedback"] {
+        let solo = g.add(ty);
+        g.ready(solo);
+        g.link(solo, "out", solo, "input");
+        g.until("a self-wired node faults", |g| {
+            render(g, 1);
+            g.error(solo).filter(|e| e.contains("its own output"))
+        });
+        drawn(&g, acc, "and the rest of the patch draws on", |d| px(d, 0, 0)[0] > 0.05);
+        g.call("node remove", j!({ "node": hex(solo) }));
+    }
 
     // Step: the shipped set composes, and every one of it compiles on this machine.
     let ramp = g.add("graphics:Ramp");
@@ -158,7 +192,19 @@ fn shaders_render_on_the_gpu() {
         .filter(|t| t.starts_with("graphics:"))
         .map(String::from)
         .collect();
-    assert_eq!(shipped.len(), 13, "the shipped set: {shipped:?}");
+    // Against the bundle on disk, not a number: a fourteenth node must not fail the suite for
+    // existing, and a node that stops registering must fail it.
+    let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles/graphics");
+    let mut want: Vec<String> = std::fs::read_dir(&bundle)
+        .expect("the shipped bundle")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "wgsl"))
+        .map(|e| format!("graphics:{}", e.path().file_stem().unwrap().to_string_lossy()))
+        .collect();
+    want.sort();
+    let mut got = shipped.clone();
+    got.sort();
+    assert_eq!(got, want, "every shipped `.wgsl` is a type, and nothing else is");
     for ty in &shipped {
         let node = g.add(ty);
         g.ready(node);
@@ -191,6 +237,24 @@ fn shaders_render_on_the_gpu() {
     assert_eq!(g.call("library refresh", j!({}))["changed"], j!(["graphics:Half"]));
     drawn(&g, half, "a quarter, after the reload", |d| close(px(d, 0, 0), [0.0625, 0.125, 0.25, 1.0]));
 
+    // Step: the file breaks UNDER a running node. The type greys and a restart is refused, but the
+    // instance keeps the pipeline it was born with and draws on.
+    std::fs::write(dir.join("Half.wgsl"), BROKEN).unwrap();
+    g.call("library refresh", j!({}));
+    assert!(g.refuse("node restart", j!({ "node": hex(half) })).contains("unavailable"));
+    drawn(&g, half, "the last good file runs on", |d| close(px(d, 0, 0), [0.0625, 0.125, 0.25, 1.0]));
+    std::fs::write(dir.join("Half.wgsl"), QUARTER).unwrap();
+    g.call("library refresh", j!({}));
+
+    // Step: a slot of a kind a shader cannot carry is greyed, and the reason names what it may be.
+    std::fs::write(dir.join("Loud.wgsl"), FOREIGN).unwrap();
+    g.call("library refresh", j!({}));
+    let listed = g.call("library list", j!({ "full": true }));
+    let row = listed["types"].as_array().unwrap().iter().find(|r| r["type"] == "graphics:Loud").cloned();
+    let row = row.expect("a shader that names an audio slot is still a row");
+    assert_eq!(row["available"], false, "{row}");
+    assert!(row["doc"].as_str().unwrap_or_default().contains("TEXTURE or ARRAY"), "{row}");
+
     // Step: a node nobody reads renders nothing — which is what makes an idle patch free.
     let stages = |g: &Goofi| g.call("session status", j!({}))["graphics"]["stages"].as_u64().unwrap();
     let lonely = g.add("graphics:Constant");
@@ -209,6 +273,25 @@ fn shaders_render_on_the_gpu() {
     let watched = stages(&g);
     render(&g, 3);
     assert_eq!(stages(&g), watched + 3, "one reader, one stage a tick, whatever else is live");
+
+    // Step: a texture output is read by the ONE snapshot op, and the source door answers the file.
+    let shot = g.until("a snapshot of a texture slot", |g| {
+        render(g, 1);
+        g.call("node snapshot", j!({ "output": ep(hex(half), "out") }))["shape"].as_array().cloned()
+    });
+    assert_eq!(shot.len(), 3, "a texture reads back as [H, W, 4]: {shot:?}");
+    let source = g.call("library get", j!({ "type": "graphics:Half", "source": true }));
+    assert!(source["text"].as_str().is_some_and(|t| t.contains("textureSample")), "{source}");
+
+    // Step: the demand stops when the LAST reader goes. A reducer that keeps its subscription
+    // alive is a reader as far as the engine can tell, and this node would render for ever.
+    drop(probe);
+    g.until("the watched node goes quiet again", |g| {
+        render(g, 30);
+        let a = stages(g);
+        render(g, 5);
+        (stages(g) == a).then_some(())
+    });
 
     // Step: a restart is a rebirth through the same trait doors — new generation, new services.
     let generation = g.state.graph.lock().unwrap().node_generation(c);
@@ -252,6 +335,7 @@ fn the_engine_draws_on_its_own_clock() {
     assert!(ran["stages"].as_u64().is_some_and(|s| s > 0), "{ran}");
 }
 
+const FOREIGN: &str = "/* goofi\n{ \"doc\": \"claims an audio slot\", \"inputs\": [{\"name\": \"input\", \"kind\": \"AUDIO\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { return vec4f(uv, 0.0, 1.0); }\n";
 const BROKEN: &str = "/* goofi\n{ \"doc\": \"does not compile\" }\n*/\nfn shade(uv: vec2f) -> vec4f { return nothing(uv); }\n";
 const HALF: &str = "/* goofi\n{ \"doc\": \"half of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.5, c.a); }\n";
 const QUARTER: &str = "/* goofi\n{ \"doc\": \"a quarter of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.25, c.a); }\n";

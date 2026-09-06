@@ -44,9 +44,7 @@ impl GraphicsEngine {
     pub(crate) fn register(&mut self, path: &Path, type_name: &str) -> Result<bool, String> {
         let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let intro = shader::header(&source)?;
-        if let Some(reason) = goofi_node::illegal_slot(&intro)
-            .or_else(|| goofi_node::foreign_slot(&intro, Some(goofi_core::SlotType::Texture)))
-        {
+        if let Some(reason) = goofi_node::illegal_slot(&intro) {
             return Err(reason);
         }
         let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro)?;
@@ -69,9 +67,8 @@ struct Job {
     shared: Arc<goofi_control::Shared>,
 }
 
-/// Where every pipeline in the process is built: ONE thread, beside the one device. A driver
-/// asked to compile from several threads at once crashed inside itself, and one queue is also
-/// what keeps a compile off every op's path.
+/// Where every pipeline in the process is built: ONE thread, beside the one device, so no op
+/// waits on a compile.
 fn compiler() -> Option<&'static mpsc::Sender<Job>> {
     static ONE: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
     ONE.get_or_init(|| {
@@ -85,6 +82,8 @@ fn compiler() -> Option<&'static mpsc::Sender<Job>> {
                     // The tick picks the cell up by itself; the settle is for a refusal, which
                     // only a plan can turn into the node's standing error.
                     job.shared.ask_settle();
+                    // The job may hold the last handle on the pipeline it just built.
+                    crate::gpu::give_back(job);
                 }
             })
             .ok()?;
@@ -94,13 +93,9 @@ fn compiler() -> Option<&'static mpsc::Sender<Job>> {
 }
 
 /// One engine's end of that queue: the shared state a finished compile must wake.
-pub struct Compiler(Arc<goofi_control::Shared>);
+pub struct Compiler(pub Arc<goofi_control::Shared>);
 
 impl Compiler {
-    pub fn start(shared: Arc<goofi_control::Shared>) -> Compiler {
-        Compiler(shared)
-    }
-
     pub fn build(&self, source: String, params: bool, inputs: usize) -> Built {
         let cell: Built = Arc::new(OnceLock::new());
         let job = Job { source, params, inputs, cell: cell.clone(), shared: self.0.clone() };

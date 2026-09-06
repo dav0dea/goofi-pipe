@@ -17,31 +17,25 @@ pub struct Gpu {
     group1: Mutex<HashMap<usize, Arc<wgpu::BindGroupLayout>>>,
     layouts: Mutex<HashMap<(bool, usize), Arc<wgpu::PipelineLayout>>>,
     pub queue: wgpu::Queue,
-    /// LAST, with the queue before it: fields drop in declaration order, and a resource outliving
-    /// the device it was made on is a driver crash rather than an error.
+    /// LAST, here and in every struct that holds one: fields drop in declaration order, and a
+    /// resource outliving its device is a driver crash rather than an error.
     pub device: wgpu::Device,
 }
 
-/// The ONE device this process renders on, opened at the first ask. Not one per engine: an
-/// engine's teardown would unload the Vulkan driver under a sibling engine still inside it, and
-/// the suite runs many engines at once. Nothing destroys it, so nothing races on its death.
+/// The ONE device this process renders on, opened at the first ask. Nothing destroys it.
 pub fn shared() -> Result<Arc<Gpu>, String> {
     static ONE: OnceLock<Result<Arc<Gpu>, String>> = OnceLock::new();
     ONE.get_or_init(|| Gpu::open().map(Arc::new)).clone()
 }
 
-/// Held for EVERY operation on that device: a compile, a tick, a birth, a teardown. The driver
-/// on the machine this was written on crashed inside its own shader compiler whenever one thread
-/// built a pipeline while another encoded, submitted or freed on the same device, so the engine
-/// takes the device one caller at a time. Never taken while the runtime lock is free to be taken
-/// after it: the order is runtime, then this.
+/// Held for EVERY operation on that device: a compile, a tick, a birth, a teardown. Lock order is
+/// the runtime mutex, then this.
 pub fn gate() -> std::sync::MutexGuard<'static, ()> {
     static GATE: Mutex<()> = Mutex::new(());
     GATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Give a value that owns GPU objects back, behind the gate. A pipeline destroyed while the
-/// compile thread builds one is the same collision as any other.
+/// Give a value that owns GPU objects back, behind the gate.
 pub fn give_back<T>(x: T) {
     let _gate = gate();
     drop(x);

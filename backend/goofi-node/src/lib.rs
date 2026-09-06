@@ -363,11 +363,12 @@ impl Isolation {
     pub fn language(self) -> &'static str {
         match self {
             Isolation::Native => "rust",
-            _ => "python",
+            Isolation::InProcess | Isolation::Subprocess => "python",
+            Isolation::Shader => "wgsl",
         }
     }
-    /// Back from the byte an [`IsolationCell`] holds — searched, so a tier added to `ALL` needs
-    /// no arm here and cannot be read as another one.
+    /// Back from the byte an [`IsolationCell`] holds. Searched, so a tier added to `ALL` needs no
+    /// arm here.
     fn from_u8(v: u8) -> Isolation {
         Isolation::ALL.into_iter().find(|i| *i as u8 == v).unwrap_or(Isolation::Native)
     }

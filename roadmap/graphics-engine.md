@@ -183,6 +183,32 @@ answers what moved between two settles, `Shared::drain` hands the reports over, 
 what it last sent so `send_if_changed` is the only door. Each of those was a copy in two engines,
 and the drain copy had already drifted into the defect above.
 
+### What the program audit landed (2026-09-06)
+
+Three finders over the whole program. Every finding they raised is fixed, and four of them are
+rules the code now states once:
+
+- **A pass cannot read the texture it writes**, so a node wired to its OWN output is out of the
+  plan and faulted, feedback node or not. One that tried made the tick's whole command buffer
+  invalid, so EVERY stage went silent while every viewer held its last frame and no node showed an
+  error. A feedback loop needs a second stage for the frame to age in.
+- **An upload past the device limit is no upload.** `Upload::of` refuses a frame wider or taller
+  than `MAX_SIZE`, because a texture the device cannot make takes the same whole tick down. A
+  ten-second EEG buffer at a kilohertz is 10000 wide, so this was one wire away.
+- **A reducer's SUBSCRIPTION follows demand.** It keeps its cache for the node's life, as before,
+  but lets the feed go after a second with nobody asking. An attached subscriber is what a
+  scheduled engine reads as "somebody wants frames", so a reducer that never detached kept a GPU
+  node rendering at 60 Hz for ever after one glance — which is the "an idle patch is free" claim,
+  false in the real app and true only in a suite whose probes detach.
+- **The `output` size is settled state, so it takes no reference or expression.** Graphics is the
+  first engine with a universal group, and a binding on one was accepted and then silently dead.
+  The engine now states the verdict on the whole group at every settle, so the node carries the
+  refusal in words and it clears itself when the reference goes.
+
+Two smaller ones: the compile thread gives its finished job back BEHIND the gate, because the job
+can hold the last handle on a pipeline whose class was already dropped; and `Isolation::language`
+lost the wildcard that answered `python` for a `.wgsl`.
+
 ## Kept from the first design
 
 - **The wire name is `graphics`**, not `video`: the engine's registered id, the first half of

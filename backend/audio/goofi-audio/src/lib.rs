@@ -732,7 +732,7 @@ impl Engine for AudioEngine {
         if std::mem::take(&mut self.sweep) {
             self.sweep_state();
         }
-        self.shared.replan.swap(false, Ordering::Acquire);
+        self.shared.replan.store(false, Ordering::Release);
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
             let desired = self.desired_of(view, uid, nv);
@@ -781,7 +781,7 @@ impl Engine for AudioEngine {
             self.tried = None;
             self.dirty = true;
         }
-        self.shared.clone().drain(&mut self.pending, apply)
+        self.shared.drain(&mut self.pending, apply)
     }
 
     /// A refresh runs on the node's own thread, never under the graph lock.

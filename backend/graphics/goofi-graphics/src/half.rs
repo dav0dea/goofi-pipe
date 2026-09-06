@@ -25,7 +25,9 @@ impl Upload {
             [h, w, c] if (1..=4).contains(&c) => (h, w, c),
             _ => return None,
         };
-        if h == 0 || w == 0 {
+        // A texture the device cannot make invalidates the whole frame's command buffer, so a
+        // frame past the limit is no upload at all.
+        if h == 0 || w == 0 || h > crate::plan::MAX_SIZE as usize || w > crate::plan::MAX_SIZE as usize {
             return None;
         }
         let x: Vec<f32> =

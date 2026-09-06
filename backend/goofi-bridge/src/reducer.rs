@@ -2,7 +2,9 @@
 //! every subscribing connection's `ViewSpec`s and fanned out over a broadcast.
 //!
 //! The SLOT owns the reducer's lifetime, not the socket count — it lives until its node leaves the
-//! graph, because a closing socket is no evidence that a slot stopped being watched.
+//! graph, because a closing socket is no evidence that a slot stopped being watched. Its
+//! SUBSCRIPTION follows demand though: an attached subscriber is what a scheduled engine reads as
+//! "somebody wants frames", so a reducer nobody asks of lets its feed go.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -47,6 +49,8 @@ struct SlotReducer {
     gen: Arc<AtomicU64>,
     /// The latest RAW frame, pre-reduction — what serves a re-attaching viewer and `node snapshot`.
     latest: Arc<Mutex<Option<goofi_core::Data>>>,
+    /// Somebody read `latest` — a `node snapshot` — so the feed is wanted even with no viewer.
+    asked: Arc<AtomicBool>,
 }
 
 impl Drop for SlotReducer {
@@ -113,6 +117,7 @@ impl SlotReducers {
                 reductions: Arc::new(AtomicU64::new(0)),
                 gen: Arc::new(AtomicU64::new(0)),
                 latest: Arc::new(Mutex::new(None)),
+                asked: Arc::new(AtomicBool::new(true)),
             };
             spawn_reducer(key.clone(), &reducer, self.graph.clone(), slots, self.follow.clone());
             reducer
@@ -137,7 +142,9 @@ impl SlotReducers {
         // The `inner` guard is released before `latest` is taken, mirroring the reducer's order.
         let latest = {
             let mut map = self.inner.lock().unwrap();
-            self.ensure(&mut map, &key).latest.clone()
+            let r = self.ensure(&mut map, &key);
+            r.asked.store(true, Ordering::Release);
+            r.latest.clone()
         };
         let frame = latest.lock().unwrap().clone();
         frame
@@ -185,6 +192,9 @@ impl SlotReducers {
 /// How often the slot's subscribe address is re-derived from the graph: a service name carries the
 /// node's GENERATION, so a restart re-homes the stream to a name this task has never opened.
 pub const REHOME_INTERVAL: Duration = Duration::from_secs(1);
+/// Idle 16 ms passes before a reducer nobody asks of lets its subscription go. Wide enough that a
+/// viewer swapping panels never crosses it.
+const IDLE_TICKS: u32 = 60;
 
 /// One end of a slot's data service: the subscriber, its iceoryx2 node, and the service name it
 /// was opened on.
@@ -223,16 +233,27 @@ fn spawn_reducer(
     let (specs, tx, taps) = (reducer.specs.clone(), reducer.tx.clone(), reducer.taps.clone());
     let (reductions, gen) = (reducer.reductions.clone(), reducer.gen.clone());
     let (latest, stop) = (reducer.latest.clone(), reducer.stop.clone());
+    let asked = reducer.asked.clone();
     let (uid, slot) = key.clone();
     std::thread::spawn(move || {
         let mut feed = open_feed(&graph, uid, &slot);
         let mut rehomed = std::time::Instant::now();
+        // Idle ticks with nobody asking. An attached subscriber is what a scheduled engine reads
+        // as demand, so a feed nobody wants keeps a GPU node rendering for ever.
+        let mut idle = 0u32;
         // `served: None` means "never broadcast", which is what sends the first frame without a bump.
         let mut served: Option<u64> = None;
         loop {
             std::thread::sleep(Duration::from_millis(16));
             if stop.load(Ordering::Relaxed) {
                 return;
+            }
+            let wanted = asked.swap(false, Ordering::Acquire)
+                || !specs.lock().unwrap().is_empty()
+                || !taps.lock().unwrap().is_empty();
+            idle = if wanted { 0 } else { idle.saturating_add(1) };
+            if idle > IDLE_TICKS {
+                feed = None;
             }
             if rehomed.elapsed() >= REHOME_INTERVAL {
                 rehomed = std::time::Instant::now();
@@ -252,9 +273,12 @@ fn spawn_reducer(
                     }
                     return;
                 };
-                if feed.as_ref().is_none_or(|f| f.service != current) {
+                if idle <= IDLE_TICKS && feed.as_ref().is_none_or(|f| f.service != current) {
                     feed = open_feed(&graph, uid, &slot);
                 }
+            }
+            if feed.is_none() && idle <= IDLE_TICKS {
+                feed = open_feed(&graph, uid, &slot);
             }
             let mut fresh = false;
             if let Some(f) = &feed {
@@ -275,7 +299,7 @@ fn spawn_reducer(
                     }
                 }
             }
-            // Nobody is watching: the receives above still keep the cache warm for whoever returns.
+            // Nobody is watching: the cache holds the last frame for whoever returns.
             if specs.lock().unwrap().is_empty() {
                 continue;
             }

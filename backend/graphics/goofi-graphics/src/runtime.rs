@@ -43,9 +43,8 @@ pub struct Runtime {
     plan: Plan,
     states: HashMap<Uid, State>,
     started: Instant,
-    pub stats: Arc<Stats>,
-    /// Last: every texture, buffer and pipeline above outlives the device otherwise, and dropping
-    /// one on a destroyed device is a crash in the driver.
+    stats: Arc<Stats>,
+    /// Last, for the reason [`Gpu`] states.
     gpu: Arc<Gpu>,
 }
 
@@ -77,11 +76,8 @@ impl Runtime {
         self.states.insert(uid, state);
     }
 
-    /// A node leaves, and the plan goes with it — the WHOLE plan, never one stage. `Input::Stage`
-    /// is an index into it, so dropping one entry renames every entry after it; and a stage that
-    /// outlives its own birth draws the departed node's pipeline into the state a restart just
-    /// made at the same uid. The settle that ends the batch builds the next one, and until it
-    /// does this engine draws nothing.
+    /// A node leaves, and the WHOLE plan goes with it: `Input::Stage` is an index into it. The
+    /// settle that ends the batch builds the next one, and until it does this engine draws nothing.
     pub fn remove(&mut self, uid: Uid) {
         let _gate = crate::gpu::gate();
         self.states.remove(&uid);
@@ -318,8 +314,7 @@ impl State {
     }
 }
 
-/// A stage's uniform block length, so a birth can size its buffer. Measured by the writer, not
-/// stated beside it: a second spelling of one layout is a pair that drifts.
+/// A stage's uniform block length, measured by the writer so there is one layout.
 pub fn params_len(decls: &[goofi_node::ParamDecl]) -> usize {
     let zeros: Vec<AtomicU64> = decls.iter().map(|_| AtomicU64::new(0)).collect();
     shader::uniform_bytes(decls, &zeros).len()

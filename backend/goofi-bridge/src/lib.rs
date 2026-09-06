@@ -620,11 +620,8 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
 }
 
 /// The composed graph the app boots: the model plus the signal engine, registered first. A `None`
-/// audio clock asks for no audio engine at all, which is also what takes every audio node out of
-/// the catalog. The graphics engine is always ASKED for, and a machine with no GPU adapter simply
-/// has none — which takes every graphics node out of the catalog by the same one rule. Its clock
-/// is its OWN argument rather than a reading of the audio one: a demo asks for no audio engine,
-/// and used to get a graphics engine nothing drove — every node green, and every one dead.
+/// audio clock asks for no audio engine at all, which takes every audio node out of the catalog.
+/// The graphics engine is always ASKED for, and a machine with no adapter simply has none.
 pub fn fresh_graph(clock: Option<Clock>, render: RenderClock) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(

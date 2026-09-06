@@ -30,9 +30,7 @@ def arr(a):
 
 
 cases = {}
-# A `Data` is float32 — a foreign dtype is cast to f32 at the ingest boundary, so a FRAME the
-# graph makes only ever carries <f4. The one exception is the viewer hop: the reducer quantizes
-# an image to texels and encodes them itself, which is the `u8_image` case below.
+# A FRAME the graph makes only ever carries <f4. The one exception is the viewer hop, below.
 cases["f32_1d"] = arr(np.array([1.0, 2.0, 3.0], dtype=np.float32))
 cases["scalar_0d"] = Data(DataType.ARRAY, np.float32(3.0), {})  # 0-d -> shape (1,)
 cases["empty_array"] = arr(np.array([], dtype=np.float32))  # shape (0,), 0 body bytes

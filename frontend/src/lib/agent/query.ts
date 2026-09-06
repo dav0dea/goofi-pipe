@@ -9,7 +9,6 @@ import { asStateObject, linkedNodeName } from 'panelty';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
 import { summaryOf } from '$lib/viewers/viewMeta';
-import { reportedDtype } from '$lib/viewers/depth';
 
 import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 import type { GlobalView } from '$lib/crdt/graphDoc';
@@ -23,6 +22,9 @@ export interface FrameSummary {
 	text?: string;
 }
 
+const shapesEqual = (a: number[], b: readonly number[]): boolean =>
+	a.length === b.length && a.every((n, i) => n === b[i]);
+
 /** A compact, DOM-free description of the latest frame on a slot. */
 function summarize(frame: DataFrame | null): FrameSummary | null {
 	if (!frame) return null;
@@ -31,9 +33,10 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 		const s = summaryOf(a, frame.meta);
 		const recon = reconstructMeta(frame.meta);
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
-		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
+		// An AXIS reduction, so a frame whose only `reduced` entry is the depth is not one.
+		const reduced = !shapesEqual(shape, a.shape);
 		return {
-			dtype: reportedDtype(a.dtype),
+			dtype: s.dtype,
 			shape,
 			numeric: s.min !== null ? { min: s.min, max: s.max as number, mean: s.mean as number } : undefined,
 			...(reduced ? { reducedLength: a.values.length } : {})

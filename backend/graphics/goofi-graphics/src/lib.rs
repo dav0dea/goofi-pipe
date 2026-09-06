@@ -33,7 +33,7 @@ use scan::{Class, Compiler};
 const PERIOD: Duration = Duration::from_micros(16_667);
 
 /// What drives the ticks: the harness's `render(frames)`, or a clock of the engine's own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Clock {
     External,
     Timer,
@@ -73,8 +73,7 @@ pub struct GraphicsEngine {
     faults: goofi_control::Faults,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
-    /// After the classes and the runtime, for the same reason they name: the pipelines and the
-    /// textures made on this device must go first.
+    /// After the classes and the runtime, for the reason [`Gpu`] states.
     gpu: Arc<Gpu>,
     /// Last: every bell onto a control half is built from it, and fields drop in order.
     bells: goofi_transport::IoxNode,
@@ -129,7 +128,6 @@ impl GraphicsEngine {
                         }
                     }
                 })
-                .map_err(|e| format!("could not start the render clock: {e}"))
                 .expect("the render clock");
             (stop, thread)
         });
@@ -137,7 +135,7 @@ impl GraphicsEngine {
             instance,
             started,
             clock,
-            compiler: Compiler::start(shared.clone()),
+            compiler: Compiler(shared.clone()),
             gpu,
             shared,
             classes: HashMap::new(),
@@ -174,7 +172,14 @@ impl GraphicsEngine {
     }
 
     /// Everything one node's control half holds, read off the settled view.
-    fn desired_of(&self, view: &GraphView<'_>, uid: Uid, nv: &NodeView<'_>) -> Desired {
+    /// The desired state, and the verdict on every universal param: the `output` size is settled
+    /// state, so a binding on it is refused in words rather than quietly ignored.
+    fn desired_of(
+        &self,
+        view: &GraphView<'_>,
+        uid: Uid,
+        nv: &NodeView<'_>,
+    ) -> (Desired, Vec<(goofi_node::ParamKey, Option<String>)>) {
         let manifest = self.live[&uid].class.manifest;
         let consts = manifest.params.iter().map(|d| goofi_control::param_of(nv.params, d)).collect();
         let mut subs = Vec::new();
@@ -195,6 +200,20 @@ impl GraphicsEngine {
             let vars = b.vars.iter().map(|v| goofi_transport::var_of(view, v)).collect();
             subs.push(Sub::Bind { param, key: b.key.clone(), source: b.rewritten.to_string(), id: b.id, vars });
         }
+        // The whole universal set every settle, so the answer is stateless: a key a live binding
+        // names carries the refusal, and every other one clears.
+        let undrivable = OUTPUT_DECLS
+            .iter()
+            .map(|d| {
+                let key = goofi_node::ParamKey::new(d.group, d.name);
+                let bound = nv.bindings.iter().any(|b| b.live && *b.key == key);
+                let why = bound.then(|| {
+                    "the `output` size is settled state: it takes a value, never a reference or an expression"
+                        .to_string()
+                });
+                (key, why)
+            })
+            .collect();
         let targets = manifest
             .outputs
             .iter()
@@ -206,11 +225,10 @@ impl GraphicsEngine {
                     .collect()
             })
             .collect();
-        Desired { consts, subs, targets }
+        (Desired { consts, subs, targets }, undrivable)
     }
 
-    /// Whether a ring would wake a same-engine consumer for what the plan already carries: a
-    /// texture wire is an edge in the plan, and no inbox is subscribed for it.
+    /// Whether a ring would wake a same-engine consumer for what the plan already carries.
     fn rides_the_plan(&self, r: &goofi_node::Ringer<'_>) -> bool {
         let Some(consumer) = self.live.get(&r.consumer) else { return false };
         match r.via {
@@ -313,11 +331,12 @@ impl Engine for GraphicsEngine {
 
     fn settle(&mut self, view: &GraphView<'_>, _touched: &[Touched]) {
         self.dirty = false;
-        self.shared.replan.swap(false, Ordering::Acquire);
+        self.shared.replan.store(false, Ordering::Release);
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
-            let desired = self.desired_of(view, uid, nv);
+            let (desired, errors) = self.desired_of(view, uid, nv);
             self.live[&uid].control.send_if_changed(desired);
+            self.pending.push((uid, Status::BindingErrors { errors }));
         }
         let (plan, faults) = plan::compile(view, &self.live);
         let since = self.started.elapsed().as_secs_f64();
@@ -329,7 +348,7 @@ impl Engine for GraphicsEngine {
     }
 
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize {
-        self.shared.clone().drain(&mut self.pending, apply)
+        self.shared.drain(&mut self.pending, apply)
     }
 
     fn refresh_param(&mut self, uid: Uid, key: ParamKey) {
@@ -369,8 +388,6 @@ impl Engine for GraphicsEngine {
         }
         goofi_transport::wait_released(halts.iter().map(|h| &**h), goofi_transport::SHUTDOWN_WAIT);
         self.runtime.lock().expect("the runtime").clear();
-        // The classes and the instances hold this engine's pipelines; they go back behind the
-        // same gate a compile takes.
         let gate = gpu::gate();
         self.live.clear();
         self.classes.clear();

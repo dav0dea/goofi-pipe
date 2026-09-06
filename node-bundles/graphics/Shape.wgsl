@@ -1,5 +1,5 @@
 /* goofi
-{ "doc": "one shape on transparent black\nSize is the radius as a fraction of the frame, and soft is how far the edge fades.",
+{ "doc": "one shape on transparent black\nSize is the width across as a fraction of the frame, and soft is how far the edge fades.",
   "tags": ["image", "generator"],
   "params": [
     {"group": "shape", "name": "kind", "kind": "str", "default": "circle", "options": ["circle", "square", "ring"]},
@@ -23,6 +23,7 @@ fn shade(uv: vec2f) -> vec4f {
         }
         default: {}
     }
-    let cover = 1.0 - smoothstep(-p.soft, p.soft, d);
+    let soft = max(p.soft, 1e-5);
+    let cover = 1.0 - smoothstep(-soft, soft, d);
     return vec4f(vec3f(p.r, p.g, p.b) * cover, cover);
 }

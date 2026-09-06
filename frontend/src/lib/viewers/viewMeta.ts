@@ -1,5 +1,5 @@
 import type { ArrayData } from '$lib/codec/decode';
-import { isU8, sampleRange, toUnit } from './depth';
+import { isU8, reportedDtype, sampleRange, toUnit } from './depth';
 
 export interface ViewSummary {
 	shape: number[];
@@ -28,8 +28,7 @@ export function summaryOf(arraySpec: ArrayData, meta?: Record<string, unknown>):
 	}
 	return {
 		shape: arraySpec.shape,
-		// Mapped back, so what is summarized is the node's own f32, not the hop's texels.
-		dtype: range ? 'float32' : arraySpec.dtype,
+		dtype: reportedDtype(arraySpec.dtype),
 		min: n ? mn : null,
 		mean: n ? sum / n : null,
 		max: n ? mx : null

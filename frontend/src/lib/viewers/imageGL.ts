@@ -155,8 +155,8 @@ export class GLImageRenderer {
 			}
 			const texels = u8 ? (opts.range ?? [0, 1]) : [0, 1];
 			const width = texels[1] - texels[0] || 1;
-			const lo = u8 ? (opts.lo - texels[0]) / width : opts.lo;
-			const span = (opts.hi - opts.lo || 1) / (u8 ? width : 1);
+			const lo = (opts.lo - texels[0]) / width;
+			const span = (opts.hi - opts.lo || 1) / width;
 			gl.useProgram(this.prog);
 			gl.uniform1f(this.uLo, lo);
 			gl.uniform1f(this.uSpan, span);

@@ -87,16 +87,23 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
             .filter_map(|s| wires.get(&(consumer, s.name)).copied())
             .collect()
     };
-    let inbound: HashMap<Uid, Vec<Uid>> =
-        live.iter().map(|(uid, i)| (*uid, if i.class.feedback { Vec::new() } else { feeds(*uid) })).collect();
-    let (order, stuck) = kahn(live, &inbound, &HashSet::new());
+    // A pass cannot read the texture it writes, so a node wired to ITSELF is out even when it is
+    // the feedback node — a loop needs a second stage for the frame to age in.
+    let mine: HashSet<Uid> = live.keys().copied().filter(|u| feeds(*u).contains(u)).collect();
+    let inbound: HashMap<Uid, Vec<Uid>> = live
+        .iter()
+        .map(|(uid, i)| (*uid, if i.class.feedback && !mine.contains(uid) { Vec::new() } else { feeds(*uid) }))
+        .collect();
+    let (order, stuck) = kahn(live, &inbound, &mine);
     // A node Kahn could not place is IN a loop when it reaches itself; the rest are only fed by one.
     let members: HashSet<Uid> = stuck.iter().copied().filter(|u| reaches_itself(*u, &inbound, &stuck)).collect();
-    let (order, _) = if members.is_empty() { (order, stuck) } else { kahn(live, &inbound, &members) };
+    let dropped: HashSet<Uid> = members.union(&mine).copied().collect();
+    let order = if members.is_empty() { order } else { kahn(live, &inbound, &dropped).0 };
     let mut faults: Vec<(Uid, String)> = members
         .iter()
         .map(|u| (*u, "in a loop with no feedback node, so it does not render".to_string()))
         .collect();
+    faults.extend(mine.iter().map(|u| (*u, "wired to its own output, so it does not render".to_string())));
 
     let mut sizes: HashMap<Uid, (u32, u32)> = HashMap::new();
     for uid in &order {
@@ -120,8 +127,7 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
                 _ => {
                     let k = upload;
                     upload += 1;
-                    // From the settled view, not from an unlink event: an unwired ARRAY input is
-                    // transparent black, and the texture its last frame made is not the answer.
+                    // From the settled view: an unwired ARRAY input is transparent black.
                     match view.wires_into(*uid, s.name).next() {
                         Some(_) => Input::Upload(k),
                         None => Input::None,

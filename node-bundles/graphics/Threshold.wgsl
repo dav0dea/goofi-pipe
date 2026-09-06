@@ -9,6 +9,8 @@
 fn shade(uv: vec2f) -> vec4f {
     let c = textureSample(input, samp, uv);
     let l = dot(c.rgb, vec3f(0.299, 0.587, 0.114));
-    let t = smoothstep(p.level - p.soft, p.level + p.soft, l);
+    // A `smoothstep` with two equal edges divides by zero; a hard step is what soft 0 asks for.
+    let soft = max(p.soft, 1e-5);
+    let t = smoothstep(p.level - soft, p.level + soft, l);
     return vec4f(vec3f(t), c.a);
 }

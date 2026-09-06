@@ -120,9 +120,7 @@
 
 		const dst = img.data;
 		const src = arr.values;
-		// One mapping into the frame's own units, then the one byte scale: a colour texel spans
-		// [0, 1] so it survives the round trip exactly, and an alpha texel of a GRAY frame — which
-		// spans that frame's range — does not lose its meaning.
+		// Into the frame's own units first, so a texel of a GRAY frame keeps its meaning.
 		const unit = texels ? (v: number): number => toUnit(v, texels) : (v: number): number => v;
 		const scale = (v: number): number => Math.max(0, Math.min(255, Math.round(unit(v) * 255)));
 		const n = w * h;

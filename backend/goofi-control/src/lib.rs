@@ -4,8 +4,7 @@
 //! reader of an output drinks from.
 //!
 //! What an arrival BECOMES and what a tap publishes is the engine's, behind [`Half`]. Everything
-//! above that — the thread, the door, the desired state, the bindings, the reports — is one
-//! implementation, because two spellings of it would drift.
+//! above that — the thread, the door, the desired state, the bindings, the reports — is here.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,10 +24,10 @@ use indexmap::IndexMap;
 
 /// How often the paced duties run: [`Half::tick`], and a binding with no stream variable
 /// re-evaluated, at this pace whatever rings in between.
-pub const TICK: Duration = Duration::from_millis(10);
+const TICK: Duration = Duration::from_millis(10);
 
 /// What the engine wants a node's control half to hold — the WHOLE of it, sent when it changes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Desired {
     /// The record value per param: what an unbound param reads, and the type a binding coerces to.
     pub consts: Vec<Param>,
@@ -37,7 +36,7 @@ pub struct Desired {
     pub targets: Vec<Vec<(String, EventId)>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Sub {
     /// An Array input: the producer service, and the inbox its frames enter.
     Slot { inbox: usize, service: String },
@@ -60,7 +59,7 @@ impl Shared {
         Shared { evaluator: Mutex::new(None), reports: Mutex::new(Vec::new()), waker, replan: AtomicBool::new(false) }
     }
 
-    pub fn report(&self, uid: Uid, status: Status) {
+    fn report(&self, uid: Uid, status: Status) {
         self.reports.lock().unwrap().push((uid, status));
         self.waker.notify();
     }
@@ -72,7 +71,7 @@ impl Shared {
     }
 
     /// Hand the engine's own pending statuses and every half's reports to `apply`, and answer how
-    /// many. ONE lock over the reports: a clone and a later clear lost whatever landed between.
+    /// many. ONE lock over the reports, so nothing lands between a read and a clear.
     pub fn drain(&self, pending: &mut Vec<(Uid, Status)>, apply: &mut dyn FnMut(Uid, Status)) -> usize {
         let mut all = std::mem::take(pending);
         all.append(&mut self.reports.lock().expect("the reports"));
@@ -119,8 +118,6 @@ pub struct Cx<'a> {
     pub pulses: &'a [usize],
     /// Per output: whether anyone subscribes to its data service right now.
     pub readers: &'a [bool],
-    /// Seconds since the patch clock's origin.
-    pub t: f64,
 }
 
 /// What one tick of a [`Half`] changed. The errors are the WHOLE current set for the keys the
@@ -161,20 +158,18 @@ pub struct Handle {
     mail: Arc<Mutex<Mail>>,
     pub halt: Arc<Halt>,
     bell: Doorbell,
-    /// What was last sent, so a settle that changes nothing says nothing. It lives HERE because
-    /// this is the only hand that sends; an engine keeping its own copy is the same fact twice.
+    /// What was last sent, so a settle that changes nothing says nothing.
     last: Mutex<Option<Desired>>,
 }
 
 impl Handle {
-    pub fn send(&self, desired: Desired) {
+    fn send(&self, desired: Desired) {
         *self.last.lock().expect("the last desired") = Some(desired.clone());
         self.mail.lock().unwrap().desired = Some(desired);
         let _ = self.bell.ring(0);
     }
 
-    /// Send only what is new, and say whether it did. A settle runs per batch and states the WHOLE
-    /// desired state, so most of them state what the half already holds.
+    /// Send only what is new, and say whether it did.
     pub fn send_if_changed(&self, desired: Desired) -> bool {
         let fresh = self.last.lock().expect("the last desired").as_ref() != Some(&desired);
         if fresh {
@@ -515,7 +510,6 @@ impl<H: Half> Control<H> {
             params: &self.params,
             pulses: &pulses,
             readers: &readers,
-            t: self.started.elapsed().as_secs_f64(),
         };
         let outs = &self.outs;
         let ticked = self.half.tick(&cx, &mut |i, bytes| {

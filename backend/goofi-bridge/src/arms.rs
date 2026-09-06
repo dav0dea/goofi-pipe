@@ -1476,7 +1476,6 @@ pub(crate) fn session_status(
             "xruns": a.xruns,
             "render_max_us": a.render_max_us,
         })),
-        // The same door for the GPU: which adapter answered, and how much of a tick it took.
         "graphics": graphics.map(|a| json!({
             "clock": a.clock,
             "adapter": a.adapter,

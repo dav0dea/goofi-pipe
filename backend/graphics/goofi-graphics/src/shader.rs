@@ -52,8 +52,7 @@ fn wgsl_type(spec: &ParamSpec) -> &'static str {
 }
 
 /// What the engine appends after the file: the bindings a body reads, and the stages that call it.
-/// `uv` is (0, 0) at the TOP-left, WGSL's own texture space, so `textureSample(input, samp, uv)`
-/// is a copy and no flip is written anywhere — in a body, an upload or a readback.
+/// `uv` is (0, 0) at the TOP-left, WGSL's own texture space.
 pub fn prelude(manifest: &NodeManifest) -> String {
     let mut s = String::from(
         "\n@group(0) @binding(0) var<uniform> time: f32;\n\
@@ -106,8 +105,6 @@ pub fn uniform_bytes(decls: &[ParamDecl], atomics: &[AtomicU64]) -> Vec<u8> {
             _ => out.extend_from_slice(&(v.round().max(0.0) as u32).to_le_bytes()),
         }
     }
-    while !out.len().is_multiple_of(16) && !decls.is_empty() {
-        out.push(0);
-    }
+    out.resize(out.len().next_multiple_of(16), 0);
     out
 }
