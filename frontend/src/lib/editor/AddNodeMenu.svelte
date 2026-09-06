@@ -106,6 +106,11 @@
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
 			highlighted = Math.max(0, highlighted - 1);
+		} else if (e.key === 'Tab' && tabs.length > 1) {
+			// The field keeps the focus throughout — Escape is the way out, never Tab.
+			e.preventDefault();
+			const at = tabs.findIndex((t) => t.id === tab);
+			family = tabs[(at + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length].id;
 		}
 	}
 </script>
