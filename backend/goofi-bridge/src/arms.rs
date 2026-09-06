@@ -4,6 +4,20 @@
 //! shared tail; an Effect owns its consequences — re-mirror, events and dirtiness — itself.
 
 use super::*;
+use crate::schemas::Detail;
+
+/// A bool arg with the default it takes when the caller names none.
+fn flag(payload: &Value, name: &str, default: bool) -> bool {
+    payload.get(name).and_then(Value::as_bool).unwrap_or(default)
+}
+
+/// The granularity a catalog read asks for: an index unless the caller says `--full`.
+fn detail(payload: &Value, name: &str) -> Detail {
+    match flag(payload, name, false) {
+        true => Detail::Full,
+        false => Detail::Index,
+    }
+}
 
 pub(crate) fn dir_list(
     _state: &AppState,
@@ -13,7 +27,7 @@ pub(crate) fn dir_list(
 ) -> Result<Value, String> {
     // Served WITHOUT the graph mutex: it walks the filesystem, which under the lock would stall
     // the status-drain worker.
-    Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str())))
+    Ok(fsbrowse::list_dir(payload.get("path").and_then(|v| v.as_str()), flag(payload, "hidden", false)))
 }
 
 pub(crate) fn session_state(
@@ -150,19 +164,18 @@ pub(crate) fn compound(
     Ok(Value::Array(results))
 }
 
-/// The whole library — the palette a client builds every node from.
+/// The library as an INDEX; `--full` answers the palette a client builds every node from.
 pub(crate) fn library_list(
     state: &AppState,
-    _payload: &Value,
+    payload: &Value,
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
-    Ok(json!({ "types": schemas::catalog_types(&g) }))
+    Ok(json!({ "types": schemas::catalog_types(&g, detail(payload, "full")) }))
 }
 
-/// ONE library entry in full: a type's source and provenance are the palette entry with the file
-/// behind it read.
+/// ONE library entry: the palette entry with its provenance, and `--source` the file behind it.
 pub(crate) fn library_get(
     state: &AppState,
     payload: &Value,
@@ -171,7 +184,8 @@ pub(crate) fn library_get(
 ) -> Result<Value, String> {
     let ty = parse_str(payload, "type")?;
     let mount = state.mount();
-    inspect::node_source(&state.graph.lock().unwrap(), ty, &mount, &state.roots)
+    let source = flag(payload, "source", false);
+    inspect::node_source(&state.graph.lock().unwrap(), ty, &mount, &state.roots, source)
 }
 
 /// Explicit, never watched: an agent calls it after writing a node file.
@@ -186,7 +200,7 @@ pub(crate) fn library_refresh(
         let mut g = state.graph.lock().unwrap();
         let (diff, _) = rescan(state, &mut g, &state.mount());
         restart_changed(&mut g, &diff);
-        events.push(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
+        events.push(event("node_types", json!({ "types": schemas::catalog_types(&g, Detail::Full) })));
         json!({ "added": diff.added, "changed": diff.changed, "removed": diff.removed })
     };
     resync_and_broadcast(state);
@@ -507,8 +521,9 @@ pub(crate) fn node_snapshot(
             "reason": "nothing is behind this port yet — wire its inside, then ask again",
         }));
     };
+    let raw = flag(payload, "raw", false);
     match state.reducers.latest(key) {
-        Some(d) => Ok(frame_json(&d)),
+        Some(d) => Ok(frame_json(&d, raw)),
         None => Ok(json!({
             "frame": null,
             "reason": "nothing cached for this slot yet — its feed is now open, so ask again \
@@ -517,18 +532,34 @@ pub(crate) fn node_snapshot(
     }
 }
 
-/// A frame as the snapshot answers it: ARRAY as base64 NPY, STRING as its text, TABLE recursing.
-fn frame_json(d: &goofi_core::Data) -> Value {
+/// A frame as the snapshot answers it: an ARRAY as its shape and range unless `raw` asks for the
+/// numbers, STRING as its text, TABLE recursing.
+fn frame_json(d: &goofi_core::Data, raw: bool) -> Value {
     let meta = meta_json(d.meta());
     match d.value() {
-        goofi_core::Value::Array(s) => {
+        goofi_core::Value::Array(s) if raw => {
             use base64::Engine;
             let npy = base64::engine::general_purpose::STANDARD.encode(npy_bytes(s));
             json!({ "meta": meta, "npy_b64": npy })
         }
+        goofi_core::Value::Array(s) => json!({ "meta": meta, "shape": s.shape(), "range": range_json(s) }),
         goofi_core::Value::Str(s) => json!({ "meta": meta, "value": &**s }),
         goofi_core::Value::Table(t) => json!({ "meta": meta,
-            "value": Value::Object(t.iter().map(|(k, v)| (k.clone(), frame_json(v))).collect()) }),
+            "value": Value::Object(t.iter().map(|(k, v)| (k.clone(), frame_json(v, raw))).collect()) }),
+    }
+}
+
+/// What an array holds, in three numbers — enough to tell silence from signal without the frame.
+fn range_json(s: &goofi_core::ArrayStore) -> Value {
+    let mut n = 0u64;
+    let (mut min, mut max, mut sum) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for chunk in s.as_bytes().chunks_exact(4) {
+        let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64;
+        (min, max, sum, n) = (min.min(v), max.max(v), sum + v, n + 1);
+    }
+    match n {
+        0 => Value::Null,
+        n => json!({ "min": min, "max": max, "mean": sum / n as f64 }),
     }
 }
 
@@ -1539,7 +1570,7 @@ fn load_patch(state: &AppState, payload: &Value) -> Result<Value, String> {
                               state.harnesses.roster(&agents), state.mode.demo),
         ));
         // The patch brought its own node types, which `graph_replaced` does not carry.
-        let _ = state.events.send(event("node_types", json!({ "types": schemas::catalog_types(&g) })));
+        let _ = state.events.send(event("node_types", json!({ "types": schemas::catalog_types(&g, Detail::Full) })));
         if let Some(path) = from_path {
             let _ = state.events.send(event("save_path_changed", json!({ "save_path": path })));
         }
@@ -1618,22 +1649,26 @@ pub(crate) fn redo(
 /// The registry itself, as data a caller derives a whole client from.
 pub(crate) fn op_list(
     state: &AppState,
-    _payload: &Value,
+    payload: &Value,
     _actor: &str,
     _events: &mut Vec<String>,
 ) -> Result<Value, String> {
+    let doc = flag(payload, "doc", false);
     let ops: Vec<Value> = state
         .ops()
         .iter()
         .map(|o| {
-            json!({
+            let mut row = json!({
                 "op": o.name,
                 "args": o.args,
                 "positional": o.positional,
                 "kind": o.handler.kind_name(),
-                "doc": o.doc(),
-                "result": o.result,
-            })
+            });
+            if doc {
+                row["doc"] = json!(o.doc());
+                row["result"] = json!(o.result);
+            }
+            row
         })
         .collect();
     Ok(json!({ "ops": ops }))

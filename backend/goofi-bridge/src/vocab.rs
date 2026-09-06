@@ -263,7 +263,7 @@ pub fn typescript() -> String {
 }
 
 /// The table as catalog entries, so a palette and `library list` see one vocabulary of node types.
-pub fn boundary_catalog() -> Vec<(String, String, Value)> {
+pub fn boundary_catalog(d: crate::schemas::Detail) -> Vec<(String, String, Value)> {
     BOUNDARY_TYPES
         .iter()
         .map(|(name, dir, dtype)| {
@@ -272,22 +272,21 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
                 Dir::In => (json!({}), slot),
                 Dir::Out => (slot, json!({})),
             };
-            (
-                String::new(),
-                name.to_string(),
-                json!({
-                    "type": name,
-                    "source": "builtin",
-                    "tags": [],
-                    "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
-                    "available": true,
-                    "missing_deps": [],
-                    "input_slots": inputs,
-                    "input_multi": [],
-                    "output_slots": outputs,
-                    "params": {},
-                }),
-            )
+            let mut info = json!({
+                "type": name,
+                "source": "builtin",
+                "tags": [],
+                "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
+                "available": true,
+            });
+            if d.full() {
+                info["missing_deps"] = json!([]);
+                info["input_slots"] = inputs;
+                info["input_multi"] = json!([]);
+                info["output_slots"] = outputs;
+                info["params"] = json!({});
+            }
+            (String::new(), name.to_string(), info)
         })
         .collect()
 }

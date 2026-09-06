@@ -318,7 +318,8 @@ fn top_help(ops: &[&Op]) -> String {
     }
     format!(
         "goofi speaks noun-first phrases. `help <group>` lists one group,\n\
-         `<phrase> --help` explains one op, and `op list` answers the whole registry as data.\n\
+         `<phrase> --help` explains one op, and `op list` answers the registry as data —\n\
+         `op list --doc` explains every op at once, which is the whole manual.\n\
          groups:\n{}\n\
          subjectless: {}.\n\
          reserved words: {} — and `goofi -` runs stdin lines as one batch.",

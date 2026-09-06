@@ -264,11 +264,18 @@ pub fn globals(g: &Graph) -> Value {
     json!({ "globals": entries, "groups": groups })
 }
 
-/// `library get`: a node type's text where it has one, and its provenance either way.
-pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Result<Value, String> {
+/// `library get`: one type's provenance, and — when `source` asks — the file itself, under
+/// `text`: the entry's own `source` is where the TYPE came from, and one key cannot be both.
+pub fn node_source(
+    g: &Graph,
+    ty: &str,
+    mount: &Path,
+    roots: &[PathBuf],
+    source: bool,
+) -> Result<Value, String> {
     let (engine, entry) = g.resolve_type(ty).map_err(|e| format!("library get: {e}"))?;
     let ty = &goofi_node::qualify(engine, entry.manifest.type_name);
-    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest);
+    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest, crate::schemas::Detail::Full);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
     let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| mount.join(goofi_node::folder_of(id))).collect();
@@ -296,11 +303,13 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
     });
     info["path"] =
         found.as_ref().map(|(p, _)| json!(goofi_core::path::to_slash(p))).unwrap_or(Value::Null);
-    info["source"] = found
-        .as_ref()
-        .and_then(|(p, _)| std::fs::read_to_string(p).ok())
-        .map(Value::String)
-        .unwrap_or(Value::Null);
+    if source {
+        info["text"] = found
+            .as_ref()
+            .and_then(|(p, _)| std::fs::read_to_string(p).ok())
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+    }
     Ok(info)
 }
 

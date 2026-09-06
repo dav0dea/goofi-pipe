@@ -359,7 +359,7 @@ fn a_scheduled_engine_beside_the_signal_one() {
 
     // Step: both libraries join the ONE palette, beside the signal catalog, and an audio slot
     // is a kind the palette spells.
-    let types = t.call("library list", j!({}));
+    let types = t.call("library list", j!({ "full": true }));
     let names: Vec<&str> =
         types["types"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
     for want in ["skel:SkelAudioOsc", "graphics:SkelGfxFrame", "signal:LFO", "InAudio", "OutAudio"] {

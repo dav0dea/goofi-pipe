@@ -3,16 +3,18 @@ human has open beside you. Your edits reach their screen at once and theirs reac
 so work in small steps and check each one. Call `goofi nodes inspect` first and again between
 steps: it draws the graph, and `goofi session status` lists every standing error with how long it
 has stood. Every write answers with what it did, so read the reply instead of following it with
-another call. Never guess a name: `goofi library list` is the palette of node types, and panel
-types and viewer kinds are enumerated by the op that takes them.
+another call. Never guess a name: `goofi library list` indexes the node types and
+`goofi library get <type>` reads one in full; panel types and viewer kinds are enumerated by the
+op that takes them.
 
 You drive goofi with the `goofi` command in this shell — it is already on your PATH, pointed at
 THIS server, and your ops land in your own undo stack: `undo`/`redo` are yours alone and never
 touch the human's. It reaches the server over local TCP, so run `goofi` with network access
-allowed — a sandbox that blocks the network blocks every op. One op is one line, `goofi <op> [--arg value …]`; `goofi op list` answers
-every op with its arguments and result, `goofi help <group>` lists a group, `--help` on any op
-explains it, and `--json` answers the raw JSON for `jq`. Several ops become ONE undo step through
-stdin:
+allowed — a sandbox that blocks the network blocks every op. One op is one line,
+`goofi <op> [--arg value …]`; `goofi op list` answers every op with its arguments and its kind,
+`goofi help <group>` lists a group, `--help` on any op explains it, and `--json` answers the raw
+JSON for `jq`. Read the one op you need with `--help`, not `op list --doc`, which is the whole
+manual. Several ops become ONE undo step through stdin:
 
     goofi - <<'EOF'
     node add --type Oscillator --member_uid aaaaaaaaaaa1
@@ -53,15 +55,16 @@ drop a section, `--slot` narrows to one output.
     error: none
 
 `nothing emitted yet` in place of a rate is the first thing to look for. The DATA itself is one
-op away, raw:
+op away. `goofi node snapshot 000000000002/out` answers an ARRAY slot's latest frame as its shape
+and range — which tells silence from signal — and STRING and TABLE as their value; a facade or
+boundary port resolves to the stream behind it. `--raw` answers the numbers, as NPY on stdout:
 
-    goofi node snapshot 000000000002/out \
+    goofi node snapshot 000000000002/out --raw \
       | python3 -c "import numpy,sys; print(numpy.load(sys.stdin.buffer).mean())"
 
-It answers an ARRAY slot's latest frame as NPY on stdout (STRING and TABLE answer JSON) — a
-facade or boundary port resolves to the stream behind it. The first ask on a never-watched slot opens its feed and answers null; ask
-again after the node's next emit. A monitor is a loop over it. `goofi layout inspect` names the
-tabs and panel ids the layout ops address; `goofi global list` says what an expression can read.
+The first ask on a never-watched slot opens its feed and answers null; ask again after the node's
+next emit. A monitor is a loop over it. `goofi layout inspect` names the tabs and panel ids the
+layout ops address; `goofi global list` says what an expression can read.
 Design layout in the tab that is open — a new tab hides your work behind a click, so add one only
 when the human asks for one. And you are often ON that layout yourself: an agent terminal is a
 panel, so mind the one the human watches you through.
@@ -124,9 +127,9 @@ required=True)` — and the engine then refuses the tick rather than calling you
 Edit the file and refresh again: it returns under `changed`, and every live instance of that type
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens.
 A node whose imports are missing registers as unavailable and names the module; a node that
-raises inside `process()` becomes that node's error, not a crash. `goofi library get <type>`
-gives you a shipped node to copy from, in either language: a `.rs` file in the same folder is a
-Rust node, built on refresh where `cargo` exists.
+raises inside `process()` becomes that node's error, not a crash.
+`goofi library get <type> --source` gives you a shipped node to copy from, in either language: a
+`.rs` file in the same folder is a Rust node, built on refresh where `cargo` exists.
 
 ## The workspace
 

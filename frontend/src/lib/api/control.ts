@@ -109,7 +109,6 @@ export interface FsEntry {
 	path: string;
 	kind: 'dir' | 'file';
 	is_gfi: boolean;
-	hidden: boolean;
 }
 
 export interface FsRoot {

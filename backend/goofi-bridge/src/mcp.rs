@@ -32,9 +32,9 @@ const SUPPORTED_PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18",
 /// batch rule.
 const DESCRIPTION: &str = "\
 Drive goofi with command lines. Each entry in `commands` is one op: `<op> [--arg value …]`, with \
-bash's own quoting rules. Call `op list` first — it answers every op with its arguments, its \
-result and its kind. A bool arg is `--x` or `--no-x`; a list arg repeats its flag; a `json` arg \
-takes one JSON string.\n\n\
+bash's own quoting rules. Call `op list` first — it answers every op with its arguments and its \
+kind; `<op> --help` then explains the one you picked. A bool arg is `--x` or `--no-x`; a list arg \
+repeats its flag; a `json` arg takes one JSON string.\n\n\
 The reply is every command's result, in order, as one JSON list. SEVERAL commands execute as \
 one batch and ONE undo step: a step is a read or an undoable write — an effect runs alone — and \
 a refused step takes the whole batch back. To wire nodes made in the same batch, choose their \

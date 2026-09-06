@@ -4,14 +4,15 @@
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 
-/// One directory level, shaped as the frontend's `DirListing`.
-pub fn list_dir(path: Option<&str>) -> Value {
+/// One directory level, shaped as the frontend's `DirListing`. A dot-name is left out unless
+/// `hidden` asks for it — the browser drew none of them, and a home directory is mostly dotfiles.
+pub fn list_dir(path: Option<&str>, hidden: bool) -> Value {
     let base = base_dir(path);
     let parent = base.parent().filter(|p| *p != base).map(display);
     json!({
         "path": display(&base),
         "parent": parent,
-        "entries": entries(&base),
+        "entries": entries(&base, hidden),
         "roots": roots(),
     })
 }
@@ -109,7 +110,7 @@ fn roots() -> Value {
 }
 
 /// Directories first, then case-insensitive by name; the browser renders the array as given.
-fn entries(base: &Path) -> Value {
+fn entries(base: &Path, hidden: bool) -> Value {
     let Ok(read) = std::fs::read_dir(base) else {
         return Value::Array(Vec::new());
     };
@@ -121,13 +122,15 @@ fn entries(base: &Path) -> Value {
         let Ok(meta) = path.metadata() else { continue };
         // A non-UTF-8 name cannot survive the JSON round trip, and lossy names collide.
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+        if !hidden && name.starts_with('.') {
+            continue;
+        }
         let is_dir = meta.is_dir();
         let row = json!({
             "name": name,
             "path": display(&path),
             "kind": if is_dir { "dir" } else { "file" },
             "is_gfi": path.extension().is_some_and(|e| e == "gfi"),
-            "hidden": name.starts_with('.'),
         });
         rows.push((!is_dir, name.to_lowercase(), row));
     }

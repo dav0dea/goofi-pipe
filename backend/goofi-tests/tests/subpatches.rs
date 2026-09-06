@@ -625,11 +625,11 @@ fn a_port_wears_a_viewer_on_the_stream_it_exposes() {
 
     // Wired, the port and the facade both answer the stream BEHIND the port, raw.
     g.until("the port's stream through the raw read", |g| {
-        Some(g.call("node snapshot", j!({ "output": ep(&inst, &outp) })))
+        Some(g.call("node snapshot", j!({ "output": ep(&inst, &outp), "raw": true })))
             .filter(|r| r["npy_b64"].is_string())
             .map(|_| ())
     });
-    assert!(g.call("node snapshot", j!({ "output": ep(&outp, "value") }))["npy_b64"].is_string(),
+    assert!(g.call("node snapshot", j!({ "output": ep(&outp, "value"), "raw": true }))["npy_b64"].is_string(),
             "the port's own address answers the same stream");
     g.call("node edit", j!({ "node": inst, "viewer": [{ "slot": &outp, "kind": "line" }] }));
     let facade = g.doc()["nodes"][&inst]["viewers"].as_str().expect("a blob, as a node's").to_string();

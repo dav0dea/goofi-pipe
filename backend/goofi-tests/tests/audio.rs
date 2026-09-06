@@ -486,7 +486,7 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(shape(&filled)[0] == 1 && crossings(&f32s(&filled)) > 0, "the buffer holds the sine: {:?}", shape(&filled));
     let snapshot = g.until("a snapshot of the gain's output", |g| {
         drive(g, TENTH);
-        let answer = g.call("node snapshot", j!({ "output": ep(hex(gain3), "out") }));
+        let answer = g.call("node snapshot", j!({ "output": ep(hex(gain3), "out"), "raw": true }));
         answer["npy_b64"].is_string().then_some(answer)
     });
     assert_eq!(snapshot["meta"]["sfreq"], 48000.0, "{snapshot}");
@@ -832,7 +832,7 @@ fn a_patch_sounds_under_the_external_clock() {
     }
     // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
     // own words, stepped past it a number, and read-only is not a param at all.
-    let row = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = |ty: &str| g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).cloned().unwrap_or_else(|| panic!("{ty} is in the palette"));
     let plugin = row("audio:GoofiFixture");
     // A plugin declares no tag: its VST3 subcategories place it, and the vendor rides the doc line.

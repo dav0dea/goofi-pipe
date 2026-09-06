@@ -176,7 +176,23 @@ pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     }
 }
 
-pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest) -> Value {
+/// How much of a palette entry to project. [`Detail::Index`] is what a catalog READ wants — the
+/// name, what it is for, and whether it can be built at all; the slots and params of the one type
+/// it then picks are `library get`'s. [`Detail::Full`] is the descriptor a client builds nodes
+/// from, and every field the index leaves out is present in it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    Index,
+    Full,
+}
+
+impl Detail {
+    pub fn full(self) -> bool {
+        self == Detail::Full
+    }
+}
+
+pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest, d: Detail) -> Value {
     let ty = goofi_node::qualify(engine, m.type_name);
     let mut info = json!({
         "type": ty,
@@ -184,29 +200,32 @@ pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest)
         "tags": m.tags.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
         "doc": m.doc,
         "available": true,
-        "missing_deps": [],
-        "editor": g.type_has_editor(engine, m.type_name),
-        "input_slots": input_slots(m),
-        "input_multi": input_multi(m),
-        "output_slots": output_slots(m),
-        // The owning engine's own normalization, so palette and instance agree.
-        "params": describe_params(g, engine, &g.default_params_of(&ty, None).unwrap_or_default(), m),
     });
     if let Some(bundle) = g.bundle_of(&ty) {
         info["bundle"] = json!(bundle);
+    }
+    if d.full() {
+        info["missing_deps"] = json!([]);
+        info["editor"] = json!(g.type_has_editor(engine, m.type_name));
+        info["input_slots"] = input_slots(m);
+        info["input_multi"] = input_multi(m);
+        info["output_slots"] = output_slots(m);
+        // The owning engine's own normalization, so palette and instance agree.
+        info["params"] =
+            describe_params(g, engine, &g.default_params_of(&ty, None).unwrap_or_default(), m);
     }
     info
 }
 
 /// The `list_nodes` palette catalog, sorted by (engine, bare name). Hidden test nodes
 /// (`_`-prefixed) are excluded.
-pub fn catalog_types(g: &Graph) -> Value {
+pub fn catalog_types(g: &Graph, d: Detail) -> Value {
     let mut items: Vec<(String, String, Value)> = g
         .library_entries()
         .into_iter()
         .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
         .map(|(engine, l)| {
-            let info = node_type_info(g, engine, l.manifest);
+            let info = node_type_info(g, engine, l.manifest, d);
             (engine.to_string(), l.manifest.type_name.to_string(), info)
         })
         .collect();
@@ -219,29 +238,30 @@ pub fn catalog_types(g: &Graph) -> Value {
     items.extend(greyed.into_iter().map(|(name, reason)| {
         let last = g.last_manifest(&name);
         let (engine, bare) = goofi_node::split_type_id(&name);
-        (
-            engine.unwrap_or_default().to_string(),
-            bare.to_string(),
-            json!({
-                "type": name,
-                "source": source_of(g, &name),
-                "bundle": g.bundle_of(&name),
-                "tags": [],
-                "doc": format!("This node could not be loaded: {reason}"),
-                "available": false,
-                "missing_deps": [reason],
-                "editor": false,
-                "input_slots": last.map_or_else(|| json!({}), input_slots),
-                "input_multi": last.map_or_else(|| json!([]), input_multi),
-                "output_slots": last.map_or_else(|| json!({}), output_slots),
-                "params": last.map_or_else(|| json!({}), |m| {
-                    let params = g.default_params_of(&name, None).unwrap_or_default();
-                    describe_params(g, engine.unwrap_or_default(), &params, m)
-                }),
-            }),
-        )
+        // The reason rides the INDEX too: a greyed row is the one row a chooser must not skim
+        // past, and it is the only row `missing_deps` says anything on.
+        let mut info = json!({
+            "type": name,
+            "source": source_of(g, &name),
+            "bundle": g.bundle_of(&name),
+            "tags": [],
+            "doc": format!("This node could not be loaded: {reason}"),
+            "available": false,
+            "missing_deps": [reason],
+        });
+        if d.full() {
+            info["editor"] = json!(false);
+            info["input_slots"] = last.map_or_else(|| json!({}), input_slots);
+            info["input_multi"] = last.map_or_else(|| json!([]), input_multi);
+            info["output_slots"] = last.map_or_else(|| json!({}), output_slots);
+            info["params"] = last.map_or_else(|| json!({}), |m| {
+                let params = g.default_params_of(&name, None).unwrap_or_default();
+                describe_params(g, engine.unwrap_or_default(), &params, m)
+            });
+        }
+        (engine.unwrap_or_default().to_string(), bare.to_string(), info)
     }));
-    items.extend(crate::vocab::boundary_catalog());
+    items.extend(crate::vocab::boundary_catalog(d));
     // By the order the engines were REGISTERED, not by their names: signal is the plane a patch
     // starts on, and an alphabet would put audio ahead of it.
     let order: Vec<&'static str> = g.engine_ids();
@@ -294,7 +314,7 @@ pub fn snapshot(
     if with_protocol {
         snap["protocol_version"] = json!(PROTOCOL_VERSION);
         // The palette rides along, so the first render needs no `list_nodes` round-trip.
-        snap["node_types"] = catalog_types(g);
+        snap["node_types"] = catalog_types(g, Detail::Full);
         snap["demo"] = json!(demo);
     }
     snap

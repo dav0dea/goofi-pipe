@@ -234,10 +234,21 @@ fn list_globals_names_the_system_globals_an_expression_can_read() {
 #[test]
 fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     let g = Goofi::new();
-    // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
-    // with the wide one rather than be assembled a second way.
-    let all = g.call("library list", j!({}))["types"].as_array().cloned().unwrap_or_default();
-    let listed = all.iter().find(|t| t["type"] == "signal:LFO").expect("the LFO is in the palette");
+    // The catalog and one entry of it are the same read at three widths, so the narrow ones must
+    // agree with the wide one rather than be assembled a second way.
+    let pick = |v: &Value| v["types"].as_array().cloned().unwrap_or_default().into_iter()
+        .find(|t| t["type"] == "signal:LFO").expect("the LFO is in the palette");
+    let index = pick(&g.call("library list", j!({})));
+    let listed = pick(&g.call("library list", j!({ "full": true })));
+
+    // The INDEX is what a reader chooses a type from, and it stops there: what the type is, never
+    // what it is wired and tuned with.
+    for key in ["type", "source", "tags", "doc", "available"] {
+        assert_eq!(index[key], listed[key], "the index and the palette disagree on `{key}`");
+    }
+    for key in ["params", "input_slots", "output_slots", "input_multi", "editor", "missing_deps"] {
+        assert!(index.get(key).is_none(), "the index carries `{key}`, which is `library get`'s");
+    }
 
     // A bare name resolves while one engine offers it, and answers the QUALIFIED row.
     let v = g.call("library get", j!({ "type": "LFO" }));
@@ -249,9 +260,14 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     // A shipped Rust node is SOURCE in the shipped root, exactly as a Python one would be.
     assert_eq!(v["provenance"], "shipped", "{v}");
     assert!(v["path"].as_str().is_some_and(|p| p.ends_with("/signal/LFO.rs")), "{v}");
-    assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
+    // The FILE is a fourth width again: named always, read only when asked for — and under
+    // `text`, because `source` on an entry is where the TYPE came from.
+    assert!(v.get("text").is_none(), "the file is `--source`'s, not every reader's: {v}");
+    let full = g.call("library get", j!({ "type": "LFO", "source": true }));
+    assert!(full["text"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{full}");
+    assert_eq!(full["source"], listed["source"], "the file never overwrites the origin: {full}");
     assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("unknown node type `Nope`"));
 }
 
@@ -279,15 +295,15 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     std::fs::create_dir_all(&nodes).unwrap();
     std::fs::write(nodes.join("boom.py"), "class Boom:\n    pass\n").unwrap();
 
-    let v = g.call("library get", j!({ "type": "Boom" }));
+    let v = g.call("library get", j!({ "type": "Boom", "source": true }));
     assert_eq!(v["provenance"], "patch", "{v}");
     assert_eq!(v["path"], goofi_core::path::to_slash(&nodes.join("boom.py")), "{v}");
-    assert_eq!(v["source"], "class Boom:\n    pass\n", "{v}");
+    assert_eq!(v["text"], "class Boom:\n    pass\n", "{v}");
     assert_eq!(v["language"], "python", "{v}");
 
     // A tree holding no such file leaves the discovery half empty and SAYS so, rather than null.
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
-    let v = g.call("library get", j!({ "type": "Boom" }));
-    assert_eq!(v["source"], Value::Null);
+    let v = g.call("library get", j!({ "type": "Boom", "source": true }));
+    assert_eq!(v["text"], Value::Null);
     assert!(v["provenance"].as_str().unwrap().contains("no source file"), "{v}");
 }

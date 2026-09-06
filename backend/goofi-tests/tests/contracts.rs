@@ -180,7 +180,7 @@ static PULSE_PARAMS: &[ParamDecl] = &[ParamDecl {
 static PULSING: NodeManifest = manifest("PulsingThing", &[], PULSE_PARAMS, true);
 
 fn row(g: &Goofi, type_name: &str) -> Value {
-    g.call("library list", j!({}))["types"].as_array().expect("a palette").iter()
+    g.call("library list", j!({ "full": true }))["types"].as_array().expect("a palette").iter()
         .find(|v| v["type"] == type_name)
         .unwrap_or_else(|| panic!("{type_name} is in the palette")).clone()
 }
@@ -257,8 +257,8 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     g.ready(b);
 
     let (_c, hello) = Client::connect(&g.serve().await).await;
-    assert_eq!(hello["node_types"], g.call("library list", j!({}))["types"],
-               "hello embeds the same palette `library list` answers");
+    assert_eq!(hello["node_types"], g.call("library list", j!({ "full": true }))["types"],
+               "hello embeds the same palette `library list --full` answers");
     for dead in ["nodes", "links", "instances"] {
         assert!(hello.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
     }
@@ -399,7 +399,7 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
             .collect()
     };
     assert!(!declared.is_empty(), "a fresh goofi offers a library");
-    let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
+    let palette = g.call("library list", j!({ "full": true }))["types"].as_array().expect("a palette").clone();
     for (ty, groups) in declared {
         let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
         assert!(row.get("category").is_none(), "{ty}: category is gone");

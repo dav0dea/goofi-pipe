@@ -76,8 +76,8 @@ Drop a file in the patch workspace's `nodes_signal/` or `nodes_audio/`, or strai
 `smooth.py` or `Smooth.rs`. The stem names the type, a leading `_` hides it, and a `.rs` names the
 SDK it is written against, which is what routes it to its engine. The nodes goofi ships are the same kind of file
 under `node-bundles/`, built at goofi's own build time and embedded, so a toolchain is needed to
-author a Rust node and never to run one; `goofi library get <type>` hands back any node's source to
-copy.
+author a Rust node and never to run one; `goofi library get <type> --source` hands back any node's
+source to copy.
 
 ```python
 import goofi
