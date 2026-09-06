@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::FromSample;
 use goofi_audio_sdk::{high, BLOCK, MAX_CHANNELS};
 use goofi_control::{flag, text, Cx, Half, Ticked};
 use goofi_core::{Data, Meta, Param};
@@ -624,17 +625,84 @@ fn open_input(
     if !clock.owns_devices() {
         return Ok(None);
     }
-    let mut config = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?.config();
+    let supported = device.default_input_config().map_err(|e| format!("`{name}`: {e}"))?;
+    let format = supported.sample_format();
+    let mut config = supported.config();
     config.sample_rate = rate as u32;
     let channels = config.channels;
-    let stream = device
-        .build_input_stream::<f32, _, _>(
+    if let Ok(configs) = device.supported_input_configs() {
+        let ranges: Vec<(u32, u32)> = configs.map(|c| (c.min_sample_rate(), c.max_sample_rate())).collect();
+        if let Some(why) = rate_refusal(config.sample_rate, &ranges) {
+            return Err(format!("`{name}`: {why}"));
+        }
+    }
+    // The word the DRIVER speaks, not the one goofi would prefer. A shared-mode host reformats to
+    // `f32` for every client, so demanding it cost nothing and was never wrong there; a host that
+    // hands over the device's own word — a Focusrite's is `i32` — failed outright on a format goofi
+    // never asked about. Reading it and converting in the callback is the whole of the difference.
+    let open = |f| match f {
+        cpal::SampleFormat::F32 => input_stream::<f32>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::I8 => input_stream::<i8>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::I16 => input_stream::<i16>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::I32 => input_stream::<i32>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::U8 => input_stream::<u8>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::U16 => input_stream::<u16>(&device, config, channels, producer.clone(), dead.clone()),
+        cpal::SampleFormat::F64 => input_stream::<f64>(&device, config, channels, producer.clone(), dead.clone()),
+        other => Err(format!("the driver's sample format {other} is one goofi does not read")),
+    };
+    let stream = open(format).map_err(|e| format!("`{name}`: {e}"))?;
+    stream.play().map_err(|e| format!("`{name}`: {e}"))?;
+    Ok(Some((stream, channels)))
+}
+
+/// Why `wanted` Hz cannot be had from a device offering `ranges`, or `None` when it can.
+///
+/// A device that cannot run at the clock's rate is still the error — one rate crosses the graph —
+/// but the refusal should say what the device DOES offer. What a card is set to is set somewhere
+/// else, in a driver's own control panel or by another application holding it, so "unsupported"
+/// almost always means "go and change it", and the message is worth nothing if it does not say to
+/// what. A host that will not enumerate says nothing here: `ranges` is empty and the open is left
+/// to fail on its own terms rather than be refused on a guess.
+fn rate_refusal(wanted: u32, ranges: &[(u32, u32)]) -> Option<String> {
+    if ranges.is_empty() || ranges.iter().any(|(lo, hi)| (*lo..=*hi).contains(&wanted)) {
+        return None;
+    }
+    let mut offered: Vec<u32> = ranges.iter().flat_map(|(lo, hi)| [*lo, *hi]).collect();
+    offered.sort_unstable();
+    offered.dedup();
+    let offered: Vec<String> = offered.iter().map(|r| r.to_string()).collect();
+    Some(format!(
+        "the clock runs at {wanted} Hz and this device offers only {} Hz. Set the device to \
+         {wanted} Hz, or clock the graph from an output that runs at one of those.",
+        offered.join(", ")
+    ))
+}
+
+/// One device callback, entering interleaved frames into the node's inbox as `f32` whatever word
+/// the driver hands over. The two numbers ahead of the samples are the crossing's own header.
+fn input_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    channels: u16,
+    producer: Feed<f32>,
+    dead: Arc<AtomicBool>,
+) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    device
+        .build_input_stream::<T, _, _>(
             config,
-            move |data, _| {
+            move |data: &[T], _| {
                 let Ok(mut inbox) = producer.try_lock() else { return };
                 let frames = data.len() / channels as usize;
                 if let Ok(chunk) = inbox.write_chunk_uninit(2 + data.len()) {
-                    chunk.fill_from_iter([f32::from(channels), frames as f32].into_iter().chain(data.iter().copied()));
+                    chunk.fill_from_iter(
+                        [f32::from(channels), frames as f32]
+                            .into_iter()
+                            .chain(data.iter().map(|s| f32::from_sample_(*s))),
+                    );
                 }
             },
             move |e| {
@@ -644,9 +712,7 @@ fn open_input(
             },
             None,
         )
-        .map_err(|e| format!("`{name}`: {e}"))?;
-    stream.play().map_err(|e| format!("`{name}`: {e}"))?;
-    Ok(Some((stream, channels)))
+        .map_err(|e| e.to_string())
 }
 
 /// A MIDI port, its callback handing every note to the node's ring.
@@ -670,4 +736,40 @@ fn open_port(name: &str, producer: Feed<Note>) -> Result<midir::MidiInputConnect
             (),
         )
         .map_err(|e| format!("`{name}`: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_refusal;
+
+    /// The case this was written for: a card pinned to one rate by its own control panel, or by
+    /// another application already holding it, against a graph clocked from somewhere else. The
+    /// old message named neither number, so it read as a defect in goofi rather than a setting.
+    #[test]
+    fn a_refusal_names_the_rate_wanted_and_the_rates_offered() {
+        let why = rate_refusal(48_000, &[(44_100, 44_100)]).expect("44100-only device refuses 48000");
+        assert!(why.contains("48000"), "the rate wanted is named: {why}");
+        assert!(why.contains("44100"), "the rate offered is named: {why}");
+    }
+
+    #[test]
+    fn every_offered_rate_is_named_once_and_in_order() {
+        let ranges = [(48_000, 48_000), (44_100, 44_100), (96_000, 96_000), (44_100, 44_100)];
+        let why = rate_refusal(22_050, &ranges).expect("22050 is offered by none of them");
+        assert!(why.contains("44100, 48000, 96000"), "sorted and deduplicated: {why}");
+    }
+
+    #[test]
+    fn a_rate_the_device_has_is_no_refusal() {
+        assert!(rate_refusal(48_000, &[(44_100, 44_100), (48_000, 48_000)]).is_none());
+        // A continuous range is a range, not two points: a host reporting 8k–192k accepts 48k.
+        assert!(rate_refusal(48_000, &[(8_000, 192_000)]).is_none());
+    }
+
+    /// A host that will not enumerate must not be turned into a refusal on a guess — the open is
+    /// left to fail on its own terms, with whatever the backend actually says.
+    #[test]
+    fn a_device_that_names_no_rate_is_not_refused() {
+        assert!(rate_refusal(48_000, &[]).is_none());
+    }
 }
