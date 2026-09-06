@@ -11,6 +11,12 @@ reading; `tonotopic` spaces by how the ear places pitch; `consonance`, `harmonic
 colour by how simple each interval is, each by a different measure of simplicity; `mds` places the
 degrees by their mutual distances; `derived` reads the colourspace off the signal itself.
 
+`physical` is the ORIGINAL reading and stands apart from the other eight: each frequency is doubled
+whole octaves until it lands in visible light — 3 Hz is 47 of them, and arrives at 710nm — and the
+colour is that wavelength's. It is the only one not budgeted to a perceptual colourspace, so it
+alone comes back saturated: where `spectral` answers a pastel `#e2c17a`, this answers `#bf0000`.
+`fund` sets what ratio 1 sounds at when the source is a tuning, since a ratio has no frequency.
+
 `calibration` is the one to leave alone. It maps a descriptor onto a percentile so unrelated
 signals do not collide, and the fitted ones ship as data files that this install does NOT carry —
 so `none` is the honest default here, and a fitted one needs `build_calibration` over your own
@@ -20,10 +26,10 @@ extractor first.
 import warnings
 
 import numpy as np
-from biotuner.biocolors import palette_from_signal, palette_from_tuning
+from biotuner.biocolors import audible2visible, palette_from_signal, palette_from_tuning, srgb_to_oklch, wavelength_to_rgb
 import goofi
 
-METHODS = ["anchored", "spectral", "tonotopic", "consonance", "harmonic", "tenney", "mds", "derived"]
+METHODS = ["anchored", "spectral", "tonotopic", "consonance", "harmonic", "tenney", "mds", "derived", "physical"]
 
 
 class BioColors(goofi.Node):
@@ -104,6 +110,9 @@ class BioColors(goofi.Node):
             amp = np.asarray([v for v in row_amps if np.isfinite(v)], dtype=np.float64)[: degrees.size]
             amp = None if amp.size < degrees.size else amp
 
+        if p.method == "physical":
+            return self._physical(degrees, p)
+
         # The calibration warns on every call when the fitted percentiles do not cover a signal,
         # which at frame rate is a stderr flood rather than news.
         with warnings.catch_warnings():
@@ -118,3 +127,16 @@ class BioColors(goofi.Node):
         colours = np.clip(np.asarray(pal.rgb, dtype=np.float64), 0.0, 1.0)
         spec = np.vstack([np.asarray(pal.spec.L), np.asarray(pal.spec.C), np.asarray(pal.spec.h)])
         return colours, spec
+
+    def _physical(self, degrees, p):
+        """The original reading: fold each frequency up whole octaves until it is light, and take
+        the colour of that wavelength. Saturated where the perceptual mappings are budgeted."""
+        hz = degrees * p.fund if p.source == "tuning" else degrees
+        colours = np.zeros((hz.size, 3))
+        for i, f in enumerate(hz):
+            if f <= 0:
+                continue
+            _thz, _hz, nm, _octaves = audible2visible(float(f))
+            colours[i] = np.asarray(wavelength_to_rgb(nm)[:3], dtype=np.float64) / 255.0
+        colours = np.clip(colours, 0.0, 1.0)
+        return colours, np.asarray(srgb_to_oklch(colours), dtype=np.float64).T
