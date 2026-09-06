@@ -633,6 +633,14 @@ impl Graph {
         }
     }
 
+    /// Re-resolve EVERY binding, once the graph is whole. A load writes its nodes in file order,
+    /// so a binding restored before the leaf it names resolved against a graph that did not hold it
+    /// yet; settled state is the only point at which every name means what the patch says.
+    fn rebind_all(&mut self) {
+        let all = self.sources_where(|_| true);
+        self.rebind(&all);
+    }
+
     /// Re-resolve and re-send every expression binding that reads global `name`, so its new value
     /// reaches the nodes reading it (only those bindings pay). Shared by the global mutators.
     fn invalidate_bindings_reading(&mut self, name: &str) {
@@ -3386,9 +3394,11 @@ impl Graph {
                 let _ = self.add_link(no, so, ni, si);
             }
         }
-        // A load writes scopes and ports straight into the maps, so it never pays the
-        // `rebind_naming` a live add does — and a binding parsed before them names nothing yet.
-        self.rebind_ports();
+        // A load writes its nodes straight into the maps, so it never pays the `rebind_naming` a
+        // live add does, and a binding parsed before the node it names resolved against nothing.
+        // Every binding is re-resolved here rather than the ports alone: a reference to a LEAF
+        // written earlier in the file is the same broken binding, and was left broken.
+        self.rebind_all();
         self.viewpoint = doc.get("viewpoint").cloned().unwrap_or(serde_json::Value::Null);
         // A corrupt arrangement costs the CHROME, never the patch. The reason is kept for the load
         // reply; an ABSENT arrangement is not a corrupt one and warns about nothing.
