@@ -11,7 +11,8 @@ import {
 	type NodeTypeInfo,
 	type ScanDiff
 } from '$lib/api/control';
-import { boundaryType } from '$lib/api/vocab';
+import { boundaryType, feeds, type SlotDtype } from '$lib/api/vocab';
+import { wantedDtype } from '$lib/inspector/expr/refs';
 import { bareName } from '$lib/editor/typeId';
 import { consoleStore } from './console.svelte';
 import { selection } from './selection.svelte';
@@ -471,6 +472,16 @@ export class GraphStore {
 	async sourceControl(group: string, element: string, reference: string, index?: number): Promise<void> {
 		await this.ctl.call('control source', index === undefined ? { group, element, reference } : { group, element, reference, index });
 		this._recordGraphCmd(`Source ${group}.${element}`);
+	}
+
+	/** Make the widget named `name` follow the first output of node `uid` that can feed it. */
+	async linkControl(name: string, uid: string): Promise<void> {
+		const gv = this.globals.find((v) => v.name === name);
+		const node = this.nodeById(uid);
+		if (!gv || !node) return;
+		const want = wantedDtype(gv.type);
+		const slot = Object.entries(node.output_slots).find(([, d]) => feeds(d as SlotDtype, want as SlotDtype))?.[0];
+		if (slot) await this.sourceControl(gv.group, gv.element, `${node.name}.${slot}`);
 	}
 
 	async removeControl(group: string, element: string): Promise<void> {

@@ -10,11 +10,11 @@
 	import { graph } from '$lib/stores/graph.svelte';
 	import type { ControlView, GlobalView, LockView } from '$lib/crdt/graphDoc';
 	import { effectiveLock, isValidIdentifier } from '$lib/crdt/graphDoc';
-	import type { ParamDescriptor, SourcePatch } from '$lib/api/types';
+	import { ui } from '$lib/stores/ui.svelte';
 	import { bindViewer } from '$lib/api/frames';
 	import type { ArrayData, DataFrame } from '$lib/codec/decode';
 	import { viewSpecForKind } from '$lib/viewers/capacity';
-	import ParamField from '$lib/inspector/ParamField.svelte';
+	import RefPicker from '$lib/inspector/RefPicker.svelte';
 	import {
 		Chip,
 		EmptyState,
@@ -25,6 +25,7 @@
 		NumberInput,
 		Popover,
 		ScrollArea,
+		Segmented,
 		Select,
 		Slider,
 		TextInput,
@@ -53,6 +54,7 @@
 
 	let props: PanelProps = $props();
 	const g = graph();
+	const uiStore = ui();
 
 	const st = $derived(asStateObject(props.state) as ControlState);
 	const group = $derived(st.group ?? '');
@@ -62,19 +64,7 @@
 	const elements = $derived(g.globals.filter((gv) => gv.group === group && gv.control));
 
 	let board: HTMLDivElement | null = $state(null);
-	let wrap: HTMLDivElement | null = $state(null);
 	let picked = $state<string | null>(null);
-	// The popover asks to close on any press outside it; only a press inside THIS panel — the bare
-	// board, or another widget — or Escape is one. A press elsewhere leaves the form standing, so a
-	// node can be brought in from another panel.
-	let pressedOutside = false;
-	function notePress(e: PointerEvent): void {
-		pressedOutside = !wrap?.contains(e.target as Node);
-		queueMicrotask(() => (pressedOutside = false));
-	}
-	function dismiss(): void {
-		if (!pressedOutside) picked = null;
-	}
 	let renaming = $state<string | null>(null);
 	const pickedView = $derived(elements.find((el) => el.name === picked) ?? null);
 	// The form hangs off the picked widget's own cell, and follows it wherever a drag lands it.
@@ -284,29 +274,21 @@
 		return TYPE_OF[kind] === 'float' ? 0.5 : zero(TYPE_OF[kind]);
 	}
 
-	/** The widget's value as the inspector field reads it: a param whose one other source is a
-	 * reference, since a global follows a producer and never an expression. */
-	function valueDescriptor(pv: GlobalView, pc: ControlView): ParamDescriptor {
-		const base = {
-			doc: null,
-			refreshable: false,
-			mode: pv.source ? ('reference' as const) : ('constant' as const),
-			expression: null,
-			reference: pv.source?.reference ?? null,
-			triggers: false,
-			error: null
-		};
-		if (pv.type === 'float' || pv.type === 'int') {
-			return { ...base, type: pv.type, value: num(pv.value), vmin: pc.min ?? 0, vmax: pc.max ?? 1 };
-		}
-		if (pv.type === 'bool') return { ...base, type: 'bool', value: pv.value === true };
-		return { ...base, type: 'string', value: String(pv.value), options: pc.kind === 'dropdown' ? (pc.options ?? []) : null };
-	}
+	// A widget is either set by hand or LINKED to one output of a node. `linking` is the link
+	// segment lit before a node is chosen, so the picker shows with nothing to show yet.
+	let linking = $state(false);
+	$effect(() => {
+		if (pickedView?.source) linking = false;
+	});
+	$effect(() => {
+		void picked;
+		linking = false;
+	});
 
-	function setSource(pv: GlobalView, patch: SourcePatch): void {
+	function setSource(pv: GlobalView, reference: string): void {
 		stopLearning();
-		if (patch.reference !== undefined) void g.sourceControl(group, pv.element, patch.reference).catch(() => {});
-		else if (patch.mode === 'constant') void g.sourceControl(group, pv.element, '').catch(() => {});
+		linking = false;
+		void g.sourceControl(group, pv.element, reference).catch(() => {});
 	}
 
 	function setIndex(pv: GlobalView, index: number): void {
@@ -367,9 +349,7 @@
 	{/if}
 {/snippet}
 
-<svelte:window onpointerdowncapture={edit && picked ? notePress : undefined} />
-
-<div class="wrap" bind:this={wrap} data-testid="control-panel" data-group={group} data-edit={edit}>
+<div class="wrap" data-testid="control-panel" data-group={group} data-edit={edit}>
 	<div class="bar">
 		<span class="title">{group}</span>
 		<IconButton
@@ -444,6 +424,7 @@
 						class="cell"
 						class:picked={edit && picked === gv.name}
 						data-testid={`control-${group}-${gv.element}`}
+						data-node-drop={edit ? gv.name : undefined}
 						style={`grid-column: ${at.x + 1} / span ${at.w}; grid-row: ${at.y + 1} / span ${at.h}`}
 						tabindex={edit ? 0 : undefined}
 						onpointerdown={(e) => down(e, gv, false)}
@@ -499,6 +480,9 @@
 								onpointerdown={(e) => down(e, gv, true)}
 							></span>
 						{/if}
+						{#if edit && uiStore.nodeDrag !== null}
+							<div class="node-drop-hint" class:active={uiStore.nodeDragWidget === gv.name} data-testid="node-drop-hint"></div>
+						{/if}
 					</div>
 				{/each}
 			</div>
@@ -512,7 +496,7 @@
 			<Popover
 				{anchor}
 				open={anchor !== null}
-				onDismiss={dismiss}
+				onDismiss={() => (picked = null)}
 				flip
 				role="dialog"
 				aria-label={`${pv.element} settings`}
@@ -542,14 +526,33 @@
 								onChange={(v) => setControl(pv, { kind: v as Kind })}
 							/>
 						</Field>
-						<ParamField
-							paramName="value"
-							descriptor={valueDescriptor(pv, pc)}
-							modes={['constant', 'reference']}
-							onCommit={(v) => commitValue(pv, v as Value)}
-							onSetSource={(patch) => setSource(pv, patch)}
-							data-testid="control-props-value"
-						/>
+						<Field label="source">
+							<Segmented
+								value={pv.source || linking ? 'link' : 'value'}
+								segments={[
+									{ id: 'value', label: 'value', title: 'Set by hand, on the widget itself', testid: 'control-source-value' },
+									{
+										id: 'link',
+										label: 'link',
+										title: 'Follow one output of a node — a MIDI controller, say. Drop the node onto the widget, or pick it',
+										testid: 'control-source-link'
+									}
+								]}
+								onChange={(id) => (id === 'link' ? (linking = true) : pv.source ? setSource(pv, '') : (linking = false))}
+								aria-label="source"
+								data-testid="control-source"
+							/>
+						</Field>
+						{#if pv.source || linking}
+							<Field label="link" doc="The node output the widget follows; a node dropped onto the widget lands here">
+								<RefPicker
+									value={pv.source?.reference ?? null}
+									paramType={pv.type}
+									onCommit={(r) => setSource(pv, r)}
+									testid="control-props-link"
+								/>
+							</Field>
+						{/if}
 						{#if pv.source}
 							<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128">
 								<NumberInput value={pv.source.index ?? 0} min={0} step={1} onChange={(v) => setIndex(pv, v)} />

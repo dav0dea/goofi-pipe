@@ -18,7 +18,7 @@ class MidiIn(goofi.Node):
     """Receive MIDI: the velocity of every held note, and the value of every controller."""
 
     TAGS = ["input", "midi"]
-    OUTPUTS = {"notes": goofi.DataType.ARRAY, "cc": goofi.DataType.ARRAY}
+    OUTPUTS = {"cc": goofi.DataType.ARRAY, "notes": goofi.DataType.ARRAY}
     PRODUCER = True
     PARAMS = {
         "midi": {

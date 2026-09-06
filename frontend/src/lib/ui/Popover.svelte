@@ -44,9 +44,11 @@
 			pos = clampToViewport(ar, { width: m.width, height: m.height }, overlayViewport(), { flip });
 			placed = true;
 		};
-		// Re-measured on every resize, not once per open: the consumer's content can grow while open.
+		// Re-measured on every resize, not once per open: the consumer's content can grow while open,
+		// and so can the anchor.
 		const ro = new ResizeObserver(place);
 		ro.observe(el);
+		ro.observe(a);
 		// …and on every visual-viewport change: a soft keyboard shrinks the space without resizing us.
 		const vv = window.visualViewport;
 		vv?.addEventListener('resize', place);

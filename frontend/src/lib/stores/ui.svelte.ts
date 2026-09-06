@@ -34,6 +34,9 @@ export class UIStore {
 	/** Id of the linkable panel the dragged node is over, or null. */
 	nodeDragTarget = $state<string | null>(null);
 
+	/** Name of the control widget the dragged node is over, or null. */
+	nodeDragWidget = $state<string | null>(null);
+
 	/** Input slots an in-flight cable drag is near ({@link slotKey} keys); replaced, never mutated. */
 	cableNear = $state.raw<ReadonlySet<string>>(new Set());
 

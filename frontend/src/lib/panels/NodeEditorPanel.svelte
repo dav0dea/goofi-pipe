@@ -550,12 +550,26 @@
 		return null;
 	}
 
-	/** A node-accepting panel under the cursor, other than this editor. */
-	function linkTargetAt(event: MouseEvent | TouchEvent): { id: string; type: string } | null {
+	/** The control widget under a screen point, in a panel whose group is in edit mode. */
+	function widgetUnder(x: number, y: number): string | null {
+		for (const el of document.querySelectorAll<HTMLElement>('[data-node-drop]')) {
+			const r = el.getBoundingClientRect();
+			if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return el.dataset.nodeDrop ?? null;
+		}
+		return null;
+	}
+
+	type LinkTarget = { panel: string } | { widget: string };
+
+	/** What a dragged node would link into under the cursor: a widget, or a node-accepting panel
+	 * other than this editor. */
+	function linkTargetAt(event: MouseEvent | TouchEvent): LinkTarget | null {
 		const p = eventPoint(event);
 		if (!p) return null;
+		const widget = widgetUnder(p.clientX, p.clientY);
+		if (widget) return { widget };
 		const t = panelUnder(p.clientX, p.clientY);
-		return t && t.id !== panelId && getPanelType(t.type)?.acceptsNode === true ? t : null;
+		return t && t.id !== panelId && getPanelType(t.type)?.acceptsNode === true ? { panel: t.id } : null;
 	}
 
 	/** Put the dragged nodes back where the drag started. */
@@ -582,7 +596,8 @@
 		const target = linkTargetAt(args.event);
 		if (target) {
 			// A reference drag, not a coordinate move: the node snaps back and a ghost follows.
-			uiStore.nodeDragTarget = target.id;
+			uiStore.nodeDragTarget = 'panel' in target ? target.panel : null;
+			uiStore.nodeDragWidget = 'widget' in target ? target.widget : null;
 			// `eventPoint`, because a TouchEvent carries no `clientX` of its own.
 			const p = eventPoint(args.event) ?? { clientX: 0, clientY: 0 };
 			linkGhost = { x: p.clientX, y: p.clientY, name: g.nodeById(args.nodes[0]?.id ?? '')?.name ?? '' };
@@ -591,6 +606,7 @@
 			return;
 		}
 		uiStore.nodeDragTarget = null;
+		uiStore.nodeDragWidget = null;
 		linkGhost = null;
 		const current = new Map<string, { x: number; y: number }>();
 		for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
@@ -617,8 +633,9 @@
 		if (target) {
 			revertDragged(dragged);
 			for (const id of dragged) pinned.delete(id);
-			const name = args.nodes[0]?.id;
-			if (name) ws.linkNodeToPanel(target.id, name);
+			const uid = args.nodes[0]?.id ?? '';
+			if ('panel' in target) ws.linkNodeToPanel(target.panel, uid);
+			else void g.linkControl(target.widget, uid).catch(() => {});
 		} else {
 			const current = new Map<string, { x: number; y: number }>();
 			for (const n of args.nodes) current.set(n.id, { x: n.position.x, y: n.position.y });
@@ -651,6 +668,7 @@
 		}
 		uiStore.nodeDrag = null;
 		uiStore.nodeDragTarget = null;
+		uiStore.nodeDragWidget = null;
 		linkGhost = null;
 		snapGuides = [];
 	}
@@ -1072,6 +1090,7 @@
 			if (uiStore.nodeDrag !== null) {
 				uiStore.nodeDrag = null;
 				uiStore.nodeDragTarget = null;
+				uiStore.nodeDragWidget = null;
 			}
 		};
 	});

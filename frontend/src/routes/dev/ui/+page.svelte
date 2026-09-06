@@ -20,6 +20,7 @@
 		Dialog,
 		Badge,
 		Chip,
+		Segmented,
 		StatusDot,
 		EmptyState,
 		ChoiceGrid,
@@ -87,6 +88,7 @@
 	let dialogOpen = $state(false);
 
 	let chipCount = $state(0);
+	let segment = $state('a');
 
 	function doRefresh(): void {
 		refreshing = true;
@@ -485,6 +487,30 @@
 			{#each badgeTones as tone (tone)}
 				<Badge {tone} data-testid={`ui-badge-${tone}`}>{tone}</Badge>
 			{/each}
+		</div>
+	</section>
+
+	<section>
+		<h2>Segmented (one lit segment, chrome-height)</h2>
+		<div class="form">
+			<Segmented
+				value={segment}
+				segments={[
+					{ id: 'a', label: 'A', name: 'first' },
+					{ id: 'b', label: 'B', name: 'second' },
+					{ id: 'c', label: 'C', name: 'third' }
+				]}
+				onChange={(id) => (segment = id)}
+				aria-label="sample"
+				data-testid="ui-segmented"
+			/>
+			<Segmented
+				value={segment === 'a' ? 'lone' : null}
+				segments={[{ id: 'lone', label: 'lone' }]}
+				onChange={() => (segment = segment === 'a' ? 'b' : 'a')}
+				aria-label="lone sample"
+				data-testid="ui-segmented-lone"
+			/>
 		</div>
 	</section>
 
