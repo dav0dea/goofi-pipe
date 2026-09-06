@@ -320,12 +320,16 @@ fn a_save_packs_the_live_mount_refuses_to_pack_into_it_and_never_truncates_a_goo
     }
 
     // Two names that fold to one file: packed here and unpacked on macOS, the second would take
-    // the first's place and the load would report success. Both ends refuse instead.
+    // the first's place and the load would report success. Both ends refuse instead — but such a
+    // PAIR only exists where the filesystem tells the two apart, and where it folds them the
+    // second write IS the first file, so there is nothing for a save to refuse.
     std::fs::write(mount.join("Agent.md"), b"the other one").unwrap();
-    let clash = tmp.path().join("clash.gfi");
-    let err = goofi_bridge::save_archive(&clash, "version: 7\n", &mount).unwrap_err();
-    assert!(err.contains("fold case"), "the refusal names the reason: {err}");
-    assert!(!clash.exists(), "and it writes nothing");
+    if std::fs::read(mount.join("agent.md")).is_ok_and(|b| b == b"notes") {
+        let clash = tmp.path().join("clash.gfi");
+        let err = goofi_bridge::save_archive(&clash, "version: 7\n", &mount).unwrap_err();
+        assert!(err.contains("fold case"), "the refusal names the reason: {err}");
+        assert!(!clash.exists(), "and it writes nothing");
+    }
     std::fs::remove_file(mount.join("Agent.md")).unwrap();
 
     // The same pair reaching a load from anywhere else — an older goofi, another tool.

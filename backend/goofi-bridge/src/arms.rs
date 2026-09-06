@@ -1559,7 +1559,11 @@ fn load_patch(state: &AppState, payload: &Value) -> Result<Value, String> {
         // Commit, now that nothing left can fail: the loaded patch's workspace becomes the live
         // one, and the replaced mount goes with the harnesses spawned into it.
         let replaced = std::mem::replace(&mut *state.mount.lock().unwrap(), fresh);
-        state.retire_mount(&replaced);
+        // Off this thread wherever there IS a wait: this runs under the graph lock, and a harness
+        // that will not leave takes the whole grace — five seconds no op may be held for.
+        if let Some(finish) = state.reclaim(replaced) {
+            std::thread::spawn(finish);
+        }
         // Sent under the lock, not queued for the dispatcher: the status worker's next stage delta
         // needs this lock, so nothing it says can overtake the snapshot it is a delta over.
         let _ = state.events.send(event("harness_changed", state.harnesses.roster(&agents)));
