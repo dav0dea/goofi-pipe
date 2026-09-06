@@ -104,7 +104,11 @@ impl Inbox {
             if self.left > 0 {
                 match self.ring.read_chunk(self.chans) {
                     Ok(sample) => {
-                        for (c, v) in sample.into_iter().enumerate() {
+                        // `chans` is read off the RING, so it is the producer's word and not this
+                        // side's: a device wider than `MAX_CHANNELS` — an ASIO card answers with
+                        // eighteen — would index past `last` and panic in the audio callback. The
+                        // extra channels are dropped here rather than trusted.
+                        for (c, v) in sample.into_iter().enumerate().take(self.last.len()) {
                             self.last[c] = v;
                         }
                         self.left -= 1;

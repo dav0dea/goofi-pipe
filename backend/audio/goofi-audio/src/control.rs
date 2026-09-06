@@ -608,6 +608,11 @@ fn open_input(
     let format = supported.sample_format();
     let mut config = supported.config();
     config.sample_rate = rate as u32;
+    // The engine carries `MAX_CHANNELS`, and a device may be wider: an ASIO card answers with every
+    // channel the interface has — eighteen on a Scarlett 4pre — where WASAPI answers with the pair
+    // an endpoint is. Ask for what can be carried rather than for everything, so the extra channels
+    // are never opened instead of being read and dropped.
+    config.channels = config.channels.min(MAX_CHANNELS);
     let channels = config.channels;
     if let Ok(configs) = device.supported_input_configs() {
         let ranges: Vec<(u32, u32)> = configs.map(|c| (c.min_sample_rate(), c.max_sample_rate())).collect();

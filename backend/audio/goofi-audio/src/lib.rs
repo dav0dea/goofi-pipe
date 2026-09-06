@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use goofi_audio_sdk::host::Loaded;
-use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
+use goofi_audio_sdk::{AudioNode, BLOCK, MAX_CHANNELS, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
     DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, NodeView,
@@ -39,6 +39,9 @@ pub(crate) const RATE: f64 = 48_000.0;
 /// A ceiling on a device open, which runs under the graph lock: a sound server that does not
 /// answer must not wedge every op.
 const OPEN_WAIT: Duration = Duration::from_secs(2);
+
+/// The same ceiling for an ASIO driver, which loads a vendor runtime before it answers.
+const ASIO_OPEN_WAIT: Duration = Duration::from_secs(10);
 
 /// What drives the blocks: the harness's `drive(frames)`, or the device the `AudioOut` nodes name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,9 +118,13 @@ impl DeviceClock {
                 let _ = done.send(());
             })
             .map_err(|e| format!("could not start the clock thread: {e}"))?;
+        // An ASIO driver loads the vendor's whole runtime before it answers, which routinely
+        // outlasts the ceiling a sound server needs; the ceiling exists so a host that never
+        // answers cannot wedge every op, and that is still true at the longer one.
+        let wait = if crate::host::asio_driver(name).is_some() { ASIO_OPEN_WAIT } else { OPEN_WAIT };
         let (rate, channels) = on_open
-            .recv_timeout(OPEN_WAIT)
-            .map_err(|_| format!("`{name}` did not open within {} s", OPEN_WAIT.as_secs()))??;
+            .recv_timeout(wait)
+            .map_err(|_| format!("`{name}` did not open within {} s", wait.as_secs()))??;
         Ok((DeviceClock { name: name.to_string(), channels, go: Some(go), done: on_done }, rate))
     }
 
@@ -150,24 +157,64 @@ pub(crate) const NO_DEVICE: &str = "the external clock owns no device";
 fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(cpal::Stream, f64, u16), String> {
     let device = host::device(host::Kind::Output, name)?;
     let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
+    let format = supported.sample_format();
     // The host's own buffer, never a size of ours: `render_into` is size-agnostic, and a request of
     // ours underran while the client was unoptimized. The 2 s this costs is a roadmap item.
-    let config = supported.config();
+    let mut config = supported.config();
+    config.channels = config.channels.min(MAX_CHANNELS);
     let rate = f64::from(config.sample_rate);
     let channels = config.channels;
+    // The word the DEVICE speaks, as on the input side: a shared-mode host takes `f32` from every
+    // client, and a host that hands over the device's own — a Focusrite's is `i32` — refused the
+    // stream outright. The runtime still renders `f32` and knows nothing of this.
+    let open = |f| match f {
+        cpal::SampleFormat::F32 => output_stream::<f32>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::I8 => output_stream::<i8>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::I16 => output_stream::<i16>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::I32 => output_stream::<i32>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::U8 => output_stream::<u8>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::U16 => output_stream::<u16>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        cpal::SampleFormat::F64 => output_stream::<f64>(&device, config, runtime.clone(), stats.clone(), waker.clone()),
+        other => Err(format!("the device's sample format {other} is one goofi does not write")),
+    };
+    let stream = open(format).map_err(|e| format!("`{name}`: {e}"))?;
+    Ok((stream, rate, channels))
+}
+
+/// The clock's callback, rendering `f32` and handing the device whatever word it speaks.
+///
+/// `render_into` writes `f32` and nothing else — the whole engine is `f32` — so a device of another
+/// word is served through a scratch buffer that grows once to the host's period and is then reused.
+/// Allocating in the callback would be a xrun waiting to happen; `resize` past the first block is
+/// not an allocation.
+fn output_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    runtime: Arc<Mutex<Runtime>>,
+    stats: Arc<Stats>,
+    waker: Arc<DrainWaker>,
+) -> Result<cpal::Stream, String>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
     let died = stats.clone();
-    let stream = device
-        .build_output_stream::<f32, _, _>(
+    let mut scratch: Vec<f32> = Vec::new();
+    device
+        .build_output_stream::<T, _, _>(
             config,
-            move |data, _| {
+            move |data: &mut [T], _| {
                 stats.callbacks.fetch_add(1, Ordering::Relaxed);
                 let started = Instant::now();
+                scratch.resize(data.len(), 0.0);
                 match runtime.try_lock() {
-                    Ok(mut rt) => rt.render_into(data),
+                    Ok(mut rt) => rt.render_into(&mut scratch),
                     Err(_) => {
-                        data.fill(0.0);
+                        scratch.fill(0.0);
                         stats.xruns.fetch_add(1, Ordering::Relaxed);
                     }
+                }
+                for (out, v) in data.iter_mut().zip(scratch.iter()) {
+                    *out = T::from_sample_(*v);
                 }
                 stats.render_max_us.fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
             },
@@ -183,8 +230,7 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
             },
             None,
         )
-        .map_err(|e| format!("`{name}`: {e}"))?;
-    Ok((stream, rate, channels))
+        .map_err(|e| e.to_string())
 }
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,

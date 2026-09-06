@@ -11,6 +11,9 @@
 //! carries that decision. `--features asio`, with `CPAL_ASIO_DIR` naming the unpacked SDK, is the
 //! whole of the opt-in; without it every function here is the platform default it always was.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use cpal::traits::{DeviceTrait, HostTrait};
 
 /// What an ASIO device's name wears. The two hosts name one card differently but not always, and a
@@ -79,6 +82,21 @@ fn asio() -> Option<cpal::Host> {
     None
 }
 
+/// Every ASIO device seen while its driver could still be loaded, by the name a patch stores.
+///
+/// Enumerating ASIO stops at the FIRST driver that is not the one already loaded — cpal returns
+/// `None` there rather than spinning through the rest — so once any stream holds a driver the list
+/// is empty, and even that driver's own device cannot be found again. An input opened after an
+/// output would therefore fail with `no input device`, naming the very device that is playing.
+///
+/// A `Device` is a handle and not a session: it stays valid while its driver is loaded, and one
+/// ASIO device serves input and output alike. So the handle seen before the stream opened is the
+/// one to reuse, and this is where it is kept.
+fn seen() -> &'static Mutex<HashMap<String, cpal::Device>> {
+    static SEEN: OnceLock<Mutex<HashMap<String, cpal::Device>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn name_of(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|d| d.name().to_string())
 }
@@ -95,7 +113,12 @@ pub(crate) fn named(kind: Kind) -> Vec<(String, cpal::Device)> {
     let mut out: Vec<(String, cpal::Device)> =
         kind.all(&platform()).into_iter().filter_map(|d| name_of(&d).map(|n| (n, d))).collect();
     if let Some(host) = asio() {
-        out.extend(kind.all(&host).into_iter().filter_map(|d| name_of(&d).map(|n| (format!("{ASIO}{n}"), d))));
+        let asio: Vec<(String, cpal::Device)> =
+            kind.all(&host).into_iter().filter_map(|d| name_of(&d).map(|n| (format!("{ASIO}{n}"), d))).collect();
+        if let Ok(mut seen) = seen().lock() {
+            seen.extend(asio.iter().map(|(n, d)| (n.clone(), d.clone())));
+        }
+        out.extend(asio);
     }
     out
 }
@@ -106,11 +129,17 @@ pub(crate) fn device(kind: Kind, name: &str) -> Result<cpal::Device, String> {
     if name == crate::DEFAULT_DEVICE {
         return kind.default_of(&platform()).ok_or_else(|| format!("no default {} device", kind.word()));
     }
-    named(kind)
-        .into_iter()
-        .find(|(n, _)| n == name)
-        .map(|(_, d)| d)
-        .ok_or_else(|| format!("no {} device `{name}`", kind.word()))
+    if let Some((_, device)) = named(kind).into_iter().find(|(n, _)| n == name) {
+        return Ok(device);
+    }
+    // Not in the list, and for an ASIO name that is the expected answer once a stream holds the
+    // driver — see [`seen`]. A device remembered from before is the same device.
+    if asio_driver(name).is_some() {
+        if let Some(device) = seen().lock().ok().and_then(|s| s.get(name).cloned()) {
+            return Ok(device);
+        }
+    }
+    Err(format!("no {} device `{name}`", kind.word()))
 }
 
 #[cfg(test)]
