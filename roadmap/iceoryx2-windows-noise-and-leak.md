@@ -99,6 +99,15 @@ file. Nothing else on that job is red, and neither ubuntu nor macOS fails any of
 | `a_patch_sounds_under_the_external_clock` | the `Directory::new` PANIC |
 | four `signals` scenarios | `timed out waiting for …` |
 
+The next run, on 2026-09-06 with the audio defect fixed, put the same eight up again with one
+NEW signature that is worth more than the other seven: `a_complexity_node_reads_a_real_signal…`
+failed on ARITHMETIC — Hjorth complexity of an 8 Hz sine read 1.2204651 against 0.9..1.1, where a
+pure sine is exactly 1. A full 256-sample window that is not a sine is a window that LOST A BLOCK
+and was stitched across the gap, and the PAL's `dirent` errors bracket that panic in its own
+stdout. So on Windows this family is not only "a node will not start": it can deliver quietly
+wrong DATA, and it took a numeric oracle to see it. The same run's `Directory::new` panic landed
+on the audio test again, so the thrash theory below is answered: no.
+
 The two transport ones are the burst again — 24 and 40 iceoryx2 nodes in a loop — and the four
 timeouts are nodes whose services never came up, which is the create failure worn quietly.
 
@@ -131,7 +140,4 @@ Two things this adds to what is above:
   symptom-hiding. Still parked, but the 2026-09-06 run prices it: SEVEN of the eight failures wear a
   create-time `Err` a retry could absorb, and the eighth is the `panic!`, which nothing can. So it is
   not "half a fix" — it is most of the job, against the one signature it can never reach.
-  What the same run also shows is that the panic follows THRASH rather than the clock: it landed on
-  the one test that was driving tenths for ninety seconds against an `AudioPlayback` defect fixed
-  the same day. Whether Windows still panics with that loop gone is the cheap thing to learn next,
-  and it wants no code at all — just the next run.
+  It also cannot reach the spliced window above, which is the signature that matters most.

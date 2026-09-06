@@ -139,6 +139,9 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     g.call("global entry source", j!({ "name": "desk.level", "reference": "" }));
     assert!(g.doc()["globals"]["desk.level"].get("source").is_none(), "an empty reference clears it");
     assert_eq!(g.call("global entry edit", j!({ "name": "desk.level", "value": 0.5 }))["value"], 0.5);
+    // …and it STAYS: the producer is still running, and a pick it made before the clear must not
+    // land on top of what the author typed after it.
+    assert!(g.stays(|g| g.doc()["globals"]["desk.level"]["value"] == j!(0.5)), "the cleared source writes no more");
 
     // A panel made a control panel with no group of its own is born naming a fresh one.
     g.call("layout panel edit", j!({ "panel": first_panel(&g), "type": "viewer" }));
