@@ -23,17 +23,27 @@ platform bodies and the swizzle — has never executed anywhere. CI compiles it 
   invisible with no message. Left because goofi writes the extension itself at every door it owns,
   and because the real finding underneath is that four sites — `scan.rs`, `bridge/lib.rs`, two build
   scripts — each spell "is this a `.rs`" for themselves. One owner first, then the folding.
-- **Two Playwright steps fail on CI and on no machine here.** `integrity.spec.ts` reports
-  "frames reached the tab" timing out after 30 s, and it has now done so on a different viewport
-  project in three runs — always `tablet`. It is not the viewer rate cap: the same failure stands on
-  `pr-audio-watchdog`, whose base predates that commit. It is not the viewport gate either: a probe
-  measured both cards well inside the pane on all four projects, tablet most comfortably of them
-  (a card at x=276..474 in a pane 597 wide), and PHONE passes with that card half outside. Nothing
-  here reproduces it, and a deadline raised without a reason is how a real defect gets hidden.
 - **`Loop::open()` cannot fail on Windows**, so the "the display is gone" state is unreachable
   there; the agent e2e scenario is POSIX-only by construction; `patchfile.rs` writes an unquoted
   filename into `Content-Disposition` — now sanitized, but the header still has no `filename*`
   form, so a non-ASCII patch name reaches the browser mangled.
+
+## Fixed, third round
+
+- **The tablet Playwright failure was never about the tablet.** `touch.spec.ts` turns the sole panel
+  into a CONTROL panel and never hands it back, and a panel's type lives in the running patch — so
+  the next spec on that worker booted into a page with no node editor, nothing subscribed, and
+  `integrity`'s streaming poll timed out 30 s later on whichever project drew the short straw. Which
+  project that is follows the worker count, which is why it read as a viewport. The panel type is the
+  fifth leakable global in `expectPristineWorkspace` now, named in 2.1 s instead of 30, and
+  `restorePanelType` is the `finally` half. Reproduced locally at `GOOFI_E2E_WORKERS=1`, both ways.
+- **A looped WAV file left a DC offset on the output forever.** `AudioPlayback` sets `ended` at the
+  end of a file and lays one quiet chunk with it, because the DSP half HOLDS its last sample on an
+  empty ring. A wrap under `loop` seeks back and left `ended` set, so the next real end laid no quiet
+  and the engine held the file's last sample for good. macOS caught it and Linux did not, because
+  what a take ends on depends on where a control landed inside a block: the scenario now records a
+  SQUARE into the tail of its take, so the held sample is full scale and the step fails on any
+  machine that has the defect. Verified both ways on Linux.
 
 ## Fixed, second round
 

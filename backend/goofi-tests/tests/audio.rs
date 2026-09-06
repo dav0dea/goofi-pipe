@@ -366,11 +366,17 @@ fn a_patch_sounds_under_the_external_clock() {
     // runs out, loops, and resets — and a name that is not there says so.
     g.set_param(out, "record", "file", "sweep");
     g.set_param(out, "record", "on", true);
-    drive(&g, 4 * TENTH);
+    // A long HEAD: three steps below wait for the A this records, and what the file plays past it
+    // never comes back — so the window has to outlast a command that lands a tenth or two late.
+    drive(&g, 8 * TENTH);
     g.set_param(osc3, "osc", "pitch", 1.75);
     sounds(&g, "an octave up, into the same take", |x| near(crossings(x), 176));
+    // A square into the TAIL of the take, and the sine back after it: what a file ends on is what
+    // a player that wrongly believes it has already ended holds forever, and a sine can end near zero.
+    g.set_param(osc3, "osc", "waveform", "square");
     drive(&g, 3 * TENTH);
     g.set_param(out, "record", "on", false);
+    g.set_param(osc3, "osc", "waveform", "sine");
     g.call("link remove", j!({ "from": ep(hex(gain3), "out"), "to": ep(hex(out), "input") }));
     let player = g.add("AudioPlayback");
     g.link(player, "out", out, "input");

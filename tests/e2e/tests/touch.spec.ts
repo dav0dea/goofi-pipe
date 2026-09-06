@@ -12,7 +12,7 @@
 // tests that each name one.
 
 import { test, expect, type Page } from '@playwright/test';
-import { waitForApp } from '../lib/app';
+import { restorePanelType, waitForApp } from '../lib/app';
 import { addNode, tapNode, waitForNode } from '../lib/goofi';
 import { emptySpot, touchSession } from '../lib/touch';
 import { pane } from '../lib/inspector';
@@ -270,6 +270,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			await expect(page.getByTestId('toast'), 'learn with no MIDI node says so').toContainText('MIDI');
 		});
 	} finally {
+		await restorePanelType(page);
 		await page.evaluate(async () => {
 			const g = (window as any).goofi;
 			await g.commands.lockGlobalGroup('desk', { config: false, value: false });

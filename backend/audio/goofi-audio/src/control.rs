@@ -305,6 +305,9 @@ impl AudioHalf {
                 if got == 0 {
                     if looping {
                         dead = file.seek(0).err();
+                        // A wrap is not an end: leaving this set costs the quiet chunk the NEXT
+                        // end needs, and the DSP half then holds the file's last sample for good.
+                        play.ended = false;
                         continue;
                     }
                     if !play.ended {
