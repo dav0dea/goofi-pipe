@@ -1,0 +1,106 @@
+import { describe, expect, it } from 'vitest';
+import type { ParamDescriptor } from '$lib/api/types';
+import { isModified, onlyTouched, touchedCount, touchedRows } from './paramTouched';
+
+const base = {
+	doc: null,
+	refreshable: false,
+	expression: null,
+	mode: 'constant',
+	reference: null,
+	triggers: false,
+	error: null
+} as const;
+
+const float = (value: number, dflt: number): ParamDescriptor =>
+	({ ...base, type: 'float', value, default: dflt, vmin: 0, vmax: 1 }) as ParamDescriptor;
+
+describe('isModified', () => {
+	it('is false for a param still sitting on its declared default', () => {
+		expect(isModified(float(0.5, 0.5))).toBe(false);
+	});
+
+	it('is true once the value has moved — which is how a knob turned in a plugin window shows up', () => {
+		expect(isModified(float(0.7, 0.5))).toBe(true);
+	});
+
+	it('is true for a driven param even when its value happens to equal the default', () => {
+		const driven = { ...float(0.5, 0.5), mode: 'expression', expression: 't' } as ParamDescriptor;
+		expect(isModified(driven)).toBe(true);
+	});
+
+	it('is false for a pulse, which holds no value to compare', () => {
+		const pulse = { ...base, type: 'pulse', value: null, default: null } as ParamDescriptor;
+		expect(isModified(pulse)).toBe(false);
+	});
+
+	it('treats a string param off its default as touched', () => {
+		const s = { ...base, type: 'string', value: 'hard', default: 'soft', options: null } as ParamDescriptor;
+		expect(isModified(s)).toBe(true);
+	});
+});
+
+describe('touchedCount', () => {
+	it('counts across every group, so the badge matches what a filter would show', () => {
+		expect(
+			touchedCount({
+				osc: { tune: float(0.2, 0.5), shape: float(0.5, 0.5) },
+				env1: { attack: float(0.9, 0.5) }
+			})
+		).toBe(2);
+	});
+
+	it('is zero for a node nobody has touched', () => {
+		expect(touchedCount({ osc: { tune: float(0.5, 0.5) } })).toBe(0);
+	});
+
+	it('is zero for no node at all', () => {
+		expect(touchedCount(undefined)).toBe(0);
+	});
+});
+
+describe('touchedRows', () => {
+	const groups = {
+		osc: { tune: float(0.2, 0.5), shape: float(0.5, 0.5) },
+		env1: { attack: float(0.9, 0.5) },
+		lfo1: { rate: float(0.5, 0.5) }
+	};
+
+	it('spans every group, so a param touched in a tab nobody is looking at still shows', () => {
+		expect(touchedRows(groups).map((r) => `${r.group}.${r.name}`)).toEqual(['osc.tune', 'env1.attack']);
+	});
+
+	it('agrees with the count, which is what made the empty list a bug rather than a view', () => {
+		expect(touchedRows(groups)).toHaveLength(touchedCount(groups));
+	});
+
+	it('follows the given group order', () => {
+		expect(touchedRows(groups, ['env1', 'osc']).map((r) => r.group)).toEqual(['env1', 'osc']);
+	});
+
+	it('is empty for an untouched node, and for no node', () => {
+		expect(touchedRows({ osc: { tune: float(0.5, 0.5) } })).toEqual([]);
+		expect(touchedRows(undefined)).toEqual([]);
+	});
+});
+
+describe('onlyTouched', () => {
+	const rows = [
+		{ group: 'osc', name: 'tune', descriptor: float(0.2, 0.5) },
+		{ group: 'osc', name: 'shape', descriptor: float(0.5, 0.5) },
+		{ group: 'env1', name: 'attack', descriptor: float(0.9, 0.5) }
+	];
+
+	it('narrows a search to what the filter admits, rather than reopening the whole node', () => {
+		expect(onlyTouched(rows).map((r) => r.name)).toEqual(['tune', 'attack']);
+	});
+
+	it('leaves an already-touched set alone', () => {
+		const touched = onlyTouched(rows);
+		expect(onlyTouched(touched)).toEqual(touched);
+	});
+
+	it('is empty when nothing in the hits was touched', () => {
+		expect(onlyTouched([{ group: 'osc', name: 'shape', descriptor: float(0.5, 0.5) }])).toEqual([]);
+	});
+});

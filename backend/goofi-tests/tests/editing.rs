@@ -538,13 +538,49 @@ fn a_reply_says_what_the_write_actually_did() {
     let coerced = g.set_param(buf, "buffer", "size", 512.6);
     assert_eq!(coerced["value"], 513, "an int param rounds: {coerced}");
 
+    // Addressed by uid, answered by NAME: what comes back is what the next op takes.
     let wired = g.call("link add", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "input") }));
-    assert_eq!((&wired["from"], &wired["dtype"]), (&j!(ep(&osc, "out")), &j!("ARRAY")), "{wired}");
+    let name = born["name"].as_str().unwrap();
+    assert_eq!((&wired["from"], &wired["dtype"]), (&j!(ep(name, "out")), &j!("ARRAY")), "{wired}");
 
     assert_eq!(g.call("node remove", j!({ "node": GHOST }))["removed"], false);
     assert_eq!(g.call("node remove", j!({ "node": osc }))["removed"], true);
     assert_eq!(g.call("link remove", j!({ "from": ep(&osc, "out"), "to": ep(hex(buf), "input") }))["removed"],
                false);
+
+    // A NAME is the front door, and a batch is where that pays: the second line addresses what
+    // the first built, with no uid to carry between them.
+    let made = g.call("compound", j!({ "ops": [
+        { "op": "node add", "payload": { "type": "LFO", "name": "src" } },
+        { "op": "node add", "payload": { "type": "Buffer", "name": "win" } },
+        { "op": "link add", "payload": { "from": "src/out", "to": "win/input" } },
+    ] }));
+    assert_eq!(made[0]["name"], "src", "the name asked for is the name minted: {made}");
+    assert_eq!(made[2]["from"], "src/out", "{made}");
+    assert_eq!(made[2]["to"], "win/input", "{made}");
+
+    // Every op takes it, and every read gives it back — the uid is a second door, never the first.
+    assert_eq!(g.call("node param edit",
+                      j!({ "node": "win", "param": "buffer/size", "value": 32 }))["value"], 32);
+    let uid = made[1]["uid"].as_str().unwrap().to_string();
+    assert_eq!(g.call("node param edit",
+                      j!({ "node": &uid, "param": "buffer/size", "value": 64 }))["value"], 64);
+    let drawn = g.call("nodes inspect", j!({}))["text"].as_str().unwrap().to_string();
+    assert!(drawn.contains("src -- out→input --> win"), "the diagram wires names: {drawn}");
+    assert!(!drawn.contains(&uid), "…and shows no uid at all: {drawn}");
+
+    // A fault is reported against the name too, so the read that finds it hands back the handle
+    // that fixes it.
+    g.call("node param edit", j!({ "node": "src", "param": "common/max_frequency",
+                                   "expression": "@@@ not an expression @@@" }));
+    let errs = g.call("session status", j!({}))["errors"].as_array().cloned().unwrap_or_default();
+    assert!(errs.iter().any(|e| e["node"] == "src"), "the fault names the node: {errs:?}");
+
+    // And a rename moves the handle with it: the old name is nobody's, the new one is the node's.
+    g.call("node edit", j!({ "node": "win", "name": "kept" }));
+    assert!(g.refuse("node state", j!({ "node": "win" })).contains("win"));
+    assert_eq!(g.call("node state", j!({ "node": "kept" }))["text"].as_str()
+                   .map(|t| t.starts_with("kept:")), Some(true));
 }
 
 #[test]

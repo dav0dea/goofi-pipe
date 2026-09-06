@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Introspection {
+    /// `serde(default)`: a node file whose language has no GIL — a `.wgsl` — says nothing.
+    #[serde(default)]
     pub gil_safe: bool,
     #[serde(default)]
     pub doc: String,
@@ -14,8 +16,19 @@ pub struct Introspection {
     /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.
     #[serde(default)]
     pub producer: bool,
+    /// Whether the node reads its input as the PREVIOUS tick left it: the one kind of node a
+    /// loop may close through. `serde(default)`: only a scheduled engine asks.
+    #[serde(default)]
+    pub feedback: bool,
+    /// Whether the node shows its frame in a window on the machine goofi runs on.
+    /// `serde(default)`: only the graphics engine asks.
+    #[serde(default)]
+    pub window: bool,
+    #[serde(default)]
     pub inputs: Vec<Slot>,
+    #[serde(default)]
     pub outputs: Vec<OutSlot>,
+    #[serde(default)]
     pub params: Vec<Param>,
 }
 
@@ -23,7 +36,10 @@ pub struct Introspection {
 pub struct Slot {
     pub name: String,
     pub kind: String,
+    /// `serde(default)`: the signal-plane flags a scheduled engine's node file never states.
+    #[serde(default)]
     pub trigger: bool,
+    #[serde(default)]
     pub multi: bool,
     /// Whether the engine refuses to tick the node while this slot's last-store is empty.
     /// `serde(default)`: an older wheel emits no key, and a parse failure greys out every node.

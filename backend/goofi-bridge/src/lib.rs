@@ -140,12 +140,12 @@ impl Default for DataLiveness {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(Mode::default(), Clock::External)
+        Self::new(Mode::default(), Clock::External, RenderClock::External)
     }
 }
 
 impl AppState {
-    pub fn new(mode: Mode, clock: Clock) -> AppState {
+    pub fn new(mode: Mode, clock: Clock, render: RenderClock) -> AppState {
         let (events, _) = broadcast::channel(256);
         let iid = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -158,7 +158,7 @@ impl AppState {
         let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        let mut graph_val = fresh_graph((!mode.demo).then_some(clock));
+        let mut graph_val = fresh_graph((!mode.demo).then_some(clock), render);
         graph_val.set_workspace(&mount);
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
@@ -224,7 +224,7 @@ impl AppState {
     /// Reclaim one mount and everything living IN it: the harnesses spawned into it are asked to
     /// leave FIRST, or one survives editing a patch out of a directory the next line deletes.
     fn retire_mount(&self, mount: &std::path::Path) {
-        self.harnesses.stop_all();
+        self.harnesses.reap_all();
         remove_mount(mount);
     }
 }
@@ -619,9 +619,10 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
     }
 }
 
-/// The composed graph the app boots: the model plus the signal engine, registered first. `None`
-/// asks for no audio engine at all, which is also what takes every audio node out of the catalog.
-pub fn fresh_graph(clock: Option<Clock>) -> Graph {
+/// The composed graph the app boots: the model plus the signal engine, registered first. A `None`
+/// audio clock asks for no audio engine at all, which takes every audio node out of the catalog.
+/// The graphics engine is always ASKED for, and a machine with no adapter simply has none.
+pub fn fresh_graph(clock: Option<Clock>, render: RenderClock) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
         g.instance().to_string(),
@@ -632,10 +633,25 @@ pub fn fresh_graph(clock: Option<Clock>) -> Graph {
     if let Some(clock) = clock {
         g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
     }
+    match goofi_graphics::GraphicsEngine::open(g.instance().to_string(), g.patch_start(), g.drain_waker(), render) {
+        Ok(engine) => g.register_engine(Box::new(engine)),
+        Err(why) => eprintln!("graphics: {why}; this machine renders no shaders"),
+    }
     g
 }
 
+/// The graphics engine registered in `g` — its external clock is the door a test renders through.
+pub fn graphics_engine(g: &mut Graph) -> &mut goofi_graphics::GraphicsEngine {
+    try_graphics_engine(g).expect("the graphics engine is registered")
+}
+
+/// …or nothing, where no GPU adapter answered.
+pub fn try_graphics_engine(g: &mut Graph) -> Option<&mut goofi_graphics::GraphicsEngine> {
+    g.engine_mut("graphics").and_then(|e| e.as_any_mut().downcast_mut())
+}
+
 pub use goofi_audio::Clock;
+pub use goofi_graphics::Clock as RenderClock;
 
 /// The audio engine registered in `g` — its external clock is the concrete door a test drives.
 pub fn audio_engine(g: &mut Graph) -> &mut goofi_audio::AudioEngine {
@@ -898,6 +914,12 @@ fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> Strin
     event("state_update", Value::Object(body))
 }
 
+/// How a read NAMES a node: the display name, which is what every op takes back. A uid is the
+/// fallback for the nameless and never the first thing a caller reads.
+pub(crate) fn named(g: &goofi_graph::Graph, uid: Uid) -> String {
+    g.name(uid).map(str::to_string).unwrap_or_else(|| uid.to_hex())
+}
+
 fn parse_uid(g: &goofi_graph::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
     let raw = payload
         .get(key)
@@ -1020,7 +1042,7 @@ fn apply_layout(
     cmd: goofi_graph::Command,
 ) -> Result<Value, String> {
     state.history.lock().unwrap().apply(g, actor, cmd)?;
-    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
+    Ok(json!({ "text": inspect::layout_tree(g, None) }))
 }
 
 impl AppState {

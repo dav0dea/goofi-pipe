@@ -104,7 +104,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Collapse one axis to a single value per position on the others: a mean, a spread, an extreme or a total.",
+    doc: "Collapse one axis to a single value.\n\
+          One value per position on the other axes: a mean, a spread, an extreme or a total.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

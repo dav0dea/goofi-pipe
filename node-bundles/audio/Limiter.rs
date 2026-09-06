@@ -31,7 +31,8 @@ static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "One gain across every channel, so nothing leaves above the ceiling and the picture holds.",
+    doc: "Hold everything under a ceiling.\n\
+          One gain across every channel, so nothing leaves above it and the picture holds.",
     inputs: INS,
     outputs: OUTS,
     params: PARAMS,

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { glSupports } from './imageGL';
 
-// The wire is f32-only. The GL path handles float grayscale (R32F), RGB (RGB32F) and
-// RGBA (RGBA32F); only gray+alpha falls back to the 2D path.
+// The wire is f32, plus the reducer's 8-bit hop for an image. The GL path handles grayscale
+// (R32F/R8), RGB (RGB32F/RGB8) and RGBA; only gray+alpha falls back to the 2D path.
 describe('glSupports', () => {
 	it('handles float grayscale and float RGBA', () => {
 		expect(glSupports(1, '<f4')).toBe(true);
@@ -16,8 +16,14 @@ describe('glSupports', () => {
 	it('falls back for gray+alpha (c === 2)', () => {
 		expect(glSupports(2, '<f4')).toBe(false);
 	});
-	it('rejects any non-float dtype — the encoder can only emit f32', () => {
-		expect(glSupports(1, '|u1')).toBe(false);
+	it('handles the 8-bit hop, which is what an image viewer asks for', () => {
+		expect(glSupports(1, '|u1')).toBe(true);
+		expect(glSupports(3, '|u1')).toBe(true);
+		expect(glSupports(4, '|u1')).toBe(true);
+		expect(glSupports(2, '|u1')).toBe(false);
+	});
+	it('rejects every other dtype — nothing else reaches a viewer', () => {
 		expect(glSupports(4, '<i8')).toBe(false);
+		expect(glSupports(1, '<u2')).toBe(false);
 	});
 });

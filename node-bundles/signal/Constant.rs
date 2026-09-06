@@ -61,7 +61,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Generator],
-    doc: "A number, given a shape: the way a scalar becomes an array of the size a node downstream wants.",
+    doc: "A number, given a shape.\n\
+          How a scalar becomes an array of the size a node downstream wants.",
     inputs: &[],
     outputs: OUTPUTS,
     params: PARAMS,

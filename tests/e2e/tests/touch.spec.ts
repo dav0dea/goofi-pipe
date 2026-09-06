@@ -115,7 +115,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 			const field = pane(page).getByTestId('param-field-frequency');
 			await field.getByTestId('param-mode-reference').tap();
 			await field.getByTestId('param-ref-node').tap();
-			const option = page.locator('.cm-tooltip-autocomplete [role="option"]', { hasText: lfoName });
+			const option = page.getByTestId('param-ref-node-list').getByRole('option', { name: lfoName });
 			await expect(option, 'the list opens on focus and names the producer').toBeVisible();
 			await option.tap();
 			const frequency = (key: 'mode' | 'expression' | 'reference'): Promise<unknown> =>
@@ -263,6 +263,11 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 				page.getByTestId('control-desk-slider0'),
 				'the drop bore a slider with a fresh name'
 			).toBeVisible();
+
+			// The grab picked the knob, so its form is open; a finger's learn is there, and a patch with
+			// no MIDI node is told so rather than handed an empty list.
+			await page.getByTestId('control-props').getByTestId('control-learn').tap();
+			await expect(page.getByTestId('toast'), 'learn with no MIDI node says so').toContainText('MIDI');
 		});
 	} finally {
 		await page.evaluate(async () => {

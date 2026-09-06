@@ -18,6 +18,8 @@ pub use goofi_node::{ExprDecl, ExprMode, OutputDecl, ParamDecl, ParamKey, ParamS
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's.
 pub struct Manifest {
     pub tags: &'static [Tag],
+    /// What the type IS. The FIRST LINE is the nutshell a catalog shows and all most readers
+    /// see; whatever follows it is the detail `library get` answers.
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

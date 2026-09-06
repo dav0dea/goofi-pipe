@@ -32,6 +32,7 @@ function unknownParam(): ParamDescriptor {
 	return {
 		type: 'unknown',
 		value: undefined,
+		default: undefined,
 		doc: null,
 		refreshable: false,
 		mode: 'constant',

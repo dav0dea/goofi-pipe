@@ -17,8 +17,8 @@ use vst3::Steinberg::*;
 use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 use super::node::Derived;
-use crate::control::Shared;
-use crate::ui::{Host, Runloop, Window};
+use crate::control::AudioShared;
+use goofi_window::{Host, Runloop, Window};
 
 #[cfg(target_os = "linux")]
 const PLATFORM: FIDString = kPlatformTypeX11EmbedWindowID;
@@ -47,7 +47,7 @@ struct Editor {
 }
 
 /// A plugin came up: its controller edits through here from now on, and a view can be asked of it.
-pub(super) fn register(uid: Uid, controller: ComPtr<IEditController>, class: Arc<Derived>, shared: Arc<Shared>) {
+pub(super) fn register(uid: Uid, controller: ComPtr<IEditController>, class: Arc<Derived>, shared: Arc<AudioShared>) {
     let handler = ComWrapper::new(Handler { uid, shared });
     if let Some(h) = handler.to_com_ptr::<IComponentHandler>() {
         unsafe { controller.setComponentHandler(h.as_ptr()) };
@@ -122,7 +122,7 @@ impl Editor {
         let attached = unsafe { view.attached(window.parent, PLATFORM) };
         if attached != kResultOk {
             unsafe { view.setFrame(std::ptr::null_mut()) };
-            host.close_window(window);
+            host.close_window(window.id());
             return Err(format!("attaching the editor answered {attached}"));
         }
         Ok(Editor { view, window, frame })
@@ -133,7 +133,7 @@ impl Editor {
             self.view.removed();
             self.view.setFrame(std::ptr::null_mut());
         }
-        host.close_window(self.window);
+        host.close_window(self.window.id());
         drop(self.view);
         drop(self.frame);
     }
@@ -142,7 +142,7 @@ impl Editor {
 /// What a view edits through: the value goes to the engine's inbox, and to the document from there.
 struct Handler {
     uid: Uid,
-    shared: Arc<Shared>,
+    shared: Arc<AudioShared>,
 }
 
 impl Class for Handler {

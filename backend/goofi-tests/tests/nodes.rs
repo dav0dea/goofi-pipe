@@ -101,11 +101,11 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
 
     let uid = g.add("MyThing");
     emits(&g, uid, 9.0); // the patch's own file wins the name
-    let source = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let source = |ty: &str| g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).unwrap()["source"].clone();
     assert_eq!(source("signal:MyThing"), "patch", "…and says where it came from");
     assert_eq!(source("signal:OnlyShipped"), "builtin", "the shipped root's own node is not the patch's");
-    let bundle = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let bundle = |ty: &str| g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).unwrap()["bundle"].clone();
     let dir = shipped.path().file_name().unwrap().to_string_lossy().into_owned();
     assert_eq!(bundle("signal:OnlyShipped"), j!(dir), "a root's node names the root, by its own directory name");
@@ -144,8 +144,8 @@ fn a_named_type_hands_back_the_file_that_is_actually_running() {
     g.state.roots = vec![builtin.path().to_path_buf(), mine.path().to_path_buf()];
     rescan(&g);
 
-    let r = g.call("library get", j!({ "type": "MyThing" }));
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("[5.0]")),
+    let r = g.call("library get", j!({ "type": "MyThing", "source": true }));
+    assert!(r["text"].as_str().is_some_and(|s| s.contains("[5.0]")),
             "the file that RUNS is the file handed back: {r}");
     assert_eq!(r["provenance"], "shipped", "{r}");
     assert_eq!(r["path"], goofi_core::path::to_slash(&mine.path().join("my_thing.py")),
@@ -153,9 +153,9 @@ fn a_named_type_hands_back_the_file_that_is_actually_running() {
 
     write_node(&g.state.mount().join("nodes_signal"), "my_thing.py", "9.0");
     rescan(&g);
-    let r = g.call("library get", j!({ "type": "MyThing" }));
+    let r = g.call("library get", j!({ "type": "MyThing", "source": true }));
     assert_eq!(r["provenance"], "patch", "{r}");
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("[9.0]")), "{r}");
+    assert!(r["text"].as_str().is_some_and(|s| s.contains("[9.0]")), "{r}");
 }
 
 #[test]
@@ -186,9 +186,11 @@ fn loading_a_patch_registers_the_nodes_it_ships_before_resolving_them() {
 fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let g = Goofi::new();
     // A shipped node is SOURCE in the shipped root, where `library get` finds it.
-    let r = g.call("library get", j!({ "type": "LFO" }));
+    let r = g.call("library get", j!({ "type": "LFO", "source": true }));
     assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{r}");
+    assert!(r["text"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{r}");
+    // The entry's own `source` says where the TYPE came from, and the file never overwrites it.
+    assert_eq!(r["source"], "builtin", "{r}");
     let shipped_osc = std::path::PathBuf::from(r["path"].as_str().unwrap());
 
     // An authored file builds through cargo into the same cache, and runs.
@@ -205,10 +207,10 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     // built from the last good file runs on.
     std::fs::write(mount.join("nodes_signal").join("Twice.rs"), "fn broken( {\n").unwrap();
     rescan(&g);
-    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "signal:Twice").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
-    assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
+    assert!(row["doc"].as_str().is_some_and(|d| d.contains("error")), "rustc's words reach the palette: {row}");
     // The greyed row keeps the SHAPE it last loaded, because the canvas draws a node's slots and
     // params from it: the instance is still running and still wired, and a row with no slots
     // erased it from every open tab while its data kept flowing.
@@ -266,7 +268,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let loud = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "signal:Loud").cloned().expect("listed, greyed");
     assert_eq!(loud["available"], false, "{loud}");
-    assert!(loud["missing_deps"].to_string().contains("goofi_audio_sdk"), "{loud}");
+    assert!(loud["doc"].as_str().is_some_and(|d| d.contains("goofi_audio_sdk")), "{loud}");
 
     // A shipped file copied into the patch shadows it, and the palette says so — a copy that kept
     // its source's mtime included, which is what a Finder copy and `fs::copy` on macOS make.
@@ -275,7 +277,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     let kept = std::fs::metadata(&shipped_osc).unwrap().modified().unwrap();
     std::fs::File::options().write(true).open(&copy).unwrap().set_modified(kept).unwrap();
     assert!(rescan(&g)["changed"].as_array().unwrap().contains(&j!("signal:LFO")));
-    let source = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let source = g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "signal:LFO").unwrap()["source"].clone();
     assert_eq!(source, "patch");
 
@@ -322,22 +324,23 @@ fn holds(g: &Goofi, uid: goofi_tests::Uid, want: f32) {
 #[test]
 fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     let g = Goofi::new();
-    let r = g.call("library get", j!({ "type": "Osc" }));
+    let r = g.call("library get", j!({ "type": "Osc", "source": true }));
     assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl AudioNode for Osc")), "{r}");
+    assert!(r["text"].as_str().is_some_and(|s| s.contains("impl AudioNode for Osc")), "{r}");
 
     let mount = g.state.mount();
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.25");
     assert_eq!(rescan(&g)["added"], j!(["audio:Level"]), "the file becomes a type");
-    let live = g.add("Level");
+    let live = g.add("audio:Level");
     holds(&g, live, 0.25);
     // A signal node with the same stem is another type, and `library get` finds each one's file.
     std::fs::create_dir_all(mount.join("nodes_signal")).unwrap();
     std::fs::write(mount.join("nodes_signal").join("Level.py"), PY_LEVEL).unwrap();
-    assert_eq!(rescan(&g)["added"], j!(["signal:Level"]), "two engines offer one name");
-    let (audio, signal) = (g.call("library get", j!({ "type": "audio:Level" })), g.call("library get", j!({ "type": "signal:Level" })));
-    assert!(audio["source"].as_str().is_some_and(|s| s.contains("impl AudioNode for Level")), "{audio}");
-    assert!(signal["source"].as_str().is_some_and(|s| s.contains("class Level")), "{signal}");
+    assert_eq!(rescan(&g)["added"], j!(["signal:Level"]), "another engine offers the name too");
+    let read = |ty: &str| g.call("library get", j!({ "type": ty, "source": true }));
+    let (audio, signal) = (read("audio:Level"), read("signal:Level"));
+    assert!(audio["text"].as_str().is_some_and(|s| s.contains("impl AudioNode for Level")), "{audio}");
+    assert!(signal["text"].as_str().is_some_and(|s| s.contains("class Level")), "{signal}");
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
     assert_eq!(rescan(&g)["changed"], j!(["audio:Level"]), "an edited file reports as changed");
     holds(&g, live, 0.5);
@@ -349,7 +352,7 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "audio:Level").cloned().expect("the type stays listed, greyed");
     assert_eq!(row["available"], false, "{row}");
-    assert!(row["missing_deps"].to_string().contains("error"), "rustc's words reach the palette: {row}");
+    assert!(row["doc"].as_str().is_some_and(|d| d.contains("error")), "rustc's words reach the palette: {row}");
     assert!(g.refuse("node add", j!({ "type": "audio:Level" })).contains("unavailable"));
     holds(&g, live, 0.5);
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.5");
@@ -364,7 +367,7 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     assert_eq!(rescan(&g)["changed"], j!([]));
     let rows: Vec<serde_json::Value> = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .filter(|v| v["type"] == "audio:AudioOut").cloned().collect();
-    assert!(rows.len() == 1 && rows[0]["available"] == true && rows[0]["source"] != "patch", "{rows:?}");
+    assert!(rows.len() == 1 && rows[0].get("available").is_none(), "one row, and it loaded: {rows:?}");
     assert_ne!(g.call("library get", j!({ "type": "AudioOut" }))["provenance"], "patch");
 
     // The archive carries the SOURCE; a second goofi builds or finds the artifact and runs it.

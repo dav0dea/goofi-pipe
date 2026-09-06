@@ -94,6 +94,16 @@ pub fn panel_type_ids() -> Vec<&'static str> {
     PANEL_TYPES.iter().map(|p| p.id).collect()
 }
 
+/// The viewer kind a slot of each dtype opens with: the first kind that serves that dtype, which
+/// for a pinned one is the pin. An engine-local kind serves none directly — it reaches a viewer
+/// through its engine's tap — so it names what draws what the tap makes.
+pub fn default_kind(dtype: SlotType) -> &'static str {
+    if dtype == SlotType::Texture {
+        return "image";
+    }
+    VIEWER_KINDS.iter().find(|k| k.dtype() == dtype.name()).map_or("line", |k| k.id)
+}
+
 /// Every viewer kind's id.
 pub fn viewer_kind_ids() -> Vec<&'static str> {
     VIEWER_KINDS.iter().map(|k| k.id).collect()
@@ -114,6 +124,21 @@ pub fn boundary_types_help() -> String {
 }
 
 /// The frontend's vocabulary module, generated from the tables above and checked into the tree.
+/// How often ONE slot's reduced stream is broadcast, as frames a second. The app-wide viewer
+/// rate: the browser paints no faster, so anything above it is bytes nobody draws. The frontend
+/// reads it off the generated table rather than declaring a second one.
+pub const MAX_VIEWER_FPS: u32 = 30;
+
+/// The reducer's own loop quantum: HALF a serve, so it can both drain at twice the viewer rate
+/// and land a serve exactly on the interval. The interval is derived from it rather than the other
+/// way round — a quantum that does not divide the interval aliases the real rate away from
+/// [`MAX_VIEWER_FPS`], and the loop's sleep would be a second owner of the cadence.
+pub const REDUCER_TICK: std::time::Duration =
+    std::time::Duration::from_nanos(1_000_000_000 / (2 * MAX_VIEWER_FPS) as u64);
+
+/// The gap [`MAX_VIEWER_FPS`] asks for between two serves of one slot.
+pub const VIEWER_INTERVAL: std::time::Duration = REDUCER_TICK.saturating_mul(2);
+
 pub fn typescript() -> String {
     let dtypes = SlotType::ALL.iter().map(|t| format!("'{}'", t.name())).collect::<Vec<_>>().join(" | ");
     let feeds = SlotType::ALL
@@ -121,6 +146,10 @@ pub fn typescript() -> String {
         .flat_map(|out| SlotType::ALL.iter().filter(|into| out.feeds(**into)).map(move |into| format!("'{}>{}'", out.name(), into.name())))
         .collect::<Vec<_>>()
         .join(", ");
+    let defaults = SlotType::ALL
+        .iter()
+        .map(|t| format!("\t{}: '{}',\n", t.name(), default_kind(*t)))
+        .collect::<String>();
     let panel_ids = PANEL_TYPES.iter().map(|p| format!("\n\t| '{}'", p.id)).collect::<String>();
     let kind_ids = VIEWER_KINDS.iter().map(|k| format!("\n\t| '{}'", k.id)).collect::<String>();
     let panels = PANEL_TYPES
@@ -258,12 +287,19 @@ pub fn typescript() -> String {
          \n\
          /** Which output kind may feed which input kind — the manager's one link rule, projected. */\n\
          export const FEEDS: ReadonlySet<string> = new Set([{feeds}]);\n\
-         export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${{out}}>${{into}}`);\n"
+         export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${{out}}>${{into}}`);\n\
+         \n\
+         /** The kind a slot of each dtype opens with, before a viewer has stored one of its own. */\n\
+         export const DEFAULT_KIND: Record<SlotDtype, ViewerKind> = {{\n{defaults}}};\n\
+         \n\
+         /** How fast the manager serves one slot, and so the fastest a viewer can be asked to paint. */\n\
+         export const MAX_VIEWER_FPS = {fps};\n",
+        fps = MAX_VIEWER_FPS,
     )
 }
 
 /// The table as catalog entries, so a palette and `library list` see one vocabulary of node types.
-pub fn boundary_catalog() -> Vec<(String, String, Value)> {
+pub fn boundary_catalog(d: crate::schemas::Detail) -> Vec<(String, String, Value)> {
     BOUNDARY_TYPES
         .iter()
         .map(|(name, dir, dtype)| {
@@ -272,22 +308,21 @@ pub fn boundary_catalog() -> Vec<(String, String, Value)> {
                 Dir::In => (json!({}), slot),
                 Dir::Out => (slot, json!({})),
             };
-            (
-                String::new(),
-                name.to_string(),
-                json!({
-                    "type": name,
-                    "source": "builtin",
-                    "tags": [],
-                    "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
-                    "available": true,
-                    "missing_deps": [],
-                    "input_slots": inputs,
-                    "input_multi": [],
-                    "output_slots": outputs,
-                    "params": {},
-                }),
-            )
+            let mut info = json!({
+                "type": name,
+                "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
+            });
+            if d.full() {
+                info["source"] = json!("builtin");
+                info["tags"] = json!([]);
+                info["available"] = json!(true);
+                info["missing_deps"] = json!([]);
+                info["input_slots"] = inputs;
+                info["input_multi"] = json!([]);
+                info["output_slots"] = outputs;
+                info["params"] = json!({});
+            }
+            (String::new(), name.to_string(), info)
         })
         .collect()
 }
@@ -318,7 +353,7 @@ pub fn resolve_slot(
         return Ok(key.clone());
     }
     let have: Vec<&str> = slots.iter().map(|(_, l, _)| l.as_str()).collect();
-    Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
+    Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", crate::named(g, uid), have.join(", ")))
 }
 
 pub(crate) fn check_slot(

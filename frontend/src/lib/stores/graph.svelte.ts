@@ -474,14 +474,31 @@ export class GraphStore {
 		this._recordGraphCmd(`Source ${group}.${element}`);
 	}
 
-	/** Make the widget named `name` follow the first output of node `uid` that can feed it. */
-	async linkControl(name: string, uid: string): Promise<void> {
+	/** The first output of node `uid` that can feed the global named `name`, as `node.slot`. */
+	feedFor(name: string, uid: string): string | null {
 		const gv = this.globals.find((v) => v.name === name);
 		const node = this.nodeById(uid);
-		if (!gv || !node) return;
+		if (!gv || !node) return null;
 		const want = wantedDtype(gv.type);
 		const slot = Object.entries(node.output_slots).find(([, d]) => feeds(d as SlotDtype, want as SlotDtype))?.[0];
-		if (slot) await this.sourceControl(gv.group, gv.element, `${node.name}.${slot}`);
+		return slot ? `${node.name}.${slot}` : null;
+	}
+
+	/** The nodes tagged `midi` with an output that can feed the global named `name`. */
+	midiFeeds(name: string): { uid: string; name: string; reference: string }[] {
+		return this.nodes.flatMap((n) => {
+			if (!this.nodeTypes?.find((t) => t.type === n.type)?.tags.includes('midi')) return [];
+			const reference = this.feedFor(name, n.uid);
+			return reference ? [{ uid: n.uid, name: n.name, reference }] : [];
+		});
+	}
+
+	/** Make the widget named `name` follow the first output of node `uid` that can feed it. */
+	async linkControl(name: string, uid: string): Promise<string | null> {
+		const gv = this.globals.find((v) => v.name === name);
+		const reference = this.feedFor(name, uid);
+		if (gv && reference) await this.sourceControl(gv.group, gv.element, reference);
+		return reference;
 	}
 
 	async removeControl(group: string, element: string): Promise<void> {

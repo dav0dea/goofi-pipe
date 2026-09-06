@@ -187,7 +187,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Generator],
-    doc: "A low-frequency oscillator: one sample per update to modulate a param, or a block of samples to feed a signal.",
+    doc: "A low-frequency oscillator.\n\
+          One sample per update to modulate a param, or a block of samples to feed a signal.",
     inputs: &[],
     outputs: OUTPUTS,
     params: PARAMS,

@@ -105,7 +105,6 @@
 		void go(initialPath).then(() => pathBarEl?.querySelector('input')?.focus());
 	});
 
-	const visible = $derived(entries.filter((e) => !e.hidden));
 	const title = $derived(mode === 'save' ? 'Save patch' : 'Load patch');
 </script>
 
@@ -161,7 +160,7 @@
 
 				<ScrollArea data-testid="fs-list">
 					<ul class="rows">
-						{#each visible as entry (entry.path)}
+						{#each entries as entry (entry.path)}
 							<li>
 								<button
 									class="entry"
@@ -177,7 +176,7 @@
 							</li>
 						{/each}
 					</ul>
-					{#if visible.length === 0}
+					{#if entries.length === 0}
 						<EmptyState>
 							{#snippet hint()}Empty folder.{/snippet}
 						</EmptyState>

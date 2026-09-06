@@ -1,6 +1,7 @@
 //! The subprocess Python tier: one GIL interpreter per node, one run per `[u32 seq][frame]`
 //! request/response over iceoryx2 shared memory.
 
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -75,20 +76,26 @@ impl Running {
         let mut cmd = Command::new(python);
         cmd.arg("-c")
             .arg("import goofi; goofi.serve()")
-            .env("GOOFI_NODE_SRC", source)
             .env("GOOFI_IOX_REQ", &req_name)
             .env("GOOFI_IOX_RESP", &resp_name)
             // The host's PYTHONPATH (the pyo3/FT tier's) must not shadow the child's own numpy/goofi.
             .env_remove("PYTHONPATH")
             .env_remove("PYTHONHOME")
-            .stdin(Stdio::null())
+            // The source rides stdin, never the environment: Windows caps a whole environment
+            // block at 32767 characters, and a node file is text of no stated size.
+            .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         // Armed BEFORE the spawn it guards, so a Ctrl-C or a crash here cannot orphan the child.
         let armed = goofi_codec::liveness::arm(&mut cmd).map_err(|e| format!("liveness pipe: {e}"))?;
         let mut child = cmd.spawn().map_err(|e| format!("spawn `{python}`: {e}"))?;
         let parent_alive = Some(armed.into_writer());
-        match build_ports(&req_name, &resp_name) {
+        // The write end is dropped as this ends, and that EOF is where the child stops reading.
+        let handed = match child.stdin.take() {
+            Some(mut w) => w.write_all(source.as_bytes()).map_err(|e| format!("hand the source over: {e}")),
+            None => Err("the child took no stdin".to_string()),
+        };
+        match handed.and_then(|()| build_ports(&req_name, &resp_name)) {
             Ok(ports) => Ok(Running { child, ports, seq: 0, parent_alive }),
             Err(e) => {
                 let _ = child.kill();

@@ -20,6 +20,7 @@
 		Dialog,
 		Badge,
 		Chip,
+		Combobox,
 		Segmented,
 		StatusDot,
 		EmptyState,
@@ -89,6 +90,7 @@
 
 	let chipCount = $state(0);
 	let segment = $state('a');
+	let combo = $state('beta');
 
 	function doRefresh(): void {
 		refreshing = true;
@@ -487,6 +489,20 @@
 			{#each badgeTones as tone (tone)}
 				<Badge {tone} data-testid={`ui-badge-${tone}`}>{tone}</Badge>
 			{/each}
+		</div>
+	</section>
+
+	<section>
+		<h2>Combobox (a list that typing filters)</h2>
+		<div class="form">
+			<Combobox
+				value={combo}
+				options={() => ['alpha', 'beta', 'gamma', 'delta'].map((label) => ({ label, detail: label.length + ' letters' }))}
+				onCommit={(v) => (combo = v)}
+				placeholder="greek"
+				testid="ui-combobox"
+			/>
+			<span class="readout" data-testid="ui-combobox-value">{combo}</span>
 		</div>
 	</section>
 

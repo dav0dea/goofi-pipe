@@ -49,7 +49,9 @@ impl AudioEngine {
         if !self.rust_loaded.contains_key(artifact) {
             let opened = goofi_build::open(artifact)?;
             let intro = goofi_node::parse_introspection(&opened.describe)?;
-            if let Some(reason) = goofi_node::illegal_slot(&intro) {
+            if let Some(reason) = goofi_node::illegal_slot(&intro)
+                .or_else(|| goofi_node::foreign_slot(&intro, Some(goofi_core::SlotType::Audio)))
+            {
                 return Err(reason);
             }
             let manifest = goofi_node::leak_manifest(type_name.to_string(), &intro)?;

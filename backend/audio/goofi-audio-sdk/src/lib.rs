@@ -13,17 +13,17 @@ pub mod host;
 pub const BLOCK: usize = 64;
 /// What a node is prepared for; a port never carries more channels than this.
 pub const MAX_CHANNELS: u16 = 16;
-/// The most inputs, outputs or params a node may declare: a block's ports are stack arrays on
-/// both sides of the boundary, so this is stack per callback rather than a free number. 16 was
-/// enough for a hand-written node and far too few for a plugin — a third of the VST3 classes on
-/// one machine here declare between 17 and 64 params, and at 16 every one of them was refused
-/// outright rather than merely trimmed.
+/// The most inputs, outputs or AUDIO-RATE params a node may declare: a block's ports are stack
+/// arrays on both sides of the boundary, so this is stack per callback rather than a free number.
+/// A control-rate param is a float in `Block::scalars` instead, and is not bounded by this.
 pub const MAX_PORTS: usize = 64;
 
 /// What a node file declares: a `NodeManifest` less the type name, which is the FILE's. The
 /// signal-only slot flags are ignored; `multi: true` on an input sums its wires at the jack.
 pub struct Manifest {
     pub tags: &'static [Tag],
+    /// What the type IS. The FIRST LINE is the nutshell a catalog shows and all most readers
+    /// see; whatever follows it is the detail `library get` answers.
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],
@@ -107,12 +107,14 @@ impl<'a> PortMut<'a> {
     }
 }
 
-/// One block: every declared input, output and param, in declaration order — wires already
-/// summed and coerced, a param's region holding its one source.
+/// One block: every declared input and output, in declaration order — wires already summed and
+/// coerced. `params` carries a port for each AUDIO-RATE param; `scalars` carries this block's
+/// value for EVERY declared param, so a control-rate one costs no port and no ceiling.
 pub struct Block<'a> {
     pub ins: &'a [Port<'a>],
     pub outs: &'a mut [PortMut<'a>],
     pub params: &'a [Port<'a>],
+    pub scalars: &'a [f32],
 }
 
 /// The DSP half of an audio node. It moves to the audio thread inside the plan and owns
@@ -123,6 +125,12 @@ pub trait AudioNode: Send {
     /// compile, on the control thread. The default is `max(ins).max(1)` for each of the `outs`.
     fn channels(&self, ins: &[u16], _params: &[f64], outs: usize) -> Vec<u16> {
         vec![ins.iter().copied().max().unwrap_or(1).max(1); outs]
+    }
+    /// How many LEADING params this node reads per sample, out of the `declared` it has. The rest
+    /// are control rate: they reach `process` through `Block::scalars`, cost no port, and so are
+    /// not bounded by `MAX_PORTS`. The default keeps every param audio rate.
+    fn audio_params(&self, declared: usize) -> usize {
+        declared
     }
     /// Once on the control thread before the first block, again only when the rate changes.
     /// Allocate here, for `MAX_CHANNELS` and `BLOCK` frames.

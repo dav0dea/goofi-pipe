@@ -216,7 +216,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Keep part of one axis, named by label, by position, or by the coordinate range it carries.",
+    doc: "Keep part of one axis.\n\
+          Named by label, by position, or by the coordinate range it carries.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

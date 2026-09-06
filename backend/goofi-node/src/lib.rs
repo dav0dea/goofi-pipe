@@ -11,7 +11,7 @@ pub mod mailbox;
 pub mod seam;
 pub mod tags;
 pub mod type_id;
-pub use describe::{describe, engine_of, folder_of, illegal_slot, leak_manifest, node_files, parse_introspection, type_name_of};
+pub use describe::{describe, engine_of, folder_of, foreign_slot, illegal_slot, leak_manifest, node_files, parse_introspection, type_name_of};
 pub use mailbox::{Expression, Mailbox, Var};
 pub use seam::{
     Edit, EditorAction,
@@ -342,30 +342,35 @@ pub enum Isolation {
     InProcess,
     /// Python, in a subprocess with its own GIL.
     Subprocess,
+    /// A `.wgsl` file, run on the GPU by the graphics engine.
+    Shader,
 }
 
 impl Isolation {
+    pub const ALL: [Isolation; 4] =
+        [Isolation::Native, Isolation::InProcess, Isolation::Subprocess, Isolation::Shader];
+
     /// The wire name, shared by `inspect_type`'s `tier` and the per-node runtime overlay.
     pub fn wire(self) -> &'static str {
         match self {
             Isolation::Native => "native",
             Isolation::InProcess => "in-process",
             Isolation::Subprocess => "subprocess",
+            Isolation::Shader => "shader",
         }
     }
     /// Which language the node is written in — a reading of the tier, never a second field.
     pub fn language(self) -> &'static str {
         match self {
             Isolation::Native => "rust",
-            _ => "python",
+            Isolation::InProcess | Isolation::Subprocess => "python",
+            Isolation::Shader => "wgsl",
         }
     }
+    /// Back from the byte an [`IsolationCell`] holds. Searched, so a tier added to `ALL` needs no
+    /// arm here.
     fn from_u8(v: u8) -> Isolation {
-        match v {
-            0 => Isolation::Native,
-            1 => Isolation::InProcess,
-            _ => Isolation::Subprocess,
-        }
+        Isolation::ALL.into_iter().find(|i| *i as u8 == v).unwrap_or(Isolation::Native)
     }
 }
 
@@ -397,6 +402,8 @@ impl IsolationCell {
 /// The cell every native node points at. Shared because a native tier is fixed — only a Python
 /// type, whose cell is leaked per type at discovery, is ever written.
 pub static NATIVE: IsolationCell = IsolationCell::new(Isolation::Native);
+/// Every graphics node is one, so the engine advertises this rather than minting a cell per class.
+pub static SHADER: IsolationCell = IsolationCell::new(Isolation::Shader);
 
 pub struct SlotDecl {
     pub name: &'static str,
@@ -418,6 +425,8 @@ pub struct OutputDecl {
 pub struct NodeManifest {
     pub type_name: &'static str,
     pub tags: &'static [Tag],
+    /// What the type IS. The FIRST LINE is the nutshell a catalog shows and all most readers
+    /// see; whatever follows it is the detail `library get` answers.
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

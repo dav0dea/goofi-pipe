@@ -32,7 +32,10 @@ pub fn serve(py: Python<'_>) -> PyResult<()> {
     let sys = py.import("sys")?;
     sys.setattr("stdout", sys.getattr("stderr")?)?;
 
-    let source = env("GOOFI_NODE_SRC")?;
+    // The source comes on stdin rather than in the environment, which Windows caps as a block.
+    let mut source = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut source)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("no node source on stdin: {e}")))?;
     let req_name = env("GOOFI_IOX_REQ")?;
     let resp_name = env("GOOFI_IOX_RESP")?;
 

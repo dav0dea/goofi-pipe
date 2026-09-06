@@ -7,8 +7,8 @@ static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Its input one block late: the one way a loop closes. It runs first each block, reading \
-          what its producer left in the last one.",
+    doc: "Its input one block late — the one way a loop closes.\n\
+          It runs first each block, reading what its producer left in the last one.",
     inputs: INS,
     outputs: OUTS,
     params: &[],

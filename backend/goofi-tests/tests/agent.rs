@@ -127,7 +127,8 @@ async fn the_one_tool_speaks_the_whole_op_vocabulary_in_command_lines() {
     let edited = ok_exec(&addr, 4, &line).await;
     assert!(edited.contains("7.5"), "the param came back as stored: {edited}");
     let patch = ok_exec(&addr, 5, "nodes inspect").await;
-    assert!(patch.contains(&uid), "the diagram rides the result's `text`: {patch}");
+    assert!(patch.contains("osc"), "the diagram rides the result's `text`, by name: {patch}");
+    assert!(!patch.contains(&uid), "…and a name is what it shows, not the uid: {patch}");
 
     // Idempotence still SAYS which of the two happened.
     let missing = ok_exec(&addr, 6, "node remove --node aaaaaaaaaaaa").await;
@@ -234,26 +235,35 @@ async fn two_agents_drive_one_server_at_once_and_read_their_work_back_out_of_it(
     assert!(init["result"]["serverInfo"]["name"].as_str().is_some_and(|n| n.contains("goofi")));
     assert!(init["result"]["instructions"].is_null(), "{init}");
 
-    let uid_of = |t: String| serde_json::from_str::<Value>(&t).unwrap()["uid"].as_str().unwrap().to_string();
+    let born = |t: String| {
+        let v: Value = serde_json::from_str(&t).unwrap();
+        (v["uid"].as_str().unwrap().to_string(), v["name"].as_str().unwrap().to_string())
+    };
     let spawn = |ty: &'static str, base: i64| {
         let addr = addr.clone();
         tokio::spawn(async move {
-            let mut uids = Vec::new();
+            let mut made = Vec::new();
             for i in 0..4 {
                 let line = format!("node add --type {ty}");
-                uids.push(uid_of(ok_exec(&addr, base + i, &line).await));
+                made.push(born(ok_exec(&addr, base + i, &line).await));
             }
-            uids
+            made
         })
     };
     let (a, b) = (spawn("LFO", 100), spawn("Buffer", 200));
-    let mut uids = a.await.unwrap();
-    uids.extend(b.await.unwrap());
-    assert_eq!(uids.iter().collect::<std::collections::HashSet<_>>().len(), 8,
-               "two clients minted a colliding uid: {uids:?}");
+    let mut made = a.await.unwrap();
+    made.extend(b.await.unwrap());
+    // Both halves of a node's identity are minted under concurrency, and both must be unique:
+    // the uid keys the document, and the NAME is what every op and every read addresses.
+    for which in [0, 1] {
+        let seen: std::collections::HashSet<&String> =
+            made.iter().map(|m| if which == 0 { &m.0 } else { &m.1 }).collect();
+        assert_eq!(seen.len(), 8, "two clients collided: {made:?}");
+    }
     let patch = ok_exec(&addr, 300, "nodes inspect").await;
-    for uid in &uids {
-        assert!(patch.contains(uid), "{uid} is missing from the shared patch:\n{patch}");
+    for (uid, name) in &made {
+        assert!(patch.contains(name), "{name} is missing from the shared patch:\n{patch}");
+        assert!(!patch.contains(uid), "…and the diagram names it rather than showing {uid}:\n{patch}");
     }
 
     let (text, err) = exec(&addr, "/mcp", 400, &["node add --type NoSuchNodeType"]).await;

@@ -204,7 +204,7 @@ fn workspace_manifest() -> String {
 }
 
 fn generate(sdk: &Sdk, source: &Path, sdk_root: &Path, crate_dir: &Path, crate_name: &str) -> Result<(), String> {
-    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let slash = |p: &Path| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
     let deps: String = sdk
         .allow
         .iter()
@@ -258,7 +258,12 @@ pub fn place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let part = dir.join(format!(".{}.{}", path.file_name().unwrap().to_string_lossy(), std::process::id()));
     std::fs::write(&part, bytes)?;
-    std::fs::rename(&part, path)
+    // A lost race is not a failure: another builder put the artifact there. Windows refuses to
+    // rename onto a mapped DLL, which is that same case seen from the loser's side.
+    std::fs::rename(&part, path).or_else(|e| {
+        let _ = std::fs::remove_file(&part);
+        path.exists().then_some(()).ok_or(e)
+    })
 }
 
 /// A loaded artifact: the library, kept for the process lifetime, and what it says it is.

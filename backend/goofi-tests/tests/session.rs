@@ -318,6 +318,27 @@ fn a_save_packs_the_live_mount_refuses_to_pack_into_it_and_never_truncates_a_goo
         assert!(err.contains("temporary workspace"), "the refusal says why: {err}");
         assert!(!inside.exists(), "a refused save writes nothing");
     }
+
+    // Two names that fold to one file: packed here and unpacked on macOS, the second would take
+    // the first's place and the load would report success. Both ends refuse instead.
+    std::fs::write(mount.join("Agent.md"), b"the other one").unwrap();
+    let clash = tmp.path().join("clash.gfi");
+    let err = goofi_bridge::save_archive(&clash, "version: 7\n", &mount).unwrap_err();
+    assert!(err.contains("fold case"), "the refusal names the reason: {err}");
+    assert!(!clash.exists(), "and it writes nothing");
+    std::fs::remove_file(mount.join("Agent.md")).unwrap();
+
+    // The same pair reaching a load from anywhere else — an older goofi, another tool.
+    let made = tmp.path().join("made.gfi");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&made).unwrap());
+    for entry in ["patch.yaml", "workspace/agent.md", "workspace/Agent.md"] {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"version: 7\n").unwrap();
+    }
+    zip.finish().unwrap();
+    let err = goofi_graph::archive::read_gfi(&made, &tmp.path().join("never")).unwrap_err();
+    assert!(err.contains("fold case"), "the load refuses it too: {err}");
+    assert!(!tmp.path().join("never").exists(), "and unpacks nothing");
 }
 
 #[test]
@@ -363,6 +384,7 @@ fn the_file_browser_answers_a_path_the_way_save_and_load_take_it() {
         Some(p) => g.call("dir list", j!({ "path": p })),
         None => g.call("dir list", j!({})),
     };
+    let list_hidden = |p: &str| g.call("dir list", j!({ "path": p, "hidden": true }));
     let names = |l: &Value| -> Vec<String> {
         l["entries"].as_array().unwrap().iter()
             .map(|e| e["name"].as_str().unwrap().to_string()).collect()
@@ -387,23 +409,27 @@ fn the_file_browser_answers_a_path_the_way_save_and_load_take_it() {
 
     let here = to_slash(&canonical(tmp.path()).unwrap());
     let listing = list(Some(&tmp.path().to_string_lossy()));
-    assert_eq!(names(&listing), ["apples", "Zeta", ".hidden", "alpha.txt", "Beta.txt", "patch.gfi"],
+    assert_eq!(names(&listing), ["apples", "Zeta", "alpha.txt", "Beta.txt", "patch.gfi"],
                "directories first, then case-insensitively by name, and nothing undecodable");
+    // A dot-name is LEFT OUT rather than sent and dropped — the browser drew none of them, and a
+    // home directory is mostly dotfiles.
+    assert_eq!(names(&list_hidden(&tmp.path().to_string_lossy()))
+                   .into_iter().filter(|n| n.starts_with('.')).collect::<Vec<_>>(),
+               [".hidden"], "`--hidden` is the door to them");
 
     let by_name = |n: &str| listing["entries"].as_array().unwrap().iter()
         .find(|e| e["name"] == n).unwrap_or_else(|| panic!("{n} is listed")).clone();
     let entry = by_name("alpha.txt");
-    for key in ["name", "path", "kind", "is_gfi", "hidden"] {
+    for key in ["name", "path", "kind", "is_gfi"] {
         assert!(entry.get(key).is_some(), "an entry is missing `{key}`");
     }
     assert_eq!(entry["kind"], "file");
     assert_eq!(entry["path"], format!("{here}/alpha.txt"));
-    // The browser renders neither a size nor a date column, so the row carries neither.
-    for key in ["size", "mtime"] {
+    // The browser renders neither a size nor a date column, so the row carries neither — nor a
+    // `hidden` flag, now that a listing holds nothing for it to mark.
+    for key in ["size", "mtime", "hidden"] {
         assert!(entry.get(key).is_none(), "an entry carries an unrendered `{key}`");
     }
-    // Hidden entries are EMITTED, not filtered — the browser owns that toggle.
-    assert_eq!((&by_name(".hidden")["hidden"], &by_name("patch.gfi")["hidden"]), (&j!(true), &j!(false)));
     assert_eq!((&by_name("patch.gfi")["is_gfi"], &by_name("alpha.txt")["is_gfi"]),
                (&j!(true), &j!(false)));
 

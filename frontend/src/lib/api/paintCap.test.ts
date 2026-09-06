@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { MAX_VIEWER_FPS, MIN_PAINT_INTERVAL_MS, paintDelay } from './paintCap';
+import { MIN_PAINT_INTERVAL_MS, paintDelay } from './paintCap';
+import { MAX_VIEWER_FPS } from './vocab';
 
 describe('the viewer paint cap', () => {
-	it('is 30 fps, as one retunable constant', () => {
+	it('derives from the rate the manager serves at, which is the one owner', () => {
 		expect(MAX_VIEWER_FPS).toBe(30);
-		expect(MIN_PAINT_INTERVAL_MS).toBeCloseTo(1000 / 30, 5);
+		expect(MIN_PAINT_INTERVAL_MS).toBeCloseTo(1000 / MAX_VIEWER_FPS, 5);
 	});
 
 	it('a first-ever flush waits nothing', () => {

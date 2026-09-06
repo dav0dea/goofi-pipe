@@ -52,7 +52,7 @@ fn share_read_end(cmd: &mut Command, reader: &PipeReader) -> io::Result<String> 
     Ok(fd.to_string())
 }
 
-// The Windows half is not CI-verified: no Windows host runs this suite.
+// The Windows half is not CI-verified: this ran on no Windows host when it was written.
 #[cfg(windows)]
 fn share_read_end(_cmd: &mut Command, reader: &PipeReader) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;

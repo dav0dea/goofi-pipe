@@ -24,7 +24,7 @@
 	// A shape this kind cannot draw resolves to the text fallback.
 	const summary = $derived.by(() => {
 		if (!frame || !arraySpec) return null;
-		if (!renderable) return summaryOf(arraySpec);
+		if (!renderable) return summaryOf(arraySpec, frame.meta);
 		return null;
 	});
 </script>

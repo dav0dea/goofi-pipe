@@ -176,11 +176,11 @@ async fn a_shell_finds_its_server_and_drives_the_whole_vocabulary_through_exec()
         "one undo took back the whole batch, in shell_a's stack"
     );
 
-    // The raw read round-trips: the entry's rendered form IS the NPY bytes, ready for a pipe.
+    // `--raw` round-trips: the entry's rendered form IS the NPY bytes, ready for a pipe.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let npy = loop {
         let entries =
-            client::exec(&url, &lines(&[&format!("node snapshot {uid}/out")]), None).unwrap();
+            client::exec(&url, &lines(&[&format!("node snapshot {uid}/out --raw")]), None).unwrap();
         let bytes = client::rendered(&entries[0]);
         if bytes.starts_with(b"\x93NUMPY") {
             break bytes;

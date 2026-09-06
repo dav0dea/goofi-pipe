@@ -86,7 +86,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "One elementwise function over the frame, chosen by name. Shape and metadata are untouched.",
+    doc: "One elementwise function over the frame, chosen by name.\n\
+          Shape and metadata are untouched.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

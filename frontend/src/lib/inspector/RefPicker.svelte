@@ -1,9 +1,9 @@
 <!--
-  RefPicker — a param's reference as two fields, node then slot, each completing against the live
-  catalogue filtered by what this param may reference. The pair commits as one `node.slot`.
+  RefPicker — a param's reference as two lists, node then slot, each over the live catalogue
+  filtered by what this param may reference. The pair commits as one `node.slot`.
 -->
 <script lang="ts">
-	import ExprEditor from './expr/ExprEditor.svelte';
+	import { Combobox } from '$lib/ui';
 	import { liveCatalogue } from './expr/catalogue';
 	import { refNodes, refSlots, splitReference, wantedDtype } from './expr/refs';
 
@@ -41,20 +41,18 @@
 </script>
 
 <div class="ref-picker" data-testid={testid}>
-	<ExprEditor
+	<Combobox
 		value={node}
-		picker={() => refNodes(liveCatalogue(), want)}
+		options={() => refNodes(liveCatalogue(), want)}
 		onCommit={pickNode}
-		label="reference node"
 		placeholder="node"
 		testid={`${testid}-node`}
 	/>
 	<span class="dot" aria-hidden="true">.</span>
-	<ExprEditor
+	<Combobox
 		value={slot}
-		picker={() => refSlots(liveCatalogue(), node, want)}
+		options={() => refSlots(liveCatalogue(), node, want)}
 		onCommit={pickSlot}
-		label="reference slot"
 		placeholder="slot"
 		testid={`${testid}-slot`}
 		disabled={!node}

@@ -741,6 +741,27 @@ test.describe('the control socket', () => {
 					.not.toBeNull();
 			});
 
+			await test.step('the wire is capped at the rate the app paints, not the rate the node emits', async () => {
+				// The producer is pushed WELL past the cap, so an uncapped manager would show up
+				// as roughly double. A paint count cannot answer this: the paint is capped either
+				// way, and every frame above the cap is bytes the tab decodes and throws away.
+				await page.evaluate((u) => {
+					const g = (window as any).goofi;
+					g.commands.updateParam(u, 'common', 'max_frequency', 100);
+				}, osc);
+				const rate = () =>
+					page.evaluate((u) => (window as any).goofi.query.arrivalRate(u, 'out'), osc);
+				await expect
+					.poll(rate, { message: 'the stream reports a rate', timeout: 20_000 })
+					.toBeGreaterThan(0);
+				// Two windows, so a rate measured across the param edit cannot stand.
+				await page.evaluate(() => new Promise((r) => setTimeout(r, 1200)));
+				const fps = (await rate()) ?? 0;
+				expect(fps, `arriving at ${fps} fps, and the cap is 30`).toBeLessThan(45);
+				expect(fps, `arriving at ${fps} fps — the stream stalled instead of being capped`)
+					.toBeGreaterThan(15);
+			});
+
 			await test.step('…and it decodes to a real signal, not to zeroes', async () => {
 				expect(summary.dtype, 'the wire dtype survived — numpy spelling, little-endian f32').toBe('<f4');
 				expect(summary.numeric, 'an array frame carries its numbers').toBeTruthy();

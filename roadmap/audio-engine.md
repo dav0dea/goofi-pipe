@@ -236,6 +236,35 @@ is dropped whole, and an inbox the plan stops reading is flushed at the swap, so
 plays when the input is wired again. Latency is one source frame. `SignalIn` is a copy, and a new
 channel count re-plans through `dirty()`.
 
+**Recording and playback are one file's two directions, and neither is a new mechanism.** Landed
+2026-09-06. **A take is params on `AudioOut` rather than a node of its own**, because the clock IS
+an `AudioOut`: a `Record` node in a patch with no device node would have no clock, write an empty
+file and report nothing wrong, and that state cannot exist here. While `record.on` is high the DSP
+half pushes its input into a ring in the framing a tap already uses, and the node's own control
+half drains it each tick into a 32-bit float WAV. **The blocks ARE the request** — a take opens
+because the ring HOLDS something, never because the tick sampled the toggle, since a sampled level
+cuts the head off every take and loses one shorter than a tick outright. Recording is PRE-gain,
+because `gain` is the monitor level and a take must not change with how loud it was played; `gain
+0` is therefore "keep this, do not play it". A take is a SEQUENCE of parts: whatever would make
+the file wrong — the width moved, the rate moved, or RIFF's 4 GB filled — closes the part and
+opens the next as `-2`, `-3`. The size fields are patched once a second as well as at the close,
+so a goofi that dies leaves a file that still plays. A bare name lands in
+`$GOOFI_HOME/.goofi/recordings/` and an absolute path is taken as it is; `unique` joins the UTC
+time on, so a take never replaces the one before it.
+
+**`AudioPlayback` is built into the engine because a `Str` param's TEXT reaches no loaded node** —
+free text arrives at the audio thread as silence, so only a control half that sees
+`Desired.consts` can hold a file name. Its DSP half is `AudioIn`'s, shared as `Fed`, since both
+are fed a ring by their own control half; what differs is the one thing that had to be said out
+loud, that a live source DROPS what piled up because a period rendered late is latency, where a
+file KEEPS it because dropping there is a skip through the file. The control half enters the WAV
+through the same crossing an Array input takes, so a file at any rate arrives at the engine's and
+the resampler keeps one owner. An eighth of a second is held ahead, which is also what a skip
+waits out. `position` is a SEEK REQUEST and not a playhead — the engine never writes a param, so a
+MOVE of it seeks and playback runs free between moves — and `reset` is a pulse, so a gate from
+anywhere fires it. A pulse is DELIVERED to the tick rather than sampled by it, for the reason the
+take's toggle is not sampled either.
+
 **MIDI is a node that emits signals, and no engine mechanism knows it exists.** Landed 2026-09-02
 as engine nodes — `AudioIn` and `MidiIn` stay compiled into the engine when the DSP nodes move to
 `nodes_audio/`, because a control half that owns an OS handle is the engine's — whose handles are
