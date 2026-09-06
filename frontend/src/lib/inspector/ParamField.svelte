@@ -6,7 +6,7 @@
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { ParamDescriptor, ParamMode, SourcePatch } from '$lib/api/types';
-	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Button, Icon, Chip, type BadgeTone } from '$lib/ui';
+	import { Field, Slider, NumberInput, Toggle, Select, TextInput, Button, Icon } from '$lib/ui';
 	import { controlKind } from './controlKind';
 	import { literalFor } from './paramSeed';
 	import ExprEditor from './expr/ExprEditor.svelte';
@@ -62,9 +62,10 @@
 		if (descriptor.mode === 'reference') picking = false;
 	});
 
-	function tone(mode: ParamMode): BadgeTone {
-		if (descriptor.mode !== mode) return 'neutral';
-		return descriptor.error ? 'danger' : 'accent';
+	/** The lit segment — `picking` is a reference being chosen, whatever the committed mode says. */
+	function active(mode: ParamMode): boolean {
+		if (picking) return mode === 'reference';
+		return descriptor.mode === mode;
 	}
 
 	function choose(mode: ParamMode): void {
@@ -89,50 +90,39 @@
 	}
 </script>
 
+{#snippet segment(mode: ParamMode, glyph: string, hint: string, testid: string)}
+	<button
+		type="button"
+		class="seg"
+		class:on={active(mode)}
+		class:bad={active(mode) && !!descriptor.error}
+		aria-pressed={active(mode)}
+		onclick={() => choose(mode)}
+		title={hint}
+		data-testid={testid}>{glyph}</button
+	>
+{/snippet}
+
 <!-- A SIBLING of the label (via Field's adornment slot), so its buttons never steal the label's focus target. -->
 {#snippet source()}
 	{#if driven}
-		<Chip
-			tone={descriptor.triggers ? 'accent' : 'neutral'}
+		<button
+			type="button"
+			class="seg lone"
+			class:on={descriptor.triggers}
 			aria-pressed={descriptor.triggers}
 			onclick={() => onSetSource({ triggers: !descriptor.triggers })}
 			title="When this source's value changes, wake the node's process()"
-			data-testid="param-triggers"
+			data-testid="param-triggers">trig</button
 		>
-			trig
-		</Chip>
 	{/if}
-	<div class="mode" role="group" aria-label={`${paramName} source`} data-testid="param-mode">
-		<Chip
-			tone={tone('constant')}
-			aria-pressed={descriptor.mode === 'constant' && !picking}
-			onclick={() => choose('constant')}
-			title="A constant: the value below"
-			data-testid="param-mode-constant"
-		>
-			=
-		</Chip>
+	<div class="modes" role="group" aria-label={`${paramName} source`} data-testid="param-mode">
+		{@render segment('constant', '=', 'A constant: the value beside it', 'param-mode-constant')}
 		{#if modes.includes('expression')}
-			<Chip
-				tone={tone('expression')}
-				aria-pressed={descriptor.mode === 'expression'}
-				onclick={() => choose('expression')}
-				title="An expression over nd(), globals and me, at control rate"
-				data-testid="param-mode-expression"
-			>
-				fx
-			</Chip>
+			{@render segment('expression', 'fx', 'An expression over nd(), globals and me, at control rate', 'param-mode-expression')}
 		{/if}
 		{#if modes.includes('reference')}
-			<Chip
-				tone={tone('reference')}
-				aria-pressed={descriptor.mode === 'reference' || picking}
-				onclick={() => choose('reference')}
-				title="A reference to one node's output, at that node's rate"
-				data-testid="param-mode-reference"
-			>
-				ref
-			</Chip>
+			{@render segment('reference', 'ref', "A reference to one node's output, at that node's rate", 'param-mode-reference')}
 		{/if}
 	</div>
 {/snippet}
@@ -142,7 +132,10 @@
 	     be its direct children, and a real box would take them out of the @container column-flip. -->
 	<div class="pf-value">
 		{#if kind === 'pulse'}
-			<Button size="sm" onclick={onPulse} data-testid="param-pulse">{paramName}</Button>
+			<!-- The field's label already names it, so the button carries the ACT alone and fills the row. -->
+			<Button class="pf-pulse" title="Fire one pulse" onclick={onPulse} data-testid="param-pulse">
+				<Icon name="activity" />pulse
+			</Button>
 		{/if}
 		{#if showSource}
 			<div class="src-region">
@@ -207,13 +200,80 @@
 	.pf-value {
 		display: contents;
 		font-family: var(--font-mono);
+		/* Narrower than the primitive's default: a param row seats a slider, a number AND the source
+		   switch, and the number is the one of the three with slack to give. */
+		--number-width: 5rem;
 	}
-	.mode {
-		display: inline-flex;
-		gap: var(--space-1);
+	/* The source switch is chrome beside a value, not a control of its own, so it wears the strip
+	   box the panel headers wear rather than a row of pills. */
+	.modes {
+		display: flex;
+		align-items: stretch;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.seg {
+		flex: 0 0 auto;
+		min-width: 1.4rem;
+		height: var(--chrome-control-h);
+		padding: 0 var(--space-2);
+		border: none;
+		background: transparent;
+		color: var(--text-muted);
+		font-family: var(--font-sans);
+		font-size: var(--fs-micro);
+		font-weight: 600;
+		line-height: 1;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		transition:
+			background var(--dur-fast) var(--ease),
+			color var(--dur-fast) var(--ease),
+			border-color var(--dur-fast) var(--ease);
+	}
+	.seg + .seg {
+		border-left: 1px solid var(--border);
+	}
+	.seg.lone {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+	}
+	.seg:hover {
+		background: var(--hover-fill);
+		color: var(--text);
+	}
+	.seg.on {
+		background: var(--accent-fill);
+		color: var(--accent);
+	}
+	.seg.lone.on {
+		border-color: var(--accent);
+	}
+	.seg.on.bad {
+		background: var(--danger-fill);
+		color: var(--danger);
+	}
+	.seg:focus-visible {
+		outline: var(--focus-width) solid var(--focus-ink);
+		outline-offset: -1px;
+	}
+	/* The strip is chrome-height by design; the finger floor is taken back here, as `$lib/ui`'s own
+	   `density="chrome"` controls take theirs. */
+	@media (hover: none) and (pointer: coarse) {
+		.seg {
+			min-width: var(--hit);
+		}
+	}
+	/* A pulse has no value beside it, so the whole row is the target — and it takes the rung above
+	   the fields around it, so a press target never reads as one more box to type in. */
+	.pf-value :global(.pf-pulse) {
+		flex: 1 1 auto;
+		background: var(--surface-3);
+		border-color: var(--border-strong);
 	}
 	.src-region {
-		flex: 1;
+		flex: 3 1 0;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;

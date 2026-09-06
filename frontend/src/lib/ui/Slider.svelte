@@ -36,6 +36,10 @@
 
 	function fmtBound(v: number): string {
 		if (!Number.isFinite(v)) return '';
+		// A bound is CONTEXT beside the track, never a readout: past five digits it is printed short,
+		// so a 1e6 range cannot squeeze the track it describes down to nothing.
+		const a = Math.abs(v);
+		if (a >= 1e5 || (a > 0 && a < 1e-3)) return v.toExponential(0).replace('e+', 'e');
 		if (Number.isInteger(v)) return String(v);
 		return String(Number(v.toFixed(3))); // trim trailing zeros
 	}

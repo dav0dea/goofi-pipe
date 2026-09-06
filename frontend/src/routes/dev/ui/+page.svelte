@@ -707,7 +707,7 @@
 		font-size: var(--fs-strong);
 		color: var(--text);
 	}
-	/* Widths sit either side of the Field's 240px @container threshold. */
+	/* Widths sit either side of the Field's @container threshold. */
 	.cq-box {
 		container-type: inline-size;
 		box-sizing: border-box;
