@@ -18,7 +18,6 @@ pub const GENERATOR: u32 = 512;
 /// The widest a node may ask for on either axis.
 pub const MAX_SIZE: u32 = 8192;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
     /// Another stage's output, by index into `Plan::stages`.
     Stage(usize),
@@ -121,7 +120,12 @@ pub fn compile(view: &GraphView<'_>, live: &HashMap<Uid, Instance>) -> (Plan, Ve
                 _ => {
                     let k = upload;
                     upload += 1;
-                    Input::Upload(k)
+                    // From the settled view, not from an unlink event: an unwired ARRAY input is
+                    // transparent black, and the texture its last frame made is not the answer.
+                    match view.wires_into(*uid, s.name).next() {
+                        Some(_) => Input::Upload(k),
+                        None => Input::None,
+                    }
                 }
             })
             .collect();
@@ -154,10 +158,6 @@ fn size_of(
     if let Some(known) = sizes.get(&uid) {
         return *known;
     }
-    if visiting.contains(&uid) {
-        return (GENERATOR, GENERATOR);
-    }
-    visiting.push(uid);
     let asked = |name: &str| -> u32 {
         view.nodes
             .get(&uid)
@@ -167,6 +167,11 @@ fn size_of(
     };
     let (w, h) = (asked("width"), asked("height"));
     let mut answer = (w, h);
+    // A chain that follows ITSELF cannot answer; what it asked for on either axis still stands.
+    if visiting.contains(&uid) {
+        return (if w == 0 { GENERATOR } else { w }, if h == 0 { GENERATOR } else { h });
+    }
+    visiting.push(uid);
     if w == 0 || h == 0 {
         let behind = live.get(&uid).and_then(|inst| {
             inst.class

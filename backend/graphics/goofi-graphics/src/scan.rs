@@ -3,7 +3,6 @@
 //! holds a cell, and the plan picks it up at the tick after it is filled.
 
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -30,7 +29,7 @@ pub(crate) fn scan(engine: &mut GraphicsEngine, dir: &Path) -> Vec<ScannedType> 
             Err(reason) => {
                 // A file that no longer loads displaces its registration, so the palette greys the
                 // type rather than offering one nothing can build.
-                engine.classes.remove(type_name.as_str());
+                crate::gpu::give_back(engine.classes.remove(type_name.as_str()));
                 Scanned::Unavailable(reason)
             }
         };
@@ -55,7 +54,10 @@ impl GraphicsEngine {
         shader::validate(&full)?;
         let pipeline = self.compiler.build(full, !manifest.params.is_empty(), manifest.inputs.len());
         let class = Arc::new(Class { manifest, feedback: intro.feedback, pipeline });
-        Ok(self.classes.insert(type_name.to_string(), class).is_some())
+        let displaced = self.classes.insert(type_name.to_string(), class);
+        let replaced = displaced.is_some();
+        crate::gpu::give_back(displaced);
+        Ok(replaced)
     }
 }
 
@@ -64,50 +66,58 @@ struct Job {
     params: bool,
     inputs: usize,
     cell: Built,
+    shared: Arc<goofi_control::Shared>,
 }
 
-/// The thread every pipeline is built on.
-pub struct Compiler {
-    jobs: mpsc::Sender<Job>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Compiler {
-    pub fn start(gpu: Arc<Gpu>, shared: Arc<goofi_control::Shared>) -> Compiler {
+/// Where every pipeline in the process is built: ONE thread, beside the one device. A driver
+/// asked to compile from several threads at once crashed inside itself, and one queue is also
+/// what keeps a compile off every op's path.
+fn compiler() -> Option<&'static mpsc::Sender<Job>> {
+    static ONE: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    ONE.get_or_init(|| {
+        let gpu = crate::gpu::shared().ok()?;
         let (jobs, take) = mpsc::channel::<Job>();
-        let thread = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("goofi-graphics-compile".into())
             .spawn(move || {
                 while let Ok(job) = take.recv() {
                     let _ = job.cell.set(compile(&gpu, &job));
-                    // A pipeline that just arrived changes nothing until a settle plans for it.
-                    shared.replan.store(true, Ordering::Release);
-                    shared.waker.notify();
+                    // The tick picks the cell up by itself; the settle is for a refusal, which
+                    // only a plan can turn into the node's standing error.
+                    job.shared.ask_settle();
                 }
             })
-            .expect("the compile thread");
-        Compiler { jobs, thread: Some(thread) }
+            .ok()?;
+        Some(jobs)
+    })
+    .as_ref()
+}
+
+/// One engine's end of that queue: the shared state a finished compile must wake.
+pub struct Compiler(Arc<goofi_control::Shared>);
+
+impl Compiler {
+    pub fn start(shared: Arc<goofi_control::Shared>) -> Compiler {
+        Compiler(shared)
     }
 
     pub fn build(&self, source: String, params: bool, inputs: usize) -> Built {
         let cell: Built = Arc::new(OnceLock::new());
-        let _ = self.jobs.send(Job { source, params, inputs, cell: cell.clone() });
+        let job = Job { source, params, inputs, cell: cell.clone(), shared: self.0.clone() };
+        match compiler() {
+            Some(jobs) => {
+                let _ = jobs.send(job);
+            }
+            None => {
+                let _ = cell.set(Err("no compile thread".into()));
+            }
+        }
         cell
     }
 }
 
-impl Drop for Compiler {
-    fn drop(&mut self) {
-        // Dropping the sender ends the loop; the join is what keeps the device alive until it has.
-        let (jobs, _) = mpsc::channel();
-        drop(std::mem::replace(&mut self.jobs, jobs));
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 fn compile(gpu: &Gpu, job: &Job) -> Result<Arc<wgpu::RenderPipeline>, String> {
+    let _gate = crate::gpu::gate();
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,

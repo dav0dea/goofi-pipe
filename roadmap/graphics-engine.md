@@ -56,14 +56,28 @@ before they arrive.
   a pass-through body is a copy and nothing flips anywhere. The upload of the suite's gradient
   fixture is what found it; a chain of uniform colours cannot see a flip, which is why the first
   four scenario steps were green over it.
-- **The engine is scheduled, demand-driven, and owns one device and one render thread** — LANDED
-  2026-09-06. No
+- **The PROCESS owns one device and one compile thread; the engine owns one render thread** —
+  LANDED 2026-09-06, and the "one device per engine" of the first design is REVISED. Two reasons,
+  both measured. A Vulkan instance opened and closed per engine unloads the driver under a sibling
+  engine still inside it. And the driver crashes inside its own shader compiler whenever one
+  thread builds a pipeline while another encodes, submits or frees on the same device — so every
+  operation on that device takes one process-wide gate: a compile, a tick, a birth, a teardown,
+  and every drop of a class or an instance that owns a pipeline. Eight concurrent engines crashed
+  four runs in five before the gate and none in twenty after; one engine doing thirty-two times
+  the work never crashed at all, which is what named concurrency rather than volume. In
+  production there is one graph and one engine, so the gate is uncontended except against the
+  compile thread, which is exactly what it is for. No
   window. The clock is a constructor choice: `Clock::External` for the suite, driven by
   `render(frames)`; `Clock::Timer` at 60 Hz for the CLI. A stage renders in a tick only when its
   output has a reader — a subscriber on its data service, or a same-engine consumer that is
   demanded — so a node nobody reads costs nothing. That is TouchDesigner's cook model. The runtime
   is behind a mutex the tick thread and the engine share; the render thread never takes the graph
   lock, and an op waits at most one frame.
+- **A plan is replaced whole, never edited.** `Input::Stage` is an index into the plan's own
+  stage list, so dropping one entry renames every entry after it; and a stage that outlives the
+  node it was built for draws the departed node's pipeline into the state a restart just made at
+  the same uid. A node leaving therefore drops the WHOLE plan, and the settle that ends the batch
+  builds the next one. Between the two, the engine draws nothing.
 - **Settle compiles a plan**: Kahn over texture edges, ties by uid, a `feedback` node ignoring its
   in-edges and running first on its producer's previous frame, a loop with no feedback node
   excluded and named — the audio rule. Resolution is settled state: the universal group `output`
@@ -138,6 +152,36 @@ naga's own line number in the FILE's numbering, an authored node loaded and relo
 `library refresh`, a node nobody reads costing no work until a reader arrives, a restart as a
 rebirth on a new generation with the corpse's service gone silent, and a remove that leaves the
 rest standing.
+
+### What the node set and the audit landed (2026-09-06)
+
+All thirteen ship. `ArrayIn` is the door in from the rest of the patch, `Feedback` the one node a
+loop closes through, and the other eleven are sources and filters. The scenario draws a frame from
+EVERY shipped type and checks the node stands with no error: a palette row says naga read the
+file, and only a frame says this device built the pipeline behind it.
+
+The audit of the engine core found seven defects, and each is now a rule rather than a patch:
+
+- The plan is replaced whole (above), which is also what a render thread and an op batch can agree
+  on without a second owner.
+- An unwired ARRAY input reads transparent black FROM THE SETTLED VIEW, not from an unlink event.
+  It kept sampling its last frame for ever, and `Half::unwired` was the second owner that made it
+  possible.
+- The reports are drained under ONE lock. A clone followed by a clear lost whatever a control
+  thread pushed between them.
+- A texture wire is a plan edge, so it no longer rings the consumer's door — the rule the audio
+  engine already had.
+- The render clock is its own argument to `fresh_graph`. It was read off the audio clock, so a
+  demo — which asks for no audio engine — would have got a graphics engine nothing drove: every
+  node green, and every node dead.
+- An idle tick returns before it submits. It was submitting an empty command buffer and blocking
+  on it at 60 Hz on every machine with a GPU.
+- A loop head keeps the axis it asked for instead of falling back to 512 on both.
+
+The duplication with the audio engine went into `goofi-control` rather than being noted: `Faults`
+answers what moved between two settles, `Shared::drain` hands the reports over, and `Handle` holds
+what it last sent so `send_if_changed` is the only door. Each of those was a copy in two engines,
+and the drain copy had already drifted into the defect above.
 
 ## Kept from the first design
 

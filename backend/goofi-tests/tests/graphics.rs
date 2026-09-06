@@ -87,6 +87,25 @@ fn shaders_render_on_the_gpu() {
     assert!(close(px(&frame, 0, 0), [0.0, 1.0, 0.5, 1.0]), "row 0 is the top: {:?}", px(&frame, 0, 0));
     assert!(close(px(&frame, 3, 3), [1.0, 0.0, 0.5, 1.0]), "and row 3 the bottom: {:?}", px(&frame, 3, 3));
 
+    g.call("link remove", j!({ "from": ep(hex(img), "out"), "to": ep(hex(up), "input") }));
+    drawn(&g, up, "the unlinked upload", |d| close(px(d, 0, 0), [0.0, 0.0, 0.0, 0.0]));
+
+    // Step: a texture chain does not flip either. A gradient down the frame, copied by a Level,
+    // still runs the same way — the half of the orientation rule an upload cannot see.
+    let vert = g.add("graphics:Ramp");
+    g.ready(vert);
+    g.set_param(vert, "ramp", "angle", 90.0);
+    g.set_param(vert, "output", "width", 8);
+    g.set_param(vert, "output", "height", 8);
+    let copy = g.add("graphics:Level");
+    g.ready(copy);
+    g.link(vert, "out", copy, "input");
+    let direct = drawn(&g, vert, "the vertical ramp", |d| shape(d) == vec![8, 8, 4]);
+    let copied = drawn(&g, copy, "the copy of it", |d| shape(d) == vec![8, 8, 4]);
+    assert!(px(&direct, 0, 0)[0] < px(&direct, 7, 0)[0], "the ramp runs down: {:?}", px(&direct, 0, 0));
+    assert!(close(px(&copied, 0, 0), px(&direct, 0, 0)), "and the copy is not mirrored");
+    assert!(close(px(&copied, 7, 0), px(&direct, 7, 0)));
+
     // Step: a reference moves a param at control rate, the one door every modulation uses.
     let knob = g.add("_TestScalar");
     g.ready(knob);
@@ -119,6 +138,34 @@ fn shaders_render_on_the_gpu() {
         g.error(lone).filter(|e| e.contains("feedback"))
     });
     g.call("node remove", j!({ "node": hex(lone) }));
+
+    // Step: the shipped set composes, and every one of it compiles on this machine.
+    let ramp = g.add("graphics:Ramp");
+    g.ready(ramp);
+    let comp = g.add("graphics:Composite");
+    g.ready(comp);
+    g.set_param(comp, "composite", "mode", "add");
+    g.link(ramp, "out", comp, "a");
+    g.link(c, "out", comp, "b");
+    drawn(&g, comp, "the sum of a ramp and the constant", |d| px(d, 0, 0)[2] > 1.0 - 1e-3);
+    // A row says naga read the file; a FRAME says this device built the pipeline behind it, which
+    // is the half a validation pass cannot answer for.
+    let shipped: Vec<String> = g.call("library list", j!({}))["types"]
+        .as_array()
+        .expect("a palette")
+        .iter()
+        .filter_map(|r| r["type"].as_str())
+        .filter(|t| t.starts_with("graphics:"))
+        .map(String::from)
+        .collect();
+    assert_eq!(shipped.len(), 13, "the shipped set: {shipped:?}");
+    for ty in &shipped {
+        let node = g.add(ty);
+        g.ready(node);
+        drawn(&g, node, ty, |d| shape(d).len() == 3);
+        assert!(g.error(node).is_none(), "{ty} stands with an error");
+        g.call("node remove", j!({ "node": hex(node) }));
+    }
 
     // Step: a `.wgsl` that does not compile is a greyed type carrying naga's own line number.
     let dir = g.state.mount().join("nodes_graphics");
@@ -157,7 +204,11 @@ fn shaders_render_on_the_gpu() {
         render(g, 1);
         probe.latest()
     });
-    assert!(stages(&g) > before, "and it renders the moment one arrives");
+    // EXACTLY one stage a tick, with several nodes live: "it moved" would pass a demand walk that
+    // wakes the whole patch whenever anybody reads anything.
+    let watched = stages(&g);
+    render(&g, 3);
+    assert_eq!(stages(&g), watched + 3, "one reader, one stage a tick, whatever else is live");
 
     // Step: a restart is a rebirth through the same trait doors — new generation, new services.
     let generation = g.state.graph.lock().unwrap().node_generation(c);

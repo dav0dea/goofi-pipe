@@ -103,8 +103,8 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
         goofi_bridge::schemas::PROTOCOL_VERSION
     );
 
-    // The tier set is the other pair declared by hand on both sides. A tier the client's union
-    // does not name types as `never`, so its health pill silently draws nothing.
+    // The other pair declared by hand on both sides: a tier the client's union does not name
+    // types as `never`, and its health pill silently draws nothing.
     let union = src
         .split("export type NodeRuntime =")
         .nth(1)
@@ -117,8 +117,7 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
 
 #[test]
 fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for() {
-    // A tier crosses its shared cell as a byte, and the way back was once a wildcard: a tier
-    // added at the end read as the one before it, and nothing said so.
+    // A tier crosses its shared cell as a byte, and must come back as itself.
     for tier in goofi_node::Isolation::ALL {
         let cell = goofi_node::IsolationCell::new(tier);
         assert_eq!(cell.get().wire(), tier.wire(), "`{}` does not survive its cell", tier.wire());

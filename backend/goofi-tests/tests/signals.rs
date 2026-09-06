@@ -355,9 +355,9 @@ fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
     set(level, "constant", "shape", j!("3,4"));
 
     // Above and below are the same comparison read from either side.
-    let over = g.add("Threshold");
+    let over = g.add("signal:Threshold");
     set(over, "threshold", "level", j!(1.0));
-    let under = g.add("Threshold");
+    let under = g.add("signal:Threshold");
     set(under, "threshold", "level", j!(1.0));
     set(under, "threshold", "mode", j!("below"));
     let (po, pu) = (g.probe(over, "out"), g.probe(under, "out"));

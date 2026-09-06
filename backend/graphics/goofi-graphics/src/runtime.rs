@@ -40,11 +40,13 @@ struct State {
 }
 
 pub struct Runtime {
-    gpu: Arc<Gpu>,
     plan: Plan,
     states: HashMap<Uid, State>,
     started: Instant,
     pub stats: Arc<Stats>,
+    /// Last: every texture, buffer and pipeline above outlives the device otherwise, and dropping
+    /// one on a destroyed device is a crash in the driver.
+    gpu: Arc<Gpu>,
 }
 
 impl Runtime {
@@ -55,6 +57,7 @@ impl Runtime {
     /// A birth's GPU state. `params` is the byte length of its uniform block, zero for a node
     /// that declares none.
     pub fn insert(&mut self, uid: Uid, params: usize) {
+        let _gate = crate::gpu::gate();
         let uniform = |label: &str, size: u64| {
             self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -74,12 +77,26 @@ impl Runtime {
         self.states.insert(uid, state);
     }
 
+    /// A node leaves, and the plan goes with it — the WHOLE plan, never one stage. `Input::Stage`
+    /// is an index into it, so dropping one entry renames every entry after it; and a stage that
+    /// outlives its own birth draws the departed node's pipeline into the state a restart just
+    /// made at the same uid. The settle that ends the batch builds the next one, and until it
+    /// does this engine draws nothing.
     pub fn remove(&mut self, uid: Uid) {
+        let _gate = crate::gpu::gate();
         self.states.remove(&uid);
-        self.plan.stages.retain(|s| s.uid != uid);
+        self.plan = Plan::default();
+    }
+
+    /// Every GPU object this engine holds, given back at once.
+    pub fn clear(&mut self) {
+        let _gate = crate::gpu::gate();
+        self.plan = Plan::default();
+        self.states.clear();
     }
 
     pub fn set_plan(&mut self, plan: Plan) {
+        let _gate = crate::gpu::gate();
         self.plan = plan;
     }
 
@@ -93,6 +110,11 @@ impl Runtime {
         let began = Instant::now();
         let t = self.started.elapsed().as_secs_f32();
         let want = self.plan.demanded();
+        if !want.contains(&true) {
+            self.stats.frames.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let _gate = crate::gpu::gate();
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
         let mut readbacks: Vec<usize> = Vec::new();
         for (i, drawn) in want.iter().enumerate() {
@@ -296,10 +318,9 @@ impl State {
     }
 }
 
-/// A stage's uniform block length, so a birth can size its buffer.
+/// A stage's uniform block length, so a birth can size its buffer. Measured by the writer, not
+/// stated beside it: a second spelling of one layout is a pair that drifts.
 pub fn params_len(decls: &[goofi_node::ParamDecl]) -> usize {
-    if decls.is_empty() {
-        return 0;
-    }
-    decls.len() * 4 + (16 - (decls.len() * 4) % 16) % 16
+    let zeros: Vec<AtomicU64> = decls.iter().map(|_| AtomicU64::new(0)).collect();
+    shader::uniform_bytes(decls, &zeros).len()
 }

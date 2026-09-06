@@ -2,15 +2,12 @@
 //! layouts every pipeline shares, and the 1x1 transparent texture an unwired input samples.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-/// Renderable and filterable on every backend, half the readback of f32, and HDR — so a feedback
-/// chain that accumulates past 1 keeps what it made.
+/// Every texture in the engine.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 pub struct Gpu {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
     pub adapter: String,
     pub backend: String,
     pub sampler: wgpu::Sampler,
@@ -19,10 +16,39 @@ pub struct Gpu {
     group0: [wgpu::BindGroupLayout; 2],
     group1: Mutex<HashMap<usize, Arc<wgpu::BindGroupLayout>>>,
     layouts: Mutex<HashMap<(bool, usize), Arc<wgpu::PipelineLayout>>>,
+    pub queue: wgpu::Queue,
+    /// LAST, with the queue before it: fields drop in declaration order, and a resource outliving
+    /// the device it was made on is a driver crash rather than an error.
+    pub device: wgpu::Device,
+}
+
+/// The ONE device this process renders on, opened at the first ask. Not one per engine: an
+/// engine's teardown would unload the Vulkan driver under a sibling engine still inside it, and
+/// the suite runs many engines at once. Nothing destroys it, so nothing races on its death.
+pub fn shared() -> Result<Arc<Gpu>, String> {
+    static ONE: OnceLock<Result<Arc<Gpu>, String>> = OnceLock::new();
+    ONE.get_or_init(|| Gpu::open().map(Arc::new)).clone()
+}
+
+/// Held for EVERY operation on that device: a compile, a tick, a birth, a teardown. The driver
+/// on the machine this was written on crashed inside its own shader compiler whenever one thread
+/// built a pipeline while another encoded, submitted or freed on the same device, so the engine
+/// takes the device one caller at a time. Never taken while the runtime lock is free to be taken
+/// after it: the order is runtime, then this.
+pub fn gate() -> std::sync::MutexGuard<'static, ()> {
+    static GATE: Mutex<()> = Mutex::new(());
+    GATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Give a value that owns GPU objects back, behind the gate. A pipeline destroyed while the
+/// compile thread builds one is the same collision as any other.
+pub fn give_back<T>(x: T) {
+    let _gate = gate();
+    drop(x);
 }
 
 impl Gpu {
-    pub fn open() -> Result<Gpu, String> {
+    fn open() -> Result<Gpu, String> {
         // No display handle: this engine never opens a window, and asking for one would refuse
         // the device on a headless machine — a server, a CI runner — that has a GPU regardless.
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -158,7 +184,7 @@ impl Gpu {
     }
 }
 
-pub fn one_texel() -> wgpu::Extent3d {
+fn one_texel() -> wgpu::Extent3d {
     wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }
 }
 

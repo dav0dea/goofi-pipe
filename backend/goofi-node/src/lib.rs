@@ -366,8 +366,8 @@ impl Isolation {
             _ => "python",
         }
     }
-    /// Back from the byte an [`IsolationCell`] holds. Searched rather than matched: a wildcard
-    /// arm here read a newly added tier as another one, and said nothing.
+    /// Back from the byte an [`IsolationCell`] holds — searched, so a tier added to `ALL` needs
+    /// no arm here and cannot be read as another one.
     fn from_u8(v: u8) -> Isolation {
         Isolation::ALL.into_iter().find(|i| *i as u8 == v).unwrap_or(Isolation::Native)
     }

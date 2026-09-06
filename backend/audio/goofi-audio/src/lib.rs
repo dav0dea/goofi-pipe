@@ -14,7 +14,7 @@ use goofi_audio_sdk::host::Loaded;
 use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
-    DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView,
+    DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, NodeView,
     ParamGroups, ParamKey, Ringer, Status, Touched, Uid, Via, NATIVE,
 };
 
@@ -230,8 +230,6 @@ pub(crate) struct Instance {
     pub(crate) control: Handle,
     /// The channel count each Array input last saw — what the plan sizes its inbox by.
     pub(crate) chans: Vec<Arc<AtomicU16>>,
-    /// What the control half was last told; a settle that changes nothing says nothing.
-    last: Option<Desired>,
 }
 
 pub struct AudioEngine {
@@ -266,7 +264,7 @@ pub struct AudioEngine {
     sweep: bool,
     /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
     disabled: HashMap<Uid, String>,
-    faulted: HashMap<Uid, String>,
+    faults: goofi_control::Faults,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
     last: Plan,
@@ -324,7 +322,7 @@ impl AudioEngine {
             workspace: None,
             sweep: false,
             disabled: HashMap::new(),
-            faulted: HashMap::new(),
+            faults: goofi_control::Faults::default(),
             pending: Vec::new(),
             dirty: false,
             last: Plan::default(),
@@ -706,7 +704,7 @@ impl Engine for AudioEngine {
         };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });
-        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, chans: inbox_chans, last: None });
+        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, chans: inbox_chans });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.shared.waker.notify();
@@ -723,7 +721,7 @@ impl Engine for AudioEngine {
             self.discard_retired();
             self.free.push(inst.idx);
             self.disabled.remove(&uid);
-            self.faulted.remove(&uid);
+            self.faults.forget(uid);
             self.pending.retain(|(u, _)| *u != uid);
             self.dirty = true;
         }
@@ -738,13 +736,10 @@ impl Engine for AudioEngine {
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
             let desired = self.desired_of(view, uid, nv);
-            if self.live[&uid].last.as_ref() == Some(&desired) {
+            let shown = self.plugin_values(uid, &desired.consts);
+            if !self.live[&uid].control.send_if_changed(desired) {
                 continue;
             }
-            let shown = self.plugin_values(uid, &desired.consts);
-            let inst = self.live.get_mut(&uid).expect("live");
-            inst.control.send(desired.clone());
-            inst.last = Some(desired);
             if let (Some(ui), Some(values)) = (&self.ui, shown) {
                 ui.post(move |_| vst3::editor::sync(uid, values));
             }
@@ -767,16 +762,7 @@ impl Engine for AudioEngine {
         let (plan, looped) = plan::compile(view, &self.live, &silent, &self.disabled);
         faults.extend(looped);
         let since = self.started.elapsed().as_secs_f64();
-        let now: HashMap<Uid, String> = faults.into_iter().collect();
-        for uid in self.faulted.keys().filter(|u| !now.contains_key(u)) {
-            self.pending.push((*uid, Status::Fault { fault: None }));
-        }
-        for (uid, msg) in &now {
-            if self.faulted.get(uid) != Some(msg) {
-                self.pending.push((*uid, Status::Fault { fault: Some(NodeFault::Process { msg: msg.clone(), since }) }));
-            }
-        }
-        self.faulted = now;
+        self.pending.extend(self.faults.settle(faults, since));
         if plan != self.last {
             let arena = vec![0.0; plan.arena_len];
             self.send(Msg::Plan { plan: plan.clone(), arena });
@@ -795,13 +781,7 @@ impl Engine for AudioEngine {
             self.tried = None;
             self.dirty = true;
         }
-        let mut pending = std::mem::take(&mut self.pending);
-        pending.append(&mut self.shared.reports.lock().unwrap());
-        let n = pending.len();
-        for (uid, status) in pending {
-            apply(uid, status);
-        }
-        n
+        self.shared.clone().drain(&mut self.pending, apply)
     }
 
     /// A refresh runs on the node's own thread, never under the graph lock.

@@ -8,10 +8,10 @@ use goofi_core::SlotType;
 use goofi_node::{NodeManifest, ParamDecl, ParamSpec};
 
 /// The names the prelude declares. A header that takes one is refused, rather than shadowing it.
-pub const RESERVED: &[&str] = &["time", "resolution", "samp", "p", "Params", "Vs", "vs", "fs", "shade"];
+const RESERVED: &[&str] = &["time", "resolution", "samp", "p", "Params", "Vs", "vs", "fs", "shade"];
 
 /// The one output every graphics node has.
-pub const OUT: &str = "out";
+const OUT: &str = "out";
 
 /// The header's manifest, with the one output added. The file's WHOLE text stays the source that
 /// naga reads, so a line number it reports is the line an author sees.
@@ -106,7 +106,7 @@ pub fn uniform_bytes(decls: &[ParamDecl], atomics: &[AtomicU64]) -> Vec<u8> {
             _ => out.extend_from_slice(&(v.round().max(0.0) as u32).to_le_bytes()),
         }
     }
-    while !out.len().is_multiple_of(16) {
+    while !out.len().is_multiple_of(16) && !decls.is_empty() {
         out.push(0);
     }
     out

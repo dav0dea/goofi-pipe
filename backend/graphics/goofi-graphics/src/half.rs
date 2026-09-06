@@ -15,9 +15,8 @@ pub struct Upload {
 }
 
 impl Upload {
-    /// A frame as RGBA texels. `[N]` is one row; `[H, W]` is gray; `[H, W, C]` fills the channels
-    /// it has, with alpha 1 where it has none. Values enter as they are — clamping is the
-    /// shader's business, and the format is HDR.
+    /// A frame as RGBA texels, unclamped. `[N]` is one row; `[H, W]` is gray; `[H, W, C]` fills
+    /// the channels it has, with alpha 1 where it has none.
     pub fn of(frame: &Data) -> Option<Upload> {
         let Value::Array(a) = frame.value() else { return None };
         let (h, w, c) = match *a.shape() {
@@ -61,12 +60,6 @@ impl Half for GraphicsHalf {
             *cell.lock().unwrap() = Some(up);
         }
         false
-    }
-
-    fn unwired(&mut self, inbox: usize) {
-        if let Some(cell) = self.uploads.get(inbox) {
-            *cell.lock().unwrap() = None;
-        }
     }
 
     fn tick(&mut self, cx: &Cx<'_>, publish: &mut dyn FnMut(usize, &[u8])) -> Ticked {

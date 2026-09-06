@@ -158,7 +158,12 @@ impl AppState {
         let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        let mut graph_val = fresh_graph((!mode.demo).then_some(clock));
+        // A harness drives the render clock by hand through `render()`; every real run is timed.
+        let render = match clock {
+            Clock::External => RenderClock::External,
+            _ => RenderClock::Timer,
+        };
+        let mut graph_val = fresh_graph((!mode.demo).then_some(clock), render);
         graph_val.set_workspace(&mount);
         let mut doc = crate::doc::GraphDoc::new();
         doc.reconcile_root(&projection::of(&graph_val));
@@ -619,11 +624,13 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
     }
 }
 
-/// The composed graph the app boots: the model plus the signal engine, registered first. `None`
-/// asks for no audio engine at all, which is also what takes every audio node out of the catalog.
-/// The graphics engine is always ASKED for, and a machine with no GPU adapter simply has none —
-/// which takes every graphics node out of the catalog by the same one rule.
-pub fn fresh_graph(clock: Option<Clock>) -> Graph {
+/// The composed graph the app boots: the model plus the signal engine, registered first. A `None`
+/// audio clock asks for no audio engine at all, which is also what takes every audio node out of
+/// the catalog. The graphics engine is always ASKED for, and a machine with no GPU adapter simply
+/// has none — which takes every graphics node out of the catalog by the same one rule. Its clock
+/// is its OWN argument rather than a reading of the audio one: a demo asks for no audio engine,
+/// and used to get a graphics engine nothing drove — every node green, and every one dead.
+pub fn fresh_graph(clock: Option<Clock>, render: RenderClock) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
         g.instance().to_string(),
@@ -634,10 +641,6 @@ pub fn fresh_graph(clock: Option<Clock>) -> Graph {
     if let Some(clock) = clock {
         g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
     }
-    let render = match clock {
-        Some(Clock::Device) => goofi_graphics::Clock::Timer,
-        _ => goofi_graphics::Clock::External,
-    };
     match goofi_graphics::GraphicsEngine::open(g.instance().to_string(), g.patch_start(), g.drain_waker(), render) {
         Ok(engine) => g.register_engine(Box::new(engine)),
         Err(why) => eprintln!("graphics: {why}; this machine renders no shaders"),
@@ -656,6 +659,7 @@ pub fn try_graphics_engine(g: &mut Graph) -> Option<&mut goofi_graphics::Graphic
 }
 
 pub use goofi_audio::Clock;
+pub use goofi_graphics::Clock as RenderClock;
 
 /// The audio engine registered in `g` — its external clock is the concrete door a test drives.
 pub fn audio_engine(g: &mut Graph) -> &mut goofi_audio::AudioEngine {

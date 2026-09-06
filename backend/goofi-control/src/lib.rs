@@ -70,6 +70,43 @@ impl Shared {
         self.replan.store(true, Ordering::Release);
         self.waker.notify();
     }
+
+    /// Hand the engine's own pending statuses and every half's reports to `apply`, and answer how
+    /// many. ONE lock over the reports: a clone and a later clear lost whatever landed between.
+    pub fn drain(&self, pending: &mut Vec<(Uid, Status)>, apply: &mut dyn FnMut(Uid, Status)) -> usize {
+        let mut all = std::mem::take(pending);
+        all.append(&mut self.reports.lock().expect("the reports"));
+        let n = all.len();
+        for (uid, status) in all {
+            apply(uid, status);
+        }
+        n
+    }
+}
+
+/// What a scheduled engine's nodes are faulted with, and the deltas a settle owes the graph. The
+/// engine states the WHOLE current set each settle; this answers only what moved.
+#[derive(Default)]
+pub struct Faults(IndexMap<Uid, String>);
+
+impl Faults {
+    pub fn settle(&mut self, now: impl IntoIterator<Item = (Uid, String)>, since: f64) -> Vec<(Uid, Status)> {
+        let now: IndexMap<Uid, String> = now.into_iter().collect();
+        let mut out: Vec<(Uid, Status)> =
+            self.0.keys().filter(|u| !now.contains_key(*u)).map(|u| (*u, Status::Fault { fault: None })).collect();
+        for (uid, msg) in &now {
+            if self.0.get(uid) != Some(msg) {
+                let fault = Some(goofi_node::NodeFault::Process { msg: msg.clone(), since });
+                out.push((*uid, Status::Fault { fault }));
+            }
+        }
+        self.0 = now;
+        out
+    }
+
+    pub fn forget(&mut self, uid: Uid) {
+        self.0.shift_remove(&uid);
+    }
 }
 
 /// This tick's settled state, as [`Half::tick`] reads it.
@@ -124,12 +161,26 @@ pub struct Handle {
     mail: Arc<Mutex<Mail>>,
     pub halt: Arc<Halt>,
     bell: Doorbell,
+    /// What was last sent, so a settle that changes nothing says nothing. It lives HERE because
+    /// this is the only hand that sends; an engine keeping its own copy is the same fact twice.
+    last: Mutex<Option<Desired>>,
 }
 
 impl Handle {
     pub fn send(&self, desired: Desired) {
+        *self.last.lock().expect("the last desired") = Some(desired.clone());
         self.mail.lock().unwrap().desired = Some(desired);
         let _ = self.bell.ring(0);
+    }
+
+    /// Send only what is new, and say whether it did. A settle runs per batch and states the WHOLE
+    /// desired state, so most of them state what the half already holds.
+    pub fn send_if_changed(&self, desired: Desired) -> bool {
+        let fresh = self.last.lock().expect("the last desired").as_ref() != Some(&desired);
+        if fresh {
+            self.send(desired);
+        }
+        fresh
     }
 
     pub fn refresh(&self, key: ParamKey) {
@@ -213,7 +264,7 @@ pub fn spawn<H: Half + 'static>(
             thread_halt.release();
         })
         .map_err(|e| format!("could not start the node's control thread: {e}"))?;
-    Ok(Handle { mail, halt, bell })
+    Ok(Handle { mail, halt, bell, last: Mutex::new(None) })
 }
 
 /// One output's door out: who drinks from it, and who to wake once something is on it.
