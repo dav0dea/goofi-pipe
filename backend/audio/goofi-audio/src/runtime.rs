@@ -11,8 +11,13 @@ use goofi_node::Uid;
 
 use crate::plan::{Plan, Source, SILENCE};
 
-/// Blocks in a row a node may take longer than a block to process before it leaves the plan.
+/// Blocks in a row a node may exceed its budget before it leaves the plan.
 pub const OVERRUNS: u8 = 8;
+
+/// Blocks of wall time one block's `process` is given. A node near ONE block is heavy, not broken:
+/// a plugin measured at 1.3-2.0ms against a 1.33ms block crossed the line on 127 of 57330 blocks
+/// and cost no underrun at all, so a budget with no margin ejects on the scheduler's noise.
+pub const BUDGET: u32 = 4;
 
 pub struct Slot {
     pub uid: Uid,
@@ -150,8 +155,8 @@ pub struct Runtime {
     pub fifo: Vec<f32>,
     /// The device's width while a device is the clock; the summed output's own otherwise.
     device: Option<u16>,
-    /// One block's duration at the rate: what a node's `process` is held to.
-    pub block: Duration,
+    /// What a node's `process` is held to: `BUDGET` blocks of wall time at the rate.
+    pub budget: Duration,
 }
 
 impl Runtime {
@@ -164,7 +169,7 @@ impl Runtime {
             outbox,
             fifo: Vec::new(),
             device: None,
-            block: Duration::from_secs_f64(BLOCK as f64 / crate::RATE),
+            budget: Duration::from_secs_f64(BLOCK as f64 / crate::RATE) * BUDGET,
         }
     }
 
@@ -299,7 +304,7 @@ impl Runtime {
                     Ok(()) if stage.outs.iter().any(|(at, ch)| unsafe { region(base, len, *at, *ch) }.iter().any(|v| !v.is_finite())) => {
                         Some(Fault::NotANumber)
                     }
-                    Ok(()) if started.elapsed() > self.block => {
+                    Ok(()) if started.elapsed() > self.budget => {
                         slot.overruns = slot.overruns.saturating_add(1);
                         (slot.overruns >= OVERRUNS).then_some(Fault::Overrun)
                     }

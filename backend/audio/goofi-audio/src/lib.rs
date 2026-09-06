@@ -415,7 +415,7 @@ impl AudioEngine {
                     if self.live.get(&uid).is_some_and(|i| i.serial == serial) {
                         let msg = match fault {
                             Fault::Panic(msg) => msg,
-                            Fault::Overrun => format!("process overran the block {OVERRUNS} times in a row"),
+                            Fault::Overrun => format!("process overran its budget {OVERRUNS} blocks in a row"),
                             Fault::NotANumber => "process put out a value that is not a number".to_string(),
                         };
                         self.disabled.insert(uid, msg);
@@ -588,7 +588,7 @@ impl AudioEngine {
                 slot.node.prepare(rate);
             }
             self.audio.rate.store(rate.to_bits(), Ordering::Relaxed);
-            rt.block = Duration::from_secs_f64(BLOCK as f64 / rate);
+            rt.budget = Duration::from_secs_f64(BLOCK as f64 / rate) * runtime::BUDGET;
         }
         rt.set_device(Some(channels));
     }
