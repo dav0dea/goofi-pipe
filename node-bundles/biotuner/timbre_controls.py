@@ -4,14 +4,22 @@ The other half of `VitalPreset`. A preset is written once and carries structure 
 wavetables, modulation routings, the coupling analysis that costs a second to compute. This node
 carries what a frame CAN: the timbre's shape, every frame, as numbers a plugin parameter binds to.
 
-Takes a TUNING (ratios inside an octave), as `Tuning` emits them, and optionally the `amps` beside
-the peaks they came from. Everything here is measured in under a millisecond, which is why it can
-run at frame rate at all.
+Takes a TUNING (ratios inside an octave), as `Tuning` emits them. Everything here is measured in
+under a millisecond, which is why it can run at frame rate at all.
+
+It takes NO amplitudes, and that is a decision rather than an omission. `compute_peak_ratios`
+answers every PAIRWISE ratio, deduplicated and folded — five peaks give ten degrees — so degree
+`k` stands in no relation to peak `k` and an amplitude cannot be aligned to it. The information
+needed to align them does not survive the tuning, so it cannot be repaired here: an amplitude
+belongs to a peak, and weighting it belongs where the peaks still exist. `tilt` shapes the
+partials instead.
 
 
 Every output is a plain number in a plain range, so binding one to a plugin param is a reference
 and nothing more. The last axis is ratios and is consumed; every axis before it survives.
 """
+
+from fractions import Fraction
 
 import numpy as np
 from biotuner.biotuner_utils import compute_peak_ratios
@@ -24,7 +32,6 @@ class TimbreControls(goofi.Node):
 
     Inputs:
       input  a tuning: ratios inside an octave, as `Tuning` emits them
-      amps   optional — the amplitudes beside the peaks the tuning came from
 
     Outputs:
       partials      the ratios as frequencies over `base_freq`, in Hz
@@ -32,16 +39,14 @@ class TimbreControls(goofi.Node):
       weights       per partial, how consonant it is against the rest, 0 to 1
       brightness    the amplitude-weighted centroid, 0 to 1 across the partial span — the one to bind
                     to a filter cutoff
-      spread        how far the partials sit from a harmonic series, 0 to 1: 0 is harmonic, higher is
-                    bell-like. Binds to detune, unison or an inharmonic control
+      spread        how far the degrees sit from simple just ratios, in cents against `spread_span`,
+                    0 to 1: a just scale is 0, a tempered or irrational one higher. Binds to
+                    detune, unison or an inharmonic control
       harmonicity   the mean consonance of the whole set, 0 to 1
     """
 
     TAGS = ["transform"]
-    INPUTS = {
-        "input": goofi.InputSlot(goofi.DataType.ARRAY, required=True),
-        "amps": goofi.InputSlot(goofi.DataType.ARRAY, required=False),
-    }
+    INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
     OUTPUTS = {
         "partials": goofi.DataType.ARRAY,
         "amplitudes": goofi.DataType.ARRAY,
@@ -54,19 +59,27 @@ class TimbreControls(goofi.Node):
         "timbre": {
             "base_freq": goofi.FloatParam(220.0, 20.0, 2000.0, doc="The frequency ratio 1 sits at, in Hz."),
             "tilt": goofi.FloatParam(0.0, -2.0, 2.0, doc="Amplitude rolloff per partial: above 0 favours the low ones."),
-            "spread_span": goofi.FloatParam(0.25, 0.01, 1.0, doc="The distance from harmonic that reads as spread 1."),
+            "spread_span": goofi.FloatParam(25.0, 1.0, 200.0, doc="Cents away from just that reads as spread 1."),
+            "justLimit": goofi.IntParam(8, 2, 32, doc="Largest denominator a degree may be called just by."),
         }
     }
 
-    def process(self, input, amps=None):
+    @staticmethod
+    def _cents_from_just(ratios, limit):
+        """Mean distance, in cents, from each degree to the simplest just ratio near it."""
+        away = []
+        for r in ratios:
+            near = Fraction(float(r)).limit_denominator(int(limit))
+            away.append(abs(1200.0 * np.log2(float(r) / float(near))) if float(near) > 0 else 0.0)
+        return float(np.mean(away)) if away else 0.0
+
+    def process(self, input):
         p = self.params.timbre
         x = np.asarray(input.data, dtype=np.float64)
         if x.ndim == 0:
             raise ValueError("TimbreControls reads a scale, not a single number")
-        given = None if amps is None else np.asarray(amps.data, dtype=np.float64)
 
         lead, rows = x.shape[:-1], x.reshape(-1, x.shape[-1])
-        arows = None if given is None else given.reshape(-1, given.shape[-1])
         width = max(int(np.isfinite(r).sum()) for r in rows) or 1
         part = np.full((rows.shape[0], width), np.nan)
         amp = np.full((rows.shape[0], width), np.nan)
@@ -79,15 +92,8 @@ class TimbreControls(goofi.Node):
                 continue
             freqs = ratios * p.base_freq
 
-            # Amplitude comes from the peaks where they are wired, else from the tilt alone; either
-            # way the loudest partial is 1, so `brightness` means the same thing in both.
-            if arows is not None:
-                a = np.asarray([v for v in arows[i] if np.isfinite(v)], dtype=np.float64)[: ratios.size]
-                a = np.power(10.0, a / 20.0) if a.size and a.min() < 0 else a  # dB from `Peaks`
-                a = np.pad(a, (0, ratios.size - a.size), constant_values=0.0) if a.size < ratios.size else a
-            else:
-                a = np.ones(ratios.size)
-            a = a * np.power(ratios, -p.tilt)
+            # `tilt` alone shapes the amplitudes, and the loudest partial is 1.
+            a = np.power(ratios, -p.tilt)
             a = a / a.max() if a.max() > 0 else a
 
             # How consonant each partial is against every other, as the mean of its pairs.
@@ -99,9 +105,11 @@ class TimbreControls(goofi.Node):
             centroid = float(np.sum(freqs * a) / np.sum(a)) if a.sum() > 0 else float(freqs[0])
             span = float(freqs[-1] - freqs[0])
             brightness = (centroid - freqs[0]) / span if span > 0 else 0.0
-            # Distance from the nearest whole harmonic, which is what makes a set bell-like.
-            harm = ratios / ratios[0]
-            spread = float(np.mean(np.abs(harm - np.round(harm)))) / p.spread_span
+            # Distance from the nearest SIMPLE JUST ratio. Measuring against the nearest whole
+            # number cannot work on a scale: every ratio is folded into `[1, 2)`, so the distance
+            # is to 1 or to 2, which an evenly spread scale maximises by construction — it rated a
+            # just major scale as more bell-like than a deliberately inharmonic one.
+            spread = self._cents_from_just(ratios, p.justLimit) / p.spread_span
 
             part[i, : ratios.size] = freqs
             amp[i, : a.size] = a

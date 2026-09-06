@@ -74,15 +74,23 @@ class MicrotonalKeys(goofi.Node):
         ratios = np.asarray([v for v in np.ravel(np.asarray(input.data, dtype=np.float64)) if np.isfinite(v)])
         # The octave that closes a scale is the next scale's first step, so it is not a step here —
         # otherwise every octave would sound twice and the key count would drift.
-        ratios = ratios[ratios < p.octave - 1e-9]
         if ratios.size == 0:
-            raise ValueError("MicrotonalKeys needs at least one ratio below the octave")
+            raise ValueError("MicrotonalKeys needs at least one ratio")
+        ratios = np.sort(ratios[ratios < p.octave - 1e-9])
+        # biotuner drops the unison by construction — a peak over itself is not an interval — so
+        # most constructions hand back a scale whose first degree is not 1. Degree zero IS the
+        # unison, and without it `base_note` does not sound at `base_freq`: the default
+        # `peaks_ratios` starts at 1.0179, which is 31 cents out.
+        if ratios.size == 0 or not np.isclose(ratios[0], 1.0):
+            ratios = np.concatenate([[1.0], ratios])
 
         vel = np.ravel(np.asarray(notes.data, dtype=np.float64))
         down = [n for n in range(min(vel.size, 128)) if vel[n] > 0.0]
 
         # A key keeps the voice it was given; a released one frees its voice for the next press.
-        self.held = {n: v for n, v in self.held.items() if n in down}
+        # A voice index outlives the count that made it: lowering `voices` under a held key
+        # leaves it pointing past every output, and every frame after faults on it.
+        self.held = {n: v for n, v in self.held.items() if n in down and v < p.voices}
         free = [v for v in range(p.voices) if v not in self.held.values()]
         for n in down:
             if n not in self.held and free:
