@@ -308,6 +308,59 @@ fn a_patch_sounds_under_the_external_clock() {
     sounds(&g, "…and to rejoin", |x| (peak(x) - 1.5).abs() < 0.02);
     g.call("node remove", j!({ "node": hex(out2) }));
 
+    // Step: `record.on` writes what reaches the AudioOut to a WAV file, BEFORE gain — so the
+    // monitor level moves what is heard and never what is kept. Three takes: a plain one, a
+    // second under `unique` that cannot replace it, and a name that will not open, which stands
+    // as an error on the param until one of the three moves.
+    let takes = goofi_audio::recordings();
+    let opened = |p: &Path| goofi_audio::wav::Reader::open(p).ok().filter(|r| r.frames > 0);
+    g.set_param(out, "record", "file", "scenario");
+    g.set_param(out, "record", "unique", false);
+    g.set_param(out, "audio", "gain", 0.25);
+    sounds(&g, "a quarter of it is heard", |x| (peak(x) - 0.25).abs() < 0.02);
+    g.set_param(out, "record", "on", true);
+    for _ in 0..3 {
+        drive(&g, TENTH);
+    }
+    g.set_param(out, "record", "on", false);
+    let one = takes.join("scenario.wav");
+    let mut kept = g.until("the take closed and its header patched", |_| opened(&one));
+    assert_eq!((kept.channels, kept.rate), (1, 48_000), "the chain's width, and the clock's rate");
+    assert!(kept.frames >= 2 * TENTH as u64, "no block was dropped: {} frames of {}", kept.frames, 3 * TENTH);
+    let (_, x) = kept.read(TENTH).expect("the take reads back");
+    assert!((peak(&x) - 1.0).abs() < 0.02, "kept before gain, at full scale: peak {}", peak(&x));
+    assert!(near(crossings(&x), 88), "the tone that was playing: {} crossings", crossings(&x));
+
+    g.set_param(out, "record", "unique", true);
+    g.set_param(out, "record", "on", true);
+    drive(&g, TENTH);
+    g.set_param(out, "record", "on", false);
+    let stamped = g.until("the stamped take beside the first", |_| {
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&takes).ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| *p != one && p.extension().is_some_and(|e| e == "wav"))
+            .collect();
+        wavs.sort();
+        wavs.pop().filter(|p| opened(p).is_some())
+    });
+    assert!(opened(&one).is_some(), "the first take still stands: {}", one.display());
+    let name = stamped.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    assert!(name.starts_with("scenario-") && name.len() == "scenario-20260906-141233".len(), "the time joined the name: {name}");
+
+    let blocked = takes.join("blocked.wav");
+    std::fs::create_dir_all(&blocked).expect("a directory where the take wants its file");
+    g.set_param(out, "record", "unique", false);
+    g.set_param(out, "record", "file", takes.join("blocked").to_string_lossy().to_string());
+    g.set_param(out, "record", "on", true);
+    drive(&g, TENTH);
+    let why = g.until("the take that will not open to say why", |g| g.error(out));
+    assert!(why.contains("blocked.wav"), "the path it could not open: {why}");
+    g.set_param(out, "record", "on", false);
+    g.until("the error to clear once the param moves", |g| g.error(out).is_none().then_some(()));
+    g.set_param(out, "record", "file", "scenario");
+    g.set_param(out, "audio", "gain", 1.0);
+    sounds(&g, "the monitor level back where the scenario left it", |x| (peak(x) - 1.0).abs() < 0.02);
+
     // Step: the device list is a refresh answered by the node's own thread and echoed to every
     // client, the host default first; the clock itself reports through `session status`.
     let mut ev = g.events();

@@ -4,12 +4,13 @@
 //! output drinks from.
 
 use std::panic::AssertUnwindSafe;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
+use goofi_audio_sdk::{high, BLOCK, MAX_CHANNELS};
 use goofi_core::{Data, Meta, Param};
 use goofi_node::{BindingId, DrainWaker, EventId, ExprEvaluator, Expression, NodeManifest, ParamKey, Status, Uid, Var};
 use goofi_transport::{
@@ -20,7 +21,7 @@ use indexmap::IndexMap;
 
 use crate::nodes::midi_in::{Note, NO_PORT};
 use crate::nodes::{audio_in, audio_out, midi_in};
-use crate::{plan, Clock, DEFAULT_DEVICE, NO_DEVICE, RATE};
+use crate::{plan, wav, Clock, DEFAULT_DEVICE, NO_DEVICE, RATE};
 
 /// How often the paced duties run: a tapped output is published, and a binding with no stream
 /// variable is re-evaluated, at this pace whatever rings in between.
@@ -30,8 +31,12 @@ pub const TAP_RING: usize = (1 + MAX_CHANNELS as usize * BLOCK) * 16;
 /// An inbox holds one second of the widest frame at the rate; a frame that does not fit is
 /// dropped whole.
 pub const INBOX_RING: usize = RATE as usize * MAX_CHANNELS as usize;
+/// A take's ring holds one second of the widest block, as an inbox holds one second of a frame.
+pub const REC_RING: usize = (1 + MAX_CHANNELS as usize * BLOCK) * (RATE as usize / BLOCK);
 /// Notes a port may hold between two blocks.
 pub const NOTE_RING: usize = 1024;
+/// How often a take patches its size fields, so a goofi that dies leaves a file that still plays.
+const SYNC: Duration = Duration::from_secs(1);
 
 /// A ring's producer as an OS callback holds it: successive streams on one node share it, and a
 /// callback that finds it taken drops that buffer rather than wait.
@@ -43,6 +48,8 @@ pub type Feed<T> = Arc<Mutex<rtrb::Producer<T>>>;
 pub struct Ports {
     pub audio_in: Option<(Feed<f32>, Arc<AtomicU16>)>,
     pub midi_in: Option<Feed<Note>>,
+    /// The control half's end of an `AudioOut`'s take ring.
+    pub rec: Option<rtrb::Consumer<f32>>,
 }
 
 /// What a control half opens on its own thread and never lets cross it: a stream is not `Send`
@@ -185,6 +192,7 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
     let chans = inboxes.iter().map(|i| i.chans.clone()).collect();
     let mail = Arc::new(Mutex::new(Mail::default()));
     let halt = Arc::new(Halt::default());
+    let mut ports = spawn.ports;
     let control = Control {
         uid: spawn.uid,
         manifest: spawn.manifest,
@@ -195,7 +203,8 @@ pub fn spawn(spawn: Spawn, shared: Arc<Shared>, bells: &IoxNode) -> Result<Handl
         outs,
         slots: Vec::new(),
         binds: Vec::new(),
-        ports: spawn.ports,
+        rec: ports.rec.take().map(Rec::new),
+        ports,
         evaluated: IndexMap::new(),
         errors: IndexMap::new(),
         pulsed: Vec::new(),
@@ -279,36 +288,145 @@ struct Out {
     bells: Vec<(String, Doorbell, EventId)>,
 }
 
-impl Out {
-    /// Everything the audio thread tapped since the last tick, as one planar `[C, T]` frame —
-    /// up to a block whose channel count differs, which the next tick starts from.
-    fn drain(&mut self) -> Option<(usize, Vec<f32>)> {
-        let mut chans = 0;
-        let mut planar: Vec<Vec<f32>> = Vec::new();
-        while let Ok(head) = self.ring.read_chunk(1) {
-            let c = head.as_slices().0.first().copied().unwrap_or(0.0) as usize;
-            if c == 0 || (chans != 0 && c != chans) {
-                if c == 0 {
-                    head.commit_all();
-                }
-                break;
+/// Everything the audio thread pushed into a ring since the last read, as one planar `[C, T]`
+/// frame — up to a block whose channel count differs, which the next read starts from. The
+/// framing a tap and a take share, read in one place.
+fn drain_blocks(ring: &mut rtrb::Consumer<f32>) -> Option<(usize, Vec<f32>)> {
+    let mut chans = 0;
+    let mut planar: Vec<Vec<f32>> = Vec::new();
+    while let Ok(head) = ring.read_chunk(1) {
+        let c = head.as_slices().0.first().copied().unwrap_or(0.0) as usize;
+        if c == 0 || (chans != 0 && c != chans) {
+            if c == 0 {
+                head.commit_all();
             }
-            head.commit_all();
-            let Ok(block) = self.ring.read_chunk(c * BLOCK) else { break };
-            if chans == 0 {
-                chans = c;
-                planar = vec![Vec::new(); c];
-            }
-            let (a, b) = block.as_slices();
-            let samples: Vec<f32> = a.iter().chain(b).copied().collect();
-            for (ch, lane) in planar.iter_mut().enumerate() {
-                lane.extend_from_slice(&samples[ch * BLOCK..(ch + 1) * BLOCK]);
-            }
-            block.commit_all();
+            break;
         }
-        (chans != 0).then(|| (chans, planar.concat()))
+        head.commit_all();
+        let Ok(block) = ring.read_chunk(c * BLOCK) else { break };
+        if chans == 0 {
+            chans = c;
+            planar = vec![Vec::new(); c];
+        }
+        let (a, b) = block.as_slices();
+        let samples: Vec<f32> = a.iter().chain(b).copied().collect();
+        for (ch, lane) in planar.iter_mut().enumerate() {
+            lane.extend_from_slice(&samples[ch * BLOCK..(ch + 1) * BLOCK]);
+        }
+        block.commit_all();
+    }
+    (chans != 0).then(|| (chans, planar.concat()))
+}
+
+/// An `AudioOut`'s take: the ring its DSP half fills, and the part being written. A break — the
+/// width moved, the rate moved, or RIFF filled — closes the part and opens the next.
+struct Rec {
+    ring: rtrb::Consumer<f32>,
+    take: Option<wav::Writer>,
+    /// The name every part is numbered from, while a take is asked for.
+    stem: Option<PathBuf>,
+    part: u32,
+    synced: Instant,
+    /// The name and `unique` last seen; a move of either lets a take that failed be tried again.
+    named: Option<(String, bool)>,
+    error: Option<String>,
+}
+
+impl Rec {
+    fn new(ring: rtrb::Consumer<f32>) -> Rec {
+        Rec { ring, take: None, stem: None, part: 0, synced: Instant::now(), named: None, error: None }
     }
 
+    fn drain(&mut self, named: &(String, bool), rate: f64) {
+        while let Some((c, planar)) = drain_blocks(&mut self.ring) {
+            if self.error.is_some() {
+                continue;
+            }
+            if self.stem.is_none() {
+                self.stem = Some(take_stem(&named.0, named.1));
+                self.part = 0;
+            }
+            if let Err(e) = self.write(c, &planar, rate) {
+                self.error = Some(e);
+                self.stem = None;
+                self.take = None;
+            }
+        }
+    }
+
+    fn write(&mut self, c: usize, planar: &[f32], rate: f64) -> Result<(), String> {
+        let frames = planar.len() / c;
+        let rate = rate.round().max(1.0) as u32;
+        if self.take.as_ref().is_some_and(|w| w.channels != c as u16 || w.rate != rate) {
+            self.take = None;
+        }
+        // Twice at most: a part opened for this chunk is empty, so it always takes it.
+        for _ in 0..2 {
+            if self.take.is_none() {
+                self.part += 1;
+                let stem = self.stem.clone().ok_or("no take is open")?;
+                self.take = Some(wav::Writer::create(&part_path(&stem, self.part), rate, c as u16)?);
+                self.synced = Instant::now();
+            }
+            let take = self.take.as_mut().expect("the part just opened");
+            if take.write(planar, frames)? {
+                if self.synced.elapsed() >= SYNC {
+                    self.synced = Instant::now();
+                    take.sync()?;
+                }
+                return Ok(());
+            }
+            self.take = None;
+        }
+        Ok(())
+    }
+}
+
+/// Where a take lands: a bare name under the recordings folder, an absolute path as it is, and
+/// the time joined on when the name must not be reused.
+fn take_stem(file: &str, unique: bool) -> PathBuf {
+    let name = file.trim();
+    let name = name.strip_suffix(".wav").unwrap_or(name);
+    let name = if name.is_empty() { "take" } else { name };
+    let stem = if Path::new(name).is_absolute() { PathBuf::from(name) } else { crate::recordings().join(name) };
+    if !unique {
+        return stem;
+    }
+    let mut named = stem.into_os_string();
+    named.push(format!("-{}", stamp()));
+    PathBuf::from(named)
+}
+
+fn part_path(stem: &Path, part: u32) -> PathBuf {
+    let mut name = stem.to_path_buf().into_os_string();
+    if part > 1 {
+        name.push(format!("-{part}"));
+    }
+    name.push(".wav");
+    PathBuf::from(name)
+}
+
+/// UTC as `YYYYMMDD-HHMMSS`, so takes sort in the order they were played.
+fn stamp() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (days, rest) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}", rest / 3600, (rest / 60) % 60, rest % 60)
+}
+
+impl Out {
+    /// Everything the audio thread tapped since the last tick.
+    fn drain(&mut self) -> Option<(usize, Vec<f32>)> {
+        drain_blocks(&mut self.ring)
+    }
 }
 
 struct SlotSub {
@@ -336,6 +454,8 @@ struct Control {
     slots: Vec<SlotSub>,
     binds: Vec<Bind>,
     ports: Ports,
+    /// An `AudioOut`'s take; every other node has none.
+    rec: Option<Rec>,
     evaluated: IndexMap<ParamKey, Param>,
     errors: IndexMap<ParamKey, String>,
     /// The params a pulse raised, each lowered once a control tick has passed since its raise.
@@ -558,6 +678,34 @@ impl Control {
         }
     }
 
+    fn flag(&self, param: usize) -> bool {
+        self.consts.get(param).and_then(|p| p.as_bool()).unwrap_or(false)
+    }
+
+    /// The take, driven by what the ring HOLDS: the DSP half pushes only while `record.on` is
+    /// high, so the blocks are the request themselves. A take shorter than a tick still lands,
+    /// and none loses the head a sampled level would cut. The name is read where the take opens,
+    /// and one that will not open stands as an error until the take ends or the name moves.
+    /// `record.on` is read live, so a bound gate records too.
+    fn record(&mut self) -> Option<String> {
+        let rate = self.shared.rate();
+        let on = high(f64::from_bits(self.params[audio_out::P::ON].load(Ordering::Relaxed)) as f32);
+        let named = (self.text(audio_out::P::FILE), self.flag(audio_out::P::UNIQUE));
+        let rec = self.rec.as_mut()?;
+        if rec.named.as_ref() != Some(&named) {
+            rec.named = Some(named.clone());
+            rec.error = None;
+        }
+        rec.drain(&named, rate);
+        if !on {
+            rec.take = None;
+            rec.stem = None;
+            rec.part = 0;
+            rec.error = None;
+        }
+        rec.error.clone()
+    }
+
     fn key_of(&self, param: usize) -> ParamKey {
         let d = &self.manifest.params[param];
         ParamKey::new(d.group, d.name)
@@ -635,6 +783,10 @@ impl Control {
             if self.binds[i].streams.is_empty() {
                 self.evaluate(i, &mut pass);
             }
+        }
+        if self.rec.is_some() {
+            let error = self.record();
+            self.record_error(self.key_of(audio_out::P::ON), error, &mut pass);
         }
         self.report(pass);
         for out in &mut self.outs {

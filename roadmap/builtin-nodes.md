@@ -40,15 +40,15 @@ already compose to, and is this genuinely outside that span?"
 
 ## What the library needs, by area
 
-- **Sinks.** Nothing currently leaves the patch. Recording to disk, streaming out, and a plain
-  "write this to a file" are all missing. This is the largest hole.
+- **Sinks.** Audio leaves the patch now: `AudioOut` writes a WAV (`audio-engine.md`, 2026-09-06).
+  Streaming out, and a plain "write this to a file" for the signal plane, are still missing.
 - **Real biosignal inputs.** LSL, OSC, serial, and whatever devices the user actually runs. These
   are the canonical shape of a node with a background receiver thread started in `setup()` — the
   subprocess tier exists for exactly this.
 - **Array maths.** The general-purpose middle of any patch: reshape, slice, reduce, arithmetic.
   Where the temptation to add fifty nodes is strongest and most wrong.
-- **Recording and playback.** Both directions of the same idea, and the thing that makes a patch
-  reproducible.
+- **Recording and playback.** Recording is done for audio; playback, and both for the signal
+  plane, are open. An EEG stream written to disk and played back makes a patch reproducible.
 - **More spectral work**, now that `Psd` and `Filter` stand: envelopes, coherence, time-frequency.
   Each is a test of whether the span already covers it.
 

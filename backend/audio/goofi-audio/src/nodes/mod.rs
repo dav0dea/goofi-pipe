@@ -17,6 +17,8 @@ use goofi_node::NodeManifest;
 #[derive(Default)]
 pub struct Birth {
     pub inbox: Option<rtrb::Consumer<f32>>,
+    /// The take's ring, which only `AudioOut` fills: the DSP half's end of it.
+    pub rec: Option<rtrb::Producer<f32>>,
     pub notes: Option<rtrb::Consumer<midi_in::Note>>,
     pub chans: Arc<AtomicU16>,
     /// The window thread, where a plugin is made and unmade; none where the machine has no display.
@@ -44,7 +46,7 @@ pub fn built_in(type_name: &str) -> bool {
 }
 
 pub static BUILT_IN: &[(&str, &Manifest, Born)] = &[
-    (audio_out::TYPE, &audio_out::MANIFEST, |_| Box::new(audio_out::AudioOut)),
+    (audio_out::TYPE, &audio_out::MANIFEST, |b| Box::new(audio_out::AudioOut::new(b))),
     (audio_in::TYPE, &audio_in::MANIFEST, |b| Box::new(audio_in::AudioIn::new(b))),
     (midi_in::TYPE, &midi_in::MANIFEST, |b| Box::new(midi_in::MidiIn::new(b))),
 ];

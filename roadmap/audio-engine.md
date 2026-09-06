@@ -236,6 +236,22 @@ is dropped whole, and an inbox the plan stops reading is flushed at the swap, so
 plays when the input is wired again. Latency is one source frame. `SignalIn` is a copy, and a new
 channel count re-plans through `dirty()`.
 
+**Recording is params on `AudioOut`, and no new mechanism.** Landed
+2026-09-06. **A take is params on `AudioOut` rather than a node of its own**, because the clock IS
+an `AudioOut`: a `Record` node in a patch with no device node would have no clock, write an empty
+file and report nothing wrong, and that state cannot exist here. While `record.on` is high the DSP
+half pushes its input into a ring in the framing a tap already uses, and the node's own control
+half drains it each tick into a 32-bit float WAV. **The blocks ARE the request** — a take opens
+because the ring HOLDS something, never because the tick sampled the toggle, since a sampled level
+cuts the head off every take and loses one shorter than a tick outright. Recording is PRE-gain,
+because `gain` is the monitor level and a take must not change with how loud it was played; `gain
+0` is therefore "keep this, do not play it". A take is a SEQUENCE of parts: whatever would make
+the file wrong — the width moved, the rate moved, or RIFF's 4 GB filled — closes the part and
+opens the next as `-2`, `-3`. The size fields are patched once a second as well as at the close,
+so a goofi that dies leaves a file that still plays. A bare name lands in
+`$GOOFI_HOME/.goofi/recordings/` and an absolute path is taken as it is; `unique` joins the UTC
+time on, so a take never replaces the one before it.
+
 **MIDI is a node that emits signals, and no engine mechanism knows it exists.** Landed 2026-09-02
 as engine nodes — `AudioIn` and `MidiIn` stay compiled into the engine when the DSP nodes move to
 `nodes_audio/`, because a control half that owns an OS handle is the engine's — whose handles are
