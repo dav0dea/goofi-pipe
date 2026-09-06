@@ -9,6 +9,7 @@ import { asStateObject, linkedNodeName } from 'panelty';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
 import { reconstructMeta } from '$lib/editor/metaFormat';
 import { summaryOf } from '$lib/viewers/viewMeta';
+import { reportedDtype } from '$lib/viewers/depth';
 
 import type { LinkInfo, NodeInstanceInfo, NodeTypeInfo } from '$lib/api/control';
 import type { GlobalView } from '$lib/crdt/graphDoc';
@@ -32,7 +33,7 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
 		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
 		return {
-			dtype: String(recon['dtype'] ?? a.dtype),
+			dtype: reportedDtype(a.dtype),
 			shape,
 			numeric: s.min !== null ? { min: s.min, max: s.max as number, mean: s.mean as number } : undefined,
 			...(reduced ? { reducedLength: a.values.length } : {})

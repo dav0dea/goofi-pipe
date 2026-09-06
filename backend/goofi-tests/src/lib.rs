@@ -70,7 +70,17 @@ impl Goofi {
         Goofi::with_mode(goofi_bridge::Mode { headless: false, demo: true })
     }
 
+    /// One whose graphics engine runs on its OWN 60 Hz clock, as the binary does — nothing to
+    /// drive by hand, and nothing to mistake a driven frame for.
+    pub fn timed() -> Goofi {
+        Goofi::boot(goofi_bridge::Mode::default(), goofi_bridge::RenderClock::Timer)
+    }
+
     fn with_mode(mode: goofi_bridge::Mode) -> Goofi {
+        Goofi::boot(mode, goofi_bridge::RenderClock::External)
+    }
+
+    fn boot(mode: goofi_bridge::Mode, render: goofi_bridge::RenderClock) -> Goofi {
         // Every test process is WALLED OFF from the real `~/.goofi` — a developer's own config
         // or session records must not reach an assertion. A test that scoped its own home first
         // keeps it.
@@ -96,7 +106,7 @@ impl Goofi {
             let nested = target.unwrap_or_else(std::env::temp_dir).join("goofi-test-cargo-target");
             std::env::set_var("CARGO_TARGET_DIR", nested);
         });
-        let state = AppState::new(mode, goofi_bridge::Clock::External);
+        let state = AppState::new(mode, goofi_bridge::Clock::External, render);
         let windows = (!mode.demo).then(window_thread);
         {
             let mut g = state.graph.lock().unwrap();

@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { isU8, sampleRange, toUnit } from './depth';
+import { isU8, reportedDtype, sampleRange, toUnit } from './depth';
 
 describe('the 8-bit viewer hop', () => {
 	it('names the dtype', () => {
 		expect(isU8('|u1')).toBe(true);
 		expect(isU8('<f4')).toBe(false);
+	});
+
+	it('tells a reader the graph dtype, and leaves every other one alone', () => {
+		expect(reportedDtype('|u1')).toBe('float32');
+		expect(reportedDtype('<f4')).toBe('<f4');
+		expect(reportedDtype('<i8')).toBe('<i8');
 	});
 
 	it('reads the range the texels span off the meta', () => {

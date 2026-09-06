@@ -157,7 +157,7 @@ async fn serve_main(rest: Vec<String>, ui: Option<goofi_audio::ui::Ui>) {
         }
     };
     let mode = goofi_bridge::Mode { headless: cli.headless, demo: cli.demo };
-    let state = AppState::new(mode, goofi_bridge::Clock::Device);
+    let state = AppState::new(mode, goofi_bridge::Clock::Device, goofi_bridge::RenderClock::Timer);
     std::process::exit(run(cli, python, state, shutdown_signal(), ui).await);
 }
 
@@ -731,7 +731,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::env::set_var("GOOFI_HOME", dir);
         });
-        AppState::new(goofi_bridge::Mode::default(), goofi_bridge::Clock::External)
+        AppState::new(goofi_bridge::Mode::default(), goofi_bridge::Clock::External, goofi_bridge::RenderClock::External)
     }
 
     #[test]

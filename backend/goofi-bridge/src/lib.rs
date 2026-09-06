@@ -140,12 +140,12 @@ impl Default for DataLiveness {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new(Mode::default(), Clock::External)
+        Self::new(Mode::default(), Clock::External, RenderClock::External)
     }
 }
 
 impl AppState {
-    pub fn new(mode: Mode, clock: Clock) -> AppState {
+    pub fn new(mode: Mode, clock: Clock, render: RenderClock) -> AppState {
         let (events, _) = broadcast::channel(256);
         let iid = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -158,11 +158,6 @@ impl AppState {
         let workspace_baseline = goofi_graph::archive::fingerprint(&mount);
         // Project the INITIAL graph — no nodes, but the seeded system globals — so a client that
         // connects to a fresh backend has the current state at once.
-        // A harness drives the render clock by hand through `render()`; every real run is timed.
-        let render = match clock {
-            Clock::External => RenderClock::External,
-            _ => RenderClock::Timer,
-        };
         let mut graph_val = fresh_graph((!mode.demo).then_some(clock), render);
         graph_val.set_workspace(&mount);
         let mut doc = crate::doc::GraphDoc::new();

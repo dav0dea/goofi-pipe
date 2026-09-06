@@ -9,6 +9,12 @@ export function isU8(dtype: string): boolean {
 	return dtype.endsWith('u1');
 }
 
+/** What a READER of the folded stream calls the frame: the wire's dtype, unless it carries
+ * texels — inside the graph a frame is f32, and a texel is not a value. */
+export function reportedDtype(wire: string): string {
+	return isU8(wire) ? 'float32' : wire;
+}
+
 /** The `[lo, hi]` the texels span, off `meta.reduced.depth`; null for an f32 frame. */
 export function sampleRange(meta: Record<string, unknown> | undefined): [number, number] | null {
 	const reduced = meta?.reduced as Record<string, unknown> | undefined;

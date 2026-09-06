@@ -227,6 +227,31 @@ fn shaders_render_on_the_gpu() {
     drawn(&g, c, "the constant still renders", |d| close(px(d, 0, 0), [0.25, 0.5, 1.0, 1.0]));
 }
 
+/// The clock the binary actually runs on: nobody calls `render()`, and the engine draws anyway.
+#[test]
+fn the_engine_draws_on_its_own_clock() {
+    let g = Goofi::timed();
+    let c = g.add("graphics:Constant");
+    g.ready(c);
+    g.set_param(c, "colour", "r", 0.75);
+
+    // Step: with no reader the clock turns and nothing is drawn — the demand rule holds here too.
+    let idle = |g: &Goofi| g.call("session status", j!({}))["graphics"].clone();
+    let start = g.until("the clock turns", |g| {
+        idle(g)["frames"].as_u64().filter(|f| *f > 3)
+    });
+    assert_eq!(idle(&g)["clock"], "timer");
+    assert_eq!(idle(&g)["stages"], j!(0), "no reader, no stage, whatever the clock does");
+
+    // Step: a viewer arrives and the frames it gets were drawn by nobody's hand.
+    let probe = g.probe(c, "out");
+    let frame = g.until("a frame off the timer", |_| probe.latest());
+    assert!(close(px(&frame, 0, 0), [0.75, 1.0, 1.0, 1.0]), "{:?}", px(&frame, 0, 0));
+    let ran = idle(&g);
+    assert!(ran["frames"].as_u64().is_some_and(|f| f > start), "{ran}");
+    assert!(ran["stages"].as_u64().is_some_and(|s| s > 0), "{ran}");
+}
+
 const BROKEN: &str = "/* goofi\n{ \"doc\": \"does not compile\" }\n*/\nfn shade(uv: vec2f) -> vec4f { return nothing(uv); }\n";
 const HALF: &str = "/* goofi\n{ \"doc\": \"half of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.5, c.a); }\n";
 const QUARTER: &str = "/* goofi\n{ \"doc\": \"a quarter of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.25, c.a); }\n";
