@@ -2,7 +2,14 @@ name: Gates
 
 on:
   push:
-    branches: [ '*' ]
+    # `**`, not `*`: a single star does not cross a `/`, so a `feat/x` branch ran no gate at all.
+    branches: [ '**' ]
+
+# `bash` on every machine, so a step written once behaves once: Windows would otherwise run these
+# in PowerShell, which spells a pipe, `&&` and a variable differently. The one pwsh step says so.
+defaults:
+  run:
+    shell: bash
 
 # One job, because the gates are one list and they share one machine's worth of setup: the SPA is
 # compiled into the binary, so no cargo build here happens without the frontend's dependencies, and
@@ -111,6 +118,14 @@ jobs:
     # becomes something a machine can hold us to.
     - name: Zero warnings (rustc + clippy)
       run: cargo clippy --workspace --all-targets -- -D warnings
+
+    # Clippy carries the rustc lints, but NOT cargo's own — the `.pdb` collision was one of those,
+    # and `-D warnings` never saw it. This is the anchored grep AGENTS.md names, which until now
+    # was in the list and in no job.
+    - name: No cargo warnings
+      run: |
+        cargo build --workspace --all-targets 2>&1 | tee /tmp/build.log
+        ! grep -n '^warning' /tmp/build.log
 
     - name: Tests
       run: cargo test --workspace --no-fail-fast

@@ -117,6 +117,12 @@ impl Screen for Platform {
     /// `PutImage`, in bands: one request carries at most the server's maximum, and a frame is
     /// far larger than the 256 KB a server without BIG-REQUESTS accepts.
     fn present(&mut self, id: Id, (w, h): (u32, u32), rgba: &[u8]) {
+        // Four bytes a pixel in BGRX, which is what a TrueColor visual reads at these depths and
+        // nothing else does. A `PutImage` of the wrong length is an ASYNCHRONOUS error the pump
+        // discards, so the window would simply stay blank.
+        if !matches!(self.depth, 24 | 32) {
+            return;
+        }
         let win = id as Window;
         let gc = match self.gcs.get(&win) {
             Some(gc) => *gc,

@@ -156,7 +156,7 @@ impl GraphicsEngine {
             windows: HashMap::new(),
             pending: Vec::new(),
             dirty: false,
-            bells: goofi_transport::iox_node().expect("an iceoryx2 node for the graphics engine's bells"),
+            bells: goofi_transport::iox_node()?,
         })
     }
 

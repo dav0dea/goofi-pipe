@@ -292,7 +292,13 @@ fn texels(frame: &Data) -> Vec<u8> {
     let goofi_core::Value::Array(a) = frame.value() else { return Vec::new() };
     a.as_bytes()
         .chunks_exact(4)
-        .map(|b| {
+        .enumerate()
+        .map(|(i, b)| {
+            // A window is OPAQUE. X11 and Win32 drop the fourth byte and macOS composites it, so
+            // a shader's own alpha would show through on one screen of three.
+            if i % 4 == 3 {
+                return 255;
+            }
             let v = f32::from_le_bytes(b.try_into().expect("four bytes"));
             (v.clamp(0.0, 1.0) * 255.0).round() as u8
         })

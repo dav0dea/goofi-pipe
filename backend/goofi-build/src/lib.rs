@@ -204,7 +204,7 @@ fn workspace_manifest() -> String {
 }
 
 fn generate(sdk: &Sdk, source: &Path, sdk_root: &Path, crate_dir: &Path, crate_name: &str) -> Result<(), String> {
-    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let slash = |p: &Path| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
     let deps: String = sdk
         .allow
         .iter()

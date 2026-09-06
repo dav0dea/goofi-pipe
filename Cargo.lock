@@ -849,18 +849,13 @@ dependencies = [
  "goofi-transport",
  "goofi-window",
  "indexmap",
- "libc",
  "libloading 0.8.9",
  "midir",
- "objc2",
- "objc2-foundation",
  "rtrb",
  "serde",
  "serde_json",
  "sha2",
  "vst3",
- "windows-sys 0.61.2",
- "x11rb",
 ]
 
 [[package]]

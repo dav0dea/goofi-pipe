@@ -38,7 +38,9 @@ fn base_dir(path: Option<&str>) -> PathBuf {
 
 fn expand_tilde(path: &str) -> PathBuf {
     match path.strip_prefix('~') {
-        Some(rest) => home().join(rest.trim_start_matches('/')),
+        // BOTH separators: `~\\x` leaves a rooted `\\x`, and `join` on one of those keeps the
+        // drive and drops the home.
+        Some(rest) => home().join(rest.trim_start_matches(['/', '\\'])),
         None => PathBuf::from(path),
     }
 }

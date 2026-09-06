@@ -9,7 +9,9 @@ fn shade(uv: vec2f) -> vec4f {
     var sum = vec4f(0.0);
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
-            sum = sum + textureSample(input, samp, uv + vec2f(f32(x), f32(y)) * p.radius);
+            // `Level`, not `textureSample`: a sample inside a loop is a gradient a DX12 shader
+            // compiler must unroll and usually refuses. Every texture here has one mip.
+            sum = sum + textureSampleLevel(input, samp, uv + vec2f(f32(x), f32(y)) * p.radius, 0.0);
         }
     }
     return sum / 9.0;

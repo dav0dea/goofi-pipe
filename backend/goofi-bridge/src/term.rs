@@ -449,7 +449,8 @@ fn own_dir() -> Result<PathBuf, String> {
 fn prepend_path(dir: &Path, env: &[(OsString, OsString)]) -> OsString {
     let tail = env
         .iter()
-        .find(|(k, _)| k == "PATH")
+        // Case-insensitively: Windows stores the name as `Path`, and its own lookup ignores case.
+        .find(|(k, _)| k.to_string_lossy().eq_ignore_ascii_case("PATH"))
         .map(|(_, v)| v.clone())
         .or_else(|| std::env::var_os("PATH"))
         .unwrap_or_default();

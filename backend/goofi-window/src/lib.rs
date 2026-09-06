@@ -51,8 +51,8 @@ trait Screen {
 }
 
 /// RGBA into the BGRA byte order an X11 TrueColor visual and a Win32 DIB both read on a
-/// little-endian machine. Reuses `out`, because this runs once a frame.
-#[allow(dead_code)]
+/// little-endian machine. Reuses `out`, because this runs once a frame. macOS takes RGBA as it is.
+#[cfg(not(target_os = "macos"))]
 fn bgra_into(rgba: &[u8], out: &mut Vec<u8>) {
     out.clear();
     out.reserve(rgba.len());

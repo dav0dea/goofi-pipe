@@ -35,7 +35,7 @@ fn prebuild_nodes() {
         let name = bundle.file_name().unwrap().to_string_lossy().into_owned();
         for path in files_under(&bundle) {
             println!("cargo:rerun-if-changed={}", path.display());
-            let within = path.strip_prefix(&bundle).unwrap().to_string_lossy().replace('\\', "/");
+            let within = path.strip_prefix(&bundle).unwrap().to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
             sources += &format!("    ({:?}, include_bytes!({:?})),\n", format!("{name}/{within}"), path.display().to_string());
             key.push(format!("{name}/{within}").into_bytes());
             key.push(std::fs::read(&path).expect("a bundle file reads"));

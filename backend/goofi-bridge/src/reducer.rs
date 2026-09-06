@@ -192,9 +192,9 @@ impl SlotReducers {
 /// How often the slot's subscribe address is re-derived from the graph: a service name carries the
 /// node's GENERATION, so a restart re-homes the stream to a name this task has never opened.
 pub const REHOME_INTERVAL: Duration = Duration::from_secs(1);
-/// Idle 16 ms passes before a reducer nobody asks of lets its subscription go. Wide enough that a
-/// viewer swapping panels never crosses it.
-const IDLE_TICKS: u32 = 60;
+/// How long a reducer nobody asks of keeps its subscription. WALL TIME, not a count of sleeps: a
+/// platform whose sleep rounds up would otherwise hold on for as much longer.
+const IDLE: Duration = Duration::from_secs(1);
 
 /// One end of a slot's data service: the subscriber, its iceoryx2 node, and the service name it
 /// was opened on.
@@ -238,22 +238,24 @@ fn spawn_reducer(
     std::thread::spawn(move || {
         let mut feed = open_feed(&graph, uid, &slot);
         let mut rehomed = std::time::Instant::now();
-        // Idle ticks with nobody asking. An attached subscriber is what a scheduled engine reads
-        // as demand, so a feed nobody wants keeps a GPU node rendering for ever.
-        let mut idle = 0u32;
+        // An attached subscriber is what a scheduled engine reads as demand, so a feed nobody
+        // wants keeps a GPU node rendering for ever.
+        let mut asked_at = std::time::Instant::now();
         // `served: None` means "never broadcast", which is what sends the first frame without a bump.
         let mut served: Option<u64> = None;
         let mut next_serve = std::time::Instant::now();
         loop {
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(crate::vocab::REDUCER_TICK);
             if stop.load(Ordering::Relaxed) {
                 return;
             }
             let wanted = asked.swap(false, Ordering::Acquire)
                 || !specs.lock().unwrap().is_empty()
                 || !taps.lock().unwrap().is_empty();
-            idle = if wanted { 0 } else { idle.saturating_add(1) };
-            if idle > IDLE_TICKS {
+            if wanted {
+                asked_at = std::time::Instant::now();
+            }
+            if asked_at.elapsed() > IDLE {
                 feed = None;
             }
             if rehomed.elapsed() >= REHOME_INTERVAL {
@@ -274,11 +276,11 @@ fn spawn_reducer(
                     }
                     return;
                 };
-                if idle <= IDLE_TICKS && feed.as_ref().is_none_or(|f| f.service != current) {
+                if asked_at.elapsed() <= IDLE && feed.as_ref().is_none_or(|f| f.service != current) {
                     feed = open_feed(&graph, uid, &slot);
                 }
             }
-            if feed.is_none() && idle <= IDLE_TICKS {
+            if feed.is_none() && asked_at.elapsed() <= IDLE {
                 feed = open_feed(&graph, uid, &slot);
             }
             let mut fresh = false;

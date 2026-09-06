@@ -547,12 +547,18 @@ fn enter_planar(inbox: &mut Inbox, channels: u16, frames: usize, planar: &[f32],
     }
 }
 
+/// Whether a name names a place of its own. `has_root` as well as `is_absolute`, because on
+/// Windows `/x.wav` is rooted and NOT absolute — and `join` on a rooted path drops the folder.
+fn rooted(p: &Path) -> bool {
+    p.is_absolute() || p.has_root()
+}
+
 /// Where a name is looked for: the recordings folder for a bare one, an absolute path as it is,
 /// and `.wav` joined on where it is not already there — the spelling a take is written under.
 fn source_path(name: &str) -> PathBuf {
     let name = name.trim();
     let name = if name.to_ascii_lowercase().ends_with(".wav") { name.to_string() } else { format!("{name}.wav") };
-    if Path::new(&name).is_absolute() {
+    if rooted(Path::new(&name)) {
         PathBuf::from(name)
     } else {
         crate::recordings().join(name)
@@ -565,7 +571,7 @@ fn take_stem(file: &str, unique: bool) -> PathBuf {
     let name = file.trim();
     let name = name.strip_suffix(".wav").unwrap_or(name);
     let name = if name.is_empty() { "take" } else { name };
-    let stem = if Path::new(name).is_absolute() { PathBuf::from(name) } else { crate::recordings().join(name) };
+    let stem = if rooted(Path::new(name)) { PathBuf::from(name) } else { crate::recordings().join(name) };
     if !unique {
         return stem;
     }

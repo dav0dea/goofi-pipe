@@ -12,6 +12,12 @@ use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NS
 
 use super::{Id, Pumped, Screen, Wake};
 
+/// AppKit, linked by hand: `objc2-app-kit` is not in the offline registry, so nothing else in the
+/// graph pulls the framework in — and `class!(NSApplication)` on a class the process never loaded
+/// panics rather than answering, which took the whole server down at start.
+#[link(name = "AppKit", kind = "framework")]
+extern "C" {}
+
 pub struct Platform {
     app: Retained<AnyObject>,
     windows: Vec<(Id, Retained<AnyObject>, bool)>,
@@ -32,7 +38,9 @@ const REGULAR: isize = 0;
 
 impl Wake for Waker {
     fn wake(&self) {
-        unsafe {
+        // A pool of its own: this runs on ANY thread, and the event below is autoreleased. Off the
+        // main thread there is no run loop to drain one, so each wake would leak an NSEvent.
+        objc2::rc::autoreleasepool(|_| unsafe {
             let app = self.0 as *mut AnyObject;
             let event: *mut AnyObject = msg_send![
                 class!(NSEvent),
@@ -47,7 +55,7 @@ impl Wake for Waker {
                 data2: 0isize
             ];
             let _: () = msg_send![app, postEvent: event, atStart: true];
-        }
+        })
     }
 }
 
@@ -123,8 +131,14 @@ impl Screen for Platform {
                     let view: Retained<AnyObject> = msg_send![view, initWithFrame: frame];
                     // Axes independently: the window is always the frame's own size, so this only
                     // matters while a resize is in flight.
-                    let _: () = msg_send![&*view, setImageScaling: 3isize];
-                    let _: () = msg_send![&**window, setContentView: &*view];
+                    // 1 is `NSImageScaleAxesIndependently`; the window is the frame's own size,
+                    // so this only shows while a resize is in flight.
+                    let _: () = msg_send![&*view, setImageScaling: 1isize];
+                    // A SUBVIEW, never the content view: `setContentView:` releases the old one,
+                    // which is the very pointer `create` handed out for a plugin to embed into.
+                    let _: () = msg_send![&*view, setAutoresizingMask: 18usize];
+                    let content: *mut AnyObject = msg_send![&**window, contentView];
+                    let _: () = msg_send![content, addSubview: &*view];
                     self.views.push((id, view.clone()));
                     view
                 }
@@ -156,7 +170,15 @@ impl Screen for Platform {
         }
     }
 
-    fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
+    fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped {
+        // The run loop pops its own pool before `nextEventMatchingMask:` answers, so every event
+        // it hands back would leak without one of ours around the whole turn.
+        objc2::rc::autoreleasepool(|_| self.pump_pooled(until, fds))
+    }
+}
+
+impl Platform {
+    fn pump_pooled(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
         let first: Retained<NSDate> = match until {
             Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
             None => NSDate::distantFuture(),
