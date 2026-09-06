@@ -1,14 +1,11 @@
 <!--
-  ExprEditor — the param source surface, in one of two configurations: a Python expression with
-  goofi's completions, or — given `picker` — a bare field whose only legal contents are the names
-  the picker hands it. It reads the graph store, so it lives here and never in `$lib/ui`, which
-  must stay a leaf layer.
+  ExprEditor — the param's expression surface: a Python expression with goofi's completions. It
+  reads the graph store, so it lives here and never in `$lib/ui`, which must stay a leaf layer.
 -->
 <script lang="ts">
 	import { loadExprEditor } from './load';
 	import type { ExprEditorHandle } from './editor';
 	import { liveCatalogue } from './catalogue';
-	import type { PickerOption } from './refs';
 
 	let {
 		value,
@@ -18,7 +15,6 @@
 		placeholder = '',
 		testid,
 		selfName,
-		picker,
 		disabled = false
 	}: {
 		value: string;
@@ -31,8 +27,6 @@
 		testid: string;
 		/** The edited node's display name — what `me` completes against. */
 		selfName?: string;
-		/** The picker configuration: the names offered, read at the moment the list opens. */
-		picker?: () => PickerOption[];
 		disabled?: boolean;
 	} = $props();
 
@@ -49,16 +43,14 @@
 		loadExprEditor().then((mod) => {
 			if (!live) return;
 			const attributes = { 'data-testid': testid, 'aria-label': label };
-			mounted = picker
-				? mod.createPicker(el, { doc: value, options: picker, onCommit: (v) => onCommit(v), placeholder, attributes })
-				: mod.createExprEditor(el, {
-						doc: value,
-						catalogue: () => ({ ...liveCatalogue(), self: selfName }),
-						onCommit: (v) => onCommit(v),
-						error,
-						placeholder,
-						attributes
-					});
+			mounted = mod.createExprEditor(el, {
+				doc: value,
+				catalogue: () => ({ ...liveCatalogue(), self: selfName }),
+				onCommit: (v) => onCommit(v),
+				error,
+				placeholder,
+				attributes
+			});
 			handle = mounted;
 		});
 		return () => {

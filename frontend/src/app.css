@@ -60,8 +60,10 @@
 	--success: #6bdd8c;
 	--warning: #f0c050;
 	--danger: #f06080;
+	--info: #6ab0ff;
 	--accent-fill: color-mix(in srgb, var(--accent) 18%, transparent);
 	--danger-fill: color-mix(in srgb, var(--danger) 16%, transparent);
+	--info-fill: color-mix(in srgb, var(--info) 16%, transparent);
 	--success-fill: color-mix(in srgb, var(--success) 16%, transparent);
 	--warning-fill: color-mix(in srgb, var(--warning) 16%, transparent);
 	/* The hover fill for a control with NO surface of its own — the `ghost` button variants. A rung

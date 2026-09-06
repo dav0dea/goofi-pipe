@@ -61,7 +61,7 @@ describe('borders read as a light hairline, never an inverted groove', () => {
 
 describe('semantic + dtype colours stay legible on the lightest surface', () => {
 	const s4 = token('surface-4');
-	const marks = ['success', 'warning', 'danger', 'dtype-array', 'dtype-string', 'dtype-table'];
+	const marks = ['success', 'warning', 'danger', 'info', 'dtype-array', 'dtype-string', 'dtype-table'];
 	for (const t of [...marks, 'engine-signal', 'engine-audio', 'engine-graphics', 'engine-vst']) {
 		it(`--${t} ≥ 3:1 on --surface-4`, () => expect(contrastRatio(token(t), s4)).toBeGreaterThanOrEqual(3));
 	}
