@@ -4,9 +4,9 @@ The third engine — shaders on the GPU, in the style of a TouchDesigner TOP cha
 **peer of the signal and audio engines inside one graph**. First designed 2026-08-09 as a fused
 compute engine over a `Field` dtype; redesigned with the owner on 2026-09-06 as a smaller first
 step, and this file was rewritten to it. What the first design decided and still stands is kept
-below under "kept from the first design". The engine core runs as of 2026-09-06 — a `.wgsl` is a
-node, a chain renders, a tap publishes; uploads, references, `Feedback` and eleven of the thirteen
-nodes are what is left. The working spec is
+below under "kept from the first design". **The first step is BUILT as of 2026-09-06** — the
+engine, the `.wgsl` contract, uploads, references, `Feedback`, the tap, the uint8 hop and all
+thirteen nodes. What is left is phase 2 and the Open list. The working spec is
 `docs/superpowers/specs/2026-09-06-graphics-engine-design.md`.
 
 The seam this engine assumes is `multi-engine-graph.md`. The audio engine, `audio-engine.md`, is
@@ -198,9 +198,9 @@ and the drain copy had already drifted into the defect above.
 
 ## Phases
 
-1. **This step**: the engine, the `.wgsl` contract, uploads, references, `Feedback`, the tap and the
-   uint8 hop, the thirteen nodes. Proof: `goofi-tests/tests/graphics.rs`, one session under the
-   external clock.
+1. **BUILT 2026-09-06**: the engine, the `.wgsl` contract, uploads, references, `Feedback`, the
+   tap and the uint8 hop, the thirteen nodes. Proof: `goofi-tests/tests/graphics.rs` — one session
+   under the external clock, and a second one under the timer clock the binary runs.
 2. **3D**: geometry, cameras, a raster pipeline, instancing. Its own spec.
 3. **Fields**: ray-marched distance fields and fractals. The exactness tag per node
    (`Exact | Bound(k)`) must arrive with the first field node, never after.
@@ -208,7 +208,12 @@ and the drain copy had already drifted into the defect above.
 
 ## Open
 
-- macOS Metal on the CI runner.
+- macOS Metal on the CI runner, and Windows WARP. Only Linux is proved, on lavapipe in CI and on
+  an NVIDIA card by hand.
+- The device gate serialises the tick against a compile. It was measured as necessary on one
+  driver; whether every driver needs it is not known, and the cheap way to find out is to try
+  another machine before making the gate narrower.
+- Nobody has run `cargo run` and watched a shader in the browser. Every claim here is the suite's.
 - The readback waits on the render thread once per tick; a double-buffered readback is the lever
   if a tick misses 16 ms.
 - The reducer's area kernel at 1080p; a GPU-side downscale needs the viewer's size to reach the
@@ -230,3 +235,10 @@ and the drain copy had already drifted into the defect above.
 - **`copy_texture_to_buffer` rows align to 256 bytes** (`COPY_BYTES_PER_ROW_ALIGNMENT`); the
   readback unpads.
 - **`device.poll` takes `PollType::Wait { submission_index, timeout }`**, a struct variant.
+- **`InstanceDescriptor::new_without_display_handle()`**, taken by value, is what opens a device on
+  a machine with no display; asking for a display handle refuses one on a server or a CI runner.
+- **`on_uncaptured_error` takes an `Arc`**, `push_error_scope` answers a guard whose `.pop()` is
+  the future, `get_mapped_range()` answers a `Result`, and `RenderPassDescriptor` needs
+  `multiview_mask`.
+- **An error scope is keyed by THREAD**, so a scope pushed on the compile thread cannot catch an
+  error raised on the render thread.
