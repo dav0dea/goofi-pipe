@@ -3,7 +3,7 @@ import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
-import { latestFrame } from '$lib/api/frames';
+import { arrivalRate, latestFrame } from '$lib/api/frames';
 import { collectPanels } from 'panelty';
 import { asStateObject, linkedNodeName } from 'panelty';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
@@ -85,6 +85,8 @@ export const query = {
 	},
 	frameSummary: (node: string, slot: string): FrameSummary | null =>
 		summarize(latestFrame(node, slot)),
+	/** Frames a second the WIRE delivered for one stream — what a paint count cannot show. */
+	arrivalRate: (node: string, slot: string): number | null => arrivalRate(node, slot),
 	panels: (): PanelView[] =>
 		collectPanels(workspace().active.root).map((p) => {
 			const s = asStateObject(p.state);

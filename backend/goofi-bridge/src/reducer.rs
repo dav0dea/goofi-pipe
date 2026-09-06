@@ -243,6 +243,7 @@ fn spawn_reducer(
         let mut idle = 0u32;
         // `served: None` means "never broadcast", which is what sends the first frame without a bump.
         let mut served: Option<u64> = None;
+        let mut next_serve = std::time::Instant::now();
         loop {
             std::thread::sleep(Duration::from_millis(16));
             if stop.load(Ordering::Relaxed) {
@@ -307,6 +308,17 @@ fn spawn_reducer(
             let g_now = gen.load(Ordering::Acquire);
             if !fresh && served == Some(g_now) {
                 continue; // nothing new to say — no emit, no joiner, no spec change
+            }
+            // The viewer rate, held HERE because this is the one place N viewers became one
+            // stream. A producer emitting faster than the browser paints is bytes nobody draws.
+            // The loop's own tick is the quantum, so the real ceiling is one tick coarser.
+            let now = std::time::Instant::now();
+            if now < next_serve {
+                continue;
+            }
+            next_serve += crate::vocab::VIEWER_INTERVAL;
+            if next_serve < now {
+                next_serve = now + crate::vocab::VIEWER_INTERVAL;
             }
             let plan = goofi_view::plan(&union_specs(&specs.lock().unwrap()), &d);
             let out = goofi_core::reduce::reduce_for_view(&d, &plan);

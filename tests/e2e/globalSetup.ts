@@ -54,7 +54,16 @@ export default async function spawnFleet(config: FullConfig): Promise<() => Prom
 		// product runs it under the user's own login shell.
 		const child = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(port), '--debug'], {
 			cwd: REPO_ROOT,
-			env: { ...process.env, GOOFI_HOME: home, SHELL: '/bin/sh' },
+			// The node build cache is pinned OUTSIDE the wiped home, and shared with `goofi-tests`.
+			// Left inside it, every run rebuilds every shipped node from scratch — which outlasts
+			// the boot deadline below, and the SIGKILL that follows means the build never
+			// finishes, so no later run is any faster either.
+			env: {
+				...process.env,
+				GOOFI_HOME: home,
+				GOOFI_BUILD_DIR: path.join(REPO_ROOT, 'target', 'goofi-build'),
+				SHELL: '/bin/sh'
+			},
 			stdio: ['ignore', fd, fd]
 		});
 		fs.closeSync(fd);

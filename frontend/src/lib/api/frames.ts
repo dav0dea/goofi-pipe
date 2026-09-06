@@ -28,6 +28,9 @@ interface Slot {
 	/** This stream's own coalescing rate — per slot, because a drop belongs to the stream that
 	 * overwrote a frame. */
 	drops: RateMeter;
+	/** What the WIRE delivered, which the paint rate cannot show: the cap the manager serves at
+	 * is invisible in a paint count, since a paint is capped either way. */
+	arrivals: RateMeter;
 }
 
 const slots = new Map<string, Slot>();
@@ -148,7 +151,8 @@ function ensureSlot(k: string): Slot {
 			pending: null,
 			current: null,
 			lastFlush: 0,
-			drops: new RateMeter(nowMs())
+			drops: new RateMeter(nowMs()),
+			arrivals: new RateMeter(nowMs())
 		};
 		slots.set(k, s);
 	}
@@ -189,6 +193,7 @@ export function bindViewer(
 setFrameSink((node, slot, frame) => {
 	const s = slots.get(streamKey(node, slot));
 	if (!s) return;
+	s.arrivals.delivered();
 	// A pending frame overwritten before it painted is a drop, charged to THIS stream.
 	if (s.pending !== null) s.drops.dropped();
 	s.pending = frame;
@@ -202,6 +207,15 @@ export function dropRate(node: string, slot: string): number | null {
 	if (!s) return null;
 	s.drops.tick(nowMs());
 	return s.drops.dps;
+}
+
+/** Frames a second arriving on ONE stream, before any coalescing. Null when nothing is
+ * subscribed: absent is not zero. */
+export function arrivalRate(node: string, slot: string): number | null {
+	const s = slots.get(streamKey(node, slot));
+	if (!s) return null;
+	s.arrivals.tick(nowMs());
+	return s.arrivals.fps;
 }
 
 /** The latest frame for a (node, slot), or null when nothing is subscribed to it. */

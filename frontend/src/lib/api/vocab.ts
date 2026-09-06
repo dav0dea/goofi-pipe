@@ -152,3 +152,6 @@ export const DEFAULT_KIND: Record<SlotDtype, ViewerKind> = {
 	AUDIO: 'line',
 	TEXTURE: 'image',
 };
+
+/** How fast the manager serves one slot, and so the fastest a viewer can be asked to paint. */
+export const MAX_VIEWER_FPS = 30;
