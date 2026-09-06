@@ -365,7 +365,9 @@ impl GlobalStore {
     /// The follower's own write: what the source delivered, coerced to the type held. It answers
     /// whether the value CHANGED, and a value-locked global takes nothing, silently.
     pub fn follow(&mut self, name: &str, value: GlobalValue) -> bool {
-        if is_machine(name) || self.lock_of(name).value {
+        // A global with no source has no follower: a pick already in flight when one is cleared
+        // would otherwise land after, and overwrite the value the clearing author then typed.
+        if is_machine(name) || self.lock_of(name).value || !self.sources.contains_key(name) {
             return false;
         }
         let Some(existing) = self.values.get(name) else { return false };
