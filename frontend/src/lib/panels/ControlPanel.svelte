@@ -88,7 +88,10 @@
 	// The two gestures in flight: a widget being moved or resized, and a chip lifted off the palette.
 	let drag: { name: string; from: Cell; x: number; y: number; units: Units; resize: boolean; to: Cell | null } | null =
 		$state(null);
-	let lift: { kind: Kind; x: number; y: number; w: number; h: number; from: { x: number; y: number } } | null = $state(null);
+	// `at` is the ghost's top-left: snapped to the cell it would land on while over the board, else
+	// under the pointer's centre.
+	let lift: { kind: Kind; at: { x: number; y: number }; snapped: boolean; w: number; h: number; from: { x: number; y: number } } | null =
+		$state(null);
 	// A drop's cell outlives the pointer until the document agrees, so it never flashes back.
 	let pending: { name: string; to: Cell } | null = $state(null);
 	$effect(() => {
@@ -116,12 +119,34 @@
 		return { x, y: Number.isFinite(row) ? row + gap : x, gap };
 	}
 
+	/** Where the pointer is on the board, in pixels into its grid, or null when it is off the
+	 * board's scroll area — the whole area, since the board itself is only as tall as its widgets. */
 	function onBoard(e: PointerEvent): { x: number; y: number } | null {
-		if (!board) return null;
+		const zone = board?.closest('.ui-scrollarea') ?? board;
+		if (!board || !zone) return null;
+		const z = zone.getBoundingClientRect();
+		if (e.clientX < z.left || e.clientX > z.right || e.clientY < z.top || e.clientY > z.bottom) return null;
 		const r = board.getBoundingClientRect();
-		if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return null;
 		const cs = getComputedStyle(board);
 		return { x: e.clientX - r.left - parseFloat(cs.paddingLeft), y: e.clientY - r.top - parseFloat(cs.paddingTop) };
+	}
+
+	/** The ghost's top-left for a pointer at `e`: the cell it would land on, in pixels, while over
+	 * the board; else centred under the pointer. */
+	function ghostAt(e: PointerEvent, kind: Kind, w: number, h: number): { at: { x: number; y: number }; snapped: boolean } {
+		const point = onBoard(e);
+		if (point && board) {
+			const u = unitsOf(board);
+			const born = BORN[kind];
+			const cell = cellAt(point.x, point.y, born.w, born.h, u, COLUMNS);
+			const r = board.getBoundingClientRect();
+			const cs = getComputedStyle(board);
+			return {
+				at: { x: r.left + parseFloat(cs.paddingLeft) + cell.x * u.x, y: r.top + parseFloat(cs.paddingTop) + cell.y * u.y },
+				snapped: true
+			};
+		}
+		return { at: { x: e.clientX - w / 2, y: e.clientY - h / 2 }, snapped: false };
 	}
 
 	function nameGroup(raw: string): void {
@@ -189,22 +214,17 @@
 		if (!board) return;
 		const u = unitsOf(board);
 		const born = BORN[kind];
-		lift = {
-			kind,
-			x: e.clientX,
-			y: e.clientY,
-			w: born.w * u.x - u.gap,
-			h: born.h * u.y - u.gap,
-			from: { x: e.clientX, y: e.clientY }
-		};
+		const [w, h] = [born.w * u.x - u.gap, born.h * u.y - u.gap];
+		lift = { kind, ...ghostAt(e, kind, w, h), w, h, from: { x: e.clientX, y: e.clientY } };
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		e.preventDefault();
 	}
 
 	function driftChip(e: PointerEvent): void {
 		if (!lift) return;
-		lift.x = e.clientX;
-		lift.y = e.clientY;
+		const { at, snapped } = ghostAt(e, lift.kind, lift.w, lift.h);
+		lift.at = at;
+		lift.snapped = snapped;
 	}
 
 	// A tap bears the widget where the manager places it; a drag bears it where it was let go.
@@ -462,17 +482,15 @@
 						{/if}
 						{#if edit}
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<span class="zap" onpointerdown={(e) => e.stopPropagation()}>
-								<IconButton
-									variant="danger"
-									size="sm"
-									density="chrome"
-									data-testid="control-delete"
-									title="Delete {gv.element}"
-									label="Delete {gv.element}"
-									onclick={() => void g.removeControl(group, gv.element)}><Icon name="x" /></IconButton
-								>
-							</span>
+							<button
+								type="button"
+								class="zap"
+								data-testid="control-delete"
+								title="Delete {gv.element}"
+								aria-label="Delete {gv.element}"
+								onpointerdown={(e) => e.stopPropagation()}
+								onclick={() => void g.removeControl(group, gv.element)}><Icon name="x" /></button
+							>
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span
 								class="handle"
@@ -568,7 +586,7 @@
 	{/if}
 
 	{#if lift}
-		<div class="ghost" style={`left: ${lift.x}px; top: ${lift.y}px`} aria-hidden="true">
+		<div class="ghost" class:snapped={lift.snapped} style={`left: ${lift.at.x}px; top: ${lift.at.y}px`} aria-hidden="true">
 			<div class="cell born" style={`width: ${lift.w}px; height: ${lift.h}px`}>
 				<div class="widget">
 					{@render widget(
@@ -632,12 +650,26 @@
 		/* Three numbers share one field's row, so each takes its share rather than a fixed width. */
 		--number-width: 100%;
 	}
-	/* The cross sits over the widget's corner; its own press must not start a drag. */
+	/* A bare red cross over the widget's corner, no box of its own; its press must not start a drag. */
 	.zap {
 		position: absolute;
 		top: 0;
 		right: 0;
 		z-index: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: var(--hit);
+		min-height: var(--hit);
+		padding: 0;
+		background: transparent;
+		border: none;
+		color: var(--danger);
+		cursor: pointer;
+	}
+	.zap:focus-visible {
+		outline: var(--focus-width) solid var(--focus-ink);
+		outline-offset: -2px;
 	}
 	/* The board is a container, so a grid unit is a share of ITS width and follows every resize. */
 	.sheet {
@@ -751,12 +783,15 @@
 		background: var(--accent);
 		border-radius: var(--radius-sm) 0 var(--radius-md) 0;
 	}
-	/* The ghost IS the widget it will bear, at the size it will be born, carried by its centre. */
+	/* The ghost IS the widget it will bear, at the size it will be born, on the cell it will land. */
 	.ghost {
 		position: fixed;
 		z-index: var(--z-drag-ghost);
-		transform: translate(-50%, -50%);
 		pointer-events: none;
+	}
+	.ghost.snapped .born {
+		outline-style: solid;
+		opacity: 1;
 	}
 	.born {
 		outline: 1px dashed var(--accent);

@@ -249,13 +249,15 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 			// Edit mode also opens the palette, and a chip dragged onto the board bears a widget where
 			// it lands, named for its kind — the one door a new element has.
+			// …let go BELOW the board's own box, in the empty scroll area: the board is only as tall as
+			// its widgets, and a drop on the space under them is the drop a finger makes.
 			const chip = page.getByTestId('control-palette-slider');
 			const cb = (await chip.boundingBox())!;
 			const bb = (await page.getByTestId('control-board').boundingBox())!;
 			await swipe(
 				page,
 				{ x: Math.round(cb.x + cb.width / 2), y: Math.round(cb.y + cb.height / 2) },
-				{ x: Math.round(bb.x + bb.width * 0.3), y: Math.round(bb.y + bb.height * 0.3) }
+				{ x: Math.round(bb.x + bb.width * 0.3), y: Math.round(bb.y + bb.height + 40) }
 			);
 			await expect(
 				page.getByTestId('control-desk-slider0'),
