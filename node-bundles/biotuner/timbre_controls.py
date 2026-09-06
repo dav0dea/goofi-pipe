@@ -8,19 +8,6 @@ Takes a TUNING (ratios inside an octave), as `Tuning` emits them, and optionally
 the peaks they came from. Everything here is measured in under a millisecond, which is why it can
 run at frame rate at all.
 
-Inputs:
-  input  a tuning: ratios inside an octave, as `Tuning` emits them
-  amps   optional — the amplitudes beside the peaks the tuning came from
-
-Outputs:
-  partials      the ratios as frequencies over `base_freq`, in Hz
-  amplitudes    per partial, 0 to 1, normalized so the loudest is 1
-  weights       per partial, how consonant it is against the rest, 0 to 1
-  brightness    the amplitude-weighted centroid, 0 to 1 across the partial span — the one to bind
-                to a filter cutoff
-  spread        how far the partials sit from a harmonic series, 0 to 1: 0 is harmonic, higher is
-                bell-like. Binds to detune, unison or an inharmonic control
-  harmonicity   the mean consonance of the whole set, 0 to 1
 
 Every output is a plain number in a plain range, so binding one to a plugin param is a reference
 and nothing more. The last axis is ratios and is consumed; every axis before it survives.
@@ -33,7 +20,22 @@ import goofi
 
 
 class TimbreControls(goofi.Node):
-    """A tuning as continuous, bindable synth controls."""
+    """A tuning as continuous, bindable synth controls.
+
+    Inputs:
+      input  a tuning: ratios inside an octave, as `Tuning` emits them
+      amps   optional — the amplitudes beside the peaks the tuning came from
+
+    Outputs:
+      partials      the ratios as frequencies over `base_freq`, in Hz
+      amplitudes    per partial, 0 to 1, normalized so the loudest is 1
+      weights       per partial, how consonant it is against the rest, 0 to 1
+      brightness    the amplitude-weighted centroid, 0 to 1 across the partial span — the one to bind
+                    to a filter cutoff
+      spread        how far the partials sit from a harmonic series, 0 to 1: 0 is harmonic, higher is
+                    bell-like. Binds to detune, unison or an inharmonic control
+      harmonicity   the mean consonance of the whole set, 0 to 1
+    """
 
     TAGS = ["transform"]
     INPUTS = {

@@ -13,13 +13,6 @@ or flat window would otherwise do constantly.
 
 Extraction is the expensive half of biotuner, so it stands alone: one Peaks feeds Tuning,
 Harmonicity and PeaksExtension without paying for the spectrum three times.
-
-Inputs:
-  input  a RAW time series. The last axis is time, and `sfreq` must be in the frame's metadata
-
-Outputs:
-  peaks  the loudest frequencies, in Hz, `n_peaks` wide and NaN-padded
-  amps   each peak's power in dB — normally NEGATIVE, and larger means louder
 """
 
 import numpy as np
@@ -28,7 +21,15 @@ import goofi
 
 
 class Peaks(goofi.Node):
-    """The dominant spectral peaks of a signal, and their amplitudes."""
+    """The dominant spectral peaks of a signal, and their amplitudes.
+
+    Inputs:
+      input  a RAW time series. The last axis is time, and `sfreq` must be in the frame's metadata
+
+    Outputs:
+      peaks  the loudest frequencies, in Hz, `n_peaks` wide and NaN-padded
+      amps   each peak's power in dB — normally NEGATIVE, and larger means louder
+    """
 
     TAGS = ["analysis"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

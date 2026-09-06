@@ -15,17 +15,6 @@ note number, so a per-note tuning has to be smuggled through one bend per channe
 caps a patch at as many notes as it has channels. goofi's pitch is already continuous volts per
 octave, zero at C4, so the microtonality is simply the number, and the only ceiling is `voices`.
 
-Inputs:
-  input  a tuning: ratios inside an octave, as `Tuning` emits them
-  notes  `signal:MidiIn`'s `notes` — 128 slots, the note number is the INDEX and the velocity the value
-
-Outputs:
-  voices     the whole keyboard in one wire: pitches then velocities, the layout a plugin's
-             `voice` input reads — cross it with `audio:SignalIn` and that is the only cable
-  pitch      volts per octave, zero at C4 — reference this from `voice.pitch`
-  gate       1 while the key is held
-  velocity   how hard it was struck, 0 to 1
-  freq       the same pitch in Hz, for reading rather than playing
 
 Every output is `[voices, 1]` rather than flat, because the audio engine reads a one-dimensional
 frame as ONE channel of many samples where these are many channels of one.
@@ -41,7 +30,20 @@ C4_HZ = 261.63
 
 
 class MicrotonalKeys(goofi.Node):
-    """Play a tuning from a MIDI keyboard: one voice per key, one step per key."""
+    """Play a tuning from a MIDI keyboard: one voice per key, one step per key.
+
+    Inputs:
+      input  a tuning: ratios inside an octave, as `Tuning` emits them
+      notes  `signal:MidiIn`'s `notes` — 128 slots, the note number is the INDEX and the velocity the value
+
+    Outputs:
+      voices     the whole keyboard in one wire: pitches then velocities, the layout a plugin's
+                 `voice` input reads — cross it with `audio:SignalIn` and that is the only cable
+      pitch      volts per octave, zero at C4 — reference this from `voice.pitch`
+      gate       1 while the key is held
+      velocity   how hard it was struck, 0 to 1
+      freq       the same pitch in Hz, for reading rather than playing
+    """
 
     TAGS = ["transform", "midi"]
     INPUTS = {

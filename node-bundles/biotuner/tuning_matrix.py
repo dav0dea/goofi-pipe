@@ -3,14 +3,6 @@
 Takes a TUNING (ratios inside an octave), as `Tuning` emits them. Each pair of degrees is scored
 by one harmonicity measure, giving a square grid.
 
-Inputs:
-  input  a tuning: ratios inside an octave, as `Tuning` emits them
-
-Outputs:
-  matrix         the full `[N, N]` grid, symmetric, for a viewer to draw
-  metricPerStep  one number per degree — the grid's column means — which is what a param follows
-                 when you want each scale degree to drive something of its own
-  metric         one number for the whole scale: how consonant this tuning is overall
 
 The last axis is scale degrees and is consumed. Every axis before it survives, so `[C, N]` in
 gives `[C, N, N]`, `[C, N]` and `[C]`. Rows are padded with NaN to the widest scale in the batch,
@@ -28,7 +20,17 @@ FUNCTIONS = {"dyad_similarity": dyad_similarity, "consonance": compute_consonanc
 
 
 class TuningMatrix(goofi.Node):
-    """The pairwise consonance of a scale's degrees."""
+    """The pairwise consonance of a scale's degrees.
+
+    Inputs:
+      input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+    Outputs:
+      matrix         the full `[N, N]` grid, symmetric, for a viewer to draw
+      metricPerStep  one number per degree — the grid's column means — which is what a param follows
+                     when you want each scale degree to drive something of its own
+      metric         one number for the whole scale: how consonant this tuning is overall
+    """
 
     TAGS = ["analysis"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

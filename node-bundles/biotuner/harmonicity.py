@@ -6,18 +6,6 @@ padding is dropped per row, so a channel that found fewer peaks is still measure
 Each output is ONE number per channel, which is what makes it something a param can follow:
 `[C, n_peaks]` in gives `[C]` out, and a single row gives a single value.
 
-Inputs:
-  input  peaks in Hz, as `Peaks` emits them
-
-Outputs:
-  harmsim          0..100, higher is more consonant. The mean harmonic similarity of every pair:
-                   how nearly the peaks form a simple whole-number ratio.
-  tenney           Tenney height, higher is MORE complex. The log of the ratio's numerator times
-                   its denominator, so it grows as the fractions get uglier.
-  cons             0..1, higher is more consonant. The mean consonance of the peak pairs that
-                   pass `cons_limit`.
-  subharmTension   Higher is more tense. How badly the peaks fail to share a common subharmonic
-                   within `delta_lim`.
 
 `harmsim` and `cons` rise together; `tenney` and `subharmTension` run the other way, so pairing
 one of each is the usual way to drive two params in opposition.
@@ -34,7 +22,21 @@ import goofi
 
 
 class Harmonicity(goofi.Node):
-    """Harmonic similarity, Tenney height, consonance and subharmonic tension, from peaks."""
+    """Harmonic similarity, Tenney height, consonance and subharmonic tension, from peaks.
+
+    Inputs:
+      input  peaks in Hz, as `Peaks` emits them
+
+    Outputs:
+      harmsim          0..100, higher is more consonant. The mean harmonic similarity of every pair:
+                       how nearly the peaks form a simple whole-number ratio.
+      tenney           Tenney height, higher is MORE complex. The log of the ratio's numerator times
+                       its denominator, so it grows as the fractions get uglier.
+      cons             0..1, higher is more consonant. The mean consonance of the peak pairs that
+                       pass `cons_limit`.
+      subharmTension   Higher is more tense. How badly the peaks fail to share a common subharmonic
+                       within `delta_lim`.
+    """
 
     TAGS = ["analysis"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
