@@ -85,7 +85,8 @@ export type ControlKindId =
 	| 'number'
 	| 'field'
 	| 'toggle'
-	| 'dropdown';
+	| 'dropdown'
+	| 'draw';
 
 export interface ControlKindInfo {
 	readonly id: ControlKindId;
@@ -101,9 +102,10 @@ export const CONTROL_KINDS: readonly ControlKindInfo[] = [
 	{ id: 'knob', type: 'float', w: 4, h: 4 },
 	{ id: 'slider', type: 'float', w: 8, h: 2 },
 	{ id: 'number', type: 'float', w: 4, h: 2 },
-	{ id: 'field', type: 'string', w: 6, h: 2 },
+	{ id: 'field', type: 'string', w: 6, h: 3 },
 	{ id: 'toggle', type: 'bool', w: 2, h: 2 },
 	{ id: 'dropdown', type: 'string', w: 6, h: 2 },
+	{ id: 'draw', type: 'string', w: 8, h: 8 },
 ];
 
 /** How many columns a control panel's grid is, whatever its pixel width. */
