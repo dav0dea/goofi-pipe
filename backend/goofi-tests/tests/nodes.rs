@@ -188,7 +188,7 @@ fn a_rust_node_file_builds_loads_follows_its_edits_and_shadows_a_shipped_one() {
     // A shipped node is SOURCE in the shipped root, where `library get` finds it.
     let r = g.call("library get", j!({ "type": "LFO" }));
     assert_eq!((&r["provenance"], &r["language"], &r["tier"]), (&j!("shipped"), &j!("rust"), &j!("native")), "{r}");
-    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for Lfo")), "{r}");
+    assert!(r["source"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{r}");
     let shipped_osc = std::path::PathBuf::from(r["path"].as_str().unwrap());
 
     // An authored file builds through cargo into the same cache, and runs.

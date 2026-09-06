@@ -29,7 +29,7 @@ fn wave(kind: &str, t: f64, duty: f64) -> f64 {
 }
 
 #[derive(Default)]
-struct Lfo {
+struct LFO {
     /// Cycles accumulated since the last reset; bounded to `[0, 1)`.
     phase: f64,
     /// `ctx.now` at the first emit — block pacing is measured from here.
@@ -40,7 +40,7 @@ struct Lfo {
     emitted: u64,
 }
 
-impl Node for Lfo {
+impl Node for LFO {
     fn process(
         &mut self,
         _inp: &Inputs<'_>,
@@ -194,4 +194,4 @@ static MANIFEST: Manifest = Manifest {
     producer: true,
 };
 
-goofi_signal_sdk::export!(Lfo, MANIFEST);
+goofi_signal_sdk::export!(LFO, MANIFEST);
