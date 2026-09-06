@@ -219,7 +219,35 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     let said = g.until("the text to answer its edit", |_| pt.latest().filter(|d| text(d) == Some("hello")));
     assert_eq!(text(&said), Some("hello"));
 
-    for n in [lfo, noise, konst, words] {
+    // A Clock is the tick the rest of the patch shares. `count` is the reading that never skips
+    // one, where `pulse` can only say that a tick landed in this update and not that two did.
+    let clock = g.add("Clock");
+    set(clock, "clock", "unit", j!("hz"));
+    set(clock, "clock", "rate", j!(20.0));
+    let pcl = g.probe(clock, "count");
+    g.until("the clock to count several ticks", |_| pcl.latest().filter(|d| f32s(d)[0] >= 3.0));
+    g.call("node param pulse", j!({ "node": hex(clock), "param": "clock/reset" }));
+    g.until("the count to start again from zero", |_| pcl.latest().filter(|d| f32s(d)[0] < 3.0));
+
+    // Stopping holds the place it had reached rather than rewinding it, so starting again
+    // resumes: the count carries on from where the stop left it.
+    set(clock, "clock", "running", j!(false));
+    let mut steady: Option<(u64, f32)> = None;
+    let frozen = g.until("the count to settle once the clock is stopped", |_| {
+        let (seen, value) = (pcl.count(), pcl.latest().map(|d| f32s(&d)[0])?);
+        match steady {
+            // Frames kept arriving and the reading did not move: the stop has landed.
+            Some((first, held)) if held == value => (seen >= first + 3).then_some(value),
+            _ => {
+                steady = Some((seen, value));
+                None
+            }
+        }
+    });
+    set(clock, "clock", "running", j!(true));
+    g.until("the count to carry on from where it stopped", |_| pcl.latest().filter(|d| f32s(d)[0] > frozen));
+
+    for n in [lfo, noise, konst, words, clock] {
         assert!(g.error(n).is_none(), "a generator carries no error");
     }
 }
