@@ -125,7 +125,18 @@ Two things this adds to what is above:
   `PoisonError`. Secondary, and it costs nothing while goofi does not panic — but it is why one
   upstream flake prints as two unrelated panics.
 
-## Open
+## The owner's call, 2026-09-06: ACCEPTED, and nothing here is taken
+
+The iceoryx2 team knows and is working on a fix, so goofi waits for it. **Windows is expected red on
+this family and nobody should re-diagnose it.** None of the levers below is taken — not the startup
+reclaim, not the per-instance root, not the retry — because each one is goofi working around a
+defect whose owner is already fixing it, and a workaround outlives the thing it works around. They
+stay written down for the day the wait stops being the right answer.
+
+The three PR branches and `rust-rewrite` are GREEN on ubuntu and macOS as of this date, so a red
+Windows job on any of them is this file and needs no reading past this line.
+
+## Open — parked on that call, not being worked
 
 - Whether goofi should reclaim the leak itself at startup rather than wait for upstream. It
   already pre-creates `<root>/nodes` and `<root>/services`, so it has an opinion about that
