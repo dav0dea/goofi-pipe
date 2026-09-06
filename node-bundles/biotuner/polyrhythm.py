@@ -6,14 +6,6 @@ intervals heard at two speeds — one as pitch, one as pulse. Every voice shares
 length is the lowest common multiple of their cycles, and where their onsets land together is a
 `coincidence`: the rhythmic reading of consonance.
 
-Inputs:
-  input  a tuning: ratios inside an octave, as `Tuning` emits them
-
-Outputs:
-  voices        one row per degree, 1 where an onset falls and 0 where none does
-  coincidences  per grid position, how many voices strike at once
-  labels        what each voice is, in the construction's own words
-  cycle         how many positions the grid holds, so a player knows the loop length
 
 `method` picks the construction. `euclid` gives each voice a euclidean pattern over its own step
 count. `iso` spaces each voice evenly across the whole grid, which makes a longer cycle and a
@@ -56,7 +48,17 @@ def fitting_denom(scale, want, cap):
 
 
 class Polyrhythm(goofi.Node):
-    """A scale's degrees as simultaneous cycles on one grid."""
+    """A scale's degrees as simultaneous cycles on one grid.
+
+    Inputs:
+      input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+    Outputs:
+      voices        one row per degree, 1 where an onset falls and 0 where none does
+      coincidences  per grid position, how many voices strike at once
+      labels        what each voice is, in the construction's own words
+      cycle         how many positions the grid holds, so a player knows the loop length
+    """
 
     TAGS = ["transform", "music"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

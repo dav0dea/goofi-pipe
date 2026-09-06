@@ -4,16 +4,6 @@ Takes PEAKS in Hz (as `Peaks` emits them) or a TUNING of ratios, and answers a c
 The mapping is not decoration: biotuner places each partial in a perceptual space — OKLCh, where a
 step of the same size looks the same size — and `method` chooses what the hue is a picture OF.
 
-Inputs:
-  input  peaks in Hz, or ratios when `source` is `tuning`
-  amps   optional — the amplitudes beside those peaks, as `Peaks` emits them
-
-Outputs:
-  rgb        one row per degree, red green blue in 0 to 1. Wire this to an `image` viewer
-  lightness  per degree, 0 to 1
-  chroma     per degree, how saturated — 0 is grey
-  hue        per degree, in degrees around the circle
-  hex        the same palette as text, for a viewer or an agent to read
 
 `method` is the choice worth making. `anchored` fixes the hue to the signal's own fingerprint, so
 one signal keeps its colour as it drifts; `spectral` reads frequency as wavelength, the literal
@@ -37,7 +27,19 @@ METHODS = ["anchored", "spectral", "tonotopic", "consonance", "harmonic", "tenne
 
 
 class BioColors(goofi.Node):
-    """A palette from a signal's peaks or from a tuning."""
+    """A palette from a signal's peaks or from a tuning.
+
+    Inputs:
+      input  peaks in Hz, or ratios when `source` is `tuning`
+      amps   optional — the amplitudes beside those peaks, as `Peaks` emits them
+
+    Outputs:
+      rgb        one row per degree, red green blue in 0 to 1. Wire this to an `image` viewer
+      lightness  per degree, 0 to 1
+      chroma     per degree, how saturated — 0 is grey
+      hue        per degree, in degrees around the circle
+      hex        the same palette as text, for a viewer or an agent to read
+    """
 
     TAGS = ["transform", "image"]
     INPUTS = {

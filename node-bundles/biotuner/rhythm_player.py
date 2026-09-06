@@ -5,13 +5,6 @@ pattern at a tempo and answers where it is now: one gate per voice, high for the
 that carries an onset. Wire `gate` through `audio:SignalIn` and it crosses as one channel per
 voice, which is what a plugin's gate or an envelope reads.
 
-Inputs:
-  input  a pattern: `[voices, steps]`, or one `[steps]` row, as the rhythm nodes emit
-
-Outputs:
-  gate     one row per voice, 1 while its onset sounds and 0 otherwise
-  step     which position of the grid is playing, counted from zero
-  phase    how far through the current step, 0 to 1, for anything that wants to slide
 
 Takes the pattern matrix either node emits — `[voices, steps]`, or a single `[steps]` row. NaN is
 padding and reads as no onset, so a ragged `EuclidRhythm` batch plays without trimming.
@@ -30,7 +23,16 @@ import goofi
 
 
 class RhythmPlayer(goofi.Node):
-    """Walk a rhythm pattern at a tempo and emit its gates."""
+    """Walk a rhythm pattern at a tempo and emit its gates.
+
+    Inputs:
+      input  a pattern: `[voices, steps]`, or one `[steps]` row, as the rhythm nodes emit
+
+    Outputs:
+      gate     one row per voice, 1 while its onset sounds and 0 otherwise
+      step     which position of the grid is playing, counted from zero
+      phase    how far through the current step, 0 to 1, for anything that wants to slide
+    """
 
     TAGS = ["transform", "music"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}
