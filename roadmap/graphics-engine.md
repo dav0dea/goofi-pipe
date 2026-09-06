@@ -59,10 +59,15 @@ before they arrive.
   excluded and named — the audio rule. Resolution is settled state: the universal group `output`
   holds `width` and `height`, 0 following the first wired texture input on that axis, a generator
   with none 512. Every texture is `Rgba16Float`.
-- **The control half is shared with audio**, lifted into `goofi-control`: the per-node thread on
-  its door, `Desired`, evaluation on arrival, pulses, refresh, reports, bells. What an arrival
-  becomes and what a tap publishes is the engine's, behind one trait (`Half`). A second copy of
-  that thread is the drift the design principles forbid.
+- **The control half is shared with audio**, lifted into `goofi-control` — LANDED 2026-09-06,
+  before the engine that needs it: the per-node thread on its door, `Desired`, the subscriptions,
+  evaluation on arrival, pulses, refresh, reports and bells are one implementation. What an
+  ARRIVAL becomes and what a tap publishes is the engine's, behind `Half` — four methods, of which
+  two are defaulted. `spawn` takes a FACTORY that builds the half on the control thread, so a half
+  may hold what does not cross one: audio's cpal stream and MIDI connection are built there and
+  never move. Audio's own additions (the clock's rate, what drives it, a plugin editor's writes)
+  are an `AudioShared` beside the generic one, and the scalar readers a plan needs are the control
+  crate's. A second copy of that thread is the drift the design principles forbid.
 - **One tap serves every reader of an output**: a readback to a `[H, W, 4]` f32 frame published on
   the derived name while anyone subscribes, and nothing while nobody does. The bandwidth fix lands
   on the `/data` socket, not here, and it is engine-agnostic — LANDED 2026-09-06, before the engine.

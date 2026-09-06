@@ -1,0 +1,12 @@
+[package]
+name = "goofi-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goofi-core = { path = "../goofi-core" }
+goofi-node = { path = "../goofi-node" }
+goofi-codec = { path = "../goofi-codec" }
+goofi-transport = { path = "../goofi-transport" }
+indexmap = "2"

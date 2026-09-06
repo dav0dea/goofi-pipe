@@ -14,7 +14,7 @@ use super::editor;
 use super::host::{Changes, Events, Host, Stream};
 use super::module;
 use super::ok;
-use crate::control::Shared;
+use crate::control::AudioShared;
 use crate::ui::{self, Ui};
 use goofi_node::Uid;
 
@@ -49,7 +49,7 @@ pub struct Plugin {
     class: Arc<Derived>,
     ui: Option<Ui>,
     uid: Option<Uid>,
-    shared: Option<Arc<Shared>>,
+    shared: Option<Arc<AudioShared>>,
     live: Option<Live>,
     /// What instantiation refused; every `process` raises it, because the runtime marks a node
     /// dead only once the fault is on its way and expects the next block to fault again.
@@ -60,7 +60,7 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub fn new(class: Arc<Derived>, ui: Option<Ui>, uid: Option<Uid>, shared: Option<Arc<Shared>>) -> Plugin {
+    pub fn new(class: Arc<Derived>, ui: Option<Ui>, uid: Option<Uid>, shared: Option<Arc<AudioShared>>) -> Plugin {
         Plugin { class, ui, uid, shared, live: None, failed: None, blob: Vec::new() }
     }
 }

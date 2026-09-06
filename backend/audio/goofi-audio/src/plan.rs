@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
-use goofi_core::{Param, SlotType};
-use goofi_node::{BindingView, GraphView, NodeManifest, ParamDecl, ParamGroups, Uid};
+use goofi_core::SlotType;
+pub(crate) use goofi_control::{param_of, scalar, scalar_of};
+use goofi_node::{BindingView, GraphView, NodeManifest, Uid};
 
 use crate::Instance;
 
@@ -65,26 +66,6 @@ impl Plan {
             .iter()
             .any(|s| s.idx == idx && s.ins.iter().any(|i| matches!(i, Source::Inbox { inbox: n, .. } if *n == inbox)))
     }
-}
-
-/// A param's scalar as the audio thread reads it: a number as itself, a bool as 0/1, an option
-/// as its index, free text as 0, and a pulse — which holds no value — as 0.
-pub(crate) fn scalar(p: &Param) -> f64 {
-    p.as_f64().unwrap_or_else(|| match p {
-        Param::Str { value, options: Some(options), .. } => {
-            options.iter().position(|o| o == value).map_or(0.0, |i| i as f64)
-        }
-        _ => 0.0,
-    })
-}
-
-/// The record's value for one declared param, the declared default where the record has none.
-pub(crate) fn param_of(params: &ParamGroups, d: &ParamDecl) -> Param {
-    goofi_node::param(params, d.group, d.name).cloned().unwrap_or_else(|| d.spec.to_param())
-}
-
-pub(crate) fn scalar_of(params: &ParamGroups, d: &ParamDecl) -> f64 {
-    scalar(&param_of(params, d))
 }
 
 /// The inbox an Array input reads — its index among the node's Array inputs — and `None` for an
@@ -201,7 +182,7 @@ pub fn compile(
             .iter()
             .enumerate()
             .map(|(i, s)| match inbox_of(inst.manifest, i) {
-                Some(inbox) => inst.control.chans[inbox].load(Ordering::Relaxed),
+                Some(inbox) => inst.chans[inbox].load(Ordering::Relaxed),
                 None => parts_of(*uid, s.name, &outs_of).iter().map(|p| p.1).max().unwrap_or(1),
             })
             .collect();
@@ -225,7 +206,7 @@ pub fn compile(
             .map(|(i, s)| match inbox_of(inst.manifest, i) {
                 Some(_) if view.wires_into(*uid, s.name).next().is_none() => Source::Silence,
                 Some(inbox) => {
-                    let channels = inst.control.chans[inbox].load(Ordering::Relaxed);
+                    let channels = inst.chans[inbox].load(Ordering::Relaxed);
                     Source::Inbox { at: alloc(channels, &mut plan.arena_len), channels, inbox }
                 }
                 None => source_of(parts_of(*uid, s.name, &outs_of), &own, &mut plan.arena_len),

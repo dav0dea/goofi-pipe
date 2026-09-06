@@ -17,7 +17,7 @@ use vst3::Steinberg::*;
 use vst3::{Class, ComPtr, ComRef, ComWrapper};
 
 use super::node::Derived;
-use crate::control::Shared;
+use crate::control::AudioShared;
 use crate::ui::{Host, Runloop, Window};
 
 #[cfg(target_os = "linux")]
@@ -47,7 +47,7 @@ struct Editor {
 }
 
 /// A plugin came up: its controller edits through here from now on, and a view can be asked of it.
-pub(super) fn register(uid: Uid, controller: ComPtr<IEditController>, class: Arc<Derived>, shared: Arc<Shared>) {
+pub(super) fn register(uid: Uid, controller: ComPtr<IEditController>, class: Arc<Derived>, shared: Arc<AudioShared>) {
     let handler = ComWrapper::new(Handler { uid, shared });
     if let Some(h) = handler.to_com_ptr::<IComponentHandler>() {
         unsafe { controller.setComponentHandler(h.as_ptr()) };
@@ -142,7 +142,7 @@ impl Editor {
 /// What a view edits through: the value goes to the engine's inbox, and to the document from there.
 struct Handler {
     uid: Uid,
-    shared: Arc<Shared>,
+    shared: Arc<AudioShared>,
 }
 
 impl Class for Handler {

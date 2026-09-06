@@ -27,7 +27,8 @@ pub mod wav;
 pub mod ui;
 pub mod vst3;
 
-use control::{Desired, Handle, Shared, Sub};
+use control::{AudioHalf, AudioShared};
+use goofi_control::{Desired, Handle, Shared, Sub};
 use nodes::{audio_out, Class};
 use plan::Plan;
 use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
@@ -189,7 +190,7 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
 /// the control half's in the ports. A node that owns no OS handle gets neither.
-fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui>, shared: Arc<Shared>) -> (nodes::Birth, control::Ports) {
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui>, shared: Arc<AudioShared>) -> (nodes::Birth, control::Ports) {
     let mut birth = nodes::Birth { chans: chans.clone(), ui, uid: Some(uid), shared: Some(shared), ..Default::default() };
     let mut ports = control::Ports::default();
     match type_name {
@@ -227,6 +228,8 @@ pub(crate) struct Instance {
     /// thread.
     pub(crate) twin: Box<dyn AudioNode>,
     pub(crate) control: Handle,
+    /// The channel count each Array input last saw — what the plan sizes its inbox by.
+    pub(crate) chans: Vec<Arc<AtomicU16>>,
     /// What the control half was last told; a settle that changes nothing says nothing.
     last: Option<Desired>,
 }
@@ -241,6 +244,9 @@ pub struct AudioEngine {
     tried: Option<(String, Option<String>)>,
     stats: Arc<Stats>,
     shared: Arc<Shared>,
+    /// What only an audio control half needs: the clock's rate, what drives it, and the edits a
+    /// plugin's own window made.
+    audio: Arc<AudioShared>,
     classes: HashMap<&'static str, Class>,
     /// Every built artifact loaded so far, by path: a library is opened once and never closed.
     rust_loaded: HashMap<PathBuf, Arc<Loaded>>,
@@ -297,14 +303,12 @@ impl AudioEngine {
             device: None,
             tried: None,
             stats: Arc::new(Stats::default()),
-            shared: Arc::new(Shared {
-                evaluator: Mutex::new(None),
-                reports: Mutex::new(Vec::new()),
-                waker,
-                replan: Default::default(),
+            shared: Arc::new(Shared::new(waker.clone())),
+            audio: Arc::new(AudioShared {
                 rate: AtomicU64::new(RATE.to_bits()),
                 clock,
                 edits: Mutex::new(Vec::new()),
+                waker,
             }),
             classes,
             rust_loaded: HashMap::new(),
@@ -357,7 +361,7 @@ impl AudioEngine {
                 Clock::Device => "device",
             },
             device: self.device.as_ref().map(|d| d.name.clone()),
-            rate: self.shared.rate(),
+            rate: self.audio.rate(),
             channels: self.device.as_ref().map_or(self.last.output.1, |d| d.channels),
             callbacks: self.stats.callbacks.load(Ordering::Relaxed),
             xruns: self.stats.xruns.load(Ordering::Relaxed),
@@ -581,11 +585,11 @@ impl AudioEngine {
     fn retune(&mut self, rate: f64, channels: u16) {
         let mut rt = self.runtime();
         rt.apply_pending();
-        if rate != self.shared.rate() {
+        if rate != self.audio.rate() {
             for slot in rt.slab.iter_mut().flatten() {
                 slot.node.prepare(rate);
             }
-            self.shared.rate.store(rate.to_bits(), Ordering::Relaxed);
+            self.audio.rate.store(rate.to_bits(), Ordering::Relaxed);
             rt.block = Duration::from_secs_f64(BLOCK as f64 / rate);
         }
         rt.set_device(Some(channels));
@@ -648,14 +652,14 @@ impl Engine for AudioEngine {
             return Some(format!("no audio node type `{type_name}`"));
         };
         let chans = Arc::new(AtomicU16::new(1));
-        let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.shared.clone());
+        let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.audio.clone());
         let mut node = make(birth);
         // Only the audio-rate params are ports; a control-rate one is a float in the scalar strip.
         let widest = node.audio_params(manifest.params.len()).max(manifest.inputs.len()).max(manifest.outputs.len());
         if widest > MAX_PORTS {
             return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
         }
-        node.prepare(self.shared.rate());
+        node.prepare(self.audio.rate());
         if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
             node.load(&bytes);
         }
@@ -669,17 +673,20 @@ impl Engine for AudioEngine {
             .unzip();
         let (tap_in, tap_out): (Vec<_>, Vec<_>) =
             manifest.outputs.iter().map(|_| rtrb::RingBuffer::<f32>::new(control::TAP_RING)).unzip();
-        let spawn = control::Spawn {
+        // The inboxes are built here so the plan can read their channel cells; the half itself is
+        // made on its own thread, where an OS handle it opens never has to cross one.
+        let inboxes: Vec<control::Inbox> = inbox_in.into_iter().map(control::Inbox::new).collect();
+        let inbox_chans = AudioHalf::channels(&inboxes);
+        let birth = control::Birth { manifest, inboxes, taps: tap_out, ports, audio: self.audio.clone() };
+        let spawn = goofi_control::Spawn {
+            engine: "audio",
             uid,
             base: goofi_transport::service_base(&self.instance, uid, generation),
             manifest,
             params: atomics.clone(),
-            inboxes: inbox_in,
-            taps: tap_out,
-            ports,
             started: self.started,
         };
-        let control = match control::spawn(spawn, self.shared.clone(), &self.bells) {
+        let control = match goofi_control::spawn(spawn, self.shared.clone(), &self.bells, move || AudioHalf::new(birth)) {
             Ok(handle) => handle,
             Err(e) => return Some(e),
         };
@@ -699,7 +706,7 @@ impl Engine for AudioEngine {
         };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });
-        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, last: None });
+        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, chans: inbox_chans, last: None });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.shared.waker.notify();
@@ -826,7 +833,7 @@ impl Engine for AudioEngine {
     /// What every editor wrote since the last call, as the record spells it — latest wins per
     /// param, because a drag is many edits and the document wants the last.
     fn take_edits(&mut self) -> Vec<Edit> {
-        let raw = std::mem::take(&mut *self.shared.edits.lock().unwrap());
+        let raw = std::mem::take(&mut *self.audio.edits.lock().unwrap());
         let mut edits: Vec<Edit> = Vec::new();
         for (uid, id, v) in raw {
             let Some(inst) = self.live.get(&uid) else { continue };
@@ -879,11 +886,5 @@ impl Engine for AudioEngine {
             rt.render_block();
         }
         self.discard_retired();
-    }
-}
-
-impl Shared {
-    pub(crate) fn rate(&self) -> f64 {
-        f64::from_bits(self.rate.load(Ordering::Relaxed))
     }
 }

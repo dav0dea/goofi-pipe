@@ -29,7 +29,7 @@ pub struct Birth {
     /// Which node this is, and the engine's inbox — what a plugin's editor writes through. None
     /// for the twin, which is no instance.
     pub uid: Option<goofi_node::Uid>,
-    pub shared: Option<Arc<crate::control::Shared>>,
+    pub shared: Option<Arc<crate::control::AudioShared>>,
 }
 
 /// The DSP half of every node its own control half feeds — the device's input, and a file's. It
