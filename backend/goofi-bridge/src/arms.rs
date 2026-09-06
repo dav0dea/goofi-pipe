@@ -1658,13 +1658,9 @@ pub(crate) fn op_list(
         .ops()
         .iter()
         .map(|o| {
-            let mut row = json!({
-                "op": o.name,
-                "args": o.args,
-                "positional": o.positional,
-                "kind": o.handler.kind_name(),
-            });
+            let mut row = json!({ "op": o.name, "args": o.args, "kind": o.handler.kind_name() });
             if doc {
+                row["positional"] = json!(o.positional);
                 row["doc"] = json!(o.doc());
                 row["result"] = json!(o.result);
             }

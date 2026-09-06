@@ -133,7 +133,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Move a signal up or down the spectrum by a fixed number of hertz, without changing its speed.",
+    doc: "Move a signal up or down the spectrum.\n\
+          By a fixed number of hertz, without changing its speed.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

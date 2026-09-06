@@ -152,7 +152,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Stri
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform, Tag::Text],
-    doc: "A table becomes JSON text: an object, with arrays as lists and strings as strings.",
+    doc: "A table becomes JSON text.\n\
+          An object, with arrays as lists and strings as strings.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

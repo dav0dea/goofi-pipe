@@ -178,7 +178,8 @@ static OUTPUTS: &[OutputDecl] = &[
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Analysis],
-    doc: "How a signal's frequencies come and go across the frame, which one spectrum cannot show.",
+    doc: "How a signal's frequencies come and go across the frame.\n\
+          Which one spectrum cannot show.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

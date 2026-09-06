@@ -22,11 +22,12 @@ pub fn introspect(py: Python<'_>, path: &str) -> PyResult<String> {
             .and_then(|f| f.call0())
             .and_then(|v| v.extract::<bool>())
             .unwrap_or(true),
-        doc: cls
-            .getattr("__doc__")
-            .ok()
-            .and_then(|d| d.extract::<String>().ok())
-            .map(|s| s.trim().to_string())
+        // `cleandoc`, not `trim`: a docstring's body carries the class's own indentation, and a
+        // node doc is read as text — its first line is the nutshell, the rest the detail.
+        doc: py
+            .import("inspect")?
+            .call_method1("cleandoc", (cls.getattr("__doc__")?,))
+            .and_then(|d| d.extract::<String>())
             .unwrap_or_default(),
         producer: cls.getattr("PRODUCER")?.extract()?,
         tags: cls.getattr("TAGS")?.extract()?,

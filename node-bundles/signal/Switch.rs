@@ -49,7 +49,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Control],
-    doc: "Let one of several wires through, chosen by number, so a signal can pick the route.",
+    doc: "Let one of several wires through, chosen by number.\n\
+          So a signal can pick the route.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

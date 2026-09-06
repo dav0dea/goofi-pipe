@@ -106,7 +106,8 @@ static OUTPUTS: &[OutputDecl] = &[
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Analysis],
-    doc: "How big a signal's swing is, where in its cycle it stands, and how fast that is turning.",
+    doc: "A signal's envelope, phase and instantaneous frequency.\n\
+          How big its swing is, where in its cycle it stands, and how fast that is turning.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

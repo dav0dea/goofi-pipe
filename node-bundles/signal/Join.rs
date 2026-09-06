@@ -116,7 +116,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Lay several frames end to end along one axis, or stack them onto a new axis named after their senders.",
+    doc: "Lay several frames end to end, or stack them.\n\
+          Along one axis, or onto a new axis named after their senders.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

@@ -188,7 +188,8 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:NeedsScipy").expect("still in the palette").clone();
     let _ = std::fs::remove_file(&installed);
-    assert_eq!(row["available"], true, "installed, refreshed, and still greyed: {row}");
+    // A loadable row says nothing about availability: the index spends that key on greyed rows alone.
+    assert!(row.get("available").is_none(), "installed, refreshed, and still greyed: {row}");
 }
 
 #[test]

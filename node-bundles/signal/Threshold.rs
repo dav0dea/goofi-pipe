@@ -108,7 +108,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Control],
-    doc: "Turn a signal into a decision: one where it is past the level, zero where it is not.",
+    doc: "Turn a signal into a decision.\n\
+          One where it is past the level, zero where it is not.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

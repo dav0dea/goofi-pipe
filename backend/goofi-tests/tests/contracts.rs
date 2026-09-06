@@ -400,9 +400,21 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
     };
     assert!(!declared.is_empty(), "a fresh goofi offers a library");
     let palette = g.call("library list", j!({ "full": true }))["types"].as_array().expect("a palette").clone();
+    // The index is what a chooser reads, so what it shows of a type is the doc's FIRST LINE: a
+    // nutshell, short enough that seventy-five of them are a list and not a manual.
+    let index = g.call("library list", j!({}))["types"].as_array().expect("an index").clone();
     for (ty, groups) in declared {
         let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
         assert!(row.get("category").is_none(), "{ty}: category is gone");
+        let doc = row["doc"].as_str().unwrap_or_else(|| panic!("{ty}: a doc"));
+        let nutshell = doc.split('\n').next().unwrap_or_default();
+        assert!(!nutshell.is_empty() && nutshell.len() <= 80,
+                "{ty}: the doc opens with a nutshell of 80 characters or less, not {}: {nutshell}", nutshell.len());
+        let listed = index.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the index"));
+        assert_eq!(listed["doc"], j!(nutshell), "{ty}: the index shows the nutshell and stops there");
+        for key in ["tags", "source", "params", "input_slots", "output_slots"] {
+            assert!(listed.get(key).is_none(), "{ty}: the index carries `{key}`, which is `library get`'s");
+        }
         let tags = row["tags"].as_array().expect("a tags list");
         // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
         // wheel looks: the probe emits no tags and the feature is inert while the suite is green.

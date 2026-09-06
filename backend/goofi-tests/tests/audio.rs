@@ -949,7 +949,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "audio:Crasher").cloned().expect("greyed, not absent");
     assert_eq!(row["available"], false, "{row}");
-    assert!(row["missing_deps"].to_string().contains("scanner"), "the scanner's death is the reason: {row}");
+    assert!(row["doc"].as_str().is_some_and(|d| d.contains("scanner")), "the scanner's death is the reason: {row}");
     assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));
     heard(&g, plug, "the server answers on", |x| (peak(x) - 0.5).abs() < 0.02);
 

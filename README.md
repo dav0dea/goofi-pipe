@@ -97,8 +97,9 @@ class Smooth(goofi.Node):
         return np.apply_along_axis(lambda v: np.convolve(v, kernel, mode="same"), -1, data.data)
 ```
 
-A node declares itself in constants, read once by the import — not in hooks. Each may be
-omitted:
+The class docstring is the node's doc, and its FIRST LINE is the nutshell a catalog shows: keep
+it under 80 characters and put whatever else it needs after it. The rest of the node declares
+itself in constants, read once by the import — not in hooks. Each may be omitted:
 
 | Constant | Shape |
 | --- | --- |

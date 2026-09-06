@@ -258,8 +258,8 @@ pub static TREE: &[Entry] = &[
     ]),
     Group("library", "the node types — what `node add` can build", &[
         Leaf(Op { name: "list", handler: Read(arms::library_list), args: "full:bool", positional: 0,
-             doc: "The node library as an INDEX — every registered type with what it is for. One type's slots and params are `library get`'s, so choosing from this list costs a catalog and not a manual. `--full` answers each entry with its slots, params and availability instead: the palette a client draws the add-menu from.",
-             result: "{types: [{type, source, bundle, tags, doc, available}]}, an unloadable one also naming its `missing_deps`. With `--full`, every entry also carries {missing_deps, editor, input_slots, input_multi, output_slots, params}." }),
+             doc: "The node library as an INDEX: every registered type, and the first line of its doc. Everything else about the one type you then pick — where it came from, its slots, its params, the rest of its doc — is `library get`'s, so choosing from this list costs a catalog and not a manual. `--full` answers the palette a client draws the add-menu from instead.",
+             result: "{types: [{type, doc}]}, an unloadable one also carrying `available: false` and saying so in its doc. With `--full`, every entry carries {source, bundle, tags, available, missing_deps, editor, input_slots, input_multi, output_slots, params} and the WHOLE doc." }),
         Leaf(Op { name: "get", handler: Read(arms::library_get), args: "type:string! source:bool", positional: 1,
              doc: "ONE library entry in full: the palette fields — slots, params, availability — plus where the type came from. `--source` reads the file itself too, under `text`. Copy a node into the patch workspace to modify one.",
              result: "the `library list --full` entry plus {language, tier, provenance, path}, and `text` under `--source`" }),
@@ -274,8 +274,8 @@ pub static TREE: &[Entry] = &[
     ]),
     Group("op", "the vocabulary itself", &[
         Leaf(Op { name: "list", handler: Read(arms::op_list), args: "doc:bool", positional: 0,
-             doc: "Every op this server speaks: its name, its arguments (`!` marks a required one) and its kind — a `write` is undoable and may ride in a batch, an `effect` runs alone. What one op DOES is `<op> --help`; `--doc` answers the whole vocabulary explained, which is the manual and costs like one.",
-             result: "{ops: [{op, args, positional, kind}]}, each row also carrying {doc, result} under `--doc`" }),
+             doc: "Every op this server speaks: its name, its arguments (`!` marks a required one) and its kind — a `write` is undoable and may ride in a batch, an `effect` runs alone. Every argument is reachable as `--name value`, which is all a caller needs to write one. What an op DOES is `<op> --help`; `--doc` answers the whole vocabulary explained, which is the manual and costs like one.",
+             result: "{ops: [{op, args, kind}]}, each row also carrying {positional, doc, result} under `--doc`" }),
         Leaf(Op { name: "complete", handler: Read(arms::op_complete), args: "line:string", positional: 1,
              doc: "What can come NEXT on a partial command line — the shell completion read. Each candidate is a word with a one-line doc: a group or op word mid-phrase, a flag once the op is named, or a value for a flag with a known vocabulary (a panel type, a live node's uid). The line's last word, when partial, filters the candidates.",
              result: "{text: string} — one candidate per line, `word<TAB>doc`" }),

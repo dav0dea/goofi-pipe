@@ -218,8 +218,47 @@ fn parse_flags(op: &Op, words: &[String]) -> Result<Value, String> {
     Ok(Value::Object(payload))
 }
 
+/// Whether a value fits on one line: a scalar, or a RECORD — an object with no container in it.
+fn flat(v: &Value) -> bool {
+    match v {
+        Value::Array(_) => false,
+        Value::Object(m) => m.values().all(|x| !matches!(x, Value::Array(_) | Value::Object(_))),
+        _ => true,
+    }
+}
+
+/// JSON as a caller reads it, with ONE departure from a plain pretty print: a list of flat
+/// records puts one record per line. Every catalog read answers that shape, and a field per line
+/// spent three lines of punctuation on every line of content.
+pub fn pretty(v: &Value) -> String {
+    fn go(v: &Value, pad: usize) -> String {
+        let (inner, close) = (" ".repeat(pad + 2), " ".repeat(pad));
+        let wrap = |open: char, body: Vec<String>, shut: char| match body.is_empty() {
+            true => format!("{open}{shut}"),
+            false => format!("{open}\n{}\n{close}{shut}", body.join(",\n")),
+        };
+        match v {
+            Value::Array(a) if a.iter().all(flat) => {
+                wrap('[', a.iter().map(|e| format!("{inner}{e}")).collect(), ']')
+            }
+            Value::Array(a) => {
+                wrap('[', a.iter().map(|e| format!("{inner}{}", go(e, pad + 2))).collect(), ']')
+            }
+            Value::Object(m) => wrap(
+                '{',
+                m.iter()
+                    .map(|(k, val)| format!("{inner}{}: {}", Value::String(k.clone()), go(val, pad + 2)))
+                    .collect(),
+                '}',
+            ),
+            other => other.to_string(),
+        }
+    }
+    go(v, 0)
+}
+
 /// An op's answer as the text a caller reads: prose and bare strings verbatim, everything else
-/// pretty-printed. A result carrying NPY is DATA, not text — the text form points at the pipe,
+/// as JSON. A result carrying NPY is DATA, not text — the text form points at the pipe,
 /// and only the CLI's own renderer writes the bytes.
 pub fn render(result: &Value) -> String {
     if let Value::String(s) = result {
@@ -234,9 +273,9 @@ pub fn render(result: &Value) -> String {
     match result.as_object() {
         Some(o) if o.len() == 1 => match o.get("text").and_then(|t| t.as_str()) {
             Some(t) => t.to_string(),
-            None => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
+            None => pretty(result),
         },
-        _ => serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string()),
+        _ => pretty(result),
     }
 }
 

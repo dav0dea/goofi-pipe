@@ -177,9 +177,9 @@ pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
 }
 
 /// How much of a palette entry to project. [`Detail::Index`] is what a catalog READ wants — the
-/// name, what it is for, and whether it can be built at all; the slots and params of the one type
-/// it then picks are `library get`'s. [`Detail::Full`] is the descriptor a client builds nodes
-/// from, and every field the index leaves out is present in it.
+/// name and the doc's FIRST LINE, and nothing else; where the type came from, its slots and its
+/// params are all `library get`'s. [`Detail::Full`] is the descriptor a client builds nodes from,
+/// and every field the index leaves out is present in it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Detail {
     Index,
@@ -192,19 +192,24 @@ impl Detail {
     }
 }
 
+/// A node doc's FIRST LINE — the nutshell every doc opens with, and all an index shows.
+pub fn nutshell(doc: &str) -> &str {
+    doc.split('\n').next().unwrap_or(doc).trim_end()
+}
+
 pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest, d: Detail) -> Value {
     let ty = goofi_node::qualify(engine, m.type_name);
     let mut info = json!({
         "type": ty,
-        "source": source_of(g, &ty),
-        "tags": m.tags.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
-        "doc": m.doc,
-        "available": true,
+        "doc": if d.full() { m.doc } else { nutshell(m.doc) },
     });
-    if let Some(bundle) = g.bundle_of(&ty) {
-        info["bundle"] = json!(bundle);
-    }
     if d.full() {
+        info["source"] = json!(source_of(g, &ty));
+        info["tags"] = json!(m.tags.iter().map(|t| t.as_str()).collect::<Vec<_>>());
+        info["available"] = json!(true);
+        if let Some(bundle) = g.bundle_of(&ty) {
+            info["bundle"] = json!(bundle);
+        }
         info["missing_deps"] = json!([]);
         info["editor"] = json!(g.type_has_editor(engine, m.type_name));
         info["input_slots"] = input_slots(m);
@@ -238,18 +243,18 @@ pub fn catalog_types(g: &Graph, d: Detail) -> Value {
     items.extend(greyed.into_iter().map(|(name, reason)| {
         let last = g.last_manifest(&name);
         let (engine, bare) = goofi_node::split_type_id(&name);
-        // The reason rides the INDEX too: a greyed row is the one row a chooser must not skim
-        // past, and it is the only row `missing_deps` says anything on.
+        // `available` rides the INDEX too, and only where it is false: a greyed row is the one row
+        // a chooser must not skim past, and the doc it carries names the reason in words.
         let mut info = json!({
             "type": name,
-            "source": source_of(g, &name),
-            "bundle": g.bundle_of(&name),
-            "tags": [],
             "doc": format!("This node could not be loaded: {reason}"),
             "available": false,
-            "missing_deps": [reason],
         });
         if d.full() {
+            info["source"] = json!(source_of(g, &name));
+            info["bundle"] = g.bundle_of(&name).map_or(Value::Null, |b| json!(b));
+            info["tags"] = json!([]);
+            info["missing_deps"] = json!([reason]);
             info["editor"] = json!(false);
             info["input_slots"] = last.map_or_else(|| json!({}), input_slots);
             info["input_multi"] = last.map_or_else(|| json!([]), input_multi);

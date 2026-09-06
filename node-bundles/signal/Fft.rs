@@ -211,7 +211,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Analysis],
-    doc: "The spectrum both ways: samples into one-sided bins, and those bins back into samples.",
+    doc: "The spectrum, both ways.\n\
+          Samples into one-sided bins, and those bins back into samples.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

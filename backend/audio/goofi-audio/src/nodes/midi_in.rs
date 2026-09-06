@@ -35,8 +35,9 @@ static OUTS: &[OutputDecl] = &[
 
 pub static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Input, Tag::Midi],
-    doc: "A MIDI port as signals: per voice a gate, a pitch in volts per octave (C4 is 0) and a \
-          velocity in [0, 1]. A note lands at the start of the next block.",
+    doc: "A MIDI port as signals.\n\
+          Per voice a gate, a pitch in volts per octave (C4 is 0) and a velocity in [0, 1]. A \
+          note lands at the start of the next block.",
     inputs: &[],
     outputs: OUTS,
     params: PARAMS,

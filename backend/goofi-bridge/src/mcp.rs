@@ -93,13 +93,7 @@ fn call_tool(state: &AppState, params: &Value) -> Value {
     match phrase::exec_lines(state, &lines, actor) {
         // ONE shape whatever the count — the list of results, in order — so no data is
         // reachable at one arity and paraphrased at another.
-        Ok(results) => {
-            let list = Value::Array(results);
-            tool_result(
-                serde_json::to_string_pretty(&list).unwrap_or_else(|_| list.to_string()),
-                false,
-            )
-        }
+        Ok(results) => tool_result(phrase::pretty(&Value::Array(results)), false),
         Err(e) => tool_result(e, true),
     }
 }

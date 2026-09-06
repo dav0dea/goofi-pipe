@@ -274,12 +274,12 @@ pub fn boundary_catalog(d: crate::schemas::Detail) -> Vec<(String, String, Value
             };
             let mut info = json!({
                 "type": name,
-                "source": "builtin",
-                "tags": [],
                 "doc": format!("Sub-patch {} ({})", dir.name(), dtype.name().to_lowercase()),
-                "available": true,
             });
             if d.full() {
+                info["source"] = json!("builtin");
+                info["tags"] = json!([]);
+                info["available"] = json!(true);
                 info["missing_deps"] = json!([]);
                 info["input_slots"] = inputs;
                 info["input_multi"] = json!([]);

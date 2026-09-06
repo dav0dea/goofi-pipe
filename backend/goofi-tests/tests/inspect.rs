@@ -243,10 +243,11 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
 
     // The INDEX is what a reader chooses a type from, and it stops there: what the type is, never
     // what it is wired and tuned with.
-    for key in ["type", "source", "tags", "doc", "available"] {
-        assert_eq!(index[key], listed[key], "the index and the palette disagree on `{key}`");
-    }
-    for key in ["params", "input_slots", "output_slots", "input_multi", "editor", "missing_deps"] {
+    assert_eq!(index["type"], listed["type"]);
+    assert_eq!(index["doc"], j!(listed["doc"].as_str().unwrap().split('\n').next().unwrap()),
+               "the index shows the doc's first line and stops there: {index}");
+    for key in ["source", "tags", "available", "missing_deps", "params", "input_slots",
+                "output_slots", "input_multi", "editor"] {
         assert!(index.get(key).is_none(), "the index carries `{key}`, which is `library get`'s");
     }
 

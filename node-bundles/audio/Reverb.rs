@@ -52,7 +52,8 @@ static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "A room around the sound: eight delay lines fed back through each other, out in stereo.",
+    doc: "A room around the sound.\n\
+          Eight delay lines fed back through each other, out in stereo.",
     inputs: INS,
     outputs: OUTS,
     params: PARAMS,

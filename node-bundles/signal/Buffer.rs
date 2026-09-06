@@ -103,7 +103,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Rolling window along one axis: keeps the most recent `size` entries; an axis past the rank is a new one.",
+    doc: "A rolling window along one axis.\n\
+          Keeps the most recent `size` entries; an axis past the rank is a new one.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

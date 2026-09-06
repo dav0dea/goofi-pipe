@@ -76,7 +76,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Write the sample rate or the channel names onto a frame, for a source that does not carry its own.",
+    doc: "Write the sample rate or the channel names onto a frame.\n\
+          For a source that does not carry its own.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

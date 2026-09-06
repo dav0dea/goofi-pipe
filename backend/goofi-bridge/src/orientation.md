@@ -1,16 +1,15 @@
 goofi-pipe is a live signal-processing patch: a graph of nodes running right now, in a window a
 human has open beside you. Your edits reach their screen at once and theirs reach your next read,
-so work in small steps and check each one. Call `goofi nodes inspect` first and again between
-steps: it draws the graph, and `goofi session status` lists every standing error with how long it
-has stood. Every write answers with what it did, so read the reply instead of following it with
-another call. Never guess a name: `goofi library list` indexes the node types and
+so work in small steps and check each one, `goofi nodes inspect` between them. Every write
+answers with what it did, so read the reply instead of following it with another call. Never
+guess a name: `goofi library list` indexes the node types and
 `goofi library get <type>` reads one in full; panel types and viewer kinds are enumerated by the
 op that takes them.
 
-You drive goofi with the `goofi` command in this shell — it is already on your PATH, pointed at
-THIS server, and your ops land in your own undo stack: `undo`/`redo` are yours alone and never
-touch the human's. It reaches the server over local TCP, so run `goofi` with network access
-allowed — a sandbox that blocks the network blocks every op. One op is one line,
+You drive goofi with the `goofi` command in this shell — already on your PATH, pointed at THIS
+server, and your ops land in your own undo stack: `undo`/`redo` never touch the human's. It
+reaches the server over local TCP, so run it with network access allowed — a sandbox that blocks
+the network blocks every op. One op is one line,
 `goofi <op> [--arg value …]`; `goofi op list` answers every op with its arguments and its kind,
 `goofi help <group>` lists a group, `--help` on any op explains it, and `--json` answers the raw
 JSON for `jq`. Read the one op you need with `--help`, not `op list --doc`, which is the whole
@@ -95,8 +94,7 @@ the slots that exist, and refuses an end that names no node — so a reply means
 there. Take uids from a read, never from memory.
 
 Panel types and viewer kinds are **closed sets**, not free strings — guessing `params` for
-`parameters` is a mistake a real agent made. A guess is refused with the whole set: empty,
-node-editor, parameters, viewer, metadata, console, globals, agent.
+`parameters` is a mistake a real agent made. A guess is refused with the whole set.
 
 ## Custom nodes
 
@@ -108,6 +106,8 @@ overriding a shipped type of the same name.
     import goofi
 
     class Scale(goofi.Node):
+        """Multiply every value by a factor."""
+
         INPUTS = {"input": goofi.DataType.ARRAY}
         OUTPUTS = {"out": goofi.DataType.ARRAY}
         PARAMS = {"scale": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
@@ -119,10 +119,12 @@ overriding a shipped type of the same name.
 
     goofi library refresh → {"added": ["Scale"], "changed": [], "removed": []}
 
-Four constants declare the node, and each may be omitted: `INPUTS`, `OUTPUTS`, `PARAMS`, and
-`PRODUCER = True` for a source that paces itself rather than waiting for a frame. An input slot
-that `process()` reads unconditionally should say so — `goofi.InputSlot(goofi.DataType.ARRAY,
-required=True)` — and the engine then refuses the tick rather than calling you with `None`.
+The docstring is the node's doc, and its FIRST LINE is the nutshell a catalog shows: keep it
+under 80 characters and put the detail after it. Four constants declare the rest, each of them
+optional: `INPUTS`, `OUTPUTS`, `PARAMS`, and `PRODUCER = True` for a source that paces itself
+rather than waiting for a frame. An input slot that `process()` reads unconditionally should say
+so — `goofi.InputSlot(goofi.DataType.ARRAY, required=True)` — and the engine then refuses the
+tick rather than calling you with `None`.
 
 Edit the file and refresh again: it returns under `changed`, and every live instance of that type
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens.

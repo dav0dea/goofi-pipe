@@ -22,6 +22,8 @@ pub const MAX_PORTS: usize = 64;
 /// signal-only slot flags are ignored; `multi: true` on an input sums its wires at the jack.
 pub struct Manifest {
     pub tags: &'static [Tag],
+    /// What the type IS. The FIRST LINE is the nutshell a catalog shows and all most readers
+    /// see; whatever follows it is the detail `library get` answers.
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],

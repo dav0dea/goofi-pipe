@@ -418,6 +418,8 @@ pub struct OutputDecl {
 pub struct NodeManifest {
     pub type_name: &'static str,
     pub tags: &'static [Tag],
+    /// What the type IS. The FIRST LINE is the nutshell a catalog shows and all most readers
+    /// see; whatever follows it is the detail `library get` answers.
     pub doc: &'static str,
     pub inputs: &'static [SlotDecl],
     pub outputs: &'static [OutputDecl],
