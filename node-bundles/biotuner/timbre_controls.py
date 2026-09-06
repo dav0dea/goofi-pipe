@@ -8,6 +8,11 @@ Takes a TUNING (ratios inside an octave), as `Tuning` emits them, and optionally
 the peaks they came from. Everything here is measured in under a millisecond, which is why it can
 run at frame rate at all.
 
+Inputs:
+  input  a tuning: ratios inside an octave, as `Tuning` emits them
+  amps   optional — the amplitudes beside the peaks the tuning came from
+
+Outputs:
   partials      the ratios as frequencies over `base_freq`, in Hz
   amplitudes    per partial, 0 to 1, normalized so the loudest is 1
   weights       per partial, how consonant it is against the rest, 0 to 1

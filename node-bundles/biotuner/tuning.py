@@ -17,6 +17,13 @@ downstream drop that padding again. NaN peaks are ignored, which is what lets `P
 
 A construction that finds nothing for a row leaves that row empty rather than faulting: a scale is
 a property of the signal, and a window that has none is an answer.
+
+Inputs:
+  input  peaks in Hz, as `Peaks` emits them
+  amps   optional, and REQUIRED by `method` `diss_curve` — the amplitudes beside those peaks
+
+Outputs:
+  tuning  the scale's ratios, NaN-padded to the widest row in the batch
 """
 
 import numpy as np

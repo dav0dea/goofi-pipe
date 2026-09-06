@@ -3,6 +3,10 @@
 Takes a TUNING (ratios inside an octave), as `Tuning` emits them. Each pair of degrees is scored
 by one harmonicity measure, giving a square grid.
 
+Inputs:
+  input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+Outputs:
   matrix         the full `[N, N]` grid, symmetric, for a viewer to draw
   metricPerStep  one number per degree — the grid's column means — which is what a param follows
                  when you want each scale degree to drive something of its own

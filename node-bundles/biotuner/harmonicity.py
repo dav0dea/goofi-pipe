@@ -6,6 +6,10 @@ padding is dropped per row, so a channel that found fewer peaks is still measure
 Each output is ONE number per channel, which is what makes it something a param can follow:
 `[C, n_peaks]` in gives `[C]` out, and a single row gives a single value.
 
+Inputs:
+  input  peaks in Hz, as `Peaks` emits them
+
+Outputs:
   harmsim          0..100, higher is more consonant. The mean harmonic similarity of every pair:
                    how nearly the peaks form a simple whole-number ratio.
   tenney           Tenney height, higher is MORE complex. The log of the ratio's numerator times
