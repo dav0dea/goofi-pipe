@@ -5,6 +5,10 @@ pattern that spreads `pulses` onsets over `steps` as evenly as whole numbers all
 the source of both: a 3/2 becomes three pulses over two steps, so an interval a scale is built
 from and the rhythm beside it are the same number read at two speeds.
 
+Inputs:
+  input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+Outputs:
   patterns   one row per rhythm, 1 where an onset falls and 0 where none does
   steps      how many steps each row spans, so a row can be read without counting its padding
 

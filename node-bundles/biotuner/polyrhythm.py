@@ -6,6 +6,10 @@ intervals heard at two speeds — one as pitch, one as pulse. Every voice shares
 length is the lowest common multiple of their cycles, and where their onsets land together is a
 `coincidence`: the rhythmic reading of consonance.
 
+Inputs:
+  input  a tuning: ratios inside an octave, as `Tuning` emits them
+
+Outputs:
   voices        one row per degree, 1 where an onset falls and 0 where none does
   coincidences  per grid position, how many voices strike at once
   labels        what each voice is, in the construction's own words

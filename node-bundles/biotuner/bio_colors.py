@@ -4,6 +4,11 @@ Takes PEAKS in Hz (as `Peaks` emits them) or a TUNING of ratios, and answers a c
 The mapping is not decoration: biotuner places each partial in a perceptual space — OKLCh, where a
 step of the same size looks the same size — and `method` chooses what the hue is a picture OF.
 
+Inputs:
+  input  peaks in Hz, or ratios when `source` is `tuning`
+  amps   optional — the amplitudes beside those peaks, as `Peaks` emits them
+
+Outputs:
   rgb        one row per degree, red green blue in 0 to 1. Wire this to an `image` viewer
   lightness  per degree, 0 to 1
   chroma     per degree, how saturated — 0 is grey

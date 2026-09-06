@@ -6,6 +6,11 @@ the same relations. An element's lines sit in the optical range and a biosignal'
 INTERVAL, in cents. What comes back is a ranking, not an identification — a signal does not contain
 hydrogen, its intervals resemble hydrogen's.
 
+Inputs:
+  input  peaks in Hz, as `Peaks` emits them
+  amps   optional, and read by `method` `tuning` alone
+
+Outputs:
   elements    one entry per element kept, its score per row of input
   scores      the same scores as numbers, ranked, for binding or plotting
   ranked      the element names in that order, so a reader can label the scores
