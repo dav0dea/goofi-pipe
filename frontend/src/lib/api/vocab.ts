@@ -40,7 +40,7 @@ export interface PanelTypeInfo {
 }
 
 /** The slot kinds, as the manager names them. */
-export type SlotDtype = 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO';
+export type SlotDtype = 'ARRAY' | 'STRING' | 'TABLE' | 'AUDIO' | 'TEXTURE';
 
 export interface ViewerKindInfo {
 	readonly id: ViewerKind;
@@ -129,15 +129,26 @@ export const BOUNDARY_TYPES: readonly BoundaryTypeInfo[] = [
 	{ type: 'InString', dir: 'in', dtype: 'STRING' },
 	{ type: 'InTable', dir: 'in', dtype: 'TABLE' },
 	{ type: 'InAudio', dir: 'in', dtype: 'AUDIO' },
+	{ type: 'InTexture', dir: 'in', dtype: 'TEXTURE' },
 	{ type: 'OutArray', dir: 'out', dtype: 'ARRAY' },
 	{ type: 'OutString', dir: 'out', dtype: 'STRING' },
 	{ type: 'OutTable', dir: 'out', dtype: 'TABLE' },
 	{ type: 'OutAudio', dir: 'out', dtype: 'AUDIO' },
+	{ type: 'OutTexture', dir: 'out', dtype: 'TEXTURE' },
 ];
 
 export const boundaryType = (type: string): BoundaryTypeInfo | undefined =>
 	BOUNDARY_TYPES.find((b) => b.type === type);
 
 /** Which output kind may feed which input kind — the manager's one link rule, projected. */
-export const FEEDS: ReadonlySet<string> = new Set(['ARRAY>ARRAY', 'STRING>STRING', 'TABLE>TABLE', 'AUDIO>ARRAY', 'AUDIO>AUDIO']);
+export const FEEDS: ReadonlySet<string> = new Set(['ARRAY>ARRAY', 'STRING>STRING', 'TABLE>TABLE', 'AUDIO>ARRAY', 'AUDIO>AUDIO', 'TEXTURE>ARRAY', 'TEXTURE>TEXTURE']);
 export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${out}>${into}`);
+
+/** The kind a slot of each dtype opens with, before a viewer has stored one of its own. */
+export const DEFAULT_KIND: Record<SlotDtype, ViewerKind> = {
+	ARRAY: 'line',
+	STRING: 'string',
+	TABLE: 'table',
+	AUDIO: 'line',
+	TEXTURE: 'image',
+};

@@ -163,6 +163,31 @@ pub fn illegal_slot(intro: &probe::Introspection) -> Option<String> {
         .map(|bad| format!("slot `{bad}` is not a legal name: {}", goofi_core::globals::NAME_RULE))
 }
 
+/// The first slot whose kind belongs to an engine other than `own`, phrased for the palette. An
+/// engine-local kind never crosses the wire, so a file declaring one is in the wrong folder.
+pub fn foreign_slot(intro: &probe::Introspection, own: Option<goofi_core::SlotType>) -> Option<String> {
+    intro
+        .inputs
+        .iter()
+        .map(|s| (&s.name, &s.kind))
+        .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
+        .find_map(|(name, kind)| {
+            let kind = goofi_core::SlotType::from_name(kind).filter(|k| k.is_engine_local() && Some(*k) != own)?;
+            Some(format!("slot `{name}` is {}", authored_as(kind)))
+        })
+}
+
+/// How a node carrying an engine-local slot kind is written, so a refusal says where to go.
+/// Exhaustive on purpose: a new kind must decide this rather than fall through to nothing.
+fn authored_as(kind: goofi_core::SlotType) -> &'static str {
+    use goofi_core::SlotType::*;
+    match kind {
+        Audio => "audio — an audio node is written against goofi_audio_sdk",
+        Texture => "a texture — a graphics node is a `.wgsl` file",
+        Array | String | Table => "another engine's kind",
+    }
+}
+
 /// Leak a `'static &str` for the catalog's lifetime.
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())

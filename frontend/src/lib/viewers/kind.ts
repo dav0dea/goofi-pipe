@@ -1,6 +1,6 @@
 /** Viewer-kind BEHAVIOUR; the vocabulary itself is the manager's, in `$lib/api/vocab`. */
 import type { ArrayData } from '$lib/codec/decode';
-import { VIEWER_KINDS, type ViewerKind } from '$lib/api/vocab';
+import { DEFAULT_KIND, VIEWER_KINDS, type SlotDtype, type ViewerKind } from '$lib/api/vocab';
 
 export type { ViewerKind };
 
@@ -9,10 +9,12 @@ export const ARRAY_KINDS: readonly ViewerKind[] = VIEWER_KINDS.filter(
 	(k) => k.dtype === 'ARRAY'
 ).map((k) => k.id);
 
-/** The viewer kind to actually use: a dtype-pinned kind wins over the stored one. */
+/** The viewer kind to actually use: a dtype-pinned kind wins over the stored one, and a slot
+ * nobody has chosen for opens with what draws its dtype. */
 export function resolveKind(dtype: string | null, stored: ViewerKind | undefined): ViewerKind {
 	const pinned = VIEWER_KINDS.find((k) => k.dtype !== 'ARRAY' && k.dtype === dtype);
-	return pinned ? pinned.id : (stored ?? 'line');
+	if (pinned) return pinned.id;
+	return stored ?? DEFAULT_KIND[(dtype ?? 'ARRAY') as SlotDtype] ?? 'line';
 }
 
 /** Whether an array of the given shape can be drawn by `kind`; a non-array frame always can. */

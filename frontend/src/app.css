@@ -162,6 +162,7 @@
 	--dtype-string: #f0c050;
 	--dtype-table: #e08060;
 	--dtype-audio: #c080f0;
+	--dtype-texture: #5ec8e0;
 
 	/* engine palette — a node's header and its palette row read as its engine at a glance.
 	   `vst` is a plugin FORMAT, not an engine; it wears the set's shape because it is a palette tab. */

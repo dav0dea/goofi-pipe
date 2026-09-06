@@ -31,13 +31,19 @@ before they arrive.
   `Shader` node with the WGSL as a text param, which cannot carry named params because a manifest is
   per type; the second may still arrive as a convenience over the same compile path, and is out for
   now by the owner's ruling.
-- **`SlotType::Texture`, wire name `TEXTURE`**, the audio rule copied: a texture output feeds a
-  texture input in the engine, or an ARRAY input through the tap, and nothing but a texture feeds a
-  texture input. An ARRAY input on a graphics node is an upload — the frame becomes a texture the
-  shader samples under the input's name — as an ARRAY input on an audio node is a resampled port.
-  An unwired texture input samples one shared 1×1 transparent black texture: present, never an
-  error. `InTexture` and `OutTexture` are the boundary ports. `Data` stays f32; a texture never
-  crosses the wire.
+- **`SlotType::Texture`, wire name `TEXTURE`**, the audio rule copied — LANDED 2026-09-06: a
+  texture output feeds a texture input in the engine, or an ARRAY input through the tap, and
+  nothing but a texture feeds a texture input. Audio and a texture are now ONE property,
+  `SlotType::is_engine_local` — a kind that never crosses the wire — so `feeds` states the rule
+  once and a third such kind needs no new arm. The two scanners' foreign-slot refusals became one
+  `goofi_node::foreign_slot(intro, own)`, which names how a node of the kind it found IS written.
+  An ARRAY input on a graphics node is an upload — the frame becomes a texture the shader samples
+  under the input's name — as an ARRAY input on an audio node is a resampled port. An unwired
+  texture input samples one shared 1x1 transparent black texture: present, never an error.
+  `InTexture` and `OutTexture` are the boundary ports. `Data` stays f32; a texture never crosses
+  the wire. The viewer kind a slot OPENS with is now a table too (`vocab::default_kind`,
+  projected as `DEFAULT_KIND`): a texture draws as an image, an array and audio as a line. The
+  suite's graphics-shaped skeleton was renamed `skelgfx`, because `graphics` is the real engine's.
 - **`uv` is `(0, 0)` at the bottom-left, the shader convention; a texture's row 0 is the top, the
   image convention.** The prelude's vertex stage is where the two meet, and nothing flips anywhere
   else: an uploaded image displays upright, and a readback's row 0 is the top.

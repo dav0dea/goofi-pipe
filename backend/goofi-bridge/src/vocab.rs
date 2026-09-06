@@ -94,6 +94,17 @@ pub fn panel_type_ids() -> Vec<&'static str> {
     PANEL_TYPES.iter().map(|p| p.id).collect()
 }
 
+/// The viewer kind a slot of each dtype opens with, before anyone has chosen one: what draws
+/// that kind of thing. A PINNED kind (string, table) is resolved from the kind table itself.
+pub fn default_kind(dtype: SlotType) -> &'static str {
+    match dtype {
+        SlotType::Array | SlotType::Audio => "line",
+        SlotType::Texture => "image",
+        SlotType::String => "string",
+        SlotType::Table => "table",
+    }
+}
+
 /// Every viewer kind's id.
 pub fn viewer_kind_ids() -> Vec<&'static str> {
     VIEWER_KINDS.iter().map(|k| k.id).collect()
@@ -121,6 +132,10 @@ pub fn typescript() -> String {
         .flat_map(|out| SlotType::ALL.iter().filter(|into| out.feeds(**into)).map(move |into| format!("'{}>{}'", out.name(), into.name())))
         .collect::<Vec<_>>()
         .join(", ");
+    let defaults = SlotType::ALL
+        .iter()
+        .map(|t| format!("\t{}: '{}',\n", t.name(), default_kind(*t)))
+        .collect::<String>();
     let panel_ids = PANEL_TYPES.iter().map(|p| format!("\n\t| '{}'", p.id)).collect::<String>();
     let kind_ids = VIEWER_KINDS.iter().map(|k| format!("\n\t| '{}'", k.id)).collect::<String>();
     let panels = PANEL_TYPES
@@ -258,7 +273,10 @@ pub fn typescript() -> String {
          \n\
          /** Which output kind may feed which input kind — the manager's one link rule, projected. */\n\
          export const FEEDS: ReadonlySet<string> = new Set([{feeds}]);\n\
-         export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${{out}}>${{into}}`);\n"
+         export const feeds = (out: SlotDtype, into: SlotDtype): boolean => FEEDS.has(`${{out}}>${{into}}`);\n\
+         \n\
+         /** The kind a slot of each dtype opens with, before a viewer has stored one of its own. */\n\
+         export const DEFAULT_KIND: Record<SlotDtype, ViewerKind> = {{\n{defaults}}};\n"
     )
 }
 

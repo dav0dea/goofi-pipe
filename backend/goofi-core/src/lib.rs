@@ -658,10 +658,14 @@ pub enum SlotType {
     /// Audio-rate planar samples that never cross the wire: an audio output feeds an audio input
     /// in its engine, or an ARRAY input through the engine's tap, and nothing feeds it but audio.
     Audio,
+    /// A GPU texture that never crosses the wire: a texture output feeds a texture input in its
+    /// engine, or an ARRAY input through the engine's tap, and nothing feeds it but a texture.
+    Texture,
 }
 
 impl SlotType {
-    pub const ALL: [SlotType; 4] = [SlotType::Array, SlotType::String, SlotType::Table, SlotType::Audio];
+    pub const ALL: [SlotType; 5] =
+        [SlotType::Array, SlotType::String, SlotType::Table, SlotType::Audio, SlotType::Texture];
 
     /// Frontend-facing name (`input_slots`/`output_slots` value).
     pub fn name(self) -> &'static str {
@@ -670,12 +674,19 @@ impl SlotType {
             SlotType::String => "STRING",
             SlotType::Table => "TABLE",
             SlotType::Audio => "AUDIO",
+            SlotType::Texture => "TEXTURE",
         }
     }
-    /// Whether an output of this kind may feed an input of `into`: the same kind, or audio into
-    /// an array, which the audio engine's tap turns into `[C, T]` frames.
+    /// Whether an output of this kind may feed an input of `into`: the same kind, or an
+    /// engine-local kind into an array, which that engine's tap turns into frames.
     pub fn feeds(self, into: SlotType) -> bool {
-        self == into || (self == SlotType::Audio && into == SlotType::Array)
+        self == into || (self.is_engine_local() && into == SlotType::Array)
+    }
+
+    /// Whether this kind lives inside ONE engine and never crosses the wire, so only that
+    /// engine's tap can put it on an ARRAY slot.
+    pub fn is_engine_local(self) -> bool {
+        matches!(self, SlotType::Audio | SlotType::Texture)
     }
 
     pub fn from_name(name: &str) -> Option<SlotType> {
