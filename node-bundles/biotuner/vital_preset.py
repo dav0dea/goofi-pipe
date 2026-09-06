@@ -8,6 +8,14 @@ second. `path` carries where the last one went, so an agent can pick it up.
 Wire the optional `signal` input to hand the raw biosignal to the kinds that can use it — only
 `ensemble` does today, which writes a whole bundle rather than a single patch.
 
+Inputs:
+  input   a tuning: ratios inside an octave, as `Tuning` emits them
+  signal  optional raw biosignal, read by the `ensemble` kind alone
+
+Outputs:
+  path  where the last preset was written, so an agent can pick it up
+
+`kind` is one of:
   spectral        the partials as Vital's own harmonic editor sees them: one patch, one spectrum
   inharmonic      the same partials left unsnapped, so a stretched or gamelan-like set stays so
   wavetableMorph  a 64-frame wavetable that sweeps the spectral tilt, with an LFO on the position

@@ -15,6 +15,11 @@ note number, so a per-note tuning has to be smuggled through one bend per channe
 caps a patch at as many notes as it has channels. goofi's pitch is already continuous volts per
 octave, zero at C4, so the microtonality is simply the number, and the only ceiling is `voices`.
 
+Inputs:
+  input  a tuning: ratios inside an octave, as `Tuning` emits them
+  notes  `signal:MidiIn`'s `notes` — 128 slots, the note number is the INDEX and the velocity the value
+
+Outputs:
   voices     the whole keyboard in one wire: pitches then velocities, the layout a plugin's
              `voice` input reads — cross it with `audio:SignalIn` and that is the only cable
   pitch      volts per octave, zero at C4 — reference this from `voice.pitch`
