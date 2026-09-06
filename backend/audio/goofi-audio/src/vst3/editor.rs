@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use goofi_node::Uid;
