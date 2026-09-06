@@ -516,8 +516,18 @@ fn introspection(vendor: &str, class: &ClassInfo) -> (probe::Introspection, Vec<
         doc,
         tags: vec![tag.as_str().to_string()],
         producer: false,
+        // A plugin that takes notes takes them by CABLE too: `voice` is `audio:MidiIn`'s bundle —
+        // gates, then pitches, then velocities — so one wire carries a whole keyboard and the
+        // voice params stay as the manual override for anything not driven by it.
         inputs: (0..class.inputs.len())
             .map(|i| probe::Slot { name: numbered("input", i), kind: audio.clone(), trigger: false, multi: true, required: false })
+            .chain(class.events.then(|| probe::Slot {
+                name: "voice".into(),
+                kind: audio.clone(),
+                trigger: false,
+                multi: false,
+                required: false,
+            }))
             .collect(),
         outputs: (0..class.outputs.len()).map(|i| probe::OutSlot { name: numbered("out", i), kind: audio.clone() }).collect(),
         params,
