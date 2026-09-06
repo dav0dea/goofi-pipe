@@ -29,7 +29,7 @@ pub mod vst3;
 use control::{Desired, Handle, Shared, Sub};
 use nodes::{audio_out, Class};
 use plan::Plan;
-use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS, WARMUP};
+use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
 
 /// The rate until a device names one.
 pub(crate) const RATE: f64 = 48_000.0;
@@ -679,7 +679,7 @@ impl Engine for AudioEngine {
             inboxes: inbox_out.into_iter().map(Inbox::new).collect(),
             taps: tap_in,
             dead: false,
-            overruns: -WARMUP,
+            overruns: 0,
         };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });

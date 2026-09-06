@@ -12,11 +12,7 @@ use goofi_node::Uid;
 use crate::plan::{Plan, Source, SILENCE};
 
 /// Blocks in a row a node may take longer than a block to process before it leaves the plan.
-pub const OVERRUNS: i32 = 8;
-
-/// Blocks a node may be slow for before that count begins. The VST3 contract lets a plugin build
-/// its engine on its first calls, and one measured at 18ms there settles under budget by its fourth.
-pub const WARMUP: i32 = 1024;
+pub const OVERRUNS: u8 = 8;
 
 pub struct Slot {
     pub uid: Uid,
@@ -33,9 +29,7 @@ pub struct Slot {
     /// Out of the plan: it panicked or the watchdog took it, and its outputs are zero until the
     /// settle that re-plans without it.
     pub dead: bool,
-    /// Counted up from `-WARMUP`, and zeroed by the first block that lands inside the budget: what
-    /// a node has PROVED it can do, never what it did while warming.
-    pub overruns: i32,
+    pub overruns: u8,
 }
 
 /// The audio thread's end of an Array input: chunks of interleaved samples, each headed by its
@@ -301,7 +295,7 @@ impl Runtime {
                         Some(Fault::NotANumber)
                     }
                     Ok(()) if started.elapsed() > self.block => {
-                        slot.overruns += 1;
+                        slot.overruns = slot.overruns.saturating_add(1);
                         (slot.overruns >= OVERRUNS).then_some(Fault::Overrun)
                     }
                     Ok(()) => {
