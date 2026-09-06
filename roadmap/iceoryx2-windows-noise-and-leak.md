@@ -37,13 +37,28 @@ bytes each — **~101 MB of unbuffered stderr**, which is the whole of the run's
 
 ## The manual reclaim
 
-Not a fix — for a clean measurement only, exactly as `/dev/shm/iox2_*` is on unix. The owner keeps
-implicit `WRITE_DAC`, so:
+Not a fix — for a clean measurement only, exactly as `/dev/shm/iox2_*` is on unix, and never with
+another goofi alive. The owner keeps implicit `WRITE_DAC`, so:
 
 ```
 icacls C:\Temp\iceoryx2 /grant "%USERNAME%":(OI)(CI)F /T
 rmdir /s /q C:\Temp\iceoryx2
 ```
+
+**Measured 2026-09-06: that pair is not enough, and the reason is the word PROTECTED.** Against 939
+stranded node directories it took 3,085 files down to 1,218 and stopped. `/T` grants an INHERITABLE
+ace and walks containers; a `.node_monitor_context` carries a protected DACL, which is precisely a
+DACL that refuses inheritance — so icacls reports "Failed processing 0 files" while the file's own
+ace list still reads `SYSTEM:(F) Administrators:(F) Users:(R)` and the owner still cannot unlink it.
+Naming the file DIRECTLY works, because that writes an explicit ace rather than an inherited one:
+`icacls <file> /grant "%USERNAME%":(F)`. So the reclaim is per-file and recursive, not a `/T` walk —
+in PowerShell, `[System.IO.File]::SetAccessControl` over a fresh `FileSecurity` carrying one
+FullControl rule, which touches the Access section alone (`Set-Acl` fetches the SACL too and dies
+on `SeSecurityPrivilege`). 622 files, then the tree removes.
+
+That reclaim was NOT what made boots quick, and the record should say so: 939 stranded directories
+cost nothing measurable, because a node's cache is opened by name and never enumerated. The boot
+cost on that machine was the VST3 scan — `vst3-scan-boot-cost.md`.
 
 ## The race now fails tests, not just logs
 
