@@ -271,6 +271,20 @@ what the device clock opens is the machine's sound SERVER, never its card, becau
 stream is one the OS volume and the OS mute cannot reach. `roadmap/audio-engine.md` holds the
 design.
 
+**A graphics node is a `.wgsl` FILE, and the file's header is its manifest.** No SDK, no cargo, no
+toolchain: a text editor is the whole requirement to author one, and the engine appends its prelude
+AFTER the file's text so a naga error names the line the author sees. Every texture is
+`Rgba16Float`, and `uv`, the sampler, texture memory, an upload's rows and a readback's rows all
+put row 0 at the TOP — one convention, so a pass-through body is a copy and no flip is written
+anywhere. The engine is scheduled and DEMAND-DRIVEN: a stage renders only where its output has a
+reader, so a node nobody watches costs nothing. Its plan is replaced whole and never edited,
+because a stage index is a name and a stage that outlives its node draws into a stranger. The
+PROCESS owns one device and one compile thread, and every operation on that device takes one gate
+— a driver crashed inside its own shader compiler when two threads touched the device at once.
+The control half is `goofi-control`, shared with audio rather than copied. A texture never crosses
+the wire: the tap reads back an f32 frame like any other, and `roadmap/graphics-engine.md` holds
+the design.
+
 **There is no tick.** Every node owns one thread and schedules itself, waking for a control
 message, a frame on an input, or its own rate cap elapsing. Frames travel node to node over
 shared memory, never through the graph — so no node runs under the graph mutex and no user action
@@ -286,7 +300,8 @@ Python nodes share one marshalling seam, so they cannot drift; neither the tier 
 interpreter is selectable — one probe per node file routes it, by whether its imports keep the
 GIL disabled. A Rust node runs the same seam: every Rust node, shipped or authored, signal or
 audio, is one `.rs` file naming the SDK it is written against — which is what routes it to its
-engine — built by one pipeline into a `cdylib` and loaded behind a version symbol. The signal ABI IS the subprocess tier's codec — one encode and one
+engine — built by one pipeline into a `cdylib` and loaded behind a version symbol. A `.wgsl` file
+is the third such routing, and the one that needs no build at all. The signal ABI IS the subprocess tier's codec — one encode and one
 decode per side per run, a copy a compiled-in node never paid, accepted as the price of one
 seam; the audio ABI crosses the block as descriptors of the arena's own regions, because a block
 is memory the plan laid out, not a frame in flight. There is no static registration. Every
