@@ -5,36 +5,31 @@
 	import type { Snippet } from 'svelte';
 	import { beginDrag } from 'panelty';
 	import { onDestroy } from 'svelte';
-	import { paneAxes, coordOf, paneSizeAt, type PaneAxis, type PaneDrag } from './paneDrag';
+	import { PANE_AXES, coordOf, paneSizeAt, type PaneAxis, type PaneDrag } from './paneDrag';
 
 	let {
 		open,
 		onClosed,
 		testid = 'side-pane',
-		storage = 'goofi.panel',
 		children
 	}: {
 		open: boolean;
 		onClosed?: () => void;
 		testid?: string;
-		/** The key prefix this host's pane size persists under — one per host. */
-		storage?: string;
 		children?: Snippet;
 	} = $props();
-
-	const axes = $derived(paneAxes(storage));
 
 	/** A persisted pane size, or `null` — the resting size is then the stylesheet's own `clamp()`. */
 	function storedSize(axis: PaneAxis): number | null {
 		try {
-			const n = parseInt(localStorage.getItem(axes[axis].key) ?? '', 10);
+			const n = parseInt(localStorage.getItem(PANE_AXES[axis].key) ?? '', 10);
 			return Number.isFinite(n) ? n : null;
 		} catch {
 			return null; // private mode; persistence is best-effort
 		}
 	}
 
-	/** Keyed exactly as `axes` is, so a drag's axis selects the state it writes. */
+	/** Keyed exactly as `PANE_AXES` is, so a drag's axis selects the state it writes. */
 	let paneSize = $state({ x: storedSize('x'), y: storedSize('y') });
 	let resizing = $state(false);
 	let paneEl = $state<HTMLElement | null>(null);
@@ -54,7 +49,7 @@
 		// Read back off the pane rather than re-derived: the axis is the container query's answer.
 		const axis: PaneAxis =
 			getComputedStyle(el).getPropertyValue('--pane-axis').trim() === 'y' ? 'y' : 'x';
-		const dim = axes[axis];
+		const dim = PANE_AXES[axis];
 		// The RENDERED size, not the stored one: the bounds live in CSS, so a value restored from a
 		// wider screen is not what is on screen.
 		const drag: PaneDrag = {

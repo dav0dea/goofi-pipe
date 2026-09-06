@@ -10,17 +10,10 @@ export interface PaneAxisDims {
 	sizeOf(box: { width: number; height: number }): number;
 }
 
-/** The axes of one host's pane, persisted under `prefix`: each host that carries a pane keeps its
- * own size, so a sheet dragged small over the canvas is not the size a control panel opens at. */
-export function paneAxes(prefix: string): Record<PaneAxis, PaneAxisDims> {
-	return {
-		x: { key: `${prefix}Width`, sizeOf: (b) => b.width },
-		y: { key: `${prefix}Height`, sizeOf: (b) => b.height }
-	};
-}
-
-/** The node editor's inspector pane. */
-export const PANE_AXES = paneAxes('goofi.panel');
+export const PANE_AXES: Record<PaneAxis, PaneAxisDims> = {
+	x: { key: 'goofi.panelWidth', sizeOf: (b) => b.width },
+	y: { key: 'goofi.panelHeight', sizeOf: (b) => b.height }
+};
 
 /** A gesture in flight; the axis is already spent by the time one of these exists. */
 export interface PaneDrag {

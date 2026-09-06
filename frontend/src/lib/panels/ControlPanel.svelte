@@ -1,8 +1,8 @@
 <!-- Control panel — knobs, sliders and fields over ONE group of globals. Edit mode is the group's
      config lock, inverted: out of it a drag turns a widget; in it the same drag moves it, the
-     corner resizes it, and the inspector slides in with the palette and the picked widget's form.
-     Every change is a globals op, so the manager owns the state and this panel owns only the
-     drawing and the gesture in flight. -->
+     corner resizes it, a strip above the board holds the name and the palette, and the picked
+     widget's form opens beside the widget itself. Every change is a globals op, so the manager
+     owns the state and this panel owns only the drawing and the gesture in flight. -->
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import type { PanelProps } from 'panelty';
@@ -15,7 +15,6 @@
 	import type { ArrayData, DataFrame } from '$lib/codec/decode';
 	import { viewSpecForKind } from '$lib/viewers/capacity';
 	import ParamField from '$lib/inspector/ParamField.svelte';
-	import SidePane from './SidePane.svelte';
 	import {
 		Chip,
 		EmptyState,
@@ -24,6 +23,7 @@
 		IconButton,
 		Knob,
 		NumberInput,
+		Popover,
 		ScrollArea,
 		Select,
 		Slider,
@@ -65,6 +65,13 @@
 	let picked = $state<string | null>(null);
 	let renaming = $state<string | null>(null);
 	const pickedView = $derived(elements.find((el) => el.name === picked) ?? null);
+	// The form hangs off the picked widget's own cell, and follows it wherever a drag lands it.
+	const anchor = $derived.by(() => {
+		if (!board || !pickedView) return null;
+		const at = placed(pickedView);
+		void [at.x, at.y, at.w, at.h];
+		return board.querySelector<HTMLElement>(`[data-testid="control-${group}-${pickedView.element}"]`);
+	});
 
 	// The two gestures in flight: a widget being moved or resized, and a chip lifted off the palette.
 	let drag: { name: string; from: Cell; x: number; y: number; units: Units; resize: boolean; to: Cell | null } | null =
@@ -342,6 +349,37 @@
 		>
 	</div>
 
+	{#if edit}
+		<div class="strip">
+			<div class="grow">
+				<TextInput
+					inputmode="search"
+					data-testid="control-group-name"
+					title="The group its globals live in: globals.name.element"
+					value={group}
+					autocomplete="off"
+					onChange={nameGroup}
+				/>
+			</div>
+			<div class="palette" data-testid="control-palette">
+				{#each KINDS as kind (kind)}
+					<Chip
+						tone={lift?.kind === kind ? 'accent' : 'neutral'}
+						data-testid={`control-palette-${kind}`}
+						title="Drag onto the board, or tap to add"
+						onpointerdown={(e) => liftChip(e, kind)}
+						onpointermove={driftChip}
+						onpointerup={dropChip}
+						onpointercancel={() => (lift = null)}
+						onclick={(e) => {
+							if (e.detail === 0) void bear(kind, null);
+						}}>{kind}</Chip
+					>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
 	<ScrollArea>
 		<div class="sheet">
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -423,55 +461,45 @@
 		</div>
 	</ScrollArea>
 
-	<SidePane open={edit} testid="control-inspector" storage="goofi.controlPane">
-		<ScrollArea>
-			<div class="pane">
-				<Field label="panel" doc="The group its globals live in: globals.panel.element">
-					<TextInput
-						inputmode="search"
-						data-testid="control-group-name"
-						value={group}
-						autocomplete="off"
-						onChange={nameGroup}
-					/>
-				</Field>
-				<div class="palette" data-testid="control-palette">
-					{#each KINDS as kind (kind)}
-						<Chip
-							tone={lift?.kind === kind ? 'accent' : 'neutral'}
-							data-testid={`control-palette-${kind}`}
-							title="Drag onto the board, or tap to add"
-							onpointerdown={(e) => liftChip(e, kind)}
-							onpointermove={driftChip}
-							onpointerup={dropChip}
-							onpointercancel={() => (lift = null)}
-							onclick={(e) => {
-								if (e.detail === 0) void bear(kind, null);
-							}}>{kind}</Chip
-						>
-					{/each}
-				</div>
-				{#if pickedView && !pickedView.lock.config}
-					{@const pv = pickedView}
-					{@const pc = pv.control as ControlView}
-					<div class="props" data-testid="control-props">
-						<Field label="name">
-							<TextInput
-								inputmode="search"
-								data-testid="control-props-name"
-								value={pv.element}
-								autocomplete="off"
-								onChange={(v) => void rename(pv, v)}
-							/>
-						</Field>
-						<Field label="widget">
-							<Select
-								data-testid="control-props-kind"
-								value={pc.kind}
-								options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
-								onChange={(v) => setControl(pv, { kind: v as Kind })}
-							/>
-						</Field>
+	{#if edit && pickedView}
+		{@const pv = pickedView}
+		{@const pc = pv.control as ControlView}
+		{#key `${pv.name}:${placed(pv).x},${placed(pv).y}`}
+			<Popover
+				{anchor}
+				open={anchor !== null}
+				onDismiss={() => (picked = null)}
+				flip
+				role="dialog"
+				aria-label={`${pv.element} settings`}
+				style="--popover-min-width: 18rem"
+				data-testid="control-props"
+			>
+				{#if pv.lock.config}
+					<EmptyState>
+						{#snippet hint()}This widget is config-locked.{/snippet}
+					</EmptyState>
+				{:else}
+					<div class="props">
+						<div class="row">
+							<Field label="name">
+								<TextInput
+									inputmode="search"
+									data-testid="control-props-name"
+									value={pv.element}
+									autocomplete="off"
+									onChange={(v) => void rename(pv, v)}
+								/>
+							</Field>
+							<Field label="widget">
+								<Select
+									data-testid="control-props-kind"
+									value={pc.kind}
+									options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
+									onChange={(v) => setControl(pv, { kind: v as Kind })}
+								/>
+							</Field>
+						</div>
 						<ParamField
 							paramName="value"
 							descriptor={valueDescriptor(pv, pc)}
@@ -528,14 +556,10 @@
 							>
 						</div>
 					</div>
-				{:else}
-					<EmptyState>
-						{#snippet hint()}{pickedView ? 'This widget is config-locked.' : 'Tap a widget to edit it.'}{/snippet}
-					</EmptyState>
 				{/if}
-			</div>
-		</ScrollArea>
-	</SidePane>
+			</Popover>
+		{/key}
+	{/if}
 
 	{#if lift}
 		<div class="ghost" style={`left: ${lift.x}px; top: ${lift.y}px`} aria-hidden="true">
@@ -556,7 +580,6 @@
 
 <style>
 	.wrap {
-		position: relative;
 		display: flex;
 		flex-direction: column;
 		height: 100%;
@@ -578,11 +601,17 @@
 		font-family: var(--font-mono);
 		font-size: var(--fs-small);
 	}
-	.pane {
+	.strip {
 		display: flex;
-		flex-direction: column;
-		gap: var(--space-5);
-		padding: var(--space-4) var(--space-5) var(--space-6);
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2) var(--space-4);
+		padding: var(--space-2) var(--space-3);
+		border-bottom: 1px dashed var(--border);
+	}
+	.grow {
+		flex: 1 1 10rem;
+		min-width: 0;
 	}
 	.palette {
 		display: flex;

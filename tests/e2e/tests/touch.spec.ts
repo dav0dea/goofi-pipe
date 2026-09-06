@@ -236,7 +236,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 			// …and the same drag MOVES it once edit mode is on, which is the whole mode switch.
 			await page.getByTestId('control-edit-toggle').tap();
-			// The palette opening above the board is the sign the mode landed, and it moves the board.
+			// The strip opening above the board is the sign the mode landed, and it moves the board.
 			await expect(page.getByTestId('control-palette'), 'edit mode opened the palette').toBeVisible();
 			const before = (await knob.boundingBox())!;
 			const held = await level();
@@ -249,18 +249,8 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 			// Edit mode also opens the palette, and a chip dragged onto the board bears a widget where
 			// it lands, named for its kind — the one door a new element has.
-			// The palette rides the inspector pane, which SLIDES in: the chip is measured once it rests.
 			const chip = page.getByTestId('control-palette-slider');
-			let cb = (await chip.boundingBox())!;
-			await expect
-				.poll(async () => {
-					await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-					const now = (await chip.boundingBox())!;
-					const same = now.x === cb.x && now.y === cb.y;
-					cb = now;
-					return same;
-				}, 'the pane came to rest')
-				.toBe(true);
+			const cb = (await chip.boundingBox())!;
 			const bb = (await page.getByTestId('control-board').boundingBox())!;
 			await swipe(
 				page,
