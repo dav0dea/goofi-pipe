@@ -114,11 +114,39 @@ Locked, because the codebase's rules already say so:
 
 The decision the door turns on: **the frontend bundle is compiled into the binary, and an
 add-on's component cannot be.** It must arrive as JavaScript loaded at run time, which crosses the
-two rules the build discipline rests on. Unresolved, and to be decided first when this half
-starts: what the CSP becomes and whether an add-on gets its own origin; how an add-on is
-versioned against goofi's interface and what a mismatch does; whether the boundary is Svelte or
-plain DOM; and whether a panel-to-panel message is a manager-ordered op (replayable, undoable,
-testable through the one interface) or a peer channel (cheaper, weaker).
+two rules the build discipline rests on. Surveyed 2026-09-06, and decided:
+
+**The boundary is a CUSTOM ELEMENT, not Svelte and not an iframe.** A Svelte component would couple
+every add-on to goofi's exact Svelte version and to `$lib`'s internal shape — an ABI with no
+version symbol, and a bundler the author must run, which is the bar the `.wgsl` node exists to
+avoid. An iframe buys isolation this project has already declined to want: trust is provenance, and
+an add-on runs in the app's origin with the control socket by decision above. What the iframe would
+then cost is real — a CSS custom property does not cross a frame, so the token contract needs a
+bridge, and focus, keyboard and touch each need one too. A custom element is a platform primitive
+with no version to keep in step, tokens cascade into it, and any framework or none compiles to one.
+
+**The first add-on is COMPILED IN, and the loader comes second.** A folder in the tree whose panel
+the build script bundles proves the owned op row and the run-time panel type with no loader and no
+version question. The recorder panel (`recording.md`) is that first tenant, and it has a backend
+half already, so the door is proved against something real rather than a stub.
+
+**The op row is the first thing to build, and it is more than one field.** `Op` is `&'static` in
+its name, args, doc and result; `Handler` holds a bare `fn` pointer, so an add-on handler carrying
+its own state cannot be one; `AppState.ops` is `Arc<Vec<&'static Op>>`; `phrase.rs` walks a
+`&'static` tree, `schemas.rs` and `mcp.rs` derive from the rows, and the frontend's `OpName` union
+is generated from them. The union needs an escape for a run-time row.
+
+**The panel vocabulary is compiled in TWICE**, and both must take a run-time row: `PANEL_TYPES` in
+`vocab.rs` is `&'static`, and `frontend/src/lib/api/vocab.ts` is generated from it with
+`PanelTypeId` a closed union.
+
+**The backend half needs nothing new.** `term::Harnesses` is a working roster of spawned processes
+with lifecycle, events and a per-instance socket. An add-on's backend process is that shape.
+
+Still open here: how an add-on is versioned against goofi's interface and what a mismatch does;
+whether a panel-to-panel message is a manager-ordered op (replayable, undoable, testable through
+the one interface) or a peer channel (cheaper, weaker); and what the CSP becomes — there is none in
+the tree today, so nothing has to be un-decided.
 
 ## Order of work
 
