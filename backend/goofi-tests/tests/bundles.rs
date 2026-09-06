@@ -34,6 +34,12 @@ fn install_bundled_all(g: &Goofi, bundle: &str, files: &[&str]) -> Vec<String> {
     install_all(g, &pairs)
 }
 
+/// A required slot still empty is a node WAITING for the producer wired to it — the runtime faults
+/// on it every tick until the first frame lands — rather than a node that failed.
+fn waiting(e: &str) -> bool {
+    e.contains("has no data")
+}
+
 /// Wait for a node to come up, reading its error channel WHILE waiting so a node that says why
 /// fails with its own words, then for a frame `keep` accepts.
 fn first_frame(
@@ -44,13 +50,13 @@ fn first_frame(
     mut keep: impl FnMut(&goofi_core::Data) -> bool,
 ) -> goofi_core::Data {
     g.until(&format!("{ty} to start"), |g| {
-        if let Some(e) = g.error(node) {
+        if let Some(e) = g.error(node).filter(|e| !waiting(e)) {
             panic!("{ty} failed to start: {e}");
         }
         (g.stage(node) == "ready").then_some(())
     });
     g.until(&format!("{ty} to answer once it is ready"), |g| {
-        if let Some(e) = g.error(node) {
+        if let Some(e) = g.error(node).filter(|e| !waiting(e)) {
             panic!("{ty} failed instead of answering: {e}");
         }
         probe.latest().filter(&mut keep)
@@ -289,4 +295,92 @@ fn the_eeg_bundle_plays_a_recording_reads_its_spectrum_and_receives_a_live_strea
     let n = played.count();
     g.until("the playback to resume", |_| (played.count() > n).then_some(()));
 
+}
+
+#[test]
+fn the_biotuner_bundle_reads_a_scale_out_of_a_signal_and_measures_it() {
+    // An 8 Hz sine is a signal whose spectrum has ONE answer, so every stage after the extraction
+    // is judged against a peak that is known rather than against whatever the noise gave.
+    let _py = require_python();
+    let g = Goofi::new();
+    let osc = g.add("LFO");
+    let buf = g.add("Buffer");
+    g.set_param(osc, "output", "sfreq", 256.0);
+    g.set_param(osc, "output", "mode", "block");
+    g.set_param(osc, "lfo", "frequency", 8.0);
+    g.set_param(buf, "buffer", "size", 256);
+    g.link(osc, "out", buf, "input");
+    let window = g.probe(buf, "out");
+    g.until("a full window", |_| window.latest().filter(|d| shape(d) == vec![256]));
+
+    // One scan, as a folder is taken: six imports of biotuner in parallel rather than in turn.
+    let files = ["peaks.py", "harmonicity.py", "tuning.py", "tuning_reduction.py", "tuning_matrix.py", "timbre_controls.py"];
+    let types = install_bundled_all(&g, "biotuner", &files);
+    let [peaks_ty, harm_ty, tuning_ty, reduce_ty, matrix_ty, timbre_ty]: [String; 6] =
+        types.try_into().expect("one type per file");
+
+    // The extraction stands alone, and everything below reads ITS answer rather than the signal.
+    let peaks = g.add(&peaks_ty);
+    let found = g.probe(peaks, "peaks");
+    g.link(buf, "out", peaks, "input");
+    let d = first_frame(&g, &peaks_ty, peaks, &found, |d| shape(d) == vec![5]);
+    let hz = f32s(&d);
+    // One `precision` step of the frequency the LFO was set to, which is the resolution the
+    // search was asked for; the peaks beside it are the window's own edges.
+    // Half a `precision` step of the frequency the LFO was set to: the search grid is 0.5 Hz and
+    // 8 Hz over a 256-sample window at 256 Hz is a whole number of cycles, so the peak is exact.
+    // The peaks beside it are the window's own edges, and a looser bound would accept one of those.
+    assert!(
+        hz.iter().any(|f| (f - 8.0).abs() <= 0.25),
+        "the 8 Hz sine is one of the peaks: {hz:?}",
+    );
+    assert!(
+        hz.iter().all(|f| f.is_nan() || (2.0..=30.0).contains(f)),
+        "a peak is inside the search band, or it is the NaN padding: {hz:?}",
+    );
+
+    let harm = g.add(&harm_ty);
+    let harmsim = g.probe(harm, "harmsim");
+    g.link(peaks, "peaks", harm, "input");
+
+    let tuning = g.add(&tuning_ty);
+    let scale = g.probe(tuning, "tuning");
+    g.link(peaks, "peaks", tuning, "input");
+    g.link(peaks, "amps", tuning, "amps");
+
+    let reduced = g.add(&reduce_ty);
+    let mode = g.probe(reduced, "reduced");
+    let matrix = g.add(&matrix_ty);
+    let metric = g.probe(matrix, "metric");
+    let timbre = g.add(&timbre_ty);
+    let brightness = g.probe(timbre, "brightness");
+    for node in [reduced, matrix, timbre] {
+        g.link(tuning, "tuning", node, "input");
+    }
+
+    let d = first_frame(&g, &harm_ty, harm, &harmsim, |d| !f32s(d).is_empty());
+    assert!(f32s(&d).iter().all(|x| x.is_finite() && *x >= 0.0), "harmonic similarity is a score: {:?}", f32s(&d));
+
+    // A scale is ratios inside ONE octave: that is what folding the peaks over the lowest means.
+    let d = first_frame(&g, &tuning_ty, tuning, &scale, |d| !f32s(d).is_empty());
+    let ratios = f32s(&d);
+    assert!(
+        ratios.iter().all(|r| r.is_nan() || (1.0..=2.0).contains(r)),
+        "every degree sits in the octave, or it is padding: {ratios:?}",
+    );
+
+    let d = first_frame(&g, &reduce_ty, reduced, &mode, |d| shape(d) == vec![5]);
+    assert!(f32s(&d).iter().all(|r| r.is_nan() || (1.0..=2.0).contains(r)), "the mode is a subset of the scale");
+    let d = first_frame(&g, &matrix_ty, matrix, &metric, |d| !f32s(d).is_empty());
+    assert!(f32s(&d).iter().all(|x| x.is_finite()), "the matrix answers one number for the whole scale");
+    let d = first_frame(&g, &timbre_ty, timbre, &brightness, |d| !f32s(d).is_empty());
+    assert!(
+        f32s(&d).iter().all(|x| (0.0..=1.0).contains(x)),
+        "brightness is a plain scalar in a plain range, which is what binding it to a plugin needs: {:?}",
+        f32s(&d),
+    );
+
+    for (ty, node) in [(&peaks_ty, peaks), (&harm_ty, harm), (&tuning_ty, tuning)] {
+        assert!(g.error(node).is_none(), "{ty} carries no error: {:?}", g.error(node));
+    }
 }
