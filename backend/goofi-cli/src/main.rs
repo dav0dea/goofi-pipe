@@ -99,7 +99,7 @@ fn main() {
         Some(first) if first.starts_with('-') => argv,
         Some(_) => std::process::exit(client_main(argv)),
     };
-    let (windows, ui) = match goofi_audio::ui::Loop::open() {
+    let (windows, ui) = match goofi_window::Loop::open() {
         Ok((windows, ui)) => (Some(windows), Some(ui)),
         Err(_) => (None, None),
     };
@@ -121,7 +121,7 @@ fn main() {
     }
 }
 
-async fn serve_main(rest: Vec<String>, ui: Option<goofi_audio::ui::Ui>) {
+async fn serve_main(rest: Vec<String>, ui: Option<goofi_window::Ui>) {
     let mut cli = match parse_args(rest.into_iter()) {
         Ok(cli) => cli,
         Err(e) => {
@@ -157,7 +157,7 @@ async fn serve_main(rest: Vec<String>, ui: Option<goofi_audio::ui::Ui>) {
         }
     };
     let mode = goofi_bridge::Mode { headless: cli.headless, demo: cli.demo };
-    let state = AppState::new(mode, goofi_bridge::Clock::Device);
+    let state = AppState::new(mode, goofi_bridge::Clock::Device, goofi_bridge::RenderClock::Timer);
     std::process::exit(run(cli, python, state, shutdown_signal(), ui).await);
 }
 
@@ -415,7 +415,7 @@ async fn run(
     subproc_python: String,
     mut state: AppState,
     shutdown: impl Future<Output = ()>,
-    ui: Option<goofi_audio::ui::Ui>,
+    ui: Option<goofi_window::Ui>,
 ) -> i32 {
     // Before ANY use of the embedded interpreter.
     point_embedded_python_at_its_venv();
@@ -431,13 +431,19 @@ async fn run(
     // Handed to the engine before anything scans, so the boot scan and every rescan share it.
     goofi_bridge::signal_engine(&mut state.graph.lock().unwrap())
         .set_python(goofi_signal::Python::new(subproc_python.clone()));
-    if !demo {
+    {
         let mut g = state.graph.lock().unwrap();
-        let audio = goofi_bridge::audio_engine(&mut g);
-        if let Ok(own) = std::env::current_exe() {
-            audio.set_vst3(own, goofi_audio::vst3::platform_dirs());
+        if !demo {
+            let audio = goofi_bridge::audio_engine(&mut g);
+            if let Ok(own) = std::env::current_exe() {
+                audio.set_vst3(own, goofi_audio::vst3::platform_dirs());
+            }
+            audio.set_ui(ui.clone());
         }
-        audio.set_ui(ui);
+        // One screen for both engines: a plugin's editor and a `Window` node are the same thread.
+        if let Some(graphics) = goofi_bridge::try_graphics_engine(&mut g) {
+            graphics.set_ui(ui);
+        }
     }
     boot_scan(&state);
 
@@ -511,7 +517,7 @@ async fn run(
     };
     // The order is load-bearing: the agents leave before their workspace goes, and a node's
     // thread releases its shared memory before the mount goes.
-    state.harnesses.reap_all(std::time::Duration::from_secs(5));
+    state.harnesses.reap_all();
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code
@@ -687,7 +693,7 @@ fn boot_scan(state: &AppState) {
         let patch = state.mount();
         (goofi_bridge::rescan(state, &mut g, &patch).1, state.roots.clone())
     };
-    let (mut n_native, mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32, 0u32);
+    let (mut n_native, mut n_in, mut n_sub, mut n_shader, mut n_bad) = (0u32, 0u32, 0u32, 0u32, 0u32);
     for t in found {
         match t.outcome {
             Scanned::Registered { isolation, replaced } => {
@@ -696,6 +702,7 @@ fn boot_scan(state: &AppState) {
                     Isolation::Native => n_native += 1,
                     Isolation::InProcess => n_in += 1,
                     Isolation::Subprocess => n_sub += 1,
+                    Isolation::Shader => n_shader += 1,
                 }
             }
             Scanned::Unavailable(reason) => {
@@ -707,7 +714,7 @@ fn boot_scan(state: &AppState) {
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
     let from = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ");
     println!(
-        "  {n_native} native + {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
+        "  {n_native} native + {n_in} in-process + {n_sub} subprocess + {n_shader} shader node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
     );
 }
 
@@ -730,7 +737,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dir);
             std::env::set_var("GOOFI_HOME", dir);
         });
-        AppState::new(goofi_bridge::Mode::default(), goofi_bridge::Clock::External)
+        AppState::new(goofi_bridge::Mode::default(), goofi_bridge::Clock::External, goofi_bridge::RenderClock::External)
     }
 
     #[test]

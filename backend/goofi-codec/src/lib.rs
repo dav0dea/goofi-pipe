@@ -5,7 +5,7 @@
 
 pub mod liveness;
 
-use goofi_core::{ArrayStore, Coord, Data, MetaValue, Value};
+use goofi_core::{Coord, Data, MetaValue, Value};
 use rmpv::Value as Mp;
 
 pub const MAGIC: &[u8; 4] = b"GOOF";
@@ -14,24 +14,35 @@ pub const HEADER_SIZE: usize = 14;
 
 /// Encode a `Data` into a fresh GOOF v2 frame.
 pub fn encode(d: &Data) -> Vec<u8> {
-    let meta_bytes = pack_meta(d);
     let mut body = Vec::new();
     write_body(d, &mut body);
+    frame(d.dtype_tag(), pack_meta(d), body)
+}
 
-    let mut out = Vec::with_capacity(HEADER_SIZE + meta_bytes.len() + body.len());
+/// An 8-bit array frame for the browser hop, where `Data` itself stays f32: the same header and
+/// the same meta, with a `|u1` body.
+pub fn encode_u8(shape: &[usize], texels: &[u8], meta: &goofi_core::Meta) -> Vec<u8> {
+    let mut body = Vec::new();
+    array_body(b"|u1", shape, texels, &mut body);
+    frame(0, pack_array_meta(meta, shape, "uint8"), body)
+}
+
+/// The header every frame carries, around a packed meta and a body.
+fn frame(dtype_tag: u8, meta: Vec<u8>, body: Vec<u8>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_SIZE + meta.len() + body.len());
     out.extend_from_slice(MAGIC);
     out.push(VERSION);
-    out.push(d.dtype_tag());
-    out.extend_from_slice(&(meta_bytes.len() as u32).to_le_bytes());
+    out.push(dtype_tag);
+    out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    out.extend_from_slice(&meta_bytes);
+    out.extend_from_slice(&meta);
     out.extend_from_slice(&body);
     out
 }
 
 fn write_body(d: &Data, out: &mut Vec<u8>) {
     match d.value() {
-        Value::Array(store) => encode_array_body(store, out),
+        Value::Array(store) => array_body(b"<f4", store.shape(), store.as_bytes(), out),
         Value::Str(s) => out.extend_from_slice(s.as_bytes()),
         Value::Table(map) => {
             out.extend_from_slice(&(map.len() as u32).to_le_bytes());
@@ -48,16 +59,14 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
 }
 
 /// `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`.
-fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
-    let dtype_str: &[u8] = b"<f4";
-    let shape = store.shape();
+fn array_body(dtype_str: &[u8], shape: &[usize], samples: &[u8], out: &mut Vec<u8>) {
     out.push(shape.len() as u8);
     out.push(dtype_str.len() as u8);
     out.extend_from_slice(dtype_str);
     for &dim in shape {
         out.extend_from_slice(&(dim as u32).to_le_bytes());
     }
-    out.extend_from_slice(store.as_bytes());
+    out.extend_from_slice(samples);
 }
 
 /// Meta names the wire derives from the `Data` itself, so they are never taken from `Meta`.
@@ -66,32 +75,44 @@ const DERIVED_KEYS: [&str; 2] = ["shape", "dtype"];
 /// Serialize a `Data`'s `Meta` to the msgpack map used in a GOOF frame.
 fn pack_meta(d: &Data) -> Vec<u8> {
     let meta = d.meta();
-    let mut entries: Vec<(Mp, Mp)> = Vec::new();
-
-    // `channels` and the derived names are projected below; dropping them here is what keeps
-    // the map from carrying one key twice.
-    for (k, v) in meta.iter() {
-        if k == goofi_core::META_CHANNELS || DERIVED_KEYS.contains(&k.as_str()) || matches!(v, MetaValue::Null) {
-            continue;
-        }
-        entries.push((Mp::from(k.as_str()), mv_to_mp(v)));
-    }
-
     match d.value() {
-        Value::Array(store) => {
-            let shape: Vec<Mp> = store.shape().iter().map(|&d| Mp::from(d as u64)).collect();
-            entries.push((Mp::from("shape"), Mp::Array(shape)));
-            entries.push((Mp::from("dtype"), Mp::from("float32")));
-            entries.push((Mp::from("channels"), channels_to_mp(meta.channels())));
-        }
+        Value::Array(store) => pack_array_meta(meta, store.shape(), "float32"),
         Value::Str(_) => {
+            let mut entries = carried(meta);
             entries.push((Mp::from("dtype"), Mp::from("str")));
+            pack(entries)
         }
         Value::Table(_) => {
+            let mut entries = carried(meta);
             entries.push((Mp::from("dtype"), Mp::from("table")));
+            pack(entries)
         }
     }
+}
 
+/// An array frame's meta: what the `Meta` carries, plus the shape, dtype and axes the wire
+/// derives. Shared with [`encode_u8`], whose frame has no `Data` to read them off.
+fn pack_array_meta(meta: &goofi_core::Meta, shape: &[usize], dtype: &str) -> Vec<u8> {
+    let mut entries = carried(meta);
+    let dims: Vec<Mp> = shape.iter().map(|&d| Mp::from(d as u64)).collect();
+    entries.push((Mp::from("shape"), Mp::Array(dims)));
+    entries.push((Mp::from("dtype"), Mp::from(dtype)));
+    entries.push((Mp::from("channels"), channels_to_mp(meta.channels())));
+    pack(entries)
+}
+
+/// Every key the `Meta` itself carries. `channels` and the derived names are projected beside
+/// them; dropping them here is what keeps the map from carrying one key twice.
+fn carried(meta: &goofi_core::Meta) -> Vec<(Mp, Mp)> {
+    meta.iter()
+        .filter(|(k, v)| {
+            *k != goofi_core::META_CHANNELS && !DERIVED_KEYS.contains(&k.as_str()) && !matches!(v, MetaValue::Null)
+        })
+        .map(|(k, v)| (Mp::from(k.as_str()), mv_to_mp(v)))
+        .collect()
+}
+
+fn pack(entries: Vec<(Mp, Mp)>) -> Vec<u8> {
     let mut buf = Vec::new();
     rmpv::encode::write_value(&mut buf, &Mp::Map(entries)).expect("msgpack meta encode");
     buf

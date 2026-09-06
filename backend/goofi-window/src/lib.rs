@@ -2,6 +2,9 @@
 //! entry point hands it — the process main thread when goofi serves. A plugin is loaded, its
 //! controller made and its editor pumped HERE, because a JUCE plugin takes the thread that loaded
 //! it for its message thread and aborts on any other.
+//!
+//! Its own crate, under both engines rather than inside either: an audio plugin's editor and a
+//! graphics node's window are one screen, and a process has one main thread to give them.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +45,20 @@ trait Screen {
     fn destroy(&mut self, id: Id);
     /// Park until a window event, a wake, a readable plugin descriptor or `until`.
     fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped;
+    /// Draw one frame into the window, one texel to one pixel from the top-left. `rgba` is
+    /// `w * h * 4` bytes, row 0 the top.
+    fn present(&mut self, _id: Id, _size: (u32, u32), _rgba: &[u8]) {}
+}
+
+/// RGBA into the BGRA byte order an X11 TrueColor visual and a Win32 DIB both read on a
+/// little-endian machine. Reuses `out`, because this runs once a frame. macOS takes RGBA as it is.
+#[cfg(not(target_os = "macos"))]
+fn bgra_into(rgba: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(rgba.len());
+    for p in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+    }
 }
 
 /// Wakes the pump from any thread.
@@ -113,6 +130,7 @@ impl Loop {
             screen,
             runloop: Rc::new(RefCell::new(Runloop::default())),
             on_close: HashMap::new(),
+            presents: HashMap::new(),
             dead: false,
             stopped: false,
         };
@@ -180,6 +198,9 @@ pub struct Host {
     screen: Box<dyn Screen>,
     runloop: Rc<RefCell<Runloop>>,
     on_close: HashMap<Id, OnClose>,
+    /// Frames drawn per window. Counted HERE rather than per screen, so a headless run still
+    /// proves the seam a display would.
+    presents: HashMap<Id, u64>,
     dead: bool,
     stopped: bool,
 }
@@ -196,6 +217,12 @@ impl Window {
     /// right after.
     pub fn request_resize(&self, size: (u32, u32)) {
         RESIZES.with(|r| r.borrow_mut().push((self.id, size)));
+    }
+
+    /// The window's name on the loop. A `Window` holds a native pointer and so stays on this
+    /// thread; the id is what another thread addresses it by.
+    pub fn id(&self) -> Id {
+        self.id
     }
 }
 
@@ -217,9 +244,29 @@ impl Host {
         }
     }
 
-    pub fn close_window(&mut self, window: Window) {
-        self.on_close.remove(&window.id);
-        self.screen.destroy(window.id);
+    pub fn close_window(&mut self, id: Id) {
+        self.on_close.remove(&id);
+        self.presents.remove(&id);
+        self.screen.destroy(id);
+    }
+
+    /// Draw one frame into a window, at the size it was opened or last resized to.
+    pub fn present(&mut self, id: Id, size: (u32, u32), rgba: &[u8]) {
+        if self.dead || rgba.len() < size.0 as usize * size.1 as usize * 4 {
+            return;
+        }
+        self.screen.present(id, size, rgba);
+        *self.presents.entry(id).or_default() += 1;
+    }
+
+    /// How many frames a window has been given.
+    pub fn presents(&self, id: Id) -> u64 {
+        self.presents.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The window is always its frame's own size, so a frame that changed size resizes it.
+    pub fn resize_window(&mut self, id: Id, size: (u32, u32)) {
+        self.screen.resize(id, size);
     }
 
     /// The tables a plugin registers its descriptors and timers in.

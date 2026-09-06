@@ -7,9 +7,10 @@ static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Control],
-    doc: "The in-order crossing: a `[C, T]` signal frame with `sfreq` enters as `C` audio channels, \
-          resampled to the rate. A frame with no `sfreq` enters one sample per sample, so a control \
-          value is held until the next.",
+    doc: "A signal frame crossing into the audio plane.\n\
+          A `[C, T]` frame with `sfreq` enters as `C` audio channels, resampled to the rate. A \
+          frame with no `sfreq` enters one sample per sample, so a control value is held until \
+          the next.",
     inputs: INS,
     outputs: OUTS,
     params: &[],

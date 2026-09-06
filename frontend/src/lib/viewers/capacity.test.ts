@@ -25,7 +25,8 @@ describe('viewSpecForKind', () => {
 			reduce: [
 				{ dim: 0, max: 720, method: 'area' },
 				{ dim: 1, max: 1280, method: 'area' }
-			]
+			],
+			depth: 'u8'
 		});
 	});
 

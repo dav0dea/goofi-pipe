@@ -20,7 +20,9 @@ goofi_audio_sdk::params! {
         name: "voices",
         spec: ParamSpec::Int { default: 4, min: 1, max: MAX_CHANNELS as i64 },
         expression: None,
-        doc: Some("one channel per voice on every output; notes take voices round-robin"),
+        doc: Some(
+            "one channel per voice on every output; notes take voices round-robin. The bundled              `voices` output needs two channels per voice, so it carries the first 8 — past that,              wire gate, pitch and velocity separately",
+        ),
     },
 }
 
@@ -28,12 +30,14 @@ static OUTS: &[OutputDecl] = &[
     OutputDecl { name: "gate", kind: SlotType::Audio },
     OutputDecl { name: "pitch", kind: SlotType::Audio },
     OutputDecl { name: "velocity", kind: SlotType::Audio },
+    OutputDecl { name: "voices", kind: SlotType::Audio },
 ];
 
 pub static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Input, Tag::Midi],
-    doc: "A MIDI port as signals: per voice a gate, a pitch in volts per octave (C4 is 0) and a \
-          velocity in [0, 1]. A note lands at the start of the next block.",
+    doc: "A MIDI port as signals.\n\
+          Per voice a gate, a pitch in volts per octave (C4 is 0) and a velocity in [0, 1]. A \
+          note lands at the start of the next block.",
     inputs: &[],
     outputs: OUTS,
     params: PARAMS,
@@ -45,15 +49,21 @@ pub struct Note {
     pub on: bool,
     pub note: u8,
     pub velocity: u8,
+    /// The sustain pedal moved rather than a key: `on` is the pedal's new state.
+    pub pedal: bool,
 }
 
 impl Note {
     /// The note a raw MIDI message carries, if it is one: a note-on with zero velocity is off.
+    /// The sustain pedal rides here too — it decides when a note-off is obeyed, so it has to be
+    /// in the same order as the notes it holds.
     pub fn parse(bytes: &[u8]) -> Option<Note> {
         let [status, note, velocity, ..] = *bytes else { return None };
         match status & 0xF0 {
-            0x90 if velocity > 0 => Some(Note { on: true, note, velocity }),
-            0x90 | 0x80 => Some(Note { on: false, note, velocity }),
+            0x90 if velocity > 0 => Some(Note { on: true, note, velocity, pedal: false }),
+            0x90 | 0x80 => Some(Note { on: false, note, velocity, pedal: false }),
+            // CC 64 is sustain, and by the spec anything from 64 up is DOWN.
+            0xB0 if note == 64 => Some(Note { on: velocity >= 64, note, velocity, pedal: true }),
             _ => None,
         }
     }
@@ -64,41 +74,70 @@ struct Voice {
     gate: bool,
     note: u8,
     velocity: f32,
+    /// The key is up and only the pedal is still holding this voice down.
+    held_by_pedal: bool,
 }
 
 pub struct MidiIn {
     notes: Option<rtrb::Consumer<Note>>,
     voices: [Voice; MAX_CHANNELS as usize],
     next: usize,
+    pedal: bool,
 }
 
 impl MidiIn {
     pub fn new(birth: Birth) -> MidiIn {
-        MidiIn { notes: birth.notes, voices: [Voice::default(); MAX_CHANNELS as usize], next: 0 }
+        MidiIn { notes: birth.notes, voices: [Voice::default(); MAX_CHANNELS as usize], next: 0, pedal: false }
     }
 
     /// A note-on takes the next free voice round-robin — or the voice already holding that note;
     /// a note-off frees its voice wherever it is, past a shrunk count included.
     fn land(&mut self, n: Note, voices: usize) {
+        // Lifting the pedal is what finally releases every key already let go under it.
+        if n.pedal {
+            self.pedal = n.on;
+            if !n.on {
+                for v in self.voices.iter_mut().filter(|v| v.held_by_pedal) {
+                    v.gate = false;
+                    v.held_by_pedal = false;
+                }
+            }
+            return;
+        }
         let held = self.voices.iter_mut().find(|v| v.gate && v.note == n.note);
         match (n.on, held) {
-            (true, Some(voice)) => voice.velocity = f32::from(n.velocity) / 127.0,
+            // Retaking a key the pedal still holds is a fresh press, so it stops being the
+            // pedal's — otherwise lifting the pedal would cut a note being played.
+            (true, Some(voice)) => {
+                voice.velocity = f32::from(n.velocity) / 127.0;
+                voice.held_by_pedal = false;
+            }
             (true, None) => {
                 let free = (0..voices).map(|k| (self.next + k) % voices).find(|v| !self.voices[*v].gate);
                 let v = free.unwrap_or(self.next % voices);
-                self.voices[v] = Voice { gate: true, note: n.note, velocity: f32::from(n.velocity) / 127.0 };
+                self.voices[v] =
+                    Voice { gate: true, note: n.note, velocity: f32::from(n.velocity) / 127.0, held_by_pedal: false };
                 self.next = (v + 1) % voices;
             }
-            (false, Some(voice)) => voice.gate = false,
+            (false, Some(voice)) => {
+                if self.pedal {
+                    voice.held_by_pedal = true;
+                } else {
+                    voice.gate = false;
+                }
+            }
             (false, None) => {}
         }
     }
 }
 
 impl AudioNode for MidiIn {
+    /// The three plain outputs are one channel per voice; `voices` is pitches then velocities, so
+    /// a reader halves the count. The gate is not carried because MIDI does not carry one either:
+    /// a velocity of zero IS the note off, which is what buys the eighth voice.
     fn channels(&self, _ins: &[u16], params: &[f64], outs: usize) -> Vec<u16> {
-        let voices = params.get(P::VOICES).copied().unwrap_or(1.0) as u16;
-        vec![voices.clamp(1, MAX_CHANNELS); outs]
+        let voices = (params.get(P::VOICES).copied().unwrap_or(1.0) as u16).clamp(1, MAX_CHANNELS);
+        (0..outs).map(|i| if i == 3 { (voices * 2).min(MAX_CHANNELS) } else { voices }).collect()
     }
 
     fn prepare(&mut self, _rate: f64) {}
@@ -108,11 +147,21 @@ impl AudioNode for MidiIn {
         while let Some(n) = self.notes.as_mut().and_then(|r| r.pop().ok()) {
             self.land(n, voices);
         }
+        // The bundle is capped like any other port, so a voice count whose pair would not fit
+        // carries as many whole voices as it can rather than a torn last one.
+        let bundled = (b.outs[3].channels() as usize / 2).min(voices);
         for c in 0..voices {
             let voice = self.voices[c];
-            b.outs[0].chan_mut(c).fill(if voice.gate { 1.0 } else { 0.0 });
-            b.outs[1].chan_mut(c).fill((f32::from(voice.note) - 60.0) / 12.0);
-            b.outs[2].chan_mut(c).fill(voice.velocity);
+            let (gate, pitch, vel) =
+                (if voice.gate { 1.0 } else { 0.0 }, (f32::from(voice.note) - 60.0) / 12.0, voice.velocity);
+            b.outs[0].chan_mut(c).fill(gate);
+            b.outs[1].chan_mut(c).fill(pitch);
+            b.outs[2].chan_mut(c).fill(vel);
+            if c < bundled {
+                b.outs[3].chan_mut(c).fill(pitch);
+                // A silent voice carries zero, which is the note-off the other side reads.
+                b.outs[3].chan_mut(bundled + c).fill(if voice.gate { vel.max(f32::MIN_POSITIVE) } else { 0.0 });
+            }
         }
     }
 }

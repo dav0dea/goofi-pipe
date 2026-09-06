@@ -1,107 +1,137 @@
 {
-  "version": 2,
-  "entries": [
-    {
-      "name": "array_f32_1d",
-      "hex": "474f4f460200210000001500000083a573686170659103a56474797065a7666c6f61743332a86368616e6e656c738001033c6634030000000000803f00002040000040c0",
-      "decoded": {
-        "dtype": "ARRAY",
-        "arrayDtype": "<f4",
-        "shape": [
-          3
-        ],
-        "values": [
-          1.0,
-          2.5,
-          -3.0
-        ],
-        "meta": {
-          "shape": [
-            3
-          ],
-          "dtype": "float32",
-          "channels": {}
-        }
-      }
-    },
-    {
-      "name": "array_with_channels",
-      "hex": "474f4f460200330000001900000083a86368616e6e656c7381a464696d3094a2467aa2437aa2507aa24f7aa573686170659104a56474797065a7666c6f6174333201033c663404000000000020410000a0410000f04100002042",
-      "decoded": {
-        "dtype": "ARRAY",
-        "arrayDtype": "<f4",
-        "shape": [
-          4
-        ],
-        "values": [
-          10.0,
-          20.0,
-          30.0,
-          40.0
-        ],
-        "meta": {
-          "channels": {
-            "dim0": [
-              "Fz",
-              "Cz",
-              "Pz",
-              "Oz"
-            ]
-          },
-          "shape": [
-            4
-          ],
-          "dtype": "float32"
-        }
-      }
-    },
-    {
-      "name": "string_unicode",
-      "hex": "474f4f4602010b0000001000000081a56474797065a373747268c3a96c6c6f20c2b720e4b896e7958c",
-      "decoded": {
-        "dtype": "STRING",
-        "value": "h\u00e9llo \u00b7 \u4e16\u754c",
-        "meta": {
-          "dtype": "str"
-        }
-      }
-    },
-    {
-      "name": "table_nested",
-      "hex": "474f4f4602020d0000007300000081a56474797065a57461626c6502000000030073696740000000474f4f460200210000001100000083a573686170659102a56474797065a7666c6f61743332a86368616e6e656c738001033c6634020000000000803f0000004005006c6162656c1b000000474f4f4602010b0000000200000081a56474797065a37374726f6b",
-      "decoded": {
-        "dtype": "TABLE",
-        "entries": {
-          "sig": {
-            "dtype": "ARRAY",
-            "arrayDtype": "<f4",
-            "shape": [
-              2
-            ],
-            "values": [
-              1.0,
-              2.0
-            ],
-            "meta": {
-              "shape": [
-                2
-              ],
-              "dtype": "float32",
-              "channels": {}
-            }
-          },
-          "label": {
-            "dtype": "STRING",
-            "value": "ok",
-            "meta": {
-              "dtype": "str"
-            }
-          }
-        },
-        "meta": {
-          "dtype": "table"
-        }
-      }
+ "version": 2,
+ "entries": [
+  {
+   "name": "array_f32_1d",
+   "hex": "474f4f460200210000001500000083a573686170659103a56474797065a7666c6f61743332a86368616e6e656c738001033c6634030000000000803f00002040000040c0",
+   "decoded": {
+    "dtype": "ARRAY",
+    "arrayDtype": "<f4",
+    "shape": [
+     3
+    ],
+    "values": [
+     1.0,
+     2.5,
+     -3.0
+    ],
+    "meta": {
+     "shape": [
+      3
+     ],
+     "dtype": "float32",
+     "channels": {}
     }
-  ]
+   }
+  },
+  {
+   "name": "array_with_channels",
+   "hex": "474f4f460200330000001900000083a86368616e6e656c7381a464696d3094a2467aa2437aa2507aa24f7aa573686170659104a56474797065a7666c6f6174333201033c663404000000000020410000a0410000f04100002042",
+   "decoded": {
+    "dtype": "ARRAY",
+    "arrayDtype": "<f4",
+    "shape": [
+     4
+    ],
+    "values": [
+     10.0,
+     20.0,
+     30.0,
+     40.0
+    ],
+    "meta": {
+     "channels": {
+      "dim0": [
+       "Fz",
+       "Cz",
+       "Pz",
+       "Oz"
+      ]
+     },
+     "shape": [
+      4
+     ],
+     "dtype": "float32"
+    }
+   }
+  },
+  {
+   "name": "string_unicode",
+   "hex": "474f4f4602010b0000001000000081a56474797065a373747268c3a96c6c6f20c2b720e4b896e7958c",
+   "decoded": {
+    "dtype": "STRING",
+    "value": "h\u00e9llo \u00b7 \u4e16\u754c",
+    "meta": {
+     "dtype": "str"
+    }
+   }
+  },
+  {
+   "name": "table_nested",
+   "hex": "474f4f4602020d0000007300000081a56474797065a57461626c6502000000030073696740000000474f4f460200210000001100000083a573686170659102a56474797065a7666c6f61743332a86368616e6e656c738001033c6634020000000000803f0000004005006c6162656c1b000000474f4f4602010b0000000200000081a56474797065a37374726f6b",
+   "decoded": {
+    "dtype": "TABLE",
+    "entries": {
+     "sig": {
+      "dtype": "ARRAY",
+      "arrayDtype": "<f4",
+      "shape": [
+       2
+      ],
+      "values": [
+       1.0,
+       2.0
+      ],
+      "meta": {
+       "shape": [
+        2
+       ],
+       "dtype": "float32",
+       "channels": {}
+      }
+     },
+     "label": {
+      "dtype": "STRING",
+      "value": "ok",
+      "meta": {
+       "dtype": "str"
+      }
+     }
+    },
+    "meta": {
+     "dtype": "table"
+    }
+   }
+  },
+  {
+   "name": "array_u8_image",
+   "hex": "474f4f460200210000001700000083a5736861706593010203a56474797065a575696e7438a86368616e6e656c738003037c753101000000020000000300000000ff80ff0080",
+   "decoded": {
+    "dtype": "ARRAY",
+    "arrayDtype": "|u1",
+    "shape": [
+     1,
+     2,
+     3
+    ],
+    "values": [
+     0,
+     255,
+     128,
+     255,
+     0,
+     128
+    ],
+    "meta": {
+     "shape": [
+      1,
+      2,
+      3
+     ],
+     "dtype": "uint8",
+     "channels": {}
+    }
+   }
+  }
+ ]
 }

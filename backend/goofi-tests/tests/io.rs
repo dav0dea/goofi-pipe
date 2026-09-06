@@ -48,7 +48,7 @@ fn a_patch_publishes_what_it_made_and_reads_it_back_off_the_machine() {
 
     // OSC: a table goes out as one message per leaf, and the address is the path back into it.
     let port = 40_000 + (mine % 20_000) as i64;
-    let level = g.add("Constant");
+    let level = g.add("signal:Constant");
     g.set_param(level, "constant", "value", 0.25);
     let name = g.add("Text");
     g.set_param(name, "text", "value", "resting");

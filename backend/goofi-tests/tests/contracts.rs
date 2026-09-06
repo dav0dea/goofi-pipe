@@ -102,10 +102,27 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
         "the client declares protocol {declared} and this manager speaks {} — bump both together",
         goofi_bridge::schemas::PROTOCOL_VERSION
     );
+
+    // The other pair declared by hand on both sides: a tier the client's union does not name
+    // types as `never`, and its health pill silently draws nothing.
+    let union = src
+        .split("export type NodeRuntime =")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_else(|| panic!("no NodeRuntime in {}", path.display()));
+    let named: Vec<&str> = union.split('|').map(|w| w.trim().trim_matches('\'')).collect();
+    let ours: Vec<&str> = goofi_node::Isolation::ALL.iter().map(|i| i.wire()).collect();
+    assert_eq!(named, ours, "the client's tiers and this manager's — declare a new one in both");
 }
 
 #[test]
 fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for() {
+    // A tier crosses its shared cell as a byte, and must come back as itself.
+    for tier in goofi_node::Isolation::ALL {
+        let cell = goofi_node::IsolationCell::new(tier);
+        assert_eq!(cell.get().wire(), tier.wire(), "`{}` does not survive its cell", tier.wire());
+    }
+
     // Each op that takes a vocabulary word enumerates the set in its own description, by expansion.
     let doc = find("layout panel edit").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
@@ -180,7 +197,7 @@ static PULSE_PARAMS: &[ParamDecl] = &[ParamDecl {
 static PULSING: NodeManifest = manifest("PulsingThing", &[], PULSE_PARAMS, true);
 
 fn row(g: &Goofi, type_name: &str) -> Value {
-    g.call("library list", j!({}))["types"].as_array().expect("a palette").iter()
+    g.call("library list", j!({ "full": true }))["types"].as_array().expect("a palette").iter()
         .find(|v| v["type"] == type_name)
         .unwrap_or_else(|| panic!("{type_name} is in the palette")).clone()
 }
@@ -257,8 +274,8 @@ async fn the_palette_rides_the_snapshot_and_the_graph_never_does() {
     g.ready(b);
 
     let (_c, hello) = Client::connect(&g.serve().await).await;
-    assert_eq!(hello["node_types"], g.call("library list", j!({}))["types"],
-               "hello embeds the same palette `library list` answers");
+    assert_eq!(hello["node_types"], g.call("library list", j!({ "full": true }))["types"],
+               "hello embeds the same palette `library list --full` answers");
     for dead in ["nodes", "links", "instances"] {
         assert!(hello.get(dead).is_none(), "`{dead}` is the doc's job, not the snapshot's");
     }
@@ -383,26 +400,45 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
     // client draws what it is given.
     let g = Goofi::new();
     // The lock is DROPPED before the first op: `library list` takes the same one.
-    let declared: Vec<(String, Vec<&'static str>)> = {
+    let declared: Vec<(String, Vec<String>)> = {
         let graph = g.state.graph.lock().unwrap();
         graph.library_entries().into_iter()
             .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
             .map(|(engine, l)| {
-                let mut groups: Vec<&'static str> = Vec::new();
-                for d in l.manifest.params {
-                    if d.group != "common" && !groups.contains(&d.group) {
-                        groups.push(d.group);
+                let mut universal: Vec<String> = Vec::new();
+                for d in graph.universal_decls(engine, l.manifest) {
+                    if !universal.contains(&d.group.to_string()) {
+                        universal.push(d.group.to_string());
                     }
                 }
+                let mut groups: Vec<String> = Vec::new();
+                for d in l.manifest.params {
+                    if !universal.contains(&d.group.to_string()) && !groups.contains(&d.group.to_string()) {
+                        groups.push(d.group.to_string());
+                    }
+                }
+                groups.extend(universal);
                 (goofi_node::qualify(engine, l.manifest.type_name), groups)
             })
             .collect()
     };
     assert!(!declared.is_empty(), "a fresh goofi offers a library");
-    let palette = g.call("library list", j!({}))["types"].as_array().expect("a palette").clone();
+    let palette = g.call("library list", j!({ "full": true }))["types"].as_array().expect("a palette").clone();
+    // The index is what a chooser reads, so what it shows of a type is the doc's FIRST LINE: a
+    // nutshell, short enough that seventy-five of them are a list and not a manual.
+    let index = g.call("library list", j!({}))["types"].as_array().expect("an index").clone();
     for (ty, groups) in declared {
         let row = palette.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the palette"));
         assert!(row.get("category").is_none(), "{ty}: category is gone");
+        let doc = row["doc"].as_str().unwrap_or_else(|| panic!("{ty}: a doc"));
+        let nutshell = doc.split('\n').next().unwrap_or_default();
+        assert!(!nutshell.is_empty() && nutshell.len() <= 80,
+                "{ty}: the doc opens with a nutshell of 80 characters or less, not {}: {nutshell}", nutshell.len());
+        let listed = index.iter().find(|v| v["type"] == ty).unwrap_or_else(|| panic!("{ty} is in the index"));
+        assert_eq!(listed["doc"], j!(nutshell), "{ty}: the index shows the nutshell and stops there");
+        for key in ["tags", "source", "params", "input_slots", "output_slots"] {
+            assert!(listed.get(key).is_none(), "{ty}: the index carries `{key}`, which is `library get`'s");
+        }
         let tags = row["tags"].as_array().expect("a tags list");
         // Every entry here is a SHIPPED type, and each declares one. An empty list is how a stale
         // wheel looks: the probe emits no tags and the feature is inert while the suite is green.
@@ -411,8 +447,7 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
             assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
         }
         let pages: Vec<&str> = row["params"].as_object().expect("pages").keys().map(String::as_str).collect();
-        let own: Vec<&str> = pages.iter().copied().filter(|p| *p != "common").collect();
-        assert_eq!(own, groups, "{ty}: pages in declared order");
+        assert_eq!(pages, groups, "{ty}: the author's pages in declared order, then the engine's own");
         assert!(!pages.contains(&"common") || pages.last() == Some(&"common"), "{ty}: common is the last page: {pages:?}");
     }
     // An author who declares `common` FIRST, with a default of their own for one universal param,

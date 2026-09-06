@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveKind, isRenderable } from './kind';
+import { resolveKind, isRenderable, pinnedKind } from './kind';
 import { resolveSettings } from './settingsSchema';
 
 describe('resolveKind', () => {
@@ -13,6 +13,24 @@ describe('resolveKind', () => {
 	});
 	it('falls back to line for null dtype', () => {
 		expect(resolveKind(null, undefined)).toBe('line');
+	});
+	it('opens a slot nobody has chosen for with what draws its dtype', () => {
+		expect(resolveKind('TEXTURE', undefined)).toBe('image');
+		expect(resolveKind('AUDIO', undefined)).toBe('line');
+	});
+	it('lets a stored kind stand on a dtype that pins none', () => {
+		expect(resolveKind('TEXTURE', 'line')).toBe('line');
+	});
+});
+
+describe('pinnedKind', () => {
+	it('names the kind a dtype forces, and nothing for one a viewer may choose', () => {
+		expect(pinnedKind('STRING')).toBe('string');
+		expect(pinnedKind('TABLE')).toBe('table');
+		// The gate on the kind dropdown: an array off a tap is still an array to draw.
+		expect(pinnedKind('ARRAY')).toBeNull();
+		expect(pinnedKind('TEXTURE')).toBeNull();
+		expect(pinnedKind('AUDIO')).toBeNull();
 	});
 });
 

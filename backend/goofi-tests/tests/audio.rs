@@ -88,7 +88,7 @@ fn a_patch_sounds_under_the_external_clock() {
     audio.sort_unstable();
     // The shipped set, whole: three built in because their control halves own OS handles, and
     // seven files built by the same pipeline an authored node takes.
-    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:Delay", "audio:Env", "audio:Feedback",
+    assert_eq!(audio, ["audio:AudioIn", "audio:AudioOut", "audio:AudioPlayback", "audio:Delay", "audio:Env", "audio:Feedback",
                        "audio:Filter", "audio:FreqShift", "audio:Gain", "audio:Limiter", "audio:MidiIn",
                        "audio:Mixdown", "audio:Noise", "audio:Osc", "audio:Quantize", "audio:Reverb",
                        "audio:SignalIn", "audio:Slew"]);
@@ -308,6 +308,92 @@ fn a_patch_sounds_under_the_external_clock() {
     sounds(&g, "…and to rejoin", |x| (peak(x) - 1.5).abs() < 0.02);
     g.call("node remove", j!({ "node": hex(out2) }));
 
+    // Step: `record.on` writes what reaches the AudioOut to a WAV file, BEFORE gain — so the
+    // monitor level moves what is heard and never what is kept. Three takes: a plain one, a
+    // second under `unique` that cannot replace it, and a name that will not open, which stands
+    // as an error on the param until one of the three moves.
+    let takes = goofi_audio::recordings();
+    let opened = |p: &Path| goofi_audio::wav::Reader::open(p).ok().filter(|r| r.frames > 0);
+    g.set_param(out, "record", "file", "scenario");
+    g.set_param(out, "record", "unique", false);
+    g.set_param(out, "audio", "gain", 0.25);
+    sounds(&g, "a quarter of it is heard", |x| (peak(x) - 0.25).abs() < 0.02);
+    g.set_param(out, "record", "on", true);
+    for _ in 0..3 {
+        drive(&g, TENTH);
+    }
+    g.set_param(out, "record", "on", false);
+    let one = takes.join("scenario.wav");
+    let mut kept = g.until("the take closed and its header patched", |_| opened(&one));
+    assert_eq!((kept.channels, kept.rate), (1, 48_000), "the chain's width, and the clock's rate");
+    assert!(kept.frames >= 2 * TENTH as u64, "no block was dropped: {} frames of {}", kept.frames, 3 * TENTH);
+    let (_, x) = kept.read(TENTH).expect("the take reads back");
+    assert!((peak(&x) - 1.0).abs() < 0.02, "kept before gain, at full scale: peak {}", peak(&x));
+    assert!(near(crossings(&x), 88), "the tone that was playing: {} crossings", crossings(&x));
+
+    g.set_param(out, "record", "unique", true);
+    g.set_param(out, "record", "on", true);
+    drive(&g, TENTH);
+    g.set_param(out, "record", "on", false);
+    let stamped = g.until("the stamped take beside the first", |_| {
+        let mut wavs: Vec<PathBuf> = std::fs::read_dir(&takes).ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| *p != one && p.extension().is_some_and(|e| e == "wav"))
+            .collect();
+        wavs.sort();
+        wavs.pop().filter(|p| opened(p).is_some())
+    });
+    assert!(opened(&one).is_some(), "the first take still stands: {}", one.display());
+    let name = stamped.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    assert!(name.starts_with("scenario-") && name.len() == "scenario-20260906-141233".len(), "the time joined the name: {name}");
+
+    let blocked = takes.join("blocked.wav");
+    std::fs::create_dir_all(&blocked).expect("a directory where the take wants its file");
+    g.set_param(out, "record", "unique", false);
+    g.set_param(out, "record", "file", takes.join("blocked").to_string_lossy().to_string());
+    g.set_param(out, "record", "on", true);
+    drive(&g, TENTH);
+    let why = g.until("the take that will not open to say why", |g| g.error(out));
+    assert!(why.contains("blocked.wav"), "the path it could not open: {why}");
+    g.set_param(out, "record", "on", false);
+    g.until("the error to clear once the param moves", |g| g.error(out).is_none().then_some(()));
+    g.set_param(out, "record", "file", "scenario");
+    g.set_param(out, "audio", "gain", 1.0);
+    sounds(&g, "the monitor level back where the scenario left it", |x| (peak(x) - 1.0).abs() < 0.02);
+
+    // Step: a WAV file plays back at the engine's rate, as wide as it is. The take made here
+    // changes tone halfway, so WHERE playback starts is audible: it plays from the head, skips,
+    // runs out, loops, and resets — and a name that is not there says so.
+    g.set_param(out, "record", "file", "sweep");
+    g.set_param(out, "record", "on", true);
+    drive(&g, 4 * TENTH);
+    g.set_param(osc3, "osc", "pitch", 1.75);
+    sounds(&g, "an octave up, into the same take", |x| near(crossings(x), 176));
+    drive(&g, 3 * TENTH);
+    g.set_param(out, "record", "on", false);
+    g.call("link remove", j!({ "from": ep(hex(gain3), "out"), "to": ep(hex(out), "input") }));
+    let player = g.add("AudioPlayback");
+    g.link(player, "out", out, "input");
+    g.set_param(player, "play", "file", "sweep");
+    sounds(&g, "the take plays back from its head", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    sounds(&g, "…and reaches the octave it was recorded into", |x| near(crossings(x), 176));
+    g.set_param(player, "play", "position", 0.05);
+    sounds(&g, "…which position skips back to the A at its head", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    sounds(&g, "…and then the file runs out", |x| peak(x) < 0.01);
+    g.set_param(player, "play", "loop", true);
+    sounds(&g, "…which looping starts over", |x| peak(x) > 0.5);
+    g.set_param(player, "play", "loop", false);
+    sounds(&g, "…and without it, out again", |x| peak(x) < 0.01);
+    g.call("node param pulse", j!({ "node": hex(player), "param": "play/reset" }));
+    sounds(&g, "…until reset plays it from the start", |x| near(crossings(x), 88) && peak(x) > 0.5);
+    g.set_param(player, "play", "file", "not-a-take");
+    let missing = g.until("the file that is not there to say so", |g| g.error(player));
+    assert!(missing.contains("not-a-take.wav"), "the path it looked for: {missing}");
+    g.call("node remove", j!({ "node": hex(player) }));
+    g.link(gain3, "out", out, "input");
+    g.set_param(osc3, "osc", "pitch", 0.75);
+    sounds(&g, "the chain back where the scenario left it", |x| (peak(x) - 1.0).abs() < 0.02 && near(crossings(x), 88));
+
     // Step: the device list is a refresh answered by the node's own thread and echoed to every
     // client, the host default first; the clock itself reports through `session status`.
     let mut ev = g.events();
@@ -486,7 +572,7 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(shape(&filled)[0] == 1 && crossings(&f32s(&filled)) > 0, "the buffer holds the sine: {:?}", shape(&filled));
     let snapshot = g.until("a snapshot of the gain's output", |g| {
         drive(g, TENTH);
-        let answer = g.call("node snapshot", j!({ "output": ep(hex(gain3), "out") }));
+        let answer = g.call("node snapshot", j!({ "output": ep(hex(gain3), "out"), "raw": true }));
         answer["npy_b64"].is_string().then_some(answer)
     });
     assert_eq!(snapshot["meta"]["sfreq"], 48000.0, "{snapshot}");
@@ -608,7 +694,7 @@ fn a_patch_sounds_under_the_external_clock() {
     g.call("link remove", j!({ "from": ep(hex(osc3), "out"), "to": ep(hex(gain3), "input") }));
     g.link(held, "out", gain3, "input");
     g.set_param(gain3, "gain", "gain", 0.5);
-    let fb = g.add("Feedback");
+    let fb = g.add("audio:Feedback");
     g.link(gain3, "out", fb, "input");
     g.link(fb, "out", gain3, "input");
     assert!(g.stays(|g| !state(g, gain3).contains("loop")), "a feedback node closes the loop without a fault");
@@ -620,7 +706,7 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a feedback node wired to itself reads its own last block through a copy, never the
     // region it writes — a wire the graph accepts must not tear the audio thread.
-    let fb2 = g.add("Feedback");
+    let fb2 = g.add("audio:Feedback");
     g.link(fb2, "out", fb2, "input");
     g.link(fb2, "out", out, "input");
     let (still, _) = drive(&g, TENTH);
@@ -832,7 +918,7 @@ fn a_patch_sounds_under_the_external_clock() {
     }
     // Each parameter shape by its own rule: stepped within the ceiling is a list of the plugin's
     // own words, stepped past it a number, and read-only is not a param at all.
-    let row = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = |ty: &str| g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == ty).cloned().unwrap_or_else(|| panic!("{ty} is in the palette"));
     let plugin = row("audio:GoofiFixture");
     // A plugin declares no tag: its VST3 subcategories place it, and the vendor rides the doc line.
@@ -863,7 +949,7 @@ fn a_patch_sounds_under_the_external_clock() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "audio:Crasher").cloned().expect("greyed, not absent");
     assert_eq!(row["available"], false, "{row}");
-    assert!(row["missing_deps"].to_string().contains("scanner"), "the scanner's death is the reason: {row}");
+    assert!(row["doc"].as_str().is_some_and(|d| d.contains("scanner")), "the scanner's death is the reason: {row}");
     assert!(g.refuse("node add", j!({ "type": "Crasher" })).contains("unavailable"));
     heard(&g, plug, "the server answers on", |x| (peak(x) - 0.5).abs() < 0.02);
 

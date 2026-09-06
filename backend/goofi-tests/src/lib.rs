@@ -29,7 +29,7 @@ pub struct Goofi {
     /// The handle that minted the mount, and the only one whose drop is the session's end.
     owner: bool,
     /// The window thread, with no screen: what the binary's main thread is where a display answers.
-    windows: Option<(goofi_audio::ui::Ui, std::thread::JoinHandle<()>)>,
+    windows: Option<(goofi_window::Ui, std::thread::JoinHandle<()>)>,
 }
 
 /// A situation ends the way a process exits: every node stopped and waited for, so no test leaves
@@ -70,7 +70,17 @@ impl Goofi {
         Goofi::with_mode(goofi_bridge::Mode { headless: false, demo: true })
     }
 
+    /// One whose graphics engine runs on its OWN 60 Hz clock, as the binary does — nothing to
+    /// drive by hand, and nothing to mistake a driven frame for.
+    pub fn timed() -> Goofi {
+        Goofi::boot(goofi_bridge::Mode::default(), goofi_bridge::RenderClock::Timer)
+    }
+
     fn with_mode(mode: goofi_bridge::Mode) -> Goofi {
+        Goofi::boot(mode, goofi_bridge::RenderClock::External)
+    }
+
+    fn boot(mode: goofi_bridge::Mode, render: goofi_bridge::RenderClock) -> Goofi {
         // Every test process is WALLED OFF from the real `~/.goofi` — a developer's own config
         // or session records must not reach an assertion. A test that scoped its own home first
         // keeps it.
@@ -96,7 +106,7 @@ impl Goofi {
             let nested = target.unwrap_or_else(std::env::temp_dir).join("goofi-test-cargo-target");
             std::env::set_var("CARGO_TARGET_DIR", nested);
         });
-        let state = AppState::new(mode, goofi_bridge::Clock::External);
+        let state = AppState::new(mode, goofi_bridge::Clock::External, render);
         let windows = (!mode.demo).then(window_thread);
         {
             let mut g = state.graph.lock().unwrap();
@@ -108,6 +118,11 @@ impl Goofi {
                 let audio = goofi_bridge::audio_engine(&mut g);
                 audio.set_vst3(scanner(), Vec::new());
                 audio.set_ui(windows.as_ref().map(|(ui, _)| ui.clone()));
+            }
+            // The graphics engine gets the same screenless host, so a `Window` node opens a window
+            // the loop knows about and no test reaches a desktop.
+            if let Some(graphics) = goofi_bridge::try_graphics_engine(&mut g) {
+                graphics.set_ui(windows.as_ref().map(|(ui, _)| ui.clone()));
             }
             // The engine's Python door, as the CLI hands it at boot; a machine with none scans a
             // `.py` file as unavailable, which is what a test that needs one then reports.
@@ -133,6 +148,12 @@ impl Goofi {
             send_timeout: Duration::from_millis(200),
         };
         g
+    }
+
+    /// The window thread this instance runs on. Screenless, so what it proves is the SEAM: a
+    /// window was asked for, and frames reached it.
+    pub fn ui(&self) -> goofi_window::Ui {
+        self.windows.as_ref().map(|(ui, _)| ui.clone()).expect("a window thread")
     }
 
     /// A second client of the SAME instance, with its own undo stack — what two browser tabs are.
@@ -171,6 +192,13 @@ impl Goofi {
     /// Set one param's literal value, answering `{value, error}` — the value as STORED, coerced
     /// to the param's declared type.
     #[track_caller]
+    /// A node's display NAME, from a uid or from a name — how every op addresses it.
+    pub fn name(&self, node: &str) -> String {
+        let g = self.state.graph.lock().unwrap();
+        let uid = g.resolve_ref(node).unwrap_or_else(|| panic!("`{node}` names no node"));
+        g.name(uid).unwrap_or_default().to_string()
+    }
+
     pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
         self.call(
             "node param edit",
@@ -386,12 +414,12 @@ impl Events {
 /// `target/<profile>/vst3scan`: the package's bin, which cargo builds beside every test.
 /// A window loop on a thread of its own, with no screen — as the clock has no device — so the
 /// editor seam is proven on every machine and no window reaches anyone's desktop.
-fn window_thread() -> (goofi_audio::ui::Ui, std::thread::JoinHandle<()>) {
+fn window_thread() -> (goofi_window::Ui, std::thread::JoinHandle<()>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let thread = std::thread::Builder::new()
         .name("goofi-windows".into())
         .spawn(move || {
-            let (windows, ui) = goofi_audio::ui::Loop::headless();
+            let (windows, ui) = goofi_window::Loop::headless();
             let _ = tx.send(ui);
             windows.run();
         })
@@ -409,6 +437,13 @@ fn scanner() -> PathBuf {
 pub fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
     let mut graph = g.state.graph.lock().unwrap();
     goofi_bridge::audio_engine(&mut graph).drive(frames)
+}
+
+/// Tick the graphics engine's external clock `frames` times, on this thread — what the binary's
+/// own 60 Hz clock does, at the caller's pace.
+pub fn render(g: &Goofi, frames: usize) {
+    let mut graph = g.state.graph.lock().unwrap();
+    goofi_bridge::graphics_engine(&mut graph).render(frames);
 }
 
 /// A uid as the wire spells it.

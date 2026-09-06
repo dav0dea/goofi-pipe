@@ -111,7 +111,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Scale and shift every value, then map one range onto another. Shape and metadata are untouched.",
+    doc: "Scale and shift every value, then remap the range.\n\
+          Shape and metadata are untouched.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

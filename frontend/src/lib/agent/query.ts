@@ -3,7 +3,7 @@ import { graph } from '$lib/stores/graph.svelte';
 import { selection } from '$lib/stores/selection.svelte';
 import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
-import { latestFrame } from '$lib/api/frames';
+import { arrivalRate, latestFrame } from '$lib/api/frames';
 import { collectPanels } from 'panelty';
 import { asStateObject, linkedNodeName } from 'panelty';
 import { isArrayFrame, isStringFrame, type DataFrame } from '$lib/codec/decode';
@@ -22,17 +22,21 @@ export interface FrameSummary {
 	text?: string;
 }
 
+const shapesEqual = (a: number[], b: readonly number[]): boolean =>
+	a.length === b.length && a.every((n, i) => n === b[i]);
+
 /** A compact, DOM-free description of the latest frame on a slot. */
 function summarize(frame: DataFrame | null): FrameSummary | null {
 	if (!frame) return null;
 	if (isArrayFrame(frame)) {
 		const a = frame.data;
-		const s = summaryOf(a);
+		const s = summaryOf(a, frame.meta);
 		const recon = reconstructMeta(frame.meta);
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
-		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
+		// An AXIS reduction, so a frame whose only `reduced` entry is the depth is not one.
+		const reduced = !shapesEqual(shape, a.shape);
 		return {
-			dtype: a.dtype,
+			dtype: s.dtype,
 			shape,
 			numeric: s.min !== null ? { min: s.min, max: s.max as number, mean: s.mean as number } : undefined,
 			...(reduced ? { reducedLength: a.values.length } : {})
@@ -81,6 +85,8 @@ export const query = {
 	},
 	frameSummary: (node: string, slot: string): FrameSummary | null =>
 		summarize(latestFrame(node, slot)),
+	/** Frames a second the WIRE delivered for one stream — what a paint count cannot show. */
+	arrivalRate: (node: string, slot: string): number | null => arrivalRate(node, slot),
 	panels: (): PanelView[] =>
 		collectPanels(workspace().active.root).map((p) => {
 			const s = asStateObject(p.state);

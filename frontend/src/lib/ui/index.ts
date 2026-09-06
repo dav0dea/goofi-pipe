@@ -13,6 +13,7 @@ export { default as NumberInput } from './NumberInput.svelte';
 export { default as Slider } from './Slider.svelte';
 export { default as Knob } from './Knob.svelte';
 export { default as Select } from './Select.svelte';
+export { default as Combobox, type ComboOption } from './Combobox.svelte';
 export { default as TextInput } from './TextInput.svelte';
 export { MODE_ATTRS } from './inputMode';
 export { default as Toggle } from './Toggle.svelte';

@@ -12,7 +12,10 @@ import goofi
 
 
 class FractalDimension(goofi.Node):
-    """Fractal dimension: how much the trace fills the plane, 1 (smooth) to 2 (filling)."""
+    """Fractal dimension: how much the trace fills the plane.
+
+    1 is a smooth line, 2 a trace that fills it.
+    """
 
     TAGS = ["analysis"]
     INPUTS = {"data": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

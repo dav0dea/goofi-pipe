@@ -271,6 +271,20 @@ what the device clock opens is the machine's sound SERVER, never its card, becau
 stream is one the OS volume and the OS mute cannot reach. `roadmap/audio-engine.md` holds the
 design.
 
+**A graphics node is a `.wgsl` FILE, and the file's header is its manifest.** No SDK, no cargo, no
+toolchain: a text editor is the whole requirement to author one, and the engine appends its prelude
+AFTER the file's text so a naga error names the line the author sees. Every texture is
+`Rgba16Float`, and `uv`, the sampler, texture memory, an upload's rows and a readback's rows all
+put row 0 at the TOP — one convention, so a pass-through body is a copy and no flip is written
+anywhere. The engine is scheduled and DEMAND-DRIVEN: a stage renders only where its output has a
+reader, so a node nobody watches costs nothing. Its plan is replaced whole and never edited,
+because a stage index is a name and a stage that outlives its node draws into a stranger. The
+PROCESS owns one device and one compile thread, and every operation on that device takes one gate
+— a driver crashed inside its own shader compiler when two threads touched the device at once.
+The control half is `goofi-control`, shared with audio rather than copied. A texture never crosses
+the wire: the tap reads back an f32 frame like any other, and `roadmap/graphics-engine.md` holds
+the design.
+
 **There is no tick.** Every node owns one thread and schedules itself, waking for a control
 message, a frame on an input, or its own rate cap elapsing. Frames travel node to node over
 shared memory, never through the graph — so no node runs under the graph mutex and no user action
@@ -286,7 +300,8 @@ Python nodes share one marshalling seam, so they cannot drift; neither the tier 
 interpreter is selectable — one probe per node file routes it, by whether its imports keep the
 GIL disabled. A Rust node runs the same seam: every Rust node, shipped or authored, signal or
 audio, is one `.rs` file naming the SDK it is written against — which is what routes it to its
-engine — built by one pipeline into a `cdylib` and loaded behind a version symbol. The signal ABI IS the subprocess tier's codec — one encode and one
+engine — built by one pipeline into a `cdylib` and loaded behind a version symbol. A `.wgsl` file
+is the third such routing, and the one that needs no build at all. The signal ABI IS the subprocess tier's codec — one encode and one
 decode per side per run, a copy a compiled-in node never paid, accepted as the price of one
 seam; the audio ABI crosses the block as descriptors of the arena's own regions, because a block
 is memory the plan laid out, not a frame in flight. There is no static registration. Every
@@ -326,6 +341,15 @@ leaves the port; a viewer opened before the wire stays open and starts drawing w
 What this cost, three times over: a port was DELETED when its target was, its `/data` socket was
 refused with a terminal close code that the client then made permanent, and `node state` answered
 "no node" for the thing `node add` had just returned.
+
+**A node is addressed by its NAME, and the uid is the document's key.** The two are not rivals: a
+uid is identity, unique for the node's life and restored by a load, so the document, the manifest
+and every uid-keyed binding stay on it. A name is the HANDLE — unique across the patch, minted at
+birth, and what a person and an agent both actually type. So every op takes either, and every read
+answers the name: a wire's two ends, a diagram's mermaid ids, a standing error's row, a panel's
+binding. A uid rides beside a name only where a caller keys records of its own. What this buys is
+a batch with no bookkeeping in it — `node add --name src`, then `link add src/out …`, with nothing
+carried between the lines.
 
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,
@@ -477,7 +501,10 @@ merely stale. After changing the Python package, delete the venv — or the prob
 old wheel and a node using a new authoring feature silently disappears from the palette.
 
 The cross-language tests find these interpreters themselves and **fail with an actionable message**
-when none can import goofi. They never skip, and nothing in the suite is `#[ignore]`d.
+when none can import goofi. They never skip, and nothing in the suite is `#[ignore]`d. The graphics
+suite is the same rule against a GPU: a machine with no adapter has no graphics engine and no
+graphics type in the catalog, and the scenario fails naming the package to install
+(`mesa-vulkan-drivers`, which is lavapipe) rather than skipping.
 
 `/dev/shm/iox2_*` is not a leak, and two reviews have now misread it as one. The count PEAKS
 during a run and settles back, because every node releases its shared memory when it drops. Delete

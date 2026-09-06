@@ -2,7 +2,9 @@
 //! every subscribing connection's `ViewSpec`s and fanned out over a broadcast.
 //!
 //! The SLOT owns the reducer's lifetime, not the socket count — it lives until its node leaves the
-//! graph, because a closing socket is no evidence that a slot stopped being watched.
+//! graph, because a closing socket is no evidence that a slot stopped being watched. Its
+//! SUBSCRIPTION follows demand though: an attached subscriber is what a scheduled engine reads as
+//! "somebody wants frames", so a reducer nobody asks of lets its feed go.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -47,6 +49,8 @@ struct SlotReducer {
     gen: Arc<AtomicU64>,
     /// The latest RAW frame, pre-reduction — what serves a re-attaching viewer and `node snapshot`.
     latest: Arc<Mutex<Option<goofi_core::Data>>>,
+    /// Somebody read `latest` — a `node snapshot` — so the feed is wanted even with no viewer.
+    asked: Arc<AtomicBool>,
 }
 
 impl Drop for SlotReducer {
@@ -113,6 +117,7 @@ impl SlotReducers {
                 reductions: Arc::new(AtomicU64::new(0)),
                 gen: Arc::new(AtomicU64::new(0)),
                 latest: Arc::new(Mutex::new(None)),
+                asked: Arc::new(AtomicBool::new(true)),
             };
             spawn_reducer(key.clone(), &reducer, self.graph.clone(), slots, self.follow.clone());
             reducer
@@ -137,7 +142,9 @@ impl SlotReducers {
         // The `inner` guard is released before `latest` is taken, mirroring the reducer's order.
         let latest = {
             let mut map = self.inner.lock().unwrap();
-            self.ensure(&mut map, &key).latest.clone()
+            let r = self.ensure(&mut map, &key);
+            r.asked.store(true, Ordering::Release);
+            r.latest.clone()
         };
         let frame = latest.lock().unwrap().clone();
         frame
@@ -185,6 +192,9 @@ impl SlotReducers {
 /// How often the slot's subscribe address is re-derived from the graph: a service name carries the
 /// node's GENERATION, so a restart re-homes the stream to a name this task has never opened.
 pub const REHOME_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a reducer nobody asks of keeps its subscription. WALL TIME, not a count of sleeps: a
+/// platform whose sleep rounds up would otherwise hold on for as much longer.
+const IDLE: Duration = Duration::from_secs(1);
 
 /// One end of a slot's data service: the subscriber, its iceoryx2 node, and the service name it
 /// was opened on.
@@ -223,16 +233,30 @@ fn spawn_reducer(
     let (specs, tx, taps) = (reducer.specs.clone(), reducer.tx.clone(), reducer.taps.clone());
     let (reductions, gen) = (reducer.reductions.clone(), reducer.gen.clone());
     let (latest, stop) = (reducer.latest.clone(), reducer.stop.clone());
+    let asked = reducer.asked.clone();
     let (uid, slot) = key.clone();
     std::thread::spawn(move || {
         let mut feed = open_feed(&graph, uid, &slot);
         let mut rehomed = std::time::Instant::now();
+        // An attached subscriber is what a scheduled engine reads as demand, so a feed nobody
+        // wants keeps a GPU node rendering for ever.
+        let mut asked_at = std::time::Instant::now();
         // `served: None` means "never broadcast", which is what sends the first frame without a bump.
         let mut served: Option<u64> = None;
+        let mut next_serve = std::time::Instant::now();
         loop {
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(crate::vocab::REDUCER_TICK);
             if stop.load(Ordering::Relaxed) {
                 return;
+            }
+            let wanted = asked.swap(false, Ordering::Acquire)
+                || !specs.lock().unwrap().is_empty()
+                || !taps.lock().unwrap().is_empty();
+            if wanted {
+                asked_at = std::time::Instant::now();
+            }
+            if asked_at.elapsed() > IDLE {
+                feed = None;
             }
             if rehomed.elapsed() >= REHOME_INTERVAL {
                 rehomed = std::time::Instant::now();
@@ -252,9 +276,12 @@ fn spawn_reducer(
                     }
                     return;
                 };
-                if feed.as_ref().is_none_or(|f| f.service != current) {
+                if asked_at.elapsed() <= IDLE && feed.as_ref().is_none_or(|f| f.service != current) {
                     feed = open_feed(&graph, uid, &slot);
                 }
+            }
+            if feed.is_none() && asked_at.elapsed() <= IDLE {
+                feed = open_feed(&graph, uid, &slot);
             }
             let mut fresh = false;
             if let Some(f) = &feed {
@@ -275,7 +302,7 @@ fn spawn_reducer(
                     }
                 }
             }
-            // Nobody is watching: the receives above still keep the cache warm for whoever returns.
+            // Nobody is watching: the cache holds the last frame for whoever returns.
             if specs.lock().unwrap().is_empty() {
                 continue;
             }
@@ -284,10 +311,27 @@ fn spawn_reducer(
             if !fresh && served == Some(g_now) {
                 continue; // nothing new to say — no emit, no joiner, no spec change
             }
+            // The viewer rate, held HERE because this is the one place N viewers became one
+            // stream. A producer emitting faster than the browser paints is bytes nobody draws.
+            // The loop's own tick is the quantum, so the real ceiling is one tick coarser.
+            let now = std::time::Instant::now();
+            if now < next_serve {
+                continue;
+            }
+            next_serve += crate::vocab::VIEWER_INTERVAL;
+            if next_serve < now {
+                next_serve = now + crate::vocab::VIEWER_INTERVAL;
+            }
             let plan = goofi_view::plan(&union_specs(&specs.lock().unwrap()), &d);
             let out = goofi_core::reduce::reduce_for_view(&d, &plan);
             reductions.fetch_add(1, Ordering::Relaxed);
-            let bytes = Bytes::from(goofi_codec::encode(&out));
+            // 8-bit only where every viewer of the slot draws it, and only for a frame that has
+            // texels; the reduction itself is f32 either way.
+            let quantized = (plan.depth == goofi_view::Depth::U8)
+                .then(|| goofi_core::reduce::quantize_u8(&out))
+                .flatten()
+                .map(|(shape, texels, meta)| goofi_codec::encode_u8(&shape, &texels, &meta));
+            let bytes = Bytes::from(quantized.unwrap_or_else(|| goofi_codec::encode(&out)));
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
             served = Some(g_now);
         }

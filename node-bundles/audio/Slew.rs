@@ -24,7 +24,8 @@ static OUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Audio }
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Its input with a rate limit: a step becomes a ramp, a gate an envelope, a knob a glide.",
+    doc: "Its input with a rate limit.\n\
+          A step becomes a ramp, a gate an envelope, a knob a glide.",
     inputs: INS,
     outputs: OUTS,
     params: PARAMS,

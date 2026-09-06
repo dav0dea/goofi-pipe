@@ -55,13 +55,13 @@ scope: root
 
 ```mermaid
 flowchart LR
-  n000000000001[\"lfo0: signal:LFO<br/>000000000001\"]
-  n000000000002[\"⚠ testfail0: signal:_TestFail<br/>000000000002\"]
-  n000000000004[[\"subpatch0<br/>000000000004\"]]
-  n000000000001 -- out→value --> n000000000004
+  lfo0[\"lfo0: signal:LFO\"]
+  testfail0[\"⚠ testfail0: signal:_TestFail\"]
+  subpatch0[[\"subpatch0\"]]
+  lfo0 -- out→value --> subpatch0
 ```
 
-uids: a uid is its mermaid id without the leading `n`.
+names: a node's mermaid id is its name, which every op takes.
 "
     );
 
@@ -70,7 +70,7 @@ uids: a uid is its mermaid id without the leading `n`.
     let health = g.call("session status", j!({}));
     let errs = health["errors"].as_array().cloned().unwrap_or_default();
     assert_eq!(errs.len(), 1, "one standing error: {health}");
-    assert_eq!(errs[0]["node"], "000000000002");
+    assert_eq!(errs[0]["node"], "testfail0", "the name is what a caller passes back: {health}");
     assert_eq!(errs[0]["path"], "testfail0");
     assert_eq!(errs[0]["error"], "the sensor is unplugged");
     assert!(errs[0]["standing"].as_f64().is_some(), "and how long it has stood: {health}");
@@ -82,16 +82,16 @@ fn inspect_patch_draws_a_sub_patchs_boundary_ports_as_the_nodes_they_are() {
     assert_eq!(
         text(&g, "nodes inspect", j!({ "scope": scope })),
         "\
-scope: subpatch0 (000000000004)
+scope: subpatch0
 
 ```mermaid
 flowchart LR
-  n000000000003[\"buffer0: signal:Buffer<br/>000000000003\"]
-  n000000000005([\"in0: InArray<br/>000000000005\"])
-  n000000000005 -- value\u{2192}input --> n000000000003
+  buffer0[\"buffer0: signal:Buffer\"]
+  in0([\"in0: InArray\"])
+  in0 -- value\u{2192}input --> buffer0
 ```
 
-uids: a uid is its mermaid id without the leading `n`.
+names: a node's mermaid id is its name, which every op takes.
 "
     );
     // The erroring node is in ROOT, and this is a sub-patch: asking about one scope used to report
@@ -120,7 +120,7 @@ fn a_node_wired_to_itself_keeps_its_edge() {
     let buf = g.add("Buffer");
     g.link(buf, "out", buf, "input");
     let out = text(&g, "nodes inspect", j!({}));
-    assert!(out.contains(&format!("n{0} -- out→input --> n{0}\n", hex(buf))), "{out}");
+    assert!(out.contains("buffer0 -- out→input --> buffer0\n"), "{out}");
 }
 
 #[test]
@@ -234,10 +234,22 @@ fn list_globals_names_the_system_globals_an_expression_can_read() {
 #[test]
 fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     let g = Goofi::new();
-    // The catalog and one entry of it are the same read at two widths, so the narrow one must agree
-    // with the wide one rather than be assembled a second way.
-    let all = g.call("library list", j!({}))["types"].as_array().cloned().unwrap_or_default();
-    let listed = all.iter().find(|t| t["type"] == "signal:LFO").expect("the LFO is in the palette");
+    // The catalog and one entry of it are the same read at three widths, so the narrow ones must
+    // agree with the wide one rather than be assembled a second way.
+    let pick = |v: &Value| v["types"].as_array().cloned().unwrap_or_default().into_iter()
+        .find(|t| t["type"] == "signal:LFO").expect("the LFO is in the palette");
+    let index = pick(&g.call("library list", j!({})));
+    let listed = pick(&g.call("library list", j!({ "full": true })));
+
+    // The INDEX is what a reader chooses a type from, and it stops there: what the type is, never
+    // what it is wired and tuned with.
+    assert_eq!(index["type"], listed["type"]);
+    assert_eq!(index["doc"], j!(listed["doc"].as_str().unwrap().split('\n').next().unwrap()),
+               "the index shows the doc's first line and stops there: {index}");
+    for key in ["source", "tags", "available", "missing_deps", "params", "input_slots",
+                "output_slots", "input_multi", "editor"] {
+        assert!(index.get(key).is_none(), "the index carries `{key}`, which is `library get`'s");
+    }
 
     // A bare name resolves while one engine offers it, and answers the QUALIFIED row.
     let v = g.call("library get", j!({ "type": "LFO" }));
@@ -249,9 +261,14 @@ fn one_named_type_is_the_catalog_entry_plus_the_file_behind_it() {
     // A shipped Rust node is SOURCE in the shipped root, exactly as a Python one would be.
     assert_eq!(v["provenance"], "shipped", "{v}");
     assert!(v["path"].as_str().is_some_and(|p| p.ends_with("/signal/LFO.rs")), "{v}");
-    assert!(v["source"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{v}");
     // The manifest a caller needs instead comes along.
     assert_eq!(v["output_slots"]["out"], "ARRAY");
+    // The FILE is a fourth width again: named always, read only when asked for — and under
+    // `text`, because `source` on an entry is where the TYPE came from.
+    assert!(v.get("text").is_none(), "the file is `--source`'s, not every reader's: {v}");
+    let full = g.call("library get", j!({ "type": "LFO", "source": true }));
+    assert!(full["text"].as_str().is_some_and(|s| s.contains("impl Node for LFO")), "{full}");
+    assert_eq!(full["source"], listed["source"], "the file never overwrites the origin: {full}");
     assert!(g.refuse("library get", j!({ "type": "Nope" })).contains("unknown node type `Nope`"));
 }
 
@@ -279,15 +296,15 @@ fn a_discovered_types_file_is_found_by_re_deriving_its_name() {
     std::fs::create_dir_all(&nodes).unwrap();
     std::fs::write(nodes.join("boom.py"), "class Boom:\n    pass\n").unwrap();
 
-    let v = g.call("library get", j!({ "type": "Boom" }));
+    let v = g.call("library get", j!({ "type": "Boom", "source": true }));
     assert_eq!(v["provenance"], "patch", "{v}");
     assert_eq!(v["path"], goofi_core::path::to_slash(&nodes.join("boom.py")), "{v}");
-    assert_eq!(v["source"], "class Boom:\n    pass\n", "{v}");
+    assert_eq!(v["text"], "class Boom:\n    pass\n", "{v}");
     assert_eq!(v["language"], "python", "{v}");
 
     // A tree holding no such file leaves the discovery half empty and SAYS so, rather than null.
     std::fs::remove_file(nodes.join("boom.py")).unwrap();
-    let v = g.call("library get", j!({ "type": "Boom" }));
-    assert_eq!(v["source"], Value::Null);
+    let v = g.call("library get", j!({ "type": "Boom", "source": true }));
+    assert_eq!(v["text"], Value::Null);
     assert!(v["provenance"].as_str().unwrap().contains("no source file"), "{v}");
 }

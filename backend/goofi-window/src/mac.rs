@@ -12,9 +12,17 @@ use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NS
 
 use super::{Id, Pumped, Screen, Wake};
 
+// AppKit, linked by hand: `objc2-app-kit` is not in the offline registry, so nothing else in the
+// graph pulls the framework in — and `class!(NSApplication)` on a class the process never loaded
+// panics rather than answering, which took the whole server down at start.
+#[link(name = "AppKit", kind = "framework")]
+extern "C" {}
+
 pub struct Platform {
     app: Retained<AnyObject>,
     windows: Vec<(Id, Retained<AnyObject>, bool)>,
+    /// The image view a presented window's frames go into, made on its first frame.
+    views: Vec<(Id, Retained<AnyObject>)>,
 }
 
 /// The application, to post a wake-up event to from any thread — the one call AppKit allows there.
@@ -30,7 +38,9 @@ const REGULAR: isize = 0;
 
 impl Wake for Waker {
     fn wake(&self) {
-        unsafe {
+        // A pool of its own: this runs on ANY thread, and the event below is autoreleased. Off the
+        // main thread there is no run loop to drain one, so each wake would leak an NSEvent.
+        objc2::rc::autoreleasepool(|_| unsafe {
             let app = self.0 as *mut AnyObject;
             let event: *mut AnyObject = msg_send![
                 class!(NSEvent),
@@ -45,7 +55,7 @@ impl Wake for Waker {
                 data2: 0isize
             ];
             let _: () = msg_send![app, postEvent: event, atStart: true];
-        }
+        })
     }
 }
 
@@ -56,7 +66,7 @@ impl Platform {
             let app: Retained<AnyObject> = msg_send![class!(NSApplication), sharedApplication];
             let _: bool = msg_send![&*app, setActivationPolicy: REGULAR];
             let _: () = msg_send![&*app, finishLaunching];
-            Ok(Platform { app, windows: Vec::new() })
+            Ok(Platform { app, windows: Vec::new(), views: Vec::new() })
         }
     }
 
@@ -100,13 +110,75 @@ impl Screen for Platform {
     }
 
     fn destroy(&mut self, id: Id) {
+        self.views.retain(|(i, _)| *i != id);
         if let Some(at) = self.windows.iter().position(|(i, ..)| *i == id) {
             let (_, window, _) = self.windows.remove(at);
             let _: () = unsafe { msg_send![&*window, close] };
         }
     }
 
-    fn pump(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
+    /// An `NSImageView` holding one `NSBitmapImageRep` a frame. The rep is allocated with NULL
+    /// planes and filled after, so IT owns the pixels — passing our own pointer would hand AppKit
+    /// a buffer the next frame overwrites.
+    fn present(&mut self, id: Id, (w, h): (u32, u32), rgba: &[u8]) {
+        unsafe {
+            let view = match self.views.iter().find(|(i, _)| *i == id) {
+                Some((_, v)) => v.clone(),
+                None => {
+                    let Some((_, window, _)) = self.windows.iter().find(|(i, ..)| *i == id) else { return };
+                    let frame: NSRect = msg_send![&**window, contentLayoutRect];
+                    let view: Allocated<AnyObject> = msg_send![class!(NSImageView), alloc];
+                    let view: Retained<AnyObject> = msg_send![view, initWithFrame: frame];
+                    // Axes independently: the window is always the frame's own size, so this only
+                    // matters while a resize is in flight.
+                    // 1 is `NSImageScaleAxesIndependently`; the window is the frame's own size,
+                    // so this only shows while a resize is in flight.
+                    let _: () = msg_send![&*view, setImageScaling: 1isize];
+                    // A SUBVIEW, never the content view: `setContentView:` releases the old one,
+                    // which is the very pointer `create` handed out for a plugin to embed into.
+                    let _: () = msg_send![&*view, setAutoresizingMask: 18usize];
+                    let content: *mut AnyObject = msg_send![&**window, contentView];
+                    let _: () = msg_send![content, addSubview: &*view];
+                    self.views.push((id, view.clone()));
+                    view
+                }
+            };
+            let rep: Allocated<AnyObject> = msg_send![class!(NSBitmapImageRep), alloc];
+            let rep: Option<Retained<AnyObject>> = msg_send![
+                rep,
+                initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>(),
+                pixelsWide: w as isize,
+                pixelsHigh: h as isize,
+                bitsPerSample: 8isize,
+                samplesPerPixel: 4isize,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: &*NSString::from_str("NSDeviceRGBColorSpace"),
+                bytesPerRow: w as isize * 4,
+                bitsPerPixel: 32isize
+            ];
+            let Some(rep) = rep else { return };
+            let data: *mut u8 = msg_send![&*rep, bitmapData];
+            if data.is_null() {
+                return;
+            }
+            std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, w as usize * h as usize * 4);
+            let image: Allocated<AnyObject> = msg_send![class!(NSImage), alloc];
+            let image: Retained<AnyObject> = msg_send![image, initWithSize: NSSize::new(w as f64, h as f64)];
+            let _: () = msg_send![&*image, addRepresentation: &*rep];
+            let _: () = msg_send![&*view, setImage: &*image];
+        }
+    }
+
+    fn pump(&mut self, until: Option<Instant>, fds: &[i32]) -> Pumped {
+        // The run loop pops its own pool before `nextEventMatchingMask:` answers, so every event
+        // it hands back would leak without one of ours around the whole turn.
+        objc2::rc::autoreleasepool(|_| self.pump_pooled(until, fds))
+    }
+}
+
+impl Platform {
+    fn pump_pooled(&mut self, until: Option<Instant>, _fds: &[i32]) -> Pumped {
         let first: Retained<NSDate> = match until {
             Some(t) => NSDate::dateWithTimeIntervalSinceNow(t.saturating_duration_since(Instant::now()).as_secs_f64()),
             None => NSDate::distantFuture(),

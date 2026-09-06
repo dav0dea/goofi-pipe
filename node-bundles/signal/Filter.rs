@@ -251,7 +251,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Keep one band of the spectrum, run both ways so nothing comes out shifted in time.",
+    doc: "Keep one band of the spectrum.\n\
+          Run both ways, so nothing comes out shifted in time.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

@@ -33,12 +33,22 @@ static AUDIO: NodeManifest = NodeManifest {
     producer: true,
 };
 
-static GFX_OUTS: &[OutputDecl] = &[OutputDecl { name: "frame", kind: SlotType::Array }];
+static GFX_OUTS: &[OutputDecl] = &[
+    OutputDecl { name: "frame", kind: SlotType::Array },
+    OutputDecl { name: "tex", kind: SlotType::Texture },
+];
+static GFX_INS: &[SlotDecl] = &[SlotDecl {
+    name: "tex",
+    kind: SlotType::Texture,
+    trigger_process: false,
+    multi: false,
+    required: false,
+}];
 static GFX: NodeManifest = NodeManifest {
     type_name: "SkelGfxFrame",
     tags: &[],
     doc: "a static frame per tick",
-    inputs: &[],
+    inputs: GFX_INS,
     outputs: GFX_OUTS,
     params: &[],
     producer: true,
@@ -322,7 +332,7 @@ fn audio_block() -> goofi_core::Data {
     let params = [Port::new(&level, 1, true)];
     let mut arena = [0f32; BLOCK];
     let mut outs = [PortMut::new(&mut arena, 1)];
-    Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params });
+    Tone.process(&mut Block { ins: &[], outs: &mut outs, params: &params, scalars: &[level[0]] });
     goofi_tests::frame(&arena)
 }
 
@@ -344,7 +354,7 @@ fn register_skeletons(t: &Goofi) {
         waker.clone(),
     )));
     g.register_engine(Box::new(Skeleton::new(
-        "graphics",
+        "skelgfx",
         &GFX,
         &gfx_frame(),
         Duration::from_millis(16),
@@ -359,10 +369,10 @@ fn a_scheduled_engine_beside_the_signal_one() {
 
     // Step: both libraries join the ONE palette, beside the signal catalog, and an audio slot
     // is a kind the palette spells.
-    let types = t.call("library list", j!({}));
+    let types = t.call("library list", j!({ "full": true }));
     let names: Vec<&str> =
         types["types"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
-    for want in ["skel:SkelAudioOsc", "graphics:SkelGfxFrame", "signal:LFO", "InAudio", "OutAudio"] {
+    for want in ["skel:SkelAudioOsc", "skelgfx:SkelGfxFrame", "signal:LFO", "InAudio", "OutAudio"] {
         assert!(names.contains(&want), "`{want}` is missing from the merged palette: {names:?}");
     }
     let skel = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "skel:SkelAudioOsc").unwrap();
@@ -541,6 +551,40 @@ fn a_scheduled_engine_beside_the_signal_one() {
     let frame_probe = t.probe(gfx, "frame");
     let frame = frame_probe.expect_frame(&mut t.state.graph.lock().unwrap(), "the gfx frame");
     assert_eq!(shape(&frame), vec![8, 8], "the graphics skeleton's static frame");
+
+    // Step: a texture output feeds a texture input, or an ARRAY input through the tap; nothing
+    // but a texture feeds a texture input, and the refusal names both kinds.
+    let types = t.call("library list", j!({ "full": true }));
+    let row = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "skelgfx:SkelGfxFrame").unwrap();
+    assert_eq!(row["output_slots"]["tex"], "TEXTURE", "{row}");
+    assert_eq!(row["input_slots"]["tex"], "TEXTURE", "{row}");
+    let gfx2 = t.add("SkelGfxFrame");
+    t.ready(gfx2);
+    t.link(gfx, "tex", gfx2, "tex");
+    let sink = t.add("_TestEcho");
+    t.link(gfx, "tex", sink, "input");
+    let crossed = t.probe(sink, "out");
+    let crossed = crossed.expect_frame(&mut t.state.graph.lock().unwrap(), "the tapped texture");
+    assert_eq!(shape(&crossed), vec![8, 8], "a texture reaches a signal node as a frame");
+    let refused = t.refuse("link add", j!({ "from": ep(hex(gfx), "frame"), "to": ep(hex(gfx2), "tex") }));
+    assert!(refused.contains("ARRAY") && refused.contains("TEXTURE"), "{refused}");
+
+    // Step: a texture port is a node like any other — born in a sub-patch and wired on both faces.
+    // The archive is the audio port's step above: one mechanism, and a port type is a string in it.
+    let scope = t.call("nodes group", j!({ "nodes": [hex(gfx2)], "pos": [0.0, 0.0] }))["inst_id"]
+        .as_str().unwrap().to_string();
+    let port_in = t.call("node add", j!({ "type": "InTexture", "inst_id": scope, "pos": [0.0, 0.0] }))["uid"]
+        .as_str().unwrap().to_string();
+    let port_out = t.call("node add", j!({ "type": "OutTexture", "inst_id": scope, "pos": [0.0, 0.0] }))["uid"]
+        .as_str().unwrap().to_string();
+    t.call("link add", j!({ "from": ep(&port_in, "value"), "to": ep(hex(gfx2), "tex") }));
+    t.call("link add", j!({ "from": ep(hex(gfx2), "tex"), "to": ep(&port_out, "value") }));
+    t.call("link add", j!({ "from": ep(hex(gfx), "tex"), "to": ep(&port_in, "value") }));
+    let doc = t.doc();
+    assert_eq!(doc["nodes"][&port_in]["scope"], scope, "the port is in the sub-patch: {doc}");
+    assert_eq!(doc["nodes"][&port_out]["type"], "OutTexture", "{doc}");
+    t.call("node remove", j!({ "node": scope }));
+    t.call("node remove", j!({ "node": hex(sink) }));
 
     // Step: a remove through the one op surface tears the foreign node down and the rest stand.
     t.call("node remove", j!({ "node": hex(gfx) }));

@@ -50,6 +50,7 @@ pub fn register(g: &mut Graph) {
     add(g, manifest("_TestMute", "a refreshable list with no hook behind it", &[], &[], PICKER_PARAMS, false), || Box::new(MutePicker));
     add(g, manifest("_TestConst", "constant float32 array source (value+length) — hidden test/bench scaffolding.", &[], OUT_ARRAY, CONST_PARAMS, true), || Box::new(TestConst));
     add(g, manifest("_TestRamp", "a [C, T] ramp frame at `sfreq`: channel c rises from c to c + 1", &[], OUT_ARRAY, RAMP_PARAMS, true), || Box::new(Ramp));
+    add(g, manifest("_TestImage", "a 4x4 gradient image, gray and bipolar on request", &[], OUT_ARRAY, IMAGE_PARAMS, true), || Box::new(Image));
 }
 
 static IN_ARRAY: &[SlotDecl] = &[SlotDecl {
@@ -193,6 +194,36 @@ impl Node for Scalar {
     fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
         let value = p.f64("control", "value").unwrap_or(0.0) as f32;
         o.set("out", Data::array_f32(vec![1], value.to_le_bytes().to_vec(), Meta::new()).unwrap());
+        Ok(())
+    }
+}
+
+static IMAGE_PARAMS: &[ParamDecl] = &[ParamDecl {
+    group: "control",
+    name: "gray",
+    spec: ParamSpec::Bool { default: false },
+    expression: None,
+    doc: Some("Emit one bipolar channel instead of three colour ones."),
+}];
+
+/// What an image viewer is handed: a 4x4 frame whose texels span the whole range, so a
+/// quantization to 8 bits has both ends to hit.
+struct Image;
+impl Node for Image {
+    fn process(&mut self, _i: &Inputs<'_>, o: &mut Outputs<'_>, _c: &mut NodeCtx, p: &Params<'_>) -> NodeResult {
+        let frame = if p.bool("control", "gray").unwrap_or(false) {
+            let bytes: Vec<u8> = (0..16).flat_map(|i| ((i as f32 / 15.0) * 4.0 - 2.0).to_le_bytes()).collect();
+            Data::array_f32(vec![4, 4], bytes, Meta::new()).unwrap()
+        } else {
+            let bytes: Vec<u8> = (0..16)
+                .flat_map(|i| {
+                    let t = i as f32 / 15.0;
+                    [t, 1.0 - t, 0.5].into_iter().flat_map(f32::to_le_bytes)
+                })
+                .collect();
+            Data::array_f32(vec![4, 4, 3], bytes, Meta::new()).unwrap()
+        };
+        o.set("out", frame);
         Ok(())
     }
 }

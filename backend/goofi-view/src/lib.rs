@@ -113,6 +113,16 @@ pub struct AxisReduce {
 /// the one kernel every viewer family can draw.
 pub const UNDECLARED_MAX: usize = 512;
 
+/// The sample depth a viewer can draw: the wire's f32, or 8-bit texels, which cost a quarter of
+/// the bytes and are all an image viewer can show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Depth {
+    #[default]
+    F32,
+    U8,
+}
+
 /// One viewer's full declaration: what it can draw + what it wants reduced.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewSpec {
@@ -127,6 +137,10 @@ pub struct ViewSpec {
     /// Desired per-axis reductions.
     #[serde(default)]
     pub reduce: Vec<AxisReduce>,
+    /// The depth this viewer can draw. One stream serves every viewer, so 8-bit is sent only
+    /// where every admitted one accepts it.
+    #[serde(default)]
+    pub depth: Depth,
 }
 
 /// A payload frame the reducer can query for shape.
@@ -150,7 +164,13 @@ impl ViewSpec {
     /// so a slot nobody has sized cannot cost the stream's whole rate.
     pub fn undeclared() -> ViewSpec {
         let cap = |dim| AxisReduce { dim, max: UNDECLARED_MAX, method: ReduceMethod::Subsample };
-        ViewSpec { dtype: ViewDtype::Array, ndim: Vec::new(), dims: Vec::new(), reduce: vec![cap(0), cap(-1)] }
+        ViewSpec {
+            dtype: ViewDtype::Array,
+            ndim: Vec::new(),
+            dims: Vec::new(),
+            reduce: vec![cap(0), cap(-1)],
+            depth: Depth::F32,
+        }
     }
 
     /// Whether this viewer can draw `frame`, and so joins the merge.
@@ -187,10 +207,12 @@ pub struct PlannedAxis {
     pub method: ReduceMethod,
 }
 
-/// The merged reduction plan for ONE frame. Empty ⇒ passthrough (no reduction).
+/// The merged reduction plan for ONE frame. Empty axes ⇒ passthrough (no reduction).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct MergedViewSpec {
     pub axes: Vec<PlannedAxis>,
+    /// The depth every admitted viewer can draw.
+    pub depth: Depth,
 }
 
 /// Merge N viewers' specs into ONE concrete plan for THIS frame: specs that do not admit the
@@ -199,10 +221,14 @@ pub fn plan<R: Reducible + ?Sized>(specs: &[ViewSpec], frame: &R) -> MergedViewS
     let ndim = frame.ndim();
     let mut order: Vec<usize> = Vec::new(); // first-seen dim order → stable output
     let mut folded: HashMap<usize, (usize, MethodSet)> = HashMap::new();
+    let mut admitted = 0usize;
+    let mut every_u8 = true;
     for spec in specs {
         if !spec.admits(frame) {
             continue;
         }
+        admitted += 1;
+        every_u8 &= spec.depth == Depth::U8;
         for r in &spec.reduce {
             let Some(d) = canon_dim(r.dim, ndim) else {
                 continue;
@@ -223,7 +249,8 @@ pub fn plan<R: Reducible + ?Sized>(specs: &[ViewSpec], frame: &R) -> MergedViewS
         })
         .collect();
     aspect_preserve_area(&mut axes, frame.shape());
-    MergedViewSpec { axes }
+    let depth = if admitted > 0 && every_u8 { Depth::U8 } else { Depth::F32 };
+    MergedViewSpec { axes, depth }
 }
 
 /// Scale every `Area` axis by one shared factor, so a non-square image keeps its aspect ratio.

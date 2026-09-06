@@ -11,6 +11,7 @@
 	import type { ControlView, GlobalView, LockView } from '$lib/crdt/graphDoc';
 	import { effectiveLock, isValidIdentifier } from '$lib/crdt/graphDoc';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { notify } from '$lib/stores/notify.svelte';
 	import { bindViewer } from '$lib/api/frames';
 	import type { ArrayData, DataFrame } from '$lib/codec/decode';
 	import { viewSpecForKind } from '$lib/viewers/capacity';
@@ -164,6 +165,22 @@
 		return typeof v === 'number' ? v : 0;
 	}
 
+	// Listened to DIRECTLY, not delegated: a finger's touch is snapped to the nearest element that
+	// listens, and a delegated listener is on the root — so the corner buttons took every grab.
+	function grab(el: HTMLElement, on: (e: PointerEvent) => void): { update(on: (e: PointerEvent) => void): void; destroy(): void } {
+		let now = on;
+		const hear = (e: PointerEvent): void => now(e);
+		el.addEventListener('pointerdown', hear);
+		return {
+			update(next) {
+				now = next;
+			},
+			destroy() {
+				el.removeEventListener('pointerdown', hear);
+			}
+		};
+	}
+
 	function down(e: PointerEvent, gv: GlobalView, resize: boolean): void {
 		if (!edit || !board) return;
 		picked = gv.name;
@@ -286,7 +303,7 @@
 	});
 
 	function setSource(pv: GlobalView, reference: string): void {
-		stopLearning();
+		if (learning === pv.name) stopLearning();
 		linking = false;
 		void g.sourceControl(group, pv.element, reference).catch(() => {});
 	}
@@ -297,21 +314,30 @@
 		void g.sourceControl(group, pv.element, ref, Math.max(0, Math.round(index))).catch(() => {});
 	}
 
-	// MIDI learn: listen to the followed slot, and the first number that moves is the one.
-	let learning = $state<(() => void) | null>(null);
+	// MIDI learn: listen to the followed slot, and the first number that moves is the one. A widget
+	// with no link yet is linked first — to the patch's one MIDI node, or to the one asked for.
+	let learning = $state<string | null>(null);
+	let unbind: (() => void) | null = null;
+	let asking = $state<string | null>(null);
+	const asked = $derived(elements.find((el) => el.name === asking) ?? null);
+	const askAnchor = $derived.by(() => {
+		if (!board || !asked) return null;
+		return board.querySelector<HTMLElement>(`[data-testid="control-${group}-${asked.element}"]`);
+	});
 	function stopLearning(): void {
-		learning?.();
+		unbind?.();
+		unbind = null;
 		learning = null;
 	}
-	function toggleLearn(pv: GlobalView): void {
-		if (learning) return stopLearning();
-		const ref = pv.source?.reference;
-		const [nodeName, slot] = ref?.split('.') ?? [];
+	function startLearning(gv: GlobalView, ref: string): void {
+		stopLearning();
+		const [nodeName, slot] = ref.split('.');
 		const uid = g.nodes.find((n) => n.name === nodeName)?.uid;
-		if (!ref || !slot || !uid) return;
-		const element = pv.element;
+		if (!slot || !uid) return;
+		const { element, name } = gv;
 		let baseline: number[] | null = null;
-		learning = bindViewer(uid, slot, `learn:${group}.${element}`, viewSpecForKind('line', 4096, 64), (f: DataFrame) => {
+		learning = name;
+		unbind = bindViewer(uid, slot, `learn:${name}`, viewSpecForKind('line', 4096, 64), (f: DataFrame) => {
 			const values = (f.data as ArrayData).values;
 			if (!values || typeof values.length !== 'number') return;
 			if (!baseline) {
@@ -327,8 +353,25 @@
 			}
 		});
 	}
+	async function linkAndLearn(gv: GlobalView, uid: string): Promise<void> {
+		asking = null;
+		try {
+			const ref = await g.linkControl(gv.name, uid);
+			if (ref) startLearning(gv, ref);
+		} catch {
+			/* refused */
+		}
+	}
+	async function learn(gv: GlobalView): Promise<void> {
+		if (learning === gv.name) return stopLearning();
+		if (gv.source) return startLearning(gv, gv.source.reference);
+		const feeds = g.midiFeeds(gv.name);
+		if (feeds.length === 0) notify().raise('No MIDI node in the patch — add one, then learn');
+		else if (feeds.length === 1) await linkAndLearn(gv, feeds[0].uid);
+		else asking = gv.name;
+	}
 	$effect(() => {
-		if (!edit || !pickedView) stopLearning();
+		if (!edit || (learning && !elements.some((el) => el.name === learning))) stopLearning();
 	});
 	onDestroy(stopLearning);
 </script>
@@ -427,7 +470,7 @@
 						data-node-drop={edit ? gv.name : undefined}
 						style={`grid-column: ${at.x + 1} / span ${at.w}; grid-row: ${at.y + 1} / span ${at.h}`}
 						tabindex={edit ? 0 : undefined}
-						onpointerdown={(e) => down(e, gv, false)}
+						use:grab={(e) => down(e, gv, false)}
 						onkeydown={(e) => zap(e, gv)}
 					>
 						<div
@@ -462,6 +505,21 @@
 							</div>
 						{/if}
 						{#if edit}
+							<button
+								type="button"
+								class="learn"
+								class:on={learning === gv.name}
+								data-testid="control-learn"
+								title={learning === gv.name
+									? 'Listening: move one control on the MIDI node'
+									: gv.source
+										? `Learn which of ${gv.source.reference} moves`
+										: 'Link a MIDI node and learn which of its controls moves'}
+								aria-label="MIDI learn for {gv.element}"
+								aria-pressed={learning === gv.name}
+								onpointerdown={(e) => e.stopPropagation()}
+								onclick={() => void learn(gv)}><Icon name="radio" /></button
+							>
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<button
 								type="button"
@@ -477,7 +535,7 @@
 								class="handle"
 								data-testid="control-resize"
 								title="Resize"
-								onpointerdown={(e) => down(e, gv, true)}
+								use:grab={(e) => down(e, gv, true)}
 							></span>
 						{/if}
 						{#if edit && uiStore.nodeDrag !== null}
@@ -554,15 +612,8 @@
 							</Field>
 						{/if}
 						{#if pv.source}
-							<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128">
+							<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128. Learn, on the widget, finds it">
 								<NumberInput value={pv.source.index ?? 0} min={0} step={1} onChange={(v) => setIndex(pv, v)} />
-								<Chip
-									tone={learning ? 'accent' : 'neutral'}
-									aria-pressed={learning !== null}
-									data-testid="control-learn"
-									title="Move one control on the source, and the widget follows that one"
-									onclick={() => toggleLearn(pv)}>{learning ? 'listening…' : 'learn'}</Chip
-								>
 							</Field>
 						{/if}
 						{#if pv.type === 'float' || pv.type === 'int'}
@@ -582,10 +633,40 @@
 								/>
 							</Field>
 						{/if}
+						<!-- The corner buttons' door for a finger: a cell is narrower than two finger-sized targets. -->
+						<div class="touch-actions">
+							<Chip
+								tone={learning === pv.name ? 'accent' : 'neutral'}
+								aria-pressed={learning === pv.name}
+								data-testid="control-learn"
+								onclick={() => void learn(pv)}>{learning === pv.name ? 'listening…' : 'MIDI learn'}</Chip
+							>
+							<Chip tone="danger" data-testid="control-delete" onclick={() => void g.removeControl(group, pv.element)}>delete</Chip>
+						</div>
 					</div>
 				{/if}
 			</Popover>
 		{/key}
+	{/if}
+
+	{#if asked && askAnchor}
+		{@const gv = asked}
+		<Popover
+			anchor={askAnchor}
+			open
+			onDismiss={() => (asking = null)}
+			catcher
+			role="dialog"
+			aria-label="Which MIDI node"
+			data-testid="control-learn-ask"
+		>
+			<div class="ask">
+				<span class="ask-title">Learn from which MIDI node?</span>
+				{#each g.midiFeeds(gv.name) as f (f.uid)}
+					<Chip data-testid={`control-learn-ask-${f.name}`} onclick={() => void linkAndLearn(gv, f.uid)}>{f.reference}</Chip>
+				{/each}
+			</div>
+		</Popover>
 	{/if}
 
 	{#if lift}
@@ -673,6 +754,63 @@
 	.zap:focus-visible {
 		outline: var(--focus-width) solid var(--focus-ink);
 		outline-offset: -2px;
+	}
+	/* Its blue twin over the other corner; lit while it listens. */
+	.learn {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: var(--hit);
+		min-height: var(--hit);
+		padding: 0;
+		background: transparent;
+		border: none;
+		border-radius: var(--radius-md);
+		color: var(--info);
+		cursor: pointer;
+	}
+	.learn.on {
+		background: var(--info-fill);
+		animation: listen 1s ease-in-out infinite alternate;
+	}
+	@keyframes listen {
+		from {
+			opacity: 1;
+		}
+		to {
+			opacity: 0.45;
+		}
+	}
+	.learn:focus-visible {
+		outline: var(--focus-width) solid var(--focus-ink);
+		outline-offset: -2px;
+	}
+	.touch-actions {
+		display: none;
+		gap: var(--space-2);
+	}
+	@media (hover: none) and (pointer: coarse) {
+		.learn,
+		.zap {
+			display: none;
+		}
+		.touch-actions {
+			display: flex;
+		}
+	}
+	.ask {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: var(--space-2);
+	}
+	.ask-title {
+		font-size: var(--fs-small);
+		color: var(--text-dim);
 	}
 	/* The board is a container, so a grid unit is a share of ITS width and follows every resize. */
 	.sheet {

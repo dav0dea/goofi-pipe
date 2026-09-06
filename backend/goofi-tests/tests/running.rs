@@ -55,13 +55,25 @@ fn a_chain_runs_streams_and_follows_the_params_edited_under_it() {
         probe.latest().filter(|d| f32s(d).len() == 16).map(|_| ())
     });
 
-    // The raw one-shot read: exactly the frame the node emitted, as NPY — no subscription, no
-    // reduction, and refused by naming the real slots when the address is wrong.
+    // The one-shot read: exactly the frame the node emitted — no subscription, no reduction, and
+    // refused by naming the real slots when the address is wrong.
     let why = g.refuse("node snapshot", j!({ "output": ep(hex(buf), "psd") }));
     // `it has:` anchors the real-slot list — a bare `out` also matches "output" in the same line.
     assert!(why.contains("no output slot `psd`") && why.contains("it has: out"), "{why}");
-    let snap = g.until("a 16-wide raw frame in the snapshot cache", |g| {
+    // Asked plainly it answers the SHAPE and the range, never the numbers: a caller reading "is
+    // this emitting" pays for one line, not for a megabyte of base64.
+    let seen = g.until("a 16-wide frame in the snapshot cache", |g| {
         Some(g.call("node snapshot", j!({ "output": ep(hex(buf), "out") })))
+            .filter(|r| r["shape"] == j!([16]))
+    });
+    assert!(seen["npy_b64"].is_null(), "the plain read carries no payload: {seen}");
+    let range = &seen["range"];
+    for k in ["min", "max", "mean"] {
+        assert!(range[k].as_f64().is_some_and(|v| v.abs() <= 1.0), "the unit sine's {k}: {seen}");
+    }
+    assert!(range["min"].as_f64() < range["max"].as_f64(), "a sine is not one value: {seen}");
+    let snap = g.until("a 16-wide raw frame in the snapshot cache", |g| {
+        Some(g.call("node snapshot", j!({ "output": ep(hex(buf), "out"), "raw": true })))
             .filter(|r| npy_f32s(&npy(r)).len() == 16)
     });
     let bytes = npy(&snap);

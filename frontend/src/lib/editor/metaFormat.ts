@@ -55,6 +55,8 @@ export function reconstructMeta(meta: Record<string, unknown>): Record<string, u
 	if (!isPlainObject(reduced)) return meta;
 	const out: Record<string, unknown> = { ...meta };
 	delete out['reduced'];
+	// The 8-bit hop is the viewer's, never the node's: inside the graph a frame is f32.
+	if (isPlainObject(reduced['depth'])) out['dtype'] = 'float32';
 	const shape = Array.isArray(meta['shape']) ? [...(meta['shape'] as number[])] : null;
 	const channels = isPlainObject(meta['channels'])
 		? { ...(meta['channels'] as Record<string, unknown>) }

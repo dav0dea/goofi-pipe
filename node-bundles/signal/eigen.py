@@ -11,7 +11,10 @@ import goofi
 
 
 class Eigen(goofi.Node):
-    """The eigenvalues and eigenvectors of a square symmetric matrix, or of its Laplacian."""
+    """The eigenvalues and eigenvectors of a square symmetric matrix.
+
+    Or of its Laplacian, which reads the matrix as a graph instead.
+    """
 
     TAGS = ["analysis", "connectivity"]
     INPUTS = {"input": goofi.InputSlot(goofi.DataType.ARRAY, required=True)}

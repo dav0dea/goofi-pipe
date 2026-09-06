@@ -14,7 +14,7 @@ use goofi_audio_sdk::host::Loaded;
 use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
 use goofi_node::{
-    DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeFault, NodeManifest, NodeStage, NodeView,
+    DrainWaker, Edit, EditorAction, Engine, GraphView, LibraryEntry, NodeManifest, NodeStage, NodeView,
     ParamGroups, ParamKey, Ringer, Status, Touched, Uid, Via, NATIVE,
 };
 
@@ -23,10 +23,11 @@ pub(crate) mod nodes;
 mod plan;
 mod runtime;
 mod scan;
-pub mod ui;
+pub mod wav;
 pub mod vst3;
 
-use control::{Desired, Handle, Shared, Sub};
+use control::{AudioHalf, AudioShared};
+use goofi_control::{Desired, Handle, Shared, Sub};
 use nodes::{audio_out, Class};
 use plan::Plan;
 use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
@@ -137,6 +138,11 @@ impl Drop for DeviceClock {
 /// The host default is what a `default` name means.
 pub(crate) const DEFAULT_DEVICE: &str = "default";
 
+/// Where a take lands, and where a playback name is looked for, when it is a bare one.
+pub fn recordings() -> std::path::PathBuf {
+    goofi_core::home::dir().join("recordings")
+}
+
 /// What an input names its device to say the name resolved and nothing was opened.
 pub(crate) const NO_DEVICE: &str = "the external clock owns no device";
 
@@ -183,7 +189,7 @@ fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, wake
 
 /// The rings a device or a port fills, minted per instance: the DSP half's ends in the birth,
 /// the control half's in the ports. A node that owns no OS handle gets neither.
-fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui>, shared: Arc<Shared>) -> (nodes::Birth, control::Ports) {
+fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<goofi_window::Ui>, shared: Arc<AudioShared>) -> (nodes::Birth, control::Ports) {
     let mut birth = nodes::Birth { chans: chans.clone(), ui, uid: Some(uid), shared: Some(shared), ..Default::default() };
     let mut ports = control::Ports::default();
     match type_name {
@@ -191,6 +197,16 @@ fn rings_for(type_name: &str, chans: Arc<AtomicU16>, uid: Uid, ui: Option<ui::Ui
             let (producer, consumer) = rtrb::RingBuffer::new(control::INBOX_RING);
             birth.inbox = Some(consumer);
             ports.audio_in = Some((Arc::new(Mutex::new(producer)), chans));
+        }
+        nodes::audio_playback::TYPE => {
+            let (producer, consumer) = rtrb::RingBuffer::new(control::INBOX_RING);
+            birth.inbox = Some(consumer);
+            ports.play = Some((producer, chans));
+        }
+        nodes::audio_out::TYPE => {
+            let (producer, consumer) = rtrb::RingBuffer::new(control::REC_RING);
+            birth.rec = Some(producer);
+            ports.rec = Some(consumer);
         }
         nodes::midi_in::TYPE => {
             let (producer, consumer) = rtrb::RingBuffer::new(control::NOTE_RING);
@@ -211,8 +227,8 @@ pub(crate) struct Instance {
     /// thread.
     pub(crate) twin: Box<dyn AudioNode>,
     pub(crate) control: Handle,
-    /// What the control half was last told; a settle that changes nothing says nothing.
-    last: Option<Desired>,
+    /// The channel count each Array input last saw — what the plan sizes its inbox by.
+    pub(crate) chans: Vec<Arc<AtomicU16>>,
 }
 
 pub struct AudioEngine {
@@ -225,13 +241,16 @@ pub struct AudioEngine {
     tried: Option<(String, Option<String>)>,
     stats: Arc<Stats>,
     shared: Arc<Shared>,
+    /// What only an audio control half needs: the clock's rate, what drives it, and the edits a
+    /// plugin's own window made.
+    audio: Arc<AudioShared>,
     classes: HashMap<&'static str, Class>,
     /// Every built artifact loaded so far, by path: a library is opened once and never closed.
     rust_loaded: HashMap<PathBuf, Arc<Loaded>>,
     /// The child a bundle is scanned in, and the platform's plugin folders: the composition root's.
     vst3: Option<(PathBuf, Vec<PathBuf>)>,
     /// The window thread: where a plugin is loaded and its editor lives. None without a display.
-    ui: Option<ui::Ui>,
+    ui: Option<goofi_window::Ui>,
     runtime: Arc<Mutex<Runtime>>,
     inbox: rtrb::Producer<Msg>,
     outbox: rtrb::Consumer<Retired>,
@@ -244,7 +263,7 @@ pub struct AudioEngine {
     sweep: bool,
     /// Nodes the audio thread put out of the plan — a panic, or the watchdog — until a restart.
     disabled: HashMap<Uid, String>,
-    faulted: HashMap<Uid, String>,
+    faults: goofi_control::Faults,
     pending: Vec<(Uid, Status)>,
     dirty: bool,
     last: Plan,
@@ -281,14 +300,12 @@ impl AudioEngine {
             device: None,
             tried: None,
             stats: Arc::new(Stats::default()),
-            shared: Arc::new(Shared {
-                evaluator: Mutex::new(None),
-                reports: Mutex::new(Vec::new()),
-                waker,
-                replan: Default::default(),
+            shared: Arc::new(Shared::new(waker.clone())),
+            audio: Arc::new(AudioShared {
                 rate: AtomicU64::new(RATE.to_bits()),
                 clock,
                 edits: Mutex::new(Vec::new()),
+                waker,
             }),
             classes,
             rust_loaded: HashMap::new(),
@@ -304,7 +321,7 @@ impl AudioEngine {
             workspace: None,
             sweep: false,
             disabled: HashMap::new(),
-            faulted: HashMap::new(),
+            faults: goofi_control::Faults::default(),
             pending: Vec::new(),
             dirty: false,
             last: Plan::default(),
@@ -319,7 +336,7 @@ impl AudioEngine {
     }
 
     /// The window thread every plugin from here on is made on — before anything scans.
-    pub fn set_ui(&mut self, ui: Option<ui::Ui>) {
+    pub fn set_ui(&mut self, ui: Option<goofi_window::Ui>) {
         self.ui = ui;
     }
 
@@ -341,7 +358,7 @@ impl AudioEngine {
                 Clock::Device => "device",
             },
             device: self.device.as_ref().map(|d| d.name.clone()),
-            rate: self.shared.rate(),
+            rate: self.audio.rate(),
             channels: self.device.as_ref().map_or(self.last.output.1, |d| d.channels),
             callbacks: self.stats.callbacks.load(Ordering::Relaxed),
             xruns: self.stats.xruns.load(Ordering::Relaxed),
@@ -438,7 +455,7 @@ impl AudioEngine {
     /// Array inputs it drains, the bindings it evaluates, and the doors each output rings.
     fn desired_of(&self, view: &GraphView<'_>, uid: Uid, nv: &NodeView<'_>) -> Desired {
         let manifest = self.live[&uid].manifest;
-        let consts = manifest.params.iter().map(|d| plan::param_of(nv.params, d)).collect();
+        let consts = manifest.params.iter().map(|d| goofi_control::param_of(nv.params, d)).collect();
         let mut subs = Vec::new();
         for (i, s) in manifest.inputs.iter().enumerate() {
             let Some(inbox) = plan::inbox_of(manifest, i) else { continue };
@@ -479,7 +496,7 @@ impl AudioEngine {
             .iter()
             .enumerate()
             .map(|(i, (id, kind))| {
-                let raw = plan::scalar(&consts[voice + i]);
+                let raw = goofi_control::scalar(&consts[voice + i]);
                 let normalized = match kind {
                     vst3::Kind::Float => raw,
                     vst3::Kind::Stepped(steps) => raw / steps,
@@ -508,7 +525,7 @@ impl AudioEngine {
             .filter(|(uid, inst)| inst.manifest.type_name == audio_out::TYPE && !self.disabled.contains_key(uid))
             .filter_map(|(uid, inst)| {
                 let nv = view.nodes.get(uid)?;
-                let Param::Str { value, .. } = plan::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };
+                let Param::Str { value, .. } = goofi_control::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };
                 Some((*uid, value))
             })
             .collect();
@@ -565,11 +582,11 @@ impl AudioEngine {
     fn retune(&mut self, rate: f64, channels: u16) {
         let mut rt = self.runtime();
         rt.apply_pending();
-        if rate != self.shared.rate() {
+        if rate != self.audio.rate() {
             for slot in rt.slab.iter_mut().flatten() {
                 slot.node.prepare(rate);
             }
-            self.shared.rate.store(rate.to_bits(), Ordering::Relaxed);
+            self.audio.rate.store(rate.to_bits(), Ordering::Relaxed);
             rt.block = Duration::from_secs_f64(BLOCK as f64 / rate);
         }
         rt.set_device(Some(channels));
@@ -631,19 +648,20 @@ impl Engine for AudioEngine {
         let Some(Class { manifest, make, .. }) = self.classes.get(type_name).cloned() else {
             return Some(format!("no audio node type `{type_name}`"));
         };
-        let widest = manifest.params.len().max(manifest.inputs.len()).max(manifest.outputs.len());
+        let chans = Arc::new(AtomicU16::new(1));
+        let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.audio.clone());
+        let mut node = make(birth);
+        // Only the audio-rate params are ports; a control-rate one is a float in the scalar strip.
+        let widest = node.audio_params(manifest.params.len()).max(manifest.inputs.len()).max(manifest.outputs.len());
         if widest > MAX_PORTS {
             return Some(format!("`{type_name}` declares more than {MAX_PORTS} ports"));
         }
-        let chans = Arc::new(AtomicU16::new(1));
-        let (birth, ports) = rings_for(type_name, chans.clone(), uid, self.ui.clone(), self.shared.clone());
-        let mut node = make(birth);
-        node.prepare(self.shared.rate());
+        node.prepare(self.audio.rate());
         if let Some(bytes) = self.state_path(uid, type_name).and_then(|p| std::fs::read(p).ok()) {
             node.load(&bytes);
         }
         let atomics: Arc<[AtomicU64]> =
-            manifest.params.iter().map(|d| AtomicU64::new(plan::scalar_of(params, d).to_bits())).collect();
+            manifest.params.iter().map(|d| AtomicU64::new(goofi_control::scalar_of(params, d).to_bits())).collect();
         let (inbox_in, inbox_out): (Vec<_>, Vec<_>) = manifest
             .inputs
             .iter()
@@ -652,17 +670,20 @@ impl Engine for AudioEngine {
             .unzip();
         let (tap_in, tap_out): (Vec<_>, Vec<_>) =
             manifest.outputs.iter().map(|_| rtrb::RingBuffer::<f32>::new(control::TAP_RING)).unzip();
-        let spawn = control::Spawn {
+        // The inboxes are built here so the plan can read their channel cells; the half itself is
+        // made on its own thread, where an OS handle it opens never has to cross one.
+        let inboxes: Vec<control::Inbox> = inbox_in.into_iter().map(control::Inbox::new).collect();
+        let inbox_chans = AudioHalf::channels(&inboxes);
+        let birth = control::Birth { manifest, inboxes, taps: tap_out, ports, audio: self.audio.clone() };
+        let spawn = goofi_control::Spawn {
+            engine: "audio",
             uid,
             base: goofi_transport::service_base(&self.instance, uid, generation),
             manifest,
             params: atomics.clone(),
-            inboxes: inbox_in,
-            taps: tap_out,
-            ports,
             started: self.started,
         };
-        let control = match control::spawn(spawn, self.shared.clone(), &self.bells) {
+        let control = match goofi_control::spawn(spawn, self.shared.clone(), &self.bells, move || AudioHalf::new(birth)) {
             Ok(handle) => handle,
             Err(e) => return Some(e),
         };
@@ -675,14 +696,14 @@ impl Engine for AudioEngine {
             serial,
             node,
             params: atomics,
-            inboxes: inbox_out.into_iter().map(Inbox::new).collect(),
+            inboxes: inbox_out.into_iter().map(|ring| Inbox::new(ring, true)).collect(),
             taps: tap_in,
             dead: false,
             overruns: 0,
         };
         self.send(Msg::Insert { idx, slot });
         let twin = make(nodes::Birth { chans, ..Default::default() });
-        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, last: None });
+        self.live.insert(uid, Instance { idx, serial, manifest, twin, control, chans: inbox_chans });
         self.pending.push((uid, Status::Stage { stage: NodeStage::Ready }));
         self.dirty = true;
         self.shared.waker.notify();
@@ -699,7 +720,7 @@ impl Engine for AudioEngine {
             self.discard_retired();
             self.free.push(inst.idx);
             self.disabled.remove(&uid);
-            self.faulted.remove(&uid);
+            self.faults.forget(uid);
             self.pending.retain(|(u, _)| *u != uid);
             self.dirty = true;
         }
@@ -710,17 +731,14 @@ impl Engine for AudioEngine {
         if std::mem::take(&mut self.sweep) {
             self.sweep_state();
         }
-        self.shared.replan.swap(false, Ordering::Acquire);
+        self.shared.replan.store(false, Ordering::Release);
         for uid in self.live.keys().copied().collect::<Vec<_>>() {
             let Some(nv) = view.nodes.get(&uid) else { continue };
             let desired = self.desired_of(view, uid, nv);
-            if self.live[&uid].last.as_ref() == Some(&desired) {
+            let shown = self.plugin_values(uid, &desired.consts);
+            if !self.live[&uid].control.send_if_changed(desired) {
                 continue;
             }
-            let shown = self.plugin_values(uid, &desired.consts);
-            let inst = self.live.get_mut(&uid).expect("live");
-            inst.control.send(desired.clone());
-            inst.last = Some(desired);
             if let (Some(ui), Some(values)) = (&self.ui, shown) {
                 ui.post(move |_| vst3::editor::sync(uid, values));
             }
@@ -743,16 +761,7 @@ impl Engine for AudioEngine {
         let (plan, looped) = plan::compile(view, &self.live, &silent, &self.disabled);
         faults.extend(looped);
         let since = self.started.elapsed().as_secs_f64();
-        let now: HashMap<Uid, String> = faults.into_iter().collect();
-        for uid in self.faulted.keys().filter(|u| !now.contains_key(u)) {
-            self.pending.push((*uid, Status::Fault { fault: None }));
-        }
-        for (uid, msg) in &now {
-            if self.faulted.get(uid) != Some(msg) {
-                self.pending.push((*uid, Status::Fault { fault: Some(NodeFault::Process { msg: msg.clone(), since }) }));
-            }
-        }
-        self.faulted = now;
+        self.pending.extend(self.faults.settle(faults, since));
         if plan != self.last {
             let arena = vec![0.0; plan.arena_len];
             self.send(Msg::Plan { plan: plan.clone(), arena });
@@ -771,13 +780,7 @@ impl Engine for AudioEngine {
             self.tried = None;
             self.dirty = true;
         }
-        let mut pending = std::mem::take(&mut self.pending);
-        pending.append(&mut self.shared.reports.lock().unwrap());
-        let n = pending.len();
-        for (uid, status) in pending {
-            apply(uid, status);
-        }
-        n
+        self.shared.drain(&mut self.pending, apply)
     }
 
     /// A refresh runs on the node's own thread, never under the graph lock.
@@ -809,7 +812,7 @@ impl Engine for AudioEngine {
     /// What every editor wrote since the last call, as the record spells it — latest wins per
     /// param, because a drag is many edits and the document wants the last.
     fn take_edits(&mut self) -> Vec<Edit> {
-        let raw = std::mem::take(&mut *self.shared.edits.lock().unwrap());
+        let raw = std::mem::take(&mut *self.audio.edits.lock().unwrap());
         let mut edits: Vec<Edit> = Vec::new();
         for (uid, id, v) in raw {
             let Some(inst) = self.live.get(&uid) else { continue };
@@ -862,11 +865,5 @@ impl Engine for AudioEngine {
             rt.render_block();
         }
         self.discard_retired();
-    }
-}
-
-impl Shared {
-    pub(crate) fn rate(&self) -> f64 {
-        f64::from_bits(self.rate.load(Ordering::Relaxed))
     }
 }

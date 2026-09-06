@@ -31,7 +31,7 @@ fn a_python_file_in_the_workspace_becomes_a_node_that_runs_and_takes_its_params(
     let ty = install(&g, "affine.py", AFFINE);
     assert_eq!(ty, "Affine", "the type is named after the file stem");
 
-    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:Affine").expect("Affine is in the palette").clone();
     assert_eq!(row["input_slots"]["data"], "ARRAY", "{row}");
     assert_eq!(row["output_slots"]["out"], "ARRAY", "{row}");
@@ -188,7 +188,8 @@ fn a_node_missing_a_dependency_is_listed_greyed_rather_than_vanishing() {
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:NeedsScipy").expect("still in the palette").clone();
     let _ = std::fs::remove_file(&installed);
-    assert_eq!(row["available"], true, "installed, refreshed, and still greyed: {row}");
+    // A loadable row says nothing about availability: the index spends that key on greyed rows alone.
+    assert!(row.get("available").is_none(), "installed, refreshed, and still greyed: {row}");
 }
 
 #[test]
@@ -239,7 +240,7 @@ fn a_python_multi_slot_names_its_senders_and_follows_a_rename() {
     let _py = require_python();
     let g = Goofi::new();
     install(&g, "sources.py", SOURCES);
-    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:Sources").expect("Sources is in the palette").clone();
     assert_eq!(row["input_multi"], j!(["input"]), "{row}");
 
@@ -268,7 +269,7 @@ fn a_python_pulse_param_is_a_request_the_node_answers_with_a_hook() {
     let _py = require_python();
     let g = Goofi::new();
     install(&g, "pulse_counter.py", PULSE_COUNTER);
-    let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+    let row = g.call("library list", j!({ "full": true }))["types"].as_array().unwrap().iter()
         .find(|t| t["type"] == "signal:PulseCounter").expect("PulseCounter is in the palette").clone();
     assert_eq!(row["params"]["count"]["reset"]["type"], "pulse", "{row}");
     assert!(row["params"]["count"]["reset"]["value"].is_null(), "{row}");

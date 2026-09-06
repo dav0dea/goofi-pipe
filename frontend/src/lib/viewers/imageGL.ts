@@ -1,5 +1,6 @@
 /** WebGL2 image renderer; `tryCreate` returns null so the caller can degrade to 2D. */
 import { isFloatDtype } from '$lib/codec/decode';
+import { isU8 } from './depth';
 
 const VERT = `#version 300 es
 const vec2 verts[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
@@ -35,8 +36,11 @@ void main() {
 export interface RenderOpts {
 	colormap: string;
 	lut: Uint8Array;
+	/** The drawn range, in the FRAME's units. */
 	lo: number;
 	hi: number;
+	/** What an 8-bit frame's texels span, in the frame's units; absent for an f32 frame. */
+	range?: [number, number] | null;
 	cssW: number;
 	cssH: number;
 }
@@ -44,7 +48,7 @@ export interface RenderOpts {
 /** Whether the GL path supports a given (channels, dtype); gray+alpha (c === 2) falls to 2D.
  * RGB32F is neither color-renderable nor filterable, which is fine — this renderer only samples. */
 export function glSupports(c: number, dtype: string): boolean {
-	if (!isFloatDtype(dtype)) return false;
+	if (!isFloatDtype(dtype) && !isU8(dtype)) return false;
 	return c === 1 || c === 3 || c === 4;
 }
 
@@ -124,17 +128,23 @@ export class GLImageRenderer {
 		}
 
 		const mode = c === 1 ? 0 : c === 3 ? 1 : 2;
-		const internal = c === 1 ? gl.R32F : c === 3 ? gl.RGB32F : gl.RGBA32F;
+		// An 8-bit texture is NORMALIZED: it samples in [0, 1] whatever the frame's own units are,
+		// so the gray range is normalized with it below.
+		const u8 = values instanceof Uint8Array;
+		const internal = u8
+			? c === 1 ? gl.R8 : c === 3 ? gl.RGB8 : gl.RGBA8
+			: c === 1 ? gl.R32F : c === 3 ? gl.RGB32F : gl.RGBA32F;
 		const format = c === 1 ? gl.RED : c === 3 ? gl.RGB : gl.RGBA;
 
 		gl.activeTexture(gl.TEXTURE0);
 		gl.bindTexture(gl.TEXTURE_2D, this.tex);
-		const filter = this.floatLinear ? gl.LINEAR : gl.NEAREST;
+		const filter = u8 || this.floatLinear ? gl.LINEAR : gl.NEAREST;
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-		gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, gl.FLOAT, values as unknown as ArrayBufferView);
+		const type = u8 ? gl.UNSIGNED_BYTE : gl.FLOAT;
+		gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, values as unknown as ArrayBufferView);
 
 		if (mode === 0) {
 			if (this.lutName !== opts.colormap) {
@@ -143,9 +153,12 @@ export class GLImageRenderer {
 				gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
 				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, 256, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, opts.lut);
 			}
-			const span = opts.hi - opts.lo || 1;
+			const texels = u8 ? (opts.range ?? [0, 1]) : [0, 1];
+			const width = texels[1] - texels[0] || 1;
+			const lo = (opts.lo - texels[0]) / width;
+			const span = (opts.hi - opts.lo || 1) / width;
 			gl.useProgram(this.prog);
-			gl.uniform1f(this.uLo, opts.lo);
+			gl.uniform1f(this.uLo, lo);
 			gl.uniform1f(this.uSpan, span);
 		}
 		gl.useProgram(this.prog);

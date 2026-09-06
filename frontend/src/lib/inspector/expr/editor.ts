@@ -1,6 +1,5 @@
-/** The mounted expression editor and the reference picker — one lazy CodeMirror chunk, two
- *  configurations of it: a Python expression with goofi's completions, and a bare picker whose only
- *  completions are the names it is handed. */
+/** The mounted expression editor — one lazy CodeMirror chunk: a Python expression with goofi's
+ *  completions. */
 import { EditorState, Prec, type Extension } from '@codemirror/state';
 import { EditorView, keymap, placeholder, tooltips, type KeyBinding } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
@@ -9,7 +8,6 @@ import {
 	acceptCompletion,
 	autocompletion,
 	closeCompletion,
-	startCompletion,
 	type CompletionSource
 } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -20,7 +18,6 @@ import { expressionDiagnostics } from './diagnostics';
 import { singleLineExpression } from './singleLine';
 import { exprHighlight, exprTheme } from './theme';
 import type { ExprCatalogue } from './catalogue';
-import type { PickerOption } from './refs';
 
 export interface ExprEditorOptions {
 	doc: string;
@@ -30,16 +27,6 @@ export interface ExprEditorOptions {
 	onCommit: (value: string) => void;
 	/** The backend's last compile/eval failure for this param, or null. */
 	error: string | null;
-	placeholder?: string;
-	attributes: Record<string, string>;
-}
-
-export interface PickerOptions {
-	doc: string;
-	/** Read at the moment a completion is asked for; what is typed filters it. */
-	options: () => PickerOption[];
-	/** A pick from the list, Enter, or blur with a changed document. */
-	onCommit: (value: string) => void;
 	placeholder?: string;
 	attributes: Record<string, string>;
 }
@@ -155,41 +142,4 @@ export function createExprEditor(host: HTMLElement, opts: ExprEditorOptions): Ex
 	};
 	showError(opts.error);
 	return handleFor(view, adopt, showError);
-}
-
-/** A field whose only legal contents are the names it is handed: no language, no highlighting, the
- *  list opens on focus, what is typed filters it, and a pick commits at once. Typed text commits
- *  only when it IS one of the names — a half-typed name is never sent. */
-export function createPicker(host: HTMLElement, opts: PickerOptions): ExprEditorHandle {
-	const { send, adopt } = committer(opts.doc, opts.onCommit);
-	const commit = (view: EditorView): void => {
-		const typed = view.state.doc.toString();
-		if (opts.options().some((o) => o.label === typed)) send(view);
-	};
-	const source: CompletionSource = (ctx) => {
-		const typed = ctx.state.doc.toString().toLowerCase();
-		const options = opts
-			.options()
-			.filter((o) => o.label.toLowerCase().includes(typed))
-			.map((o) => ({
-				label: o.label,
-				detail: o.detail,
-				type: 'variable',
-				apply: (view: EditorView) => {
-					view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: o.label } });
-					send(view);
-				}
-			}));
-		return options.length ? { from: 0, to: ctx.state.doc.length, options, filter: false } : null;
-	};
-	const view = mount(host, opts, commit, [
-		autocompletion({ override: [source], activateOnTyping: true }),
-		EditorView.domEventHandlers({
-			focus: (_e, view) => {
-				startCompletion(view);
-				return false;
-			}
-		})
-	]);
-	return handleFor(view, adopt, () => {});
 }

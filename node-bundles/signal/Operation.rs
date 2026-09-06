@@ -335,7 +335,8 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl { name: "out", kind: SlotType::Arra
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Combine several frames: arithmetic folded left with numpy broadcasting, a matrix product, or a correlation.",
+    doc: "Combine several frames into one.\n\
+          Arithmetic folded left with numpy broadcasting, a matrix product, or a correlation.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,

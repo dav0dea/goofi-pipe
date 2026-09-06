@@ -19,6 +19,7 @@ function catalog(): NodeTypeInfo {
 				frequency: {
 					type: 'float',
 					value: 1,
+					default: 1,
 					vmin: 0,
 					vmax: 30,
 					doc: null,
@@ -34,6 +35,7 @@ function catalog(): NodeTypeInfo {
 				device: {
 					type: 'string',
 					value: 'default',
+					default: 'default',
 					options: ['default'],
 					doc: null,
 					refreshable: true,
@@ -48,6 +50,7 @@ function catalog(): NodeTypeInfo {
 				reset: {
 					type: 'pulse',
 					value: null,
+					default: null,
 					doc: null,
 					refreshable: false,
 					expression: null,

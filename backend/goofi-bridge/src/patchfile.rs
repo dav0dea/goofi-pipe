@@ -12,13 +12,16 @@ use serde_json::json;
 use crate::AppState;
 
 /// The name the browser's Save dialog opens with: the open patch's own filename, or a default.
+/// A quote or a control character would end the header field it sits in, so neither survives.
 fn download_name(state: &AppState) -> String {
+    let kept = |c: char| !c.is_control() && !"\"\\".contains(c);
     state
         .save_path
         .lock()
         .unwrap()
         .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().replace(|c| !kept(c), "_")))
+        .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "patch.gfi".into())
 }
 
@@ -59,7 +62,11 @@ pub(crate) async fn upload(State(state): State<AppState>, body: Bytes) -> Respon
     if let Err(e) = std::fs::write(&tmp, &body) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}: {e}", tmp.display())).into_response();
     }
-    let load = state.call("session load", json!({ "path": tmp.to_string_lossy(), "adopt": false }), "upload");
+    let Some(path) = tmp.to_str() else {
+        let _ = std::fs::remove_file(&tmp);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "the temp directory's name is not UTF-8\n").into_response();
+    };
+    let load = state.call("session load", json!({ "path": path, "adopt": false }), "upload");
     let _ = std::fs::remove_file(&tmp);
 
     match load {

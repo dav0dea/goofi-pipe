@@ -354,8 +354,10 @@ fn what_a_crash_left_behind_is_gone_by_the_next_start() {
         assert!(present.contains(id), "the child's node `{id}` has a directory to leave behind");
     }
 
-    // SIGKILL, because the point is a process that drops nothing: a graceful exit would clean up.
-    let _ = std::process::Command::new("kill").args(["-9", &child.id().to_string()]).status();
+    // Killed, because the point is a process that drops nothing: a graceful exit would clean up.
+    // Through `Child::kill`, not a `kill` binary — Windows has none, so the child ran its sleep out
+    // and exited GRACEFULLY, which made this scenario prove the opposite of what it claims.
+    let _ = child.kill();
     let _ = child.wait();
 
     goofi_transport::reclaim_stale_resources();

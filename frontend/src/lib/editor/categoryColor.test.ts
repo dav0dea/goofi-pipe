@@ -6,5 +6,7 @@ describe('dtypeColor is untouched (load-bearing --dtype channel)', () => {
 		expect(dtypeColor('ARRAY')).toBe('var(--dtype-array)');
 		expect(dtypeColor('STRING')).toBe('var(--dtype-string)');
 		expect(dtypeColor('TABLE')).toBe('var(--dtype-table)');
+		expect(dtypeColor('AUDIO')).toBe('var(--dtype-audio)');
+		expect(dtypeColor('TEXTURE')).toBe('var(--dtype-texture)');
 	});
 });

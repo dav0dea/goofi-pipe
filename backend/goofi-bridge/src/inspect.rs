@@ -5,9 +5,14 @@ use std::path::{Path, PathBuf};
 use goofi_graph::{Graph, Uid};
 use serde_json::{json, Value};
 
-/// A uid as a mermaid node id: mermaid ids may not start with a digit, hence the leading `n`.
-fn mid(uid: Uid) -> String {
-    format!("n{}", uid.to_hex())
+/// A node as a mermaid id — its NAME, which is what an op takes back and what a reader of the
+/// diagram would type. A name is a letter then letters and digits, which is a mermaid id already;
+/// the uid is the fallback, and mermaid ids may not start with a digit, hence the leading `n`.
+fn mid(g: &Graph, uid: Uid) -> String {
+    match g.name(uid) {
+        Some(name) => name.to_string(),
+        None => format!("n{}", uid.to_hex()),
+    }
 }
 
 /// A display name safe inside a mermaid `"…"` label.
@@ -69,12 +74,12 @@ fn age(g: &Graph, uid: Uid) -> String {
 pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
     if let Some(s) = scope {
         if !g.is_facade(s) {
-            return Err(format!("nodes inspect: no sub-patch `{}`", s.to_hex()));
+            return Err(format!("nodes inspect: no sub-patch `{}`", crate::named(g, s)));
         }
     }
     let mut out = format!(
         "scope: {}\n",
-        scope.map_or("root".to_string(), |s| format!("{} ({})", scope_path(g, s), s.to_hex())),
+        scope.map_or("root".to_string(), |s| scope_path(g, s)),
     );
 
     let member = members(g, scope);
@@ -85,16 +90,15 @@ pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
         // ONE loop: a port, a facade and a leaf are all members, and only the SHAPE they are drawn
         // in differs — which is the one distinction a diagram is allowed to make.
         for &uid in &member {
-            let hex = uid.to_hex();
             let name = label(g.name(uid).unwrap_or("?"));
             let ty = g.node_type(uid).unwrap_or_else(|| "?".into());
             let warn = if g.last_error(uid).is_some() { "⚠ " } else { "" };
             if g.stub(uid).is_some() {
-                out.push_str(&format!("  {}([\"{warn}{name}: {ty}<br/>{hex}\"])\n", mid(uid)));
+                out.push_str(&format!("  {}([\"{warn}{name}: {ty}\"])\n", mid(g, uid)));
             } else if g.is_facade(uid) {
-                out.push_str(&format!("  {}[[\"{warn}{name}<br/>{hex}\"]]\n", mid(uid)));
+                out.push_str(&format!("  {}[[\"{warn}{name}\"]]\n", mid(g, uid)));
             } else {
-                out.push_str(&format!("  {}[\"{warn}{name}: {ty}<br/>{hex}\"]\n", mid(uid)));
+                out.push_str(&format!("  {}[\"{warn}{name}: {ty}\"]\n", mid(g, uid)));
             }
         }
         // Runtime links are flat leaf→leaf, so each end folds onto the member of THIS scope that
@@ -111,13 +115,13 @@ pub fn patch(g: &Graph, scope: Option<Uid>) -> Result<String, String> {
             if a == b && (l.node_out != a || l.node_in != b) {
                 continue;
             }
-            let e = format!("  {} -- {}→{} --> {}\n", mid(a), l.slot_out, l.slot_in, mid(b));
+            let e = format!("  {} -- {}→{} --> {}\n", mid(g, a), l.slot_out, l.slot_in, mid(g, b));
             if !edges.contains(&e) {
                 edges.push(e);
             }
         }
         out.extend(edges);
-        out.push_str("```\n\nuids: a uid is its mermaid id without the leading `n`.\n");
+        out.push_str("```\n\nnames: a node's mermaid id is its name, which every op takes.\n");
     }
 
     Ok(out)
@@ -131,7 +135,7 @@ pub fn errors(g: &Graph) -> Vec<Value> {
         .filter(|u| g.last_error(*u).is_some())
         .map(|uid| {
             serde_json::json!({
-                "node": uid.to_hex(),
+                "node": crate::named(g, uid),
                 "path": node_path(g, uid),
                 "error": g.last_error(uid).unwrap_or(""),
                 "standing": g.error_age(uid).map(|d| d.as_secs_f64()),
@@ -264,11 +268,18 @@ pub fn globals(g: &Graph) -> Value {
     json!({ "globals": entries, "groups": groups })
 }
 
-/// `library get`: a node type's text where it has one, and its provenance either way.
-pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Result<Value, String> {
+/// `library get`: one type's provenance, and — when `source` asks — the file itself, under
+/// `text`: the entry's own `source` is where the TYPE came from, and one key cannot be both.
+pub fn node_source(
+    g: &Graph,
+    ty: &str,
+    mount: &Path,
+    roots: &[PathBuf],
+    source: bool,
+) -> Result<Value, String> {
     let (engine, entry) = g.resolve_type(ty).map_err(|e| format!("library get: {e}"))?;
     let ty = &goofi_node::qualify(engine, entry.manifest.type_name);
-    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest);
+    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest, crate::schemas::Detail::Full);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
     let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| mount.join(goofi_node::folder_of(id))).collect();
@@ -296,34 +307,40 @@ pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Resu
     });
     info["path"] =
         found.as_ref().map(|(p, _)| json!(goofi_core::path::to_slash(p))).unwrap_or(Value::Null);
-    info["source"] = found
-        .as_ref()
-        .and_then(|(p, _)| std::fs::read_to_string(p).ok())
-        .map(Value::String)
-        .unwrap_or(Value::Null);
+    if source {
+        info["text"] = found
+            .as_ref()
+            .and_then(|(p, _)| std::fs::read_to_string(p).ok())
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+    }
     Ok(info)
 }
 
-use goofi_graph::layout::{Layout, Node};
+use goofi_graph::layout::Node;
 
 /// One node's line in the arrangement tree, and its children under it.
-fn layout_line(n: &Node, depth: usize, out: &mut String) {
+fn layout_line(g: &Graph, n: &Node, depth: usize, out: &mut String) {
     let pad = "  ".repeat(depth);
     match n {
         Node::Split { id, size, axis, children } => {
             out.push_str(&format!("{pad}{} split {size:.2}  [{id}]\n", axis.name()));
             for c in children {
-                layout_line(c, depth + 1, out);
+                layout_line(g, c, depth + 1, out);
             }
         }
         Node::Panel { id, size, panel_type, state } => {
-            let bound = state.get("node").and_then(|v| v.as_str()).map(|b| format!(" → {b}"));
+            // The doc binds a panel by uid; a reader is shown the name, which is what rebinds it.
+            let bound = state.get("node").and_then(|v| v.as_str()).map(|b| {
+                format!(" → {}", g.resolve_ref(b).map_or_else(|| b.to_string(), |u| crate::named(g, u)))
+            });
             out.push_str(&format!("{pad}{panel_type}{} {size:.2}  [{id}]\n", bound.unwrap_or_default()))
         }
     }
 }
 
-pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
+pub fn layout_tree(g: &Graph, tab: Option<&str>) -> String {
+    let l = g.arrangement();
     let mut out = String::from(
         "The editor arrangement. Every entry — tab, split and panel — is addressed by the id in []. \
          The number on each entry is its share of its parent — what `layout split edit` sets.\n\n",
@@ -336,7 +353,7 @@ pub fn layout_tree(l: &Layout, tab: Option<&str>) -> String {
         let Some(name) = l.name_of(&t) else { continue };
         out.push_str(&format!("tab `{name}`  [{t}]\n"));
         if let Some(root) = l.root_of(&t).and_then(|r| l.node(&r).cloned()) {
-            layout_line(&root, 1, &mut out);
+            layout_line(g, &root, 1, &mut out);
         }
     }
     out

@@ -1,40 +1,41 @@
 goofi-pipe is a live signal-processing patch: a graph of nodes running right now, in a window a
 human has open beside you. Your edits reach their screen at once and theirs reach your next read,
-so work in small steps and check each one. Call `goofi nodes inspect` first and again between
-steps: it draws the graph, and `goofi session status` lists every standing error with how long it
-has stood. Every write answers with what it did, so read the reply instead of following it with
-another call. Never guess a name: `goofi library list` is the palette of node types, and panel
-types and viewer kinds are enumerated by the op that takes them.
+so work in small steps and check each one, `goofi nodes inspect` between them. Every write
+answers with what it did, so read the reply instead of following it with another call. Never
+guess a name: `goofi library list` indexes the node types and
+`goofi library get <type>` reads one in full; panel types and viewer kinds are enumerated by the
+op that takes them.
 
-You drive goofi with the `goofi` command in this shell — it is already on your PATH, pointed at
-THIS server, and your ops land in your own undo stack: `undo`/`redo` are yours alone and never
-touch the human's. It reaches the server over local TCP, so run `goofi` with network access
-allowed — a sandbox that blocks the network blocks every op. One op is one line, `goofi <op> [--arg value …]`; `goofi op list` answers
-every op with its arguments and result, `goofi help <group>` lists a group, `--help` on any op
-explains it, and `--json` answers the raw JSON for `jq`. Several ops become ONE undo step through
-stdin:
+You drive goofi with the `goofi` command in this shell — already on your PATH, pointed at THIS
+server, and your ops land in your own undo stack: `undo`/`redo` never touch the human's. It
+reaches the server over local TCP, so run it with network access allowed — a sandbox that blocks
+the network blocks every op. One op is one line,
+`goofi <op> [--arg value …]`; `goofi op list` answers every op with its arguments and its kind,
+`goofi help <group>` lists a group, `--help` on any op explains it, and `--json` answers the raw
+JSON for `jq`. Read the one op you need with `--help`, not `op list --doc`, which is the whole
+manual. Several ops become ONE undo step through stdin:
 
     goofi - <<'EOF'
-    node add --type Oscillator --member_uid aaaaaaaaaaa1
-    node add --type Buffer --member_uid aaaaaaaaaaa2
-    link add aaaaaaaaaaa1/out aaaaaaaaaaa2/data
+    node add Oscillator --name osc
+    node add Buffer --name buf
+    link add osc/out buf/data
     EOF
 
-`--member_uid` lets you CHOOSE a uid, so a later line can wire what an earlier one built. A batch
+A NAME is how every op addresses a node, so a later line wires what an earlier one built. A batch
 lands whole or not at all. (An MCP-connected agent runs the same lines through the one tool
 `goofi_exec`, a list of them as one batch; the NPY pipe and `--json` are the shell's alone.)
 
 ## Seeing
 
-`goofi nodes inspect` draws one scope. No argument is the root; a sub-patch uid narrows to it.
+`goofi nodes inspect` draws one scope. No argument is the root; a sub-patch narrows to it.
 
     scope: root
 
     ```mermaid
     flowchart LR
-      n000000000001["oscillator0: Oscillator<br/>000000000001"]
-      n000000000002["buffer0: Buffer<br/>000000000002"]
-      n000000000001 -- out→data --> n000000000002
+      osc["osc: Oscillator"]
+      buf["buf: Buffer"]
+      osc -- out→data --> buf
     ```
 
 `goofi session status` lists every standing error with its age — a 0.2s error may clear
@@ -42,7 +43,7 @@ itself, one standing 30s will not — and says where the patch is saved. `goofi 
 is the cheap peek — params, whether each output emits, and the error; `--no-params`/`--no-error`
 drop a section, `--slot` narrows to one output.
 
-    buffer0: Buffer (uid 000000000002, native, stage ready)
+    buf: Buffer (uid 000000000002, native, stage ready)
 
     params:
       buffer.size = 1000 (int 1..10000000)
@@ -53,15 +54,16 @@ drop a section, `--slot` narrows to one output.
     error: none
 
 `nothing emitted yet` in place of a rate is the first thing to look for. The DATA itself is one
-op away, raw:
+op away. `goofi node snapshot buf/out` answers an ARRAY slot's latest frame as its shape
+and range — which tells silence from signal — and STRING and TABLE as their value; a facade or
+boundary port resolves to the stream behind it. `--raw` answers the numbers, as NPY on stdout:
 
-    goofi node snapshot 000000000002/out \
+    goofi node snapshot buf/out --raw \
       | python3 -c "import numpy,sys; print(numpy.load(sys.stdin.buffer).mean())"
 
-It answers an ARRAY slot's latest frame as NPY on stdout (STRING and TABLE answer JSON) — a
-facade or boundary port resolves to the stream behind it. The first ask on a never-watched slot opens its feed and answers null; ask
-again after the node's next emit. A monitor is a loop over it. `goofi layout inspect` names the
-tabs and panel ids the layout ops address; `goofi global list` says what an expression can read.
+The first ask on a never-watched slot opens its feed and answers null; ask again after the node's
+next emit. A monitor is a loop over it. `goofi layout inspect` names the tabs and panel ids the
+layout ops address; `goofi global list` says what an expression can read.
 Design layout in the tab that is open — a new tab hides your work behind a click, so add one only
 when the human asks for one. And you are often ON that layout yourself: an agent terminal is a
 panel, so mind the one the human watches you through.
@@ -69,15 +71,17 @@ panel, so mind the one the human watches you through.
 ## Building
 
     goofi node add Oscillator --pos 0,0
-    → {"uid": "000000000001", "name": "oscillator0", "input_slots": {},
+    → {"name": "oscillator0", "uid": "000000000001", "input_slots": {},
        "output_slots": {"out": "ARRAY"}, "params": {…}}
 
-    goofi link add 000000000001/out 000000000002/data   → {"from": …, "to": …, "dtype": "ARRAY"}
+    goofi link add oscillator0/out buffer0/data   → {"from": …, "to": …, "dtype": "ARRAY"}
 
-    goofi node param edit 000000000001 oscillator/frequency --value 7.5
+    goofi node param edit oscillator0 oscillator/frequency --value 7.5
     → {"value": 7.5, "error": null}
 
-`name` is what `nd()` addresses a node by; `uid` is what every op takes. `node param edit`
+A NAME is what every op takes and what `nd()` addresses — unique across the patch, minted if you
+give none, and yours to set with `--name`. The uid beside it is for keying records of your own.
+`node param edit`
 answers the param **as stored** — coerced to its declared type, so a fraction into an int comes
 back rounded; the declared min/max are the editor's range, not a clamp. `--expression
 "nd('other_node').out.sfreq"` — or `globals.x`, or `t` — binds instead of a literal; a bound param
@@ -89,11 +93,10 @@ undo.
 
 `link add` refuses a dtype mismatch and names both ends, refuses a wrong slot name by naming
 the slots that exist, and refuses an end that names no node — so a reply means the wire is really
-there. Take uids from a read, never from memory.
+there. Take names from a read, never from memory.
 
 Panel types and viewer kinds are **closed sets**, not free strings — guessing `params` for
-`parameters` is a mistake a real agent made. A guess is refused with the whole set: empty,
-node-editor, parameters, viewer, metadata, console, globals, agent.
+`parameters` is a mistake a real agent made. A guess is refused with the whole set.
 
 ## Custom nodes
 
@@ -105,6 +108,8 @@ overriding a shipped type of the same name.
     import goofi
 
     class Scale(goofi.Node):
+        """Multiply every value by a factor."""
+
         INPUTS = {"input": goofi.DataType.ARRAY}
         OUTPUTS = {"out": goofi.DataType.ARRAY}
         PARAMS = {"scale": {"factor": goofi.FloatParam(2.0, 0.0, 10.0)}}
@@ -116,17 +121,19 @@ overriding a shipped type of the same name.
 
     goofi library refresh → {"added": ["Scale"], "changed": [], "removed": []}
 
-Four constants declare the node, and each may be omitted: `INPUTS`, `OUTPUTS`, `PARAMS`, and
-`PRODUCER = True` for a source that paces itself rather than waiting for a frame. An input slot
-that `process()` reads unconditionally should say so — `goofi.InputSlot(goofi.DataType.ARRAY,
-required=True)` — and the engine then refuses the tick rather than calling you with `None`.
+The docstring is the node's doc, and its FIRST LINE is the nutshell a catalog shows: keep it
+under 80 characters and put the detail after it. Four constants declare the rest, each of them
+optional: `INPUTS`, `OUTPUTS`, `PARAMS`, and `PRODUCER = True` for a source that paces itself
+rather than waiting for a frame. An input slot that `process()` reads unconditionally should say
+so — `goofi.InputSlot(goofi.DataType.ARRAY, required=True)` — and the engine then refuses the
+tick rather than calling you with `None`.
 
 Edit the file and refresh again: it returns under `changed`, and every live instance of that type
 **restarts onto the new code** — `setup()` runs again, so a buffer empties and a device reopens.
 A node whose imports are missing registers as unavailable and names the module; a node that
-raises inside `process()` becomes that node's error, not a crash. `goofi library get <type>`
-gives you a shipped node to copy from, in either language: a `.rs` file in the same folder is a
-Rust node, built on refresh where `cargo` exists.
+raises inside `process()` becomes that node's error, not a crash.
+`goofi library get <type> --source` gives you a shipped node to copy from, in either language: a
+`.rs` file in the same folder is a Rust node, built on refresh where `cargo` exists.
 
 ## The workspace
 
