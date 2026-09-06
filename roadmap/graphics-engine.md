@@ -213,7 +213,12 @@ and the drain copy had already drifted into the defect above.
 - The device gate serialises the tick against a compile. It was measured as necessary on one
   driver; whether every driver needs it is not known, and the cheap way to find out is to try
   another machine before making the gate narrower.
-- Nobody has run `cargo run` and watched a shader in the browser. Every claim here is the suite's.
+- The BROWSER has not drawn a graphics frame by hand yet. The binary has: a release `goofi` on an
+  RTX 4090 through Vulkan holds 60 fps with one reader, at 512 square and at 1280x720 alike, and
+  the worst tick of a run is the first, which allocates. It renders nothing while nothing reads,
+  which is the demand rule holding outside the suite. A DEBUG binary manages 14 fps at 512 square,
+  because the readback converts a million texels from f16 in an unoptimized loop; that is the
+  build, not the design, and it is why a rate must never be read off `cargo run` alone.
 - The readback waits on the render thread once per tick; a double-buffered readback is the lever
   if a tick misses 16 ms.
 - The reducer's area kernel at 1080p; a GPU-side downscale needs the viewer's size to reach the
