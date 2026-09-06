@@ -69,6 +69,19 @@ export async function waitForNoNode(page: Page, uid: string): Promise<void> {
 	);
 }
 
+/** Rename a node — a doc write that redraws every card the panel holds. */
+export function renameNode(page: Page, uid: string, name: string): Promise<void> {
+	return page.evaluate(
+		([u, n]) => (window as any).goofi.commands.renameNode(u, n),
+		[uid, name] as const
+	);
+}
+
+/** How many nodes the active editor holds selected. */
+export function selectedCount(page: Page): Promise<number> {
+	return page.evaluate(() => (window as any).goofi.query.selection().nodes.length);
+}
+
 /** Edit a committed param value (a doc leaf-write). */
 export function updateParam(
 	page: Page,

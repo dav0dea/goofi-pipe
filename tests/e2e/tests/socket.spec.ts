@@ -20,7 +20,17 @@ import {
 	replicaNodes,
 	restoreSocket
 } from '../lib/raw';
-import { addNode, nodeParams, redo, selectNode, undo, waitForNode } from '../lib/goofi';
+import {
+	addNode,
+	nodeParams,
+	nodes,
+	redo,
+	renameNode,
+	selectNode,
+	selectedCount,
+	undo,
+	waitForNode
+} from '../lib/goofi';
 
 /** Whether the platform clipboard holds a goofi payload naming `uid` — the observable a copy is
  * finished by, since the manager is asked for the subtree before anything is written. */
@@ -482,6 +492,47 @@ test.describe('the control socket', () => {
 				expect(truth.sort()).toEqual([mine, theirs].sort());
 				await expect.poll(() => replicaNodes(page)).toEqual(truth);
 				await expect.poll(() => replicaNodes(other)).toEqual(truth);
+			});
+
+			await test.step('a peer’s delta lands mid-drag, and the marquee still selects what it drew', async () => {
+				// A delta rebuilds every rendered node, and the rebuild re-derives each one's
+				// `selected` flag. Re-derived from the STORE, it wiped a marquee still in the hand:
+				// the box drew, the release committed nothing, and a busier patch met it more often.
+				const pane = (await page.locator('.svelte-flow').boundingBox())!;
+				const cards = await page.locator('.svelte-flow__node').all();
+				const boxes = await Promise.all(cards.map(async (c) => (await c.boundingBox())!));
+				// A card sits in the pane's own top-left corner, so the box is drawn from clear
+				// ground BEYOND the cards back to that corner. Started the other way round, the
+				// press lands on the top bar and drags a panel instead.
+				const from = {
+					x: Math.max(...boxes.map((b) => b.x + b.width)) + 24,
+					y: Math.max(...boxes.map((b) => b.y + b.height)) + 24
+				};
+				const to = { x: pane.x + 2, y: pane.y + 2 };
+				await page.keyboard.down('Shift');
+				await page.mouse.move(from.x, from.y);
+				await page.mouse.down();
+				for (let i = 1; i <= 6; i++)
+					await page.mouse.move(
+						from.x + ((to.x - from.x) * i) / 6,
+						from.y + ((to.y - from.y) * i) / 6
+					);
+				await expect(
+					page.locator('.svelte-flow__selection'),
+					'the drag draws a selection box'
+				).toHaveCount(1);
+				// The peer's edit, taken all the way to THIS tab's replica before the finger lifts.
+				await renameNode(other, theirs, 'renamed');
+				await expect
+					.poll(async () => (await nodes(page)).map((n) => n.name), {
+						message: 'the peer’s rename reached this tab mid-drag'
+					})
+					.toContain('renamed');
+				await page.mouse.up();
+				await page.keyboard.up('Shift');
+				await expect
+					.poll(() => selectedCount(page), { message: 'the release commits what the box drew' })
+					.toBe(2);
 			});
 
 			await test.step('an undo here takes back MY node, and leaves the peer’s standing', async () => {

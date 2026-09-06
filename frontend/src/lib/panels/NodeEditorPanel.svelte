@@ -312,6 +312,10 @@
 		return `${Object.keys(n.input_slots).join(' ')}|${Object.keys(n.output_slots).join(' ')}`;
 	}
 
+	// True only between a box/marquee drag's start and end, so a plain pane click's end event
+	// cannot resurrect a just-cleared selection — and so a rebuild knows a marquee is live.
+	let boxSelecting = false;
+
 	// Render the direct children of the entered scope — leaves, nested facades and boundary ports
 	// alike, because each is a node record that names this scope.
 	$effect(() => {
@@ -330,7 +334,9 @@
 				type: 'goofi',
 				position: pinned.get(uid) ?? { x: n.pos?.[0] ?? 0, y: n.pos?.[1] ?? 0 },
 				data: { node: n, label: n.name, handles },
-				selected: sel.nodes(panelId).has(uid),
+				// A live marquee's flags are Flow's, on these very objects: re-deriving them from
+				// the store mid-drag hands the release an empty selection.
+				selected: boxSelecting ? (was?.selected ?? false) : sel.nodes(panelId).has(uid),
 				measured: was?.data.handles === handles ? was.measured : undefined
 			});
 		}
@@ -341,6 +347,7 @@
 	// inner wire is one of them: it is a link like any other, drawn where its port is drawn.
 	$effect(() => {
 		reconcileTick; // re-derive on demand to drop an optimistic ghost edge after a rejected wire
+		const previous = new Map(untrack(() => flowEdges).map((e) => [e.id, e]));
 		const next: Edge[] = [];
 		for (const l of g.links) {
 			const src = drawEndpoint(l.node_out, l.slot_out);
@@ -354,7 +361,7 @@
 				sourceHandle: src.handle,
 				target: dst.node,
 				targetHandle: dst.handle,
-				selected: sel.edges(panelId).has(id),
+				selected: boxSelecting ? (previous.get(id)?.selected ?? false) : sel.edges(panelId).has(id),
 				animated: false
 			});
 		}
@@ -692,10 +699,6 @@
 		for (const id of ids) if (!set.has(id)) return false;
 		return true;
 	}
-
-	// True only between a box/marquee drag's start and end, so a plain pane click's end event
-	// cannot resurrect a just-cleared selection.
-	let boxSelecting = false;
 
 	/** Mirror a finished marquee into the store. Keyed on start/end, never `onselectionchange`: a
 	 * store-driven selection replaces every flowNodes object and Flow then emits transient echoes. */
