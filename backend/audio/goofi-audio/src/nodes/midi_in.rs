@@ -15,6 +15,13 @@ goofi_audio_sdk::params! {
         expression: None,
         doc: None,
     },
+    BEND = ParamDecl {
+        group: "midi",
+        name: "bend_range",
+        spec: ParamSpec::Float { default: 2.0, min: 0.0, max: 24.0 },
+        expression: None,
+        doc: Some("how many semitones a full pitch wheel reaches, up and down"),
+    },
     VOICES = ParamDecl {
         group: "midi",
         name: "voices",
@@ -50,6 +57,8 @@ pub struct Note {
     pub velocity: u8,
     /// The sustain pedal moved rather than a key: `on` is the pedal's new state.
     pub pedal: bool,
+    /// The pitch wheel moved rather than a key: `bend` is where it now sits, -1 to 1.
+    pub wheel: Option<f32>,
 }
 
 impl Note {
@@ -59,10 +68,17 @@ impl Note {
     pub fn parse(bytes: &[u8]) -> Option<Note> {
         let [status, note, velocity, ..] = *bytes else { return None };
         match status & 0xF0 {
-            0x90 if velocity > 0 => Some(Note { on: true, note, velocity, pedal: false }),
-            0x90 | 0x80 => Some(Note { on: false, note, velocity, pedal: false }),
+            0x90 if velocity > 0 => Some(Note { on: true, note, velocity, pedal: false, wheel: None }),
+            0x90 | 0x80 => Some(Note { on: false, note, velocity, pedal: false, wheel: None }),
             // CC 64 is sustain, and by the spec anything from 64 up is DOWN.
-            0xB0 if note == 64 => Some(Note { on: velocity >= 64, note, velocity, pedal: true }),
+            0xB0 if note == 64 => Some(Note { on: velocity >= 64, note, velocity, pedal: true, wheel: None }),
+            // The wheel is 14 bits across the two data bytes, centred at 8192 and asymmetric:
+            // 8191 up against 8192 down, so each side is scaled by its own end.
+            0xE0 => {
+                let raw = i32::from(u16::from(velocity) << 7 | u16::from(note)) - 8192;
+                let bend = raw as f32 / if raw >= 0 { 8191.0 } else { 8192.0 };
+                Some(Note { on: false, note, velocity, pedal: false, wheel: Some(bend) })
+            }
             _ => None,
         }
     }
@@ -82,16 +98,21 @@ pub struct MidiIn {
     voices: [Voice; MAX_CHANNELS as usize],
     next: usize,
     pedal: bool,
+    bend: f32,
 }
 
 impl MidiIn {
     pub fn new(birth: Birth) -> MidiIn {
-        MidiIn { notes: birth.notes, voices: [Voice::default(); MAX_CHANNELS as usize], next: 0, pedal: false }
+        MidiIn { notes: birth.notes, voices: [Voice::default(); MAX_CHANNELS as usize], next: 0, pedal: false, bend: 0.0 }
     }
 
     /// A note-on takes the next free voice round-robin — or the voice already holding that note;
     /// a note-off frees its voice wherever it is, past a shrunk count included.
     fn land(&mut self, n: Note, voices: usize) {
+        if let Some(bend) = n.wheel {
+            self.bend = bend;
+            return;
+        }
         // Lifting the pedal is what finally releases every key already let go under it.
         if n.pedal {
             self.pedal = n.on;
@@ -143,6 +164,9 @@ impl AudioNode for MidiIn {
 
     fn process(&mut self, b: &mut Block<'_>) {
         let voices = (b.outs[0].channels() as usize).clamp(1, MAX_CHANNELS as usize);
+        // The wheel bends the PITCH rather than riding a channel of its own, so every instrument
+        // hears it through the one signal it already reads — the cable included.
+        let semitones = b.params.get(P::BEND).map_or(2.0, |p| p.chan(0)[0]);
         while let Some(n) = self.notes.as_mut().and_then(|r| r.pop().ok()) {
             self.land(n, voices);
         }
@@ -151,8 +175,8 @@ impl AudioNode for MidiIn {
         let bundled = (b.outs[3].channels() as usize / 2).min(voices);
         for c in 0..voices {
             let voice = self.voices[c];
-            let (gate, pitch, vel) =
-                (if voice.gate { 1.0 } else { 0.0 }, (f32::from(voice.note) - 60.0) / 12.0, voice.velocity);
+            let (gate, vel) = (if voice.gate { 1.0 } else { 0.0 }, voice.velocity);
+            let pitch = (f32::from(voice.note) - 60.0 + self.bend * semitones) / 12.0;
             b.outs[0].chan_mut(c).fill(gate);
             b.outs[1].chan_mut(c).fill(pitch);
             b.outs[2].chan_mut(c).fill(vel);
