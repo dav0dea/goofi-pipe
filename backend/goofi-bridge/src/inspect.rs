@@ -245,18 +245,20 @@ pub fn globals(g: &Graph) -> Value {
     let entries: Vec<Value> = g
         .globals()
         .entries()
-        .map(|(name, v, system, locked, control)| {
+        .map(|(name, v, _, control)| {
             let mut e = goofi_graph::global_to_json(v);
             e["name"] = json!(name);
-            e["system"] = json!(system);
-            e["locked"] = json!(locked);
+            // What holds it, its own lock and its group's together — the answer a writer needs.
+            e["lock"] = serde_json::to_value(g.globals().lock_of(name)).expect("a plain record");
             if let Some(c) = control {
                 e["control"] = serde_json::to_value(c).expect("a plain record");
             }
             e
         })
         .collect();
-    json!({ "globals": entries })
+    let groups: serde_json::Map<String, Value> =
+        g.globals().groups().map(|(group, lock)| (group.to_string(), json!({ "lock": lock }))).collect();
+    json!({ "globals": entries, "groups": groups })
 }
 
 /// `library get`: a node type's text where it has one, and its provenance either way.

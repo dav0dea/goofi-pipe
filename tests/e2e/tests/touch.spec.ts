@@ -216,9 +216,10 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 				await g.commands.addGlobal('desk.level', 0.5, 'float', {
 					kind: 'knob', min: 0, max: 1, step: 0.01, x: 0, y: 0, w: 3, h: 3
 				});
+				await g.commands.lockGlobalGroup('desk', { config: true });
 				const panel = g.query.panels()[0];
 				g.commands.setPanelType(panel.panelId, 'control');
-				g.commands.setPanelState(panel.panelId, { group: 'desk', edit: false });
+				g.commands.setPanelState(panel.panelId, { group: 'desk' });
 			});
 			const knob = page.getByTestId('control-desk-level');
 			await expect(knob).toBeVisible();
@@ -264,6 +265,7 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 	} finally {
 		await page.evaluate(async () => {
 			const g = (window as any).goofi;
+			await g.commands.lockGlobalGroup('desk', { config: false, value: false });
 			for (const v of g.query.globals().filter((v: { name: string }) => v.name.startsWith('desk.')))
 				await g.commands.removeGlobal(v.name);
 		});

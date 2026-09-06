@@ -107,14 +107,34 @@ impl Control {
     }
 }
 
-/// A code-owned system global: never deletable or renamable. A LOCKED one is not editable
-/// either — its value is the machine's, re-derived at every reassert, and a `.gfi` never
-/// carries it.
+/// A lock on a global or a whole group: `config` freezes the name, the type, the widget and
+/// membership; `value` freezes the value alone. A group's lock reaches every member.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lock {
+    #[serde(default)]
+    pub config: bool,
+    #[serde(default)]
+    pub value: bool,
+}
+
+impl Lock {
+    pub fn is_default(self) -> bool {
+        self == Lock::default()
+    }
+    /// This lock and `other` together: an axis is locked when either locks it.
+    pub fn or(self, other: Lock) -> Lock {
+        Lock { config: self.config || other.config, value: self.value || other.value }
+    }
+}
+
+/// A code-owned system global: its group is config-locked for life. A MACHINE one is
+/// value-locked too — its value is the machine's, re-derived at every reassert, and a `.gfi`
+/// never carries it.
 pub struct GlobalDef {
     pub name: &'static str,
     pub value: fn() -> GlobalValue,
     pub doc: &'static str,
-    pub locked: bool,
+    pub machine: bool,
 }
 
 pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
@@ -122,13 +142,13 @@ pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
         name: "system.default_ufreq",
         value: || GlobalValue::Float(30.0),
         doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
-        locked: false,
+        machine: false,
     },
     GlobalDef {
         name: "system.goofi_home",
         value: || GlobalValue::Str(crate::path::to_slash(&crate::home::dir())),
         doc: "The .goofi folder, where goofi keeps its own files. The machine says where it is.",
-        locked: true,
+        machine: true,
     },
 ];
 
@@ -192,14 +212,26 @@ pub fn is_valid_name(name: &str) -> bool {
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && chars.all(|c| c.is_ascii_alphanumeric())
 }
 
-/// The authoritative globals map. System globals may be edited but never removed, and the
-/// insertion order is observable (the panel, the `.gfi` and the mirror all read it).
+/// The group `system`, which is goofi's own: born config-locked, and no lock of its is a caller's
+/// to set.
+pub const SYSTEM_GROUP: &str = "system";
+
+fn is_machine(name: &str) -> bool {
+    SYSTEM_GLOBALS.iter().any(|d| d.machine && d.name == name)
+}
+
+fn group_of(name: &str) -> &str {
+    split_global(name).map(|(g, _)| g).unwrap_or(name)
+}
+
+/// The authoritative globals map. Locks decide what a caller may change, and the insertion order
+/// is observable (the panel, the `.gfi` and the mirror all read it).
 #[derive(Clone)]
 pub struct GlobalStore {
     values: IndexMap<String, GlobalValue>,
     controls: IndexMap<String, Control>,
-    system: std::collections::HashSet<String>,
-    locked: std::collections::HashSet<String>,
+    locks: IndexMap<String, Lock>,
+    group_locks: IndexMap<String, Lock>,
 }
 
 impl Default for GlobalStore {
@@ -213,25 +245,26 @@ impl GlobalStore {
         let mut s = GlobalStore {
             values: IndexMap::new(),
             controls: IndexMap::new(),
-            system: std::collections::HashSet::new(),
-            locked: std::collections::HashSet::new(),
+            locks: IndexMap::new(),
+            group_locks: IndexMap::new(),
         };
         s.reassert_system();
         s
     }
 
-    /// Back-fill any missing system global with its default — on construction and after a load.
-    /// A LOCKED one is overwritten instead: its value is this machine's, never a file's.
+    /// Back-fill any missing system global with its default — on construction and after a load —
+    /// and re-lock the system group. A MACHINE one is overwritten instead: its value is this
+    /// machine's, never a file's.
     pub fn reassert_system(&mut self) {
         for def in SYSTEM_GLOBALS {
-            if def.locked {
+            if def.machine {
                 self.values.insert(def.name.to_string(), (def.value)());
-                self.locked.insert(def.name.to_string());
+                self.locks.insert(def.name.to_string(), Lock { config: false, value: true });
             } else {
                 self.values.entry(def.name.to_string()).or_insert_with(def.value);
             }
-            self.system.insert(def.name.to_string());
         }
+        self.group_locks.insert(SYSTEM_GROUP.to_string(), Lock { config: true, value: false });
     }
 
     pub fn get(&self, name: &str) -> Option<&GlobalValue> {
@@ -241,12 +274,71 @@ impl GlobalStore {
         self.values.contains_key(name)
     }
 
-    /// Every global in order, tagged with whether it is a system global, whether it is locked,
-    /// and the control record that makes it an element.
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, bool, bool, Option<&Control>)> {
-        self.values.iter().map(|(k, v)| {
-            (k.as_str(), v, self.system.contains(k), self.locked.contains(k), self.controls.get(k))
-        })
+    /// Every global in order, with its OWN lock and the control record that makes it an element.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &GlobalValue, Lock, Option<&Control>)> {
+        self.values
+            .iter()
+            .map(|(k, v)| (k.as_str(), v, self.locks.get(k).copied().unwrap_or_default(), self.controls.get(k)))
+    }
+
+    /// Every group that holds a lock, in the order the locks were set.
+    pub fn groups(&self) -> impl Iterator<Item = (&str, Lock)> {
+        self.group_locks.iter().map(|(g, l)| (g.as_str(), *l))
+    }
+
+    /// Whether a `.gfi` must leave `name` out: a machine global's value is this machine's.
+    pub fn is_machine(&self, name: &str) -> bool {
+        is_machine(name)
+    }
+
+    pub fn group_lock(&self, group: &str) -> Lock {
+        self.group_locks.get(group).copied().unwrap_or_default()
+    }
+
+    /// What holds `name` right now: its own lock and its group's together.
+    pub fn lock_of(&self, name: &str) -> Lock {
+        self.locks.get(name).copied().unwrap_or_default().or(self.group_lock(group_of(name)))
+    }
+
+    /// Set a global's own lock, answering the one it held. The system group's are not a caller's.
+    pub fn set_lock(&mut self, name: &str, lock: Lock) -> Result<Lock, String> {
+        if group_of(name) == SYSTEM_GROUP {
+            return Err(format!("`{name}` is goofi's own; its lock is not yours to set"));
+        }
+        if !self.values.contains_key(name) {
+            return Err(format!("no such global `{name}`"));
+        }
+        let old = self.locks.get(name).copied().unwrap_or_default();
+        match lock.is_default() {
+            true => drop(self.locks.shift_remove(name)),
+            false => drop(self.locks.insert(name.to_string(), lock)),
+        }
+        Ok(old)
+    }
+
+    /// Set a group's lock, answering the one it held. A lock is what makes a group exist as much
+    /// as a member does, so any legal group name takes one.
+    pub fn set_group_lock(&mut self, group: &str, lock: Lock) -> Result<Lock, String> {
+        if group == SYSTEM_GROUP {
+            return Err(format!("`{SYSTEM_GROUP}` is goofi's own; its lock is not yours to set"));
+        }
+        if !is_valid_identifier(group) {
+            return Err(format!("invalid group name `{group}`: {GLOBAL_NAME_RULE}"));
+        }
+        let old = self.group_lock(group);
+        match lock.is_default() {
+            true => drop(self.group_locks.shift_remove(group)),
+            false => drop(self.group_locks.insert(group.to_string(), lock)),
+        }
+        Ok(old)
+    }
+
+    fn config_locked(&self, name: &str) -> Result<(), String> {
+        match self.lock_of(name).config {
+            true if group_of(name) == SYSTEM_GROUP => Err(format!("`{name}` is a system global; its name is goofi's")),
+            true => Err(format!("global `{name}` is config-locked")),
+            false => Ok(()),
+        }
     }
 
     pub fn control(&self, name: &str) -> Option<&Control> {
@@ -256,6 +348,7 @@ impl GlobalStore {
     /// Set or clear a global's control record; a widget that cannot draw the value is refused.
     pub fn set_control(&mut self, name: &str, control: Option<Control>) -> Result<(), String> {
         let value = self.values.get(name).ok_or_else(|| format!("no such global `{name}`"))?;
+        self.config_locked(name)?;
         match control {
             Some(c) if !c.fits(value) => Err(c.mismatch(value)),
             Some(c) => {
@@ -271,8 +364,11 @@ impl GlobalStore {
 
     /// Set an EXISTING global, coercing to its declared type; errors when it does not exist.
     pub fn set(&mut self, name: &str, value: GlobalValue) -> Result<(), String> {
-        if self.locked.contains(name) {
+        if is_machine(name) {
             return Err(format!("global `{name}` is read-only: its value is the machine's"));
+        }
+        if self.lock_of(name).value {
+            return Err(format!("global `{name}` is value-locked"));
         }
         match self.values.get(name) {
             Some(existing) => {
@@ -293,6 +389,9 @@ impl GlobalStore {
         if self.values.contains_key(name) {
             return Err(format!("global `{name}` already exists"));
         }
+        if self.group_lock(group_of(name)).config {
+            return Err(format!("group `{}` is config-locked", group_of(name)));
+        }
         let at = at.unwrap_or(usize::MAX).min(self.values.len());
         self.values.shift_insert(at, name.to_string(), value);
         Ok(())
@@ -303,34 +402,41 @@ impl GlobalStore {
         self.values.get_index_of(name)
     }
 
-    /// Remove a USER global; errors when it is a system global or absent.
+    /// Remove a global; errors when it is config-locked or absent.
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
-        if self.system.contains(name) {
-            return Err(format!("cannot delete system global `{name}`"));
-        }
-        if self.values.shift_remove(name).is_none() {
+        if !self.values.contains_key(name) {
             return Err(format!("no such global `{name}`"));
         }
+        self.config_locked(name)?;
+        self.values.shift_remove(name);
         self.controls.shift_remove(name);
+        self.locks.shift_remove(name);
         Ok(())
     }
 
-    /// Rename a USER global, keeping its ordered position.
+    /// Rename a global, keeping its ordered position; its own lock travels with it.
     pub fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
-        if self.system.contains(from) {
-            return Err(format!("cannot rename system global `{from}`"));
+        if !self.values.contains_key(from) {
+            return Err(format!("no such global `{from}`"));
         }
+        self.config_locked(from)?;
         if !is_valid_global_name(to) {
             return Err(format!("invalid global name `{to}`: {GLOBAL_NAME_RULE}"));
         }
         if self.values.contains_key(to) {
             return Err(format!("global `{to}` already exists"));
         }
-        let at = self.values.get_index_of(from).ok_or_else(|| format!("no such global `{from}`"))?;
+        if self.group_lock(group_of(to)).config && group_of(to) != group_of(from) {
+            return Err(format!("group `{}` is config-locked", group_of(to)));
+        }
+        let at = self.values.get_index_of(from).expect("checked above");
         let value = self.values.shift_remove(from).expect("the index answered");
         self.values.shift_insert(at, to.to_string(), value);
         if let Some(c) = self.controls.shift_remove(from) {
             self.controls.insert(to.to_string(), c);
+        }
+        if let Some(l) = self.locks.shift_remove(from) {
+            self.locks.insert(to.to_string(), l);
         }
         Ok(())
     }
@@ -342,23 +448,35 @@ impl GlobalStore {
         if !is_valid_identifier(to) {
             return Err(format!("invalid group name `{to}`: {GLOBAL_NAME_RULE}"));
         }
+        if from == SYSTEM_GROUP {
+            return Err(format!("`{SYSTEM_GROUP}` is goofi's own; it keeps its name"));
+        }
+        if self.group_lock(from).config {
+            return Err(format!("group `{from}` is config-locked"));
+        }
         let moved: Vec<(String, String)> = self
             .values
             .keys()
             .filter_map(|k| split_global(k).filter(|(g, _)| *g == from).map(|(_, e)| (k.clone(), format!("{to}.{e}"))))
             .collect();
         for (old, new) in &moved {
-            if self.system.contains(old.as_str()) {
-                return Err(format!("cannot rename system group `{from}`"));
-            }
             if self.values.contains_key(new.as_str()) {
                 return Err(format!("global `{new}` already exists"));
             }
+            self.config_locked(old)?;
         }
         for (old, new) in &moved {
             self.rename(old, new)?;
         }
+        if let Some(l) = self.group_locks.shift_remove(from) {
+            self.group_locks.insert(to.to_string(), l);
+        }
         Ok(moved)
+    }
+
+    /// Whether anything makes `group` a group here: a member, or a lock.
+    pub fn has_group(&self, group: &str) -> bool {
+        self.group_locks.contains_key(group) || self.values.keys().any(|k| group_of(k) == group)
     }
 
     /// Apply one change: `Some(v)` sets or adds (a NEW global lands at `at`), `None` removes.

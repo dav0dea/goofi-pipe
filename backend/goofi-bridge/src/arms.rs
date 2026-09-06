@@ -1019,6 +1019,46 @@ pub(crate) fn global_rename(
     Ok(json!({ "name": to }))
 }
 
+/// The lock a payload asks for over `held`: an axis it does not name keeps what it has.
+fn parse_lock(payload: &Value, held: goofi_core::globals::Lock) -> Result<goofi_core::globals::Lock, String> {
+    let axis = |key: &str, have: bool| match payload.get(key) {
+        None | Some(Value::Null) => Ok(have),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(other) => Err(format!("`{key}` is a bool, not `{other}`")),
+    };
+    Ok(goofi_core::globals::Lock { config: axis("config", held.config)?, value: axis("value", held.value)? })
+}
+
+pub(crate) fn global_lock(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let name = parse_str(payload, "name")?.to_string();
+    if g.globals().get(&name).is_none() {
+        return Err(format!("global entry lock: no global `{name}`"));
+    }
+    let held = g.globals().entries().find(|(n, ..)| *n == name).map(|(_, _, l, _)| l).unwrap_or_default();
+    let lock = parse_lock(payload, held).map_err(|e| format!("global entry lock: {e}"))?;
+    state.history.lock().unwrap().apply(&mut g, actor, goofi_graph::Command::LockGlobal { name, lock })?;
+    Ok(json!({ "lock": lock }))
+}
+
+pub(crate) fn global_group_lock(
+    state: &AppState,
+    payload: &Value,
+    actor: &str,
+    _events: &mut Vec<String>,
+) -> Result<Value, String> {
+    let mut g = state.graph.lock().unwrap();
+    let group = parse_str(payload, "group")?.to_string();
+    let lock = parse_lock(payload, g.globals().group_lock(&group)).map_err(|e| format!("global group lock: {e}"))?;
+    state.history.lock().unwrap().apply(&mut g, actor, goofi_graph::Command::LockGlobalGroup { group, lock })?;
+    Ok(json!({ "lock": lock }))
+}
+
 pub(crate) fn global_group_rename(
     state: &AppState,
     payload: &Value,

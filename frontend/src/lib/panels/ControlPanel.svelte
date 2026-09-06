@@ -1,14 +1,15 @@
-<!-- Control panel — knobs, sliders and fields over ONE group of globals. Out of edit mode a drag
-     turns a widget; in edit mode the same drag moves it, the corner resizes it, and a chip dragged
-     off the palette bears a new one. Every change is a globals op, so the manager owns the state
-     and this panel owns only the drawing and the gesture in flight. -->
+<!-- Control panel — knobs, sliders and fields over ONE group of globals. Edit mode is the group's
+     config lock, inverted: out of it a drag turns a widget; in it the same drag moves it, the
+     corner resizes it, and a chip dragged off the palette bears a new one. Every change is a
+     globals op, so the manager owns the state and this panel owns only the drawing and the gesture
+     in flight. -->
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { PanelProps } from 'panelty';
 	import { asStateObject } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
-	import type { ControlView, GlobalView } from '$lib/crdt/graphDoc';
-	import { isValidIdentifier } from '$lib/crdt/graphDoc';
+	import type { ControlView, GlobalView, LockView } from '$lib/crdt/graphDoc';
+	import { effectiveLock, isValidIdentifier } from '$lib/crdt/graphDoc';
 	import {
 		Chip,
 		EmptyState,
@@ -42,7 +43,6 @@
 
 	interface ControlState {
 		group?: string;
-		edit?: boolean;
 	}
 
 	type Value = number | string | boolean;
@@ -53,7 +53,8 @@
 	const st = $derived(asStateObject(props.state) as ControlState);
 	const group = $derived(st.group ?? '');
 	const named = $derived(group !== '');
-	const edit = $derived(named && st.edit === true);
+	const groupLock = $derived<LockView>(g.globalGroups[group] ?? { config: false, value: false });
+	const edit = $derived(named && !groupLock.config);
 	const members = $derived(g.globals.filter((gv) => gv.group === group));
 	const elements = $derived(members.filter((gv) => gv.control));
 
@@ -112,7 +113,7 @@
 	function setEdit(on: boolean): void {
 		picked = null;
 		renaming = null;
-		props.setState({ ...st, edit: on }, 'authored', on ? 'Edit control panel' : 'Done editing');
+		void g.lockGlobalGroup(group, { config: !on }).catch(() => {});
 	}
 
 	function setControl(gv: GlobalView, patch: Partial<ControlView>): void {
@@ -345,6 +346,7 @@
 				{#each elements as gv (gv.name)}
 					{@const c = gv.control as ControlView}
 					{@const at = placed(gv)}
+					{@const held = effectiveLock(gv, groupLock)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 					<div
@@ -356,7 +358,7 @@
 						onpointerdown={(e) => down(e, gv, false)}
 						onkeydown={(e) => zap(e, gv)}
 					>
-						<div class="widget">
+						<div class="widget" class:held={held.value} title={held.value ? 'Value-locked' : undefined}>
 							{@render widget(c, gv.value, gv.element, (v) => commitValue(gv, v))}
 						</div>
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -398,7 +400,7 @@
 		</div>
 	</ScrollArea>
 
-	{#if edit && pickedView}
+	{#if edit && pickedView && !pickedView.lock.config}
 		{@const pv = pickedView}
 		{@const pc = pv.control as ControlView}
 		<div class="props" data-testid="control-props">
@@ -572,6 +574,10 @@
 	[data-edit='true'] .widget,
 	.born .widget {
 		pointer-events: none;
+	}
+	.widget.held {
+		pointer-events: none;
+		opacity: var(--disabled-opacity);
 	}
 	.label {
 		height: var(--label-h);

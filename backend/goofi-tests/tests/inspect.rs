@@ -227,7 +227,8 @@ fn list_globals_names_the_system_globals_an_expression_can_read() {
     assert_eq!(first["name"], "system.default_ufreq");
     assert_eq!(first["type"], "float");
     assert_eq!(first["value"], 30.0);
-    assert_eq!(first["system"], true);
+    // What holds it is the system group's lock, answered on the entry as the lock in force.
+    assert_eq!(first["lock"], j!({ "config": true, "value": false }));
 }
 
 #[test]

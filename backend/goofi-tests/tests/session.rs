@@ -33,6 +33,9 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
         { "kind": "knob", "min": 0.0, "max": 4.0, "step": 0.01, "x": 2.0, "y": 1.0, "w": 2.0, "h": 2.0 } }));
     let why = g.refuse("global entry edit", j!({ "name": "patch.gain", "control": { "kind": "toggle" } }));
     assert!(why.contains("toggle") && why.contains("float"), "a widget that cannot draw the type: {why}");
+    // A lock rides the archive too: the entry's own, and its group's.
+    g.call("global entry lock", j!({ "name": "patch.gain", "value": true }));
+    g.call("global group lock", j!({ "group": "patch", "config": true }));
     // …and a reference over it: the archive carries the whole record, the expression retained.
     let level = g.add("_TestScalar");
     g.call("node edit", j!({ "node": hex(level), "name": "level" }));
@@ -69,6 +72,9 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
         .find(|e| e["name"] == "patch.gain").cloned().expect("the element is in the file");
     assert_eq!((&saved_gain["control"]["kind"], &saved_gain["control"]["x"]), (&j!("knob"), &j!(2.0)),
                "the widget and its place ride the archive: {saved_gain}");
+    assert_eq!(saved_gain["lock"], j!({ "config": false, "value": true }), "{saved_gain}");
+    assert_eq!(saved["global_groups"]["patch"]["lock"]["config"], true, "{}", saved["global_groups"]);
+    assert!(saved["global_groups"].get("system").is_none(), "the system group's lock is goofi's, not the file's");
 
     g.call("layout panel edit", j!({ "panel": panel(&g), "type": "viewer",
                                         "state": { "node": hex(osc), "slot": "out" } }));
@@ -129,6 +135,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
         .find(|e| e["name"] == "patch.gain").cloned().expect("the element came back");
     assert_eq!((&reborn["control"]["kind"], &reborn["control"]["w"]), (&j!("knob"), &j!(2.0)),
                "the load restored the widget and its place: {reborn}");
+    assert_eq!(reborn["lock"], j!({ "config": true, "value": true }), "the load restored both locks: {reborn}");
     let held = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
         .find(|e| e["name"] == "system.goofi_home").cloned().unwrap();
     assert_eq!(held["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));

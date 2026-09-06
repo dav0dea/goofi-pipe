@@ -6,7 +6,7 @@ import { workspace } from 'panelty';
 import { history } from '$lib/stores/history.svelte';
 import type { LinkInfo } from '$lib/api/control';
 import type { ControlView } from '$lib/crdt/graphDoc';
-import type { GlobalType } from '$lib/crdt/graphDoc';
+import type { GlobalType, LockView } from '$lib/crdt/graphDoc';
 
 /** The editor panel that viewport/selection verbs default to. */
 function activeEditor(): string | null {
@@ -41,6 +41,9 @@ export const commands = {
 		graph().setGlobalControl(name, control),
 	renameGlobal: (from: string, to: string): Promise<void> => graph().renameGlobal(from, to),
 	renameGlobalGroup: (from: string, to: string): Promise<void> => graph().renameGlobalGroup(from, to),
+	lockGlobal: (name: string, lock: Partial<LockView>): Promise<void> => graph().lockGlobal(name, lock),
+	lockGlobalGroup: (group: string, lock: Partial<LockView>): Promise<void> =>
+		graph().lockGlobalGroup(group, lock),
 
 	save: (path: string): Promise<{ path: string }> => graph().save(path),
 	newPatch: (): Promise<void> => graph().newPatch(),

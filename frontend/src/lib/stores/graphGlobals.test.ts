@@ -80,6 +80,17 @@ describe('GraphStore globals mutators — the command surface the panel + agent 
 		expect(history().canUndo).toBe(true);
 	});
 
+	it('a lock is ONE op on the entry or on the group, naming only the axis it turns', async () => {
+		const fc = new FakeControl();
+		const g = new GraphStore(fc);
+		seed(fc).global('patch.gain', { value: 2.5, type: 'float' });
+		await g.lockGlobal('patch.gain', { value: true });
+		expect(found(fc, 'global entry lock')).toEqual({ name: 'patch.gain', value: true });
+		await g.lockGlobalGroup('patch', { config: true });
+		expect(found(fc, 'global group lock')).toEqual({ group: 'patch', config: true });
+		expect(history().canUndo).toBe(true);
+	});
+
 	it('a server rejection propagates (name/collision/system are validated server-side)', async () => {
 		const fc = new FakeControl();
 		fc.failNext('global entry add');

@@ -122,6 +122,15 @@ pub enum Command {
         from: String,
         to: String,
     },
+    /// Lock or unlock one global, or a whole group. Each inverts as the lock it replaced.
+    LockGlobal {
+        name: String,
+        lock: goofi_core::globals::Lock,
+    },
+    LockGlobalGroup {
+        group: String,
+        lock: goofi_core::globals::Lock,
+    },
     /// Move a tab to a position in the strip. Its CONTENT is a position, so it cannot ride
     /// [`Command::LayoutContents`]; it inverts as another reorder, aimed at where the tab is now.
     LayoutReorderTab {
@@ -437,6 +446,16 @@ impl Command {
             Command::RenameGlobalGroup { from, to } => {
                 let touched = g.rename_global_group(&from, &to)?;
                 Ok((Outcome::Nodes(touched), Command::RenameGlobalGroup { from: to, to: from }))
+            }
+
+            Command::LockGlobal { name, lock } => {
+                let old = g.set_global_lock(&name, lock)?;
+                Ok((Outcome::Ok, Command::LockGlobal { name, lock: old }))
+            }
+
+            Command::LockGlobalGroup { group, lock } => {
+                let old = g.set_global_group_lock(&group, lock)?;
+                Ok((Outcome::Ok, Command::LockGlobalGroup { group, lock: old }))
             }
 
             Command::LayoutReorderTab { tab, to_index } => {

@@ -27,11 +27,13 @@ import {
 	docParams,
 	viewersJson,
 	globalViews,
+	globalGroupLocks,
 	arrangementTabs,
 	type Doc,
 	type GlobalView,
 	type ControlView,
-	type GlobalType
+	type GlobalType,
+	type LockView
 } from '$lib/crdt/graphDoc';
 import { assembleNode, type RuntimeOverlay } from '$lib/crdt/nodeAssembly';
 import type { StringParam, SourcePatch } from '$lib/api/types';
@@ -69,6 +71,8 @@ export class GraphStore {
 
 	/** Patch globals (system + user), doc-authoritative, in system-first/creation order. */
 	globals = $state<GlobalView[]>([]);
+	/** Every global group that carries a lock, by name. */
+	globalGroups = $state<Record<string, LockView>>({});
 
 	/** Bumps on every WHOLESALE graph load, never on an incremental add/remove; editors re-fit on it. */
 	loadEpoch = $state(0);
@@ -133,6 +137,7 @@ export class GraphStore {
 		const doc = this._sync.doc;
 		this.links = linkViews(doc);
 		this.globals = globalViews(doc);
+		this.globalGroups = globalGroupLocks(doc);
 		// The workspace store rebuilds its tree from this; the client holds no second copy.
 		workspace().syncFromDoc(arrangementTabs(doc));
 		// No-ops until the catalog lands, then rebuilds from the doc.
@@ -174,6 +179,7 @@ export class GraphStore {
 		this.nodes = [];
 		this.links = [];
 		this.globals = [];
+		this.globalGroups = {};
 		// `_snapshotRuntime` is NOT cleared: `_replaceSnapshot` ran first, so it already holds the
 		// INCOMING session's overlay. The arrangement store is a separate singleton, so it is here.
 		workspace().syncFromDoc([]);
@@ -421,6 +427,18 @@ export class GraphStore {
 	async renameGlobalGroup(from: string, to: string): Promise<void> {
 		await this.ctl.call('global group rename', { from, to });
 		this._recordGraphCmd(`Rename global group ${from} → ${to}`);
+	}
+
+	/** Lock or unlock one global on its own account; an axis not named keeps what it has. */
+	async lockGlobal(name: string, lock: Partial<LockView>): Promise<void> {
+		await this.ctl.call('global entry lock', { name, ...lock });
+		this._recordGraphCmd(`Lock global ${name}`);
+	}
+
+	/** Lock or unlock a whole group; an axis not named keeps what it has. */
+	async lockGlobalGroup(group: string, lock: Partial<LockView>): Promise<void> {
+		await this.ctl.call('global group lock', { group, ...lock });
+		this._recordGraphCmd(`Lock global group ${group}`);
 	}
 
 	/** Ask a live node to re-evaluate a param's options. Options only, never the value, so it is

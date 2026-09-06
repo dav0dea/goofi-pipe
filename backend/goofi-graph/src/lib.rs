@@ -30,7 +30,7 @@ pub use goofi_node::Uid;
 /// archive somebody actually holds — not once per change while the format is still moving.
 const MANIFEST_VERSION: i64 = 1;
 
-use goofi_core::globals::{split_global, NAME_RULE};
+use goofi_core::globals::NAME_RULE;
 
 /// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
 /// so it carries a thread and params; a facade and a port do not, so they carry neither.
@@ -560,6 +560,16 @@ impl Graph {
         Ok(())
     }
 
+    /// Lock or unlock one global, answering the lock it held.
+    pub fn set_global_lock(&mut self, name: &str, lock: goofi_core::globals::Lock) -> Result<goofi_core::globals::Lock, String> {
+        self.globals.set_lock(name, lock)
+    }
+
+    /// Lock or unlock a whole group, answering the lock it held.
+    pub fn set_global_group_lock(&mut self, group: &str, lock: goofi_core::globals::Lock) -> Result<goofi_core::globals::Lock, String> {
+        self.globals.set_group_lock(group, lock)
+    }
+
     /// Rename one global, and rewrite every expression that reads it.
     pub fn rename_global(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
         self.globals.rename(from, to)?;
@@ -571,8 +581,7 @@ impl Graph {
     /// Rename a group, and rewrite every expression that reads any member.
     pub fn rename_global_group(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
         let writes = self.arrangement.regroup(from, to);
-        let member = |k: &str| split_global(k).is_some_and(|(g, _)| g == from);
-        if writes.is_empty() && !self.globals.entries().any(|(k, ..)| member(k)) {
+        if writes.is_empty() && !self.globals.has_group(from) {
             return Err(format!("no global group `{from}`"));
         }
         let moved = self.globals.rename_group(from, to)?;
@@ -3165,24 +3174,35 @@ impl Graph {
         let globals: Vec<Value> = self
             .globals
             .entries()
-            // A locked global is the MACHINE's; writing it into a patch would carry one machine's
-            // path onto another.
-            .filter(|(_, _, _, locked, _)| !locked)
-            .map(|(name, value, _is_system, _, control)| {
+            // A machine global's value is this machine's; writing it into a patch would carry one
+            // machine's path onto another.
+            .filter(|(name, ..)| !self.globals.is_machine(name))
+            .map(|(name, value, lock, control)| {
                 let mut e = global_to_json(value); // {value, type}
                 if let Value::Object(ref mut m) = e {
                     m.insert("name".to_string(), Value::String(name.to_string()));
                     if let Some(c) = control {
                         m.insert("control".to_string(), serde_json::to_value(c).expect("a plain record"));
                     }
+                    if !lock.is_default() {
+                        m.insert("lock".to_string(), serde_json::to_value(lock).expect("a plain record"));
+                    }
                 }
                 e
             })
+            .collect();
+        // The system group's lock is goofi's own and re-asserted on load, so a file never carries it.
+        let global_groups: serde_json::Map<String, Value> = self
+            .globals
+            .groups()
+            .filter(|(g, _)| *g != goofi_core::globals::SYSTEM_GROUP)
+            .map(|(g, lock)| (g.to_string(), json!({ "lock": lock })))
             .collect();
         let mut doc = json!({
             "version": MANIFEST_VERSION,
             "goofi": env!("CARGO_PKG_VERSION"),
             "globals": Value::Array(globals),
+            "global_groups": global_groups,
             "root": root,
         });
         if let Value::Object(ref mut m) = doc {
@@ -3258,6 +3278,16 @@ impl Graph {
                             let _ = self.globals.set_control(name, Some(c));
                         }
                     }
+                    if let Some(l) = entry.get("lock").and_then(|l| serde_json::from_value(l.clone()).ok()) {
+                        let _ = self.globals.set_lock(name, l);
+                    }
+                }
+            }
+        }
+        if let Some(serde_json::Value::Object(groups)) = doc.get("global_groups") {
+            for (group, rec) in groups {
+                if let Some(l) = rec.get("lock").and_then(|l| serde_json::from_value(l.clone()).ok()) {
+                    let _ = self.globals.set_group_lock(group, l);
                 }
             }
         }

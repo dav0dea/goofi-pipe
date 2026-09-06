@@ -124,6 +124,30 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     assert_eq!(group_of(&g), j!("duo"), "the memberless group renamed through its panel");
     let why = g.refuse("global group rename", j!({ "from": "nobody", "to": "somebody" }));
     assert!(why.contains("no global group"), "{why}");
+    // A lock holds what it names: a group's `config` freezes every name and the membership, an
+    // entry's `value` freezes its value — and each lock is ONE undoable command.
+    g.call("global group lock", j!({ "group": "desk", "config": true }));
+    for (op, payload) in [
+        ("global entry add", j!({ "name": "desk.more", "value": 1.0, "type": "float" })),
+        ("global entry rename", j!({ "name": "desk.handle", "to": "desk.grip" })),
+        ("global entry remove", j!({ "name": "desk.handle" })),
+        ("global group rename", j!({ "from": "desk", "to": "bench" })),
+    ] {
+        let why = g.refuse(op, payload);
+        assert!(why.contains("config-locked"), "`{op}` under a config lock: {why}");
+    }
+    assert_eq!(g.call("global entry edit", j!({ "name": "desk.handle", "value": "P02" }))["value"], "P02",
+               "a config lock leaves the value free");
+    g.call("global entry lock", j!({ "name": "desk.handle", "value": true }));
+    let why = g.refuse("global entry edit", j!({ "name": "desk.handle", "value": "P03" }));
+    assert!(why.contains("value-locked"), "{why}");
+    let held = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
+        .find(|e| e["name"] == "desk.handle").cloned().unwrap()["lock"].clone();
+    assert_eq!(held, j!({ "config": true, "value": true }), "the list answers what holds it, both locks together");
+    g.call("global entry lock", j!({ "name": "desk.handle", "value": false }));
+    g.call("global group lock", j!({ "group": "desk", "config": false }));
+    let why = g.refuse("global group lock", j!({ "group": "system", "config": false }));
+    assert!(why.contains("goofi's own"), "the system group's lock is nobody's to set: {why}");
 
     // …and a compound is a UNIT: a refused step takes back the one that landed, and records nothing,
     // which is what the step count below would catch.
@@ -177,7 +201,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
-    assert_eq!(steps, 21, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert_eq!(steps, 26, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");
@@ -502,7 +526,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     // remove, and what it holds is this machine's .goofi folder, not anything a patch said.
     let home = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
         .find(|e| e["name"] == "system.goofi_home").cloned().expect("goofi_home is seeded");
-    assert_eq!((&home["locked"], &home["type"]), (&j!(true), &j!("string")), "{home}");
+    assert_eq!((&home["lock"]["value"], &home["type"]), (&j!(true), &j!("string")), "{home}");
     assert_eq!(home["value"], j!(goofi_core::path::to_slash(&goofi_core::home::dir())));
     let why = g.refuse("global entry edit", j!({ "name": "system.goofi_home", "value": "/tmp/elsewhere" }));
     assert!(why.contains("read-only"), "{why}");
@@ -740,8 +764,10 @@ fn a_viewer_bag_persists_and_refuses_a_word_outside_its_vocabulary() {
     assert!(!view(&g).contains("yScale"), "the clear dropped the stored view: {}", view(&g));
 
     g.call("global entry add", j!({ "name": "patch.subject", "value": "P01", "type": "string" }));
-    assert_eq!(g.doc()["globals"]["system.default_ufreq"]["system"], true);
-    assert_eq!(g.doc()["globals"]["patch.subject"]["system"], false);
+    // The doc carries a lock only where one is held: the system group's, the machine value's.
+    assert_eq!(g.doc()["global_groups"]["system"]["lock"]["config"], true);
+    assert_eq!(g.doc()["globals"]["system.goofi_home"]["lock"]["value"], true);
+    assert!(g.doc()["globals"]["patch.subject"].get("lock").is_none());
 }
 
 #[test]

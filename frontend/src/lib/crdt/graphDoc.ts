@@ -233,6 +233,12 @@ export interface ControlView {
 	h: number;
 }
 
+/** What holds a global or a group: `config` its name, widget and membership, `value` its value. */
+export interface LockView {
+	config: boolean;
+	value: boolean;
+}
+
 export interface GlobalView {
 	/** The full `group.element` — what an expression spells and every op names. */
 	name: string;
@@ -240,12 +246,27 @@ export interface GlobalView {
 	element: string;
 	value: number | string | boolean;
 	type: GlobalType;
-	/** Present when this global is a control-panel element; the Globals panel draws it read-only. */
+	/** Present when this global is a control-panel element. */
 	control?: ControlView;
-	/** A system global (editable value, but never deletable/renamable). */
-	system: boolean;
-	/** A machine-owned global: the value is read-only too. */
-	locked: boolean;
+	/** The global's OWN lock; its group's reaches it too — see `effectiveLock`. */
+	lock: LockView;
+}
+
+function lockOf(raw: unknown): LockView {
+	const l = obj(raw);
+	return { config: l.config === true, value: l.value === true };
+}
+
+/** Every group that carries a lock, by name. */
+export function globalGroupLocks(doc: Doc): Record<string, LockView> {
+	const out: Record<string, LockView> = {};
+	for (const [group, rec] of Object.entries(obj(doc.global_groups))) out[group] = lockOf(obj(rec).lock);
+	return out;
+}
+
+/** What holds `gv` right now: its own lock and its group's together. */
+export function effectiveLock(gv: GlobalView, group: LockView | undefined): LockView {
+	return { config: gv.lock.config || group?.config === true, value: gv.lock.value || group?.value === true };
 }
 
 /** All globals, in the document's key order (system-first, then user in creation order). */
@@ -267,22 +288,32 @@ export function globalViews(doc: Doc): GlobalView[] {
 				element: name.slice(dot + 1),
 				value,
 				type,
-				system: g.system === true,
-				locked: g.locked === true,
-				control: (g.control as ControlView | undefined) ?? undefined
+				control: (g.control as ControlView | undefined) ?? undefined,
+				lock: lockOf(g.lock)
 			});
 		}
 	}
 	return out;
 }
 
-/** Globals folded into their groups, each group in first-appearance order. */
-export function groupedGlobals(views: GlobalView[]): { group: string; entries: GlobalView[] }[] {
-	const out: { group: string; entries: GlobalView[] }[] = [];
+export interface GlobalGroupView {
+	group: string;
+	entries: GlobalView[];
+	lock: LockView;
+}
+
+/** Globals folded into their groups, each group in first-appearance order, with the group's lock;
+ * a group that holds only a lock is listed too, since the lock is what makes it a group. */
+export function groupedGlobals(views: GlobalView[], locks: Record<string, LockView> = {}): GlobalGroupView[] {
+	const out: GlobalGroupView[] = [];
+	const lockFor = (group: string): LockView => locks[group] ?? { config: false, value: false };
 	for (const v of views) {
 		const held = out.find((g) => g.group === v.group);
 		if (held) held.entries.push(v);
-		else out.push({ group: v.group, entries: [v] });
+		else out.push({ group: v.group, entries: [v], lock: lockFor(v.group) });
+	}
+	for (const group of Object.keys(locks)) {
+		if (!out.some((g) => g.group === group)) out.push({ group, entries: [], lock: lockFor(group) });
 	}
 	return out;
 }

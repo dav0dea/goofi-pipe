@@ -1,11 +1,19 @@
 <!-- Globals panel — a key/value table over the patch's globals, one collapsed section per group.
-     System globals are editable in value but locked for delete/rename; an element owned by a
-     control panel is read-only here, because that panel owns it. -->
+     A lock decides what a row may change: `config` holds the name, the widget and the membership,
+     `value` holds the value, and a group's lock reaches every member. -->
 <script lang="ts">
 	import type { PanelProps } from 'panelty';
 	import { graph } from '$lib/stores/graph.svelte';
-	import { groupedGlobals, isValidIdentifier, type GlobalType, type GlobalView } from '$lib/crdt/graphDoc';
 	import {
+		effectiveLock,
+		groupedGlobals,
+		isValidIdentifier,
+		type GlobalType,
+		type GlobalView,
+		type LockView
+	} from '$lib/crdt/graphDoc';
+	import {
+		Badge,
 		Button,
 		Disclosure,
 		Icon,
@@ -23,7 +31,9 @@
 	let {}: PanelProps = $props();
 	const g = graph();
 	const globals = $derived(g.globals);
-	const groups = $derived(groupedGlobals(globals));
+	const groups = $derived(groupedGlobals(globals, g.globalGroups));
+	/** goofi's own group: config-locked for life, and no lock of its is a caller's to set. */
+	const SYSTEM = 'system';
 
 	// The group an add row is open in; `''` is a row for a NEW group, and null is none.
 	let adding = $state<string | null>(null);
@@ -79,68 +89,117 @@
 			if (!Number.isFinite(n)) return;
 			val = gv.type === 'int' ? Math.round(n) : n;
 		}
-		void g.setGlobalValue(gv.name, val).catch(() => {
-			/* rejected — the input reverts on the next mirror-back render */
-		});
+		void g.setGlobalValue(gv.name, val).catch(() => {});
 	}
 
 	function commitName(gv: GlobalView, raw: string): void {
 		const next = raw.trim();
 		if (next === gv.element) return;
-		void g.renameGlobal(gv.name, `${gv.group}.${next}`).catch(() => {
-			/* rejected — the field reverts to gv.name on the next mirror-back render */
-		});
+		void g.renameGlobal(gv.name, `${gv.group}.${next}`).catch(() => {});
+	}
+
+	function commitGroup(from: string, raw: string): void {
+		const next = raw.trim();
+		if (next === from) return;
+		void g.renameGlobalGroup(from, next).catch(() => {});
 	}
 
 	function numberDisplay(gv: GlobalView): number {
 		return typeof gv.value === 'number' ? gv.value : 0;
 	}
 
-	function commitGroup(from: string, raw: string): void {
-		const next = raw.trim();
-		if (next === from) return;
-		void g.renameGlobalGroup(from, next).catch(() => {
-			/* rejected — the header reverts on the next mirror-back render */
-		});
+	function lockGroup(group: string, lock: Partial<LockView>): void {
+		void g.lockGlobalGroup(group, lock).catch(() => {});
+	}
+
+	function lockEntry(gv: GlobalView, lock: Partial<LockView>): void {
+		void g.lockGlobal(gv.name, lock).catch(() => {});
+	}
+
+	function axisTitle(axis: 'config' | 'value', on: boolean, heldByGroup: boolean): string {
+		const what = axis === 'config' ? 'name, widget and membership' : 'value';
+		if (heldByGroup) return `The group holds the ${what}`;
+		return on ? `Unlock the ${what}` : `Lock the ${what}`;
 	}
 </script>
+
+{#snippet lockToggles(
+	lock: LockView,
+	heldBy: LockView | null,
+	set: (patch: Partial<LockView>) => void,
+	own: boolean,
+	testid: string
+)}
+	<IconButton
+		variant="ghost"
+		size="sm"
+		data-testid={`${testid}-config`}
+		title={own ? axisTitle('config', lock.config, heldBy?.config === true) : 'goofi’s own'}
+		label={axisTitle('config', lock.config, heldBy?.config === true)}
+		aria-pressed={lock.config}
+		disabled={!own || heldBy?.config === true}
+		onclick={() => set({ config: !lock.config })}
+		><Icon name={lock.config || heldBy?.config ? 'lock' : 'lock-open'} /></IconButton
+	>
+	<IconButton
+		variant="ghost"
+		size="sm"
+		data-testid={`${testid}-value`}
+		title={own ? axisTitle('value', lock.value, heldBy?.value === true) : 'goofi’s own'}
+		label={axisTitle('value', lock.value, heldBy?.value === true)}
+		aria-pressed={lock.value}
+		disabled={!own || heldBy?.value === true}
+		onclick={() => set({ value: !lock.value })}
+		><Icon name={lock.value || heldBy?.value ? 'lock' : 'lock-open'} /></IconButton
+	>
+{/snippet}
 
 <div class="wrap" data-testid="globals-panel">
 	<ScrollArea>
 		<div class="gp-body">
 			{#each groups as grp (grp.group)}
+				{@const own = grp.group !== SYSTEM}
+				{@const controlled = grp.entries.some((e) => e.control)}
 				<Disclosure
 					class="grp"
 					data-testid="global-group"
 					data-group={grp.group}
+					data-lock-config={grp.lock.config}
+					data-lock-value={grp.lock.value}
 					open={open[grp.group] === true}
 					onToggle={(v) => (open[grp.group] = v)}
 				>
 					{#snippet summary()}
 						<span class="grp-name">{grp.group}</span>
 						<span class="grp-count">{grp.entries.length}</span>
+						{#if controlled}
+							<Badge tone="accent">control panel</Badge>
+						{/if}
+						{#if grp.lock.config || grp.lock.value}
+							<span
+								class="grp-lock"
+								title={grp.lock.config && grp.lock.value
+									? 'Locked: names, widgets, membership and values'
+									: grp.lock.config
+										? 'Locked: names, widgets and membership'
+										: 'Locked: values'}><Icon name="lock" /></span
+							>
+						{/if}
 					{/snippet}
 					<table>
 						<tbody>
 							{#each grp.entries as gv (gv.name)}
+								{@const held = effectiveLock(gv, grp.lock)}
 								<tr
 									data-testid="global-row"
 									data-name={gv.name}
-									data-system={gv.system}
+									data-lock-config={held.config}
+									data-lock-value={held.value}
 									data-control={gv.control ? gv.control.kind : undefined}
 								>
 									<td class="c-name">
-										{#if gv.system || gv.control}
-											<span
-												class="sysname"
-												title={gv.control
-													? 'Control element — the control panel owns it'
-													: gv.locked
-														? 'Machine global — the value is this machine\u2019s, read-only'
-														: 'System global — value editable, name locked'}
-											>
-												<span class="lock" aria-hidden="true">🔒</span>{gv.element}
-											</span>
+										{#if held.config}
+											<span class="fixed" title={own ? 'Config-locked' : 'System global — goofi’s own'}>{gv.element}</span>
 										{:else}
 											<TextInput
 												inputmode="search"
@@ -152,8 +211,8 @@
 										{/if}
 									</td>
 									<td class="c-val">
-										{#if gv.locked || gv.control}
-											<span class="ro-value" data-testid="global-value">{String(gv.value)}</span>
+										{#if held.value}
+											<span class="ro-value" data-testid="global-value" title={own ? 'Value-locked' : 'Machine global — the value is this machine’s'}>{String(gv.value)}</span>
 										{:else if gv.type === 'bool'}
 											<Toggle
 												data-testid="global-value"
@@ -179,7 +238,8 @@
 									</td>
 									<td class="c-act">
 										<span class="type" title="type">{gv.type}</span>
-										{#if !gv.system && !gv.control}
+										{@render lockToggles(gv.lock, grp.lock, (p) => lockEntry(gv, p), own, 'global-lock')}
+										{#if !held.config}
 											<IconButton
 												variant="ghost"
 												size="sm"
@@ -195,7 +255,7 @@
 						</tbody>
 					</table>
 					<div class="grp-foot">
-						{#if grp.entries.every((e) => !e.system)}
+						{#if own && !grp.lock.config}
 							<TextInput
 								inputmode="search"
 								data-testid="global-group-name"
@@ -207,14 +267,17 @@
 						{:else}
 							<span class="grp-fixed">{grp.group}</span>
 						{/if}
-						<IconButton
-							variant="ghost"
-							size="sm"
-							data-testid="global-add-in"
-							title="Add a global to {grp.group}"
-							label="Add a global to {grp.group}"
-							onclick={() => openAdd(grp.group)}><Icon name="plus" /></IconButton
-						>
+						{@render lockToggles(grp.lock, null, (p) => lockGroup(grp.group, p), own, 'global-group-lock')}
+						{#if own && !grp.lock.config}
+							<IconButton
+								variant="ghost"
+								size="sm"
+								data-testid="global-add-in"
+								title="Add a global to {grp.group}"
+								label="Add a global to {grp.group}"
+								onclick={() => openAdd(grp.group)}><Icon name="plus" /></IconButton
+							>
+						{/if}
 					</div>
 					{#if adding === grp.group}
 						{@render addRow(false)}
@@ -321,8 +384,14 @@
 	}
 	.grp-count {
 		margin-left: var(--space-2);
+		margin-right: var(--space-3);
 		color: var(--text-muted);
 		font-size: var(--fs-micro);
+	}
+	.grp-lock {
+		display: inline-flex;
+		margin-left: var(--space-3);
+		color: var(--text-muted);
 	}
 	.grp-foot {
 		display: flex;
@@ -361,22 +430,19 @@
 		font-family: var(--font-mono);
 	}
 	.c-name {
-		width: 45%;
+		width: 40%;
 	}
 	.c-val {
-		width: 40%;
+		width: 35%;
 		/* let the bare NumberInput fill the cell instead of its default fixed width */
 		--number-width: 100%;
 	}
 	.c-act {
-		width: 15%;
+		width: 25%;
 		white-space: nowrap;
 		text-align: right;
 	}
-	.sysname {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2);
+	.fixed {
 		font-family: var(--font-mono);
 		color: var(--text);
 	}
@@ -385,13 +451,6 @@
 		font-size: var(--fs-small);
 		color: var(--text-muted);
 		overflow-wrap: anywhere;
-	}
-
-	.lock {
-		font-size: var(--fs-micro);
-		filter: grayscale(1);
-		/* Not `--disabled-opacity`: the padlock is a quiet affordance, not a disabled control. */
-		opacity: 0.7;
 	}
 	/* The one native input, kept for live per-keystroke validation; the `td` seam cannot reach it. */
 	input.name {

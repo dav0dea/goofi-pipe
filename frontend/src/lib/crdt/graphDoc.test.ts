@@ -8,6 +8,8 @@ import {
 	facadeFaces,
 	docParams,
 	globalViews,
+	globalGroupLocks,
+	effectiveLock,
 	groupedGlobals,
 	isValidIdentifier,
 	isValidName,
@@ -183,45 +185,54 @@ describe('graphDoc.setParamSource — the test-seed source write', () => {
 });
 
 describe('graphDoc globals', () => {
-	it('reads global views (system-first, typed, with the system flag)', () => {
+	it('reads global views (system-first, typed, with the lock each carries)', () => {
 		const doc: Doc = {
 			...seedDoc(),
 			globals: {
-				'system.default_ufreq': { value: 30, type: 'float', system: true },
-				'system.goofi_home': { value: '/home/u/.goofi', type: 'string', system: true, locked: true },
-				'patch.subject': { value: 'P07', type: 'string', system: false },
+				'system.default_ufreq': { value: 30, type: 'float' },
+				'system.goofi_home': { value: '/home/u/.goofi', type: 'string', lock: { value: true } },
+				'patch.subject': { value: 'P07', type: 'string' },
 				'mixer.gain': {
 					value: 0.5,
 					type: 'float',
-					system: false,
 					control: { kind: 'knob', min: 0, max: 1, x: 2, y: 1, w: 2, h: 2 }
 				},
 				// Every global is `group.element`; one without a group is malformed and is skipped,
 				// exactly as one with an unreadable type is.
-				loose: { value: 1, type: 'float', system: false }
+				loose: { value: 1, type: 'float' }
 			}
 		};
+		const free = { config: false, value: false };
 		expect(globalViews(doc)).toEqual([
-			{ name: 'system.default_ufreq', group: 'system', element: 'default_ufreq', value: 30, type: 'float', system: true, locked: false, control: undefined },
-			{ name: 'system.goofi_home', group: 'system', element: 'goofi_home', value: '/home/u/.goofi', type: 'string', system: true, locked: true, control: undefined },
-			{ name: 'patch.subject', group: 'patch', element: 'subject', value: 'P07', type: 'string', system: false, locked: false, control: undefined },
-			{ name: 'mixer.gain', group: 'mixer', element: 'gain', value: 0.5, type: 'float', system: false, locked: false, control: { kind: 'knob', min: 0, max: 1, x: 2, y: 1, w: 2, h: 2 } }
+			{ name: 'system.default_ufreq', group: 'system', element: 'default_ufreq', value: 30, type: 'float', control: undefined, lock: free },
+			{ name: 'system.goofi_home', group: 'system', element: 'goofi_home', value: '/home/u/.goofi', type: 'string', control: undefined, lock: { config: false, value: true } },
+			{ name: 'patch.subject', group: 'patch', element: 'subject', value: 'P07', type: 'string', control: undefined, lock: free },
+			{ name: 'mixer.gain', group: 'mixer', element: 'gain', value: 0.5, type: 'float', control: { kind: 'knob', min: 0, max: 1, x: 2, y: 1, w: 2, h: 2 }, lock: free }
 		]);
 	});
 
-	it('folds globals into groups, each group in first-appearance order', () => {
-		const views = globalViews({
+	it('folds globals into groups, each group in first-appearance order, with the lock that holds it', () => {
+		const doc: Doc = {
 			...seedDoc(),
 			globals: {
-				'mixer.gain': { value: 1, type: 'float', system: false },
-				'patch.subject': { value: 'P07', type: 'string', system: false },
-				'mixer.pan': { value: 0, type: 'float', system: false }
-			}
-		});
-		expect(groupedGlobals(views).map((g) => [g.group, g.entries.map((e) => e.element)])).toEqual([
-			['mixer', ['gain', 'pan']],
-			['patch', ['subject']]
+				'mixer.gain': { value: 1, type: 'float' },
+				'patch.subject': { value: 'P07', type: 'string' },
+				'mixer.pan': { value: 0, type: 'float', lock: { value: true } }
+			},
+			global_groups: { system: { lock: { config: true } }, mixer: { lock: { config: true } } }
+		};
+		const views = globalViews(doc);
+		const locks = globalGroupLocks(doc);
+		const groups = groupedGlobals(views, locks);
+		expect(groups.map((g) => [g.group, g.entries.map((e) => e.element), g.lock])).toEqual([
+			['mixer', ['gain', 'pan'], { config: true, value: false }],
+			['patch', ['subject'], { config: false, value: false }],
+			// A lock is what makes a group as much as a member does, so a group holding only one is listed.
+			['system', [], { config: true, value: false }]
 		]);
+		// What holds an entry is its own lock and its group's together.
+		expect(effectiveLock(views[2], locks.mixer)).toEqual({ config: true, value: true });
+		expect(effectiveLock(views[1], locks.patch)).toEqual({ config: false, value: false });
 	});
 
 	it('holds a node name to the letters-and-digits rule', () => {
