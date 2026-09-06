@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# ASIO is a build the USER makes, never one that ships. WASAPI publishes an interface as one stereo
+# endpoint per pair the driver exposes, so a multi-input card is reachable past its first pair only
+# through the driver's own ASIO view. The Steinberg SDK that binding needs went
+# GPLv3-or-proprietary in 2025 and cannot travel inside this binary — `roadmap/audio-engine.md`
+# carries that decision — so the flag is off, and whoever turns it on supplies the SDK themselves:
+# `CPAL_ASIO_DIR` names the unpacked copy, and LLVM must be installed for its bindgen to run.
+asio = ["cpal/asio"]
+
 [dependencies]
 goofi-core = { path = "../../goofi-core" }
 goofi-node = { path = "../../goofi-node" }

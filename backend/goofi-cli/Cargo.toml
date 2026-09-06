@@ -43,6 +43,8 @@ goofi-init = { path = "../goofi-init" }
 # One feature for Python node support, not one per tier: the free-threaded probe IS the router,
 # so without it there is nothing to decide between in-process and subprocess.
 [features]
+# Passed through so the flag can be given where the binary is: `cargo run --features asio`.
+asio = ["goofi-audio/asio"]
 default = ["python"]
 python = ["dep:goofi-python", "goofi-python/embed", "goofi-signal/embed"]
 

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use goofi_audio_sdk::host::Loaded;
 use goofi_audio_sdk::{AudioNode, BLOCK, MAX_PORTS};
 use goofi_core::{Param, SlotType};
@@ -19,6 +19,7 @@ use goofi_node::{
 };
 
 mod control;
+mod host;
 pub(crate) mod nodes;
 mod plan;
 mod runtime;
@@ -28,7 +29,7 @@ pub mod vst3;
 
 use control::{AudioHalf, AudioShared};
 use goofi_control::{Desired, Handle, Shared, Sub};
-use nodes::{audio_out, Class};
+use nodes::{audio_in, audio_out, Class};
 use plan::Plan;
 use runtime::{Fault, Inbox, Msg, Retired, Runtime, Slot, OVERRUNS};
 
@@ -147,8 +148,7 @@ pub fn recordings() -> std::path::PathBuf {
 pub(crate) const NO_DEVICE: &str = "the external clock owns no device";
 
 fn open_output(name: &str, runtime: Arc<Mutex<Runtime>>, stats: Arc<Stats>, waker: Arc<DrainWaker>) -> Result<(cpal::Stream, f64, u16), String> {
-    let host = cpal::default_host();
-    let device = control::device("output", name, host.default_output_device(), host.output_devices())?;
+    let device = host::device(host::Kind::Output, name)?;
     let supported = device.default_output_config().map_err(|e| format!("`{name}`: {e}"))?;
     // The host's own buffer, never a size of ours: `render_into` is size-agnostic, and a request of
     // ours underran while the client was unoptimized. The 2 s this costs is a roadmap item.
@@ -533,6 +533,24 @@ impl AudioEngine {
         outs
     }
 
+    /// Every `AudioIn` with the device it names, by uid. Unlike the outs these do not have to
+    /// agree — a capture endpoint is genuinely its own device — so this exists for the ASIO rule
+    /// alone, which is about the DRIVER and not about the device.
+    fn audio_ins(&self, view: &GraphView<'_>) -> Vec<(Uid, String)> {
+        let mut ins: Vec<(Uid, String)> = self
+            .live
+            .iter()
+            .filter(|(uid, inst)| inst.manifest.type_name == audio_in::TYPE && !self.disabled.contains_key(uid))
+            .filter_map(|(uid, inst)| {
+                let nv = view.nodes.get(uid)?;
+                let Param::Str { value, .. } = goofi_control::param_of(nv.params, &inst.manifest.params[audio_in::P::DEVICE]) else { return None };
+                Some((*uid, value))
+            })
+            .collect();
+        ins.sort_by_key(|(uid, _)| uid.0);
+        ins
+    }
+
     /// Open, close or switch the output stream to `wanted`, and the error a device that will not
     /// open answers with. A name is tried ONCE: the previous clock is reopened and stands, and the
     /// error stands with it until the name moves. The old stream stops before the new one opens,
@@ -751,6 +769,18 @@ impl Engine for AudioEngine {
             .filter(|(_, device)| !agrees(device))
             .map(|(uid, _)| (*uid, format!("the clock is on `{}`", clock.as_deref().unwrap_or_default())))
             .collect();
+        // ASIO loads ONE driver per process — the SDK's rule, not cpal's — and a second load
+        // answers `DriverAlreadyExists` rather than degrading. The clock's driver wins, because
+        // the clock is what the engine cannot run without; anything else naming a DIFFERENT one is
+        // refused here, where the refusal can say which driver holds the process. A patch that
+        // mixes hosts is left alone: a WASAPI capture endpoint beside an ASIO output is a real
+        // setup, and the only thing it costs is the drift `roadmap/audio-engine.md` already tracks.
+        let ins = self.audio_ins(view);
+        let held = outs.iter().chain(ins.iter()).find_map(|(_, d)| host::asio_driver(d));
+        if let Some(held) = held {
+            let strays = outs.iter().chain(ins.iter()).filter(|(_, d)| host::asio_driver(d).is_some_and(|k| k != held));
+            faults.extend(strays.map(|(uid, _)| (*uid, format!("the ASIO driver is `{held}`, and only one loads at a time"))));
+        }
         if self.clock.owns_devices() {
             if let Some(why) = self.follow(clock.as_deref()) {
                 faults.extend(outs.iter().filter(|(_, device)| agrees(device)).map(|(uid, _)| (*uid, why.clone())));
