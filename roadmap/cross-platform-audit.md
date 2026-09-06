@@ -25,9 +25,11 @@ platform bodies and the swizzle — has never executed anywhere. CI compiles it 
   scripts — each spell "is this a `.rs`" for themselves. One owner first, then the folding.
 - **Two Playwright steps fail on CI and on no machine here.** `integrity.spec.ts` reports
   "frames reached the tab" timing out after 30 s, and it has now done so on a different viewport
-  project in each of two runs. It is not the viewer rate cap: the same failure stands on
-  `pr-audio-watchdog`, whose base predates that commit. Nothing here reproduces it, and a deadline
-  raised without a reason is how a real defect gets hidden, so it is written down instead.
+  project in three runs — always `tablet`. It is not the viewer rate cap: the same failure stands on
+  `pr-audio-watchdog`, whose base predates that commit. It is not the viewport gate either: a probe
+  measured both cards well inside the pane on all four projects, tablet most comfortably of them
+  (a card at x=276..474 in a pane 597 wide), and PHONE passes with that card half outside. Nothing
+  here reproduces it, and a deadline raised without a reason is how a real defect gets hidden.
 - **`Loop::open()` cannot fail on Windows**, so the "the display is gone" state is unreachable
   there; the agent e2e scenario is POSIX-only by construction; `patchfile.rs` writes an unquoted
   filename into `Content-Disposition` — now sanitized, but the header still has no `filename*`

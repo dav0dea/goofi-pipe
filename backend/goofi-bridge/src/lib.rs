@@ -216,16 +216,30 @@ impl AppState {
         self.mount.lock().unwrap().clone()
     }
 
-    /// Drop the workspace mount, nonce directory and all.
+    /// Drop the workspace mount, nonce directory and all, waiting HERE — what teardown wants,
+    /// because nothing is waiting on teardown and a thread it left behind would not run.
     pub fn release_mount(&self) {
-        self.retire_mount(&self.mount());
+        if let Some(finish) = self.reclaim(self.mount()) {
+            finish();
+        }
     }
 
     /// Reclaim one mount and everything living IN it: the harnesses spawned into it are asked to
-    /// leave FIRST, or one survives editing a patch out of a directory the next line deletes.
-    fn retire_mount(&self, mount: &std::path::Path) {
-        self.harnesses.reap_all();
-        remove_mount(mount);
+    /// leave FIRST, or one survives editing a patch out of a directory the next line deletes. The
+    /// directory goes only once they are GONE — a harness holds it as its cwd, and Windows will
+    /// not delete a directory that is one.
+    /// `None` says it is already DONE: nothing was running in the mount, so nothing had to be
+    /// waited for and the directory is gone.
+    #[must_use]
+    pub(crate) fn reclaim(&self, mount: PathBuf) -> Option<impl FnOnce() + Send + 'static> {
+        let Some(insist) = self.harnesses.reap_all() else {
+            remove_mount(&mount);
+            return None;
+        };
+        Some(move || {
+            insist();
+            remove_mount(&mount);
+        })
     }
 }
 
