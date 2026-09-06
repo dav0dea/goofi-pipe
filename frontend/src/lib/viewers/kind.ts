@@ -9,12 +9,16 @@ export const ARRAY_KINDS: readonly ViewerKind[] = VIEWER_KINDS.filter(
 	(k) => k.dtype === 'ARRAY'
 ).map((k) => k.id);
 
+/** The kind a dtype PINS: a STRING slot is always drawn by the string viewer, whatever was
+ * stored, and a slot with no pin is one whose kind a viewer may choose. */
+export function pinnedKind(dtype: string | null): ViewerKind | null {
+	return VIEWER_KINDS.find((k) => k.dtype !== 'ARRAY' && k.dtype === dtype)?.id ?? null;
+}
+
 /** The viewer kind to actually use: a dtype-pinned kind wins over the stored one, and a slot
  * nobody has chosen for opens with what draws its dtype. */
 export function resolveKind(dtype: string | null, stored: ViewerKind | undefined): ViewerKind {
-	const pinned = VIEWER_KINDS.find((k) => k.dtype !== 'ARRAY' && k.dtype === dtype);
-	if (pinned) return pinned.id;
-	return stored ?? DEFAULT_KIND[(dtype ?? 'ARRAY') as SlotDtype] ?? 'line';
+	return pinnedKind(dtype) ?? stored ?? DEFAULT_KIND[(dtype ?? 'ARRAY') as SlotDtype] ?? 'line';
 }
 
 /** Whether an array of the given shape can be drawn by `kind`; a non-array frame always can. */

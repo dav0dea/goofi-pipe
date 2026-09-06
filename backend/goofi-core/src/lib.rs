@@ -680,13 +680,18 @@ impl SlotType {
     /// Whether an output of this kind may feed an input of `into`: the same kind, or an
     /// engine-local kind into an array, which that engine's tap turns into frames.
     pub fn feeds(self, into: SlotType) -> bool {
-        self == into || (self.is_engine_local() && into == SlotType::Array)
+        self == into || (self.engine_local().is_some() && into == SlotType::Array)
     }
 
-    /// Whether this kind lives inside ONE engine and never crosses the wire, so only that
-    /// engine's tap can put it on an ARRAY slot.
-    pub fn is_engine_local(self) -> bool {
-        matches!(self, SlotType::Audio | SlotType::Texture)
+    /// How a node carrying this kind is written — and, by having an answer at all, that the kind
+    /// lives inside ONE engine and never crosses the wire. `None` for a wire kind. ONE owner of
+    /// both facts, so a third engine-local kind cannot be half-added.
+    pub fn engine_local(self) -> Option<&'static str> {
+        match self {
+            SlotType::Audio => Some("audio — an audio node is written against goofi_audio_sdk"),
+            SlotType::Texture => Some("a texture — a graphics node is a `.wgsl` file"),
+            SlotType::Array | SlotType::String | SlotType::Table => None,
+        }
     }
 
     pub fn from_name(name: &str) -> Option<SlotType> {

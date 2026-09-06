@@ -71,10 +71,12 @@ before they arrive.
   body the browser decoder now parses, and the image viewer uploads it as `R8`/`RGB8`/`RGBA8`. A
   colour frame (3 or 4 channels) spans `[0, 1]`, the convention a viewer clamps to anyway; anything
   narrower spans its own finite range, carried as `meta.reduced.depth = {lo, hi}` so the viewer maps
-  a texel back before its own range logic applies. `Data` stays f32 everywhere inside the graph.
-  **No golden case**: `tests/codec_golden.json` exists for parity with the legacy Python codec,
-  which casts every array to f32 and has no `|u1` path to be compared against — the Rust bytes are
-  pinned by the viewer scenario and the TS decoder by its own test instead.
+  a texel back before its own range logic applies. `Data` stays f32 everywhere inside the graph,
+  so the frame the INSPECTOR and an agent's query read is mapped back and reported as `float32`:
+  a texel is not a value, and every reader of the one folded stream that is not the image viewer
+  would otherwise summarize 0..255. The `u8_image` golden case pins the bytes in both directions
+  — the legacy Python encoder does write a `|u1` body for a uint8 array, so this path has real
+  cross-language parity rather than only a Rust-side assertion.
 - **The engine registers only where a GPU adapter answers, hardware or software.** Where none
   does, there is no graphics engine and no graphics type in the catalog — the demo's rule for
   audio. The suite requires an adapter and fails naming the package (`mesa-vulkan-drivers`), never

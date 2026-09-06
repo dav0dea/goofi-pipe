@@ -5,7 +5,7 @@
 
 pub mod liveness;
 
-use goofi_core::{ArrayStore, Coord, Data, MetaValue, Value};
+use goofi_core::{Coord, Data, MetaValue, Value};
 use rmpv::Value as Mp;
 
 pub const MAGIC: &[u8; 4] = b"GOOF";
@@ -22,15 +22,8 @@ pub fn encode(d: &Data) -> Vec<u8> {
 /// An 8-bit array frame for the browser hop, where `Data` itself stays f32: the same header and
 /// the same meta, with a `|u1` body.
 pub fn encode_u8(shape: &[usize], texels: &[u8], meta: &goofi_core::Meta) -> Vec<u8> {
-    let dtype_str: &[u8] = b"|u1";
-    let mut body = Vec::with_capacity(2 + dtype_str.len() + 4 * shape.len() + texels.len());
-    body.push(shape.len() as u8);
-    body.push(dtype_str.len() as u8);
-    body.extend_from_slice(dtype_str);
-    for &dim in shape {
-        body.extend_from_slice(&(dim as u32).to_le_bytes());
-    }
-    body.extend_from_slice(texels);
+    let mut body = Vec::new();
+    array_body(b"|u1", shape, texels, &mut body);
     frame(0, pack_array_meta(meta, shape, "uint8"), body)
 }
 
@@ -49,7 +42,7 @@ fn frame(dtype_tag: u8, meta: Vec<u8>, body: Vec<u8>) -> Vec<u8> {
 
 fn write_body(d: &Data, out: &mut Vec<u8>) {
     match d.value() {
-        Value::Array(store) => encode_array_body(store, out),
+        Value::Array(store) => array_body(b"<f4", store.shape(), store.as_bytes(), out),
         Value::Str(s) => out.extend_from_slice(s.as_bytes()),
         Value::Table(map) => {
             out.extend_from_slice(&(map.len() as u32).to_le_bytes());
@@ -66,16 +59,14 @@ fn write_body(d: &Data, out: &mut Vec<u8>) {
 }
 
 /// `[u8 ndim][u8 dtype_str_len][dtype_str][ndim × u32 shape][raw bytes]`.
-fn encode_array_body(store: &ArrayStore, out: &mut Vec<u8>) {
-    let dtype_str: &[u8] = b"<f4";
-    let shape = store.shape();
+fn array_body(dtype_str: &[u8], shape: &[usize], samples: &[u8], out: &mut Vec<u8>) {
     out.push(shape.len() as u8);
     out.push(dtype_str.len() as u8);
     out.extend_from_slice(dtype_str);
     for &dim in shape {
         out.extend_from_slice(&(dim as u32).to_le_bytes());
     }
-    out.extend_from_slice(store.as_bytes());
+    out.extend_from_slice(samples);
 }
 
 /// Meta names the wire derives from the `Data` itself, so they are never taken from `Meta`.

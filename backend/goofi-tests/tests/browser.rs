@@ -77,6 +77,18 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     let (_, _, texels) = array_body(body);
     assert_eq!(depth_range(meta), (-2.0, 2.0), "a gray frame spans its own");
     assert_eq!((texels[0], texels[15]), (0, 255), "both ends of the frame's own range");
+
+    // Step: the depth rides BESIDE an axis reduction, which is what a real image viewer asks for
+    // — it always sends two `area` reductions — so neither block displaces the other.
+    g.set_param(img, "control", "gray", false);
+    v8.view(j!([{ "dtype": "array", "ndim": [], "dims": [],
+                  "reduce": [{ "dim": 0, "max": 2, "method": "area" }], "depth": "u8" }])).await;
+    let frame = raw_until(&mut v8, |dtype, shape| dtype == "|u1" && shape == [2, 4, 3]).await;
+    let (_, meta, _) = goofi_codec::split_frame(&frame).unwrap();
+    assert_eq!(depth_range(meta), (0.0, 1.0), "the colour range survives the reduction");
+    let axis = at(&reduced(meta), "0").expect("the reduced axis stands beside the depth");
+    assert_eq!(at(&axis, "orig_len").and_then(|v| v.as_u64()), Some(4));
+    assert_eq!(at(&axis, "method").and_then(|v| v.as_str().map(str::to_string)), Some("area".into()));
 }
 
 /// A GOOF array body: `[u8 ndim][u8 len][dtype][ndim x u32 shape][samples]`.
@@ -95,13 +107,19 @@ fn array_body(body: &[u8]) -> (String, Vec<usize>, Vec<u8>) {
     (dtype, shape, body[at..].to_vec())
 }
 
-/// The `[lo, hi]` an 8-bit frame's texels span, off `reduced.depth` in the packed meta.
-fn depth_range(meta: &[u8]) -> (f64, f64) {
+fn at(v: &rmpv::Value, key: &str) -> Option<rmpv::Value> {
+    v.as_map()?.iter().find(|(k, _)| k.as_str() == Some(key)).map(|(_, v)| v.clone())
+}
+
+/// The `reduced` block a frame carries: what each axis reduction did, and the depth hop's range.
+fn reduced(meta: &[u8]) -> rmpv::Value {
     let meta = rmpv::decode::read_value(&mut &meta[..]).expect("decode meta msgpack");
-    let at = |v: &rmpv::Value, key: &str| -> Option<rmpv::Value> {
-        v.as_map()?.iter().find(|(k, _)| k.as_str() == Some(key)).map(|(_, v)| v.clone())
-    };
-    let depth = at(&meta, "reduced").and_then(|r| at(&r, "depth")).expect("reduced.depth");
+    at(&meta, "reduced").expect("a reduced block")
+}
+
+/// The `[lo, hi]` an 8-bit frame's texels span, off `reduced.depth`.
+fn depth_range(meta: &[u8]) -> (f64, f64) {
+    let depth = at(&reduced(meta), "depth").expect("reduced.depth");
     let f = |key: &str| at(&depth, key).and_then(|v| v.as_f64()).expect("a number");
     (f("lo"), f("hi"))
 }

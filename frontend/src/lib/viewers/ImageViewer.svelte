@@ -120,10 +120,11 @@
 
 		const dst = img.data;
 		const src = arr.values;
-		// A colour sample is a [0,1] float on the f32 wire, and already a byte on the 8-bit hop.
-		const scale = texels
-			? (v: number): number => Number(v)
-			: (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
+		// One mapping into the frame's own units, then the one byte scale: a colour texel spans
+		// [0, 1] so it survives the round trip exactly, and an alpha texel of a GRAY frame — which
+		// spans that frame's range — does not lose its meaning.
+		const unit = texels ? (v: number): number => toUnit(v, texels) : (v: number): number => v;
+		const scale = (v: number): number => Math.max(0, Math.min(255, Math.round(unit(v) * 255)));
 		const n = w * h;
 
 		if (c === 1 || c === 2) {
@@ -132,8 +133,7 @@
 			const [lo, hi] = grayRange(src, n, stride, texels);
 			const span = hi - lo || 1;
 			for (let i = 0; i < n; i++) {
-				const raw = Number(src[i * stride]);
-				const t = ((texels ? toUnit(raw, texels) : raw) - lo) / span;
+				const t = (unit(Number(src[i * stride])) - lo) / span;
 				const idx = (Math.max(0, Math.min(1, t)) * 255) | 0;
 				const li = idx * 3;
 				const o = i * 4;

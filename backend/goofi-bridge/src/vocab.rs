@@ -94,15 +94,14 @@ pub fn panel_type_ids() -> Vec<&'static str> {
     PANEL_TYPES.iter().map(|p| p.id).collect()
 }
 
-/// The viewer kind a slot of each dtype opens with, before anyone has chosen one: what draws
-/// that kind of thing. A PINNED kind (string, table) is resolved from the kind table itself.
+/// The viewer kind a slot of each dtype opens with: the first kind that serves that dtype, which
+/// for a pinned one is the pin. An engine-local kind serves none directly — it reaches a viewer
+/// through its engine's tap — so it names what draws what the tap makes.
 pub fn default_kind(dtype: SlotType) -> &'static str {
-    match dtype {
-        SlotType::Array | SlotType::Audio => "line",
-        SlotType::Texture => "image",
-        SlotType::String => "string",
-        SlotType::Table => "table",
+    if dtype == SlotType::Texture {
+        return "image";
     }
+    VIEWER_KINDS.iter().find(|k| k.dtype() == dtype.name()).map_or("line", |k| k.id)
 }
 
 /// Every viewer kind's id.

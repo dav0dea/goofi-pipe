@@ -172,20 +172,9 @@ pub fn foreign_slot(intro: &probe::Introspection, own: Option<goofi_core::SlotTy
         .map(|s| (&s.name, &s.kind))
         .chain(intro.outputs.iter().map(|s| (&s.name, &s.kind)))
         .find_map(|(name, kind)| {
-            let kind = goofi_core::SlotType::from_name(kind).filter(|k| k.is_engine_local() && Some(*k) != own)?;
-            Some(format!("slot `{name}` is {}", authored_as(kind)))
+            let kind = goofi_core::SlotType::from_name(kind).filter(|k| Some(*k) != own)?;
+            Some(format!("slot `{name}` is {}", kind.engine_local()?))
         })
-}
-
-/// How a node carrying an engine-local slot kind is written, so a refusal says where to go.
-/// Exhaustive on purpose: a new kind must decide this rather than fall through to nothing.
-fn authored_as(kind: goofi_core::SlotType) -> &'static str {
-    use goofi_core::SlotType::*;
-    match kind {
-        Audio => "audio — an audio node is written against goofi_audio_sdk",
-        Texture => "a texture — a graphics node is a `.wgsl` file",
-        Array | String | Table => "another engine's kind",
-    }
 }
 
 /// Leak a `'static &str` for the catalog's lifetime.

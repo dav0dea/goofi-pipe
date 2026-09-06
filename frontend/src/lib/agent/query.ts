@@ -27,12 +27,12 @@ function summarize(frame: DataFrame | null): FrameSummary | null {
 	if (!frame) return null;
 	if (isArrayFrame(frame)) {
 		const a = frame.data;
-		const s = summaryOf(a);
+		const s = summaryOf(a, frame.meta);
 		const recon = reconstructMeta(frame.meta);
 		const shape = Array.isArray(recon.shape) ? (recon.shape as number[]) : a.shape;
 		const reduced = !!frame.meta && typeof frame.meta === 'object' && 'reduced' in frame.meta;
 		return {
-			dtype: a.dtype,
+			dtype: String(recon['dtype'] ?? a.dtype),
 			shape,
 			numeric: s.min !== null ? { min: s.min, max: s.max as number, mean: s.mean as number } : undefined,
 			...(reduced ? { reducedLength: a.values.length } : {})

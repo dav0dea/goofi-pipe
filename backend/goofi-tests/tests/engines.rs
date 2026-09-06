@@ -563,6 +563,9 @@ fn a_scheduled_engine_beside_the_signal_one() {
     t.link(gfx, "tex", gfx2, "tex");
     let sink = t.add("_TestEcho");
     t.link(gfx, "tex", sink, "input");
+    let crossed = t.probe(sink, "out");
+    let crossed = crossed.expect_frame(&mut t.state.graph.lock().unwrap(), "the tapped texture");
+    assert_eq!(shape(&crossed), vec![8, 8], "a texture reaches a signal node as a frame");
     let refused = t.refuse("link add", j!({ "from": ep(hex(gfx), "frame"), "to": ep(hex(gfx2), "tex") }));
     assert!(refused.contains("ARRAY") && refused.contains("TEXTURE"), "{refused}");
 

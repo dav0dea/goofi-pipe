@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use goofi_codec::{encode, split_frame};
+use goofi_codec::{encode, encode_u8, split_frame};
 use goofi_core::{Axes, Axis, Coord, Data, Meta};
 use indexmap::IndexMap;
 
@@ -15,7 +15,23 @@ fn le_bytes(vals: &[f32]) -> Vec<u8> {
     vals.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-fn build_cases() -> Vec<(&'static str, Data)> {
+/// A golden case, by which encoder writes it: the wire's f32 `Data`, or the viewer hop's texels,
+/// which no `Data` can hold.
+enum Case {
+    Frame(Data),
+    Texels(Vec<usize>, Vec<u8>, Meta),
+}
+
+impl Case {
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Case::Frame(d) => encode(d),
+            Case::Texels(shape, texels, meta) => encode_u8(shape, texels, meta),
+        }
+    }
+}
+
+fn build_cases() -> Vec<(&'static str, Case)> {
     let meta_sfreq_ch = Meta::new()
         .with_sfreq(Some(250.0))
         .with_channels(Axes::new().with(0, Axis::coords(vec![Coord::Str("Fz".into()), Coord::Str("Cz".into())])));
@@ -40,6 +56,13 @@ fn build_cases() -> Vec<(&'static str, Data)> {
         ("table", Data::table(table, Meta::empty())),
         ("table_empty", Data::table(IndexMap::new(), Meta::empty())),
     ]
+    .into_iter()
+    .map(|(name, d)| (name, Case::Frame(d)))
+    .chain([(
+        "u8_image",
+        Case::Texels(vec![1, 2, 3], vec![0, 255, 128, 255, 0, 128], Meta::empty()),
+    )])
+    .collect()
 }
 
 #[derive(PartialEq, Debug)]
@@ -105,7 +128,7 @@ fn goof_encoder_matches_python_golden() {
     }
     assert_eq!(native.len(), py_names.len(), "case count mismatch Rust vs Python");
 
-    for (name, data) in &native {
+    for (name, case) in &native {
         let py_frame: Vec<u8> = cases_json[name]["frame"]
             .as_array()
             .unwrap()
@@ -113,7 +136,7 @@ fn goof_encoder_matches_python_golden() {
             .map(|n| n.as_u64().unwrap() as u8)
             .collect();
 
-        let rust_frame = encode(data);
+        let rust_frame = case.encode();
 
         let (rt_tag, rt_meta, rt_body) = split_frame(&rust_frame).expect("rust frame valid");
         let (py_tag, py_meta, py_body) = split_frame(&py_frame).expect("py frame valid");
@@ -132,8 +155,8 @@ fn goof_encoder_matches_python_golden() {
 fn a_request_carries_each_multi_frame_with_its_source() {
     // A multi slot's entries cross under one name repeated, each with the `node.slot` that sent
     // it; a single slot's entry crosses with no source, and an output never has one.
-    let cases = build_cases();
-    let (a, b) = (&cases[0].1, &cases[1].1);
+    let a = &arr(&[3], le_bytes(&[1.0, 2.0, 3.0]), Meta::empty());
+    let b = &arr(&[2], le_bytes(&[4.0, 5.0]), Meta::empty());
     let params = goofi_codec::ParamMap::new();
     let bytes = goofi_codec::encode_request(&params, &[("input", "alpha.out", a), ("input", "beta.out", b), ("gate", "", a)]);
     let goofi_codec::Request::Process { slots, .. } = goofi_codec::decode_request(&bytes).expect("a request") else {

@@ -30,8 +30,9 @@ def arr(a):
 
 
 cases = {}
-# Arrays are always float32 — foreign dtypes are cast to f32 at the ingest boundary,
-# so the wire only ever carries <f4. Non-f32 cases are intentionally absent.
+# A `Data` is float32 — a foreign dtype is cast to f32 at the ingest boundary, so a FRAME the
+# graph makes only ever carries <f4. The one exception is the viewer hop: the reducer quantizes
+# an image to texels and encodes them itself, which is the `u8_image` case below.
 cases["f32_1d"] = arr(np.array([1.0, 2.0, 3.0], dtype=np.float32))
 cases["scalar_0d"] = Data(DataType.ARRAY, np.float32(3.0), {})  # 0-d -> shape (1,)
 cases["empty_array"] = arr(np.array([], dtype=np.float32))  # shape (0,), 0 body bytes
@@ -54,6 +55,9 @@ cases["table"] = Data(
     {},
 )
 cases["table_empty"] = Data(DataType.TABLE, {}, {})
+# The viewer hop's 8-bit frame — what `goofi_codec::encode_u8` writes, and the one array case
+# whose body is not <f4.
+cases["u8_image"] = arr(np.array([[[0, 255, 128], [255, 0, 128]]], dtype=np.uint8))
 
 out = {}
 for name, d in cases.items():

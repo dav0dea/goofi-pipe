@@ -153,8 +153,6 @@ export class GLImageRenderer {
 				gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
 				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, 256, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, opts.lut);
 			}
-			// The shader reads what the texture samples, so a [lo, hi] in frame units becomes the
-			// same window in texel units.
 			const texels = u8 ? (opts.range ?? [0, 1]) : [0, 1];
 			const width = texels[1] - texels[0] || 1;
 			const lo = u8 ? (opts.lo - texels[0]) / width : opts.lo;
