@@ -138,7 +138,7 @@
 		{#if kind === 'pulse'}
 			<!-- The field's label already names it, so the button carries the ACT alone and fills the row. -->
 			<Button class="pf-pulse" title="Fire one pulse" onclick={onPulse} data-testid="param-pulse">
-				<Icon name="activity" />pulse
+				pulse
 			</Button>
 		{/if}
 		{#if showSource}
@@ -206,7 +206,7 @@
 		font-family: var(--font-mono);
 		/* Narrower than the primitive's default: a param row seats a slider, a number AND the source
 		   switch, and the number is the one of the three with slack to give. */
-		--number-width: 4rem;
+		--number-width: 3rem;
 	}
 	/* A pulse has no value beside it, so the whole row is the target — and it takes the rung above
 	   the fields around it, so a press target never reads as one more box to type in. */
