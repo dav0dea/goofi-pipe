@@ -74,6 +74,52 @@ fn shaders_render_on_the_gpu() {
     assert_eq!(shape(&frame), vec![512, 512, 4], "with nothing to follow, it is a generator's size");
     assert!(g.error(level).is_none(), "an unwired input is not a fault");
 
+    // Step: a signal frame uploads — the fixture's gradient, sampled back texel for texel and the
+    // right way up. The one place the two row orders could disagree.
+    let img = g.add("_TestImage");
+    g.ready(img);
+    let up = g.add("graphics:ArrayIn");
+    g.ready(up);
+    g.set_param(up, "output", "width", 4);
+    g.set_param(up, "output", "height", 4);
+    g.link(img, "out", up, "input");
+    let frame = drawn(&g, up, "the uploaded image", |d| shape(d) == vec![4, 4, 4]);
+    assert!(close(px(&frame, 0, 0), [0.0, 1.0, 0.5, 1.0]), "row 0 is the top: {:?}", px(&frame, 0, 0));
+    assert!(close(px(&frame, 3, 3), [1.0, 0.0, 0.5, 1.0]), "and row 3 the bottom: {:?}", px(&frame, 3, 3));
+
+    // Step: a reference moves a param at control rate, the one door every modulation uses.
+    let knob = g.add("_TestScalar");
+    g.ready(knob);
+    g.set_param(knob, "control", "value", 0.5);
+    let knob_name = g.name(&hex(knob));
+    g.link(c, "out", level, "input");
+    g.call("node param edit", j!({ "node": hex(level), "param": "level/gain",
+                                  "reference": format!("{knob_name}.out"), "mode": "reference" }));
+    drawn(&g, level, "half gain by reference", |d| close(px(d, 0, 0), [0.125, 0.25, 0.5, 1.0]));
+    g.set_param(knob, "control", "value", 2.0);
+    drawn(&g, level, "double gain by reference", |d| close(px(d, 0, 0), [0.5, 1.0, 2.0, 1.0]));
+
+    // Step: a loop closes through Feedback and accumulates a tenth a tick; one without it faults.
+    let fb = g.add("graphics:Feedback");
+    g.ready(fb);
+    let acc = g.add("graphics:Level");
+    g.ready(acc);
+    g.set_param(acc, "level", "offset", 0.1);
+    g.link(fb, "out", acc, "input");
+    g.link(acc, "out", fb, "input");
+    let first = drawn(&g, acc, "the first tick", |d| px(d, 0, 0)[0] > 0.05);
+    let after = drawn(&g, acc, "five ticks on", |d| px(d, 0, 0)[0] > px(&first, 0, 0)[0] + 0.4);
+    assert!(px(&after, 0, 0)[0] < 10.0, "a tenth a tick, not a runaway: {:?}", px(&after, 0, 0));
+    assert!(g.error(fb).is_none() && g.error(acc).is_none(), "a loop through Feedback is not a fault");
+    let lone = g.add("graphics:Level");
+    g.ready(lone);
+    g.link(lone, "out", lone, "input");
+    g.until("a loop with no feedback node faults", |g| {
+        render(g, 1);
+        g.error(lone).filter(|e| e.contains("feedback"))
+    });
+    g.call("node remove", j!({ "node": hex(lone) }));
+
     // Step: a `.wgsl` that does not compile is a greyed type carrying naga's own line number.
     let dir = g.state.mount().join("nodes_graphics");
     std::fs::create_dir_all(&dir).unwrap();

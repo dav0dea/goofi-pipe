@@ -694,7 +694,7 @@ fn a_patch_sounds_under_the_external_clock() {
     g.call("link remove", j!({ "from": ep(hex(osc3), "out"), "to": ep(hex(gain3), "input") }));
     g.link(held, "out", gain3, "input");
     g.set_param(gain3, "gain", "gain", 0.5);
-    let fb = g.add("Feedback");
+    let fb = g.add("audio:Feedback");
     g.link(gain3, "out", fb, "input");
     g.link(fb, "out", gain3, "input");
     assert!(g.stays(|g| !state(g, gain3).contains("loop")), "a feedback node closes the loop without a fault");
@@ -706,7 +706,7 @@ fn a_patch_sounds_under_the_external_clock() {
 
     // Step: a feedback node wired to itself reads its own last block through a copy, never the
     // region it writes — a wire the graph accepts must not tear the audio thread.
-    let fb2 = g.add("Feedback");
+    let fb2 = g.add("audio:Feedback");
     g.link(fb2, "out", fb2, "input");
     g.link(fb2, "out", out, "input");
     let (still, _) = drive(&g, TENTH);

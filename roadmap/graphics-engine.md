@@ -46,9 +46,16 @@ before they arrive.
   the wire. The viewer kind a slot OPENS with is now a table too (`vocab::default_kind`,
   projected as `DEFAULT_KIND`): a texture draws as an image, an array and audio as a line. The
   suite's graphics-shaped skeleton was renamed `skelgfx`, because `graphics` is the real engine's.
-- **`uv` is `(0, 0)` at the bottom-left, the shader convention; a texture's row 0 is the top, the
-  image convention.** The prelude's vertex stage is where the two meet, and nothing flips anywhere
-  else: an uploaded image displays upright, and a readback's row 0 is the top.
+- **`uv` is `(0, 0)` at the TOP-left — WGSL's own texture space — and so is every row order in the
+  engine.** REVISED 2026-09-06, and the first design of this rule was wrong. It said `uv` was
+  bottom-left, the OpenGL convention, with the vertex stage reconciling the two; the two cannot be
+  reconciled in one value. WGSL samples a texture with `v = 0` at row 0, so a bottom-left `uv`
+  makes `textureSample(input, samp, uv)` a vertical FLIP, and every node body would have to write
+  `1.0 - uv.y` to undo it — the thing the rule existed to prevent. One convention instead: `uv`,
+  the sampler, texture memory, an upload's rows and a readback's rows all put row 0 at the top, so
+  a pass-through body is a copy and nothing flips anywhere. The upload of the suite's gradient
+  fixture is what found it; a chain of uniform colours cannot see a flip, which is why the first
+  four scenario steps were green over it.
 - **The engine is scheduled, demand-driven, and owns one device and one render thread** — LANDED
   2026-09-06. No
   window. The clock is a constructor choice: `Clock::External` for the suite, driven by

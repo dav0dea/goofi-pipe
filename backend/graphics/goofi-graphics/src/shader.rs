@@ -52,8 +52,8 @@ fn wgsl_type(spec: &ParamSpec) -> &'static str {
 }
 
 /// What the engine appends after the file: the bindings a body reads, and the stages that call it.
-/// `uv` is (0, 0) at the bottom-left, the shader convention; a texture's row 0 is the top, the
-/// image one. The vertex stage is where the two meet, so nothing flips anywhere else.
+/// `uv` is (0, 0) at the TOP-left, WGSL's own texture space, so `textureSample(input, samp, uv)`
+/// is a copy and no flip is written anywhere — in a body, an upload or a readback.
 pub fn prelude(manifest: &NodeManifest) -> String {
     let mut s = String::from(
         "\n@group(0) @binding(0) var<uniform> time: f32;\n\
@@ -77,7 +77,7 @@ pub fn prelude(manifest: &NodeManifest) -> String {
          \x20   let y = f32(i32(i & 2u) * 2 - 1);\n\
          \x20   var o: Vs;\n\
          \x20   o.pos = vec4f(x, y, 0.0, 1.0);\n\
-         \x20   o.uv = vec2f((x + 1.0) * 0.5, (y + 1.0) * 0.5);\n\
+         \x20   o.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);\n\
          \x20   return o;\n\
          }\n\
          @fragment fn fs(v: Vs) -> @location(0) vec4f { return shade(v.uv); }\n",
