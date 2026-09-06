@@ -86,14 +86,52 @@ left the dead child's node directories standing ONCE in a full `transport` targe
 when run alone — the sweep enumerating under a sibling test's concurrent node churn, which is the
 same shape as the PAL race above with a quieter failure. Flake-grade; undiagnosed past that.
 
+## The whole of the Windows red, 2026-09-06
+
+Runs 34047760400 and 34048378434: EIGHT tests fail on `windows-latest` and every one of them is this
+file. Nothing else on that job is red, and neither ubuntu nor macOS fails any of them.
+
+| test | what it wore |
+|---|---|
+| `a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow` | `PublisherCreateError::UnableToCreateDataSegment` |
+| `a_multi_input_keeps_one_cell_per_wire_in_the_order_it_was_given` | the same |
+| `the_analysis_nodes_read_a_known_sine_and_say_what_it_is` | `NodeCreationFailure::InternalError` |
+| `a_patch_sounds_under_the_external_clock` | the `Directory::new` PANIC |
+| four `signals` scenarios | `timed out waiting for …` |
+
+The two transport ones are the burst again — 24 and 40 iceoryx2 nodes in a loop — and the four
+timeouts are nodes whose services never came up, which is the create failure worn quietly.
+
+Two things this adds to what is above:
+
+- **The leak FEEDS the race.** Every stranded node directory stays in `<root>/nodes`, and that is
+  the directory `FindNextFileA` walks and `Directory::new` opens. One run strands enough of them to
+  make every later enumeration longer, so the window a concurrent create must miss widens as the run
+  goes on — which is why the burst tests and the late targets are where it lands.
+- **A panic under the graph lock takes the status thread with it.** `Directory::new` unwinds through
+  a caller holding `state.graph`, and `lib.rs:421`'s `graph.lock().unwrap()` then dies on the
+  `PoisonError`. Secondary, and it costs nothing while goofi does not panic — but it is why one
+  upstream flake prints as two unrelated panics.
+
 ## Open
 
 - Whether goofi should reclaim the leak itself at startup rather than wait for upstream. It
   already pre-creates `<root>/nodes` and `<root>/services`, so it has an opinion about that
   directory — but sweeping another library's bookkeeping is exactly the mirror this file's
   neighbours warn about, and a stale entry from a LIVE peer must never be swept.
+- **Whether an instance gets a ROOT of its own**, which is the one lever nobody has tried and the
+  only one that does not sweep: it isolates instead, so it has none of the failure mode that severed
+  every other goofi on the machine. It would keep `<root>/nodes` down to one instance's entries, so
+  the leak could not compound across a run. What it needs judging against is the rendezvous — the
+  root is process-global to iceoryx2, and two goofis meant to see each other must share one — so it
+  is a real decision about what an instance IS, not a test-only knob. The owner's call.
 - Whether the noise deserves any local mitigation before a release lands. Stderr filtering is
   ruled out: a pipe-based filter DEADLOCKS the Python subprocess tier, which was measured.
 - Whether a bounded retry on service CREATE (any platform, no `cfg`) is boundary tolerance or
-  symptom-hiding. It would absorb the first signature and cannot absorb the second (a panic has
-  no retry), so it buys half a fix at most — parked until the upstream report lands an answer.
+  symptom-hiding. Still parked, but the 2026-09-06 run prices it: SEVEN of the eight failures wear a
+  create-time `Err` a retry could absorb, and the eighth is the `panic!`, which nothing can. So it is
+  not "half a fix" — it is most of the job, against the one signature it can never reach.
+  What the same run also shows is that the panic follows THRASH rather than the clock: it landed on
+  the one test that was driving tenths for ninety seconds against an `AudioPlayback` defect fixed
+  the same day. Whether Windows still panics with that loop gone is the cheap thing to learn next,
+  and it wants no code at all — just the next run.
