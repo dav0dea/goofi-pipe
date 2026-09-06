@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ParamDescriptor } from '$lib/api/types';
-import { isModified, touchedCount, touchedRows } from './paramTouched';
+import { isModified, onlyTouched, touchedCount, touchedRows } from './paramTouched';
 
 const base = {
 	doc: null,
@@ -81,5 +81,26 @@ describe('touchedRows', () => {
 	it('is empty for an untouched node, and for no node', () => {
 		expect(touchedRows({ osc: { tune: float(0.5, 0.5) } })).toEqual([]);
 		expect(touchedRows(undefined)).toEqual([]);
+	});
+});
+
+describe('onlyTouched', () => {
+	const rows = [
+		{ group: 'osc', name: 'tune', descriptor: float(0.2, 0.5) },
+		{ group: 'osc', name: 'shape', descriptor: float(0.5, 0.5) },
+		{ group: 'env1', name: 'attack', descriptor: float(0.9, 0.5) }
+	];
+
+	it('narrows a search to what the filter admits, rather than reopening the whole node', () => {
+		expect(onlyTouched(rows).map((r) => r.name)).toEqual(['tune', 'attack']);
+	});
+
+	it('leaves an already-touched set alone', () => {
+		const touched = onlyTouched(rows);
+		expect(onlyTouched(touched)).toEqual(touched);
+	});
+
+	it('is empty when nothing in the hits was touched', () => {
+		expect(onlyTouched([{ group: 'osc', name: 'shape', descriptor: float(0.5, 0.5) }])).toEqual([]);
 	});
 });

@@ -14,6 +14,10 @@
 	/** The param count a node needs before it is worth offering a filter. */
 	export const SEARCH_FROM = 8;
 
+	/** …and before browsing is hopeless enough to want a touched-only filter as well. A hand-written
+	    node is read; a plugin's hundreds are hunted, and only the second wants the switch. */
+	export const TOUCHED_FROM = 40;
+
 </script>
 
 <!--
@@ -31,7 +35,7 @@
 	import ParamField from './ParamField.svelte';
 	import SubPatchInspector from '$lib/editor/SubPatchInspector.svelte';
 	import { matchParams, type ParamHit } from './paramSearch';
-	import { isModified, touchedCount, touchedRows } from './paramTouched';
+	import { onlyTouched, touchedCount, touchedRows } from './paramTouched';
 	import { Bar, Tabs, Badge, Disclosure, EmptyState, Icon, IconButton, MODE_ATTRS, Toggle } from '$lib/ui';
 
 	let {
@@ -120,13 +124,25 @@
 	let query = $state('');
 	const searching = $derived(query.trim().length > 0);
 	// A short node is faster to read than to filter; a plugin with no units is one long tab.
-	const searchable = $derived(
-		Object.values(node?.params ?? {}).reduce((n, named) => n + Object.keys(named ?? {}).length, 0) > SEARCH_FROM
+	const paramCount = $derived(
+		Object.values(node?.params ?? {}).reduce((n, named) => n + Object.keys(named ?? {}).length, 0)
 	);
+	const searchable = $derived(paramCount > SEARCH_FROM);
+	const filterable = $derived(paramCount > TOUCHED_FROM);
 
 	// A plugin declares every param it has, so browsing one is a scroll; touched-only is the way
-	// through. A SEARCH still spans everything — hiding is for the eye, never for reach.
+	// through. It starts OFF and returns there whenever the selection moves: the control only shows
+	// on a node with params enough to need it, so a filter carried onto a small node would hide its
+	// params behind a switch that is not on screen to turn off.
 	let touchedOnly = $state(false);
+	let filtered = $state<string | null>(null);
+	$effect(() => {
+		const uid = node?.uid ?? null;
+		if (uid !== filtered) {
+			filtered = uid;
+			touchedOnly = false;
+		}
+	});
 	const touched = $derived(touchedCount(node?.params));
 
 	/** True while the list spans every group rather than the fronted tab. */
@@ -138,7 +154,12 @@
 	const rows = $derived.by<ParamHit[]>(() => {
 		const n = node;
 		if (!n) return [];
-		if (searching) return matchParams(n.params, query);
+		// A search inside the filter searches what the filter admits: the toggle is the standing
+		// question, and a query narrows that rather than reopening everything behind it.
+		if (searching) {
+			const hits = matchParams(n.params, query);
+			return touchedOnly ? onlyTouched(hits) : hits;
+		}
 		const named = (g: string) => (n.params[g] ?? {}) as Record<string, ParamDescriptor>;
 		const of = (g: string) =>
 			Object.entries(named(g)).map(([name, descriptor]) => ({ group: g, name, descriptor }));
@@ -237,14 +258,14 @@
 					onkeydown={(e) => {
 						if (e.key === 'Escape') query = '';
 					}}
-					placeholder="Search parameters…"
+					placeholder={touchedOnly ? 'Search touched…' : 'Search parameters…'}
 					autocomplete="off"
 					aria-label="Search parameters"
 					data-testid="param-search"
 				/>
 			{/if}
 
-			{#if searchable}
+			{#if filterable}
 				<label class="pf-touched" data-testid="param-touched-only">
 					<Toggle value={touchedOnly} onChange={(v) => (touchedOnly = v)} />
 					<span>Touched only</span>
@@ -270,7 +291,7 @@
 			>
 				{#if rows.length === 0}
 					<div class="pf-empty-group" data-testid={searching ? 'param-no-matches' : 'param-empty-group'}>
-						{#if searching}No parameters match.{:else if touchedOnly}Nothing touched yet — move a control here or in the plugin's own window.{:else}No parameters in this group.{/if}
+						{#if searching}{touchedOnly ? 'No touched parameters match.' : 'No parameters match.'}{:else if touchedOnly}Nothing touched yet — move a control here or in the plugin's own window.{:else}No parameters in this group.{/if}
 					</div>
 				{:else}
 					{#each rows as { group, name: paramName, descriptor } (node.uid + '/' + group + '/' + paramName)}
