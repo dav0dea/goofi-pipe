@@ -68,6 +68,15 @@ fn cache_key(sdk: &Sdk, source: &[u8]) -> String {
     format!("{:x}", hash.finalize())[..32].to_string()
 }
 
+/// A short content key over `parts`, in order: what a set of files IS, whatever it is called.
+pub fn digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> String {
+    let mut hash = Sha256::new();
+    for part in parts {
+        hash.update(part);
+    }
+    format!("{:x}", hash.finalize())[..16].to_string()
+}
+
 fn artifact_path(base: &Path, key: &str, stem: &str) -> PathBuf {
     base.join("out").join(key).join(format!("{stem}.{}", std::env::consts::DLL_EXTENSION))
 }

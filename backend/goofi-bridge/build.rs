@@ -19,8 +19,9 @@ fn main() {
 
 /// Build every `node-bundles/<bundle>/*.rs` through the one pipeline a scan runs,
 /// into a build dir the test harness shares, and emit `$OUT_DIR/shipped.rs`: every file of every
-/// bundle, and every artifact under the cache key a scan will look it up by. A shipped node that
-/// does not compile fails THIS build, so a binary never ships a node it cannot load.
+/// bundle, every artifact under the cache key a scan will look it up by, and a key over the
+/// files themselves. A shipped node that does not compile fails THIS build, so a binary never
+/// ships a node it cannot load.
 fn prebuild_nodes() {
     let bundles = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../node-bundles");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
@@ -28,6 +29,7 @@ fn prebuild_nodes() {
     let base = out.ancestors().nth(4).expect("a cargo OUT_DIR").join("goofi-build");
     println!("cargo:rerun-if-changed={}", bundles.display());
     let (mut sources, mut artifacts) = (String::new(), String::new());
+    let mut key: Vec<Vec<u8>> = Vec::new();
     for bundle in dirs_under(&bundles) {
         println!("cargo:rerun-if-changed={}", bundle.display());
         let name = bundle.file_name().unwrap().to_string_lossy().into_owned();
@@ -35,6 +37,8 @@ fn prebuild_nodes() {
             println!("cargo:rerun-if-changed={}", path.display());
             let within = path.strip_prefix(&bundle).unwrap().to_string_lossy().replace('\\', "/");
             sources += &format!("    ({:?}, include_bytes!({:?})),\n", format!("{name}/{within}"), path.display().to_string());
+            key.push(format!("{name}/{within}").into_bytes());
+            key.push(std::fs::read(&path).expect("a bundle file reads"));
             let Some(sdk) = sdk_of(&path) else { continue };
             let artifact = goofi_build::ensure(sdk, &path, &base)
                 .unwrap_or_else(|why| panic!("the shipped node {} does not build:\n{why}", path.display()));
@@ -48,7 +52,9 @@ fn prebuild_nodes() {
         out.join("shipped.rs"),
         format!(
             "pub static SHIPPED_SOURCES: &[(&str, &[u8])] = &[\n{sources}];\n\
-             pub static SHIPPED_ARTIFACTS: &[(&str, &str, &[u8])] = &[\n{artifacts}];\n"
+             pub static SHIPPED_ARTIFACTS: &[(&str, &str, &[u8])] = &[\n{artifacts}];\n\
+             pub static SHIPPED_KEY: &str = {:?};\n",
+            goofi_build::digest(key.iter().map(Vec::as_slice))
         ),
     )
     .expect("write shipped.rs");

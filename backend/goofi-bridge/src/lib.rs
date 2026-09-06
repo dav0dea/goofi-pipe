@@ -565,13 +565,14 @@ pub async fn serve_app(
 
 include!(concat!(env!("OUT_DIR"), "/shipped.rs"));
 
-/// The shipped bundles, written under the home for this version — every file of every bundle,
-/// beside the artifacts goofi's own build made of its nodes — so a shipped node loads with no
-/// toolchain and `library get` finds its file. Each bundle is a root like any other; these come
-/// pre-warmed.
+/// The shipped bundles, written under the home for this version AND this embed — every file of
+/// every bundle, beside the artifacts goofi's own build made of its nodes — so a shipped node
+/// loads with no toolchain and `library get` finds its file. Each bundle is a root like any
+/// other; these come pre-warmed. The tree is keyed by the embed's own content, so it is written
+/// once and never edited: a file a later build moves cannot stay behind as a second claimant.
 fn materialise_shipped() -> Vec<PathBuf> {
     let home = goofi_core::home::dir();
-    let tree = home.join("shipped").join(goofi_build::VERSION);
+    let tree = home.join("shipped").join(goofi_build::VERSION).join(SHIPPED_KEY);
     let mut roots = Vec::new();
     for (rel, bytes) in SHIPPED_SOURCES {
         goofi_build::write_if_changed(&tree.join(rel), bytes);
@@ -708,24 +709,25 @@ pub fn rescan(
     patch: &std::path::Path,
 ) -> (ScanDiff, Vec<ScannedType>) {
     let mut found: std::collections::BTreeMap<String, Seen> = Default::default();
-    let mut patch_types: HashSet<String> = HashSet::new();
+    let mut origins: std::collections::HashMap<String, goofi_graph::Origin> = Default::default();
     let mut outcomes = Vec::new();
     let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| patch.join(goofi_node::folder_of(id))).collect();
     let roots = (state.roots.iter().map(|d| (d.clone(), false))).chain(workspace.into_iter().map(|d| (d, true)));
     for (root, is_patch) in roots {
+        let bundle = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         for t in g.scan_root(&root) {
-            if is_patch {
-                patch_types.insert(t.type_name.clone());
-            }
+            let origin = if is_patch { goofi_graph::Origin::Patch } else { goofi_graph::Origin::Root(bundle.clone()) };
+            origins.insert(t.type_name.clone(), origin);
             found.insert(t.type_name.clone(), (Some(root.clone()), t.stamp));
             outcomes.push(t);
         }
     }
     for t in g.scan_own() {
+        origins.insert(t.type_name.clone(), goofi_graph::Origin::Plugin);
         found.insert(t.type_name.clone(), (None, t.stamp));
         outcomes.push(t);
     }
-    g.set_patch_types(patch_types);
+    g.set_type_origins(origins);
 
     let mut prev = state.node_index.lock().unwrap();
     let mut diff = ScanDiff::default();

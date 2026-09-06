@@ -162,11 +162,11 @@ pub(crate) fn source_of(g: &Graph, type_name: &str) -> &'static str {
     }
 }
 
-pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest, source: &str) -> Value {
+pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest) -> Value {
     let ty = goofi_node::qualify(engine, m.type_name);
-    json!({
+    let mut info = json!({
         "type": ty,
-        "source": source,
+        "source": source_of(g, &ty),
         "tags": m.tags.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
         "doc": m.doc,
         "available": true,
@@ -177,7 +177,11 @@ pub fn node_type_info(g: &Graph, engine: &'static str, m: &'static NodeManifest,
         "output_slots": output_slots(m),
         // The owning engine's own normalization, so palette and instance agree.
         "params": describe_params(g, engine, &g.default_params_of(&ty, None).unwrap_or_default(), m),
-    })
+    });
+    if let Some(bundle) = g.bundle_of(&ty) {
+        info["bundle"] = json!(bundle);
+    }
+    info
 }
 
 /// The `list_nodes` palette catalog, sorted by (engine, bare name). Hidden test nodes
@@ -188,8 +192,7 @@ pub fn catalog_types(g: &Graph) -> Value {
         .into_iter()
         .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
         .map(|(engine, l)| {
-            let ty = goofi_node::qualify(engine, l.manifest.type_name);
-            let info = node_type_info(g, engine, l.manifest, source_of(g, &ty));
+            let info = node_type_info(g, engine, l.manifest);
             (engine.to_string(), l.manifest.type_name.to_string(), info)
         })
         .collect();
@@ -208,6 +211,7 @@ pub fn catalog_types(g: &Graph) -> Value {
             json!({
                 "type": name,
                 "source": source_of(g, &name),
+                "bundle": g.bundle_of(&name),
                 "tags": [],
                 "doc": format!("This node could not be loaded: {reason}"),
                 "available": false,

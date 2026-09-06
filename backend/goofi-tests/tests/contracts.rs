@@ -229,7 +229,7 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
         graph.register_unavailable("signal:PsdScipy".into(), "scipy".into());
         goofi_bridge::register_dyn_type(&mut graph, &SOURCE, Box::new(|_| never()), &goofi_node::NATIVE);
         // Provenance is the only thing the scan knows that the catalog cannot re-derive, greyed rows too.
-        graph.set_patch_types(["signal:MyPyThing".to_string(), "signal:PsdScipy".to_string()].into());
+        graph.add_patch_type("signal:PsdScipy");
     }
     let ty = row(&g, "signal:PsdScipy");
     assert_eq!(ty["available"], false);
@@ -241,6 +241,8 @@ fn a_node_that_could_not_load_explains_itself_instead_of_vanishing() {
     assert_eq!(ty["source"], "patch", "a greyed row is provenanced too");
     assert_eq!(row(&g, "signal:MyPyThing")["source"], "patch");
     assert_eq!(row(&g, "signal:LFO")["source"], "builtin", "a shipped node ships with goofi");
+    assert_eq!(row(&g, "signal:LFO")["bundle"], "signal", "…and names the bundle it ships in");
+    assert!(row(&g, "signal:MyPyThing").get("bundle").is_none(), "the patch's own names no bundle");
 }
 
 #[tokio::test]

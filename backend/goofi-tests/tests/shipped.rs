@@ -5,11 +5,23 @@ use goofi_tests::{drive, f32s, j, Goofi, OutputProbe};
 
 #[test]
 fn a_shipped_node_runs_with_no_cargo_and_an_authored_one_says_what_it_needs() {
-    // Before the first boot: a build dir nothing pre-warmed, and a cargo that does not exist.
+    // Before the first boot: a build dir nothing pre-warmed, a cargo that does not exist, and a
+    // home an EARLIER build left its tree in, whose files are not this build's and must not scan.
     let fresh = tempfile::tempdir().unwrap();
     std::env::set_var("GOOFI_BUILD_DIR", fresh.path());
     std::env::set_var("CARGO", fresh.path().join("no-cargo"));
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("GOOFI_HOME", home.path());
+    let shipped = goofi_core::home::dir().join("shipped").join(env!("CARGO_PKG_VERSION"));
+    let stale = shipped.join("stale").join("signal");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join("Stale.rs"), "").unwrap();
     let g = Goofi::new();
+    let trees: Vec<_> = g.state.roots.iter().map(|r| r.parent().unwrap().to_path_buf()).collect();
+    assert!(trees.iter().all(|t| t == &trees[0] && t.starts_with(&shipped) && t != &shipped.join("stale")),
+            "every shipped root lies under ONE tree, this build's own: {trees:?}");
+    assert!(g.call("library list", j!({}))["types"].as_array().unwrap().iter().all(|v| v["type"] != "signal:Stale"),
+            "a file an earlier build left in the home is not a node");
     let uid = g.add("LFO");
     let probe = OutputProbe::open(&g.state.graph.lock().unwrap(), uid, "out");
     g.until("the shipped LFO to emit", |g| probe.frame(&mut g.state.graph.lock().unwrap()));

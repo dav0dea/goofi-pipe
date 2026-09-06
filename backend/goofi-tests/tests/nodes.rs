@@ -105,6 +105,11 @@ fn a_patch_local_node_wins_the_name_and_is_marked_as_the_patchs_own() {
         .find(|v| v["type"] == ty).unwrap()["source"].clone();
     assert_eq!(source("signal:MyThing"), "patch", "…and says where it came from");
     assert_eq!(source("signal:OnlyShipped"), "builtin", "the shipped root's own node is not the patch's");
+    let bundle = |ty: &str| g.call("library list", j!({}))["types"].as_array().unwrap().iter()
+        .find(|v| v["type"] == ty).unwrap()["bundle"].clone();
+    let dir = shipped.path().file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(bundle("signal:OnlyShipped"), j!(dir), "a root's node names the root, by its own directory name");
+    assert!(bundle("signal:MyThing").is_null(), "the patch's own names no bundle");
 }
 
 #[test]

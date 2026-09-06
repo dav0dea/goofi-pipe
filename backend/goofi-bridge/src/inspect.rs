@@ -263,7 +263,7 @@ pub fn globals(g: &Graph) -> Value {
 pub fn node_source(g: &Graph, ty: &str, mount: &Path, roots: &[PathBuf]) -> Result<Value, String> {
     let (engine, entry) = g.resolve_type(ty).map_err(|e| format!("library get: {e}"))?;
     let ty = &goofi_node::qualify(engine, entry.manifest.type_name);
-    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest, crate::schemas::source_of(g, ty));
+    let mut info = crate::schemas::node_type_info(g, engine, entry.manifest);
     // `.rev()` is load-bearing: `rescan` scans the roots forwards and lets each overwrite the
     // last, so a first-match search walks them backwards.
     let workspace: Vec<PathBuf> = g.engine_ids().into_iter().map(|id| mount.join(goofi_node::folder_of(id))).collect();

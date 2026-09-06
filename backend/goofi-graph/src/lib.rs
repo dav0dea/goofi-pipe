@@ -395,6 +395,15 @@ struct Greyed {
     last: Option<(&'static str, &'static NodeManifest)>,
 }
 
+/// Where a scanned type came from: the open patch's workspace, a node root by directory name, or
+/// an engine's own find — a plugin, which belongs to no tree at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Patch,
+    Root(String),
+    Plugin,
+}
+
 pub struct Graph {
     nodes: IndexMap<Uid, NodeEntry>,
     links: Vec<Link>,
@@ -411,12 +420,9 @@ pub struct Graph {
     /// Types that exist on disk but cannot load here → why. Greyed in the palette, so a node
     /// needing an uninstalled dependency explains itself instead of silently not existing.
     unavailable: std::collections::BTreeMap<String, Greyed>,
-    /// The types that came from the open patch's workspace — the one thing about a type that only
-    /// the scan can know. Re-derived wholesale by each scan.
-    patch_types: std::collections::HashSet<String>,
-    /// The types an engine found on its OWN account rather than in a node root — a VST3 plugin
-    /// is one, and the palette shows them as their own family.
-    plugin_types: std::collections::HashSet<String>,
+    /// Where each scanned type came from — the one thing about a type that only the scan can
+    /// know. Re-derived wholesale by each scan.
+    origins: std::collections::HashMap<String, Origin>,
     /// One clock across every node thread rather than one per birth: `NodeCtx::now` is
     /// seconds-since-patch-start.
     start: Instant,
@@ -504,8 +510,7 @@ impl Graph {
             links: Vec::new(),
             next_uid: 1,
             unavailable: std::collections::BTreeMap::new(),
-            patch_types: std::collections::HashSet::new(),
-            plugin_types: std::collections::HashSet::new(),
+            origins: std::collections::HashMap::new(),
             arrangement: layout::Layout::default(),
             arrangement_warning: None,
             viewpoint: serde_json::Value::Null,
@@ -835,7 +840,6 @@ impl Graph {
         let held = self.held_manifests();
         let out: Vec<_> =
             self.engines.iter_mut().flat_map(|e| qualified(e.id(), e.scan_own())).collect();
-        self.plugin_types = out.iter().map(|t| t.type_name.clone()).collect();
         self.note_scanned(&out, &held);
         out
     }
@@ -1005,26 +1009,36 @@ impl Graph {
         self.unavailable.iter().map(|(k, v)| (k.as_str(), v.reason.as_str()))
     }
 
-    /// Declare which runtime types came from the open patch's own workspace — the palette's
-    /// provenance badge. Written WHOLESALE, because only the scan knows the answer.
-    pub fn set_patch_types(&mut self, names: std::collections::HashSet<String>) {
-        self.patch_types = names;
+    /// Declare where every scanned type came from — the palette's provenance badge and bundle.
+    /// Written WHOLESALE, because only the scan knows the answer.
+    pub fn set_type_origins(&mut self, origins: std::collections::HashMap<String, Origin>) {
+        self.origins = origins;
     }
 
     /// One more type of the patch's own — what a type registered in place of a scan of it is.
     pub fn add_patch_type(&mut self, name: &str) {
-        self.patch_types.insert(name.to_string());
+        self.origins.insert(name.to_string(), Origin::Patch);
     }
 
-    /// Whether `type_name` came from the open patch (see [`Graph::set_patch_types`]). Everything
+    /// Whether `type_name` came from the open patch (see [`Graph::set_type_origins`]). Everything
     /// else — built-ins and the shipped node directory alike — reads as shipped.
     pub fn is_patch_type(&self, type_name: &str) -> bool {
-        self.patch_types.contains(type_name)
+        matches!(self.origins.get(type_name), Some(Origin::Patch))
     }
 
-    /// Whether `type_name` came from an engine's own scan rather than from a node root.
+    /// The node root `type_name` was scanned from, by its directory name — none for the patch's
+    /// own, and for a plugin.
+    pub fn bundle_of(&self, type_name: &str) -> Option<&str> {
+        match self.origins.get(type_name) {
+            Some(Origin::Root(bundle)) => Some(bundle),
+            _ => None,
+        }
+    }
+
+    /// Whether `type_name` came from an engine's own scan rather than from a node root — a VST3
+    /// plugin is one, and the palette shows them as their own family.
     pub fn is_plugin_type(&self, type_name: &str) -> bool {
-        self.plugin_types.contains(type_name)
+        matches!(self.origins.get(type_name), Some(Origin::Plugin))
     }
 
     pub fn node_count(&self) -> usize {
