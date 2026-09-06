@@ -37,6 +37,12 @@ platform bodies and the swizzle — has never executed anywhere. CI compiles it 
   project that is follows the worker count, which is why it read as a viewport. The panel type is the
   fifth leakable global in `expectPristineWorkspace` now, named in 2.1 s instead of 30, and
   `restorePanelType` is the `finally` half. Reproduced locally at `GOOFI_E2E_WORKERS=1`, both ways.
+- **A cleared global source could still write the global.** A pick crosses a channel from the
+  reducer thread to the follower, so one made while the binding stood was applied after it was
+  cleared — over whatever the author typed next. `follow` knew the machine names and the value lock
+  and not the OWNER, which is the whole of it. macOS found it as a redo that rebuilt every field but
+  one; ten runs of the broken variant here never hit the window, so what stands behind the fix is
+  that CI failure and the path, not a local reproduction.
 - **A looped WAV file left a DC offset on the output forever.** `AudioPlayback` sets `ended` at the
   end of a file and lays one quiet chunk with it, because the DSP half HOLDS its last sample on an
   empty ring. A wrap under `loop` seeks back and left `ended` set, so the next real end laid no quiet
