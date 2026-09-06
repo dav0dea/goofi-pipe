@@ -438,7 +438,72 @@ fn the_control_nodes_turn_a_signal_into_a_decision_a_route_and_a_label() {
     let labels = stamped.meta().channels().get(0).and_then(|x| x.coords.clone()).expect("the written label");
     assert_eq!(labels[0], goofi_core::Coord::Str("alpha".into()), "the name the node was told to write");
 
-    for n in [over, under, route, named] {
+    // Dwell is the third leg beside hysteresis and hold: the comparison has to keep saying the
+    // same thing before the decision follows it, so a brief excursion past the level is not a
+    // state. The signal leaves the level here and the decision does not.
+    set(over, "threshold", "dwell", j!(5.0));
+    set(level, "constant", "value", j!(0.0));
+    assert!(g.stays(|_| po.latest().is_some_and(|d| f32s(&d).iter().all(|v| *v == 1.0))),
+            "the signal left the level, and the dwell has not elapsed");
+    set(over, "threshold", "dwell", j!(0.0));
+    g.until("the decision to follow once nothing holds it back", |_| {
+        po.latest().filter(|d| f32s(d).iter().all(|v| *v == 0.0))
+    });
+
+    // Hold takes the first frame unasked, so a fresh one answers with the signal rather than with
+    // zero — and after that only what a `take` catches.
+    let latch = g.add("Hold");
+    let pl = g.probe(latch, "out");
+    g.link(level, "out", latch, "input");
+    g.until("the first frame, taken unasked", |_| {
+        pl.latest().filter(|d| shape(d) == vec![3, 4] && f32s(d).iter().all(|v| *v == 0.0))
+    });
+    set(level, "constant", "value", j!(7.0));
+    assert!(g.stays(|_| pl.latest().is_some_and(|d| f32s(&d).iter().all(|v| *v == 0.0))),
+            "a held value does not follow its input");
+    g.call("node param pulse", j!({ "node": hex(latch), "param": "hold/take" }));
+    let caught = g.until("the value the take caught", |_| {
+        pl.latest().filter(|d| f32s(d).iter().all(|v| *v == 7.0))
+    });
+    assert_eq!(shape(&caught), vec![3, 4], "a latch keeps the shape it was given");
+
+    // Quantize counts its allowed values out: five from zero to one puts 0.7 on 0.75, the fourth.
+    let steps = g.add("signal:Quantize");
+    set(steps, "quantize", "count", j!(5));
+    set(level, "constant", "value", j!(0.7));
+    let (pq, pi) = (g.probe(steps, "out"), g.probe(steps, "index"));
+    g.link(level, "out", steps, "input");
+    g.until("the nearest of five counted values", |_| {
+        pq.latest().filter(|d| f32s(d).iter().all(|v| (*v - 0.75).abs() < 1e-6))
+    });
+    g.until("which of them it landed on", |_| pi.latest().filter(|d| f32s(d).iter().all(|v| *v == 3.0)));
+
+    // The same node against a WIRED set, which is how a tuning's own ratios become the only
+    // numbers a signal may take. `period` folds a value into one octave of the scale, matches it
+    // there, and puts the register back: 4.9 reads as 1.225, lands on 1.25, and comes out at 5.
+    let written = g.add("Text");
+    set(written, "text", "value", j!(r#"{"scale": [1.0, 1.25, 1.5]}"#));
+    let parsed = g.add("FromJson");
+    let ratios = g.add("TableSelect");
+    set(ratios, "table", "key", j!("scale"));
+    g.link(written, "out", parsed, "input");
+    g.link(parsed, "out", ratios, "input");
+    let pr = g.probe(ratios, "array");
+    g.until("the scale read out of its own text", |_| pr.latest().filter(|d| f32s(d).len() == 3));
+    // The set is wired before the signal is, because a levels-mode quantizer with no set to land
+    // on has nothing to answer and says so.
+    let tuned = g.add("signal:Quantize");
+    set(tuned, "quantize", "mode", j!("levels"));
+    set(tuned, "quantize", "period", j!(2.0));
+    let pv = g.probe(tuned, "out");
+    g.link(ratios, "array", tuned, "levels");
+    set(level, "constant", "value", j!(4.9));
+    g.link(level, "out", tuned, "input");
+    g.until("the value pulled onto the scale, in the octave it came from", |_| {
+        pv.latest().filter(|d| f32s(d).iter().all(|v| (*v - 5.0).abs() < 1e-5))
+    });
+
+    for n in [over, under, route, named, latch, steps, tuned] {
         assert!(g.error(n).is_none(), "a control node carries no error: {:?}", g.error(n));
     }
 }

@@ -4,11 +4,14 @@
 use goofi_core::{Data, SlotType};
 use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
 
-/// One element's decision and when it last changed.
+/// One element's decision, when it last changed, and how long the comparison has disagreed.
 #[derive(Clone, Copy, Default)]
 struct State {
     high: bool,
     since: f64,
+    /// What the raw comparison last said, and when it started saying it.
+    want: bool,
+    want_since: f64,
 }
 
 #[derive(Default)]
@@ -31,6 +34,7 @@ impl Node for Threshold {
         let below = p.str("threshold", "mode").unwrap_or("above") == "below";
         let edge_only = p.bool("threshold", "edge").unwrap_or(false);
         let hold = p.f64("threshold", "hold").unwrap_or(0.0).max(0.0);
+        let dwell = p.f64("threshold", "dwell").unwrap_or(0.0).max(0.0);
 
         let count = a.as_bytes().len() / 4;
         if self.states.len() != count {
@@ -43,8 +47,14 @@ impl Node for Threshold {
             // cannot rattle the decision.
             let past = if state.high { v > level - band } else { v > level + band };
             let want = if below { !past } else { past };
+            // The comparison has to keep saying the same thing for `dwell` before the decision
+            // follows it, so a brief excursion past the level is not a state.
+            if want != state.want {
+                state.want = want;
+                state.want_since = c.now;
+            }
             let mut rose = false;
-            if want != state.high && c.now - state.since >= hold {
+            if want != state.high && c.now - state.want_since >= dwell && c.now - state.since >= hold {
                 rose = want;
                 state.high = want;
                 state.since = c.now;
@@ -88,6 +98,17 @@ static PARAMS: &[ParamDecl] = &[
         spec: ParamSpec::Bool { default: false },
         expression: None,
         doc: Some("Emit one only on the update where the decision turns true, rather than while it holds."),
+    },
+    ParamDecl {
+        group: "threshold",
+        name: "dwell",
+        spec: ParamSpec::Float { default: 0.0, min: 0.0, max: 3600.0 },
+        expression: None,
+        doc: Some(
+            "How long in seconds the comparison must keep saying the same thing before the \
+             decision follows it, so a brief excursion past the level is not a state. It delays \
+             the release as well as the onset.",
+        ),
     },
     ParamDecl {
         group: "threshold",
