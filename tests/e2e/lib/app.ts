@@ -1,5 +1,9 @@
 import { expect, type Page } from '@playwright/test';
 
+/** The type a fresh panel is born with, mirroring `frontend/src/lib/api/vocab.ts` — this package
+ * imports no frontend source, as `lib/inspector.ts` does with the drag anchors. */
+const DEFAULT_PANEL_TYPE = 'node-editor';
+
 /** The bare readiness gate: `window.goofi` is published (AppShell mounted) and the node catalog
  * has arrived over the control WS (`query.nodeTypes()` non-empty ⇒ `hello` landed). On its own
  * this is only for a RELOAD mid-spec, where the spec's own state is legitimately still live —
@@ -41,7 +45,7 @@ export async function waitForApp(page: Page): Promise<void> {
  * What it deliberately does NOT check is the DIRTY flag. Editing anything sets it, so asserting it
  * clean would force a patch reset into all 37 specs that touch the graph — and a universal reset
  * would take the node guard above with it, since a reset can never leave a node behind to find.
- * The four globals below are all leaks a spec chooses to make; `unsaved_changes` is a byproduct of
+ * The five globals below are all leaks a spec chooses to make; `unsaved_changes` is a byproduct of
  * doing any work at all.
  */
 export async function expectPristineWorkspace(page: Page): Promise<void> {
@@ -85,6 +89,14 @@ export async function expectPristineWorkspace(page: Page): Promise<void> {
 		savePath,
 		'a previous spec left the patch NAMED — hand it back with `resetPatch` in a `finally`'
 	).toBe(null);
+	// The fifth, and the one that reads as no leak at all: the panel's TYPE. A control panel mounts
+	// no node editor, so nothing subscribes and `integrity`'s streaming poll times out 30s later.
+	await expect
+		.poll(() => page.evaluate(() => (window as any).goofi.query.panels()[0]?.type), {
+			...settled,
+			message: 'a previous spec left the panel on another type — `restorePanelType` in a `finally`'
+		})
+		.toBe(DEFAULT_PANEL_TYPE);
 }
 
 /**
@@ -135,4 +147,20 @@ export async function splitRight(page: Page): Promise<void> {
 export async function closeSplit(page: Page): Promise<void> {
 	await page.getByTestId('panel-header').nth(1).getByRole('button', { name: 'Close panel' }).click();
 	await expect(page.locator('.panel'), 'the workspace is back to one panel').toHaveCount(1);
+}
+
+/**
+ * Put the sole panel back on the node editor. A panel's type is a field in the RUNNING PATCH like
+ * a split or a tab, so a spec that switches it and leaves early hands every later spec on that
+ * worker a page with no canvas on it — and the red lands on whichever project measures a viewer
+ * next. The `finally` half of the contract `expectPristineWorkspace` enforces at the other end.
+ */
+export async function restorePanelType(page: Page): Promise<void> {
+	await page.evaluate((type) => {
+		const g = (window as any).goofi;
+		g.commands.setPanelType(g.query.panels()[0].panelId, type);
+	}, DEFAULT_PANEL_TYPE);
+	await expect
+		.poll(() => page.evaluate(() => (window as any).goofi.query.panels()[0]?.type))
+		.toBe(DEFAULT_PANEL_TYPE);
 }
