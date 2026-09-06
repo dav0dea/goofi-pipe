@@ -104,9 +104,12 @@ NEW signature that is worth more than the other seven: `a_complexity_node_reads_
 failed on ARITHMETIC — Hjorth complexity of an 8 Hz sine read 1.2204651 against 0.9..1.1, where a
 pure sine is exactly 1. A full 256-sample window that is not a sine is a window that LOST A BLOCK
 and was stitched across the gap, and the PAL's `dirent` errors bracket that panic in its own
-stdout. So on Windows this family is not only "a node will not start": it can deliver quietly
-wrong DATA, and it took a numeric oracle to see it. The same run's `Directory::new` panic landed
-on the audio test again, so the thrash theory below is answered: no.
+stdout. So on Windows this family is not only "a node will not start": it delivered quietly
+wrong DATA, and it took a numeric oracle to see it. ONCE, though — the two Windows runs after it
+ran that same test and passed, so it is flake-grade like the rest of the family rather than a
+standing property. It is recorded because a lost block that nothing reports is a worse failure
+than a node that refuses to start, not because it is common. The same run's `Directory::new` panic
+landed on the audio test again, so the thrash theory below is answered: no.
 
 The two transport ones are the burst again — 24 and 40 iceoryx2 nodes in a loop — and the four
 timeouts are nodes whose services never came up, which is the create failure worn quietly.
