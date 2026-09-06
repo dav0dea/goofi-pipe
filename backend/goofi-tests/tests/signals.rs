@@ -218,6 +218,7 @@ fn the_generators_answer_on_their_own_and_a_settled_one_answers_when_asked() {
     set(words, "text", "value", j!("hello"));
     let said = g.until("the text to answer its edit", |_| pt.latest().filter(|d| text(d) == Some("hello")));
     assert_eq!(text(&said), Some("hello"));
+
     for n in [lfo, noise, konst, words] {
         assert!(g.error(n).is_none(), "a generator carries no error");
     }
@@ -241,6 +242,23 @@ fn the_array_nodes_reshape_a_grid_and_the_rate_follows_the_time_axis() {
     g.link(src, "out", math, "input");
     let scaled = g.until("the scaled grid", |_| pm.latest().filter(|d| shape(d) == vec![3, 4]));
     assert_eq!(scaled.meta().sfreq(), Some(256.0), "elementwise work leaves the rate alone");
+
+    // `bound` is what happens to a value the range cannot hold. The remap is an identity here —
+    // the same range in and out — so each reading is the bound alone, over a flat 300.
+    set(math, "math", "multiply", j!(0.0));
+    set(math, "math", "post_add", j!(300.0));
+    set(math, "range", "from_low", j!(20.0));
+    set(math, "range", "from_high", j!(40.0));
+    set(math, "range", "to_low", j!(20.0));
+    set(math, "range", "to_high", j!(40.0));
+    // clamp holds at the edge; wrap carries round, and 300 is a whole number of spans past 20;
+    // fold halves until it lands, which is the octave a spectral peak needs to be audible.
+    for (bound, want) in [("clamp", 40.0), ("wrap", 20.0), ("fold", 37.5), ("none", 300.0)] {
+        set(math, "range", "bound", j!(bound));
+        g.until(bound, |_| pm.latest().filter(|d| f32s(d).iter().all(|v| (*v - want).abs() < 1e-4)));
+    }
+    set(math, "math", "multiply", j!(2.0));
+    set(math, "math", "post_add", j!(1.0));
 
     let func = g.add("Function");
     set(func, "function", "function", j!("negate"));
