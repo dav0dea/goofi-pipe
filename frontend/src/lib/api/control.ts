@@ -25,6 +25,9 @@ export interface NodeTypeInfo {
 	/** Which tree the type came from; an `--extra-nodes` directory reads as `builtin`. `plugin` is
 	 * an engine's own find rather than any tree's — a VST3 class, window or no window. */
 	source: 'builtin' | 'patch' | 'plugin';
+	/** The node root the type was scanned from, by directory name — a shipped bundle, or an
+	 * `--extra-nodes` root. Absent for `patch` and `plugin`, which come from no root. */
+	bundle?: string;
 	doc: string;
 	/** Whether this machine resolves the type's unconditional top-level deps. */
 	available: boolean;

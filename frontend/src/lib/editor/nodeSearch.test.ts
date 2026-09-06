@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ALL_TAB, VST_TAB, byTab, paletteTabs, rankNodeTypes } from './nodeSearch';
 import type { NodeTypeInfo } from '$lib/api/control';
 import { typeInfo } from '$lib/test/typeInfo';
+import { nodeTypeSource } from './nodeTypeSource';
 
 const node = (type: string, tags: NodeTypeInfo['tags'], doc = '') =>
 	typeInfo({ type, tags, doc });
@@ -96,6 +97,22 @@ describe('search reaches the tree a node came from', () => {
 		const reverb = typeInfo({ type: 'audio:Reverb', source: 'plugin' });
 		const shipped = typeInfo({ type: 'audio:Delay' });
 		expect(order([shipped, reverb], 'plugin')).toEqual(['audio:Reverb']);
+	});
+
+	it('finds a shipped node by its bundle, which is the word its row shows now', () => {
+		const eeg = typeInfo({ type: 'signal:Fooof', bundle: 'eeg' });
+		const core = typeInfo({ type: 'signal:Buffer', bundle: 'signal' });
+		expect(order([core, eeg], 'eeg')).toEqual(['signal:Fooof']);
+		expect(order([core, eeg], 'builtin'), 'the bundle replaced that word, not joined it').toEqual([]);
+	});
+
+	// The row says `unavailable` — the one thing an eye needs from a greyed row — so the bundle is
+	// matched off the FIELD. Read off the word, a bundle whose deps are unmet vanished from a
+	// search for its own name, which is every row of it at once.
+	it('still finds a greyed node by its bundle', () => {
+		const greyed = typeInfo({ type: 'signal:PhiId', bundle: 'complexity', available: false });
+		expect(nodeTypeSource(greyed)).toBe('unavailable');
+		expect(order([greyed], 'complexity')).toEqual(['signal:PhiId']);
 	});
 });
 

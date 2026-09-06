@@ -53,7 +53,7 @@ function tierFor(t: NodeTypeInfo, q: string): number {
 	if (hasWordStartMatch(bare, name, q)) return TIER.nameWord;
 	if (name.includes(q)) return TIER.nameSubstring;
 	if (t.tags.some((tag) => tag.includes(q))) return TIER.tags;
-	if (nodeTypeSource(t).includes(q)) return TIER.source;
+	if (t.bundle?.includes(q) || nodeTypeSource(t).includes(q)) return TIER.source;
 	if (t.doc.toLowerCase().includes(q)) return TIER.doc;
 	return TIER.none;
 }
