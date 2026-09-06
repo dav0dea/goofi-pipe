@@ -462,6 +462,18 @@
 						{/if}
 						{#if edit}
 							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<span class="zap" onpointerdown={(e) => e.stopPropagation()}>
+								<IconButton
+									variant="danger"
+									size="sm"
+									density="chrome"
+									data-testid="control-delete"
+									title="Delete {gv.element}"
+									label="Delete {gv.element}"
+									onclick={() => void g.removeControl(group, gv.element)}><Icon name="x" /></IconButton
+								>
+							</span>
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<span
 								class="handle"
 								data-testid="control-resize"
@@ -495,25 +507,23 @@
 					</EmptyState>
 				{:else}
 					<div class="props">
-						<div class="row">
-							<Field label="name">
-								<TextInput
-									inputmode="search"
-									data-testid="control-props-name"
-									value={pv.element}
-									autocomplete="off"
-									onChange={(v) => void rename(pv, v)}
-								/>
-							</Field>
-							<Field label="widget">
-								<Select
-									data-testid="control-props-kind"
-									value={pc.kind}
-									options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
-									onChange={(v) => setControl(pv, { kind: v as Kind })}
-								/>
-							</Field>
-						</div>
+						<Field label="name">
+							<TextInput
+								inputmode="search"
+								data-testid="control-props-name"
+								value={pv.element}
+								autocomplete="off"
+								onChange={(v) => void rename(pv, v)}
+							/>
+						</Field>
+						<Field label="widget">
+							<Select
+								data-testid="control-props-kind"
+								value={pc.kind}
+								options={KINDS.filter((k) => TYPE_OF[k] === pv.type)}
+								onChange={(v) => setControl(pv, { kind: v as Kind })}
+							/>
+						</Field>
 						<ParamField
 							paramName="value"
 							descriptor={valueDescriptor(pv, pc)}
@@ -523,10 +533,8 @@
 							data-testid="control-props-value"
 						/>
 						{#if pv.source}
-							<div class="row">
-								<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128">
-									<NumberInput value={pv.source.index ?? 0} min={0} step={1} onChange={(v) => setIndex(pv, v)} />
-								</Field>
+							<Field label="index" doc="Which number of a wide frame the widget reads — a controller's cc holds 128">
+								<NumberInput value={pv.source.index ?? 0} min={0} step={1} onChange={(v) => setIndex(pv, v)} />
 								<Chip
 									tone={learning ? 'accent' : 'neutral'}
 									aria-pressed={learning !== null}
@@ -534,20 +542,14 @@
 									title="Move one control on the source, and the widget follows that one"
 									onclick={() => toggleLearn(pv)}>{learning ? 'listening…' : 'learn'}</Chip
 								>
-							</div>
+							</Field>
 						{/if}
 						{#if pv.type === 'float' || pv.type === 'int'}
-							<div class="row">
-								<Field label="min">
-									<NumberInput value={pc.min ?? 0} onChange={(v) => setControl(pv, { min: v })} />
-								</Field>
-								<Field label="max">
-									<NumberInput value={pc.max ?? 1} onChange={(v) => setControl(pv, { max: v })} />
-								</Field>
-								<Field label="step">
-									<NumberInput value={pc.step ?? 0} min={0} onChange={(v) => setControl(pv, { step: v })} />
-								</Field>
-							</div>
+							<Field label="range" doc="min, max and step">
+								<NumberInput value={pc.min ?? 0} title="min" onChange={(v) => setControl(pv, { min: v })} />
+								<NumberInput value={pc.max ?? 1} title="max" onChange={(v) => setControl(pv, { max: v })} />
+								<NumberInput value={pc.step ?? 0} min={0} title="step" onChange={(v) => setControl(pv, { step: v })} />
+							</Field>
 						{/if}
 						{#if pc.kind === 'dropdown'}
 							<Field label="options" doc="Comma-separated">
@@ -559,16 +561,6 @@
 								/>
 							</Field>
 						{/if}
-						<div class="row end">
-							<IconButton
-								variant="ghost"
-								size="sm"
-								data-testid="control-delete"
-								title="Delete element (Delete)"
-								label="Delete {pv.element}"
-								onclick={() => void g.removeControl(group, pv.element)}><Icon name="x" /></IconButton
-							>
-						</div>
 					</div>
 				{/if}
 			</Popover>
@@ -637,14 +629,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
+		/* Three numbers share one field's row, so each takes its share rather than a fixed width. */
+		--number-width: 100%;
 	}
-	.row {
-		display: flex;
-		align-items: flex-end;
-		gap: var(--space-4);
-	}
-	.row.end {
-		justify-content: flex-end;
+	/* The cross sits over the widget's corner; its own press must not start a drag. */
+	.zap {
+		position: absolute;
+		top: 0;
+		right: 0;
+		z-index: 1;
 	}
 	/* The board is a container, so a grid unit is a share of ITS width and follows every resize. */
 	.sheet {
