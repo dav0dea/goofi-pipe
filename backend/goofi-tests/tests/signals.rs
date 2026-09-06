@@ -83,7 +83,7 @@ fn a_chain_filters_a_live_stream_and_reads_the_band_that_survives() {
 }
 
 #[test]
-fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
+fn a_buffer_rolls_the_axis_it_was_told_to_and_grows_one_past_the_rank() {
     let g = Goofi::new();
     let src = g.add("_TestGrid");
     let time = g.add("Buffer");
@@ -128,6 +128,26 @@ fn a_buffer_keeps_the_rank_it_was_given_and_rolls_the_axis_it_was_told_to() {
     // A window of one is the identity on rank: the rolled axis is simply length 1.
     let single = g.until("a window of one", |_| po.latest());
     assert_eq!(shape(&single), vec![3, 1], "size 1 shortens the axis, it does not remove it");
+
+    // An axis past the rank is a NEW one: a [3] frame rolled along axis 1 becomes [3, T], each
+    // element of the vector a channel with its own history.
+    let per_channel = g.add("Reduce");
+    let grow = g.add("Buffer");
+    set(grow, "size", j!(8));
+    set(grow, "axis", j!(1));
+    let pg = g.probe(grow, "out");
+    g.link(src, "out", per_channel, "input");
+    g.link(per_channel, "out", grow, "input");
+    let grown = g.until("a vector buffered into a grid", |_| pg.latest().filter(|d| shape(d) == vec![3, 8]));
+    let v = f32s(&grown);
+    for r in 0..3 {
+        let row = &v[r * 8..(r + 1) * 8];
+        assert!(row.windows(2).all(|w| w[1] > w[0]), "row {r} is one element's own history: {row:?}");
+        assert!(
+            row.iter().zip(&v[..8]).all(|(x, first)| (x - first - r as f32 * 100.0).abs() < 0.01),
+            "row {r} is the channel it came from: {row:?}",
+        );
+    }
 }
 
 #[test]

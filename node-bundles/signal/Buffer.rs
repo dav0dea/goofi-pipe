@@ -1,5 +1,5 @@
 //! Buffer — a rolling window along one axis, one window per position along the other axes.
-//! The rank never changes.
+//! An axis past the rank is a new trailing one, and each frame is one entry along it.
 
 use goofi_core::{resolve_axis, Axis, Data, SlotType};
 use goofi_signal_sdk::{Inputs, Manifest, Node, NodeCtx, NodeResult, OutputDecl, Outputs, ParamDecl, Params, ParamSpec, SlotDecl, Tag};
@@ -23,9 +23,13 @@ impl Node for Buffer {
         let d = inp.get("input").ok_or("`input` is required")?;
         let size = p.i64("buffer", "size").unwrap_or(1000).max(1) as usize;
         let a = d.assert_ndims().at_least(1)?;
-        let axis = resolve_axis(p.i64("buffer", "axis").unwrap_or(-1), a.ndim())?;
+        let along = p.i64("buffer", "axis").unwrap_or(-1);
+        let mut shape = a.shape().to_vec();
+        if along >= 0 {
+            shape.resize(shape.len().max(along as usize + 1), 1);
+        }
+        let axis = resolve_axis(along, shape.len())?;
 
-        let shape = a.shape();
         let stride: usize = shape[axis + 1..].iter().product::<usize>() * 4;
         let outer: usize = shape[..axis].iter().product();
         let block = shape[axis] * stride;
@@ -52,7 +56,7 @@ impl Node for Buffer {
             buf.extend_from_slice(window);
         }
 
-        let mut shape_out = shape.to_vec();
+        let mut shape_out = shape.clone();
         shape_out[axis] = kept;
         // Only the buffered axis' labels are dropped: they name entries that have rolled past.
         let mut meta = d.meta().clone();
@@ -80,7 +84,8 @@ static PARAMS: &[ParamDecl] = &[
         expression: None,
         doc: Some(
             "Which axis to roll along, negative from the end. -1 is time, the default and the \
-             one a signal is usually buffered over; -2 is channels.",
+             one a signal is usually buffered over; -2 is channels. An axis past the rank is a \
+             new one, so a 1-D frame buffered along axis 1 becomes channels by time.",
         ),
     },
 ];
@@ -98,7 +103,7 @@ static OUTPUTS: &[OutputDecl] = &[OutputDecl {
 
 static MANIFEST: Manifest = Manifest {
     tags: &[Tag::Transform],
-    doc: "Rolling window along one axis: keeps the most recent `size` entries, rank unchanged.",
+    doc: "Rolling window along one axis: keeps the most recent `size` entries; an axis past the rank is a new one.",
     inputs: INPUTS,
     outputs: OUTPUTS,
     params: PARAMS,
