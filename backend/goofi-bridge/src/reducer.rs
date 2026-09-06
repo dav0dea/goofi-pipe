@@ -287,7 +287,13 @@ fn spawn_reducer(
             let plan = goofi_view::plan(&union_specs(&specs.lock().unwrap()), &d);
             let out = goofi_core::reduce::reduce_for_view(&d, &plan);
             reductions.fetch_add(1, Ordering::Relaxed);
-            let bytes = Bytes::from(goofi_codec::encode(&out));
+            // 8-bit only where every viewer of the slot draws it, and only for a frame that has
+            // texels; the reduction itself is f32 either way.
+            let quantized = (plan.depth == goofi_view::Depth::U8)
+                .then(|| goofi_core::reduce::quantize_u8(&out))
+                .flatten()
+                .map(|(shape, texels, meta)| goofi_codec::encode_u8(&shape, &texels, &meta));
+            let bytes = Bytes::from(quantized.unwrap_or_else(|| goofi_codec::encode(&out)));
             let _ = tx.send(bytes); // Err only if all receivers are momentarily gone — harmless.
             served = Some(g_now);
         }

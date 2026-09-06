@@ -68,6 +68,52 @@ pub fn reduce_for_view(frame: &Data, plan: &MergedViewSpec) -> Data {
     Data::array_f32(shape, bytes.into_owned(), meta).unwrap_or_else(|_| frame.clone())
 }
 
+/// A frame as 8-bit texels for the browser hop: a quarter of the bytes. Three or four channels
+/// quantize over `[0, 1]`, the colour convention; fewer over the frame's own finite range,
+/// recorded as `reduced.depth = {lo, hi}` so a viewer maps a texel back. `None` for anything but
+/// a 2-D or 3-D array, which is every frame an image viewer draws.
+pub fn quantize_u8(frame: &Data) -> Option<(Vec<usize>, Vec<u8>, crate::Meta)> {
+    let Value::Array(store) = frame.value() else {
+        return None;
+    };
+    let shape = store.shape();
+    if shape.len() != 2 && shape.len() != 3 {
+        return None;
+    }
+    let values = || store.as_bytes().chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().expect("four bytes")));
+    let colour = shape.len() == 3 && shape[2] >= 3;
+    let (lo, hi) = if colour {
+        (0.0, 1.0)
+    } else {
+        let (lo, hi) = values()
+            .filter(|v| v.is_finite())
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        // An all-NaN or empty frame leaves the seeds; a flat one spans a unit either way.
+        if lo < hi {
+            (lo, hi)
+        } else {
+            let lo = if lo.is_finite() { lo } else { 0.0 };
+            (lo, lo + 1.0)
+        }
+    };
+    let span = hi - lo;
+    let texels: Vec<u8> = values().map(|v| (((v - lo) / span).clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+    let mut meta = frame.meta().clone();
+    let mut reduced = match meta.reduced() {
+        Some(MetaValue::Map(m)) => m.clone(),
+        _ => BTreeMap::new(),
+    };
+    reduced.insert(
+        "depth".to_string(),
+        MetaValue::Map(BTreeMap::from([
+            ("lo".to_string(), MetaValue::Float(lo as f64)),
+            ("hi".to_string(), MetaValue::Float(hi as f64)),
+        ])),
+    );
+    meta.set_reduced(Some(MetaValue::Map(reduced)));
+    Some((shape.to_vec(), texels, meta))
+}
+
 /// `m` evenly-spaced indices into `0..n` (inclusive endpoints, like `np.linspace(0,n-1,m)`).
 pub fn subsample_idx(n: usize, m: usize) -> Vec<usize> {
     if n == 0 || m == 0 {

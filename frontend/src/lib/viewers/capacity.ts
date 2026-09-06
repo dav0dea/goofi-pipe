@@ -6,6 +6,8 @@ import type { ViewerKind } from './kind';
 import { VIEWER_KINDS } from '$lib/api/vocab';
 
 export type ReduceMethod = 'envelope' | 'subsample' | 'area';
+/** The sample width a viewer can draw; the stream is 8-bit only where every viewer accepts it. */
+export type Depth = 'f32' | 'u8';
 export type DimCmp = 'lt' | 'le' | 'eq' | 'ge' | 'gt';
 export type ViewDtype = 'array' | 'string' | 'table';
 
@@ -26,6 +28,7 @@ export interface ViewSpec {
 	ndim: [DimCmp, number][];
 	dims: DimConstraint[];
 	reduce: AxisReduce[];
+	depth?: Depth;
 }
 
 /** Floor so a 0-px / collapsed layout never asks for a degenerate reduction. */
@@ -64,6 +67,8 @@ export function viewSpecForKind(kind: ViewerKind, width: number, height: number)
 		};
 	}
 	if (kind === 'image') {
+		// 8-bit: an image is drawn through a 256-level LUT or as colour bytes either way, so the
+		// other three quarters of the bandwidth buy nothing.
 		return {
 			dtype: 'array',
 			ndim,
@@ -71,7 +76,8 @@ export function viewSpecForKind(kind: ViewerKind, width: number, height: number)
 			reduce: [
 				{ dim: 0, max: h, method: 'area' },
 				{ dim: 1, max: w, method: 'area' }
-			]
+			],
+			depth: 'u8'
 		};
 	}
 	if (kind === 'trajectory') {

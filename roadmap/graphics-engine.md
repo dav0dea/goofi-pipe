@@ -59,10 +59,16 @@ before they arrive.
   that thread is the drift the design principles forbid.
 - **One tap serves every reader of an output**: a readback to a `[H, W, 4]` f32 frame published on
   the derived name while anyone subscribes, and nothing while nobody does. The bandwidth fix lands
-  on the `/data` socket, not here: `ViewSpec` carries `depth`, the reducer quantizes to `u8` at
-  encode when every viewer of the slot accepts it, the codec writes `|u1`, and the browser draws it.
-  A colour frame quantizes over `[0, 1]`; a gray one over its own range, carried in
-  `meta.reduced.depth`. Engine-agnostic, and it lands first.
+  on the `/data` socket, not here, and it is engine-agnostic — LANDED 2026-09-06, before the engine.
+  `ViewSpec` carries `depth`, `plan` folds it to `u8` only when EVERY admitted viewer accepts it,
+  `reduce::quantize_u8` quantizes the already-reduced frame, `codec::encode_u8` writes the `|u1`
+  body the browser decoder now parses, and the image viewer uploads it as `R8`/`RGB8`/`RGBA8`. A
+  colour frame (3 or 4 channels) spans `[0, 1]`, the convention a viewer clamps to anyway; anything
+  narrower spans its own finite range, carried as `meta.reduced.depth = {lo, hi}` so the viewer maps
+  a texel back before its own range logic applies. `Data` stays f32 everywhere inside the graph.
+  **No golden case**: `tests/codec_golden.json` exists for parity with the legacy Python codec,
+  which casts every array to f32 and has no `|u1` path to be compared against — the Rust bytes are
+  pinned by the viewer scenario and the TS decoder by its own test instead.
 - **The engine registers only where a GPU adapter answers, hardware or software.** Where none
   does, there is no graphics engine and no graphics type in the catalog — the demo's rule for
   audio. The suite requires an adapter and fails naming the package (`mesa-vulkan-drivers`), never

@@ -3,6 +3,7 @@
 	import type { SettingsMap } from './settingsSchema';
 	import { makeLUTCache } from './colormaps';
 	import { GLImageRenderer, glSupports } from './imageGL';
+	import { isU8, sampleRange, toUnit } from './depth';
 	import { onMount, onDestroy } from 'svelte';
 
 	type Props = { frame: DataFrame; settings?: SettingsMap };
@@ -45,15 +46,18 @@
 	const lutFor = makeLUTCache();
 
 
-	/** Gray channel range: scanned from the data when auto, else the manual [vmin, vmax]. */
+	/** Gray channel range, in the FRAME's units: scanned from the data when auto, else the manual
+	 * [vmin, vmax]. An 8-bit frame needs no scan — the reducer already spanned it. */
 	function grayRange(
 		src: ArrayLike<number | bigint>,
 		n: number,
-		stride: number
+		stride: number,
+		texels: [number, number] | null
 	): [number, number] {
 		if (!autoRange) {
 			return [vmin, vmax > vmin ? vmax : vmin + 1e-9];
 		}
+		if (texels) return texels;
 		let lo = Infinity;
 		let hi = -Infinity;
 		for (let i = 0; i < n; i++) {
@@ -80,27 +84,30 @@
 		const dims = shapeOf(arr);
 		if (!dims) return;
 		const [h, w, c] = dims;
+		// What the texels of an 8-bit frame span; null for the f32 wire.
+		const texels = isU8(arr.dtype) ? sampleRange(frame.meta) : null;
 
 		if (renderer && glSupports(c, arr.dtype)) {
 			useGl = true;
 			let lo = 0;
 			let hi = 1;
-			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1);
+			if (c === 1) [lo, hi] = grayRange(arr.values, w * h, 1, texels);
 			renderer.render(arr.values, w, h, c, {
 				colormap,
 				lut: lutFor(colormap),
 				lo,
 				hi,
+				range: texels,
 				cssW,
 				cssH
 			});
 			return;
 		}
 		useGl = false;
-		paint2d(arr, h, w, c);
+		paint2d(arr, h, w, c, texels);
 	}
 
-	function paint2d(arr: ArrayData, h: number, w: number, c: number): void {
+	function paint2d(arr: ArrayData, h: number, w: number, c: number, texels: [number, number] | null): void {
 		if (!canvas2d) return;
 		const ctx = canvas2d.getContext('2d');
 		if (!ctx) return;
@@ -113,17 +120,20 @@
 
 		const dst = img.data;
 		const src = arr.values;
-		// The wire is f32-only, so a colour sample is always a [0,1] float.
-		const scale = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
+		// A colour sample is a [0,1] float on the f32 wire, and already a byte on the 8-bit hop.
+		const scale = texels
+			? (v: number): number => Number(v)
+			: (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
 		const n = w * h;
 
 		if (c === 1 || c === 2) {
 			const stride = c;
 			const L = lutFor(colormap);
-			const [lo, hi] = grayRange(src, n, stride);
+			const [lo, hi] = grayRange(src, n, stride, texels);
 			const span = hi - lo || 1;
 			for (let i = 0; i < n; i++) {
-				const t = (Number(src[i * stride]) - lo) / span;
+				const raw = Number(src[i * stride]);
+				const t = ((texels ? toUnit(raw, texels) : raw) - lo) / span;
 				const idx = (Math.max(0, Math.min(1, t)) * 255) | 0;
 				const li = idx * 3;
 				const o = i * 4;

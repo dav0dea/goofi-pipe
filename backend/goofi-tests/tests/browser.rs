@@ -45,6 +45,80 @@ async fn a_tab_is_greeted_with_the_session_frame_and_the_palette_it_can_build_fr
     assert_eq!((&frame[0..4], frame[4], frame[5]), (&b"GOOF"[..], 2, 0), "magic, version, ARRAY tag");
     let mut bad = Viewer::open(&base, &uid, "nope").await;
     assert_eq!(bad.close_code().await, Some(4004));
+
+    // Step: an image viewer asks for 8-bit texels and is served them — a quarter of the bytes,
+    // a colour frame over the [0, 1] the viewer clamps to anyway.
+    let img = g.add("_TestImage");
+    g.ready(img);
+    let mut v8 = Viewer::open(&base, &hex(img), "out").await;
+    v8.view(j!([{ "dtype": "array", "ndim": [], "dims": [], "reduce": [], "depth": "u8" }])).await;
+    let frame = raw_until(&mut v8, |dtype, shape| dtype == "|u1" && shape == [4, 4, 3]).await;
+    let (tag, meta, body) = goofi_codec::split_frame(&frame).unwrap();
+    assert_eq!(tag, 0, "an ARRAY frame, whatever its texel width");
+    let (_, _, texels) = array_body(body);
+    assert_eq!(texels.len(), 48, "one byte per sample, not four");
+    assert_eq!((texels[0], texels[1], texels[2]), (0, 255, 128), "(0,0) is r=0, g=1, b=0.5");
+    assert_eq!((texels[45], texels[46]), (255, 0), "(3,3) is r=1, g=0");
+    assert_eq!(depth_range(meta), (0.0, 1.0), "a colour frame spans the convention");
+
+    // Step: a second viewer that draws only f32 folds the ONE stream back for both of them,
+    // and the stream returns to 8-bit when that viewer leaves.
+    let mut v32 = Viewer::open(&base, &hex(img), "out").await;
+    v32.view(j!([{ "dtype": "array", "ndim": [], "dims": [], "reduce": [] }])).await;
+    raw_until(&mut v8, |dtype, _| dtype == "<f4").await;
+    drop(v32);
+    raw_until(&mut v8, |dtype, _| dtype == "|u1").await;
+
+    // Step: a frame that is not a colour one quantizes over ITS OWN range, and carries it, so a
+    // viewer can map a texel back to what the node emitted.
+    g.set_param(img, "control", "gray", true);
+    let frame = raw_until(&mut v8, |dtype, shape| dtype == "|u1" && shape == [4, 4]).await;
+    let (_, meta, body) = goofi_codec::split_frame(&frame).unwrap();
+    let (_, _, texels) = array_body(body);
+    assert_eq!(depth_range(meta), (-2.0, 2.0), "a gray frame spans its own");
+    assert_eq!((texels[0], texels[15]), (0, 255), "both ends of the frame's own range");
+}
+
+/// A GOOF array body: `[u8 ndim][u8 len][dtype][ndim x u32 shape][samples]`.
+fn array_body(body: &[u8]) -> (String, Vec<usize>, Vec<u8>) {
+    let ndim = body[0] as usize;
+    let len = body[1] as usize;
+    let dtype = String::from_utf8(body[2..2 + len].to_vec()).unwrap();
+    let mut at = 2 + len;
+    let shape: Vec<usize> = (0..ndim)
+        .map(|_| {
+            let d = u32::from_le_bytes(body[at..at + 4].try_into().unwrap()) as usize;
+            at += 4;
+            d
+        })
+        .collect();
+    (dtype, shape, body[at..].to_vec())
+}
+
+/// The `[lo, hi]` an 8-bit frame's texels span, off `reduced.depth` in the packed meta.
+fn depth_range(meta: &[u8]) -> (f64, f64) {
+    let meta = rmpv::decode::read_value(&mut &meta[..]).expect("decode meta msgpack");
+    let at = |v: &rmpv::Value, key: &str| -> Option<rmpv::Value> {
+        v.as_map()?.iter().find(|(k, _)| k.as_str() == Some(key)).map(|(_, v)| v.clone())
+    };
+    let depth = at(&meta, "reduced").and_then(|r| at(&r, "depth")).expect("reduced.depth");
+    let f = |key: &str| at(&depth, key).and_then(|v| v.as_f64()).expect("a number");
+    (f("lo"), f("hi"))
+}
+
+/// Raw frames until one whose body `want` accepts. A viewer's constraints reach the reducer
+/// inband, so the frames before it applies them are the ones this reads past.
+async fn raw_until(v: &mut Viewer, want: impl Fn(&str, &[usize]) -> bool) -> Vec<u8> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let frame = v.frame().await;
+        let (_, _, body) = goofi_codec::split_frame(&frame).unwrap();
+        let (dtype, shape, _) = array_body(body);
+        if want(&dtype, &shape) {
+            return frame;
+        }
+        assert!(std::time::Instant::now() < deadline, "no frame matched before the deadline");
+    }
 }
 
 #[tokio::test]
