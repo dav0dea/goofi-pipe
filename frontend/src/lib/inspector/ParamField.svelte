@@ -86,7 +86,15 @@
 	{#if driven}
 		<Segmented
 			value={descriptor.triggers ? 'trig' : null}
-			segments={[{ id: 'trig', label: 'trig', title: "When this source's value changes, wake the node's process()", testid: 'param-triggers' }]}
+			segments={[
+				{
+					id: 'trig',
+					label: 'trig',
+					name: 'Trigger',
+					title: "Trigger — wake the node's process() each time this source changes",
+					testid: 'param-triggers'
+				}
+			]}
 			onChange={() => onSetSource({ triggers: !descriptor.triggers })}
 		/>
 	{/if}
@@ -95,9 +103,27 @@
 		value={picking ? 'reference' : descriptor.mode}
 		bad={!!descriptor.error}
 		segments={[
-			{ id: 'constant', label: '=', title: 'A constant: the value beside it', testid: 'param-mode-constant' },
-			{ id: 'expression', label: 'fx', title: 'An expression over nd(), globals and me, at control rate', testid: 'param-mode-expression' },
-			{ id: 'reference', label: 'ref', title: "A reference to one node's output, at that node's rate", testid: 'param-mode-reference' }
+			{
+				id: 'constant',
+				label: 'C',
+				name: 'Constant',
+				title: 'Constant — a value set here by hand, unchanging until you edit it',
+				testid: 'param-mode-constant'
+			},
+			{
+				id: 'expression',
+				label: 'E',
+				name: 'Expression',
+				title: 'Expression — Python over nd(), globals and me, evaluated at control rate',
+				testid: 'param-mode-expression'
+			},
+			{
+				id: 'reference',
+				label: 'R',
+				name: 'Reference',
+				title: "Reference — one node's output slot, followed at that node's rate",
+				testid: 'param-mode-reference'
+			}
 		]}
 		onChange={(m) => choose(m as ParamMode)}
 		aria-label={`${paramName} source`}
@@ -180,7 +206,7 @@
 		font-family: var(--font-mono);
 		/* Narrower than the primitive's default: a param row seats a slider, a number AND the source
 		   switch, and the number is the one of the three with slack to give. */
-		--number-width: 5rem;
+		--number-width: 4rem;
 	}
 	/* A pulse has no value beside it, so the whole row is the target — and it takes the rung above
 	   the fields around it, so a press target never reads as one more box to type in. */
