@@ -2,7 +2,7 @@
  * The browser replica of goofi's control-plane document, as `goofi_bridge::projection` builds it.
  * Every reader is total: an absent or wrongly-typed leaf answers a default rather than throwing.
  */
-import { EMPTY_PANEL_TYPE, SCOPE_TYPE, boundaryType } from '$lib/api/vocab';
+import { EMPTY_PANEL_TYPE, SCOPE_TYPE, boundaryType, type ControlKindId } from '$lib/api/vocab';
 import { ROOT_ID } from '$lib/editor/subpatchScene';
 import { PARAM_MODES, type ParamMode } from '$lib/api/types';
 import type { LayoutNode, Workspace } from 'panelty';
@@ -222,7 +222,9 @@ export type GlobalType = 'float' | 'int' | 'bool' | 'string';
 
 /** A control element's widget, its range and its place in the panel's grid. */
 export interface ControlView {
-	kind: 'knob' | 'slider' | 'number' | 'field' | 'toggle' | 'dropdown';
+	/** The generated union, never a restatement of it: a kind added in `vocab.rs` reaches this
+	    view without a second list to remember. */
+	kind: ControlKindId;
 	min?: number;
 	max?: number;
 	step?: number;

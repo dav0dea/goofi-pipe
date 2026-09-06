@@ -55,12 +55,20 @@ pub enum ControlKind {
     Field,
     Toggle,
     Dropdown,
+    Draw,
 }
 
 impl ControlKind {
     /// Every kind, in the order a palette offers them.
-    pub const ALL: [ControlKind; 6] =
-        [ControlKind::Knob, ControlKind::Slider, ControlKind::Number, ControlKind::Field, ControlKind::Toggle, ControlKind::Dropdown];
+    pub const ALL: [ControlKind; 7] = [
+        ControlKind::Knob,
+        ControlKind::Slider,
+        ControlKind::Number,
+        ControlKind::Field,
+        ControlKind::Toggle,
+        ControlKind::Dropdown,
+        ControlKind::Draw,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -70,6 +78,7 @@ impl ControlKind {
             ControlKind::Field => "field",
             ControlKind::Toggle => "toggle",
             ControlKind::Dropdown => "dropdown",
+            ControlKind::Draw => "draw",
         }
     }
 
@@ -78,7 +87,9 @@ impl ControlKind {
         match self {
             ControlKind::Knob | ControlKind::Slider | ControlKind::Number => GlobalValue::Float(0.0),
             ControlKind::Toggle => GlobalValue::Bool(false),
-            ControlKind::Field | ControlKind::Dropdown => GlobalValue::Str(String::new()),
+            // A drawing is a `data:image/png;base64,…` URL, which is a STRING like any other: the
+            // widget draws it, an expression reads it, and nothing new crosses the wire for it.
+            ControlKind::Field | ControlKind::Dropdown | ControlKind::Draw => GlobalValue::Str(String::new()),
         }
     }
 
@@ -88,8 +99,12 @@ impl ControlKind {
             ControlKind::Knob => (4.0, 4.0),
             ControlKind::Slider => (8.0, 2.0),
             ControlKind::Number => (4.0, 2.0),
-            ControlKind::Field | ControlKind::Dropdown => (6.0, 2.0),
+            // A field is born THREE rows tall because it is a text area, not a line: a poem is
+            // what people put in one, and a one-line box says the opposite.
+            ControlKind::Field => (6.0, 3.0),
+            ControlKind::Dropdown => (6.0, 2.0),
             ControlKind::Toggle => (2.0, 2.0),
+            ControlKind::Draw => (8.0, 8.0),
         }
     }
 }
@@ -149,7 +164,7 @@ impl Control {
         match self.kind {
             K::Knob | K::Slider | K::Number => matches!(value, G::Float(_) | G::Int(_)),
             K::Toggle => matches!(value, G::Bool(_)),
-            K::Field | K::Dropdown => matches!(value, G::Str(_)),
+            K::Field | K::Dropdown | K::Draw => matches!(value, G::Str(_)),
         }
     }
 
@@ -601,5 +616,54 @@ impl GlobalStore {
             Some(v) => self.add(name, v, at),
             None => self.remove(name),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A kind is declared in four places — `ALL`, `as_str`, `born_value`, `born_box` — and `fits`
+    /// is a fifth that decides whether the widget will draw the value it was born holding. Adding
+    /// one and updating only some of them compiles: `fits` would simply answer `false`, and the
+    /// widget would refuse its own birth value at runtime. This is what makes that a test failure.
+    #[test]
+    fn every_kind_draws_the_value_it_is_born_holding() {
+        for kind in ControlKind::ALL {
+            let born = kind.born_value();
+            let control = Control {
+                kind,
+                min: None,
+                max: None,
+                step: None,
+                options: Vec::new(),
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            };
+            assert!(control.fits(&born), "a `{}` cannot draw its own birth value {born:?}", kind.as_str());
+        }
+    }
+
+    #[test]
+    fn every_kind_is_born_in_a_box_that_fits_the_grid() {
+        for kind in ControlKind::ALL {
+            let (w, h) = kind.born_box();
+            let name = kind.as_str();
+            assert!(w >= 1.0 && h >= 1.0, "`{name}` is born {w}x{h}, which is smaller than a cell");
+            assert!(w <= CONTROL_COLUMNS, "`{name}` is born {w} wide, past the {CONTROL_COLUMNS}-column grid");
+        }
+    }
+
+    /// `as_str` is the wire spelling — the `.gfi`, the op vocabulary and the generated TypeScript
+    /// union all read it — so two kinds sharing one would make a document ambiguous.
+    #[test]
+    fn every_kind_spells_itself_once() {
+        let mut seen: Vec<&str> = ControlKind::ALL.iter().map(|k| k.as_str()).collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "two control kinds share a spelling: {seen:?}");
     }
 }

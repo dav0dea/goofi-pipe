@@ -18,6 +18,7 @@
 	import RefPicker from '$lib/inspector/RefPicker.svelte';
 	import {
 		Chip,
+		DrawPad,
 		EmptyState,
 		Field,
 		Icon,
@@ -29,6 +30,7 @@
 		Segmented,
 		Select,
 		Slider,
+		TextArea,
 		TextInput,
 		Toggle,
 		isTextEditingTarget
@@ -387,8 +389,10 @@
 		<Toggle value={value === true} {onChange} />
 	{:else if c.kind === 'dropdown'}
 		<Select value={String(value)} options={c.options ?? []} {onChange} />
+	{:else if c.kind === 'draw'}
+		<DrawPad value={String(value)} {onChange} />
 	{:else}
-		<TextInput inputmode="search" value={String(value)} autocomplete="off" {onChange} />
+		<TextArea value={String(value)} aria-label={label} {onChange} />
 	{/if}
 {/snippet}
 
