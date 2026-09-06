@@ -288,6 +288,14 @@
 	{/if}
 
 	<div class="action-zone" bind:this={zoneEl}>
+		<!-- What this instance IS, so a visitor to the public one can see it is not their own. -->
+		{#if g.demo}
+			<Badge
+				tone="accent"
+				title="The public demo: one patch, shared by everyone here, and no files"
+				data-testid="topbar-demo">demo</Badge
+			>
+		{/if}
 		<!-- The connection speaks only when it needs attention, and never spills into a menu. -->
 		{#if g.disconnected}
 			<Badge tone="warning" data-testid="topbar-connection">disconnected</Badge>
