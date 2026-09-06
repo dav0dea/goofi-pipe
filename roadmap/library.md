@@ -44,7 +44,8 @@ scan order becomes: the shipped tree, then each installed bundle, then this patc
 slot it left open. A bundle's name is a palette facet the palette derives from where a node came from.
 
 **The repo's own bundles live in `node-bundles/<name>/`**, and they publish through the same door a
-third party's do — the shipped `nodes_*/` trees stay the shipped trees. A first-party bundle that
+third party's do. There is no shipped tree beside them any more: every node goofi ships is in a
+bundle, and `nodes_<engine>/` now names the PATCH's own folder alone. A first-party bundle that
 needs a private path is the defect that proves the door is not finished. Until the install half
 exists, `--extra-nodes node-bundles/<name>` is how one is loaded.
 
@@ -178,7 +179,8 @@ the tree today, so nothing has to be un-decided.
 - A bundle carries a Rust audio node in `nodes_audio/` by `node-sources.md`'s rule; what a bundle
   must declare for the build (the allowlist is fixed, so nothing yet) is settled when the first
   one is published.
-- Whether a shipped node is ever PROMOTED out of a bundle into `nodes_*/`, and what that does to the
-  patches that named the bundle. `builtin-nodes.md` holds the other side of this line.
+- Whether a first-party bundle is ever privileged over a third party's — pinned, unremovable, or
+  exempt from naming itself in a patch's manifest. Nothing is today, and the door is only proved
+  while nothing is.
 - A private repo as a source: the login could reach it, but "publishes only from a public repo"
   is what trust rests on above.

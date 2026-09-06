@@ -313,6 +313,22 @@ to run; `--extra-nodes` adds a root at run time.
 because a wedged node must not wedge the exit. That wait is what releases shared memory; what a
 crash leaves behind is reclaimed by the next start's sweep.
 
+**The node library is ORTHOGONAL, and that is a standing rule rather than a past clean-up.** The
+old Python implementation grew a node per need and ended with hundreds of overlapping
+single-purpose ones. The replacement is a small set that COMPOSES. Before adding a node the
+question is not "would this be useful?" but "what does the library already compose to, and is this
+genuinely outside that span?" — which is why `Filter` is one node with a `mode` of four options
+where the old tree had four nodes.
+
+**A public goofi runs in DEMO mode, and demo mode is not a sandbox.** `GOOFI_DEMO` — one runtime
+boolean folded beside `headless`, riding the document as ONE field — DROPS an op from the
+vocabulary and leaves a route unmounted rather than refusing either. A param expression is Python
+and a Python node is Python, so a visitor executes arbitrary code by design: the mode removes the
+convenient doors, never the capability, and it must never be described as a sandbox. Every visitor
+shares ONE patch, because one process holds one graph. Idle belongs to the HOSTING PLATFORM alone —
+a goofi-owned countdown was built and removed, because two idle authorities cannot both own "is
+this idle", and the platform's sleep is what resets the process.
+
 **A failed frontend build is a failed build.** The bundle is compiled into the binary, so there is
 no such thing as falling back to the previous one — it is an app that does not match the binary
 around it, and on a fresh clone it does not exist. The build script fails instead, and a binary

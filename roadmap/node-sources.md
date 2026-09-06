@@ -42,5 +42,10 @@ its file. `AGENTS.md` states the contract; the code holds the mechanism.
   keys a loaded type or a saved patch still wants, so no sweep can tell a corpse from a hit.
 - **A build in progress says nothing.** A node's lifecycle models "not ready yet"; a TYPE's does not,
   so a refresh that compiles for twenty seconds is twenty seconds of silence on every transport.
-- What a Rust node buys over a Python one, measured through this boundary rather than assumed —
-  `builtin-nodes.md` keeps that question.
+- What a Rust node buys over a Python one, measured through this boundary rather than assumed.
+  Today "the ones that had to be fast" is a history, not a rule: a user writes either as easily,
+  and a Python node pays one codec copy per run. The answer is a measurement, not an opinion.
+- **`Buffer` sizes in samples only.** A window a user thinks of as "two seconds" or "the last
+  thirty updates" is a size to recompute by hand at every rate change. The size wants a unit —
+  samples, seconds against `sfreq`, or updates against `ufreq` — with the count derived, so a rate
+  change moves the window and not the patch. (`Psd` had the same shortfall and no longer does.)
