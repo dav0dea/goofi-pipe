@@ -93,18 +93,17 @@
 </div>
 
 <style>
+	/* The dial fills the box it is given and stays round, and is never smaller than a tap target. */
 	.ui-knob {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 100%;
 		height: 100%;
+		container-type: size;
 	}
 	.ui-knob-dial {
-		width: 100%;
-		height: 100%;
-		max-width: var(--hit);
-		max-height: var(--hit);
+		width: max(var(--hit), min(100cqw, 100cqh));
 		aspect-ratio: 1;
 		touch-action: none;
 		cursor: ns-resize;

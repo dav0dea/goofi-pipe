@@ -335,7 +335,9 @@ impl GlobalStore {
         Ok(())
     }
 
-    /// Rename a group, answering every member's old and new name in order.
+    /// Rename a group, answering every member's old and new name in order. A group with no member
+    /// is not refused here: a control panel naming it is what makes it a group, and only the graph
+    /// sees panels.
     pub fn rename_group(&mut self, from: &str, to: &str) -> Result<Vec<(String, String)>, String> {
         if !is_valid_identifier(to) {
             return Err(format!("invalid group name `{to}`: {GLOBAL_NAME_RULE}"));
@@ -345,9 +347,6 @@ impl GlobalStore {
             .keys()
             .filter_map(|k| split_global(k).filter(|(g, _)| *g == from).map(|(_, e)| (k.clone(), format!("{to}.{e}"))))
             .collect();
-        if moved.is_empty() {
-            return Err(format!("no global group `{from}`"));
-        }
         for (old, new) in &moved {
             if self.system.contains(old.as_str()) {
                 return Err(format!("cannot rename system group `{from}`"));

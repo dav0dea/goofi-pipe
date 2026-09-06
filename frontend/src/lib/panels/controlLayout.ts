@@ -2,13 +2,45 @@
  * GRID units, never pixels: the panel's width decides what a unit is worth. The drag LAW that turns
  * a widget lives with the widget, in `$lib/ui/knob`. */
 
+import type { GlobalType } from '$lib/crdt/graphDoc';
+
 export { turnedBy } from '$lib/ui/knob';
+
+export type Kind = 'knob' | 'slider' | 'number' | 'field' | 'toggle' | 'dropdown';
+export const KINDS: Kind[] = ['knob', 'slider', 'number', 'field', 'toggle', 'dropdown'];
+
+/** The value type each widget draws, so a widget asks for one thing, not two. */
+export const TYPE_OF: Record<Kind, GlobalType> = {
+	knob: 'float',
+	slider: 'float',
+	number: 'float',
+	field: 'string',
+	toggle: 'bool',
+	dropdown: 'string'
+};
+
+/** The box a widget is born in, in grid units. */
+export const BORN: Record<Kind, { w: number; h: number }> = {
+	knob: { w: 2, h: 2 },
+	slider: { w: 4, h: 1 },
+	number: { w: 2, h: 1 },
+	field: { w: 3, h: 1 },
+	toggle: { w: 1, h: 1 },
+	dropdown: { w: 3, h: 1 }
+};
 
 export interface Cell {
 	x: number;
 	y: number;
 	w: number;
 	h: number;
+}
+
+/** Pixels to one grid unit, per axis: a row is never shorter than a tap target, so it can be
+ * taller than a column is wide. */
+export interface Units {
+	x: number;
+	y: number;
 }
 
 /** How many columns the board is, whatever its pixel width. */
@@ -28,6 +60,12 @@ export function snap(cell: Cell): Cell {
 	};
 }
 
+/** `cell` pulled back inside `columns`: the width first, then the left edge. */
+function inside(cell: Cell, columns: number): Cell {
+	const w = Math.min(cell.w, columns);
+	return { ...cell, w, x: Math.min(cell.x, columns - w) };
+}
+
 export function overlaps(a: Cell, b: Cell): boolean {
 	return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
@@ -43,12 +81,27 @@ export function freeCell(taken: Cell[], w: number, h: number, columns: number): 
 	}
 }
 
-/** The cell a drag from `origin` by `dx, dy` pixels lands on, with `unit` pixels to the grid unit. */
-export function movedBy(origin: Cell, dx: number, dy: number, unit: number): Cell {
-	return snap({ ...origin, x: origin.x + dx / unit, y: origin.y + dy / unit });
+/** The cell a `w × h` widget lands on when dropped with its centre `px, py` pixels into the
+ * board. It may cover another — a drop is free — but never hangs off the right edge. */
+export function cellAt(px: number, py: number, w: number, h: number, units: Units, columns: number): Cell {
+	return inside(snap({ x: px / units.x - w / 2, y: py / units.y - h / 2, w, h }), columns);
+}
+
+/** A fresh element name for `kind` among `taken`: the lowest `kind0`, `kind1`, … not yet used. */
+export function freshName(kind: Kind, taken: string[]): string {
+	for (let n = 0; ; n++) {
+		const name = `${kind}${n}`;
+		if (!taken.includes(name)) return name;
+	}
+}
+
+/** The cell a drag from `origin` by `dx, dy` pixels lands on. */
+export function movedBy(origin: Cell, dx: number, dy: number, units: Units, columns: number): Cell {
+	return inside(snap({ ...origin, x: origin.x + dx / units.x, y: origin.y + dy / units.y }), columns);
 }
 
 /** The cell a resize drag lands on. The origin's x and y stay: a resize moves the far edge only. */
-export function resizedBy(origin: Cell, dx: number, dy: number, unit: number): Cell {
-	return snap({ ...origin, w: origin.w + dx / unit, h: origin.h + dy / unit });
+export function resizedBy(origin: Cell, dx: number, dy: number, units: Units, columns: number): Cell {
+	const cell = snap({ ...origin, w: origin.w + dx / units.x, h: origin.h + dy / units.y });
+	return { ...cell, w: Math.min(cell.w, columns - cell.x) };
 }

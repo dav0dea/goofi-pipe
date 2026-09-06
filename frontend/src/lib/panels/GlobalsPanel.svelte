@@ -25,13 +25,16 @@
 	const globals = $derived(g.globals);
 	const groups = $derived(groupedGlobals(globals));
 
-	let newGroup = $state('patch');
+	// The group an add row is open in; `''` is a row for a NEW group, and null is none.
+	let adding = $state<string | null>(null);
+	let newGroup = $state('');
 	let newName = $state('');
 	let newType = $state<GlobalType>('float');
-	const fullName = $derived(`${newGroup}.${newName}`);
+	const targetGroup = $derived(adding === '' ? newGroup : (adding ?? ''));
+	const fullName = $derived(`${targetGroup}.${newName}`);
 	const nameTaken = $derived(globals.some((gv) => gv.name === fullName));
-	const nameOk = $derived(isValidIdentifier(newGroup) && isValidIdentifier(newName));
-	const canAdd = $derived(nameOk && !nameTaken);
+	const nameOk = $derived(isValidIdentifier(targetGroup) && isValidIdentifier(newName));
+	const canAdd = $derived(adding !== null && nameOk && !nameTaken);
 
 	// A group starts closed: a patch has many, and the panel is a list of them, not of every value.
 	let open = $state<Record<string, boolean>>({});
@@ -40,14 +43,30 @@
 		return type === 'bool' ? false : type === 'string' ? '' : 0;
 	}
 
+	function openAdd(group: string): void {
+		adding = group;
+		newGroup = '';
+		newName = '';
+	}
+
+	function focusInput(el: HTMLInputElement): void {
+		el.focus();
+	}
+
+	function rowKey(e: KeyboardEvent): void {
+		if (e.key === 'Enter') void add();
+		else if (e.key === 'Escape') adding = null;
+	}
+
 	async function add(): Promise<void> {
 		if (!canAdd) return;
+		const group = targetGroup;
 		try {
 			await g.addGlobal(fullName, zeroFor(newType), newType);
-			open[newGroup] = true;
-			newName = '';
+			open[group] = true;
+			adding = null;
 		} catch {
-			/* server rejected (invalid name / collision) — keep the field for correction */
+			/* server rejected (invalid name / collision) — keep the row for correction */
 		}
 	}
 
@@ -175,60 +194,111 @@
 							{/each}
 						</tbody>
 					</table>
-					{#if grp.entries.every((e) => !e.system)}
-						<div class="grp-rename">
+					<div class="grp-foot">
+						{#if grp.entries.every((e) => !e.system)}
 							<TextInput
 								inputmode="search"
 								data-testid="global-group-name"
+								title="Rename this group"
 								value={grp.group}
 								autocomplete="off"
 								onChange={(v) => commitGroup(grp.group, v)}
 							/>
-						</div>
+						{:else}
+							<span class="grp-fixed">{grp.group}</span>
+						{/if}
+						<IconButton
+							variant="ghost"
+							size="sm"
+							data-testid="global-add-in"
+							title="Add a global to {grp.group}"
+							label="Add a global to {grp.group}"
+							onclick={() => openAdd(grp.group)}><Icon name="plus" /></IconButton
+						>
+					</div>
+					{#if adding === grp.group}
+						{@render addRow(false)}
 					{/if}
 				</Disclosure>
 			{/each}
 
-			<div class="add" data-testid="global-add">
-				<input
-					{...MODE_ATTRS.search}
-					class="name"
-					data-testid="global-add-group"
-					placeholder="group"
-					bind:value={newGroup}
-					autocomplete="off"
-					onkeydown={(e) => {
-						if (e.key === 'Enter') add();
-					}}
-				/>
-				<input
-					{...MODE_ATTRS.search}
-					class="name"
-					data-testid="global-add-name"
-					placeholder="element"
-					bind:value={newName}
-					autocomplete="off"
-					onkeydown={(e) => {
-						if (e.key === 'Enter') add();
-					}}
-				/>
-				<Select
-					style="flex: 0 1 auto"
-					data-testid="global-add-type"
-					value={newType}
-					onChange={(v) => (newType = v as GlobalType)}
-					options={['float', 'int', 'bool', 'string']}
-				/>
-				<Button size="sm" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</Button>
+			<div class="new-group">
+				<IconButton
+					variant="ghost"
+					size="sm"
+					data-testid="global-add-group-btn"
+					title="New group"
+					label="New group"
+					onclick={() => openAdd('')}><Icon name="plus" /></IconButton
+				>
+				<span class="new-group-hint">group</span>
 			</div>
-			{#if newName && !nameOk}
-				<div class="hint bad">Every global is `group.element`, each a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
-			{:else if nameTaken}
-				<div class="hint bad">A global named “{fullName}” already exists.</div>
+			{#if adding === ''}
+				{@render addRow(true)}
 			{/if}
 		</div>
 	</ScrollArea>
 </div>
+
+{#snippet addRow(fresh: boolean)}
+	<div class="add" data-testid="global-add">
+		{#if fresh}
+			<input
+				{...MODE_ATTRS.search}
+				class="name"
+				data-testid="global-add-group"
+				placeholder="group"
+				bind:value={newGroup}
+				autocomplete="off"
+				use:focusInput
+				onkeydown={rowKey}
+			/>
+		{/if}
+		{#if fresh}
+			<input
+				{...MODE_ATTRS.search}
+				class="name"
+				data-testid="global-add-name"
+				placeholder="element"
+				bind:value={newName}
+				autocomplete="off"
+				onkeydown={rowKey}
+			/>
+		{:else}
+			<input
+				{...MODE_ATTRS.search}
+				class="name"
+				data-testid="global-add-name"
+				placeholder="element"
+				bind:value={newName}
+				autocomplete="off"
+				use:focusInput
+				onkeydown={rowKey}
+			/>
+		{/if}
+		<Select
+			style="flex: 0 1 auto"
+			data-testid="global-add-type"
+			value={newType}
+			onChange={(v) => (newType = v as GlobalType)}
+			options={['float', 'int', 'bool', 'string']}
+		/>
+		<Button size="sm" data-testid="global-add-btn" disabled={!canAdd} onclick={add}>Add</Button>
+		<IconButton
+			variant="ghost"
+			size="sm"
+			data-testid="global-add-cancel"
+			title="Cancel"
+			label="Cancel"
+			onclick={() => (adding = null)}><Icon name="x" /></IconButton
+		>
+	</div>
+	{#if newName && !nameOk}
+		<div class="hint bad">Every global is `group.element`, each a valid identifier (letters, digits, _; can't start with a digit; not “globals”).</div>
+	{:else if nameTaken}
+		<div class="hint bad">A global named “{fullName}” already exists.</div>
+	{/if}
+{/snippet}
 
 <style>
 	.wrap {
@@ -254,8 +324,31 @@
 		color: var(--text-muted);
 		font-size: var(--fs-micro);
 	}
-	.grp-rename {
-		padding: var(--space-2) var(--space-3) var(--space-4);
+	.grp-foot {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+	}
+	.grp-fixed {
+		flex: 1;
+		min-width: 0;
+		font-family: var(--font-mono);
+		font-size: var(--fs-small);
+		color: var(--text-muted);
+	}
+	.new-group {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-top: var(--space-4);
+		padding: 0 var(--space-3);
+	}
+	.new-group-hint {
+		font-size: var(--fs-micro);
+		color: var(--text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 	}
 	td {
 		padding: var(--space-2) var(--space-3);
@@ -289,7 +382,7 @@
 	}
 	.ro-value {
 		font-family: var(--font-mono);
-		font-size: var(--text-sm);
+		font-size: var(--fs-small);
 		color: var(--text-muted);
 		overflow-wrap: anywhere;
 	}
@@ -322,7 +415,7 @@
 		display: flex;
 		gap: var(--space-3);
 		align-items: center;
-		margin-top: var(--space-6);
+		padding: var(--space-2) var(--space-3);
 	}
 	.add .name {
 		flex: 1 1 auto;

@@ -1,8 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { freeCell, movedBy, overlaps, resizedBy, snap, turnedBy, type Cell } from './controlLayout';
+import {
+	cellAt,
+	freeCell,
+	freshName,
+	movedBy,
+	overlaps,
+	resizedBy,
+	snap,
+	turnedBy,
+	type Cell
+} from './controlLayout';
 
 /* The control panel's decisions, driven the way the component drives them. The component cannot
  * mount in vitest, so everything that DECIDES lives here and everything that draws lives there. */
+
+const square = { x: 48, y: 48 };
 
 describe('snap', () => {
 	it('rounds to the grid and never lets a widget off the top or left edge', () => {
@@ -46,14 +58,43 @@ describe('freeCell', () => {
 	});
 });
 
+describe('a drop from the palette', () => {
+	it('lands the widget centred under the finger', () => {
+		// The centre of a 2×2 at (144, 96) is its top-left at (96, 48): cell (2, 1).
+		expect(cellAt(144, 96, 2, 2, square, 8)).toEqual({ x: 2, y: 1, w: 2, h: 2 });
+	});
+
+	it('keeps a widget dropped at the edge on the board', () => {
+		expect(cellAt(400, 20, 4, 1, square, 8)).toEqual({ x: 4, y: 0, w: 4, h: 1 });
+		expect(cellAt(-50, -50, 2, 2, square, 8)).toEqual({ x: 0, y: 0, w: 2, h: 2 });
+	});
+
+	it('reads rows and columns as two units, because a row may be taller than a column is wide', () => {
+		expect(cellAt(48, 120, 1, 1, { x: 48, y: 60 }, 8)).toEqual({ x: 1, y: 2, w: 1, h: 1 });
+	});
+});
+
+describe('a widget is born with a fresh name', () => {
+	it('counts from zero and skips what the group already holds', () => {
+		expect(freshName('knob', [])).toBe('knob0');
+		expect(freshName('knob', ['knob0', 'knob1', 'slider0'])).toBe('knob2');
+		expect(freshName('slider', ['slider0', 'slider2'])).toBe('slider1');
+	});
+});
+
 describe('a drag in edit mode', () => {
 	const origin: Cell = { x: 1, y: 1, w: 2, h: 2 };
 	it('moves the widget by whole grid units', () => {
-		expect(movedBy(origin, 96, 48, 48)).toEqual({ x: 3, y: 2, w: 2, h: 2 });
+		expect(movedBy(origin, 96, 48, square, 8)).toEqual({ x: 3, y: 2, w: 2, h: 2 });
+	});
+
+	it('stops at the right edge instead of leaving the board', () => {
+		expect(movedBy(origin, 4000, 0, square, 8)).toEqual({ x: 6, y: 1, w: 2, h: 2 });
 	});
 
 	it('resizes the far edge and leaves the near one where it is', () => {
-		expect(resizedBy(origin, 48, 0, 48)).toEqual({ x: 1, y: 1, w: 3, h: 2 });
+		expect(resizedBy(origin, 48, 0, square, 8)).toEqual({ x: 1, y: 1, w: 3, h: 2 });
+		expect(resizedBy(origin, 4000, 0, square, 8)).toEqual({ x: 1, y: 1, w: 7, h: 2 });
 	});
 });
 

@@ -235,6 +235,8 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 
 			// …and the same drag MOVES it once edit mode is on, which is the whole mode switch.
 			await page.getByTestId('control-edit-toggle').tap();
+			// The palette opening above the board is the sign the mode landed, and it moves the board.
+			await expect(page.getByTestId('control-palette'), 'edit mode opened the palette').toBeVisible();
 			const before = (await knob.boundingBox())!;
 			const held = await level();
 			const grip = { x: Math.round(before.x + 6), y: Math.round(before.y + 6) };
@@ -243,12 +245,27 @@ test('a patch authored with a finger, and every door hover owns on a desktop', a
 				.poll(async () => (await knob.boundingBox())!.x, 'the widget moved')
 				.toBeGreaterThan(before.x);
 			expect.soft(await level(), 'and moving it did not turn it').toBe(held);
+
+			// Edit mode also opens the palette, and a chip dragged onto the board bears a widget where
+			// it lands, named for its kind — the one door a new element has.
+			const chip = page.getByTestId('control-palette-slider');
+			const cb = (await chip.boundingBox())!;
+			const bb = (await page.getByTestId('control-board').boundingBox())!;
+			await swipe(
+				page,
+				{ x: Math.round(cb.x + cb.width / 2), y: Math.round(cb.y + cb.height / 2) },
+				{ x: Math.round(bb.x + bb.width * 0.7), y: Math.round(bb.y + bb.height * 0.7) }
+			);
+			await expect(
+				page.getByTestId('control-desk-slider0'),
+				'the drop bore a slider with a fresh name'
+			).toBeVisible();
 		});
 	} finally {
 		await page.evaluate(async () => {
 			const g = (window as any).goofi;
-			if (g.query.globals().some((v: { name: string }) => v.name === 'desk.level'))
-				await g.commands.removeGlobal('desk.level');
+			for (const v of g.query.globals().filter((v: { name: string }) => v.name.startsWith('desk.')))
+				await g.commands.removeGlobal(v.name);
 		});
 		await tearDown(page);
 	}

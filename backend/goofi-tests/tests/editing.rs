@@ -117,6 +117,13 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     g.call("global group rename", j!({ "from": "desk", "to": "board" }));
     assert_eq!(group_of(&g), j!("board"), "the panel followed its group");
     g.call("global group rename", j!({ "from": "board", "to": "desk" }));
+    // A group a panel names is a group with no member yet, and it renames like any other; one
+    // that nothing names is not a group at all.
+    g.call("layout panel edit", j!({ "panel": first_panel(&g), "state": { "group": "solo" } }));
+    g.call("global group rename", j!({ "from": "solo", "to": "duo" }));
+    assert_eq!(group_of(&g), j!("duo"), "the memberless group renamed through its panel");
+    let why = g.refuse("global group rename", j!({ "from": "nobody", "to": "somebody" }));
+    assert!(why.contains("no global group"), "{why}");
 
     // …and a compound is a UNIT: a refused step takes back the one that landed, and records nothing,
     // which is what the step count below would catch.
@@ -170,7 +177,7 @@ fn a_session_of_edits_walks_all_the_way_back_and_forward_again() {
     }
     assert!(g.nodes().is_empty() && g.instances().is_empty(), "back to an empty patch");
     assert!(g.doc()["globals"]["desk.handle"].is_null() && g.doc()["globals"]["patch.subj"].is_null());
-    assert_eq!(steps, 19, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
+    assert_eq!(steps, 21, "one step per command — a compound (the rename, the two-edit batch) and a three-field node edit are each ONE");
 
     while g.call("redo", j!({}))["changed"] == true {}
     assert_eq!(g.doc(), built, "redo rebuilt the patch it undid, uid for uid");

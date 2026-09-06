@@ -30,7 +30,7 @@ pub use goofi_node::Uid;
 /// archive somebody actually holds — not once per change while the format is still moving.
 const MANIFEST_VERSION: i64 = 1;
 
-use goofi_core::globals::NAME_RULE;
+use goofi_core::globals::{split_global, NAME_RULE};
 
 /// What a node IS. The thin distinction the backend keeps and the frontend never sees: a leaf runs,
 /// so it carries a thread and params; a facade and a port do not, so they carry neither.
@@ -565,9 +565,13 @@ impl Graph {
 
     /// Rename a group, and rewrite every expression that reads any member.
     pub fn rename_global_group(&mut self, from: &str, to: &str) -> Result<Vec<Uid>, String> {
+        let writes = self.arrangement.regroup(from, to);
+        let member = |k: &str| split_global(k).is_some_and(|(g, _)| g == from);
+        if writes.is_empty() && !self.globals.entries().any(|(k, ..)| member(k)) {
+            return Err(format!("no global group `{from}`"));
+        }
         let moved = self.globals.rename_group(from, to)?;
         let touched = self.rewrite_global_reads(&moved);
-        let writes = self.arrangement.regroup(from, to);
         self.arrangement.set_contents(&writes);
         for (_, new) in &moved {
             self.invalidate_bindings_reading(new);
