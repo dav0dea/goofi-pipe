@@ -102,6 +102,17 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
         "the client declares protocol {declared} and this manager speaks {} — bump both together",
         goofi_bridge::schemas::PROTOCOL_VERSION
     );
+
+    // The tier set is the other pair declared by hand on both sides. A tier the client's union
+    // does not name types as `never`, so its health pill silently draws nothing.
+    let union = src
+        .split("export type NodeRuntime =")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_else(|| panic!("no NodeRuntime in {}", path.display()));
+    let named: Vec<&str> = union.split('|').map(|w| w.trim().trim_matches('\'')).collect();
+    let ours: Vec<&str> = goofi_node::Isolation::ALL.iter().map(|i| i.wire()).collect();
+    assert_eq!(named, ours, "the client's tiers and this manager's — declare a new one in both");
 }
 
 #[test]

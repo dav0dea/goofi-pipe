@@ -7,7 +7,8 @@ import type { NodeRuntime } from '$lib/api/control';
 const RUNTIME: Record<NodeRuntime, { token: string; title: string }> = {
 	native: { token: 'rs.ip', title: 'Rust, in-process' },
 	'in-process': { token: 'py.ip', title: 'Python, in-process' },
-	subprocess: { token: 'py.sp', title: 'Python, in a subprocess' }
+	subprocess: { token: 'py.sp', title: 'Python, in a subprocess' },
+	shader: { token: 'wg.gp', title: 'WGSL, on the GPU' }
 };
 
 /** The status token, one per kind — three characters each, so the pill's width does not move with

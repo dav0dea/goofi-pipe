@@ -16,7 +16,7 @@ export function isProtocolCompatible(remote: unknown): boolean {
 export type NodeStage = 'creating' | 'setup' | 'ready' | 'error';
 
 /** Where a node's code runs. Absent for a port and a facade, which run nowhere. */
-export type NodeRuntime = 'native' | 'in-process' | 'subprocess';
+export type NodeRuntime = 'native' | 'in-process' | 'subprocess' | 'shader';
 
 export interface NodeTypeInfo {
 	/** The qualified `engine:Name` id; a structural type is bare. `engineOf` reads the engine. */
