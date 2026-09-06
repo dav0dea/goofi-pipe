@@ -34,6 +34,12 @@ fn install_bundled_all(g: &Goofi, bundle: &str, files: &[&str]) -> Vec<String> {
     install_all(g, &pairs)
 }
 
+/// A required slot still empty is a node WAITING for the producer wired to it — the runtime faults
+/// on it every tick until the first frame lands — rather than a node that failed.
+fn waiting(e: &str) -> bool {
+    e.contains("has no data")
+}
+
 /// Wait for a node to come up, reading its error channel WHILE waiting so a node that says why
 /// fails with its own words, then for a frame `keep` accepts.
 fn first_frame(
@@ -44,13 +50,13 @@ fn first_frame(
     mut keep: impl FnMut(&goofi_core::Data) -> bool,
 ) -> goofi_core::Data {
     g.until(&format!("{ty} to start"), |g| {
-        if let Some(e) = g.error(node) {
+        if let Some(e) = g.error(node).filter(|e| !waiting(e)) {
             panic!("{ty} failed to start: {e}");
         }
         (g.stage(node) == "ready").then_some(())
     });
     g.until(&format!("{ty} to answer once it is ready"), |g| {
-        if let Some(e) = g.error(node) {
+        if let Some(e) = g.error(node).filter(|e| !waiting(e)) {
             panic!("{ty} failed instead of answering: {e}");
         }
         probe.latest().filter(&mut keep)

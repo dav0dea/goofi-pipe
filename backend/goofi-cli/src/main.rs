@@ -517,7 +517,9 @@ async fn run(
     };
     // The order is load-bearing: the agents leave before their workspace goes, and a node's
     // thread releases its shared memory before the mount goes.
-    state.harnesses.reap_all();
+    if let Some(insist) = state.harnesses.reap_all() {
+        insist();
+    }
     state.graph.lock().unwrap().shutdown();
     state.release_mount();
     code

@@ -22,7 +22,7 @@ import goofi
 
 
 class Harmonicity(goofi.Node):
-    """Harmonic similarity, Tenney height, consonance and subharmonic tension, from peaks.
+    """Harmonic similarity, Tenney height, consonance and subharmonic tension.
 
     Inputs:
       input  peaks in Hz, as `Peaks` emits them

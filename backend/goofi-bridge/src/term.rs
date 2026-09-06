@@ -196,24 +196,31 @@ impl Harnesses {
         begin_stop(inst)
     }
 
-    /// Stop every instance and clear the roster: ask, WAIT to the grace, then insist. The wait is
-    /// synchronous because both callers need the children gone — `process::exit` destroys a grace
-    /// thread, and a mount cannot be deleted on Windows while a child holds it as a cwd.
-    pub fn reap_all(&self) {
+    /// Ask every instance to leave and clear the roster. The roster is cleared and every child is
+    /// signalled HERE, so a harness started after this call is never caught by it; the returned
+    /// closure waits out the grace and then insists, and the caller decides which thread pays.
+    /// `None` when nothing was running, which is the case with nothing to wait for.
+    #[must_use]
+    pub fn reap_all(&self) -> Option<impl FnOnce() + Send + 'static> {
         let taken = std::mem::take(&mut *self.instances.lock().unwrap());
+        if taken.is_empty() {
+            return None;
+        }
         for (_, inst) in &taken {
             inst.stopping.store(true, Ordering::Relaxed);
             let _ = signal(inst, crate::proc::request_stop);
         }
-        let deadline = std::time::Instant::now() + GRACE;
-        while taken.iter().any(|(_, i)| i.exit_code().is_none())
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        for (_, inst) in &taken {
-            let _ = signal(inst, crate::proc::force_kill);
-        }
+        Some(move || {
+            let deadline = std::time::Instant::now() + GRACE;
+            while taken.iter().any(|(_, i)| i.exit_code().is_none())
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            for (_, inst) in &taken {
+                let _ = signal(inst, crate::proc::force_kill);
+            }
+        })
     }
 }
 
