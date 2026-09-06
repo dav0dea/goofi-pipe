@@ -85,6 +85,9 @@ fn mtime(p: &Path) -> [u8; 16] {
 
 /// The probe under `memo`, where its answer outlives the process: an import-heavy node costs
 /// seconds to probe, and no boot should pay that twice for one file under one interpreter.
+/// A FAILURE is never kept: it is as often the environment as the file — a half-installed wheel, a
+/// basename shared with another bundle — and a memo of one outlives its cause silently. Failing is
+/// also the cheap case, since an import that is going to raise raises on the first module.
 fn introspect_memoised(path: &Path, python: &str, memo: &Path) -> Result<probe::Introspection, String> {
     let Some(key) = probe_key(path, &[python]) else { return probe_introspect(path, python) };
     let entry = memo.join(format!("{key}.json"));
@@ -92,7 +95,7 @@ fn introspect_memoised(path: &Path, python: &str, memo: &Path) -> Result<probe::
         return hit;
     }
     let answer = probe_introspect(path, python);
-    if let Ok(json) = serde_json::to_string(&answer) {
+    if let (Ok(_), Ok(json)) = (&answer, serde_json::to_string(&answer)) {
         let tmp = memo.join(format!("{key}.{}.tmp", std::process::id()));
         let _ = std::fs::create_dir_all(memo)
             .and_then(|()| std::fs::write(&tmp, json))
