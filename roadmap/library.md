@@ -11,7 +11,15 @@ anyone can install.
 ## What is already true and works in its favour
 
 - Node discovery is a probe over a directory, and `--extra-nodes DIR` already adds directories to
-  the scan, a later one winning a shared type name. **An installed bundle is a directory.**
+  the scan. **An installed bundle is a directory.**
+  - **But a later one does NOT win a shared type name, and this is load-bearing here.** Measured
+    2026-09-06: `--extra-nodes node-bundles/biotuner`, whose files are also embedded, warns `two
+    node files claim the type name ...; the later one wins` and then keeps the SHIPPED entry. While
+    both files agreed that read as working. Edit the later one and the type turns `probe failed` —
+    two files sharing a basename are one Python module name, so the second import answers with the
+    first — and the node leaves the palette wearing a message that names no file. An installed
+    bundle shadowing a shipped node is the whole point of the middle slot below, so this must be a
+    real precedence over WHOLE bundles before any of it is built.
 - A node that cannot load is registered UNAVAILABLE with its missing dependency named, so a bundle
   with unmet requirements degrades legibly instead of vanishing.
 - `$GOOFI_HOME/.goofi/` exists (`goofi_core::home`), which is where an installed bundle lands.

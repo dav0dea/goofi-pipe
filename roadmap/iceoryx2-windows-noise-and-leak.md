@@ -78,6 +78,13 @@ signatures of the same family:
   while the `dirent.rs:66` records were streaming. Not diagnosed: it needs a Windows machine and a
   backtrace, and a stack bump without one would be the symptom-hiding this file refuses.
 
+Local, 2026-09-06, `goofi-tests --test audio` on Windows: the 64-node slab step cannot start its
+nodes, each wearing `EventOpenError(ServiceInCorruptedState)` on its `_door` event service followed
+by ten `ListenerCreateError::ResourceCreationFailed`. Same family, same `SetFileSecurityA [ 2 ]`
+records beside it. Named here because it is the FIRST step of that scenario a Windows machine
+reaches, so every later step — the watchdog's among them — is unreachable there; the way to judge a
+change against those is to run the step alone and against the broken variant too.
+
 The sessions are not the cause and are not thinned for it: a real patch boots this many nodes.
 Until the upstream report lands, the Windows job is red on `bundles` and green on nothing less.
 
