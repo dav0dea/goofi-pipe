@@ -62,7 +62,19 @@
 	const elements = $derived(g.globals.filter((gv) => gv.group === group && gv.control));
 
 	let board: HTMLDivElement | null = $state(null);
+	let wrap: HTMLDivElement | null = $state(null);
 	let picked = $state<string | null>(null);
+	// The popover asks to close on any press outside it; only a press inside THIS panel — the bare
+	// board, or another widget — or Escape is one. A press elsewhere leaves the form standing, so a
+	// node can be brought in from another panel.
+	let pressedOutside = false;
+	function notePress(e: PointerEvent): void {
+		pressedOutside = !wrap?.contains(e.target as Node);
+		queueMicrotask(() => (pressedOutside = false));
+	}
+	function dismiss(): void {
+		if (!pressedOutside) picked = null;
+	}
 	let renaming = $state<string | null>(null);
 	const pickedView = $derived(elements.find((el) => el.name === picked) ?? null);
 	// The form hangs off the picked widget's own cell, and follows it wherever a drag lands it.
@@ -335,7 +347,9 @@
 	{/if}
 {/snippet}
 
-<div class="wrap" data-testid="control-panel" data-group={group} data-edit={edit}>
+<svelte:window onpointerdowncapture={edit && picked ? notePress : undefined} />
+
+<div class="wrap" bind:this={wrap} data-testid="control-panel" data-group={group} data-edit={edit}>
 	<div class="bar">
 		<span class="title">{group}</span>
 		<IconButton
@@ -468,7 +482,7 @@
 			<Popover
 				{anchor}
 				open={anchor !== null}
-				onDismiss={() => (picked = null)}
+				onDismiss={dismiss}
 				flip
 				role="dialog"
 				aria-label={`${pv.element} settings`}
