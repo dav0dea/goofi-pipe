@@ -331,12 +331,12 @@ fn an_audio_node_file_builds_loads_follows_its_edits_and_rides_an_archive() {
     let mount = g.state.mount();
     write_audio_node(&mount.join("nodes_audio"), "Level.rs", "0.25");
     assert_eq!(rescan(&g)["added"], j!(["audio:Level"]), "the file becomes a type");
-    let live = g.add("Level");
+    let live = g.add("audio:Level");
     holds(&g, live, 0.25);
     // A signal node with the same stem is another type, and `library get` finds each one's file.
     std::fs::create_dir_all(mount.join("nodes_signal")).unwrap();
     std::fs::write(mount.join("nodes_signal").join("Level.py"), PY_LEVEL).unwrap();
-    assert_eq!(rescan(&g)["added"], j!(["signal:Level"]), "two engines offer one name");
+    assert_eq!(rescan(&g)["added"], j!(["signal:Level"]), "another engine offers the name too");
     let read = |ty: &str| g.call("library get", j!({ "type": ty, "source": true }));
     let (audio, signal) = (read("audio:Level"), read("signal:Level"));
     assert!(audio["text"].as_str().is_some_and(|s| s.contains("impl AudioNode for Level")), "{audio}");

@@ -418,6 +418,13 @@ pub fn drive(g: &Goofi, frames: usize) -> (Vec<f32>, u16) {
     goofi_bridge::audio_engine(&mut graph).drive(frames)
 }
 
+/// Tick the graphics engine's external clock `frames` times, on this thread — what the binary's
+/// own 60 Hz clock does, at the caller's pace.
+pub fn render(g: &Goofi, frames: usize) {
+    let mut graph = g.state.graph.lock().unwrap();
+    goofi_bridge::graphics_engine(&mut graph).render(frames);
+}
+
 /// A uid as the wire spells it.
 pub fn hex(u: Uid) -> String {
     u.to_string()

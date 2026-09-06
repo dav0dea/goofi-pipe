@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 
 use goofi_audio_sdk::{BLOCK, MAX_CHANNELS};
 use goofi_core::SlotType;
-pub(crate) use goofi_control::{param_of, scalar, scalar_of};
+use goofi_control::scalar_of;
 use goofi_node::{BindingView, GraphView, NodeManifest, Uid};
 
 use crate::Instance;

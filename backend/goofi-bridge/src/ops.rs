@@ -107,7 +107,7 @@ pub static TREE: &[Entry] = &[
     Group("session", "the goofi instance as a whole — identity, the open patch, save and load", &[
         Leaf(Op { name: "status", handler: Read(arms::session_status), args: "", positional: 0,
              doc: "The session's identity AND its health: which instance this is, where the patch lives, whether it differs from disk, and every standing error with how long it has stood. One read for `is my patch healthy, and have I saved it`.",
-             result: "{instance_id, save_path: string | null, workspace, dirty: bool, errors: [{node, path, error, standing}]} — `node` is the name to pass back, `path` where it sits" }),
+             result: "{instance_id, save_path: string | null, workspace, dirty: bool, errors: [{node, path, error, standing}], audio, graphics} — `node` is the name to pass back, `path` where it sits; `audio` and `graphics` carry that engine's clock and counters, and are null where the engine is not registered" }),
         Leaf(Op { name: "state", handler: Read(arms::session_state), args: "", positional: 0,
              doc: "The whole replicated document, exact and ATOMIC: nodes, links, globals and arrangement in one read — what every client mirrors, read without the sync protocol that carries it. ONE `nodes` map carries leaves, sub-patch facades and boundary ports alike, each naming its scope, and a port's inner wire is in `links` like any other cable. Narrowing is the caller's: pipe it through `jq`.",
              result: "{nodes, links, globals, arrangement} — nodes and globals keyed by id, links a list." }),

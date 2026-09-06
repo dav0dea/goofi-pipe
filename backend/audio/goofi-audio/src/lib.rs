@@ -458,7 +458,7 @@ impl AudioEngine {
     /// Array inputs it drains, the bindings it evaluates, and the doors each output rings.
     fn desired_of(&self, view: &GraphView<'_>, uid: Uid, nv: &NodeView<'_>) -> Desired {
         let manifest = self.live[&uid].manifest;
-        let consts = manifest.params.iter().map(|d| plan::param_of(nv.params, d)).collect();
+        let consts = manifest.params.iter().map(|d| goofi_control::param_of(nv.params, d)).collect();
         let mut subs = Vec::new();
         for (i, s) in manifest.inputs.iter().enumerate() {
             let Some(inbox) = plan::inbox_of(manifest, i) else { continue };
@@ -499,7 +499,7 @@ impl AudioEngine {
             .iter()
             .enumerate()
             .map(|(i, (id, kind))| {
-                let raw = plan::scalar(&consts[voice + i]);
+                let raw = goofi_control::scalar(&consts[voice + i]);
                 let normalized = match kind {
                     vst3::Kind::Float => raw,
                     vst3::Kind::Stepped(steps) => raw / steps,
@@ -528,7 +528,7 @@ impl AudioEngine {
             .filter(|(uid, inst)| inst.manifest.type_name == audio_out::TYPE && !self.disabled.contains_key(uid))
             .filter_map(|(uid, inst)| {
                 let nv = view.nodes.get(uid)?;
-                let Param::Str { value, .. } = plan::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };
+                let Param::Str { value, .. } = goofi_control::param_of(nv.params, &inst.manifest.params[audio_out::P::DEVICE]) else { return None };
                 Some((*uid, value))
             })
             .collect();
@@ -664,7 +664,7 @@ impl Engine for AudioEngine {
             node.load(&bytes);
         }
         let atomics: Arc<[AtomicU64]> =
-            manifest.params.iter().map(|d| AtomicU64::new(plan::scalar_of(params, d).to_bits())).collect();
+            manifest.params.iter().map(|d| AtomicU64::new(goofi_control::scalar_of(params, d).to_bits())).collect();
         let (inbox_in, inbox_out): (Vec<_>, Vec<_>) = manifest
             .inputs
             .iter()

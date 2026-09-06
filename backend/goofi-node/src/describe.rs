@@ -17,7 +17,7 @@ pub fn type_name_of(path: &Path) -> Option<String> {
     }
     let name = match path.extension()?.to_str()? {
         "py" => camel(stem),
-        "rs" => stem.to_string(),
+        "rs" | "wgsl" => stem.to_string(),
         _ => return None,
     };
     goofi_core::globals::is_valid_name(&name).then_some(name)
@@ -28,12 +28,14 @@ pub fn folder_of(engine: &str) -> String {
     format!("nodes_{engine}")
 }
 
-/// The engine a node file is for: a `.py` is a signal node, and a `.rs` names the SDK it uses.
+/// The engine a node file is for: a `.py` is a signal node, a `.wgsl` a graphics one, and a `.rs`
+/// names the SDK it uses.
 /// One naming none — a file mid-edit — is its folder's where the folder names an engine, and the
 /// signal engine's elsewhere; either then says why it does not build.
 pub fn engine_of(path: &Path) -> Option<String> {
     match path.extension()?.to_str()? {
         "py" => Some("signal".to_string()),
+        "wgsl" => Some("graphics".to_string()),
         "rs" => Some(sdk_engine(&std::fs::read_to_string(path).ok()?).unwrap_or_else(|| folder_engine(path))),
         _ => None,
     }
@@ -113,6 +115,7 @@ pub fn describe(
         doc: doc.to_string(),
         tags: tags.iter().map(|t| t.as_str().to_string()).collect(),
         producer,
+        feedback: false,
         inputs: inputs
             .iter()
             .map(|s| probe::Slot {

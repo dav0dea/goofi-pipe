@@ -99,6 +99,12 @@ fn name_of(d: &cpal::Device) -> Option<String> {
     d.description().ok().map(|d| d.name().to_string())
 }
 
+/// The key of one declared param, off the `'static` manifest — never off `&self`, which a caller
+/// mid-borrow of its own fields cannot take.
+fn key_of(manifest: &NodeManifest, param: usize) -> ParamKey {
+    ParamKey::new(manifest.params[param].group, manifest.params[param].name)
+}
+
 /// One output's tap: the ring the audio thread fills after every block.
 struct Tap {
     ring: rtrb::Consumer<f32>,
@@ -147,11 +153,6 @@ impl AudioHalf {
         }
     }
 
-    fn key_of(&self, param: usize) -> ParamKey {
-        let d = &self.manifest.params[param];
-        ParamKey::new(d.group, d.name)
-    }
-
     /// The one refreshable list a type has — the graph refuses a refresh on any other param —
     /// enumerated here rather than under the graph lock: the devices behind the host default, or
     /// the MIDI ports behind `none`.
@@ -180,10 +181,7 @@ impl AudioHalf {
     /// the clock's rate, or the stream died; a name that failed stands as an error on that param
     /// until it moves.
     fn open_io(&mut self, consts: &[Param], errors: &mut Vec<(ParamKey, Option<String>)>) -> bool {
-        // Read off the `'static` manifest, not off `self`: `io` and `ports` are fields, and a
-        // node with neither a device nor a port param must not be asked for one.
         let manifest = self.manifest;
-        let key = |param: usize| ParamKey::new(manifest.params[param].group, manifest.params[param].name);
         let (rate, clock) = (self.audio.rate(), self.audio.clock);
         let (io, ports) = (&mut self.io, &self.ports);
         let mut replan = false;
@@ -206,7 +204,7 @@ impl AudioHalf {
                 replan = true;
                 io.stream = stream;
                 io.device = Some(wanted);
-                errors.push((key(audio_in::P::DEVICE), error));
+                errors.push((key_of(manifest, audio_in::P::DEVICE), error));
             }
         }
         if let Some(producer) = ports.midi_in.clone() {
@@ -225,7 +223,7 @@ impl AudioHalf {
                     }
                 };
                 io.port = Some(wanted);
-                errors.push((key(midi_in::P::PORT), error));
+                errors.push((key_of(manifest, midi_in::P::PORT), error));
             }
         }
         replan
@@ -344,12 +342,12 @@ impl Half for AudioHalf {
         ticked.replan |= self.open_io(cx.consts, &mut ticked.errors);
         if self.rec.is_some() {
             let error = self.record(cx);
-            let key = self.key_of(audio_out::P::ON);
+            let key = key_of(self.manifest, audio_out::P::ON);
             ticked.errors.push((key, error));
         }
         if self.play.is_some() {
             let (error, moved) = self.playback(cx);
-            let key = self.key_of(audio_playback::P::FILE);
+            let key = key_of(self.manifest, audio_playback::P::FILE);
             ticked.errors.push((key, error));
             ticked.replan |= moved;
         }

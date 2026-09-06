@@ -106,6 +106,13 @@ fn the_generated_frontend_artifacts_still_match_the_tables_they_come_from() {
 
 #[test]
 fn a_vocabulary_word_is_emittable_documented_and_offered_where_it_is_asked_for() {
+    // A tier crosses its shared cell as a byte, and the way back was once a wildcard: a tier
+    // added at the end read as the one before it, and nothing said so.
+    for tier in goofi_node::Isolation::ALL {
+        let cell = goofi_node::IsolationCell::new(tier);
+        assert_eq!(cell.get().wire(), tier.wire(), "`{}` does not survive its cell", tier.wire());
+    }
+
     // Each op that takes a vocabulary word enumerates the set in its own description, by expansion.
     let doc = find("layout panel edit").expect("registered").doc();
     for word in ["parameters", "node-editor", "viewer", "line", "trajectory", "topomap"] {
@@ -383,17 +390,24 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
     // client draws what it is given.
     let g = Goofi::new();
     // The lock is DROPPED before the first op: `library list` takes the same one.
-    let declared: Vec<(String, Vec<&'static str>)> = {
+    let declared: Vec<(String, Vec<String>)> = {
         let graph = g.state.graph.lock().unwrap();
         graph.library_entries().into_iter()
             .filter(|(_, l)| !l.manifest.type_name.starts_with('_'))
             .map(|(engine, l)| {
-                let mut groups: Vec<&'static str> = Vec::new();
-                for d in l.manifest.params {
-                    if d.group != "common" && !groups.contains(&d.group) {
-                        groups.push(d.group);
+                let mut universal: Vec<String> = Vec::new();
+                for d in graph.universal_decls(engine, l.manifest) {
+                    if !universal.contains(&d.group.to_string()) {
+                        universal.push(d.group.to_string());
                     }
                 }
+                let mut groups: Vec<String> = Vec::new();
+                for d in l.manifest.params {
+                    if !universal.contains(&d.group.to_string()) && !groups.contains(&d.group.to_string()) {
+                        groups.push(d.group.to_string());
+                    }
+                }
+                groups.extend(universal);
                 (goofi_node::qualify(engine, l.manifest.type_name), groups)
             })
             .collect()
@@ -423,8 +437,7 @@ fn every_palette_row_carries_standard_tags_and_its_pages_in_declared_order() {
             assert!(goofi_node::Tag::parse(t.as_str().unwrap()).is_some(), "{ty}: tag {t}");
         }
         let pages: Vec<&str> = row["params"].as_object().expect("pages").keys().map(String::as_str).collect();
-        let own: Vec<&str> = pages.iter().copied().filter(|p| *p != "common").collect();
-        assert_eq!(own, groups, "{ty}: pages in declared order");
+        assert_eq!(pages, groups, "{ty}: the author's pages in declared order, then the engine's own");
         assert!(!pages.contains(&"common") || pages.last() == Some(&"common"), "{ty}: common is the last page: {pages:?}");
     }
     // An author who declares `common` FIRST, with a default of their own for one universal param,

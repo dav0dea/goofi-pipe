@@ -621,6 +621,8 @@ pub fn prebuild(state: &AppState, patch: &std::path::Path) {
 
 /// The composed graph the app boots: the model plus the signal engine, registered first. `None`
 /// asks for no audio engine at all, which is also what takes every audio node out of the catalog.
+/// The graphics engine is always ASKED for, and a machine with no GPU adapter simply has none —
+/// which takes every graphics node out of the catalog by the same one rule.
 pub fn fresh_graph(clock: Option<Clock>) -> Graph {
     let mut g = Graph::new();
     let signal = goofi_signal::SignalEngine::new(
@@ -632,7 +634,25 @@ pub fn fresh_graph(clock: Option<Clock>) -> Graph {
     if let Some(clock) = clock {
         g.register_engine(Box::new(goofi_audio::AudioEngine::new(g.instance().to_string(), g.patch_start(), g.drain_waker(), clock)));
     }
+    let render = match clock {
+        Some(Clock::Device) => goofi_graphics::Clock::Timer,
+        _ => goofi_graphics::Clock::External,
+    };
+    match goofi_graphics::GraphicsEngine::open(g.instance().to_string(), g.patch_start(), g.drain_waker(), render) {
+        Ok(engine) => g.register_engine(Box::new(engine)),
+        Err(why) => eprintln!("graphics: {why}; this machine renders no shaders"),
+    }
     g
+}
+
+/// The graphics engine registered in `g` — its external clock is the door a test renders through.
+pub fn graphics_engine(g: &mut Graph) -> &mut goofi_graphics::GraphicsEngine {
+    try_graphics_engine(g).expect("the graphics engine is registered")
+}
+
+/// …or nothing, where no GPU adapter answered.
+pub fn try_graphics_engine(g: &mut Graph) -> Option<&mut goofi_graphics::GraphicsEngine> {
+    g.engine_mut("graphics").and_then(|e| e.as_any_mut().downcast_mut())
 }
 
 pub use goofi_audio::Clock;

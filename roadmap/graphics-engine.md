@@ -4,7 +4,9 @@ The third engine — shaders on the GPU, in the style of a TouchDesigner TOP cha
 **peer of the signal and audio engines inside one graph**. First designed 2026-08-09 as a fused
 compute engine over a `Field` dtype; redesigned with the owner on 2026-09-06 as a smaller first
 step, and this file was rewritten to it. What the first design decided and still stands is kept
-below under "kept from the first design". Not built; the working spec is
+below under "kept from the first design". The engine core runs as of 2026-09-06 — a `.wgsl` is a
+node, a chain renders, a tap publishes; uploads, references, `Feedback` and eleven of the thirteen
+nodes are what is left. The working spec is
 `docs/superpowers/specs/2026-09-06-graphics-engine-design.md`.
 
 The seam this engine assumes is `multi-engine-graph.md`. The audio engine, `audio-engine.md`, is
@@ -47,7 +49,8 @@ before they arrive.
 - **`uv` is `(0, 0)` at the bottom-left, the shader convention; a texture's row 0 is the top, the
   image convention.** The prelude's vertex stage is where the two meet, and nothing flips anywhere
   else: an uploaded image displays upright, and a readback's row 0 is the top.
-- **The engine is scheduled, demand-driven, and owns one device and one render thread.** No
+- **The engine is scheduled, demand-driven, and owns one device and one render thread** — LANDED
+  2026-09-06. No
   window. The clock is a constructor choice: `Clock::External` for the suite, driven by
   `render(frames)`; `Clock::Timer` at 60 Hz for the CLI. A stage renders in a tick only when its
   output has a reader — a subscriber on its data service, or a same-engine consumer that is
@@ -87,10 +90,47 @@ before they arrive.
   audio. The suite requires an adapter and fails naming the package (`mesa-vulkan-drivers`), never
   skips. CI's Linux runner installs lavapipe; Windows has WARP; macOS Metal on the runner is
   unverified.
-- **A `.wgsl` node's tier is `shader`**, the fourth `Isolation`.
+- **A `.wgsl` node's tier is `shader`**, the fourth `Isolation` — LANDED 2026-09-06. The way back
+  from the byte a shared cell holds is a SEARCH of `Isolation::ALL`, not a match: the wildcard arm
+  that was there read the newly added fourth tier as the third, and said nothing.
 - **The node set was agreed with the owner** (2026-09-06): `Constant`, `Ramp`, `Noise`, `Shape`,
   `Level`, `Transform`, `Blur`, `Composite`, `Displace`, `Lookup`, `Threshold`, `Feedback`,
   `ArrayIn`. `Shader` is out for now. A camera is a Python signal node feeding `ArrayIn`, later.
+
+### What the engine core landed (2026-09-06)
+
+`goofi-graphics` is the crate: one `Gpu` (adapter, device, queue, the shared sampler, the 1x1
+transparent texture every unwired input samples, and the bind-group-layout cache), `shader` (header
+parse, prelude generation, naga validation, uniform packing), `scan` (one file to one class, and
+the thread every pipeline is built on), `plan` (Kahn, demand, resolution inheritance), `runtime`
+(the tick and the readback) and `half` (what an arrival becomes, over `goofi-control`).
+
+Three decisions were taken while building it, and each is a rule the code now states once:
+
+- **A compile never blocks an op.** A driver takes its time over a pipeline, so the class holds a
+  cell and the compile thread fills it; the plan picks it up at the tick after. A pipeline that
+  just arrived sets `replan` and rings the waker, because a compile changes nothing until a settle
+  plans for it.
+- **The universal group is the ENGINE's, not literally `common`.** Graphics adds `output`
+  (`width`, `height`) where signal adds `common`. The palette's page-order contract used to name
+  `common` by hand; it now reads `universal_decls` per engine, so the law is "the author's pages in
+  declared order, then the engine's own" and a fourth engine needs no new arm.
+- **A shipped name may now belong to two engines.** `Constant` and `Level` name a signal and a
+  graphics node, an audio and a graphics node. That is the designed behaviour — `node add` refuses
+  the bare name and lists both candidates — and the cost is that the callers of those two names
+  qualify. Nothing was renamed to dodge it.
+
+`session status` grew a `graphics` block beside `audio`: the clock, the adapter and backend that
+answered, and the frame, stage and tick-time counters. It is null where no adapter answered.
+
+Shipped so far: `Constant` and `Level`. The suite's session is `goofi-tests/tests/graphics.rs`,
+under the external clock, and it proves the palette row, a readback of a real render, the `output`
+resize and the size a wired input inherits, an HDR value past 1 surviving a chain, an unwired input
+as transparent black rather than a fault, a `.wgsl` that does not compile as a greyed row carrying
+naga's own line number in the FILE's numbering, an authored node loaded and reloaded through
+`library refresh`, a node nobody reads costing no work until a reader arrives, a restart as a
+rebirth on a new generation with the corpse's service gone silent, and a remove that leaves the
+rest standing.
 
 ## Kept from the first design
 

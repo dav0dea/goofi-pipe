@@ -1453,8 +1453,10 @@ pub(crate) fn session_status(
     let dirty = state.is_dirty();
     let mut g = state.graph.lock().unwrap();
     let errors = inspect::errors(&g);
-    // A demo registers no audio engine, and status is a READ: it answers what is there.
+    // A demo registers no audio engine, and a machine with no adapter no graphics one. Status is
+    // a READ: it answers what is there.
     let audio = crate::try_audio_engine(&mut g).map(|a| a.status());
+    let graphics = crate::try_graphics_engine(&mut g).map(|a| a.status());
     Ok(json!({
         // The id is what the session-file probe verifies: a listener that answers with another
         // id — or none — is not this session.
@@ -1473,6 +1475,15 @@ pub(crate) fn session_status(
             "callbacks": a.callbacks,
             "xruns": a.xruns,
             "render_max_us": a.render_max_us,
+        })),
+        // The same door for the GPU: which adapter answered, and how much of a tick it took.
+        "graphics": graphics.map(|a| json!({
+            "clock": a.clock,
+            "adapter": a.adapter,
+            "backend": a.backend,
+            "frames": a.frames,
+            "stages": a.stages,
+            "tick_max_us": a.tick_max_us,
         })),
     }))
 }

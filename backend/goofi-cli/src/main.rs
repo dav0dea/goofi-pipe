@@ -687,7 +687,7 @@ fn boot_scan(state: &AppState) {
         let patch = state.mount();
         (goofi_bridge::rescan(state, &mut g, &patch).1, state.roots.clone())
     };
-    let (mut n_native, mut n_in, mut n_sub, mut n_bad) = (0u32, 0u32, 0u32, 0u32);
+    let (mut n_native, mut n_in, mut n_sub, mut n_shader, mut n_bad) = (0u32, 0u32, 0u32, 0u32, 0u32);
     for t in found {
         match t.outcome {
             Scanned::Registered { isolation, replaced } => {
@@ -696,6 +696,7 @@ fn boot_scan(state: &AppState) {
                     Isolation::Native => n_native += 1,
                     Isolation::InProcess => n_in += 1,
                     Isolation::Subprocess => n_sub += 1,
+                    Isolation::Shader => n_shader += 1,
                 }
             }
             Scanned::Unavailable(reason) => {
@@ -707,7 +708,7 @@ fn boot_scan(state: &AppState) {
     let bad = if n_bad > 0 { format!(", {n_bad} unavailable") } else { String::new() };
     let from = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ");
     println!(
-        "  {n_native} native + {n_in} in-process + {n_sub} subprocess node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
+        "  {n_native} native + {n_in} in-process + {n_sub} subprocess + {n_shader} shader node type(s) from {from}{bad}{NO_PYTHON_NOTE}"
     );
 }
 

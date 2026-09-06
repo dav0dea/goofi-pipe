@@ -1,0 +1,135 @@
+//! The graphics engine under the external clock: one session, every action through the op
+//! vocabulary, every probe a subscriber on the derived name of a texture slot — the door `/data`
+//! opens — and every frame a readback the GPU actually made.
+
+use goofi_tests::{ep, f32s, hex, j, render, shape, Goofi, Uid};
+
+const NO_GPU: &str = "no graphics engine here. The suite needs a GPU adapter: install a Vulkan \
+                      driver, or Mesa's lavapipe (`mesa-vulkan-drivers`)";
+
+/// Tick until the probe on `uid`'s output holds a frame `want` accepts, and hand it back.
+fn drawn(g: &Goofi, uid: Uid, what: &str, want: impl Fn(&goofi_core::Data) -> bool) -> goofi_core::Data {
+    let probe = g.probe(uid, "out");
+    g.until(what, |g| {
+        render(g, 1);
+        probe.latest().filter(&want)
+    })
+}
+
+/// The texel at `(row, col)`: four floats, row 0 the top.
+fn px(d: &goofi_core::Data, row: usize, col: usize) -> [f32; 4] {
+    let s = shape(d);
+    let at = (row * s[1] + col) * 4;
+    f32s(d)[at..at + 4].try_into().expect("four channels")
+}
+
+fn close(a: [f32; 4], b: [f32; 4]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3)
+}
+
+#[test]
+fn shaders_render_on_the_gpu() {
+    let g = Goofi::new();
+
+    // Step: the engine registered, and its library is in the ONE palette beside the others.
+    let types = g.call("library list", j!({ "full": true }));
+    let names: Vec<&str> = types["types"].as_array().unwrap().iter().filter_map(|r| r["type"].as_str()).collect();
+    assert!(names.contains(&"graphics:Constant"), "{NO_GPU}\n{names:?}");
+    let row = types["types"].as_array().unwrap().iter().find(|r| r["type"] == "graphics:Constant").unwrap();
+    assert_eq!(row["output_slots"]["out"], "TEXTURE", "{row}");
+    assert_eq!(g.call("library get", j!({ "type": "graphics:Constant" }))["tier"], "shader");
+    let status = g.call("session status", j!({}))["graphics"].clone();
+    assert_eq!(status["clock"], "external", "{status}");
+    assert!(status["adapter"].as_str().is_some_and(|a| !a.is_empty()), "{status}");
+
+    // Step: a Constant reads back the colour it was given, at the generator's own size.
+    let c = g.add("graphics:Constant");
+    g.ready(c);
+    g.set_param(c, "colour", "r", 0.25);
+    g.set_param(c, "colour", "g", 0.5);
+    g.set_param(c, "colour", "b", 1.0);
+    let frame = drawn(&g, c, "the constant's colour", |d| close(px(d, 0, 0), [0.25, 0.5, 1.0, 1.0]));
+    assert_eq!(shape(&frame), vec![512, 512, 4], "a node with nothing behind it is 512 square");
+    assert!(close(px(&frame, 511, 511), [0.25, 0.5, 1.0, 1.0]), "the same colour to the far corner");
+
+    // Step: the universal `output` group resizes it, and what is wired behind FOLLOWS the size.
+    g.set_param(c, "output", "width", 64);
+    g.set_param(c, "output", "height", 32);
+    let frame = drawn(&g, c, "the resized frame", |d| shape(d) == vec![32, 64, 4]);
+    assert!(close(px(&frame, 31, 63), [0.25, 0.5, 1.0, 1.0]));
+    let level = g.add("graphics:Level");
+    g.ready(level);
+    g.link(c, "out", level, "input");
+    let frame = drawn(&g, level, "the level follows its input's size", |d| shape(d) == vec![32, 64, 4]);
+    assert!(close(px(&frame, 0, 0), [0.25, 0.5, 1.0, 1.0]), "gain 1 is a copy");
+
+    // Step: a chain — the format is HDR, so doubling a value past 1 keeps what it made.
+    g.set_param(level, "level", "gain", 2.0);
+    drawn(&g, level, "the doubled frame", |d| close(px(d, 5, 5), [0.5, 1.0, 2.0, 1.0]));
+    g.set_param(level, "level", "gain", 1.0);
+
+    // Step: an unwired texture input is transparent black — present, never an error.
+    g.call("link remove", j!({ "from": ep(hex(c), "out"), "to": ep(hex(level), "input") }));
+    let frame = drawn(&g, level, "the unwired level", |d| close(px(d, 0, 0), [0.0, 0.0, 0.0, 0.0]));
+    assert_eq!(shape(&frame), vec![512, 512, 4], "with nothing to follow, it is a generator's size");
+    assert!(g.error(level).is_none(), "an unwired input is not a fault");
+
+    // Step: a `.wgsl` that does not compile is a greyed type carrying naga's own line number.
+    let dir = g.state.mount().join("nodes_graphics");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Broken.wgsl"), BROKEN).unwrap();
+    g.call("library refresh", j!({}));
+    let listed = g.call("library list", j!({ "full": true }));
+    let greyed = listed["types"].as_array().unwrap().iter().find(|r| r["type"] == "graphics:Broken").cloned();
+    let greyed = greyed.expect("a file that does not compile is still a row");
+    assert_eq!(greyed["available"], false, "{greyed}");
+    let why = greyed["doc"].as_str().unwrap_or_default();
+    assert!(why.contains(":4:"), "the file's OWN line 4, not the prelude's: {why}");
+    assert!(g.refuse("node add", j!({ "type": "graphics:Broken" })).contains("unavailable"));
+
+    // Step: a workspace node is authored, loaded, and reloaded through the one refresh door.
+    std::fs::write(dir.join("Half.wgsl"), HALF).unwrap();
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["graphics:Half"]));
+    let half = g.add("graphics:Half");
+    g.ready(half);
+    g.link(c, "out", half, "input");
+    drawn(&g, half, "half of the constant", |d| close(px(d, 0, 0), [0.125, 0.25, 0.5, 1.0]));
+    std::fs::write(dir.join("Half.wgsl"), QUARTER).unwrap();
+    assert_eq!(g.call("library refresh", j!({}))["changed"], j!(["graphics:Half"]));
+    drawn(&g, half, "a quarter, after the reload", |d| close(px(d, 0, 0), [0.0625, 0.125, 0.25, 1.0]));
+
+    // Step: a node nobody reads renders nothing — which is what makes an idle patch free.
+    let stages = |g: &Goofi| g.call("session status", j!({}))["graphics"]["stages"].as_u64().unwrap();
+    let lonely = g.add("graphics:Constant");
+    g.ready(lonely);
+    render(&g, 5);
+    let before = stages(&g);
+    render(&g, 10);
+    assert_eq!(stages(&g), before, "ten ticks, no reader, no work");
+    let probe = g.probe(lonely, "out");
+    g.until("a reader wakes it", |g| {
+        render(g, 1);
+        probe.latest()
+    });
+    assert!(stages(&g) > before, "and it renders the moment one arrives");
+
+    // Step: a restart is a rebirth through the same trait doors — new generation, new services.
+    let generation = g.state.graph.lock().unwrap().node_generation(c);
+    let stale = g.probe(c, "out");
+    g.call("node restart", j!({ "node": hex(c) }));
+    g.ready(c);
+    assert_eq!(g.state.graph.lock().unwrap().node_generation(c), generation + 1);
+    drawn(&g, c, "the reborn constant", |d| close(px(d, 0, 0), [0.25, 0.5, 1.0, 1.0]));
+    let seen = stale.count();
+    render(&g, 5);
+    assert_eq!(stale.count(), seen, "the corpse's service name went silent");
+
+    // Step: a remove through the one op surface tears the node down and the rest stand.
+    g.call("node remove", j!({ "node": hex(lonely) }));
+    assert!(!g.nodes().contains(&hex(lonely)));
+    drawn(&g, c, "the constant still renders", |d| close(px(d, 0, 0), [0.25, 0.5, 1.0, 1.0]));
+}
+
+const BROKEN: &str = "/* goofi\n{ \"doc\": \"does not compile\" }\n*/\nfn shade(uv: vec2f) -> vec4f { return nothing(uv); }\n";
+const HALF: &str = "/* goofi\n{ \"doc\": \"half of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.5, c.a); }\n";
+const QUARTER: &str = "/* goofi\n{ \"doc\": \"a quarter of the input\", \"inputs\": [{\"name\": \"input\", \"kind\": \"TEXTURE\"}] }\n*/\nfn shade(uv: vec2f) -> vec4f { let c = textureSample(input, samp, uv); return vec4f(c.rgb * 0.25, c.a); }\n";

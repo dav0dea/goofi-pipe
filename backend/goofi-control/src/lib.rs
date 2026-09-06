@@ -183,28 +183,33 @@ pub fn spawn<H: Half + 'static>(
     std::thread::Builder::new()
         .name(format!("goofi-{}-{}", spawn.engine, spawn.manifest.type_name))
         .spawn(move || {
-            let control = Control {
-                uid: spawn.uid,
-                manifest: spawn.manifest,
-                started: spawn.started,
-                params: spawn.params,
-                consts: Vec::new(),
-                outs,
-                slots: Vec::new(),
-                binds: Vec::new(),
-                evaluated: IndexMap::new(),
-                errors: IndexMap::new(),
-                pulsed: Vec::new(),
-                pulses: Vec::new(),
-                shared,
-                mail: thread_mail,
-                last_tick: Instant::now(),
-                listener,
-                half: make(),
-                node,
-            };
-            // A panic here is a bug, and it must still release the node's ports so the exit is real.
-            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| control.run(&thread_halt)));
+            // The half is BUILT in here too: a factory that panics must still release the halt,
+            // or the exit waits its whole ceiling on a node that never started.
+            let inner = thread_halt.clone();
+            let run = AssertUnwindSafe(move || {
+                let control = Control {
+                    uid: spawn.uid,
+                    manifest: spawn.manifest,
+                    started: spawn.started,
+                    params: spawn.params,
+                    consts: Vec::new(),
+                    outs,
+                    slots: Vec::new(),
+                    binds: Vec::new(),
+                    evaluated: IndexMap::new(),
+                    errors: IndexMap::new(),
+                    pulsed: Vec::new(),
+                    pulses: Vec::new(),
+                    shared,
+                    mail: thread_mail,
+                    last_tick: Instant::now(),
+                    listener,
+                    half: make(),
+                    node,
+                };
+                control.run(&inner);
+            });
+            let _ = std::panic::catch_unwind(run);
             thread_halt.release();
         })
         .map_err(|e| format!("could not start the node's control thread: {e}"))?;
