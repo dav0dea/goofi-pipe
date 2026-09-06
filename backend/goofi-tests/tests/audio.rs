@@ -679,6 +679,18 @@ fn a_patch_sounds_under_the_external_clock() {
     g.until("the restarted node to be clean", |g| (!state(g, trap).contains("panic")).then_some(()));
     sounds(&g, "the quarter to rejoin", |x| (level(x) - 0.75).abs() < 0.01);
 
+    // Step: a node slow from its FIRST block is WARMING, not failing — the VST3 contract lets a
+    // plugin build its engine there — so the watchdog's count begins only once a block has landed
+    // inside the budget, and a hundred slow ones before that take nothing out of the plan.
+    g.set_param(trap, "trap", "stall", true);
+    g.call("node restart", j!({ "node": hex(trap) }));
+    for _ in 0..2 {
+        drive(&g, TENTH);
+    }
+    assert!(!state(&g, trap).contains("overran"), "a warming node was taken: {}", state(&g, trap));
+    g.set_param(trap, "trap", "stall", false);
+    sounds(&g, "the warmed quarter to rejoin", |x| (level(x) - 0.75).abs() < 0.01);
+
     // Step: a node that takes longer than a block, eight blocks in a row, is taken out of the
     // plan by the watchdog and says so; its neighbours never miss a block for it.
     g.set_param(trap, "trap", "stall", true);
