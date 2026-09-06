@@ -204,14 +204,15 @@ pub struct GlobalSource {
     pub index: Option<usize>,
 }
 
-/// A code-owned system global: its group is config-locked for life. A MACHINE one is
-/// value-locked too — its value is the machine's, re-derived at every reassert, and a `.gfi`
+/// A code-owned system global: its group is config-locked for life. An EPHEMERAL one is
+/// value-locked too — goofi derives its value, it is re-derived at every reassert, and a `.gfi`
 /// never carries it.
 pub struct GlobalDef {
     pub name: &'static str,
     pub value: fn() -> GlobalValue,
     pub doc: &'static str,
-    pub machine: bool,
+    /// Whether goofi owns the value outright: nobody may set it, and no patch carries it.
+    pub ephemeral: bool,
 }
 
 pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
@@ -219,13 +220,37 @@ pub static SYSTEM_GLOBALS: &[GlobalDef] = &[
         name: "system.default_ufreq",
         value: || GlobalValue::Float(30.0),
         doc: "Default update rate (Hz) for producer nodes that have not overridden it.",
-        machine: false,
+        ephemeral: false,
+    },
+    GlobalDef {
+        name: "system.audio_rate",
+        value: || GlobalValue::Float(0.0),
+        doc: "The audio clock's sample rate. The audio engine says it; 0 where no engine runs.",
+        ephemeral: true,
+    },
+    GlobalDef {
+        name: "system.audio_channels",
+        value: || GlobalValue::Int(0),
+        doc: "How many channels the audio clock carries. The audio engine says it; 0 where no engine runs.",
+        ephemeral: true,
+    },
+    GlobalDef {
+        name: "system.audio_device",
+        value: || GlobalValue::Str(String::new()),
+        doc: "The device driving the audio clock, empty under the external clock or where none is open.",
+        ephemeral: true,
+    },
+    GlobalDef {
+        name: "system.audio_driver",
+        value: || GlobalValue::Str(String::new()),
+        doc: "The ASIO driver holding the process, empty where none does — one loads at a time, so it is the patch's.",
+        ephemeral: true,
     },
     GlobalDef {
         name: "system.goofi_home",
         value: || GlobalValue::Str(crate::path::to_slash(&crate::home::dir())),
         doc: "The .goofi folder, where goofi keeps its own files. The machine says where it is.",
-        machine: true,
+        ephemeral: true,
     },
 ];
 
@@ -293,8 +318,8 @@ pub fn is_valid_name(name: &str) -> bool {
 /// to set.
 pub const SYSTEM_GROUP: &str = "system";
 
-fn is_machine(name: &str) -> bool {
-    SYSTEM_GLOBALS.iter().any(|d| d.machine && d.name == name)
+fn is_ephemeral(name: &str) -> bool {
+    SYSTEM_GLOBALS.iter().any(|d| d.ephemeral && d.name == name)
 }
 
 fn group_of(name: &str) -> &str {
@@ -332,11 +357,11 @@ impl GlobalStore {
     }
 
     /// Back-fill any missing system global with its default — on construction and after a load —
-    /// and re-lock the system group. A MACHINE one is overwritten instead: its value is this
-    /// machine's, never a file's.
+    /// and re-lock the system group. An EPHEMERAL one is overwritten instead: goofi says what it
+    /// holds, never a file.
     pub fn reassert_system(&mut self) {
         for def in SYSTEM_GLOBALS {
-            if def.machine {
+            if def.ephemeral {
                 self.values.insert(def.name.to_string(), (def.value)());
                 self.locks.insert(def.name.to_string(), Lock { config: false, value: true });
             } else {
@@ -382,7 +407,23 @@ impl GlobalStore {
     pub fn follow(&mut self, name: &str, value: GlobalValue) -> bool {
         // A global with no source has no follower: a pick already in flight when one is cleared
         // would otherwise land after, and overwrite the value the clearing author then typed.
-        if is_machine(name) || self.lock_of(name).value || !self.sources.contains_key(name) {
+        if is_ephemeral(name) || self.lock_of(name).value || !self.sources.contains_key(name) {
+            return false;
+        }
+        let Some(existing) = self.values.get(name) else { return false };
+        let coerced = value.coerced_like(existing);
+        if *existing == coerced {
+            return false;
+        }
+        self.values.insert(name.to_string(), coerced);
+        true
+    }
+
+    /// An ENGINE's own published fact, which is why it passes the value lock: the lock exists to
+    /// keep every other writer out, and the engine is the one it is held for. Only an ephemeral
+    /// name takes one. Answers whether the value MOVED, which is what a rebind is worth doing for.
+    pub fn publish(&mut self, name: &str, value: GlobalValue) -> bool {
+        if !is_ephemeral(name) {
             return false;
         }
         let Some(existing) = self.values.get(name) else { return false };
@@ -399,9 +440,9 @@ impl GlobalStore {
         self.group_locks.iter().map(|(g, l)| (g.as_str(), *l))
     }
 
-    /// Whether a `.gfi` must leave `name` out: a machine global's value is this machine's.
-    pub fn is_machine(&self, name: &str) -> bool {
-        is_machine(name)
+    /// Whether a `.gfi` must leave `name` out: an ephemeral global's value is goofi's own.
+    pub fn is_ephemeral(&self, name: &str) -> bool {
+        is_ephemeral(name)
     }
 
     /// A global's OWN lock, apart from its group's.
@@ -482,8 +523,8 @@ impl GlobalStore {
 
     /// Set an EXISTING global, coercing to its declared type; errors when it does not exist.
     pub fn set(&mut self, name: &str, value: GlobalValue) -> Result<(), String> {
-        if is_machine(name) {
-            return Err(format!("global `{name}` is read-only: its value is the machine's"));
+        if is_ephemeral(name) {
+            return Err(format!("global `{name}` is read-only: it is ephemeral, and goofi says what it holds"));
         }
         if self.lock_of(name).value {
             return Err(format!("global `{name}` is value-locked"));

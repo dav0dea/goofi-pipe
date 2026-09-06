@@ -2902,10 +2902,21 @@ impl Graph {
         let edges = self.resolved_edges();
         let rings: HashMap<&'static str, bool> =
             self.engines().map(|e| (e.id(), e.doorbell_driven())).collect();
-        let Graph { nodes, generations, instance, engines, .. } = self;
-        let view = build_view(nodes, generations, instance, &edges, &rings);
-        for e in engines.iter_mut() {
-            e.settle(&view, &touched);
+        let published = {
+            let Graph { nodes, generations, instance, engines, .. } = self;
+            let view = build_view(nodes, generations, instance, &edges, &rings);
+            for e in engines.iter_mut() {
+                e.settle(&view, &touched);
+            }
+            engines.iter().flat_map(|e| e.published()).collect::<Vec<_>>()
+        };
+        // The engines' own facts into `system.*`, from the state this settle just reached. It
+        // not a command and never becomes one: the user's undoable act is the param they moved,
+        // and this is what that param MEANS once the engine has answered.
+        for (name, value) in published {
+            if self.globals.publish(name, value) {
+                self.invalidate_bindings_reading(name);
+            }
         }
     }
 
@@ -3233,9 +3244,9 @@ impl Graph {
         let globals: Vec<Value> = self
             .globals
             .entries()
-            // A machine global's value is this machine's; writing it into a patch would carry one
-            // machine's path onto another.
-            .filter(|(name, ..)| !self.globals.is_machine(name))
+            // An ephemeral global is goofi's own to say; writing it into a patch would carry one
+            // machine's answer onto another.
+            .filter(|(name, ..)| !self.globals.is_ephemeral(name))
             .map(|(name, value, lock, control, source)| {
                 let mut e = global_to_json(value); // {value, type}
                 if let Value::Object(ref mut m) = e {

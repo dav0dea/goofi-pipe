@@ -599,7 +599,7 @@ fn a_refusal_names_what_the_caller_could_try_instead() {
     assert!(why.contains("already exists") && why.contains("global entry edit"), "{why}");
     assert_eq!(g.call("global entry edit", j!({ "name": "system.default_ufreq", "value": 12.5 }))["value"], 12.5);
 
-    // A LOCKED global is the machine's: the value refuses the edit the way the name refuses the
+    // An EPHEMERAL global is goofi's own: the value refuses the edit the way the name refuses the
     // remove, and what it holds is this machine's .goofi folder, not anything a patch said.
     let home = g.call("global list", j!({}))["globals"].as_array().unwrap().iter()
         .find(|e| e["name"] == "system.goofi_home").cloned().expect("goofi_home is seeded");

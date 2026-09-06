@@ -259,6 +259,13 @@ pub trait Engine: Send {
     fn settle(&mut self, view: &GraphView<'_>, touched: &[Touched]);
     /// Hand over every queued health report. A pull: the caller owns the pace.
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize;
+    /// The facts this engine ALONE decides, for the `system.*` globals to carry — a rate, a
+    /// a driver. A pull like the drain, and the graph is the only writer, so an engine never needs
+    /// a store of its own for what the whole patch may read. Every name must be an ephemeral
+    /// global: goofi says what it holds and no patch carries it.
+    fn published(&self) -> Vec<(&'static str, goofi_core::globals::GlobalValue)> {
+        Vec::new()
+    }
     /// Re-enumerate a `Str` param's options on the node's own thread — the one imperative
     /// settled state cannot express.
     fn refresh_param(&mut self, uid: Uid, key: ParamKey);

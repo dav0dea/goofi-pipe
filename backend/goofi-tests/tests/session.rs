@@ -122,7 +122,7 @@ fn a_patch_is_built_saved_and_opened_somewhere_else_unchanged() {
     g.call("session save", j!({ "path": path.to_string_lossy() }));
     g.call("session load", j!({ "path": path.to_string_lossy() }));
 
-    // A locked global is the machine's: the manifest never carries it, and the load re-derives it.
+    // An EPHEMERAL global is goofi's own: the manifest never carries it, and the load re-derives it.
     let manifest = g.call("session manifest", j!({}));
     assert!(!manifest["yaml"].as_str().unwrap().contains("goofi_home"),
             "a machine path in a patch file travels to the wrong machine");

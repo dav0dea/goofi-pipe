@@ -848,6 +848,22 @@ impl Engine for AudioEngine {
         }
     }
 
+    /// What the audio plane alone decides, off the same `status()` the report reads — so the
+    /// globals and `session status` cannot drift, and a node in any engine can bind to the rate
+    /// or the driver without a door of its own.
+    fn published(&self) -> Vec<(&'static str, goofi_core::globals::GlobalValue)> {
+        use goofi_core::globals::GlobalValue;
+        let s = self.status();
+        let device = s.device.unwrap_or_default();
+        let driver = host::asio_driver(&device).unwrap_or_default().to_string();
+        vec![
+            ("system.audio_rate", GlobalValue::Float(s.rate)),
+            ("system.audio_channels", GlobalValue::Int(i64::from(s.channels))),
+            ("system.audio_driver", GlobalValue::Str(driver)),
+            ("system.audio_device", GlobalValue::Str(device)),
+        ]
+    }
+
     fn drain(&mut self, apply: &mut dyn FnMut(Uid, Status)) -> usize {
         self.discard_retired();
         // A stream that died is closed here, and its name tried once more at the settle this asks for.

@@ -208,7 +208,7 @@ pub static TREE: &[Entry] = &[
     ]),
     Group("global", "the patch globals — what an expression reads as `globals.group.element`", &[
         Leaf(Op { name: "list", handler: Read(arms::global_list), args: "", positional: 0,
-             doc: "Every patch global — what an expression can read and the global writes can set — each with the lock that holds it (its own and its group's together), and every group that carries a lock. The `system` group is goofi's own: config-locked for life, and `system.goofi_home` is the machine's value, never saved into a patch.",
+             doc: "Every patch global — what an expression can read and the global writes can set — each with the lock that holds it (its own and its group's together), and every group that carries a lock. The `system` group is goofi's own: config-locked for life, and its EPHEMERAL members — `system.goofi_home` and the `system.audio_*` facts the audio engine publishes — are goofi's own value, never saved into a patch.",
              result: "{globals: [{name, type, value, lock: {config, value}, control?, source?}], groups: {group: {lock}}}" }),
         Group("entry", "one global, addressed `group.element`", &[
             Leaf(Op { name: "add", handler: Write(arms::global_add),
@@ -216,7 +216,7 @@ pub static TREE: &[Entry] = &[
                  doc: "Create a patch global. `name` is `group.element` — every global is in a group. `type` is one of float/int/bool/string; a name the patch already holds is refused — `global entry edit` changes one. `control` makes it a control-panel element: {kind, min, max, step, options, x, y, w, h}, where kind is knob/slider/number/field/toggle/dropdown and must be able to draw the type.",
                  result: "{value} — the value as stored, type-coerced" }),
             Leaf(Op { name: "edit", handler: Write(arms::global_edit), args: "name:string! value:any control:json", positional: 1,
-                 doc: "Change an existing global's value, type-coerced to the type it holds. The type is immutable, because every expression reading a global depends on it: re-typing is a remove and an add. A value-locked global refuses the edit, and so does the machine's own (system.goofi_home). `control` sets the control-panel widget and its place, `null` clears it, and giving one makes `value` optional — which is what a panel sends when it moves a widget; a config-locked global refuses it.",
+                 doc: "Change an existing global's value, type-coerced to the type it holds. The type is immutable, because every expression reading a global depends on it: re-typing is a remove and an add. A value-locked global refuses the edit, and so does an ephemeral one (system.goofi_home, system.audio_*). `control` sets the control-panel widget and its place, `null` clears it, and giving one makes `value` optional — which is what a panel sends when it moves a widget; a config-locked global refuses it.",
                  result: "{value} — the value as stored, type-coerced" }),
             Leaf(Op { name: "remove", handler: Write(arms::global_remove), args: "name:string!", positional: 1,
                  doc: "Delete a patch global. A config-locked one refuses, and a system global always is.",

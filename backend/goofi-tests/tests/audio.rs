@@ -410,6 +410,22 @@ fn a_patch_sounds_under_the_external_clock() {
     assert!(status["audio"]["device"].is_null(), "no device under the external clock: {status}");
     assert!(status["audio"]["channels"].as_u64().is_some_and(|c| c >= 1), "{status}");
     assert_eq!((status["audio"]["callbacks"].as_u64(), status["audio"]["xruns"].as_u64()), (Some(0), Some(0)), "{status}");
+
+    // Step: the engine PUBLISHES what it decided into `system.*`, off the same read the status
+    // answers from — so the two cannot drift, and an expression in any engine reads the rate with
+    // no door of its own. It is goofi's to say: a hand edit is refused, and no patch carries it.
+    let listed = g.call("global list", j!({}))["globals"].as_array().unwrap().clone();
+    let global = |name: &str| listed.iter().find(|e| e["name"] == name).unwrap_or_else(|| panic!("{name} is seeded")).clone();
+    assert_eq!(global("system.audio_rate")["value"], status["audio"]["rate"], "the rate the engine published");
+    assert_eq!(global("system.audio_channels")["value"], status["audio"]["channels"], "the channels it published");
+    assert_eq!(global("system.audio_device")["value"], j!(""), "no device under the external clock");
+    assert_eq!(global("system.audio_driver")["value"], j!(""), "and no ASIO driver holds this process");
+    assert_eq!(global("system.audio_rate")["lock"]["value"], j!(true), "an ephemeral global is value-locked");
+    let why = g.refuse("global entry edit", j!({ "name": "system.audio_rate", "value": 22_050.0 }));
+    assert!(why.contains("ephemeral"), "the engine's own fact refuses a hand edit: {why}");
+    assert!(!g.call("session manifest", j!({}))["yaml"].as_str().unwrap().contains("audio_rate"),
+            "and a patch never carries it");
+
     // A pulse is refused on a param that is not one; no shipped audio node declares a pulse yet.
     let why = g.refuse("node param pulse", j!({ "node": hex(gain3), "param": "gain/gain" }));
     assert!(why.contains("not a pulse"), "{why}");
