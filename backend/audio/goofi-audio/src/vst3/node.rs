@@ -23,6 +23,11 @@ use goofi_node::Uid;
 /// needs to run at all, where zero is what stops it.
 const TEMPO: f64 = 120.0;
 
+/// One voice's gate, pitch or velocity for one sample, whichever source is carrying it.
+type Reader<'a> = dyn Fn(usize, usize, usize) -> f32 + 'a;
+/// Whether a gate reading means the note is down — a level for a param, a velocity for the cable.
+type Gate = dyn Fn(f32) -> bool;
+
 /// How a goofi param's scalar becomes the plugin's normalized value.
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -287,8 +292,7 @@ impl Live {
             // Each source answers the same three reads, but NOT the same gate: a param gate is a
             // level and crosses at GATE_HIGH, while the cable's gate is MIDI's — any velocity
             // above zero is on, so a note played softly still sounds.
-            let (voices, read, held): (usize, &dyn Fn(usize, usize, usize) -> f32, &dyn Fn(f32) -> bool) =
-                match cable {
+            let (voices, read, held): (usize, &Reader<'_>, &Gate) = match cable {
                     Some(p) => {
                         let n = p.channels() as usize / 2;
                         (n, &move |which, c, s| if which == 1 { p.chan(c)[s] } else { p.chan(n + c)[s] }, &|v| v > 0.0)
