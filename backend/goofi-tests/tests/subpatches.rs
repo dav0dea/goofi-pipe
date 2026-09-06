@@ -404,7 +404,7 @@ fn a_boundary_op_refuses_a_port_or_a_target_it_cannot_honour() {
     // A cable onto an UNWIRED port LANDS: the port is a node, and a node with nothing behind it
     // takes a wire exactly as an unconnected leaf does. The stream arrives when the inside is wired.
     let made = g.call("link add", j!({ "from": ep(hex(osc), "out"), "to": ep(&inst, &bnd) }));
-    assert_eq!(made["to"], ep(&bnd, "value"), "the outer cable resolves to the port: {made}");
+    assert_eq!(made["to"], ep(g.name(&bnd), "value"), "the outer cable resolves to the port: {made}");
     wire(&g, &bnd, "in", &hex(buf), "input");
     assert_eq!(g.inner(&bnd), Some((hex(buf), "input".into())), "and the inside fills in after it");
 }

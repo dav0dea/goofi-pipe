@@ -171,6 +171,13 @@ impl Goofi {
     /// Set one param's literal value, answering `{value, error}` — the value as STORED, coerced
     /// to the param's declared type.
     #[track_caller]
+    /// A node's display NAME, from a uid or from a name — how every op addresses it.
+    pub fn name(&self, node: &str) -> String {
+        let g = self.state.graph.lock().unwrap();
+        let uid = g.resolve_ref(node).unwrap_or_else(|| panic!("`{node}` names no node"));
+        g.name(uid).unwrap_or_default().to_string()
+    }
+
     pub fn set_param(&self, uid: Uid, group: &str, name: &str, value: impl Into<Value>) -> Value {
         self.call(
             "node param edit",

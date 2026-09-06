@@ -327,6 +327,15 @@ What this cost, three times over: a port was DELETED when its target was, its `/
 refused with a terminal close code that the client then made permanent, and `node state` answered
 "no node" for the thing `node add` had just returned.
 
+**A node is addressed by its NAME, and the uid is the document's key.** The two are not rivals: a
+uid is identity, unique for the node's life and restored by a load, so the document, the manifest
+and every uid-keyed binding stay on it. A name is the HANDLE — unique across the patch, minted at
+birth, and what a person and an agent both actually type. So every op takes either, and every read
+answers the name: a wire's two ends, a diagram's mermaid ids, a standing error's row, a panel's
+binding. A uid rides beside a name only where a caller keys records of its own. What this buys is
+a batch with no bookkeeping in it — `node add --name src`, then `link add src/out …`, with nothing
+carried between the lines.
+
 **A patch is an archive.** A `.gfi` is a zip holding the manifest beside the workspace tree it was
 saved with. A load extracts into a FRESH mount, parses, and only then swaps: graph and workspace,
 or neither. A load restores the uids the patch was saved with, because everything keyed by uid

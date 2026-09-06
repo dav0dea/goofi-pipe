@@ -55,13 +55,13 @@ scope: root
 
 ```mermaid
 flowchart LR
-  n000000000001[\"lfo0: signal:LFO<br/>000000000001\"]
-  n000000000002[\"⚠ testfail0: signal:_TestFail<br/>000000000002\"]
-  n000000000004[[\"subpatch0<br/>000000000004\"]]
-  n000000000001 -- out→value --> n000000000004
+  lfo0[\"lfo0: signal:LFO\"]
+  testfail0[\"⚠ testfail0: signal:_TestFail\"]
+  subpatch0[[\"subpatch0\"]]
+  lfo0 -- out→value --> subpatch0
 ```
 
-uids: a uid is its mermaid id without the leading `n`.
+names: a node's mermaid id is its name, which every op takes.
 "
     );
 
@@ -70,7 +70,7 @@ uids: a uid is its mermaid id without the leading `n`.
     let health = g.call("session status", j!({}));
     let errs = health["errors"].as_array().cloned().unwrap_or_default();
     assert_eq!(errs.len(), 1, "one standing error: {health}");
-    assert_eq!(errs[0]["node"], "000000000002");
+    assert_eq!(errs[0]["node"], "testfail0", "the name is what a caller passes back: {health}");
     assert_eq!(errs[0]["path"], "testfail0");
     assert_eq!(errs[0]["error"], "the sensor is unplugged");
     assert!(errs[0]["standing"].as_f64().is_some(), "and how long it has stood: {health}");
@@ -82,16 +82,16 @@ fn inspect_patch_draws_a_sub_patchs_boundary_ports_as_the_nodes_they_are() {
     assert_eq!(
         text(&g, "nodes inspect", j!({ "scope": scope })),
         "\
-scope: subpatch0 (000000000004)
+scope: subpatch0
 
 ```mermaid
 flowchart LR
-  n000000000003[\"buffer0: signal:Buffer<br/>000000000003\"]
-  n000000000005([\"in0: InArray<br/>000000000005\"])
-  n000000000005 -- value\u{2192}input --> n000000000003
+  buffer0[\"buffer0: signal:Buffer\"]
+  in0([\"in0: InArray\"])
+  in0 -- value\u{2192}input --> buffer0
 ```
 
-uids: a uid is its mermaid id without the leading `n`.
+names: a node's mermaid id is its name, which every op takes.
 "
     );
     // The erroring node is in ROOT, and this is a sub-patch: asking about one scope used to report
@@ -120,7 +120,7 @@ fn a_node_wired_to_itself_keeps_its_edge() {
     let buf = g.add("Buffer");
     g.link(buf, "out", buf, "input");
     let out = text(&g, "nodes inspect", j!({}));
-    assert!(out.contains(&format!("n{0} -- out→input --> n{0}\n", hex(buf))), "{out}");
+    assert!(out.contains("buffer0 -- out→input --> buffer0\n"), "{out}");
 }
 
 #[test]

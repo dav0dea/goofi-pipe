@@ -312,8 +312,8 @@ pub(crate) fn node_add(
         Value::Object(v.into_iter().map(|(k, _, t)| (k, json!(t.name()))).collect())
     };
     Ok(json!({
+        "name": named(&g, uid),
         "uid": uid.to_hex(),
-        "name": g.name(uid).unwrap_or_default(),
         "input_slots": slots(g.input_slots(uid)),
         "output_slots": slots(g.output_slots(uid)),
         "params": g.params(uid).map(|p| schemas::param_value_map(&p)).unwrap_or_else(|| json!({})),
@@ -398,8 +398,8 @@ pub(crate) fn link_add(
         .find(|(key, _, _)| *key == so)
         .map(|(_, _, dtype)| dtype);
     Ok(json!({
-        "from": format!("{}/{so}", a.to_hex()),
-        "to": format!("{}/{si}", b.to_hex()),
+        "from": format!("{}/{so}", named(&g, a)),
+        "to": format!("{}/{si}", named(&g, b)),
         "dtype": dtype,
     }))
 }
@@ -510,7 +510,7 @@ pub(crate) fn node_snapshot(
         let g = state.graph.lock().unwrap();
         let (uid, slot) = parse_endpoint(&g, payload, "node snapshot", "output")?;
         if !g.exists(uid) {
-            return Err(format!("node snapshot: no node {}", uid.to_hex()));
+            return Err(format!("node snapshot: no node {}", named(&g, uid)));
         }
         let slot = vocab::resolve_slot(&g, "node snapshot", uid, &slot)?;
         stream_behind(&g, uid, &slot)
@@ -757,7 +757,7 @@ pub(crate) fn layout_inspect(
 ) -> Result<Value, String> {
     let g = state.graph.lock().unwrap();
     let tab = payload.get("tab").and_then(|v| v.as_str()).map(str::to_string);
-    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), tab.as_deref()) }))
+    Ok(json!({ "text": inspect::layout_tree(&g, tab.as_deref()) }))
 }
 
 /// Relabel a TAB — refused for any other kind of id, because an `edit` op edits ONE kind.
@@ -1386,7 +1386,7 @@ pub(crate) fn nodes_group(
         goofi_graph::Outcome::Uid(u) => u,
         _ => return Err("nodes group: no scope uid returned".into()),
     };
-    Ok(json!({ "inst_id": inst.to_hex() }))
+    Ok(json!({ "name": named(&g, inst), "inst_id": inst.to_hex() }))
 }
 
 pub(crate) fn nodes_ungroup(

@@ -11,8 +11,9 @@ pub struct Op {
     /// re-mirror are all READ off this kind, never declared beside it.
     pub handler: Handler,
     /// The params schema: space-separated `name:type`, `!` marking a required one. Types are
-    /// `uid` (a node's uid, or its unique name), `string`, `float`, `int`, `bool`, `float2`,
-    /// `json`, `any`, `param_addr`, `endpoint` (`node/slot`, the node half a uid or a name),
+    /// `uid` (a node's NAME, which is unique across the patch, or the uid behind it), `string`,
+    /// `float`, `int`, `bool`, `float2`, `json`, `any`, `param_addr`, `endpoint` (`node/slot`,
+    /// the node half a name or a uid),
     /// `panel_type`, and `[]` for a list.
     pub args: &'static str,
     /// How many of the LEADING declared args a command line takes as positionals (0..=2). A
@@ -106,7 +107,7 @@ pub static TREE: &[Entry] = &[
     Group("session", "the goofi instance as a whole — identity, the open patch, save and load", &[
         Leaf(Op { name: "status", handler: Read(arms::session_status), args: "", positional: 0,
              doc: "The session's identity AND its health: which instance this is, where the patch lives, whether it differs from disk, and every standing error with how long it has stood. One read for `is my patch healthy, and have I saved it`.",
-             result: "{instance_id, save_path: string | null, workspace, dirty: bool, errors: [{node, path, error, standing}]}" }),
+             result: "{instance_id, save_path: string | null, workspace, dirty: bool, errors: [{node, path, error, standing}]} — `node` is the name to pass back, `path` where it sits" }),
         Leaf(Op { name: "state", handler: Read(arms::session_state), args: "", positional: 0,
              doc: "The whole replicated document, exact and ATOMIC: nodes, links, globals and arrangement in one read — what every client mirrors, read without the sync protocol that carries it. ONE `nodes` map carries leaves, sub-patch facades and boundary ports alike, each naming its scope, and a port's inner wire is in `links` like any other cable. Narrowing is the caller's: pipe it through `jq`.",
              result: "{nodes, links, globals, arrangement} — nodes and globals keyed by id, links a list." }),
@@ -136,13 +137,13 @@ pub static TREE: &[Entry] = &[
              result: "{text: string}" }),
         Leaf(Op { name: "snapshot", handler: Read(arms::node_snapshot), args: "output:endpoint! raw:bool",
              positional: 1,
-             doc: "The output's latest frame, once — the analysis read, addressed `uid/slot`. A facade or a boundary port resolves to the stream behind it, exactly as a viewer's does. It reads the cache the slot's reducer already keeps, so it never wakes the node and never touches the viewers' shared stream. An ARRAY answers its shape and its range, which is what tells silence from signal; `--raw` answers the numbers themselves as base64 NPY. STRING and TABLE answer plain JSON, a table's ARRAY members reading the same way. A slot asked about before anything was cached answers `{frame: null}` with the reason — asking is also what opens the slot's feed, so ask again after the node's next emit.",
+             doc: "The output's latest frame, once — the analysis read, addressed `node/slot`. A facade or a boundary port resolves to the stream behind it, exactly as a viewer's does. It reads the cache the slot's reducer already keeps, so it never wakes the node and never touches the viewers' shared stream. An ARRAY answers its shape and its range, which is what tells silence from signal; `--raw` answers the numbers themselves as base64 NPY. STRING and TABLE answer plain JSON, a table's ARRAY members reading the same way. A slot asked about before anything was cached answers `{frame: null}` with the reason — asking is also what opens the slot's feed, so ask again after the node's next emit.",
              result: "{meta, shape, range: {min, max, mean}} for ARRAY, or {meta, npy_b64} under `--raw`; {meta, value} for STRING/TABLE; {frame: null, reason} before the first cached frame" }),
         Leaf(Op { name: "add", handler: Write(arms::node_add),
              args: "type:string! pos:float2 name:string inst_id:uid member_uid:uid param:json[]", positional: 1,
              doc: "Create a node of `type`. `inst_id` births it inside that sub-patch; absent = root. `name` is a letter then letters or digits and not a Python keyword — one that is taken or illegal is refused, never silently swapped — and an omitted one is minted. Each `--param` is one birth param, self-addressed: `{\"name\": \"group/param\", …}` carrying `node param edit`'s fields — inside a JSON flag under bash, spell nested strings with ESCAPED double quotes (`\"nd(\\\"other\\\").out.sfreq\"`); a single-quoted `nd('x')` inside a single-quoted shell token loses its quotes silently. `member_uid` asks for a CHOSEN uid, so a caller rebuilding a graph it already knows — or wiring a batch it is still building — keeps its uid-keyed bindings; naming one the patch already holds answers with that node rather than a second one.\n\n\
                    The boundary types ({boundary_types}) create a PORT of the sub-patch named by `inst_id`, which is required for them. A port is a node in every way an op can see — it is named, moved, wired and removed by the same ops — but it never runs, so it takes no params. To COPY a node rather than build one, read it with `nodes copy` and put it back with `nodes paste`.",
-             result: "{uid, name, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what nd() addresses it by." }),
+             result: "{name, uid, input_slots, output_slots, params} — the node as born, so it can be wired and tuned without a follow-up read. `name` is what every op and nd() address it by; the uid is for a caller keying its own records." }),
         Leaf(Op { name: "edit", handler: Write(arms::node_edit),
              args: "node:uid! name:string pos:float2 viewer:json[]", positional: 1,
              doc: "Edit a node's own record: rename it, move it, set viewers — any of them, in one step and one undo. An omitted field is left alone. Params are `node param edit`'s. A sub-patch boundary port takes every field: its name is in the one namespace nd() reads, so a collision is refused exactly as a leaf's is, and its `value` slot takes a viewer exactly as a leaf's output does.\n\n\
@@ -167,8 +168,8 @@ pub static TREE: &[Entry] = &[
                  result: "{ok: true} — the pulse was dispatched to the node's own thread" }),
         ]),
         Leaf(Op { name: "remove", handler: Write(arms::node_remove), args: "node:uid!", positional: 1,
-             doc: "Delete whatever the uid names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
-             result: "{removed: bool} — false when the uid named nothing" }),
+             doc: "Delete whatever `node` names — a leaf, a boundary port or a whole sub-patch. A sub-patch takes everything inside it, to any depth: nested sub-patches, their members and their ports. A port of an enclosing sub-patch that exposed the deleted node STAYS, unwired — a port is a node, and it outlives what was behind it exactly as an unconnected node outlives the cable it lost. Idempotent: a uid naming no node succeeds having deleted nothing, and says so.",
+             result: "{removed: bool} — false when it named nothing" }),
         Leaf(Op { name: "restart", handler: Effect(arms::node_restart), args: "node:uid!", positional: 1,
              doc: "Respawn a node in place, keeping its uid, name, params, links and scope. Recovery, not an edit — `setup()` runs again.",
              result: "{ok: true}" }),
@@ -178,7 +179,7 @@ pub static TREE: &[Entry] = &[
     ]),
     Group("nodes", "the graph of several nodes — inspect, copy, paste, group", &[
         Leaf(Op { name: "inspect", handler: Read(arms::nodes_inspect), args: "scope:uid", positional: 1,
-             doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires. No arg = the root scope. Scope-wide and nothing more: what is broken is the whole patch's business, so `session status` answers that.",
+             doc: "Read one scope as a mermaid flowchart — nodes, sub-patches, boundary ports and wires. A node's mermaid id is its NAME, which is what every other op takes. No arg = the root scope. Scope-wide and nothing more: what is broken is the whole patch's business, so `session status` answers that.",
              result: "{text: string}" }),
         Leaf(Op { name: "copy", handler: Read(arms::nodes_copy), args: "nodes:uid[]!", positional: 1,
              doc: "Read `nodes` and everything they hold — a sub-patch's members, their ports and the nested sub-patches below them, to any depth — as a self-contained fragment. A link rides only when BOTH its ends are in the fragment. The shape is the `.gfi`'s own, so a fragment is a patch's worth of nodes in the format a patch is written in, and `nodes paste` is what puts one back.",
@@ -188,8 +189,8 @@ pub static TREE: &[Entry] = &[
              doc: "Add a `nodes copy` fragment on FRESH uids and fresh names, so it lands beside whatever it was copied from rather than colliding with it. `pos` shifts the whole fragment by that offset; `inst_id` puts its roots inside that sub-patch, absent = root. A record naming a scope that is IN the fragment keeps the shape it was copied with. One command, so it is one undo step.",
              result: "{rename: {old_uid: new_uid}} — every record's uid in the fragment mapped to the one it was created at" }),
         Leaf(Op { name: "group", handler: Write(arms::nodes_group), args: "nodes:uid[]! pos:float2", positional: 1,
-             doc: "Collapse nodes into a new sub-patch, returning its instance uid. `nodes` must share one scope, and one of them may itself be a sub-patch. Every wire that ends up CROSSING the new boundary mints a port to carry it, so nothing is disconnected and nothing stops running; a wire buried in a nested member mints a port there too, so it can reach the new boundary.",
-             result: "{inst_id: uid}" }),
+             doc: "Collapse nodes into a new sub-patch, returning it. `nodes` must share one scope, and one of them may itself be a sub-patch. Every wire that ends up CROSSING the new boundary mints a port to carry it, so nothing is disconnected and nothing stops running; a wire buried in a nested member mints a port there too, so it can reach the new boundary.",
+             result: "{name, inst_id} — the sub-patch as born; `name` is what every op takes, `inst_id` the uid behind it" }),
         Leaf(Op { name: "ungroup", handler: Write(arms::nodes_ungroup), args: "subpatch:uid!", positional: 1,
              doc: "Dissolve a sub-patch, returning its members to the parent scope. Its ports go with it and every wire they carried stands, because a port keeps its wire against the node behind it. A port of an ENCLOSING sub-patch that exposed one of these follows down onto what it exposed.",
              result: "{ok: true}" }),
@@ -197,9 +198,9 @@ pub static TREE: &[Entry] = &[
     Group("link", "one wire between an output and an input", &[
         Leaf(Op { name: "add", handler: Write(arms::link_add),
              args: "from:endpoint! to:endpoint!", positional: 2,
-             doc: "Wire `from` (an output, as `uid/slot`) to `to` (an input). Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
+             doc: "Wire `from` (an output, as `node/slot`) to `to` (an input). Refuses a dtype mismatch, naming both ends; refuses an end that names no node — so a reply means the wire is really there.\n\n\
                    A link never crosses a sub-patch boundary, and the two acts that look like it are ordinary links in different scopes. From the OUTSIDE you wire a node to the sub-patch's facade, naming a port's uid as the slot; the wire is stored against the PORT, whether or not anything is behind it yet. From the INSIDE you wire a port to a member, both of them in that sub-patch. A port carries one slot, `value`, on both of its sides.",
-             result: "{from, to, dtype} — the wire as made, with a facade endpoint resolved to the PORT it named." }),
+             result: "{from, to, dtype} — the wire as made, both ends named, with a facade endpoint resolved to the PORT it named." }),
         Leaf(Op { name: "remove", handler: Write(arms::link_remove),
              args: "from:endpoint! to:endpoint!", positional: 2,
              doc: "Remove one wire, addressed by both of its endpoints — a boundary port's inner wire included. Idempotent, like `node remove`.",
@@ -277,7 +278,7 @@ pub static TREE: &[Entry] = &[
              doc: "Every op this server speaks: its name, its arguments (`!` marks a required one) and its kind — a `write` is undoable and may ride in a batch, an `effect` runs alone. Every argument is reachable as `--name value`, which is all a caller needs to write one. What an op DOES is `<op> --help`; `--doc` answers the whole vocabulary explained, which is the manual and costs like one.",
              result: "{ops: [{op, args, kind}]}, each row also carrying {positional, doc, result} under `--doc`" }),
         Leaf(Op { name: "complete", handler: Read(arms::op_complete), args: "line:string", positional: 1,
-             doc: "What can come NEXT on a partial command line — the shell completion read. Each candidate is a word with a one-line doc: a group or op word mid-phrase, a flag once the op is named, or a value for a flag with a known vocabulary (a panel type, a live node's uid). The line's last word, when partial, filters the candidates.",
+             doc: "What can come NEXT on a partial command line — the shell completion read. Each candidate is a word with a one-line doc: a group or op word mid-phrase, a flag once the op is named, or a value for a flag with a known vocabulary (a panel type, a live node's name). The line's last word, when partial, filters the candidates.",
              result: "{text: string} — one candidate per line, `word<TAB>doc`" }),
     ]),
     Group("agent", "the agent harnesses goofi launches", &[

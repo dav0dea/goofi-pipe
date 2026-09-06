@@ -898,6 +898,12 @@ fn param_state_update(g: &Graph, peer: Uid, refreshed: &[(&str, &str)]) -> Strin
     event("state_update", Value::Object(body))
 }
 
+/// How a read NAMES a node: the display name, which is what every op takes back. A uid is the
+/// fallback for the nameless and never the first thing a caller reads.
+pub(crate) fn named(g: &goofi_graph::Graph, uid: Uid) -> String {
+    g.name(uid).map(str::to_string).unwrap_or_else(|| uid.to_hex())
+}
+
 fn parse_uid(g: &goofi_graph::Graph, payload: &Value, key: &str) -> Result<Uid, String> {
     let raw = payload
         .get(key)
@@ -1020,7 +1026,7 @@ fn apply_layout(
     cmd: goofi_graph::Command,
 ) -> Result<Value, String> {
     state.history.lock().unwrap().apply(g, actor, cmd)?;
-    Ok(json!({ "text": inspect::layout_tree(g.arrangement(), None) }))
+    Ok(json!({ "text": inspect::layout_tree(g, None) }))
 }
 
 impl AppState {

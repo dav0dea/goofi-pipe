@@ -317,7 +317,7 @@ pub fn resolve_slot(
         return Ok(key.clone());
     }
     let have: Vec<&str> = slots.iter().map(|(_, l, _)| l.as_str()).collect();
-    Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", uid.to_hex(), have.join(", ")))
+    Err(format!("{op}: node `{}` has no output slot `{slot}` — it has: {}", crate::named(g, uid), have.join(", ")))
 }
 
 pub(crate) fn check_slot(

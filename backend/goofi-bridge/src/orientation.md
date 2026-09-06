@@ -16,26 +16,26 @@ JSON for `jq`. Read the one op you need with `--help`, not `op list --doc`, whic
 manual. Several ops become ONE undo step through stdin:
 
     goofi - <<'EOF'
-    node add --type Oscillator --member_uid aaaaaaaaaaa1
-    node add --type Buffer --member_uid aaaaaaaaaaa2
-    link add aaaaaaaaaaa1/out aaaaaaaaaaa2/data
+    node add Oscillator --name osc
+    node add Buffer --name buf
+    link add osc/out buf/data
     EOF
 
-`--member_uid` lets you CHOOSE a uid, so a later line can wire what an earlier one built. A batch
+A NAME is how every op addresses a node, so a later line wires what an earlier one built. A batch
 lands whole or not at all. (An MCP-connected agent runs the same lines through the one tool
 `goofi_exec`, a list of them as one batch; the NPY pipe and `--json` are the shell's alone.)
 
 ## Seeing
 
-`goofi nodes inspect` draws one scope. No argument is the root; a sub-patch uid narrows to it.
+`goofi nodes inspect` draws one scope. No argument is the root; a sub-patch narrows to it.
 
     scope: root
 
     ```mermaid
     flowchart LR
-      n000000000001["oscillator0: Oscillator<br/>000000000001"]
-      n000000000002["buffer0: Buffer<br/>000000000002"]
-      n000000000001 -- out→data --> n000000000002
+      osc["osc: Oscillator"]
+      buf["buf: Buffer"]
+      osc -- out→data --> buf
     ```
 
 `goofi session status` lists every standing error with its age — a 0.2s error may clear
@@ -43,7 +43,7 @@ itself, one standing 30s will not — and says where the patch is saved. `goofi 
 is the cheap peek — params, whether each output emits, and the error; `--no-params`/`--no-error`
 drop a section, `--slot` narrows to one output.
 
-    buffer0: Buffer (uid 000000000002, native, stage ready)
+    buf: Buffer (uid 000000000002, native, stage ready)
 
     params:
       buffer.size = 1000 (int 1..10000000)
@@ -54,11 +54,11 @@ drop a section, `--slot` narrows to one output.
     error: none
 
 `nothing emitted yet` in place of a rate is the first thing to look for. The DATA itself is one
-op away. `goofi node snapshot 000000000002/out` answers an ARRAY slot's latest frame as its shape
+op away. `goofi node snapshot buf/out` answers an ARRAY slot's latest frame as its shape
 and range — which tells silence from signal — and STRING and TABLE as their value; a facade or
 boundary port resolves to the stream behind it. `--raw` answers the numbers, as NPY on stdout:
 
-    goofi node snapshot 000000000002/out --raw \
+    goofi node snapshot buf/out --raw \
       | python3 -c "import numpy,sys; print(numpy.load(sys.stdin.buffer).mean())"
 
 The first ask on a never-watched slot opens its feed and answers null; ask again after the node's
@@ -71,15 +71,17 @@ panel, so mind the one the human watches you through.
 ## Building
 
     goofi node add Oscillator --pos 0,0
-    → {"uid": "000000000001", "name": "oscillator0", "input_slots": {},
+    → {"name": "oscillator0", "uid": "000000000001", "input_slots": {},
        "output_slots": {"out": "ARRAY"}, "params": {…}}
 
-    goofi link add 000000000001/out 000000000002/data   → {"from": …, "to": …, "dtype": "ARRAY"}
+    goofi link add oscillator0/out buffer0/data   → {"from": …, "to": …, "dtype": "ARRAY"}
 
-    goofi node param edit 000000000001 oscillator/frequency --value 7.5
+    goofi node param edit oscillator0 oscillator/frequency --value 7.5
     → {"value": 7.5, "error": null}
 
-`name` is what `nd()` addresses a node by; `uid` is what every op takes. `node param edit`
+A NAME is what every op takes and what `nd()` addresses — unique across the patch, minted if you
+give none, and yours to set with `--name`. The uid beside it is for keying records of your own.
+`node param edit`
 answers the param **as stored** — coerced to its declared type, so a fraction into an int comes
 back rounded; the declared min/max are the editor's range, not a clamp. `--expression
 "nd('other_node').out.sfreq"` — or `globals.x`, or `t` — binds instead of a literal; a bound param
@@ -91,7 +93,7 @@ undo.
 
 `link add` refuses a dtype mismatch and names both ends, refuses a wrong slot name by naming
 the slots that exist, and refuses an end that names no node — so a reply means the wire is really
-there. Take uids from a read, never from memory.
+there. Take names from a read, never from memory.
 
 Panel types and viewer kinds are **closed sets**, not free strings — guessing `params` for
 `parameters` is a mistake a real agent made. A guess is refused with the whole set.
