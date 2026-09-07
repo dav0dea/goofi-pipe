@@ -905,11 +905,11 @@ fn a_patch_sounds_under_the_external_clock() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("vst3");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let nested = PathBuf::from(std::env::var_os("CARGO_TARGET_DIR").expect("the harness names the nested target"));
-    let built = |crash: bool| -> PathBuf {
+    let built = |features: &str| -> PathBuf {
         let mut cmd = std::process::Command::new(&cargo);
         cmd.arg("build").arg("--manifest-path").arg(fixture.join("Cargo.toml"));
-        if crash {
-            cmd.arg("--features").arg("crash");
+        if !features.is_empty() {
+            cmd.arg("--features").arg(features);
         }
         let out = cmd.output().expect("cargo runs");
         assert!(out.status.success(), "the fixture plugin builds: {}", String::from_utf8_lossy(&out.stderr));
@@ -931,7 +931,7 @@ fn a_patch_sounds_under_the_external_clock() {
         std::fs::create_dir_all(&into).unwrap();
         std::fs::copy(&artifact, into.join(file)).unwrap();
     };
-    bundled("GoofiFixture", built(false));
+    bundled("GoofiFixture", built(""));
     // Two audio classes in the one bundle: an effect, and a synth whose subcategories say so.
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiFixture", "audio:GoofiSynth"]));
     let plug = g.add("GoofiFixture");
@@ -961,13 +961,32 @@ fn a_patch_sounds_under_the_external_clock() {
     g.call("link remove", j!({ "from": ep(hex(src), "out"), "to": ep(hex(plug), "input") }));
     g.set_param(plug, "voice", "gate", true);
     heard(&g, plug, "a C4 from a rising gate at pitch zero", |x| (peak(x) - 0.5).abs() < 0.02 && near(per_tenth(x), 52));
+
+    // The note is the round and the residual is carried beside it: C7 and 40 cents reads 428
+    // crossings a tenth where the round alone reads 418, so a dropped residual fails here.
+    let detuned = |g: &Goofi, plug, what| {
+        // Re-taken rather than re-tuned: a voice already held is not asked its pitch again.
+        g.set_param(plug, "voice", "gate", false);
+        g.set_param(plug, "voice", "pitch", 3.0 + 0.4 / 12.0);
+        g.set_param(plug, "voice", "gate", true);
+        heard(g, plug, what, |x| near(per_tenth(x), 428));
+    };
+    detuned(&g, plug, "40 cents above C7, carried by the channel's pitch wheel");
+
+    // The same 40 cents into a plugin that maps no controller at all: with no wheel to ride, the
+    // residual travels in the note's own `tuning`, and it has to land on the very same pitch.
+    bundled("GoofiDeaf", built("deaf"));
+    assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiDeaf", "audio:GoofiDeafSynth"]));
+    detuned(&g, g.add("GoofiDeaf"), "the same 40 cents, carried by the note's own tuning");
+
+    g.set_param(plug, "voice", "pitch", 0.0);
     g.set_param(plug, "voice", "gate", false);
     heard(&g, plug, "silence after the fall", |x| peak(x) < 1e-3);
     g.call("node restart", j!({ "node": hex(plug) }));
     g.link(src, "out", plug, "input");
     heard(&g, plug, "the gain the record keeps, past a restart", |x| (peak(x) - 0.5).abs() < 0.02);
 
-    bundled("Crasher", built(true));
+    bundled("Crasher", built("crash"));
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:Crasher"]));
     let row = g.call("library list", j!({}))["types"].as_array().unwrap().iter()
         .find(|v| v["type"] == "audio:Crasher").cloned().expect("greyed, not absent");

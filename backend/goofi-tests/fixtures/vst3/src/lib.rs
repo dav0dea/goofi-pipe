@@ -1,6 +1,7 @@
 //! `GoofiFixture` by `goofi`: one stereo input, one event input, one stereo output, one
 //! continuous `Gain` parameter kept in its state. Its output is the input times the gain, plus
-//! a sine at every held note's pitch, at half the note's velocity. Its editor draws nothing and
+//! a sine at every held note's pitch — bent by its channel's wheel, or by the note's own `tuning`
+//! where `deaf` leaves it no wheel — at half the velocity. Its editor draws nothing and
 //! turns the gain to a quarter once it is attached — the whole loop a knob in a real one makes.
 #![allow(non_snake_case)]
 
@@ -13,12 +14,30 @@ use vst3::{uid, Class, ComPtr, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg:
 #[cfg(target_os = "linux")]
 use vst3::Steinberg::Linux::IRunLoopTrait;
 
+/// A `deaf` build is a DIFFERENT plugin, not the same one quieter: its classes carry their own
+/// names and ids, so both can be in one palette and one process at once.
+#[cfg(not(feature = "deaf"))]
+const VARIANT: u32 = 0;
+#[cfg(feature = "deaf")]
+const VARIANT: u32 = 0x0D0E_0A0F;
+
+#[cfg(not(feature = "deaf"))]
 const NAME: &str = "GoofiFixture";
+#[cfg(feature = "deaf")]
+const NAME: &str = "GoofiDeaf";
 /// A second audio class behind the same processor, differing only in the subcategories that
 /// name it an instrument — which is what the palette reads to tag a plugin.
+#[cfg(not(feature = "deaf"))]
 const SYNTH_NAME: &str = "GoofiSynth";
-const SYNTH_CID: TUID = uid(0x2B3C4D5E, 0x6F708192, 0xA3B4C5D6, 0xE7F80919);
+#[cfg(feature = "deaf")]
+const SYNTH_NAME: &str = "GoofiDeafSynth";
+const SYNTH_CID: TUID = uid(0x2B3C4D5E, 0x6F708192, 0xA3B4C5D6, 0xE7F80919 ^ VARIANT);
 const VOICES: usize = 16;
+/// The parameter a channel's pitch wheel is, outside the visible ids exactly as a real plugin's
+/// hidden MIDI mappings are.
+const BEND_ID: u32 = 1000;
+/// What a wheel at full travel means here, matching the host's own assumption.
+const BEND_SEMITONES: f32 = 2.0;
 
 fn copy_cstring(src: &str, dst: &mut [c_char]) {
     let c_string = CString::new(src).unwrap_or_default();
@@ -43,6 +62,8 @@ fn copy_wstring(src: &str, dst: &mut [TChar]) {
 #[derive(Clone, Copy, Default)]
 struct Voice {
     note: Option<i16>,
+    /// The note's own `tuning`, in semitones — the offset for a voice whose channel has no wheel.
+    detune: f32,
     velocity: f32,
     phase: f32,
 }
@@ -51,6 +72,8 @@ struct Processor {
     gain: AtomicU64,
     rate: AtomicU64,
     voices: RefCell<[Voice; VOICES]>,
+    /// Each channel's wheel, in semitones.
+    bend: RefCell<[f32; VOICES]>,
     /// State beyond the params: latched the first time `Shape` reaches its last step, and carried
     /// ONLY by the state blob. It halves the note tone, so a load that lost the blob is heard.
     pushed: AtomicBool,
@@ -74,13 +97,14 @@ impl IConnectionPointTrait for Processor {
 }
 
 impl Processor {
-    const CID: TUID = uid(0x6F0F1A2B, 0x3C4D5E6F, 0x70819293, 0xA4B5C6D7);
+    const CID: TUID = uid(0x6F0F1A2B, 0x3C4D5E6F, 0x70819293, 0xA4B5C6D7 ^ VARIANT);
 
     fn new() -> Processor {
         Processor {
             gain: AtomicU64::new(1.0f64.to_bits()),
             rate: AtomicU64::new(48_000.0f64.to_bits()),
             voices: RefCell::new([Voice::default(); VOICES]),
+            bend: RefCell::new([0.0; VOICES]),
             pushed: AtomicBool::new(false),
         }
     }
@@ -218,6 +242,9 @@ impl IAudioProcessorTrait for Processor {
                     match queue.getParameterId() {
                         0 => self.gain.store(value.to_bits(), Ordering::Relaxed),
                         1 if value >= 0.99 => self.pushed.store(true, Ordering::Relaxed),
+                        id if (BEND_ID..BEND_ID + VOICES as u32).contains(&id) => {
+                            self.bend.borrow_mut()[(id - BEND_ID) as usize] = (value as f32 - 0.5) * 2.0 * BEND_SEMITONES;
+                        }
                         _ => {}
                     }
                 }
@@ -234,7 +261,7 @@ impl IAudioProcessorTrait for Processor {
                     Event_::EventTypes_::kNoteOnEvent => {
                         let on = event.__field0.noteOn;
                         let voice = &mut voices[on.channel.clamp(0, VOICES as i16 - 1) as usize];
-                        *voice = Voice { note: Some(on.pitch), velocity: on.velocity, phase: 0.0 };
+                        *voice = Voice { note: Some(on.pitch), detune: on.tuning / 100.0, velocity: on.velocity, phase: 0.0 };
                     }
                     Event_::EventTypes_::kNoteOffEvent => {
                         let off = event.__field0.noteOff;
@@ -267,9 +294,11 @@ impl IAudioProcessorTrait for Processor {
         for i in 0..n {
             let (l, r) = input.map_or((0.0, 0.0), |(l, r)| (l[i], r[i]));
             let mut tone = 0.0f32;
-            for voice in voices.iter_mut() {
+            let bend = *self.bend.borrow();
+            for (channel, voice) in voices.iter_mut().enumerate() {
                 if let Some(note) = voice.note {
-                    let hz = 440.0 * 2f32.powf((note as f32 - 69.0) / 12.0);
+                    let offset = voice.detune + bend[channel];
+                    let hz = 440.0 * 2f32.powf((note as f32 + offset - 69.0) / 12.0);
                     tone += loud * voice.velocity * (voice.phase * std::f32::consts::TAU).sin();
                     voice.phase = (voice.phase + hz / rate) % 1.0;
                 }
@@ -296,8 +325,27 @@ struct Controller {
     ready: Cell<bool>,
 }
 
+/// `deaf` drops `IMidiMapping`, which is the plugin that has no wheel to bend and must be detuned
+/// by the note's own `tuning` instead. Both spellings are real; only a second build reaches both.
+#[cfg(not(feature = "deaf"))]
+impl Class for Controller {
+    type Interfaces = (IEditController, IConnectionPoint, IMidiMapping);
+}
+
+#[cfg(feature = "deaf")]
 impl Class for Controller {
     type Interfaces = (IEditController, IConnectionPoint);
+}
+
+impl IMidiMappingTrait for Controller {
+    /// A pitch wheel per channel, and no other controller.
+    unsafe fn getMidiControllerAssignment(&self, bus: i32, channel: i16, cc: CtrlNumber, id: *mut ParamID) -> tresult {
+        if bus != 0 || !(0..VOICES as i16).contains(&channel) || cc != ControllerNumbers_::kPitchBend as CtrlNumber {
+            return kResultFalse;
+        }
+        *id = BEND_ID + channel as u32;
+        kResultOk
+    }
 }
 
 impl IConnectionPointTrait for Controller {
@@ -325,7 +373,7 @@ impl IConnectionPointTrait for Controller {
 }
 
 impl Controller {
-    const CID: TUID = uid(0x1E2F3A4B, 0x5C6D7E8F, 0x90A1B2C3, 0xD4E5F607);
+    const CID: TUID = uid(0x1E2F3A4B, 0x5C6D7E8F, 0x90A1B2C3, 0xD4E5F607 ^ VARIANT);
 }
 
 impl IPluginBaseTrait for Controller {
