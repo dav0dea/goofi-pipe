@@ -706,3 +706,24 @@ class Sleeper(goofi.Node):
         });
     }
 }
+
+#[test]
+fn nodes_sharing_a_cyclic_package_all_construct_when_added_at_once() {
+    // biotuner's `__init__` imports its submodules and its submodules import back through the
+    // package. Under the GIL that cycle is legal — a partially initialized module is visible —
+    // and without one it DEADLOCKS: two threads entering it at different points each hold the
+    // module lock the other wants, and CPython raises `_DeadlockError` rather than hanging. Four
+    // nodes added in a burst is what loading a `.gfi` does, so it is the shape that must survive;
+    // added one at a time, as a person does, it never fails and proves nothing.
+    //
+    // Only `--features embed` puts these on the in-process tier, which is where the module bodies
+    // share an interpreter and the loader's serialization is what saves them.
+    let _py = require_python();
+    let g = Goofi::new();
+    let types = ["signal:Peaks", "signal:Tuning", "signal:Harmonicity", "signal:TuningMatrix"];
+    let added: Vec<Uid> = types.iter().map(|t| g.add(t)).collect();
+    for (ty, uid) in types.iter().zip(&added) {
+        g.ready(*uid);
+        assert!(g.error(*uid).is_none(), "{ty} constructed: {:?}", g.error(*uid));
+    }
+}
