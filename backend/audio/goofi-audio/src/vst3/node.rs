@@ -23,6 +23,16 @@ use goofi_node::Uid;
 /// needs to run at all, where zero is what stops it.
 const TEMPO: f64 = 120.0;
 
+/// What a note-on's `tuning` is denominated in: VST3 spells the per-note offset in cents where
+/// goofi's pitch is volts per octave, and a round's residual is never more than half a semitone.
+const CENTS_PER_SEMITONE: f32 = 100.0;
+
+/// The bend a wheel at full travel is taken to mean. It is the MIDI default and it is an
+/// ASSUMPTION: a plugin picks its own range and mostly does not publish one, so a detune is wrong
+/// by whatever ratio it differs — measured 12 on Synplant. `roadmap/vst3-per-note-tuning.md` holds
+/// what was measured and what would replace the guess.
+const BEND_SEMITONES: f32 = 2.0;
+
 /// One voice's gate, pitch or velocity for one sample, whichever source is carrying it.
 type Reader<'a> = dyn Fn(usize, usize, usize) -> f32 + 'a;
 /// Whether a gate reading means the note is down — a level for a param, a velocity for the cable.
@@ -165,7 +175,11 @@ struct Live {
     outs: Buses,
     /// The normalized value last handed over per plugin param; NaN sends it at the next block.
     sent: Vec<f64>,
-    held: [Option<i16>; MAX_CHANNELS as usize],
+    /// Per voice, the note sounding and the cents it was detuned by.
+    held: [Option<(i16, f32)>; MAX_CHANNELS as usize],
+    /// Per voice, where its channel's pitch wheel sits in `changes` — `None` where the plugin
+    /// maps none, which is what decides between the wheel and the note's own `tuning`.
+    bend: [Option<usize>; MAX_CHANNELS as usize],
     /// Whether `setupProcessing` has run: what a re-prepare must undo and a first one must not.
     prepared: bool,
 }
@@ -186,7 +200,12 @@ impl Live {
         };
         let (controller, wired) = unsafe { pair(&factory, &component, &host) };
         let (ins, outs) = unsafe { arrange(&component, &processor, class) };
-        let changes = ComWrapper::new(Changes::new(class.params.iter().map(|(id, _)| *id)));
+        // A per-note offset has two spellings and only one is widely honoured: `tuning` on the
+        // note-on is exact and OPTIONAL — Vital ignores it, measured — where the pitch wheel is
+        // universal because it is an ordinary parameter. So ask which parameter each channel's
+        // wheel is, and prefer it; the note's own field is the fallback where there is none.
+        let (bend, bend_ids) = unsafe { wheels(controller.as_ref(), &component, class.params.len()) };
+        let changes = ComWrapper::new(Changes::new(class.params.iter().map(|(id, _)| *id).chain(bend_ids)));
         let changes_ptr = changes.to_com_ptr().expect("changes are an IParameterChanges");
         let events = ComWrapper::new(Events::with_capacity(BLOCK * MAX_CHANNELS as usize));
         let events_ptr = events.to_com_ptr().expect("events are an IEventList");
@@ -205,6 +224,7 @@ impl Live {
             outs,
             sent: vec![f64::NAN; class.params.len()],
             held: [None; MAX_CHANNELS as usize],
+            bend,
             prepared: false,
         };
         live.retune(rate)?;
@@ -306,13 +326,28 @@ impl Live {
                 for s in 0..BLOCK {
                     match (held(read(0, c, s)), self.held[c]) {
                         (true, None) => {
-                            let note = (60.0 + 12.0 * read(1, c, s)).round().clamp(0.0, 127.0) as i16;
-                            self.held[c] = Some(note);
-                            self.events.push(note_on(c, s, note, read(2, c, s)));
+                            // A plugin's note IS an integer, so the round stays; what it threw away
+                            // is what `tuning` carries, which is how a continuous pitch survives a
+                            // boundary that only speaks in semitones.
+                            let want = (60.0 + 12.0 * read(1, c, s)).clamp(0.0, 127.0);
+                            let note = want.round();
+                            let off = want - note;
+                            // One spelling or the other, never both: a plugin honouring each would
+                            // detune twice.
+                            let detune = match self.bend[c] {
+                                Some(slot) => {
+                                    let wheel = 0.5 + 0.5 * (off / BEND_SEMITONES).clamp(-1.0, 1.0);
+                                    self.changes.set(slot, wheel as f64);
+                                    0.0
+                                }
+                                None => off * CENTS_PER_SEMITONE,
+                            };
+                            self.held[c] = Some((note as i16, detune));
+                            self.events.push(note_on(c, s, note as i16, detune, read(2, c, s)));
                         }
-                        (false, Some(note)) => {
+                        (false, Some((note, detune))) => {
                             self.held[c] = None;
-                            self.events.push(note_off(c, s, note));
+                            self.events.push(note_off(c, s, note, detune));
                         }
                         _ => {}
                     }
@@ -362,9 +397,30 @@ impl Live {
     }
 }
 
-/// The buses activated at the plugin's own default arrangements, and the staging sized from what
-/// the LIVE instance then reports — never the scan's cached counts, which a plugin whose default
-/// layout lives outside its binary can disagree with.
+/// Which parameter each voice channel's pitch wheel is, asked of the plugin itself. Answers the
+/// slot per channel and the ids to append to `changes`, in that order.
+unsafe fn wheels(
+    controller: Option<&ComPtr<IEditController>>,
+    component: &ComPtr<IComponent>,
+    first: usize,
+) -> ([Option<usize>; MAX_CHANNELS as usize], Vec<ParamID>) {
+    let mut slots = [None; MAX_CHANNELS as usize];
+    let mut ids = Vec::new();
+    let Some(mapping) = controller.cloned().or_else(|| component.cast()).and_then(|c: ComPtr<IEditController>| c.cast::<IMidiMapping>())
+    else {
+        return (slots, ids);
+    };
+    for (channel, slot) in slots.iter_mut().enumerate() {
+        let mut id: ParamID = 0;
+        let asked = mapping.getMidiControllerAssignment(0, channel as i16, ControllerNumbers_::kPitchBend as CtrlNumber, &mut id);
+        if asked == kResultOk {
+            *slot = Some(first + ids.len());
+            ids.push(id);
+        }
+    }
+    (slots, ids)
+}
+
 /// A component and its controller, each holding the other's connection point.
 pub(super) type Wire = (ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>);
 
@@ -421,6 +477,9 @@ pub(super) unsafe fn sunder(wire: &Wire) {
     cp.disconnect(ccp.as_ptr());
 }
 
+/// The buses activated at the plugin's own default arrangements, and the staging sized from what
+/// the LIVE instance then reports — never the scan's cached counts, which a plugin whose default
+/// layout lives outside its binary can disagree with.
 unsafe fn arrange(component: &ComPtr<IComponent>, processor: &ComPtr<IAudioProcessor>, class: &Derived) -> (Buses, Buses) {
     let audio = MediaTypes_::kAudio as MediaType;
     let (input, output) = (BusDirections_::kInput as BusDirection, BusDirections_::kOutput as BusDirection);
@@ -511,24 +570,24 @@ impl Buses {
     }
 }
 
-fn note_on(channel: usize, sample: usize, pitch: i16, velocity: f32) -> Event {
+fn note_on(channel: usize, sample: usize, pitch: i16, tuning: f32, velocity: f32) -> Event {
     Event {
         busIndex: 0,
         sampleOffset: sample as int32,
         ppqPosition: 0.0,
         flags: 0,
         r#type: Event_::EventTypes_::kNoteOnEvent as u16,
-        __field0: Event__type0 { noteOn: NoteOnEvent { channel: channel as i16, pitch, tuning: 0.0, velocity, length: 0, noteId: -1 } },
+        __field0: Event__type0 { noteOn: NoteOnEvent { channel: channel as i16, pitch, tuning, velocity, length: 0, noteId: -1 } },
     }
 }
 
-fn note_off(channel: usize, sample: usize, pitch: i16) -> Event {
+fn note_off(channel: usize, sample: usize, pitch: i16, tuning: f32) -> Event {
     Event {
         busIndex: 0,
         sampleOffset: sample as int32,
         ppqPosition: 0.0,
         flags: 0,
         r#type: Event_::EventTypes_::kNoteOffEvent as u16,
-        __field0: Event__type0 { noteOff: NoteOffEvent { channel: channel as i16, pitch, velocity: 0.0, noteId: -1, tuning: 0.0 } },
+        __field0: Event__type0 { noteOff: NoteOffEvent { channel: channel as i16, pitch, velocity: 0.0, noteId: -1, tuning } },
     }
 }

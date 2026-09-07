@@ -1,31 +1,60 @@
-# VST3: a note-on rounds the pitch to the nearest semitone
+# VST3: a plugin plays a microtonal scale only if the host knows its bend range
 
 goofi's pitch is continuous — volts per octave, zero at C4 — and goofi's own audio nodes read it
 that way: `Osc` and `Filter` call `hz_of(pitch)` and sound whatever number they are given. A VST3
-plugin does not. `note_on` in `backend/audio/goofi-audio/src/vst3/node.rs` rounds the pitch to a
-whole MIDI note and sends `tuning: 0.0`, so everything between two semitones is discarded at the
-plugin boundary — on the `voice` cable and on the three `voice` params alike.
+plugin does not: its note is an integer, and the fraction has to travel beside it.
 
-That makes a microtonal scale unplayable through a plugin while it plays correctly through `Osc`,
-which is a split no user can see and no doc explains.
+`note_on` in `backend/audio/goofi-audio/src/vst3/node.rs` now sends that fraction two ways, and
+which one it uses is asked of the plugin rather than assumed. What follows is what the asking
+answered, measured against the 16 instruments installed on the development machine.
 
 ## What is settled
 
-The fix is the field already in the event. VST3's note-on carries a per-note `tuning` offset beside
-the integer pitch for exactly this, and goofi sends zero into it. The residual — the part the round
-threw away — is what belongs there.
+**The note's own `tuning` field is not the mechanism.** It is exact, it is optional, and it is
+transmitted correctly — a probe reads back `tuning=40.000153` for a 40-cent request — and every one
+of the 16 ignores it. It stays as the fallback because it costs nothing and it is right where it is
+honoured, but nothing may depend on it.
 
-The rounding itself stays: a plugin's note IS an integer, and the tuning offset is how VST3 says the
-rest. So this is one term added, not a redesign of the voice path.
+**Note expression is not the mechanism either.** `kTuningTypeID` is the one per-note offset whose
+support can be ASKED rather than guessed, and whose scale the SDK fixes at `240 x (norm - 0.5)`
+cents. All 16 answer no to `INoteExpressionController`. The probe was written, run, and removed;
+re-add it when a plugin that answers yes is in the room.
+
+**MPE is not the mechanism.** An MPE Configuration Message — RPN 6, sent as CC 101/100/6 through the
+mapped parameters — was ignored by both plugins it was sent to.
+
+**Pitch bend is the mechanism, one per voice channel.** `wheels()` asks
+`getMidiControllerAssignment(0, ch, kPitchBend, &id)` per channel, so a voice bends on its own
+channel's wheel. Measured on Vital: a +40 cent request lands at +40.8 cents when the range matches.
+
+**The range is the whole problem, and it is per plugin.** A wheel is a fraction of a range the
+plugin chooses and mostly does not publish. Vital publishes `Pitch Bend Range` and Diva publishes
+`PitchBend Up`/`Down`, both defaulting to 2, and setting Vital's to 12 turned the same request into
++240.3 cents — exactly 6x, so the arithmetic is understood. Synplant publishes 16 per-channel bend
+VALUES and no range, and behaves as though its range were 12. Ten publish nothing bend-named,
+which is a statement about their parameter list and not about whether they accept bend.
+
+**A survey by parameter name is not a survey of what a plugin accepts.** A JUCE plugin exposes its
+MIDI mappings as parameters that never appear in the visible list, so "no bend parameter" and "no
+bend" are different findings and only the first was measured.
 
 ## What is open
 
-Whether the offset is honoured widely enough to rely on. A plugin may ignore `tuning` and sound the
-rounded note, and there is no way to ask it in advance. So the situation that pins this needs a
-plugin known to honour it, and a plugin known not to is not a failure of goofi's.
+**Whether a chord holds its voices' bends apart.** One note is proved. A test that claimed the bend
+was global put both voices on one note number, which a synth may merge into one voice, so it proved
+nothing and was withdrawn. Settling it needs two distinct pitches, both confirmed sounding, in the
+one configuration under measurement.
 
-## Why it is worth doing
+**How to learn the range where the plugin does not publish one.** Setting it is exact and covers
+two of 16. Measuring it — sound a note, read the pitch, apply full bend, read it again, divide —
+needs no cooperation at all and would cover the rest, once per plugin, cached beside everything
+else the scan already remembers.
 
-A tuning is the point of a biotuner chain, and `dav0dea/goofi-pipe#21` builds one. A keyboard that
-plays a seven-note scale is the demo, and today it plays that scale into `Osc` and a rounded
-12-TET approximation of it into every synth a user already owns.
+## Why the reference implementation is not a model
+
+The Max for Live device this feature is measured against (`MEME/m4l_bundle/Biotuner`) is worth
+reading and is not worth copying. It is `is_mpe: 0` and echoes the incoming channel, so every note
+shares one bend and a chord wears the last note's. Its `scale 0 2 -8191 8192` maps a frequency
+RATIO onto full bend, which pins full travel to the octave and is exact only at a receiver range of
+17.31 semitones; against the usual 2 it renders its own stored -191 — meaning -40 cents — as -4.7.
+It reads as working because it fails quietly, in the direction of slightly flat.
