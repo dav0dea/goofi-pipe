@@ -94,9 +94,9 @@ of a per-param runtime error without an op echo is open below.
 
 ## Open
 
-- A canvas affordance for references, so a patch's modulation is visible where its cables are.
-  Nothing in the model prevents it; it is a UI choice. `roadmap/control-panels.md` carries the same
-  question for a control element, and the two are one answer.
+- A canvas affordance for a binding — a reference AND a control element alike, since both reach a
+  param the same way. A patch's modulation is invisible where its cables are. Nothing in the model
+  prevents it; it is a UI choice, and this file owns it for both kinds.
 - The inspector shows a param's RUNTIME error (a shape error on arrival, an evaluation failure)
   only after the next op echo for that node; the node-level `error` event carries the node's
   derived error, not the param's. A per-param runtime error event is one candidate; not decided.

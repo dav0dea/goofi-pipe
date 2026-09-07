@@ -23,9 +23,8 @@ where that is proved.
 
 ## A canvas affordance
 
-Nothing draws a control element on the canvas, so a patch's modulation is invisible where its
-cables are. This is the same open item `roadmap/param-sources.md` already carries for a reference,
-and the two should be answered together rather than separately.
+`param-sources.md` owns this item for a control element and a reference alike: nothing draws either
+on the canvas, and one answer serves both.
 
 ## What a widget follows, and what is still open there (2026-09-05, later)
 

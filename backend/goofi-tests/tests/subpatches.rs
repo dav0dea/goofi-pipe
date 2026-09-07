@@ -539,7 +539,13 @@ fn an_expression_reads_a_port_and_follows_the_wire_behind_it() {
     }
     assert_eq!(g.doc()["nodes"][&outp]["name"], "drain", "a refused rename changed nothing");
     let after_bad = g.call("node state", j!({ "node": hex(buf) }))["text"].as_str().unwrap().to_string();
-    assert_eq!(before_bad, after_bad, "…and left every expression exactly as it was");
+    // The dump carries how long a standing error has STOOD, to a tenth, so two reads of a healthy
+    // node differ by the clock alone once the loop between them takes 50 ms. The claim is the
+    // expressions, not the age, so the age comes off both sides.
+    let ageless = |s: &str| {
+        s.lines().map(|l| l.split(" — for ").next().unwrap_or(l)).collect::<Vec<_>>().join("\n")
+    };
+    assert_eq!(ageless(&before_bad), ageless(&after_bad), "…and left every expression exactly as it was");
 
     // The mirror case: a source spelling a slot no port wears YET heals when a rename gives a port
     // that name. Nobody re-edits the expression — the rename is what makes it resolvable, exactly
