@@ -965,8 +965,10 @@ fn a_patch_sounds_under_the_external_clock() {
     // The note is the round and the residual is carried beside it: C7 and 40 cents reads 428
     // crossings a tenth where the round alone reads 418, so a dropped residual fails here.
     let detuned = |g: &Goofi, plug, what| {
-        // Re-taken rather than re-tuned: a voice already held is not asked its pitch again.
+        // A voice already held is not asked its pitch again, so the note is re-taken — and the
+        // release has to be RENDERED, since the gate's fall is a state nothing sees undriven.
         g.set_param(plug, "voice", "gate", false);
+        heard(g, plug, "the voice let go before it is re-taken", |x| peak(x) < 1e-3);
         g.set_param(plug, "voice", "pitch", 3.0 + 0.4 / 12.0);
         g.set_param(plug, "voice", "gate", true);
         heard(g, plug, what, |x| near(per_tenth(x), 428));
@@ -977,7 +979,9 @@ fn a_patch_sounds_under_the_external_clock() {
     // residual travels in the note's own `tuning`, and it has to land on the very same pitch.
     bundled("GoofiDeaf", built("deaf"));
     assert_eq!(g.call("library refresh", j!({}))["added"], j!(["audio:GoofiDeaf", "audio:GoofiDeafSynth"]));
-    detuned(&g, g.add("GoofiDeaf"), "the same 40 cents, carried by the note's own tuning");
+    let deaf = g.add("GoofiDeaf");
+    detuned(&g, deaf, "the same 40 cents, carried by the note's own tuning");
+    g.set_param(deaf, "voice", "gate", false);
 
     g.set_param(plug, "voice", "pitch", 0.0);
     g.set_param(plug, "voice", "gate", false);
