@@ -98,6 +98,14 @@ same shape as the PAL race above with a quieter failure. Flake-grade; undiagnose
 Runs 34047760400 and 34048378434: EIGHT tests fail on `windows-latest` and every one of them is this
 file. Nothing else on that job is red, and neither ubuntu nor macOS fails any of them.
 
+**One correction, 2026-09-06.** A LATER run added `an_expression_reads_a_port_and_follows_the_wire_behind_it`
+to that list and it was filed here with the rest. It does not belong: it compared two `node state`
+dumps of a node with a standing error, and the dump carries how long that error has stood to a
+tenth of a second — `for 0.0s` against `for 0.1s`. Platform-agnostic, and it went on to fail on
+macOS, which is what gave it away. Fixed at b4ddbed8. The lesson is the one this whole file is for,
+turned around: a red Windows job is usually this family, and "usually" is not "always" — read the
+assertion before filing it.
+
 | test | what it wore |
 |---|---|
 | `a_slot_feeds_more_consumers_than_the_iceoryx2_defaults_allow` | `PublisherCreateError::UnableToCreateDataSegment` |
