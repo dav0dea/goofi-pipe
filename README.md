@@ -15,6 +15,9 @@
 
 <h3 align="center"><a href="https://notebooklm.google.com/notebook/568087b5-8687-4175-9429-eefba15440d9?artifactId=199781e4-6a1d-4e9f-a4a7-6ae71edf02a8">AI Podcast about goofi-pipe</a> | <a href="https://deepwiki.com/dav0dea/goofi-pipe">AI-generated Documentation</a></h3>
 
+> [!TIP]
+> **goofi 3.0 is in development!** Check out the development version at [KairosHive/goofi](https://github.com/KairosHive/goofi). It's still a work in progress, so expect rough edges. Feedback, bug reports, feature ideas and contributions are very welcome!
+
 # Installation
 If you only want to run goofi-pipe and not edit any of the code, make sure you activated the desired Python environment with Python >=3.9 and <3.13 and run the following commands in your terminal:
 ```bash
